@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   isLocal: vi.fn(),
 }))
 
-vi.mock("@dfinity/agent", () => ({
+vi.mock("@icp-sdk/core/agent", () => ({
   HttpAgent: { createSync: mocks.createSync },
 }))
 

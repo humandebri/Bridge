@@ -3,7 +3,7 @@ import { hexToBytes } from "viem"
 import { toast } from "sonner"
 import { deploymentProfile } from "@/config/profile"
 import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
-import { basePublicClient } from "@/lib/evm/client"
+import { basePublicClient, hasIndependentFinalizedRevertQuorum } from "@/lib/evm/client"
 import { finalizedCheckpointMatches } from "@/lib/finalized-checkpoint"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import { continueWithdrawalWithBrowserIdentity, NotifyWithdrawalCallError, notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
@@ -17,6 +17,7 @@ import {
   type PendingNotificationFailure,
 } from "@/lib/pending-confirmations"
 import { withdrawalNotificationPresentation } from "@/lib/withdrawal-notification"
+import { decideWithdrawalFinalization } from "@/lib/withdrawal-confirmation-state"
 
 export const CONFIRMATION_POLL_MS = 15_000
 export const NOTIFICATION_RETRY_DELAY_MS = 5_000
@@ -150,19 +151,6 @@ export function SettlementConfirmationCoordinator() {
       if (!isCurrent()) return
       if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
       let latest = progressForTrigger(entry, trigger)
-      if (receipt.status === "reverted") {
-        await removePendingConfirmation(entry)
-        if (!isCurrent()) return
-        if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
-        latest = progressForTrigger(entry, trigger)
-        if (latest) update(latest.id, {
-          phase: "attention",
-          receiptBlockNumber: receipt.blockNumber.toString(),
-          attentionMessage: "The Base withdrawal transaction reverted. No withdrawal was recorded on the IC; you can close this transfer and try again.",
-        })
-        toast.warning("The Base withdrawal transaction reverted. You can try again.")
-        return
-      }
       if (receipt.blockHash === null) return
       if (latest) update(latest.id, {
         phase: "base-withdrawal-included",
@@ -189,7 +177,29 @@ export function SettlementConfirmationCoordinator() {
           return block.hash
         },
       })
-      if (!isCurrent() || !canonical) return
+      if (!isCurrent()) return
+      const decision = decideWithdrawalFinalization(
+        receipt.status,
+        receipt.blockNumber,
+        finalized.number,
+        canonical,
+      )
+      if (decision === "retry") return
+      if (decision === "discard-reverted") {
+        if (!await hasIndependentFinalizedRevertQuorum(entry.transactionHash)) return
+        if (!isCurrent()) return
+        await removePendingConfirmation(entry)
+        if (!isCurrent()) return
+        if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId) return
+        latest = progressForTrigger(entry, trigger)
+        if (latest) update(latest.id, {
+          phase: "attention",
+          receiptBlockNumber: receipt.blockNumber.toString(),
+          attentionMessage: "The finalized Base withdrawal transaction reverted. No withdrawal was recorded on the IC; you can close this transfer and try again.",
+        })
+        toast.warning("The finalized Base withdrawal transaction reverted. You can try again.")
+        return
+      }
 
       const refreshed = readPendingConfirmations().find((candidate) => candidate.kind === "withdrawal"
         && candidate.transactionHash.toLowerCase() === entry.transactionHash.toLowerCase())

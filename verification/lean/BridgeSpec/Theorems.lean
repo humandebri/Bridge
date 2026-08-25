@@ -96,28 +96,39 @@ theorem checked_settlement_preserves_backing
   next => simp at accepted
 
 theorem withdrawal_notify_requires_finalized_success
-    {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat}
-    (h : decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) =
+    {receiptSucceeded canonical : Bool} {receiptBlock finalizedBlock : Nat}
+    (h : decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock)
+      canonical =
       .notify) :
-    receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock := by
+    receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock ∧ canonical = true := by
   simp only [decideWithdrawalFinalization] at h
   split at h
   next notFinalized => contradiction
   next finalized =>
     split at h
-    next succeeded => exact ⟨succeeded, Nat.le_of_not_gt finalized⟩
+    next isCanonical =>
+      split at h
+      next succeeded => exact ⟨succeeded, Nat.le_of_not_gt finalized, isCanonical⟩
+      next => contradiction
     next => contradiction
 
 theorem finalized_revert_is_never_notified
     {receiptBlock finalizedBlock : Nat} (finalized : receiptBlock ≤ finalizedBlock) :
-    decideWithdrawalFinalization false receiptBlock (some finalizedBlock) =
+    decideWithdrawalFinalization false receiptBlock (some finalizedBlock) true =
       .discardReverted := by
   simp [decideWithdrawalFinalization, Nat.not_lt.mpr finalized]
 
+theorem noncanonical_receipt_remains_retryable
+    {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat} :
+    decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) false =
+      .retry := by
+  simp [decideWithdrawalFinalization]
+
 theorem unfinalized_receipt_remains_retryable
-    {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat}
+    {receiptSucceeded canonical : Bool} {receiptBlock finalizedBlock : Nat}
     (unfinalized : finalizedBlock < receiptBlock) :
-    decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) = .retry := by
+    decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) canonical =
+      .retry := by
   simp [decideWithdrawalFinalization, unfinalized]
 
 theorem withdrawal_id_admission_requires_nonzero_inclusive_boundary
@@ -166,5 +177,28 @@ theorem withdrawal_finality_quorum_selects_two_provider_checkpoint
     · split at selected
       · simp_all <;> omega
       · split at selected <;> simp_all <;> omega
+
+theorem withdrawal_finality_identity_requires_exact_height_and_hash
+    {first second third : Option FinalizedIdentity} {checkpoint : FinalizedIdentity}
+    (selected : withdrawalFinalizedIdentityQuorum first second third = some checkpoint) :
+    twoFinalizedIdentitiesAttest first second third checkpoint := by
+  rcases first with _ | first <;> rcases second with _ | second <;>
+    rcases third with _ | third <;>
+    simp [withdrawalFinalizedIdentityQuorum, twoFinalizedIdentitiesAttest] at selected ⊢
+  · rcases selected with ⟨rfl, rfl⟩
+    simp
+  · rcases selected with ⟨rfl, rfl⟩
+    simp
+  · rcases selected with ⟨rfl, rfl⟩
+    simp
+  · split at selected
+    · have same : first = checkpoint := Option.some.inj selected
+      rcases ‹first = second ∨ first = third› with pair | pair
+      · exact Or.inl ⟨same, pair.symm.trans same⟩
+      · exact Or.inr (Or.inl ⟨same, pair.symm.trans same⟩)
+    · split at selected
+      · have same : second = checkpoint := Option.some.inj selected
+        exact Or.inr (Or.inr ⟨same, ‹second = third›.symm.trans same⟩)
+      · simp_all
 
 end BridgeSpec

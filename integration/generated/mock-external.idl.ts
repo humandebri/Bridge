@@ -355,15 +355,11 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'CanonicalInconsistent' : IDL.Null,
     'FinalizedInconsistent' : IDL.Null,
     'FinalizedUnavailable' : IDL.Null,
+    'FinalizedCheckpointFork' : IDL.Null,
     'Canonical' : IDL.Null,
     'SameHeightDifferentHash' : IDL.Null,
   });
   const Result_10 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : IDL.Text });
-  const ChainIdMode = IDL.Variant({
-    'Wrong' : IDL.Null,
-    'Configured' : IDL.Null,
-    'Inconsistent' : IDL.Null,
-  });
   const LedgerMode = IDL.Variant({
     'TemporarilyUnavailable' : IDL.Null,
     'InsufficientAllowance' : IDL.Record({ 'allowance' : IDL.Nat }),
@@ -488,7 +484,6 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
         [],
       ),
     'set_broadcast_inconsistent_after_accepts' : IDL.Func([IDL.Nat8], [], []),
-    'set_chain_id_mode' : IDL.Func([ChainIdMode], [], []),
     'set_configured_chain_id' : IDL.Func([IDL.Nat64], [], []),
     'set_deployment_postconditions' : IDL.Func(
         [
@@ -499,6 +494,16 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
           IDL.Vec(IDL.Nat8),
           IDL.Vec(IDL.Nat8),
         ],
+        [Result_10],
+        [],
+      ),
+    'set_deployment_role_signers_for_canister' : IDL.Func(
+        [IDL.Principal, IDL.Text],
+        [Result_10],
+        [],
+      ),
+    'set_deployment_role_signers_for_canister_at_generation' : IDL.Func(
+        [IDL.Principal, IDL.Text, IDL.Nat32],
         [Result_10],
         [],
       ),
@@ -515,6 +520,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'set_ledger_fee_available' : IDL.Func([IDL.Bool], [], []),
     'set_ledger_mode' : IDL.Func([LedgerMode], [], []),
     'set_max_service_fee' : IDL.Func([IDL.Nat], [], []),
+    'set_minimum_service_fee' : IDL.Func([IDL.Nat], [], []),
     'set_mint_authorization_epoch' : IDL.Func([IDL.Nat64], [], []),
     'set_mint_log' : IDL.Func([IDL.Opt(MintLogFixture)], [], []),
     'set_mint_window' : IDL.Func(

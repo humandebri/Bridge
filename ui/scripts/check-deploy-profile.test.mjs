@@ -6,6 +6,7 @@ import { join, resolve } from "node:path"
 import { spawnSync } from "node:child_process"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
+/** @type {string} */
 let root
 
 beforeEach(() => {
@@ -13,6 +14,7 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(root, { recursive: true, force: true }))
 
+/** @param {Record<string, unknown>} [profileOverrides] */
 function fixture(profileOverrides = {}) {
   const inputs = join(root, "inputs")
   const bundle = join(root, "bundle")
@@ -63,6 +65,7 @@ else process.exit(2);
   return { bundle, inputs, bin, gate, profile }
 }
 
+/** @param {NodeJS.ProcessEnv} env */
 function run(env) {
   return spawnSync(process.execPath, [resolve(import.meta.dirname, "check-deploy-profile.mjs")], {
     encoding: "utf8", env: { ...process.env, ...env },

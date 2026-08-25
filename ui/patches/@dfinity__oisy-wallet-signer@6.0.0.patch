@@ -1,3 +1,20 @@
+diff --git a/package.json b/package.json
+index a9a8a5b..2086e4c 100644
+--- a/package.json
++++ b/package.json
+@@ -86,9 +86,9 @@
+   },
+   "peerDependencies": {
+-    "@dfinity/utils": "~4.0.3",
++    "@dfinity/utils": "~4.2.1",
+     "@dfinity/zod-schemas": "^3",
+-    "@icp-sdk/canisters": "~3.1.0",
+-    "@icp-sdk/core": "^4",
++    "@icp-sdk/canisters": "~3.6.0",
++    "@icp-sdk/core": "^5",
+     "zod": "^4"
+   }
+ }
 diff --git a/icp-wallet.js b/icp-wallet.js
 index 01adc4f8aac82c1c8aa13e13105ebe0c59cde7ea..3c9da267713c9091b03a395bf7636e51088f4a07 100644
 --- a/icp-wallet.js

@@ -1,4 +1,4 @@
-import { Principal } from "@dfinity/principal"
+import { Principal } from "@icp-sdk/core/principal"
 import { bytesToHex } from "viem"
 import { describe, expect, it, vi } from "vitest"
 import { NotifyWithdrawalCallError } from "./ic/withdrawal-notification-client"

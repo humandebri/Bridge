@@ -1,4 +1,4 @@
-import { Principal } from "@dfinity/principal"
+import { Principal } from "@icp-sdk/core/principal"
 import { useCallback, useEffect, useState } from "react"
 import type { DepositView } from "@/generated/bridge.did"
 import { deploymentProfile } from "@/config/profile"

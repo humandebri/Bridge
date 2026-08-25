@@ -10,10 +10,16 @@ use crate::{
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 
-// A receipt observation can make four bounded 30-second RPC calls (chain id,
-// finalized head, receipt, and canonical block). Leave ample callback overhead
-// while still keeping crash recovery bounded.
-const LEASE_NS: u64 = 5 * 60 * 1_000_000_000;
+// A settlement observation may perform the finalized-head call and then one
+// state-observation round, each of which may consume the full RPC timeout.
+// The lease must cover both sequential rounds plus callback/commit margin.
+const MAX_EVM_RPC_CALL_NS: u64 = 300 * 1_000_000_000;
+const MAX_SEQUENTIAL_EVM_RPC_ROUNDS: u64 = 2;
+const LEASE_CALLBACK_MARGIN_NS: u64 = 120 * 1_000_000_000;
+const LEASE_NS: u64 =
+    MAX_EVM_RPC_CALL_NS * MAX_SEQUENTIAL_EVM_RPC_ROUNDS + LEASE_CALLBACK_MARGIN_NS;
+const _: () =
+    assert!(LEASE_NS > MAX_EVM_RPC_CALL_NS * MAX_SEQUENTIAL_EVM_RPC_ROUNDS + 60 * 1_000_000_000);
 const BUSY_RETRY_NS: u64 = 60 * 1_000_000_000;
 const MAX_TRANSIENT_RETRY_NS: u64 = 15 * 60 * 1_000_000_000;
 #[cfg(target_arch = "wasm32")]
@@ -124,7 +130,12 @@ impl SettlementLease {
             )
         });
         match renewed {
-            Ok(true) => Ok(()),
+            Ok(true) => {
+                // The global timer may still target the former deadline. Rearming
+                // prevents it from reclaiming this live generation mid-callback.
+                arm();
+                Ok(())
+            }
             Ok(false) => Err(SettlementActionError::Busy),
             Err(_) => Err(SettlementActionError::StorageFailure),
         }
@@ -281,7 +292,7 @@ async fn recover_one_funding_attempt() {
         crate::ledger::ReconciliationOutcome::Absent { .. } => {
             let now = ic_cdk::api::time();
             let dedup_expired = funding_dedup_expired(current.transfer.created_at_time_ns, now);
-            match bridge_core::funding_reconciliation_decision(
+            match ::bridge_core::kernel::funding_reconciliation_decision(
                 true,
                 *final_absence_scan,
                 dedup_expired,
@@ -774,6 +785,13 @@ fn mark_fault(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lease_strictly_exceeds_the_longest_sequential_rpc_step() {
+        let worst_case = MAX_EVM_RPC_CALL_NS * MAX_SEQUENTIAL_EVM_RPC_ROUNDS;
+        assert!(LEASE_NS > worst_case);
+        assert_eq!(LEASE_NS - worst_case, LEASE_CALLBACK_MARGIN_NS);
+    }
 
     #[test]
     fn transient_backoff_is_exponential_and_bounded() {

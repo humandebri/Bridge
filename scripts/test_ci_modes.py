@@ -61,30 +61,16 @@ class CiModeTests(unittest.TestCase):
         deployment = SOURCE[start:end]
         self.assertNotIn('"kinic"', deployment)
         self.assertNotIn('"KINIC"', deployment)
-        self.assertIn('bridge_fee_constructor_args=("100000000" "$service_fee")', SOURCE)
         self.assertIn(
             'bridge_fee_constructor_args=("1" "100000000" "$service_fee")', SOURCE
         )
+        self.assertNotIn('bridge_fee_constructor_args=("100000000" "$service_fee")', SOURCE)
         self.assertIn('require_equal "bSNS name" "$token_name" \'"KINIC"\'', SOURCE)
 
     def test_legacy_aggregate_modes_remain_complete(self) -> None:
         self.assert_calls("run_rust", ["run_rust_fast", "run_rust_integration"])
         self.assert_calls("run_contracts", ["run_contracts_fast", "run_contracts_coverage"])
         self.assert_calls("run_ui", ["run_ui_fast", "run_ui_e2e"])
-
-    def test_integration_typecheck_is_hardening_only(self) -> None:
-        body = function_body("run_rust_integration")
-        profile = body.index(
-            'proof_profile="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"'
-        )
-        branch = body.index(
-            'if [[ "$proof_profile" == "security-hardening-v1" ]]; then'
-        )
-        typecheck = body.index('pnpm --dir "$ROOT" run integration:typecheck')
-        e2e = body.index('pnpm --dir "$ROOT" run test:e2e')
-        self.assertLess(profile, branch)
-        self.assertLess(branch, typecheck)
-        self.assertLess(typecheck, e2e)
 
     def test_proofs_use_independent_claim_stages(self) -> None:
         body = function_body("run_proofs")
@@ -97,21 +83,17 @@ class CiModeTests(unittest.TestCase):
         self.assertIn('python3 "$ROOT/scripts/test_check_claim_manifest.py"', body)
         self.assertIn("run_proof_stage claim-transaction-tests", body)
 
-    def test_certora_preflight_is_hardening_only(self) -> None:
+    def test_certora_preflight_precedes_proof_impact_validation(self) -> None:
         body = function_body("run_versions")
-        profile_branch = body.index(
-            'if [[ "$proof_profile" == "security-hardening-v1" ]]; then'
-        )
+        ast_build = body.index('forge build --root "$ROOT/contracts" --ast')
         certora_manifest = body.index(
             'python3 "$ROOT/scripts/check_certora_manifest.py"'
         )
         certora_tests = body.index('python3 "$ROOT/scripts/test_certora_manifest.py"')
-        current_main = body.index(
-            'python3 "$ROOT/scripts/current_main_check_proof_impact.py"'
-        )
-        self.assertLess(profile_branch, certora_manifest)
+        proof_impact = body.index('python3 "$ROOT/scripts/test_proof_impact.py"')
+        self.assertLess(ast_build, certora_manifest)
         self.assertLess(certora_manifest, certora_tests)
-        self.assertLess(certora_tests, current_main)
+        self.assertLess(certora_tests, proof_impact)
 
     def test_shared_verus_kernels_may_be_const_or_non_const(self) -> None:
         body = function_body("run_verus")
@@ -135,11 +117,9 @@ class CiModeTests(unittest.TestCase):
 
     def test_smoke_uses_profile_specific_bridge_constructor_arguments(self) -> None:
         self.assertIn(
-            'if [[ "$proof_profile" == "security-hardening-v1" ]]', SOURCE
-        )
-        self.assertIn(
             'bridge_fee_constructor_args=("1" "100000000" "$service_fee")', SOURCE
         )
+        self.assertNotIn('bridge_fee_constructor_args=("100000000"', SOURCE)
         self.assertIn('"${bridge_fee_constructor_args[@]}"', SOURCE)
 
     def test_proof_stage_stops_on_the_first_failed_command(self) -> None:

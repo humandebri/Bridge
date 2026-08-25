@@ -1,6 +1,7 @@
 use crate::Amount;
 
-pub const MINT_AUTHORIZATION_TTL_SECONDS: u64 = 7_200;
+/// Must match the on-chain `Bridge` acceptance ceiling.
+pub const MINT_AUTHORIZATION_TTL_SECONDS: u64 = 15 * 60;
 pub const MINT_AUTHORIZATION_DOMAIN_NAME: &str = "KINIC Bridge";
 pub const MINT_AUTHORIZATION_DOMAIN_VERSION: &str = "1";
 
@@ -154,10 +155,10 @@ mod tests {
 
     #[test]
     fn deadline_is_fixed_and_checked() {
-        assert_eq!(MINT_AUTHORIZATION_TTL_SECONDS, 7_200);
+        assert_eq!(MINT_AUTHORIZATION_TTL_SECONDS, 900);
         assert_eq!(
             MintAuthorization::deadline_from_finalized_timestamp(10),
-            Some(7_210)
+            Some(910)
         );
         assert_eq!(
             MintAuthorization::deadline_from_finalized_timestamp(u64::MAX),
@@ -165,9 +166,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn signature_dispatch_reuses_record_and_never_replaces_signature() {
-        let mut record = MintAuthorizationRecord {
+    fn unsigned_record() -> MintAuthorizationRecord {
+        MintAuthorizationRecord {
             authorization: MintAuthorization {
                 deposit_id: [1; 32],
                 recipient: [2; 20],
@@ -187,10 +187,23 @@ mod tests {
             signature_dispatch_attempt: 0,
             signature_dispatched: false,
             signature: None,
-        };
+        }
+    }
 
+    #[test]
+    fn signature_dispatch_retries_when_a_previous_result_was_not_installed() {
+        let mut record = unsigned_record();
         assert_eq!(record.dispatch_signature(), Some(1));
+        assert!(record.signature_dispatched);
+        assert_eq!(record.signature, None);
         assert_eq!(record.dispatch_signature(), Some(2));
+        assert_eq!(record.signature_dispatch_attempt, 2);
+    }
+
+    #[test]
+    fn installed_signature_stops_dispatch_and_cannot_be_replaced() {
+        let mut record = unsigned_record();
+        assert_eq!(record.dispatch_signature(), Some(1));
         assert!(!record.install_signature(vec![0; 64]));
         assert!(record.install_signature(vec![0; 65]));
         assert_eq!(record.dispatch_signature(), None);

@@ -103,7 +103,10 @@ pub(super) fn consume_deposit_quota_and_reserve_funding(
             retry_after_seconds: 1,
         });
     }
-    consume_deposit_verification_quota(admission, owner, quota)?;
+    // The funding reservation and cheap Ledger pull are admitted here. Paid
+    // Base verification is allowed only after that pull proves an economically
+    // scarce funding identity, so an unfunded Principal must not consume the
+    // shared verification counter.
     consume_deposit_quota(admission, owner, quota)?;
     admission
         .funding_reservations
@@ -114,61 +117,6 @@ pub(super) fn consume_deposit_quota_and_reserve_funding(
             quota_window_id: admission.window_id,
             releases_quota_on_failure: true,
         });
-    Ok(())
-}
-
-fn consume_deposit_verification_quota(
-    admission: &mut DepositAdmissionControl,
-    owner: Principal,
-    quota: DepositQuotaAdmission,
-) -> Result<(), StorageError> {
-    let window_ns = quota.window_seconds.saturating_mul(1_000_000_000);
-    let window_id = quota.now_ns / window_ns;
-    if admission.verification_window_id != window_id {
-        admission.verification_window_id = window_id;
-        admission.verification_global_count = 0;
-        admission.verification_caller_counts.clear();
-    }
-    let retry_after_seconds = ((window_id + 1)
-        .saturating_mul(window_ns)
-        .saturating_sub(quota.now_ns)
-        .saturating_add(999_999_999)
-        / 1_000_000_000)
-        .max(1);
-    let caller_count = admission
-        .verification_caller_counts
-        .iter()
-        .find(|entry| entry.caller == owner.as_slice())
-        .map_or(0, |entry| entry.count);
-    if admission.verification_global_count >= quota.global_limit
-        || caller_count >= quota.per_principal_limit
-    {
-        return Err(StorageError::DepositRateLimited {
-            retry_after_seconds,
-        });
-    }
-    admission.verification_global_count = admission
-        .verification_global_count
-        .checked_add(1)
-        .ok_or(StorageError::CounterOverflow)?;
-    match admission
-        .verification_caller_counts
-        .iter_mut()
-        .find(|entry| entry.caller == owner.as_slice())
-    {
-        Some(entry) => {
-            entry.count = entry
-                .count
-                .checked_add(1)
-                .ok_or(StorageError::CounterOverflow)?
-        }
-        None => admission
-            .verification_caller_counts
-            .push(DepositCallerQuota {
-                caller: owner.as_slice().to_vec(),
-                count: 1,
-            }),
-    }
     Ok(())
 }
 

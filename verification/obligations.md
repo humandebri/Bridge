@@ -3,8 +3,8 @@
 Leanを抽象protocol specificationの正本とし、生成vectorでproduction consumerとのbounded conformanceを検査する。
 vectorに列挙されない入力や副作用を含む実装全体のsemantic refinementは主張しない。
 
-Evidenceはclaimごとに、抽象Lean proof、有限幅Lean refinement、Verus evidence、production transaction test、外部仮定を独立に読む。Verus manifestの`executable`はproduction実行関数を直接呼ぶproof、`shared`はCargo式とspecが式macroを共有するpredicate proof、`model`はproduction symbolを持たないモデルproofであり、三者を同じ強度として扱わない。
-release対象の閉じたclaim集合、trace theorem、Verus obligation、production symbol、transaction selector、仮定IDは`claims.tsv`を正本とし、表の説明だけでは完了判定しない。statusはproof gateが証拠の最弱要素から算出する。
+Evidenceはclaimごとに、抽象Lean proof、有限幅model refinement、Verus implementation basis、SMT obligation、Halmos obligation、production symbol、transaction test、外部仮定を独立に読む。Verus manifestの`executable`はproduction実行関数の戻り値を当該proofのnamed returnと`ensures`へ結合するproof、`shared-expression`は単一armの登録macro、位置parameter、整数定数alias、明示登録した派生入力を構造検査し、当該proofの`ensures`から対応specを参照するpredicate proof、`derived`は別記述または合成specへ当該proofの`ensures`を結合したproof、`model`はproduction symbolを持たないモデルproofであり、四者を同じ強度として扱わない。各Verus obligationは支援claimを宣言し、claims台帳からの参照集合と完全一致させる。production-bound Verus evidenceの必須集合はclaimの`implementation_basis`と完全一致させ、claimの全Verus義務が直接production-bound、または同じclaimのproduction-boundな`executable`／`shared-expression`だけに依存する`derived`でない限りclaim全体を実装証明済みにしない。SMT obligationはproduction共有kernel、Halmos obligationはpost-auth commit境界の部分性質を支える`supporting`だけを許可し、public Bridge wrapperやdeployed contract全体の実装証拠へ昇格させない。Bridge wrapperからcommit境界へのcallは、`digest`の生成元、署名回復で使う宣言ID、`evaluateMint`入力全フィールドと`effects`生成元、再代入の不在、commit引数の宣言IDと順序までASTで結合する。production transaction testは認証からevent・永続化までの具体的な経路を担う。
+release対象の閉じたclaim集合、`assurance_target`、`required_strength`、trace theorem、Verus obligation、production symbol、transaction selector、仮定IDは`claims.tsv`を正本とし、表の説明だけでは完了判定しない。監査用のclaim単位evidence matrixはschema 7の`verification/output/claim-report.json`であり、`abstract-proved`、`production-linked`、`implementation-proved`を混同せず、`release-blocked`と外部仮定を独立表示する。条件付きliveness 5件は`conditional-liveness.tsv`の補助定理でありrelease claimではない。
 外部仮定の依存claim、検査可能なfault test、運用監視、破壊時のfail-closed動作は`assumptions.tsv`を正本とする。
 
 | Claim | Production implementation | Evidence | External assumption |
@@ -19,6 +19,7 @@ release対象の閉じたclaim集合、trace theorem、Verus obligation、produc
 | pauseとsigner rotationでepochは単調増加し、旧Authorizationを一括失効する | `mintAuthorizationEpoch` | Foundry unit/invariant、共有EIP-712 vector | EVM execution atomicity |
 | Baseへ渡るamount・limit・feeは`u128`境界内で、同一transactionはWithdrawalを一度だけclaimする | `Bridge` production predicate、transient claim | Solidity SMT、Foundry | EIP-1153 transaction lifetime、deployed bytecode一致 |
 | Timelock候補はdelay範囲内、closed single-member role、pending operationなしである | `Bridge._validateTimelockCandidate` production predicate | Solidity SMT、Foundry | introspection callとdeployed candidateの真正性 |
+| governance confirmation callerは非anonymousかつ現在のrelayer、governance、pauseのいずれかと完全同値である | `bridge_core::confirmation_caller_authorized`とcanister wrapper | executable Verus proof、全boolean組合せRust test、role分離設定test、PocketIC integration | IC message callerの真正性、固定runtime toolchain |
 | Ledger送金はcanonical FinalizedのCommitted確認後だけ開始する | `notify_withdrawal`、`Observed → ReleasePending` | Rust、integration（Verusはphase遷移のみ） | EVM RPC quorumの真正性 |
 | frontendはWithdrawalのFinalized成功だけを通知し、revertを破棄する | Withdrawal confirmation coordinator、純粋判断関数 | Lean定理、生成vector、TypeScript consumer、Vitest | browser storage、RPC、walletの真正性 |
 | 成功・Duplicate・履歴照合成功だけが固定amount・固定IC AccountへのPaidを終端化する | Withdrawal/Reconciliation state machine | Lean定理、Rust state/integration test、Verus terminal proof | Ledger履歴の完全性。LeanからRustへの対応はRust回帰テスト |

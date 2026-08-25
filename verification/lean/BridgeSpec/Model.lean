@@ -88,13 +88,16 @@ inductive WithdrawalFinalizationDecision where
 deriving DecidableEq
 
 def decideWithdrawalFinalization
-    (receiptSucceeded : Bool) (receiptBlock : Nat) (finalizedBlock : Option Nat) :
+    (receiptSucceeded : Bool) (receiptBlock : Nat) (finalizedBlock : Option Nat)
+    (canonical : Bool) :
     WithdrawalFinalizationDecision :=
   match finalizedBlock with
   | none => .retry
   | some finalized =>
       if finalized < receiptBlock then .retry
-      else if receiptSucceeded then .notify else .discardReverted
+      else if canonical then
+        if receiptSucceeded then .notify else .discardReverted
+      else .retry
 
 def withdrawalIdAdmissible (observed minimum : Nat) : Bool :=
   minimum != 0 && minimum ≤ observed
@@ -143,6 +146,27 @@ def twoFinalizedHeadsAttest
   (finalizedHeadAttests first checkpoint ∧ finalizedHeadAttests third checkpoint) ∨
   (finalizedHeadAttests second checkpoint ∧ finalizedHeadAttests third checkpoint)
 
+structure FinalizedIdentity where
+  height : Nat
+  hash : Nat
+deriving DecidableEq
+
+def withdrawalFinalizedIdentityQuorum
+    (first second third : Option FinalizedIdentity) : Option FinalizedIdentity :=
+  match first, second, third with
+  | some a, some b, some c =>
+      if a = b ∨ a = c then some a else if b = c then some b else none
+  | some a, some b, none
+  | some a, none, some b
+  | none, some a, some b => if a = b then some a else none
+  | _, _, _ => none
+
+def twoFinalizedIdentitiesAttest
+    (first second third : Option FinalizedIdentity) (checkpoint : FinalizedIdentity) : Prop :=
+  (first = some checkpoint ∧ second = some checkpoint) ∨
+  (first = some checkpoint ∧ third = some checkpoint) ∨
+  (second = some checkpoint ∧ third = some checkpoint)
+
 structure DepositAdmission where
   serviceFee : Nat
   maximumServiceFee : Nat
@@ -188,8 +212,8 @@ deriving DecidableEq
 def rotateFeeRecipient (state : FeeState) (recipient : Nat) : Option FeeState :=
   if state.pendingPayout = 0 then some { state with recipient } else none
 
-def serviceFeeChangeAllowed (serviceFee maximumServiceFee : Nat) : Bool :=
-  serviceFee ≤ maximumServiceFee
+def serviceFeeChangeAllowed (serviceFee minimumServiceFee maximumServiceFee : Nat) : Bool :=
+  minimumServiceFee ≤ serviceFee ∧ serviceFee ≤ maximumServiceFee
 
 def feePayoutAllowed (reserve pending amount fee : Nat) : Bool :=
   pending ≤ reserve && amount + fee ≤ reserve - pending

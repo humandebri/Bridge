@@ -75,17 +75,11 @@ pub enum ReceiptMode {
 }
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChainIdMode {
-    Configured,
-    Wrong,
-    Inconsistent,
-}
-
-#[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockMode {
     Canonical,
     FinalizedUnavailable,
     FinalizedInconsistent,
+    FinalizedCheckpointFork,
     CanonicalInconsistent,
     SameHeightDifferentHash,
 }
@@ -204,7 +198,6 @@ struct StableMockState {
     withdrawal: Option<WithdrawalFixture>,
     withdrawal_status: u8,
     receipt_mode: ReceiptMode,
-    chain_id_mode: ChainIdMode,
     configured_chain_id: u64,
     bridge_runtime_code: Vec<u8>,
     timelock_runtime_code: Vec<u8>,
@@ -218,6 +211,7 @@ struct StableMockState {
     eth_balance: u128,
     next_evm_nonce: u64,
     service_fee: u128,
+    minimum_service_fee: u128,
     max_service_fee: u128,
     per_deposit_limit: u128,
     mint_window_limit: u128,
@@ -263,7 +257,6 @@ thread_local! {
     static WITHDRAWAL: RefCell<Option<WithdrawalFixture>> = const { RefCell::new(None) };
     static WITHDRAWAL_STATUS: RefCell<u8> = const { RefCell::new(1) };
     static RECEIPT_MODE: RefCell<ReceiptMode> = const { RefCell::new(ReceiptMode::Confirmed) };
-    static CHAIN_ID_MODE: RefCell<ChainIdMode> = const { RefCell::new(ChainIdMode::Configured) };
     static CONFIGURED_CHAIN_ID: RefCell<u64> = const { RefCell::new(8_453) };
     static BRIDGE_RUNTIME_CODE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static TIMELOCK_RUNTIME_CODE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -277,6 +270,7 @@ thread_local! {
     static ETH_BALANCE: RefCell<u128> = const { RefCell::new(10_000_000_000_000_000_000) };
     static NEXT_EVM_NONCE: RefCell<u64> = const { RefCell::new(0) };
     static SERVICE_FEE: RefCell<u128> = const { RefCell::new(1) };
+    static MINIMUM_SERVICE_FEE: RefCell<u128> = const { RefCell::new(10_000) };
     static MAX_SERVICE_FEE: RefCell<u128> = const { RefCell::new(10) };
     static PER_DEPOSIT_LIMIT: RefCell<u128> = const { RefCell::new(1_000_000) };
     static MINT_WINDOW_LIMIT: RefCell<u128> = const { RefCell::new(10_000_000) };
@@ -298,7 +292,9 @@ thread_local! {
     static RECEIPT_MINT_LOG_INDEX: RefCell<Option<u64>> = const { RefCell::new(None) };
     static BRIDGE_SIGNER: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
     static BASE_ADMIN_TIMELOCK: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
+    static GOVERNANCE_OPERATOR: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
     static RUNTIME_ADMINISTRATOR: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
+    static INDEPENDENT_CANCELLER: RefCell<[u8; 20]> = const { RefCell::new([0; 20]) };
     static MINT_AUTHORIZATION_EPOCH: RefCell<u64> = const { RefCell::new(1) };
     static DEPOSIT_MINTS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
     static WITHDRAWALS_PAUSED: RefCell<bool> = const { RefCell::new(false) };
@@ -377,11 +373,6 @@ fn set_block_timestamp(timestamp: u64) {
 }
 
 #[ic_cdk::update]
-fn set_chain_id_mode(mode: ChainIdMode) {
-    CHAIN_ID_MODE.with(|current| *current.borrow_mut() = mode);
-}
-
-#[ic_cdk::update]
 fn set_configured_chain_id(chain_id: u64) {
     CONFIGURED_CHAIN_ID.with(|current| *current.borrow_mut() = chain_id);
 }
@@ -438,6 +429,11 @@ fn set_next_evm_nonce(value: u64) {
 #[ic_cdk::update]
 fn set_service_fee(value: u128) {
     SERVICE_FEE.with(|current| *current.borrow_mut() = value);
+}
+
+#[ic_cdk::update]
+fn set_minimum_service_fee(value: u128) {
+    MINIMUM_SERVICE_FEE.with(|current| *current.borrow_mut() = value);
 }
 
 #[ic_cdk::update]
@@ -499,9 +495,65 @@ async fn set_bridge_signer_for_canister(
     canister_id: Principal,
     key_name: String,
 ) -> Result<(), String> {
+    let address = derive_address_for_canister(canister_id, key_name, vec![]).await?;
+    BRIDGE_SIGNER.with(|current| *current.borrow_mut() = address);
+    Ok(())
+}
+
+#[ic_cdk::update]
+async fn set_deployment_role_signers_for_canister(
+    canister_id: Principal,
+    key_name: String,
+) -> Result<(), String> {
+    set_deployment_role_signers_for_canister_at_generation(canister_id, key_name, 0).await
+}
+
+#[ic_cdk::update]
+async fn set_deployment_role_signers_for_canister_at_generation(
+    canister_id: Principal,
+    key_name: String,
+    generation: u32,
+) -> Result<(), String> {
+    let generation_suffix = if generation == 0 {
+        Vec::new()
+    } else {
+        vec![
+            b"KINIC-CONTROL-PLANE-GENERATION-V1".to_vec(),
+            generation.to_be_bytes().to_vec(),
+        ]
+    };
+    let mut mint_path = Vec::new();
+    mint_path.extend(generation_suffix.clone());
+    let mut governance_path = vec![b"governance-operator".to_vec()];
+    governance_path.extend(generation_suffix.clone());
+    let mut runtime_administrator_path = governance_path.clone();
+    runtime_administrator_path.splice(1..1, [b"KINIC-RUNTIME-ADMINISTRATOR-V1".to_vec()]);
+    let mut independent_canceller_path = governance_path.clone();
+    independent_canceller_path.splice(1..1, [b"KINIC-INDEPENDENT-CANCELLER-V1".to_vec()]);
+    let bridge_signer =
+        derive_address_for_canister(canister_id, key_name.clone(), mint_path).await?;
+    let governance_operator =
+        derive_address_for_canister(canister_id, key_name.clone(), governance_path).await?;
+    let runtime_administrator =
+        derive_address_for_canister(canister_id, key_name.clone(), runtime_administrator_path)
+            .await?;
+    let independent_canceller =
+        derive_address_for_canister(canister_id, key_name, independent_canceller_path).await?;
+    BRIDGE_SIGNER.with(|current| *current.borrow_mut() = bridge_signer);
+    GOVERNANCE_OPERATOR.with(|current| *current.borrow_mut() = governance_operator);
+    RUNTIME_ADMINISTRATOR.with(|current| *current.borrow_mut() = runtime_administrator);
+    INDEPENDENT_CANCELLER.with(|current| *current.borrow_mut() = independent_canceller);
+    Ok(())
+}
+
+async fn derive_address_for_canister(
+    canister_id: Principal,
+    key_name: String,
+    derivation_path: Vec<Vec<u8>>,
+) -> Result<[u8; 20], String> {
     let result = ecdsa_public_key(&EcdsaPublicKeyArgs {
         canister_id: Some(canister_id),
-        derivation_path: vec![],
+        derivation_path,
         key_id: EcdsaKeyId {
             curve: EcdsaCurve::Secp256k1,
             name: key_name,
@@ -513,8 +565,9 @@ async fn set_bridge_signer_for_canister(
         .map_err(|error| format!("invalid SEC1 public key: {error}"))?;
     let uncompressed = key.to_encoded_point(false);
     let hash = keccak(&uncompressed.as_bytes()[1..]);
-    BRIDGE_SIGNER.with(|current| current.borrow_mut().copy_from_slice(&hash[12..]));
-    Ok(())
+    hash[12..]
+        .try_into()
+        .map_err(|_| "derived address must be 20 bytes".to_string())
 }
 
 #[ic_cdk::update]
@@ -556,7 +609,7 @@ fn set_deployment_postconditions(
         return Err("deployment runtime code must be non-empty".into());
     }
     BASE_ADMIN_TIMELOCK.with(|current| *current.borrow_mut() = timelock);
-    RUNTIME_ADMINISTRATOR.with(|current| *current.borrow_mut() = governance_operator);
+    GOVERNANCE_OPERATOR.with(|current| *current.borrow_mut() = governance_operator);
     BSNS_ADDRESS.with(|current| *current.borrow_mut() = bsns);
     BSNS_BRIDGE.with(|current| *current.borrow_mut() = bridge);
     TIMELOCK_RUNTIME_CODE.with(|current| *current.borrow_mut() = timelock_runtime_code);
@@ -649,7 +702,6 @@ fn pre_upgrade() {
         withdrawal: WITHDRAWAL.with(|v| v.borrow().clone()),
         withdrawal_status: WITHDRAWAL_STATUS.with(|v| *v.borrow()),
         receipt_mode: RECEIPT_MODE.with(|v| *v.borrow()),
-        chain_id_mode: CHAIN_ID_MODE.with(|v| *v.borrow()),
         configured_chain_id: CONFIGURED_CHAIN_ID.with(|v| *v.borrow()),
         bridge_runtime_code: BRIDGE_RUNTIME_CODE.with(|v| v.borrow().clone()),
         timelock_runtime_code: TIMELOCK_RUNTIME_CODE.with(|v| v.borrow().clone()),
@@ -664,6 +716,7 @@ fn pre_upgrade() {
         eth_balance: ETH_BALANCE.with(|v| *v.borrow()),
         next_evm_nonce: NEXT_EVM_NONCE.with(|v| *v.borrow()),
         service_fee: SERVICE_FEE.with(|v| *v.borrow()),
+        minimum_service_fee: MINIMUM_SERVICE_FEE.with(|v| *v.borrow()),
         max_service_fee: MAX_SERVICE_FEE.with(|v| *v.borrow()),
         per_deposit_limit: PER_DEPOSIT_LIMIT.with(|v| *v.borrow()),
         mint_window_limit: MINT_WINDOW_LIMIT.with(|v| *v.borrow()),
@@ -712,7 +765,6 @@ fn post_upgrade() {
     WITHDRAWAL.with(|v| *v.borrow_mut() = state.withdrawal);
     WITHDRAWAL_STATUS.with(|v| *v.borrow_mut() = state.withdrawal_status);
     RECEIPT_MODE.with(|v| *v.borrow_mut() = state.receipt_mode);
-    CHAIN_ID_MODE.with(|v| *v.borrow_mut() = state.chain_id_mode);
     CONFIGURED_CHAIN_ID.with(|v| *v.borrow_mut() = state.configured_chain_id);
     BRIDGE_RUNTIME_CODE.with(|v| *v.borrow_mut() = state.bridge_runtime_code);
     TIMELOCK_RUNTIME_CODE.with(|v| *v.borrow_mut() = state.timelock_runtime_code);
@@ -727,6 +779,7 @@ fn post_upgrade() {
     ETH_BALANCE.with(|v| *v.borrow_mut() = state.eth_balance);
     NEXT_EVM_NONCE.with(|v| *v.borrow_mut() = state.next_evm_nonce);
     SERVICE_FEE.with(|v| *v.borrow_mut() = state.service_fee);
+    MINIMUM_SERVICE_FEE.with(|v| *v.borrow_mut() = state.minimum_service_fee);
     MAX_SERVICE_FEE.with(|v| *v.borrow_mut() = state.max_service_fee);
     PER_DEPOSIT_LIMIT.with(|v| *v.borrow_mut() = state.per_deposit_limit);
     MINT_WINDOW_LIMIT.with(|v| *v.borrow_mut() = state.mint_window_limit);
@@ -859,17 +912,21 @@ fn icrc1_transfer(args: TransferArg) -> Result<Nat, TransferError> {
 }
 
 #[ic_cdk::query]
-fn get_transactions(_args: GetBlocksRequest) -> GetTransactionsResponse {
+fn get_transactions(args: GetBlocksRequest) -> GetTransactionsResponse {
     let transactions = TRANSACTIONS.with(|transactions| transactions.borrow().clone());
+    let start = nat_to_usize(&args.start).min(transactions.len());
+    let length = nat_to_usize(&args.length);
+    let end = start.saturating_add(length).min(transactions.len());
     let archive_length = ARCHIVE_PREFIX_LENGTH
         .with(|length| *length.borrow())
         .min(transactions.len() as u64) as usize;
-    let archived_transactions = if archive_length == 0 {
+    let archived_end = end.min(archive_length);
+    let archived_transactions = if start >= archived_end {
         vec![]
     } else {
         vec![ArchivedRange {
-            start: Nat::from(0u8),
-            length: Nat::from(archive_length),
+            start: Nat::from(start),
+            length: Nat::from(archived_end - start),
             callback: QueryTxArchiveFn::new(
                 ic_cdk::api::canister_self(),
                 "get_archive_transactions",
@@ -878,8 +935,12 @@ fn get_transactions(_args: GetBlocksRequest) -> GetTransactionsResponse {
     };
     GetTransactionsResponse {
         log_length: Nat::from(transactions.len()),
-        first_index: Nat::from(archive_length),
-        transactions: transactions.into_iter().skip(archive_length).collect(),
+        first_index: Nat::from(start.max(archive_length).min(end)),
+        transactions: transactions
+            .into_iter()
+            .skip(start.max(archive_length))
+            .take(end.saturating_sub(start.max(archive_length)))
+            .collect(),
         archived_transactions,
     }
 }
@@ -923,14 +984,19 @@ fn status() -> Status {
 
 #[ic_cdk::query]
 fn get_account_transactions(
-    _args: GetAccountTransactionsArgs,
+    args: GetAccountTransactionsArgs,
 ) -> Result<IndexTransactions, IndexError> {
-    let transactions = TRANSACTIONS.with(|transactions| {
+    let start = args.start.as_ref().map(nat_to_usize).unwrap_or(usize::MAX);
+    let max_results = nat_to_usize(&args.max_results);
+    let all_transactions = TRANSACTIONS.with(|transactions| {
         transactions
             .borrow()
             .iter()
             .cloned()
             .enumerate()
+            .filter(|(id, transaction)| {
+                *id < start && transaction_matches_account(transaction, &args.account)
+            })
             .rev()
             .map(|(id, transaction)| TransactionWithId {
                 id: Nat::from(id),
@@ -938,13 +1004,35 @@ fn get_account_transactions(
             })
             .collect::<Vec<_>>()
     });
+    let oldest_tx_id = all_transactions
+        .last()
+        .map(|transaction| transaction.id.clone());
+    let transactions = all_transactions.into_iter().take(max_results).collect();
     Ok(IndexTransactions {
         balance: Nat::from(0u8),
-        oldest_tx_id: transactions
-            .last()
-            .map(|transaction| transaction.id.clone()),
+        oldest_tx_id,
         transactions,
     })
+}
+
+fn transaction_matches_account(transaction: &Transaction, account: &Account) -> bool {
+    transaction
+        .mint
+        .as_ref()
+        .is_some_and(|mint| &mint.to == account)
+        || transaction
+            .burn
+            .as_ref()
+            .is_some_and(|burn| &burn.from == account)
+        || transaction.transfer.as_ref().is_some_and(|transfer| {
+            &transfer.from == account
+                || &transfer.to == account
+                || transfer.spender.as_ref() == Some(account)
+        })
+        || transaction
+            .approve
+            .as_ref()
+            .is_some_and(|approve| &approve.from == account || &approve.spender == account)
 }
 
 #[ic_cdk::update]
@@ -958,16 +1046,9 @@ fn multi_request(
             let next = value.borrow().saturating_add(1);
             *value.borrow_mut() = next;
         });
-        return match CHAIN_ID_MODE.with(|mode| *mode.borrow()) {
-            ChainIdMode::Configured => MultiRpcResult::Consistent(Ok(
-                CONFIGURED_CHAIN_ID.with(|chain_id| format!("0x{:x}", *chain_id.borrow()))
-            )),
-            ChainIdMode::Wrong => MultiRpcResult::Consistent(Ok("0x1".into())),
-            ChainIdMode::Inconsistent => MultiRpcResult::Inconsistent(vec![
-                (RpcService::Provider(1), Ok("0x2105".into())),
-                (RpcService::Provider(2), Ok("0x1".into())),
-            ]),
-        };
+        return MultiRpcResult::Consistent(Ok(
+            CONFIGURED_CHAIN_ID.with(|chain_id| format!("0x{:x}", *chain_id.borrow()))
+        ));
     }
     if request.contains("eth_maxPriorityFeePerGas") {
         return MultiRpcResult::Consistent(Ok("0x1".into()));
@@ -1101,10 +1182,17 @@ fn multi_request(
         address_word(BSNS_BRIDGE.with(|value| *value.borrow()))
     } else if request.contains(&selector_hex("roleMember(bytes32)")) {
         let default_role = format!("{}{}", selector_hex("roleMember(bytes32)"), "00".repeat(32));
+        let canceller_role = format!(
+            "{}{}",
+            selector_hex("roleMember(bytes32)"),
+            bytes_hex(&keccak(b"CANCELLER_ROLE")),
+        );
         if request.contains(&default_role) {
             address_word(BASE_ADMIN_TIMELOCK.with(|value| *value.borrow()))
+        } else if request.contains(&canceller_role) {
+            address_word(INDEPENDENT_CANCELLER.with(|value| *value.borrow()))
         } else {
-            address_word(RUNTIME_ADMINISTRATOR.with(|value| *value.borrow()))
+            address_word(GOVERNANCE_OPERATOR.with(|value| *value.borrow()))
         }
     } else if request.contains("f702cf2b") {
         let block_number = eip1898_block_number(&request);
@@ -1123,6 +1211,8 @@ fn multi_request(
         WITHDRAWAL.with(|value| withdrawal_response(value.borrow().as_ref()))
     } else if request.contains("8abdf5aa") {
         word(SERVICE_FEE.with(|value| *value.borrow()))
+    } else if request.contains(&selector_hex("MIN_SERVICE_FEE()")) {
+        word(MINIMUM_SERVICE_FEE.with(|value| *value.borrow()))
     } else if request.contains("14d90e1b") {
         word(MAX_SERVICE_FEE.with(|value| *value.borrow()))
     } else if request.contains("e71fb849") {
@@ -1223,6 +1313,26 @@ fn eth_get_block_by_number(
             let first = mock_block(tag.clone(), false);
             let second = mock_block(tag.clone(), true);
             let third = mock_block(tag, false);
+            MultiRpcResult::Inconsistent(vec![
+                (RpcService::Provider(1), Ok(first)),
+                (RpcService::Provider(2), Ok(second)),
+                (RpcService::Provider(3), Ok(third)),
+            ])
+        }
+        (BlockMode::FinalizedCheckpointFork, BlockTag::Finalized) => {
+            let first = mock_block(tag.clone(), false);
+            let second = mock_block(tag.clone(), false);
+            let third = mock_block(tag, false);
+            MultiRpcResult::Inconsistent(vec![
+                (RpcService::Provider(1), Ok(first)),
+                (RpcService::Provider(2), Ok(second)),
+                (RpcService::Provider(3), Ok(third)),
+            ])
+        }
+        (BlockMode::FinalizedCheckpointFork, BlockTag::Number(_)) => {
+            let first = mock_block(tag.clone(), false);
+            let second = mock_block(tag.clone(), false);
+            let third = mock_block(tag, true);
             MultiRpcResult::Inconsistent(vec![
                 (RpcService::Provider(1), Ok(first)),
                 (RpcService::Provider(2), Ok(second)),
@@ -1738,11 +1848,100 @@ pub fn generated_candid_interface() -> String {
 
 #[cfg(test)]
 mod candid_tests {
+    use candid::{Nat, Principal};
+    use icrc_ledger_types::{
+        icrc1::account::Account,
+        icrc3::transactions::{Transaction, Transfer},
+    };
+
+    fn account(seed: u8) -> Account {
+        Account {
+            owner: Principal::self_authenticating([seed; 32]),
+            subaccount: None,
+        }
+    }
+
+    fn transfer(from: Account, to: Account, timestamp: u64) -> Transaction {
+        Transaction::transfer(
+            Transfer {
+                amount: Nat::from(1u8),
+                from,
+                to,
+                spender: None,
+                memo: None,
+                fee: None,
+                created_at_time: None,
+            },
+            timestamp,
+        )
+    }
+
     #[test]
     fn checked_in_candid_matches_exported_interface() {
         assert_eq!(
             super::generated_candid_interface(),
             include_str!("../mock.did")
         );
+    }
+
+    #[test]
+    fn index_history_honors_account_exclusive_cursor_and_page_size() {
+        let owner = account(1);
+        let other = account(2);
+        let destination = account(3);
+        super::TRANSACTIONS.with(|transactions| {
+            *transactions.borrow_mut() = vec![
+                transfer(owner, destination, 0),
+                transfer(other, destination, 1),
+                transfer(owner, destination, 2),
+                transfer(other, destination, 3),
+                transfer(owner, destination, 4),
+            ];
+        });
+
+        let first = super::get_account_transactions(super::GetAccountTransactionsArgs {
+            account: owner,
+            start: None,
+            max_results: Nat::from(2u8),
+        })
+        .expect("first page");
+        assert_eq!(
+            first
+                .transactions
+                .iter()
+                .map(|transaction| transaction.id.clone())
+                .collect::<Vec<_>>(),
+            vec![Nat::from(4u8), Nat::from(2u8)]
+        );
+
+        let second = super::get_account_transactions(super::GetAccountTransactionsArgs {
+            account: owner,
+            start: Some(Nat::from(2u8)),
+            max_results: Nat::from(2u8),
+        })
+        .expect("second page");
+        assert_eq!(second.transactions.len(), 1);
+        assert_eq!(second.transactions[0].id, Nat::from(0u8));
+    }
+
+    #[test]
+    fn ledger_history_honors_requested_range() {
+        let owner = account(4);
+        let destination = account(5);
+        super::ARCHIVE_PREFIX_LENGTH.with(|length| *length.borrow_mut() = 0);
+        super::TRANSACTIONS.with(|transactions| {
+            *transactions.borrow_mut() = (0..5)
+                .map(|timestamp| transfer(owner, destination, timestamp))
+                .collect();
+        });
+
+        let page = super::get_transactions(icrc_ledger_types::icrc3::blocks::GetBlocksRequest {
+            start: Nat::from(1u8),
+            length: Nat::from(2u8),
+        });
+        assert_eq!(page.log_length, Nat::from(5u8));
+        assert_eq!(page.first_index, Nat::from(1u8));
+        assert_eq!(page.transactions.len(), 2);
+        assert!(page.archived_transactions.is_empty());
     }
 }

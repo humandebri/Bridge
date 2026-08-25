@@ -139,7 +139,7 @@ pub fn resolve_deposit_hold(
                 return Err(CoreError::HoldMismatch);
             }
             let current_funding = deposit.funding_ledger_block_index();
-            let (next_funding, _) = crate::deposit_ledger_block_transition(
+            let (next_funding, _) = crate::kernel::deposit_ledger_block_transition(
                 current_funding,
                 None,
                 1,
@@ -208,7 +208,7 @@ pub fn resolve_deposit_hold(
                 ),
                 _ => (None, None),
             };
-            let (_, next_refund) = crate::deposit_ledger_block_transition(
+            let (_, next_refund) = crate::kernel::deposit_ledger_block_transition(
                 current.0,
                 current.1,
                 2,
@@ -332,7 +332,7 @@ pub fn resolve_withdrawal_hold(
                 } => Some(*release_ledger_block_index),
                 _ => None,
             };
-            let next_release = crate::withdrawal_ledger_block_transition(
+            let next_release = crate::kernel::withdrawal_ledger_block_transition(
                 current_release,
                 1,
                 release_ledger_block_index,
@@ -347,7 +347,7 @@ pub fn resolve_withdrawal_hold(
                     ..
                 } => {
                     let (next_state, escrow_debit, reserve_credit, liability_debit) =
-                        crate::withdrawal_transition_effects(
+                        crate::kernel::withdrawal_transition_effects(
                             3,
                             4,
                             settlement.amount_out.get(),
@@ -395,7 +395,7 @@ pub fn resolve_withdrawal_hold(
                     ..
                 } => {
                     let (next_state, escrow_debit, reserve_credit, liability_debit) =
-                        crate::withdrawal_transition_effects(
+                        crate::kernel::withdrawal_transition_effects(
                             3,
                             5,
                             settlement.amount_out.get(),

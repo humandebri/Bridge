@@ -7,7 +7,7 @@ mod accounting;
 mod authorization;
 mod deposit;
 mod external;
-mod kernel;
+pub mod kernel;
 mod reconciliation;
 mod reserve;
 mod types;
@@ -31,7 +31,8 @@ pub use external::{
 pub use kernel::{
     activation_base_preflight_matches, activation_postcondition_matches, administrator_authorized,
     audit_next, authorization_commit_allowed, canonical_probe_matches, checked_counter_transition,
-    checked_requirement, committed_quote_matches, counter_delta, deposit_admission_decision,
+    checked_requirement, committed_quote_matches, confirmation_caller_authorized,
+    confirmation_roles_distinct, counter_delta, deposit_admission_decision,
     deposit_charge_service_fee, deposit_identity_decision, deposit_ledger_block_transition,
     deposit_nonterminal_indexed, deposit_numeric_effects, deposit_refund_amount,
     deposit_releases_reservation, deposit_reservation_active, deposit_transition,
@@ -47,7 +48,8 @@ pub use kernel::{
     refund_start_allowed, release_transfer_matches, replay_matches, reservation_decision,
     reserve_admission_preserves_requirement, runtime_attestation_matches, scan_complete,
     service_fee_change_allowed, settlement_decision, signature_install_allowed,
-    signing_cycle_requirement, transaction_liability_wei, withdrawal_finalized_identity_quorum,
+    signing_cycle_requirement, transaction_liability_wei, withdrawal_common_checkpoint,
+    withdrawal_finalized_checkpoint_quorum, withdrawal_finalized_identity_quorum,
     withdrawal_id_is_admissible, withdrawal_ledger_block_transition, withdrawal_liability_indexed,
     withdrawal_phase_allows, withdrawal_phase_step, withdrawal_transition_effects,
     DepositAdmissionDecision, DepositEffects, DepositEventGuard, DepositIdentityDecision,

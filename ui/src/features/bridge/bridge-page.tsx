@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ArrowDownUp, ArrowRight, LoaderCircle, LockKeyhole, RefreshCcw, TriangleAlert } from "lucide-react"
-import { Principal } from "@dfinity/principal"
+import { Principal } from "@icp-sdk/core/principal"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { hexToBytes } from "viem"
@@ -20,7 +20,7 @@ import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
 import type { DepositView } from "@/generated/bridge.did"
 import { bsnsAbi } from "@/generated/abi/bsns.generated"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
-import { estimatedAmountOut, formatTokenAmount, parseTokenAmount, requiredDepositBalance } from "@/lib/amounts"
+import { estimatedAmountOut, formatTokenAmount, maximumDepositAmount, parseTokenAmount, requiredDepositBalance } from "@/lib/amounts"
 import { shortenWalletAddress } from "@/lib/wallet-address"
 import { classifyDepositRecoverySequence } from "@/lib/deposit-recovery"
 import { createLedgerActor, ledgerAccount } from "@/lib/ic/ledger"
@@ -796,6 +796,18 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
   const depositFlowActive = direction === "deposit" && Boolean(activeDeposit)
   const depositControlsLocked = direction === "deposit"
     && (Boolean(unresolvedDeposit) || effectiveDepositProgress !== "idle" || depositFlowActive)
+  const maximumAmount = direction === "deposit"
+    ? ledgerData !== undefined
+      ? maximumDepositAmount(ledgerData.balance, ledgerData.fee, ledgerData.allowance)
+      : undefined
+    : bsnsBalanceData
+  const maximumAmountDisabled = depositControlsLocked || maximumAmount === undefined || maximumAmount === 0n
+  const useMaximumAmount = () => {
+    if (maximumAmountDisabled || maximumAmount === undefined) return
+    const formatted = formatTokenAmount(maximumAmount)
+    if (direction === "deposit") setDepositAmount(formatted)
+    else setWithdrawAmount(formatted)
+  }
 
   const changeDirection = () => { if (depositControlsLocked) return; setConfirming(false); onDirectionChange(direction === "deposit" ? "withdraw" : "deposit") }
   const setBridgeReviewOpen = (open: boolean) => {
@@ -872,7 +884,7 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       </div>
       <div className="mt-3 rounded-2xl bg-white p-4">
         <div className="flex items-center justify-between gap-4"><Label htmlFor="bridge-amount">You send</Label><span className="text-sm text-[var(--muted)]">Balance {balance !== undefined ? formatTokenAmount(balance) : "—"} {sendToken.symbol}</span></div>
-        <div className="mt-1 flex items-center gap-3"><Input id="bridge-amount" disabled={depositControlsLocked} aria-invalid={Boolean(amountError)} aria-describedby="bridge-amount-feedback" className="font-numeric h-14 border-0 px-0 text-3xl font-semibold focus:ring-0" inputMode="decimal" placeholder="0.00000000" value={amount} onChange={(event) => { if (direction === "deposit") setDepositAmount(event.target.value); else setWithdrawAmount(event.target.value) }} /><span className="rounded-xl bg-[var(--panel)] px-3 py-2 text-sm font-bold">{sendToken.symbol}</span></div>
+        <div className="mt-1 flex items-center gap-2 sm:gap-3"><Input id="bridge-amount" disabled={depositControlsLocked} aria-invalid={Boolean(amountError)} aria-describedby="bridge-amount-feedback" className="font-numeric h-14 min-w-0 border-0 px-0 text-3xl font-semibold focus:ring-0" inputMode="decimal" placeholder="0.00000000" value={amount} onChange={(event) => { if (direction === "deposit") setDepositAmount(event.target.value); else setWithdrawAmount(event.target.value) }} /><Button type="button" size="sm" variant="ghost" className="h-9 shrink-0 rounded-xl px-3" disabled={maximumAmountDisabled} onClick={useMaximumAmount}>MAX</Button><span className="shrink-0 rounded-xl bg-[var(--panel)] px-3 py-2 text-sm font-bold">{sendToken.symbol}</span></div>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-3 rounded-2xl bg-white p-4 text-sm"><Quote label={feeLabel} value={fee !== undefined ? `${formatTokenAmount(fee)} ${sendToken.symbol}` : "—"} /><Quote label="Estimated receive" value={receive !== undefined ? `${formatTokenAmount(receive)} ${receiveToken.symbol}` : "—"} /></div>
       {direction === "deposit" && (effectiveDepositProgress === "oisy-action" || deposit.isPending) && (

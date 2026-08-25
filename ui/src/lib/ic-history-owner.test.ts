@@ -1,4 +1,4 @@
-import { Principal } from "@dfinity/principal"
+import { Principal } from "@icp-sdk/core/principal"
 import { describe, expect, it, vi } from "vitest"
 import { clearIcHistoryOwner, icHistoryOwnerStorageKey, loadIcHistoryOwner, sameIcAccount, saveIcHistoryOwner } from "./ic-history-owner"
 

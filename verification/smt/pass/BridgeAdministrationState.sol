@@ -25,8 +25,12 @@ contract BridgeAdministrationState {
         }
     }
 
-    function boundedServiceFee(uint256 serviceFee, uint256 maximumServiceFee) external pure {
-        if (BridgeAdministration.serviceFeeIsValid(serviceFee, maximumServiceFee)) {
+    function boundedServiceFee(uint256 serviceFee, uint256 minimumServiceFee, uint256 maximumServiceFee)
+        external
+        pure
+    {
+        if (BridgeAdministration.serviceFeeIsValid(serviceFee, minimumServiceFee, maximumServiceFee)) {
+            assert(minimumServiceFee <= serviceFee);
             assert(serviceFee <= maximumServiceFee);
         }
     }

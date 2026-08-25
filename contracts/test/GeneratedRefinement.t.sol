@@ -25,6 +25,7 @@ contract GeneratedRefinementTest is TestBase {
             2_000,
             2_000,
             1 hours,
+            1,
             100,
             serviceFee
         );
@@ -39,7 +40,7 @@ contract GeneratedRefinementTest is TestBase {
             grossAmount: 1_100,
             maxServiceFee: serviceFee,
             chargedServiceFee: serviceFee,
-            deadline: block.timestamp + 30 minutes,
+            deadline: block.timestamp + 15 minutes,
             authorizationEpoch: bridge.mintAuthorizationEpoch()
         });
         _submitMintAuthorization(BRIDGE_SIGNER_KEY, bridge, authorization, address(this));

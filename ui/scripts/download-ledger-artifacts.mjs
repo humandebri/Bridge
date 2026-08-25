@@ -25,4 +25,5 @@ for (const artifact of artifacts) {
   process.stdout.write(`${artifact.name} ${artifact.sha256}\n`)
 }
 
+/** @param {Uint8Array} bytes */
 function digest(bytes) { return createHash("sha256").update(bytes).digest("hex") }

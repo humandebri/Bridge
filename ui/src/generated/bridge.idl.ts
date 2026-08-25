@@ -28,7 +28,9 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     }),
     'Busy' : IDL.Record({ 'operation_id' : IDL.Nat64 }),
     'TransactionNotFinalized' : IDL.Record({ 'operation_id' : IDL.Nat64 }),
+    'InsufficientCycles' : IDL.Null,
     'Unauthorized' : IDL.Null,
+    'RateLimited' : IDL.Null,
     'InvalidArgument' : IDL.Null,
     'TransactionReverted' : IDL.Record({ 'operation_id' : IDL.Nat64 }),
     'StorageFailure' : IDL.Null,
@@ -156,11 +158,29 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'operation_id' : IDL.Vec(IDL.Nat8),
   });
   const BaseGovernanceOperationKind = IDL.Variant({
+    'ExecuteControlPlaneRotation' : IDL.Record({
+      'independent_canceller' : IDL.Vec(IDL.Nat8),
+      'salt' : IDL.Vec(IDL.Nat8),
+      'generation' : IDL.Nat32,
+      'operation_id' : IDL.Vec(IDL.Nat8),
+      'bridge_signer' : IDL.Vec(IDL.Nat8),
+      'runtime_administrator' : IDL.Vec(IDL.Nat8),
+      'governance_operator' : IDL.Vec(IDL.Nat8),
+    }),
     'PauseDepositMints' : IDL.Null,
     'CancelTimelock' : IDL.Record({ 'operation_id' : IDL.Vec(IDL.Nat8) }),
     'SetServiceFee' : IDL.Record({ 'value' : IDL.Nat }),
     'PauseWithdrawals' : IDL.Null,
     'ScheduleActivation' : ActivationOperationView,
+    'ScheduleControlPlaneRotation' : IDL.Record({
+      'independent_canceller' : IDL.Vec(IDL.Nat8),
+      'salt' : IDL.Vec(IDL.Nat8),
+      'generation' : IDL.Nat32,
+      'operation_id' : IDL.Vec(IDL.Nat8),
+      'bridge_signer' : IDL.Vec(IDL.Nat8),
+      'runtime_administrator' : IDL.Vec(IDL.Nat8),
+      'governance_operator' : IDL.Vec(IDL.Nat8),
+    }),
     'ExecuteActivation' : ActivationOperationView,
   });
   const SignedBaseGovernanceTransaction = IDL.Record({
@@ -261,6 +281,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     }),
     'DepositsResumed' : IDL.Null,
     'FeePayoutRequested' : IDL.Record({ 'amount' : IDL.Nat }),
+    'ReserveGateChanged' : IDL.Record({ 'sufficient' : IDL.Bool }),
     'WithdrawalFeeGuardTripped' : IDL.Record({
       'charged_service_fee' : IDL.Nat,
       'ledger_fee' : IDL.Nat,
@@ -411,7 +432,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'refund' : IDL.Opt(DepositRefundView),
   });
   const Result_10 = IDL.Variant({
-    'Ok' : IDL.Opt(SignedBaseGovernanceTransaction),
+    'Ok' : IDL.Vec(SignedBaseGovernanceTransaction),
     'Err' : BaseGovernanceError,
   });
   const ProductionLifecycle = IDL.Variant({
@@ -577,9 +598,11 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
   });
   const Result_17 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : AdminError });
   const BaseGovernanceAction = IDL.Variant({
+    'ExecuteControlPlaneRotation' : IDL.Null,
     'PauseDepositMints' : IDL.Null,
     'SetServiceFee' : IDL.Record({ 'value' : IDL.Nat }),
     'PauseWithdrawals' : IDL.Null,
+    'ScheduleControlPlaneRotation' : IDL.Null,
     'CancelPendingTimelock' : IDL.Null,
   });
   const PrepareBaseGovernanceReplacementArgs = IDL.Record({

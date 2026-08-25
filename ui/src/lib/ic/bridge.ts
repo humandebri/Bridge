@@ -1,5 +1,5 @@
-import { Actor, type ActorSubclass, type Identity } from "@dfinity/agent"
-import { Principal } from "@dfinity/principal"
+import { Actor, type ActorSubclass, type Identity } from "@icp-sdk/core/agent"
+import { Principal } from "@icp-sdk/core/principal"
 import type { _SERVICE } from "@/generated/bridge.did"
 import { idlFactory } from "@/generated/bridge.idl"
 import { createIcAgent } from "@/lib/ic/agent"

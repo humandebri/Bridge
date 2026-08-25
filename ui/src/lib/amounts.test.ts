@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { estimatedAmountOut, formatTokenAmount, parseTokenAmount, requiredDepositBalance } from "./amounts"
+import { estimatedAmountOut, formatTokenAmount, maximumDepositAmount, parseTokenAmount, requiredDepositBalance } from "./amounts"
 
 describe("eight-decimal token amount handling", () => {
   it("parses and formats at exactly eight decimal places without numbers", () => {
@@ -22,5 +22,22 @@ describe("eight-decimal token amount handling", () => {
     expect(requiredDepositBalance(100n, 10n, 110n)).toBe(110n)
     expect(requiredDepositBalance(100n, 10n, 111n)).toBe(110n)
     expect(requiredDepositBalance(100n, 10n, 109n)).toBe(120n)
+  })
+
+  it("reserves one ledger fee when allowance covers the full balance", () => {
+    expect(maximumDepositAmount(1_000n, 10n, 1_000n)).toBe(990n)
+  })
+
+  it("reserves approval and transfer fees when allowance is insufficient", () => {
+    expect(maximumDepositAmount(1_000n, 10n, 0n)).toBe(980n)
+  })
+
+  it("uses a partial allowance when it permits a larger deposit without approval", () => {
+    expect(maximumDepositAmount(1_000n, 10n, 995n)).toBe(985n)
+  })
+
+  it("returns zero when the balance cannot cover the required ledger fees", () => {
+    expect(maximumDepositAmount(20n, 10n, 0n)).toBe(0n)
+    expect(maximumDepositAmount(0n, 10n, 1_000n)).toBe(0n)
   })
 })

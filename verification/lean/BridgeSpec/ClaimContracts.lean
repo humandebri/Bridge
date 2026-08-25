@@ -1,9 +1,8 @@
 import BridgeSpec.Protocol
 import BridgeSpec.ControlPlane
 import BridgeSpec.GlobalHistory
-import BridgeSpec.Liveness
 import BridgeSpec.Claims
-import BridgeSpec.Refinement
+import BridgeSpec.ModelRefinement
 import BridgeSpec.LedgerBlockProvenance
 
 namespace BridgeSpec.ClaimContracts
@@ -60,24 +59,17 @@ def confirmationCallerAuthorized
     (caller == confirmationRelayer || caller == governance || caller == pause)
 
 def GovernanceConfirmationAuthorization : Prop :=
-  ∀ caller initialConfirmationRelayer initialGovernance initialPause
-      currentConfirmationRelayer currentGovernance currentPause : Nat,
+  ∀ caller currentConfirmationRelayer currentGovernance currentPause : Nat,
     confirmationCallerAuthorized
-        caller initialConfirmationRelayer initialGovernance initialPause = true →
-      confirmationCallerAuthorized
-        caller currentConfirmationRelayer currentGovernance currentPause = true →
+        caller currentConfirmationRelayer currentGovernance currentPause = true ↔
       caller ≠ 0 ∧
         (caller = currentConfirmationRelayer ∨
           caller = currentGovernance ∨ caller = currentPause)
 
 theorem governance_confirmation_authorization_witness :
     GovernanceConfirmationAuthorization := by
-  intro caller _ _ _ currentConfirmationRelayer currentGovernance currentPause _ authorized
-  simp [confirmationCallerAuthorized] at authorized
-  rcases authorized with ⟨nonzero, (relayer | governance) | pause⟩
-  · exact ⟨nonzero, Or.inl relayer⟩
-  · exact ⟨nonzero, Or.inr (Or.inl governance)⟩
-  · exact ⟨nonzero, Or.inr (Or.inr pause)⟩
+  intro caller currentConfirmationRelayer currentGovernance currentPause
+  simp [confirmationCallerAuthorized, or_assoc]
 
 theorem governance_confirmation_authorization_claim :
     GovernanceConfirmationAuthorization :=
@@ -276,12 +268,12 @@ theorem reservation_commit_witness : ReservationCommit :=
   ⟨Claims.reservation_claim, reservation_lifecycle_witness⟩
 
 def ServiceFeeMaximum : Prop :=
-  (∀ serviceFee maximumServiceFee : Nat,
-      serviceFeeChangeAllowed serviceFee maximumServiceFee = true ↔
-        serviceFee ≤ maximumServiceFee) ∧ FeeAccountingOnce
+  (∀ serviceFee minimumServiceFee maximumServiceFee : Nat,
+      serviceFeeChangeAllowed serviceFee minimumServiceFee maximumServiceFee = true ↔
+        minimumServiceFee ≤ serviceFee ∧ serviceFee ≤ maximumServiceFee) ∧ FeeAccountingOnce
 
 theorem service_fee_maximum_witness : ServiceFeeMaximum :=
-  ⟨by intro serviceFee maximumServiceFee; exact Claims.service_fee_claim,
+  ⟨by intro serviceFee minimumServiceFee maximumServiceFee; exact Claims.service_fee_claim,
     fee_accounting_once_witness⟩
 
 def FeeRecipientRotation : Prop :=
@@ -371,16 +363,17 @@ theorem funding_reconciliation_freshness_witness : FundingReconciliationFreshnes
   ⟨Claims.funding_reconciliation_claim, integrated_protocol_reachability_witness⟩
 
 def WithdrawalFinalization : Prop :=
-  (∀ {receiptSucceeded : Bool} {receiptBlock finalizedBlock : Nat},
-      decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) = .notify →
-        receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock) ∧
-    (∀ {receiptSucceeded : Bool} {receiptBlock : Nat},
-      decideWithdrawalFinalization receiptSucceeded receiptBlock none = .retry)
+  (∀ {receiptSucceeded canonical : Bool} {receiptBlock finalizedBlock : Nat},
+      decideWithdrawalFinalization receiptSucceeded receiptBlock (some finalizedBlock) canonical =
+          .notify →
+        receiptSucceeded = true ∧ receiptBlock ≤ finalizedBlock ∧ canonical = true) ∧
+    (∀ {receiptSucceeded canonical : Bool} {receiptBlock : Nat},
+      decideWithdrawalFinalization receiptSucceeded receiptBlock none canonical = .retry)
 
 theorem withdrawal_finalization_witness : WithdrawalFinalization := by
   constructor
   · exact Claims.withdrawal_finalization_claim
-  · intro receiptSucceeded receiptBlock
+  · intro receiptSucceeded canonical receiptBlock
     rfl
 
 def WithdrawalAdmissionBoundary : Prop :=
@@ -397,10 +390,11 @@ def PendingQueue : Prop :=
         (restorePendingQueue queue incoming incoming.key).map
           (fun entry => entry.blocked) = some true) ∧
     (∀ queue : BridgeSpec.PendingQueue,
-      restorePendingQueue queue = restorePendingQueue queue)
+      (recordPendingQueueWrite queue false).session = queue ∧
+        (recordPendingQueueWrite queue false).durable = none)
 
 theorem pending_queue_witness : PendingQueue := by
-  exact ⟨Claims.pending_queue_claim, fun _ => rfl⟩
+  exact ⟨Claims.pending_queue_claim, Claims.pending_queue_storage_failure_claim⟩
 
 def CanonicalProbe : Prop :=
   (∀ receiptBlock snapshotBlock : Nat,
@@ -412,13 +406,15 @@ theorem canonical_probe_witness : CanonicalProbe :=
     integrated_protocol_reachability_witness⟩
 
 def WithdrawalFinalityQuorum : Prop :=
-  ∀ {first second third : Option Nat} {checkpoint : Nat},
-    withdrawalFinalizedCheckpoint first second third = some checkpoint →
-      twoFinalizedHeadsAttest first second third checkpoint
+  (∀ {first second third : Option Nat} {checkpoint : Nat},
+      withdrawalFinalizedCheckpoint first second third = some checkpoint →
+        twoFinalizedHeadsAttest first second third checkpoint) ∧
+  (∀ {first second third : Option FinalizedIdentity} {checkpoint : FinalizedIdentity},
+      withdrawalFinalizedIdentityQuorum first second third = some checkpoint →
+        twoFinalizedIdentitiesAttest first second third checkpoint)
 
 theorem withdrawal_finality_quorum_witness : WithdrawalFinalityQuorum := by
-  intro first second third checkpoint selected
-  exact Claims.withdrawal_finality_quorum_claim selected
+  exact ⟨Claims.withdrawal_finality_quorum_claim, Claims.withdrawal_finality_identity_claim⟩
 
 def AuthorizationBinding : Prop :=
   (∀ {state next : DepositState} {authorization : Authorization}
@@ -465,28 +461,16 @@ theorem exact_mint_finalization_witness : ExactMintFinalization :=
 def EpochInvalidation : Prop :=
   (∀ {state : DepositState} {current replacement : Authorization}
       {origin : AuthorizationOrigin}, state.authorization = some current →
-        commitAuthorization state replacement origin = none) ∧ AuthorizationBinding
+        commitAuthorization state replacement origin = none) ∧
+  (∀ {authorizationEpoch currentEpoch retiredSigner replacementSigner : Nat},
+      retiredSigner ≠ replacementSigner →
+        evmMintAuthorizationAccepted authorizationEpoch (currentEpoch + 1)
+          retiredSigner replacementSigner = false) ∧ AuthorizationBinding
 
 theorem epoch_invalidation_witness : EpochInvalidation :=
-  ⟨committed_authorization_cannot_be_reissued, authorization_binding_witness⟩
-
-abbrev WithdrawalEventuallyPaid := Liveness.WithdrawalEventuallyPaid
-theorem withdrawal_eventually_paid_witness : WithdrawalEventuallyPaid :=
-  Liveness.committed_withdrawal_eventually_paid
-
-abbrev FundedDepositEventuallyMinted := Liveness.FundedDepositEventuallyMinted
-theorem funded_deposit_eventually_minted_witness : FundedDepositEventuallyMinted :=
-  Liveness.funded_deposit_eventually_minted
-
-abbrev ExpiredDepositEventuallyRefunded := Liveness.ExpiredDepositEventuallyRefunded
-theorem expired_deposit_eventually_refunded_witness : ExpiredDepositEventuallyRefunded :=
-  Liveness.expired_deposit_eventually_refunded
-
-abbrev FundedDepositEventuallyMintedOrRefunded :=
-  Liveness.FundedDepositEventuallyMintedOrRefunded
-theorem funded_deposit_eventually_minted_or_refunded_witness :
-    FundedDepositEventuallyMintedOrRefunded :=
-  Liveness.funded_deposit_eventually_minted_or_refunded
+  ⟨committed_authorization_cannot_be_reissued,
+    retired_signer_rejects_even_future_epoch_authorizations,
+    authorization_binding_witness⟩
 
 def NonterminalDepositIndexConsistency : Prop :=
   ∀ phase : MintAuthorization.DepositPhase,
@@ -496,9 +480,5 @@ def NonterminalDepositIndexConsistency : Prop :=
 theorem nonterminal_deposit_index_consistency_witness :
     NonterminalDepositIndexConsistency :=
   MintAuthorization.nonterminal_deposit_index_matches_nonterminal_phases
-
-abbrev FundingFailureEventuallyCancelled := Liveness.FundingFailureEventuallyCancelled
-theorem funding_failure_eventually_cancelled_witness : FundingFailureEventuallyCancelled :=
-  Liveness.funding_failure_eventually_cancelled
 
 end BridgeSpec.ClaimContracts

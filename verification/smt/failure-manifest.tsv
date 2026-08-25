@@ -1,4 +1,5 @@
-withdrawal_quote	InvalidWithdrawalTransition.sol
+net_amount	NetAmountConstraintOmitted.sol
+paused_mint	PausedMintAccepted.sol
 epoch_invalidation	MissingEpochGuard.sol
 processed_replay	ProcessedDepositReplay.sol
 deadline_inclusive	InclusiveDeadlineRejected.sol

@@ -24,6 +24,17 @@ describe("reviewed deployment profile", () => {
     expect(parsed.deploymentBlock).toBe(123n)
   })
 
+  it("rejects token metadata that does not use the Bridge-wide 8 decimal contract", () => {
+    expect(() => deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      icToken: { ...deploymentProfile.icToken, decimals: 6 },
+    })).toThrow()
+    expect(() => deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      baseToken: { ...deploymentProfile.baseToken, decimals: 18 },
+    })).toThrow()
+  })
+
   it("requires reviewed history RPCs for Sepolia staging", () => {
     expect(() => deploymentProfileSchema.parse({
       ...deploymentProfile,
@@ -38,6 +49,13 @@ describe("reviewed deployment profile", () => {
       evmRpcCanisterId: "7hfb6-caaaa-aaaar-qadga-cai",
       baseHistoryRpcUrls: undefined,
     })).toThrow("reviewed Base history RPC URLs")
+  })
+
+  it("rejects duplicate history RPC URLs", () => {
+    expect(() => deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      baseHistoryRpcUrls: ["https://history.example", "https://history.example/"],
+    })).toThrow("Base history RPC URLs must be distinct")
   })
 
   it("rejects a zero deployment instance ID", () => {

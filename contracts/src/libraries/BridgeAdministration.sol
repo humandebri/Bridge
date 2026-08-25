@@ -28,8 +28,12 @@ library BridgeAdministration {
         return perDepositLimit != 0 && mintWindowLimit != 0 && mintWindowDuration != 0;
     }
 
-    function serviceFeeIsValid(uint256 serviceFee, uint256 maximumServiceFee) internal pure returns (bool) {
-        return serviceFee <= maximumServiceFee;
+    function serviceFeeIsValid(uint256 serviceFee, uint256 minimumServiceFee, uint256 maximumServiceFee)
+        internal
+        pure
+        returns (bool)
+    {
+        return minimumServiceFee <= serviceFee && serviceFee <= maximumServiceFee;
     }
 
     function valueFitsU128(uint256 value) internal pure returns (bool) {

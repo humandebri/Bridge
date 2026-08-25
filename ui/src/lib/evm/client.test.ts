@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { deploymentProfile } from "@/config/profile"
-import { basePublicClient, baseTransactionExplorerUrl, createBaseHistoryClients, createBasePublicClient, createProfileChain, firstSuccessfulHistoryClient, profileChain, wagmiConfig, withHistoryClientFailover } from "./client"
+import type { baseHistoryClients } from "./client"
+import { basePublicClient, baseTransactionExplorerUrl, createBaseHistoryClients, createBasePublicClient, createProfileChain, firstSuccessfulHistoryClient, hasIndependentFinalizedRevertQuorum, profileChain, wagmiConfig, withHistoryClientFailover } from "./client"
 
 describe("Base clients", () => {
   it("uses the deployment profile for the default client", () => {
@@ -34,6 +35,37 @@ describe("Base clients", () => {
       baseHistoryRpcUrls: ["https://history-one.example", "https://history-two.example"],
     })
     expect(clients).toHaveLength(2)
+  })
+
+  it("does not create two quorum votes for a duplicated RPC URL", async () => {
+    const clients = createBaseHistoryClients({
+      ...deploymentProfile,
+      baseHistoryRpcUrls: ["https://history.example", "https://history.example/"],
+    })
+    expect(clients).toHaveLength(1)
+    await expect(hasIndependentFinalizedRevertQuorum(`0x${"12".repeat(32)}`, clients))
+      .resolves.toBe(false)
+  })
+
+  it("accepts matching finalized revert evidence from two distinct clients", async () => {
+    const blockHash = `0x${"34".repeat(32)}` as const
+    const client = () => ({
+      getTransactionReceipt: vi.fn().mockResolvedValue({
+        status: "reverted",
+        blockNumber: 42n,
+        blockHash,
+      }),
+      getBlock: vi.fn().mockImplementation((args: { blockTag?: string }) => Promise.resolve(
+        args.blockTag === "finalized"
+          ? { number: 43n, hash: `0x${"56".repeat(32)}` }
+          : { number: 42n, hash: blockHash },
+      )),
+    }) as unknown as (typeof baseHistoryClients)[number]
+
+    await expect(hasIndependentFinalizedRevertQuorum(
+      `0x${"12".repeat(32)}`,
+      [client(), client()],
+    )).resolves.toBe(true)
   })
 
   it("retries the whole history operation on the next client", async () => {

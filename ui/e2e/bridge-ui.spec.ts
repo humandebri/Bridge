@@ -51,6 +51,8 @@ test("bridge defaults to IC to Base and reports incomplete configuration", async
   await expect(page.getByText("Refresh before continuing.")).toBeHidden()
   await expect(page.getByText("Live status is not confirmed. Current conditions will be checked before continuing.")).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Bridge to Base" })).toBeDisabled()
+  await expect(page.getByRole("button", { name: "MAX" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "MAX" })).toBeDisabled()
   await expect(page.getByLabel("You send")).toHaveAttribute("aria-invalid", "true")
   await expect(page.getByLabel("You send")).toHaveAttribute("aria-describedby", "bridge-amount-feedback")
   await expect(page.getByRole("button", { name: "Reverse bridge direction" })).toHaveCSS("width", "32px")

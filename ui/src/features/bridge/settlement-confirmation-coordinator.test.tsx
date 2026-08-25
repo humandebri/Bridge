@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   continueWithdrawal: vi.fn(),
   getReceipt: vi.fn(),
   getBlock: vi.fn(),
+  revertQuorum: vi.fn(),
   readPending: vi.fn(),
   markNotified: vi.fn<(entry: PendingWithdrawal, withdrawalId: Hex) => Promise<void>>(),
   markAttempt: vi.fn<(entry: PendingWithdrawal, kind: NotificationAttemptKind, finalizedBlock: bigint) => Promise<void>>(),
@@ -38,6 +39,7 @@ vi.mock("@/features/bridge/bridge-progress-provider", () => ({
 }))
 vi.mock("@/lib/evm/client", () => ({
   basePublicClient: { getTransactionReceipt: mocks.getReceipt, getBlock: mocks.getBlock },
+  hasIndependentFinalizedRevertQuorum: mocks.revertQuorum,
 }))
 vi.mock("@/lib/pending-confirmations", () => ({
   readPendingConfirmations: mocks.readPending,
@@ -102,6 +104,7 @@ beforeEach(() => {
   mocks.readPending.mockImplementation(() => mocks.pendingEntries)
   mocks.getReceipt.mockResolvedValue({ status: "success", blockNumber: 10n, blockHash })
   mocks.getBlock.mockResolvedValue({ number: 9n, hash: blockHash })
+  mocks.revertQuorum.mockResolvedValue(true)
   mocks.removePending.mockResolvedValue(undefined)
   mocks.markNotified.mockImplementation((entry: PendingWithdrawal, withdrawalId: Hex): Promise<void> => {
     mocks.pendingEntries = mocks.pendingEntries.map((candidate) => candidate.transactionHash === entry.transactionHash
@@ -165,7 +168,7 @@ describe("SettlementConfirmationCoordinator", () => {
     expect(mocks.removePending).not.toHaveBeenCalled()
   })
 
-  it("surfaces_a_reverted_receipt_before_finality_is_available", async () => {
+  it("keeps_a_reverted_receipt_pending_until_its_block_is_finalized", async () => {
     for (const finalized of [
       { number: 9n, hash: `0x${"55".repeat(32)}` },
       { number: null, hash: null },
@@ -176,17 +179,42 @@ describe("SettlementConfirmationCoordinator", () => {
 
       render(<SettlementConfirmationCoordinator />)
 
-      await waitFor(() => expect(mocks.removePending).toHaveBeenCalledWith(pending))
-      expect(mocks.update).toHaveBeenCalledWith(
+      await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(
         "withdraw:1",
-        expect.objectContaining({ phase: "attention", receiptBlockNumber: "10" }),
-      )
-      expect(mocks.getBlock).not.toHaveBeenCalled()
+        expect.objectContaining({ phase: "base-withdrawal-included", receiptBlockNumber: "10" }),
+      ))
+      expect(mocks.removePending).not.toHaveBeenCalled()
       expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
       cleanup()
       vi.clearAllMocks()
       mocks.readPending.mockReturnValue([pending])
     }
+  })
+
+  it("discards_a_reverted_receipt_only_after_finality_and_canonicality", async () => {
+    mocks.getReceipt.mockResolvedValue({ status: "reverted", blockNumber: 10n, blockHash })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
+
+    render(<SettlementConfirmationCoordinator />)
+
+    await waitFor(() => expect(mocks.removePending).toHaveBeenCalledWith(pending))
+    expect(mocks.update).toHaveBeenCalledWith(
+      "withdraw:1",
+      expect.objectContaining({ phase: "attention", receiptBlockNumber: "10" }),
+    )
+    expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
+  })
+
+  it("keeps_a_single_provider_revert_when_independent_quorum_is_missing", async () => {
+    mocks.getReceipt.mockResolvedValue({ status: "reverted", blockNumber: 10n, blockHash })
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
+    mocks.revertQuorum.mockResolvedValue(false)
+
+    render(<SettlementConfirmationCoordinator />)
+
+    await waitFor(() => expect(mocks.revertQuorum).toHaveBeenCalledWith(hash))
+    expect(mocks.removePending).not.toHaveBeenCalled()
+    expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
   })
 
   it("notifies_with_the_browser_identity_after_Base_finality_without_an_IC_wallet", async () => {

@@ -218,7 +218,7 @@ impl Settlement {
         if self.service_fee > max_service_fee {
             return Err(CoreError::ServiceFeeAboveMaximum);
         }
-        if !crate::committed_quote_matches(
+        if !crate::kernel::committed_quote_matches(
             amount.get(),
             self.amount_out.get(),
             self.service_fee.get(),

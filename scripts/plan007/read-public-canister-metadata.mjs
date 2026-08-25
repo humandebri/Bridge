@@ -51,7 +51,7 @@ export async function readPublicCanisterMetadata(
   const certificate = await createCertificate({
     certificate: response.certificate,
     rootKey: agent.rootKey,
-    canisterId,
+    principal: { canisterId },
     agent,
   })
   return classifyMetadataLookup(certificate.lookup_path(lookupPath))

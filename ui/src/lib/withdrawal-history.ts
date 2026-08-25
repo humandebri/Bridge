@@ -1,4 +1,4 @@
-import { Principal } from "@dfinity/principal"
+import { Principal } from "@icp-sdk/core/principal"
 import { bytesToHex, hexToBytes, type Hex } from "viem"
 import type { NotifyWithdrawalReceipt } from "@/generated/bridge.did"
 import { NotifyWithdrawalCallError, notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"

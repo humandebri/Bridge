@@ -182,7 +182,7 @@ describe("MintAuthorizationAction pending retry", () => {
     expect(mocks.removePendingMint).not.toHaveBeenCalled()
     expect(screen.queryByText(/Authorization valid for/)).not.toBeInTheDocument()
     expect(screen.getByText(/Waiting for inclusion\./)).toBeInTheDocument()
-    expect(screen.getByText("Review saved transaction")).toBeEnabled()
+    await waitFor(() => expect(screen.getByText("Review saved transaction")).toBeEnabled())
   })
 
   it("restores_a_saved_mint_without_repeating_the_Base_write", async () => {

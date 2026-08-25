@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   continueWithdrawal: vi.fn(),
   getReceipt: vi.fn(),
   getBlock: vi.fn(),
+  revertQuorum: vi.fn(),
   getWithdrawal: vi.fn(),
   update: vi.fn(),
   completeWithdrawalProgress: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("@/features/bridge/bridge-progress-provider", () => ({
 }))
 vi.mock("@/lib/evm/client", () => ({
   basePublicClient: { getTransactionReceipt: mocks.getReceipt, getBlock: mocks.getBlock },
+  hasIndependentFinalizedRevertQuorum: mocks.revertQuorum,
 }))
 vi.mock("@/lib/ic/bridge", () => ({
   createBridgeActor: vi.fn().mockResolvedValue({ get_withdrawal: mocks.getWithdrawal }),
@@ -71,6 +73,7 @@ beforeEach(async () => {
   }
   mocks.getReceipt.mockResolvedValue({ status: "success", blockNumber: 10n })
   mocks.getBlock.mockResolvedValue({ number: 10n })
+  mocks.revertQuorum.mockResolvedValue(true)
   mocks.notifyWithdrawal.mockResolvedValue({
     Ingested: { finalized_checkpoint_block_number: 10n, withdrawal_id: new Uint8Array(32).fill(7) },
   })

@@ -6,9 +6,13 @@ import { Secp256k1KeyIdentity } from "@icp-sdk/core/identity/secp256k1"
 import {
   canisterErrorMessage,
   commandRequiresIdentity,
+  confirmationHash,
   identityFromPem,
   isNonceTooLow,
+  parseOptions,
+  selectPendingArtifact,
   unwrap,
+  validateCommandOptions,
   waitForFinalized,
 } from "./cli.ts"
 
@@ -77,4 +81,48 @@ test("classifies only explicit consumed-nonce errors for receipt recovery", () =
   assert.equal(isNonceTooLow(new Error("nonce too low")), true)
   assert.equal(isNonceTooLow(new Error("nonce has already been used")), true)
   assert.equal(isNonceTooLow(new Error("replacement transaction underpriced")), false)
+})
+
+test("rejects duplicate, unknown, and conflicting command options", () => {
+  assert.throws(
+    () => parseOptions(["--operation-id", "1", "--operation-id", "2"]),
+    /Duplicate option: --operation-id/,
+  )
+  assert.throws(
+    () => validateCommandOptions("confirm", { typo: "value" }),
+    /Unknown option for confirm: --typo/,
+  )
+  assert.throws(
+    () => validateCommandOptions("confirm", {
+      "transaction-hash": `0x${"12".repeat(32)}`,
+      hash: `0x${"34".repeat(32)}`,
+    }),
+    /cannot be used together/,
+  )
+})
+
+test("uses the documented transaction-hash option without discarding it", () => {
+  const hash = `0x${"12".repeat(32)}`
+  const options = parseOptions(["--transaction-hash", hash])
+  validateCommandOptions("confirm", options)
+  assert.equal(confirmationHash(options), hash)
+})
+
+test("selects the requested governance nonce lane instead of the first pending transaction", () => {
+  const pending = [{ operation_id: 7n }, { operation_id: 9n }]
+  assert.equal(selectPendingArtifact(pending, "9"), pending[1])
+  assert.equal(selectPendingArtifact(pending, "8"), undefined)
+  assert.throws(
+    () => selectPendingArtifact(pending, undefined),
+    /--operation-id is required when multiple governance transactions are pending/,
+  )
+})
+
+test("preserves implicit selection for one pending governance transaction", () => {
+  const pending = [{ operation_id: 7n }]
+  assert.equal(selectPendingArtifact(pending, undefined), pending[0])
+  assert.throws(
+    () => selectPendingArtifact(pending, true),
+    /--operation-id must be a non-negative integer/,
+  )
 })

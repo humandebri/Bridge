@@ -50,6 +50,7 @@ contract BridgeWithdrawalTest is TestBase {
             1_000,
             2_000,
             1 hours,
+            1,
             MAX_SERVICE_FEE,
             SERVICE_FEE
         );
@@ -118,6 +119,19 @@ contract BridgeWithdrawalTest is TestBase {
         vm.stopPrank();
     }
 
+    function testStoredWithdrawalRoundTripsPackedFields() public {
+        uint256 amount = 1_000;
+        uint256 id = _createWithdrawal(amount, type(uint128).max, hex"010203040506", SUBACCOUNT);
+
+        IBridge.Withdrawal memory withdrawal = bridge.getWithdrawal(id);
+        assert(withdrawal.requester == USER);
+        assert(withdrawal.amount == amount);
+        assert(withdrawal.maxServiceFee == type(uint128).max);
+        assert(withdrawal.chargedServiceFee == SERVICE_FEE);
+        assert(withdrawal.amountOut == amount - SERVICE_FEE);
+        assert(withdrawal.status == IBridge.WithdrawalStatus.Committed);
+    }
+
     function testPrincipalValidationAndPauseRemainBurnGuards() public {
         bytes memory thirtyBytes = new bytes(30);
         vm.startPrank(USER);
@@ -175,7 +189,7 @@ contract BridgeWithdrawalTest is TestBase {
     }
 
     function testFuzzCommittedQuote(uint256 amountSeed, uint256 feeSeed, bytes32 subaccount) public {
-        uint256 fee = feeSeed % (MAX_SERVICE_FEE + 1);
+        uint256 fee = 1 + (feeSeed % MAX_SERVICE_FEE);
         vm.prank(RUNTIME_ADMINISTRATOR);
         bridge.setServiceFee(fee);
         uint256 amount = fee + 1 + (amountSeed % (1_000 - fee));
@@ -212,7 +226,7 @@ contract BridgeWithdrawalTest is TestBase {
             grossAmount: grossAmount,
             maxServiceFee: SERVICE_FEE,
             chargedServiceFee: SERVICE_FEE,
-            deadline: block.timestamp + 30 minutes,
+            deadline: block.timestamp + 15 minutes,
             authorizationEpoch: bridge.mintAuthorizationEpoch()
         });
     }

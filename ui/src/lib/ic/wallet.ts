@@ -1,6 +1,4 @@
-import { IDL as LegacyIDL } from "@dfinity/candid"
-import type { IDL } from "@dfinity/candid"
-import { Principal as LegacyPrincipal } from "@dfinity/principal"
+import { IDL } from "@icp-sdk/core/candid"
 import { IcrcWallet } from "@dfinity/oisy-wallet-signer/icrc-wallet"
 import { base64ToUint8Array, uint8ArrayToBase64 } from "@dfinity/utils"
 import type { ApproveParams } from "@icp-sdk/canisters/ledger/icrc"
@@ -12,7 +10,7 @@ import { isDepositPhase } from "@/lib/settlement-phase"
 
 const CALL_TIMEOUT_MS = 120_000
 const OISY_SIGNER_URL = "https://oisy.com/sign"
-const BRIDGE_SERVICE = idlFactory({ IDL: LegacyIDL })
+const BRIDGE_SERVICE = idlFactory({ IDL })
 
 type BridgeWalletMethod = "request_deposit" | "request_deposit_refund"
 
@@ -196,7 +194,7 @@ interface PlugApi {
   isConnected(): Promise<boolean>
   requestConnect(options: { whitelist: string[]; host: string }): Promise<boolean>
   disconnect(): Promise<void>
-  agent?: { getPrincipal(): Promise<LegacyPrincipal> }
+  agent?: { getPrincipal(): Promise<Principal> }
   createActor<T>(options: { canisterId: string; interfaceFactory: IDL.InterfaceFactory }): Promise<T>
 }
 
@@ -256,7 +254,7 @@ export class PlugAdapter implements IcWalletAdapter {
     const actor = await requiredPlug().createActor<PlugLedgerActor>({ canisterId: this.ledgerCanisterId, interfaceFactory: plugLedgerIdlFactory })
     const result = await actor.icrc2_approve({
       from_subaccount: [],
-      spender: { owner: LegacyPrincipal.fromText(this.bridgeCanisterId), subaccount: [] },
+      spender: { owner: Principal.fromText(this.bridgeCanisterId), subaccount: [] },
       amount: call.amount,
       expected_allowance: [call.currentAllowance],
       expires_at: [BigInt(Date.now() + 30 * 60 * 1000) * 1_000_000n],
@@ -333,11 +331,11 @@ function bridgeMethod(method: BridgeWalletMethod): IDL.FuncClass {
 }
 
 function encodeBridgeCall(method: BridgeWalletMethod, args: unknown[]): Uint8Array {
-  return new Uint8Array(LegacyIDL.encode(bridgeMethod(method).argTypes, args))
+  return new Uint8Array(IDL.encode(bridgeMethod(method).argTypes, args))
 }
 
 function decodeBridgeReply(method: BridgeWalletMethod, reply: Uint8Array): unknown {
-  const decoded = LegacyIDL.decode(bridgeMethod(method).retTypes, reply)
+  const decoded = IDL.decode(bridgeMethod(method).retTypes, reply)
   if (decoded.length !== 1) throw new Error(`Wallet reply for ${method} has an invalid result count`)
   return decoded[0]
 }
@@ -353,7 +351,7 @@ async function verifyOisyReply(input: { host: string; canisterId: string; sender
   const agent = HttpAgent.createSync({ identity: new AnonymousIdentity(), host: input.host })
   if (agent.isLocal()) await agent.fetchRootKey()
   if (!agent.rootKey) throw new Error("IC root key is unavailable")
-  const certificate = await Certificate.create({ certificate: base64ToUint8Array(input.result.certificate), rootKey: agent.rootKey, canisterId: Principal.fromText(input.canisterId) })
+  const certificate = await Certificate.create({ certificate: base64ToUint8Array(input.result.certificate), rootKey: agent.rootKey, principal: { canisterId: Principal.fromText(input.canisterId) } })
   const reply = lookupResultToBuffer(certificate.lookup_path([new TextEncoder().encode("request_status"), requestIdOf(contentMap), "reply"]))
   if (!reply) throw new Error("Certified wallet reply is unavailable")
   return reply

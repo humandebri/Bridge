@@ -443,6 +443,35 @@ fn deposit_identity_decision_is_fail_closed(
     kernel::deposit_identity_decision(processed)
 }
 
+fn confirmation_caller_authorization_matches_current_roles(
+    non_anonymous: bool,
+    relayer: bool,
+    governance: bool,
+    pause: bool,
+) -> (result: bool)
+    ensures result <==> non_anonymous && (relayer || governance || pause),
+{
+    kernel::confirmation_caller_authorized(non_anonymous, relayer, governance, pause)
+}
+
+fn confirmation_role_separation_matches_deployment_policy(
+    relayer_is_governance: bool,
+    relayer_is_pause: bool,
+    governance_is_pause: bool,
+    allow_staging_relayer_governance: bool,
+) -> (result: bool)
+    ensures result <==> !governance_is_pause
+        && !relayer_is_pause
+        && (allow_staging_relayer_governance || !relayer_is_governance),
+{
+    kernel::confirmation_roles_distinct(
+        relayer_is_governance,
+        relayer_is_pause,
+        governance_is_pause,
+        allow_staging_relayer_governance,
+    )
+}
+
 fn reservation_decision_preserves_candidate_requirement(
     reserved: u128, candidate: u128,
 ) -> (result: Option<kernel::ReservationDecision>)
@@ -549,6 +578,52 @@ proof fn withdrawal_finality_quorum_selects_two_provider_checkpoint(
     reveal(finalized_identity_attests);
 }
 
+spec fn eligible_finalized_checkpoint_attests(
+    head: Option<(int, int)>,
+    observation: Option<(int, int)>,
+    checkpoint: int,
+    selected: (int, int),
+) -> bool {
+    match (head, observation) {
+        (Some(head), Some(observation)) =>
+            head.0 >= checkpoint && observation.0 == checkpoint && observation == selected,
+        _ => false,
+    }
+}
+
+proof fn withdrawal_finality_quorum_requires_two_eligible_provider_checkpoints(
+    first_head: Option<(int, int)>,
+    second_head: Option<(int, int)>,
+    third_head: Option<(int, int)>,
+    first_observation: Option<(int, int)>,
+    second_observation: Option<(int, int)>,
+    third_observation: Option<(int, int)>,
+    checkpoint: int,
+)
+    ensures match kernel::withdrawal_finalized_checkpoint_quorum_spec(
+        first_head, second_head, third_head,
+        first_observation, second_observation, third_observation,
+        checkpoint,
+    ) {
+        Some(selected) =>
+            (eligible_finalized_checkpoint_attests(
+                first_head, first_observation, checkpoint, selected)
+                && eligible_finalized_checkpoint_attests(
+                    second_head, second_observation, checkpoint, selected))
+            || (eligible_finalized_checkpoint_attests(
+                first_head, first_observation, checkpoint, selected)
+                && eligible_finalized_checkpoint_attests(
+                    third_head, third_observation, checkpoint, selected))
+            || (eligible_finalized_checkpoint_attests(
+                second_head, second_observation, checkpoint, selected)
+                && eligible_finalized_checkpoint_attests(
+                    third_head, third_observation, checkpoint, selected)),
+        None => true,
+    }
+{
+    reveal(eligible_finalized_checkpoint_attests);
+}
+
 proof fn runtime_attestation_requires_every_config_binding(
     observation_present: bool,
     chain_id_matches: bool,
@@ -591,7 +666,13 @@ proof fn payout_includes_fee_and_cannot_exceed_reserve(reserve: int, pending: in
     requires 0 <= pending <= reserve, 0 <= amount, 0 <= fee,
         amount + fee <= 340282366920938463463374607431768211455int
     ensures kernel::payout_allowed_spec(reserve, pending, amount, fee)
-        <==> amount + fee <= reserve - pending,
+        <==> amount + fee <= reserve - pending
+{}
+
+proof fn payout_debit_matches_fee_and_confirmation(amount: int, fee: int)
+    requires 0 <= amount, 0 <= fee,
+        amount + fee <= 340282366920938463463374607431768211455int
+    ensures
         kernel::payout_debit_spec(true, amount, fee) == Some(amount + fee),
         kernel::payout_debit_spec(false, amount, fee) == Some(0int)
 {}
@@ -613,10 +694,10 @@ fn fee_recipient_rotation_decision_is_fail_closed(
         authorized, anonymous, role_collision, subaccount_len, pending_payout_debit)
 }
 
-proof fn service_fee_change_respects_immutable_maximum(service_fee: int, maximum: int)
-    requires 0 <= service_fee, 0 <= maximum
-    ensures kernel::service_fee_change_allowed_spec(service_fee, maximum)
-        <==> service_fee <= maximum
+proof fn service_fee_change_respects_immutable_range(service_fee: int, minimum: int, maximum: int)
+    requires 0 <= service_fee, 0 <= minimum, 0 <= maximum
+    ensures kernel::service_fee_change_allowed_spec(service_fee, minimum, maximum)
+        <==> minimum <= service_fee && service_fee <= maximum
 {}
 
 proof fn reserve_candidate_becomes_reservation_without_reducing_requirement(
@@ -909,13 +990,18 @@ fn withdrawal_transition_effects_cover_release_and_hold_resolutions(
     )
 }
 
+proof fn withdrawal_terminal_phase_step_is_absorbing(state: int, event: int)
+    requires state == 2
+    ensures kernel::withdrawal_phase_step_spec(state, event) == state
+{}
+
 proof fn withdrawal_terminal_phase_absorbs_any_sequence(state: int, events: Seq<int>)
     requires state == 2
     ensures kernel::withdrawal_phase_run_spec(state, events) == state
     decreases events.len()
 {
     if events.len() > 0 {
-        assert(kernel::withdrawal_phase_step_spec(state, events[0]) == state);
+        withdrawal_terminal_phase_step_is_absorbing(state, events[0]);
         withdrawal_terminal_phase_absorbs_any_sequence(state, events.drop_first());
     }
 }

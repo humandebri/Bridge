@@ -151,25 +151,6 @@ export const bridgeAbi = [
     "inputs": [
       {
         "indexed": true,
-        "internalType": "address",
-        "name": "previousTimelock",
-        "type": "address"
-      },
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "newTimelock",
-        "type": "address"
-      }
-    ],
-    "name": "BaseAdminTimelockChanged",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": true,
         "internalType": "bytes32",
         "name": "depositId",
         "type": "bytes32"
@@ -265,6 +246,11 @@ export const bridgeAbi = [
   },
   {
     "inputs": [],
+    "name": "BridgeSignerRotationRequired",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "DepositMintsArePaused",
     "type": "error"
   },
@@ -281,6 +267,19 @@ export const bridgeAbi = [
   {
     "inputs": [],
     "name": "MAX_SERVICE_FEE",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "MIN_SERVICE_FEE",
     "outputs": [
       {
         "internalType": "uint256",
@@ -911,6 +910,11 @@ export const bridgeAbi = [
       },
       {
         "internalType": "uint256",
+        "name": "minServiceFee",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
         "name": "maxServiceFee",
         "type": "uint256"
       },
@@ -953,24 +957,22 @@ export const bridgeAbi = [
     "inputs": [
       {
         "internalType": "address",
-        "name": "newTimelock",
-        "type": "address"
-      }
-    ],
-    "name": "rotateBaseAdminTimelock",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
         "name": "recipient",
         "type": "address"
       }
     ],
     "name": "InvalidMintRecipient",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "signer",
+        "type": "address"
+      }
+    ],
+    "name": "BridgeSignerAlreadyRetired",
     "type": "error"
   },
   {
@@ -1084,6 +1086,22 @@ export const bridgeAbi = [
       }
     ],
     "name": "MintAuthorizationExpired",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "deadline",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "maximumDeadline",
+        "type": "uint256"
+      }
+    ],
+    "name": "MintAuthorizationDeadlineTooFar",
     "type": "error"
   },
   {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for candidate-script closure in both proof profiles."""
+"""Regression tests for candidate-script closure in the hardening profile."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,17 +7,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import current_main_proof_fingerprint
 import proof_fingerprint
 import source_resolution
 
 
 class CandidateScriptFingerprintTests(unittest.TestCase):
     def test_generated_verification_directories_are_excluded(self) -> None:
-        for fingerprint in (
-            current_main_proof_fingerprint,
-            proof_fingerprint,
-        ):
+        for fingerprint in (proof_fingerprint,):
             with self.subTest(module=fingerprint.__name__), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory) / "root"
                 for relative_root, _ in fingerprint.FINGERPRINT_SOURCE_ROOTS:
@@ -45,10 +41,7 @@ class CandidateScriptFingerprintTests(unittest.TestCase):
                 self.assertEqual(before, fingerprint.source_fingerprint(root, manifest))
 
     def test_candidate_script_change_and_deletion_are_fail_closed(self) -> None:
-        for fingerprint in (
-            current_main_proof_fingerprint,
-            proof_fingerprint,
-        ):
+        for fingerprint in (proof_fingerprint,):
             with self.subTest(module=fingerprint.__name__), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory) / "root"
                 candidate_scripts = Path(directory) / "candidate-scripts"

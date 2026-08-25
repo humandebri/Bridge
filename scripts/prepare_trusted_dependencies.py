@@ -44,8 +44,8 @@ def parse_policy(text: str) -> dict[str, dict[str, str]]:
             profiles[profile][relative] = digest
         else:
             raise ValueError(f"unknown trusted dependency row: {number}")
-    if set(profiles) != {"current-main", "security-hardening-v1"}:
-        raise ValueError("dependency profiles must match the two proof profiles")
+    if set(profiles) != {"security-hardening-v1"}:
+        raise ValueError("security-hardening-v1 must be the only dependency profile")
     return profiles
 
 

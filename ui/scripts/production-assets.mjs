@@ -14,6 +14,12 @@ if (execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim() !== "11.0.8
   throw new Error("Production UI artifacts require pnpm 11.0.8")
 }
 
+/** @typedef {{ path: string, sha256: string }} ArtifactFile */
+/** @typedef {{ source_revision: string, source_tree_sha256: string }} SourceIdentity */
+/** @typedef {{ files: ArtifactFile[], artifact_set_sha256: string }} BuiltAssets */
+/** @typedef {{ schema_version: number, source_revision: string, source_tree_sha256: string, artifact_set_sha256: string, files: ArtifactFile[] }} ArtifactReceipt */
+
+/** @param {string | NodeJS.ArrayBufferView} value */
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex")
 }
@@ -26,6 +32,7 @@ function hashGitArchive() {
     const digest = createHash("sha256")
     let stderr = ""
     let settled = false
+    /** @param {Error} error */
     const fail = (error) => {
       if (settled) return
       settled = true
@@ -58,7 +65,9 @@ async function sourceIdentity() {
   }
 }
 
+/** @param {string} root @param {string} [current] @returns {ArtifactFile[]} */
 function walk(root, current = root) {
+  /** @type {ArtifactFile[]} */
   const files = []
   for (const name of readdirSync(current).sort()) {
     const path = resolve(current, name)
@@ -85,6 +94,7 @@ function buildGenericAssets() {
   return { files, artifact_set_sha256: sha256(JSON.stringify(files)) }
 }
 
+/** @param {ArtifactReceipt} receipt @param {SourceIdentity} identity @param {BuiltAssets} built */
 function validateReceipt(receipt, identity, built) {
   const keys = Object.keys(receipt).sort().join(",")
   if (keys !== "artifact_set_sha256,files,schema_version,source_revision,source_tree_sha256") {
@@ -99,12 +109,14 @@ function validateReceipt(receipt, identity, built) {
   }
 }
 
+/** @param {string} targetRoot @param {string} profileFile */
 function installRuntimeProfile(targetRoot, profileFile) {
   const raw = readFileSync(profileFile, "utf8")
   JSON.parse(raw)
   writeFileSync(resolve(targetRoot, profileBootstrap), `globalThis.__KINIC_DEPLOYMENT_PROFILE_JSON__ = ${JSON.stringify(raw.trim())};\n`, { flag: "wx", mode: 0o400 })
 }
 
+/** @param {ArtifactReceipt} receipt @param {string} profileFile */
 function deployFrozenAssets(receipt, profileFile) {
   const frozen = mkdtempSync(resolve(tmpdir(), "kinic-ui-deploy."))
   try {

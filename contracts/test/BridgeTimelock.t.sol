@@ -43,6 +43,7 @@ contract BridgeTimelockTest is TestBase {
             1_000,
             2_000,
             1 hours,
+            1,
             100,
             10
         );
@@ -142,18 +143,81 @@ contract BridgeTimelockTest is TestBase {
         timelock.execute(address(bridge), 0, data, bytes32(0), salt);
     }
 
-    function testConstructorAllowsOneGovernanceOperatorAndRejectsOpenRoles() public {
+    function testOperationalRoleRotationRequiresTheTimelockAndRotatesAllMembersAtomically() public {
+        address nextGovernanceOperator = address(0x66);
+        address nextCanceller = address(0x77);
+        bytes memory data =
+            abi.encodeCall(BridgeTimelockController.rotateOperationalMembers, (nextGovernanceOperator, nextCanceller));
+        bytes32 salt = keccak256("control-plane-rotation");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(TimelockController.TimelockUnauthorizedCaller.selector, BASE_ADMIN_WALLET)
+        );
+        vm.prank(BASE_ADMIN_WALLET);
+        timelock.rotateOperationalMembers(nextGovernanceOperator, nextCanceller);
+
+        vm.prank(BASE_ADMIN_WALLET);
+        timelock.schedule(address(timelock), 0, data, bytes32(0), salt, TIMELOCK_DELAY);
+        _advanceTime(TIMELOCK_DELAY);
+        vm.prank(BASE_ADMIN_WALLET);
+        timelock.execute(address(timelock), 0, data, bytes32(0), salt);
+
+        assert(!timelock.hasRole(timelock.PROPOSER_ROLE(), BASE_ADMIN_WALLET));
+        assert(!timelock.hasRole(timelock.EXECUTOR_ROLE(), BASE_ADMIN_WALLET));
+        assert(!timelock.hasRole(timelock.CANCELLER_ROLE(), CANCELLER));
+        assert(timelock.hasRole(timelock.PROPOSER_ROLE(), nextGovernanceOperator));
+        assert(timelock.hasRole(timelock.EXECUTOR_ROLE(), nextGovernanceOperator));
+        assert(timelock.hasRole(timelock.CANCELLER_ROLE(), nextCanceller));
+        assert(timelock.roleMember(timelock.PROPOSER_ROLE()) == nextGovernanceOperator);
+        assert(timelock.roleMember(timelock.EXECUTOR_ROLE()) == nextGovernanceOperator);
+        assert(timelock.roleMember(timelock.CANCELLER_ROLE()) == nextCanceller);
+    }
+
+    function testControlPlaneRotationBatchHashMatchesCanisterAbiKnownAnswer() public view {
+        address[] memory targets = new address[](3);
+        targets[0] = address(0x0707070707070707070707070707070707070707);
+        targets[1] = targets[0];
+        targets[2] = address(0x0808080808080808080808080808080808080808);
+        uint256[] memory values = new uint256[](3);
+        bytes[] memory payloads = new bytes[](3);
+        payloads[0] = abi.encodeCall(IBridge.rotateBridgeSigner, (address(0x0101010101010101010101010101010101010101)));
+        payloads[1] =
+            abi.encodeCall(IBridge.rotateRuntimeAdministrator, (address(0x0303030303030303030303030303030303030303)));
+        payloads[2] = abi.encodeCall(
+            BridgeTimelockController.rotateOperationalMembers,
+            (address(0x0202020202020202020202020202020202020202), address(0x0404040404040404040404040404040404040404))
+        );
+        bytes32 operationId = timelock.hashOperationBatch(
+            targets,
+            values,
+            payloads,
+            bytes32(0),
+            bytes32(uint256(0x0909090909090909090909090909090909090909090909090909090909090909))
+        );
+        assert(operationId == 0x0d3acc2286d377aaf6d0cd907239d72a480a50fa085600bdd815a202c0a7c1ba);
+    }
+
+    function testConstructorRequiresIndependentCancellerAndRejectsOpenRoles() public {
         address[] memory proposers = new address[](1);
         proposers[0] = BASE_ADMIN_WALLET;
         address[] memory cancellers = new address[](1);
-        cancellers[0] = BASE_ADMIN_WALLET;
+        cancellers[0] = CANCELLER;
         address[] memory executors = new address[](1);
         executors[0] = BASE_ADMIN_WALLET;
-        BridgeTimelockController singleOperator =
+        BridgeTimelockController separatedRoles =
             new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
-        assert(singleOperator.hasRole(singleOperator.PROPOSER_ROLE(), BASE_ADMIN_WALLET));
-        assert(singleOperator.hasRole(singleOperator.CANCELLER_ROLE(), BASE_ADMIN_WALLET));
-        assert(singleOperator.hasRole(singleOperator.EXECUTOR_ROLE(), BASE_ADMIN_WALLET));
+        assert(separatedRoles.hasRole(separatedRoles.PROPOSER_ROLE(), BASE_ADMIN_WALLET));
+        assert(separatedRoles.hasRole(separatedRoles.CANCELLER_ROLE(), CANCELLER));
+        assert(separatedRoles.hasRole(separatedRoles.EXECUTOR_ROLE(), BASE_ADMIN_WALLET));
+
+        cancellers[0] = BASE_ADMIN_WALLET;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                BridgeTimelockController.CancellerMustBeIndependent.selector, BASE_ADMIN_WALLET, BASE_ADMIN_WALLET
+            )
+        );
+        new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
+        cancellers[0] = CANCELLER;
 
         executors[0] = address(0);
         vm.expectRevert(
@@ -245,28 +309,6 @@ contract BridgeTimelockTest is TestBase {
         vm.prank(BASE_ADMIN_WALLET);
         timelock.execute(address(timelock), 0, data, bytes32(0), salt);
         assert(timelock.getMinDelay() == increasedDelay);
-    }
-
-    function testRotationRejectsCandidateWithPendingOperation() public {
-        address[] memory proposers = new address[](1);
-        proposers[0] = BASE_ADMIN_WALLET;
-        address[] memory cancellers = new address[](1);
-        cancellers[0] = CANCELLER;
-        address[] memory executors = new address[](1);
-        executors[0] = BASE_ADMIN_WALLET;
-        BridgeTimelockController candidate =
-            new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
-
-        bytes memory data = abi.encodeCall(IBridge.pauseDepositMints, ());
-        vm.prank(BASE_ADMIN_WALLET);
-        candidate.schedule(address(bridge), 0, data, bytes32(0), keccak256("pending-rotation"), TIMELOCK_DELAY);
-
-        vm.prank(address(timelock));
-        vm.expectRevert(
-            abi.encodeWithSelector(IBridge.TimelockCandidateHasPendingOperations.selector, address(candidate), 1)
-        );
-        bridge.rotateBaseAdminTimelock(address(candidate));
-        assert(bridge.baseAdminTimelock() == address(timelock));
     }
 
     function testRoleSetIsFrozenAfterConstruction() public {

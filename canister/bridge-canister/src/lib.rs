@@ -299,13 +299,18 @@ impl NotificationQuotaGuard {
     const GLOBAL_LIMIT: u8 = 16;
     const PER_CALLER_LIMIT: u8 = 2;
 
-    fn acquire(caller: Principal) -> Option<Self> {
+    fn acquire(caller: Principal, protected_lane: bool) -> Option<Self> {
         NOTIFICATIONS_IN_FLIGHT.with(|global| {
             NOTIFICATION_CALLERS.with(|callers| {
                 let mut global = global.borrow_mut();
                 let mut callers = callers.borrow_mut();
                 let caller_count = callers.get(&caller).copied().unwrap_or(0);
-                if *global >= Self::GLOBAL_LIMIT || caller_count >= Self::PER_CALLER_LIMIT {
+                let lane_limit = if protected_lane {
+                    Self::GLOBAL_LIMIT
+                } else {
+                    Self::GLOBAL_LIMIT.saturating_sub(2)
+                };
+                if *global >= lane_limit || caller_count >= Self::PER_CALLER_LIMIT {
                     return None;
                 }
                 *global += 1;
@@ -473,6 +478,7 @@ fn post_upgrade(args: config::StagingUpgradeArgs) {
         StableStore::reopen_after_staging_upgrade(
             DefaultMemoryImpl::default(),
             args.migration_id.as_deref(),
+            args.migration_config.as_ref(),
             args.confirmation_relayer_principal,
         ),
     );
@@ -564,7 +570,9 @@ async fn request_deposit_refund(
     use api::RequestDepositRefundError as Error;
 
     let caller = ic_cdk::api::msg_caller();
-    match bridge_core::refund_request_identity_decision(caller != candid::Principal::anonymous()) {
+    match ::bridge_core::kernel::refund_request_identity_decision(
+        caller != candid::Principal::anonymous(),
+    ) {
         bridge_core::RefundRequestIdentityDecision::Allow => {}
         bridge_core::RefundRequestIdentityDecision::AnonymousCaller => {
             return Err(Error::AnonymousCaller);
@@ -581,10 +589,21 @@ async fn request_deposit_refund(
             .map_err(|_| Error::StorageFailure)?
             .ok_or(Error::StorageFailure)
     })?;
-    if !has_external_call_cycle_budget(
+    let reserve_token = STORE
+        .with(|store| {
+            let store = store.borrow();
+            Ok::<_, storage::StorageError>((
+                store.deposit_reserve_token()?,
+                store.deposit_funding_reservation_count()?,
+            ))
+        })
+        .map_err(|_| Error::StorageFailure)?;
+    if !has_liability_cycle_budget(
         ic_cdk::api::canister_liquid_cycle_balance(),
-        config.cycles_floor,
-        config.settlement_cycle_ceiling,
+        config.reserve_policy(),
+        reserve_token.0,
+        reserve_token.1,
+        1,
     ) {
         return Err(Error::InsufficientCycles);
     }
@@ -875,6 +894,7 @@ async fn notify_withdrawal(
             .ok_or(api::NotifyWithdrawalError::StorageFailure)
     })?;
     let now_ns = ic_cdk::api::time();
+    let protected_lane = caller == config.confirmation_relayer_principal;
     if STORE
         .with(|store| {
             store
@@ -902,7 +922,7 @@ async fn notify_withdrawal(
     ) {
         return Err(api::NotifyWithdrawalError::InsufficientCycles);
     }
-    let Some(_quota_guard) = NotificationQuotaGuard::acquire(caller) else {
+    let Some(_quota_guard) = NotificationQuotaGuard::acquire(caller, protected_lane) else {
         return Err(api::NotifyWithdrawalError::RateLimited);
     };
     let Some(notification_guard) =
@@ -923,6 +943,7 @@ async fn notify_withdrawal(
                 config.notification_rate_limit_global,
                 caller_count,
                 NotificationAdmissionGuard::PER_CALLER_LIMIT,
+                protected_lane,
             )
         })
         .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?;
@@ -957,8 +978,52 @@ async fn notify_withdrawal(
     Ok(receipt)
 }
 
-fn has_external_call_cycle_budget(current: u128, floor: u128, call_ceiling: u128) -> bool {
-    current > floor.saturating_add(call_ceiling)
+fn admit_control_plane_external_call() -> Result<InFlightGuard, base_governance::BaseGovernanceError>
+{
+    let Some(guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
+        return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
+    };
+    let config = STORE.with(|store| {
+        store
+            .borrow()
+            .config()
+            .map_err(|_| base_governance::BaseGovernanceError::StorageFailure)?
+            .ok_or(base_governance::BaseGovernanceError::StorageFailure)
+    })?;
+    let (token, active_funding) = STORE
+        .with(|store| {
+            let store = store.borrow();
+            Ok::<_, storage::StorageError>((
+                store.deposit_reserve_token()?,
+                store.deposit_funding_reservation_count()?,
+            ))
+        })
+        .map_err(|_| base_governance::BaseGovernanceError::StorageFailure)?;
+    if !has_liability_cycle_budget(
+        ic_cdk::api::canister_liquid_cycle_balance(),
+        config.reserve_policy(),
+        token,
+        active_funding,
+        1,
+    ) {
+        return Err(base_governance::BaseGovernanceError::InsufficientCycles);
+    }
+    let admitted = STORE
+        .with(|store| {
+            store.borrow_mut().consume_notification_verification_quota(
+                ic_cdk::api::time(),
+                config.notification_rate_limit_window_seconds,
+                config.notification_rate_limit_global,
+                0,
+                NotificationAdmissionGuard::PER_CALLER_LIMIT,
+                true,
+            )
+        })
+        .map_err(|_| base_governance::BaseGovernanceError::StorageFailure)?;
+    if !admitted {
+        return Err(base_governance::BaseGovernanceError::RateLimited);
+    }
+    Ok(guard)
 }
 
 fn has_notification_cycle_budget(
@@ -967,12 +1032,24 @@ fn has_notification_cycle_budget(
     token: storage::DepositReserveToken,
     active_funding: u64,
 ) -> bool {
+    // One slot pays the verification fan-out and a distinct slot remains for
+    // settlement of the newly ingested withdrawal liability.
+    has_liability_cycle_budget(current, policy, token, active_funding, 2)
+}
+
+fn has_liability_cycle_budget(
+    current: u128,
+    policy: bridge_core::ReservePolicy,
+    token: storage::DepositReserveToken,
+    active_funding: u64,
+    candidate_calls: u64,
+) -> bool {
     token
-        .reserved_deposit_mint_operations
+        .nonterminal_deposits
         .checked_add(active_funding)
-        .and_then(|reserved| {
+        .and_then(|deposits| {
             policy
-                .required_cycles(token.nonterminal_withdrawals, reserved, 1)
+                .required_cycles(token.nonterminal_withdrawals, deposits, candidate_calls)
                 .ok()
         })
         .is_some_and(|required| current > required)
@@ -1022,10 +1099,21 @@ async fn continue_withdrawal(
             .map_err(|_| tasks::SettlementActionError::StorageFailure)?
             .ok_or(tasks::SettlementActionError::StorageFailure)
     })?;
-    if !has_external_call_cycle_budget(
+    let reserve_token = STORE
+        .with(|store| {
+            let store = store.borrow();
+            Ok::<_, storage::StorageError>((
+                store.deposit_reserve_token()?,
+                store.deposit_funding_reservation_count()?,
+            ))
+        })
+        .map_err(|_| tasks::SettlementActionError::StorageFailure)?;
+    if !has_liability_cycle_budget(
         ic_cdk::api::canister_liquid_cycle_balance(),
-        config.cycles_floor,
-        config.settlement_cycle_ceiling,
+        config.reserve_policy(),
+        reserve_token.0,
+        reserve_token.1,
+        1,
     ) {
         return Err(tasks::SettlementActionError::InsufficientCycles);
     }
@@ -1457,6 +1545,14 @@ async fn initialize_public_config() -> Result<(), PublicConfigInitializationErro
                 && store
                     .governance_operator_address()
                     .map_err(|_| PublicConfigInitializationError::StorageFailure)?
+                    .is_some()
+                && store
+                    .runtime_administrator_address()
+                    .map_err(|_| PublicConfigInitializationError::StorageFailure)?
+                    .is_some()
+                && store
+                    .independent_canceller_address()
+                    .map_err(|_| PublicConfigInitializationError::StorageFailure)?
                     .is_some(),
         )
     })?;
@@ -1479,10 +1575,24 @@ async fn initialize_public_config() -> Result<(), PublicConfigInitializationErro
     let governance_operator = signer::governance_operator_address(&config)
         .await
         .map_err(|_| PublicConfigInitializationError::DerivationUnavailable)?;
+    let runtime_administrator = signer::runtime_administrator_address(&config)
+        .await
+        .map_err(|_| PublicConfigInitializationError::DerivationUnavailable)?;
+    let independent_canceller = signer::canceller_address(&config)
+        .await
+        .map_err(|_| PublicConfigInitializationError::DerivationUnavailable)?;
+    if !ic_cdk::api::is_controller(&caller) {
+        return Err(PublicConfigInitializationError::Unauthorized);
+    }
     STORE.with(|store| {
         store
             .borrow_mut()
-            .initialize_chain_key_addresses(expected_bridge_signer, governance_operator)
+            .initialize_chain_key_addresses(
+                expected_bridge_signer,
+                governance_operator,
+                runtime_administrator,
+                independent_canceller,
+            )
             .map_err(|error| match error {
                 StorageError::Core(bridge_core::CoreError::ConflictingReplay) => {
                     PublicConfigInitializationError::ConflictingAddress
@@ -1629,10 +1739,16 @@ async fn seal_operational_config(
 #[ic_cdk::update]
 async fn refresh_activation_attestation(
 ) -> Result<config::ActivationAttestation, base_governance::BaseGovernanceError> {
-    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
-        return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
-    };
-    base_governance::refresh_activation_attestation(ic_cdk::api::msg_caller()).await
+    let caller = ic_cdk::api::msg_caller();
+    base_governance::require_attestation_refresh_caller(caller)?;
+    let now_ns = ic_cdk::api::time();
+    if base_governance::activation_attestation()
+        .is_ok_and(|attestation| now_ns < attestation.observed_at_ns.saturating_add(30_000_000_000))
+    {
+        return Err(base_governance::BaseGovernanceError::RateLimited);
+    }
+    let _guard = admit_control_plane_external_call()?;
+    base_governance::refresh_activation_attestation(caller).await
 }
 
 #[ic_cdk::query]
@@ -1658,7 +1774,7 @@ fn emergency_pause(
 
 #[ic_cdk::query]
 fn get_pending_base_governance_transaction() -> Result<
-    Option<base_governance::SignedBaseGovernanceTransaction>,
+    Vec<base_governance::SignedBaseGovernanceTransaction>,
     base_governance::BaseGovernanceError,
 > {
     base_governance::get_pending()
@@ -1670,10 +1786,39 @@ async fn confirm_base_governance_transaction(
 ) -> Result<base_governance::BaseGovernanceConfirmation, base_governance::BaseGovernanceError> {
     let caller = ic_cdk::api::msg_caller();
     base_governance::require_confirmation_caller(caller)?;
-    let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
-        return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
-    };
-    base_governance::confirm(caller, args).await
+    let transaction_hash: [u8; 32] = args
+        .transaction_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| base_governance::BaseGovernanceError::InvalidArgument)?;
+    if STORE
+        .with(|store| {
+            store
+                .borrow()
+                .notification_failure_cooldown_active(transaction_hash, ic_cdk::api::time())
+        })
+        .map_err(|_| base_governance::BaseGovernanceError::StorageFailure)?
+    {
+        return Err(base_governance::BaseGovernanceError::RateLimited);
+    }
+    let _guard = admit_control_plane_external_call()?;
+    let result = base_governance::confirm(caller, args).await;
+    if matches!(
+        &result,
+        Err(base_governance::BaseGovernanceError::TransactionNotFinalized { .. })
+            | Err(base_governance::BaseGovernanceError::ObservationUnavailable)
+    ) {
+        STORE
+            .with(|store| {
+                store.borrow_mut().record_notification_failure_cooldown(
+                    transaction_hash,
+                    ic_cdk::api::time(),
+                    30_000_000_000,
+                )
+            })
+            .map_err(|_| base_governance::BaseGovernanceError::StorageFailure)?;
+    }
+    result
 }
 
 #[ic_cdk::update]
@@ -1738,6 +1883,9 @@ fn icrc10_supported_standards() -> Vec<consent::Icrc10SupportedStandard> {
 fn icrc21_canister_call_consent_message(
     request: consent::Icrc21ConsentMessageRequest,
 ) -> consent::Icrc21ConsentMessageResponse {
+    if !admit_consent_request() {
+        return consent::resource_limited();
+    }
     let ledger_fee =
         if request.method == "request_deposit" || request.method == "request_deposit_refund" {
             Some(ledger::KINIC_LEDGER_FEE.get())
@@ -1750,6 +1898,39 @@ fn icrc21_canister_call_consent_message(
         request,
         ledger_fee,
     )
+}
+
+fn admit_consent_request() -> bool {
+    let Some(config) = STORE.with(|store| store.borrow().config().ok().flatten()) else {
+        return false;
+    };
+    let Ok((token, active_funding)) = STORE.with(|store| {
+        let store = store.borrow();
+        Ok::<_, storage::StorageError>((
+            store.deposit_reserve_token()?,
+            store.deposit_funding_reservation_count()?,
+        ))
+    }) else {
+        return false;
+    };
+    if !has_liability_cycle_budget(
+        ic_cdk::api::canister_liquid_cycle_balance(),
+        config.reserve_policy(),
+        token,
+        active_funding,
+        0,
+    ) {
+        return false;
+    }
+    STORE
+        .with(|store| {
+            store.borrow_mut().consume_consent_quota(
+                ic_cdk::api::time(),
+                config.notification_rate_limit_window_seconds,
+                config.notification_rate_limit_global.saturating_mul(2),
+            )
+        })
+        .unwrap_or(false)
 }
 
 #[ic_cdk::update]
@@ -1831,10 +2012,9 @@ pub fn generated_candid_interface() -> String {
 #[cfg(test)]
 mod candid_tests {
     use super::{
-        can_continue_withdrawal, has_external_call_cycle_budget, has_notification_cycle_budget,
-        storage::DepositReserveToken, storage::StorageError, storage_or_trap, ActionKey,
-        DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard, StableStore,
-        NOTIFICATION_CALLER_ADMISSION,
+        can_continue_withdrawal, has_notification_cycle_budget, storage::DepositReserveToken,
+        storage::StorageError, storage_or_trap, ActionKey, DefaultMemoryImpl, InFlightGuard,
+        NotificationAdmissionGuard, StableStore, NOTIFICATION_CALLER_ADMISSION,
     };
 
     #[cfg(not(feature = "test-deployment"))]
@@ -1902,7 +2082,13 @@ mod candid_tests {
         );
 
         let expected = super::config::StagingUpgradeArgs {
-            migration_id: None,
+            migration_id: Some(super::config::STAGING_V33_TO_V34_MIGRATION_ID.to_owned()),
+            migration_config: Some(super::config::StagingV33MigrationConfig {
+                expected_timelock_minimum_delay_seconds: 300,
+                expected_bsns_runtime_sha256: vec![7; 32],
+                expected_bsns_decimals: 8,
+                expected_minimum_service_fee: 10_000,
+            }),
             status_counts_guard_version: 1,
             expected_status_counts: Some(super::config::StagingExpectedStatusCounts {
                 retained_audit_events: 11,
@@ -2005,18 +2191,23 @@ mod candid_tests {
     }
 
     #[test]
+    #[serial_test::serial]
+    fn busy_control_plane_admission_returns_before_quota_or_cycle_reads() {
+        let guard = InFlightGuard::acquire(ActionKey::BaseGovernance)
+            .expect("first control-plane call acquires guard");
+        assert!(matches!(
+            super::admit_control_plane_external_call(),
+            Err(super::base_governance::BaseGovernanceError::Busy { operation_id: 0 })
+        ));
+        drop(guard);
+    }
+
+    #[test]
     fn storage_errors_are_not_converted_to_default_values() {
         let trapped = std::panic::catch_unwind(|| {
             storage_or_trap::<()>("test storage read", Err(StorageError::DecodeFailed));
         });
         assert!(trapped.is_err());
-    }
-
-    #[test]
-    fn external_calls_require_budget_above_floor_and_call_ceiling() {
-        assert!(!has_external_call_cycle_budget(150, 100, 50));
-        assert!(has_external_call_cycle_budget(151, 100, 50));
-        assert!(!has_external_call_cycle_budget(u128::MAX, u128::MAX, 1));
     }
 
     #[test]
@@ -2027,12 +2218,14 @@ mod candid_tests {
         };
         let token = DepositReserveToken {
             nonterminal_withdrawals: 2,
+            nonterminal_deposits: 3,
             reserved_deposit_mint_amount: 500,
             reserved_deposit_mint_operations: 3,
         };
-        // 2 withdrawals + 3 formal deposits + 1 funding attempt + 1 new RPC lane.
-        assert!(!has_notification_cycle_budget(170, policy, token, 1));
-        assert!(has_notification_cycle_budget(171, policy, token, 1));
+        // 2 withdrawals + 3 formal deposits + 1 funding attempt + distinct
+        // verification and newly-ingested withdrawal settlement slots.
+        assert!(!has_notification_cycle_budget(180, policy, token, 1));
+        assert!(has_notification_cycle_budget(181, policy, token, 1));
     }
 
     #[test]
@@ -2077,7 +2270,7 @@ mod candid_tests {
         for _ in 0..NotificationAdmissionGuard::PER_CALLER_LIMIT {
             let count = NotificationAdmissionGuard::caller_count(caller, 0, 600);
             assert!(store
-                .consume_notification_verification_quota(0, 600, 60, count, 6)
+                .consume_notification_verification_quota(0, 600, 60, count, 6, false)
                 .expect("consume notification quota"));
             NotificationAdmissionGuard::record(caller, 0, 600);
         }
@@ -2088,18 +2281,24 @@ mod candid_tests {
                 60,
                 NotificationAdmissionGuard::caller_count(caller, 0, 600),
                 6,
+                false,
             )
             .expect("enforce caller quota"));
         drop(store);
         let mut reopened = StableStore::reopen(memory.clone()).expect("reopen");
-        assert!(reopened
-            .consume_notification_verification_quota(0, 600, 7, 0, 6)
-            .expect("persisted global budget"));
         assert!(!reopened
-            .consume_notification_verification_quota(0, 600, 7, 0, 6)
-            .expect("enforce persisted global budget"));
+            .consume_notification_verification_quota(0, 600, 7, 0, 6, false)
+            .expect("public lane remains exhausted"));
+        for _ in 0..6 {
+            assert!(reopened
+                .consume_notification_verification_quota(0, 600, 7, 0, 6, true)
+                .expect("protected relayer slot remains available"));
+        }
+        assert!(!reopened
+            .consume_notification_verification_quota(0, 600, 7, 0, 6, true)
+            .expect("enforce protected lane limit"));
         assert!(reopened
-            .consume_notification_verification_quota(600 * 1_000_000_000, 600, 7, 0, 6)
+            .consume_notification_verification_quota(600 * 1_000_000_000, 600, 7, 0, 6, false,)
             .expect("reset notification window"));
         assert!(reopened
             .consume_notification_ingestion_quota(600 * 1_000_000_000, 600, 1)

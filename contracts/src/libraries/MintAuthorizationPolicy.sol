@@ -9,6 +9,7 @@ library MintAuthorizationPolicy {
         None,
         Paused,
         Expired,
+        DeadlineTooFar,
         EpochMismatch,
         ZeroRecipient,
         InvalidRecipient,
@@ -64,6 +65,7 @@ library MintAuthorizationPolicy {
     {
         if (input.paused) return (RejectReason.Paused, effects, 0);
         if (!deadlineAccepts(input.timestamp, input.deadline)) return (RejectReason.Expired, effects, 0);
+        if (input.deadline > input.timestamp + 15 minutes) return (RejectReason.DeadlineTooFar, effects, 0);
         if (!epochMatches(input.authorizationEpoch, input.currentEpoch)) {
             return (RejectReason.EpochMismatch, effects, 0);
         }

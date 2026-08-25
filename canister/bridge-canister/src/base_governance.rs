@@ -17,6 +17,8 @@ pub enum BaseGovernanceAction {
     PauseWithdrawals,
     SetServiceFee { value: Nat },
     CancelPendingTimelock,
+    ScheduleControlPlaneRotation,
+    ExecuteControlPlaneRotation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,6 +29,8 @@ pub(crate) enum GovernanceAction {
     CancelPendingTimelock,
     ScheduleActivation,
     ExecuteActivation,
+    ScheduleControlPlaneRotation,
+    ExecuteControlPlaneRotation,
 }
 
 impl From<BaseGovernanceAction> for GovernanceAction {
@@ -36,6 +40,10 @@ impl From<BaseGovernanceAction> for GovernanceAction {
             BaseGovernanceAction::PauseWithdrawals => Self::PauseWithdrawals,
             BaseGovernanceAction::SetServiceFee { value } => Self::SetServiceFee { value },
             BaseGovernanceAction::CancelPendingTimelock => Self::CancelPendingTimelock,
+            BaseGovernanceAction::ScheduleControlPlaneRotation => {
+                Self::ScheduleControlPlaneRotation
+            }
+            BaseGovernanceAction::ExecuteControlPlaneRotation => Self::ExecuteControlPlaneRotation,
         }
     }
 }
@@ -58,6 +66,24 @@ pub enum BaseGovernanceOperationKind {
         operation_id: Vec<u8>,
         salt: Vec<u8>,
     },
+    ScheduleControlPlaneRotation {
+        operation_id: Vec<u8>,
+        salt: Vec<u8>,
+        generation: u32,
+        bridge_signer: Vec<u8>,
+        governance_operator: Vec<u8>,
+        runtime_administrator: Vec<u8>,
+        independent_canceller: Vec<u8>,
+    },
+    ExecuteControlPlaneRotation {
+        operation_id: Vec<u8>,
+        salt: Vec<u8>,
+        generation: u32,
+        bridge_signer: Vec<u8>,
+        governance_operator: Vec<u8>,
+        runtime_administrator: Vec<u8>,
+        independent_canceller: Vec<u8>,
+    },
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -69,6 +95,8 @@ pub enum BaseGovernanceError {
     },
     StorageFailure,
     ObservationUnavailable,
+    RateLimited,
+    InsufficientCycles,
     InsufficientGovernanceBalance {
         observed_wei: u128,
         required_wei: u128,
@@ -259,6 +287,15 @@ pub async fn refresh_activation_attestation(
     Ok(attestation)
 }
 
+pub fn require_attestation_refresh_caller(caller: Principal) -> Result<(), BaseGovernanceError> {
+    let config = config()?;
+    if attestation_refresh_authorized(&config, caller) {
+        Ok(())
+    } else {
+        Err(BaseGovernanceError::Unauthorized)
+    }
+}
+
 pub fn activation_status() -> Result<ActivationStatus, BaseGovernanceError> {
     STORE.with(|store| {
         let store = store.borrow();
@@ -266,9 +303,14 @@ pub fn activation_status() -> Result<ActivationStatus, BaseGovernanceError> {
             .admin_state()
             .map_err(|_| BaseGovernanceError::StorageFailure)?
             .deposits_paused;
+        let rotating = store
+            .pending_control_plane_rotation()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?
+            .is_some();
         let pending_timelock_operation = store
             .pending_timelock_operation()
             .map_err(|_| BaseGovernanceError::StorageFailure)?
+            .filter(|_| !rotating)
             .map(|pending| ActivationOperationView {
                 operation_id: pending.operation_id.to_vec(),
                 salt: pending.salt.to_vec(),
@@ -326,18 +368,18 @@ pub async fn prepare(
         crate::api::cache_runtime_attestation(&config, &observed)
             .map_err(|_| BaseGovernanceError::StorageFailure)?;
         require_action_authorization(caller, &action)?;
-        if !bridge_core::service_fee_change_allowed(
+        if !::bridge_core::kernel::service_fee_change_allowed(
             value,
+            config.expected_minimum_service_fee,
             observed.snapshot.mint.max_service_fee.get(),
         ) {
             return Err(BaseGovernanceError::InvalidArgument);
         }
     }
-    let operator = crate::api::cached_governance_operator_address(&config)
-        .await
-        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    let operator = operator_address_for_role(action_signer_role(&action))?;
     require_action_authorization(caller, &action)?;
-    let (initialized, _, _, pending) = governance_lane()?;
+    let lane = action_nonce_lane(&action);
+    let (initialized, _, _, pending) = governance_lane(lane)?;
     if let Some(pending) = pending {
         require_transaction_authorization(caller, &pending.kind)?;
         if !action_matches_pending(&action, &pending.kind) {
@@ -357,7 +399,7 @@ pub async fn prepare(
         None
     };
     require_action_authorization(caller, &action)?;
-    let (initialized, stored_nonce, id, pending) = governance_lane()?;
+    let (initialized, stored_nonce, id, pending) = governance_lane(lane)?;
     if let Some(pending) = pending {
         require_transaction_authorization(caller, &pending.kind)?;
         return Err(BaseGovernanceError::Busy {
@@ -371,12 +413,15 @@ pub async fn prepare(
     };
     if matches!(
         action,
-        GovernanceAction::ScheduleActivation | GovernanceAction::ExecuteActivation
+        GovernanceAction::ScheduleActivation
+            | GovernanceAction::ExecuteActivation
+            | GovernanceAction::ScheduleControlPlaneRotation
+            | GovernanceAction::ExecuteControlPlaneRotation
     ) {
         activation_preflight(&config).await?;
         require_action_authorization(caller, &action)?;
     }
-    let (kind, target, calldata) = encode_action(action, id)?;
+    let (kind, target, calldata) = encode_action(action, id).await?;
     let payload_hash: [u8; 32] = Sha256::digest(&calldata).into();
     let fee_cap = config.governance_evm_fee.max_fee_per_gas_ceiling;
     let priority_cap = config.governance_evm_fee.max_priority_fee_per_gas_ceiling;
@@ -416,7 +461,7 @@ pub async fn prepare(
         STORE.with(|store| {
             store
                 .borrow_mut()
-                .initialize_governance_nonce(nonce)
+                .initialize_governance_nonce_for(lane, nonce)
                 .map_err(|_| BaseGovernanceError::StorageFailure)
         })?;
     }
@@ -429,20 +474,18 @@ pub async fn prepare(
     sign_prepared(caller, &config, transaction, operator).await
 }
 
-pub fn get_pending() -> Result<Option<SignedBaseGovernanceTransaction>, BaseGovernanceError> {
+pub fn get_pending() -> Result<Vec<SignedBaseGovernanceTransaction>, BaseGovernanceError> {
     STORE.with(|store| {
         let store = store.borrow();
-        let operator = store
-            .governance_operator_address()
+        store
+            .pending_governance_transactions()
             .map_err(|_| BaseGovernanceError::StorageFailure)?
-            .ok_or(BaseGovernanceError::ObservationUnavailable)?;
-        let pending = store
-            .governance_lane()
-            .map_err(|_| BaseGovernanceError::StorageFailure)?
-            .3;
-        pending
-            .map(|pending| signed_view(&pending, operator))
-            .transpose()
+            .into_iter()
+            .map(|pending| {
+                let operator = transaction_operator(&pending)?;
+                signed_view(&pending, operator)
+            })
+            .collect()
     })
 }
 
@@ -457,14 +500,8 @@ pub async fn prepare_replacement(
     let max_priority_fee_per_gas =
         nat_u128(&args.max_priority_fee_per_gas).ok_or(BaseGovernanceError::InvalidArgument)?;
     let config = config()?;
-    let operator = STORE.with(|store| {
-        store
-            .borrow()
-            .governance_operator_address()
-            .map_err(|_| BaseGovernanceError::StorageFailure)?
-            .ok_or(BaseGovernanceError::ObservationUnavailable)
-    })?;
     let mut transaction = pending_transaction(args.operation_id)?;
+    let operator = transaction_operator(&transaction)?;
     require_transaction_authorization(caller, &transaction.kind)?;
     let current = transaction
         .envelope
@@ -504,9 +541,13 @@ pub async fn prepare_replacement(
     transaction.envelope.max_priority_fee_per_gas = max_priority_fee_per_gas;
     require_affordable(&config, operator, &transaction.envelope).await?;
     require_transaction_authorization(caller, &transaction.kind)?;
-    let raw = signer::sign_governance(&transaction.envelope, &config)
-        .await
-        .map_err(signing_failure)?;
+    let raw = signer::sign_governance_for_role(
+        &transaction.envelope,
+        &config,
+        transaction_signer_role(&transaction.kind),
+    )
+    .await
+    .map_err(signing_failure)?;
     require_transaction_authorization(caller, &transaction.kind)?;
     let current_pending = pending_transaction(args.operation_id)?;
     if current_pending.envelope.signed_transactions.last() != Some(current)
@@ -516,6 +557,11 @@ pub async fn prepare_replacement(
         )
     {
         return Err(BaseGovernanceError::InvalidArgument);
+    }
+    if dangerous_governance_kind(&transaction.kind) && emergency_base_actions_pending()? {
+        return Err(BaseGovernanceError::Busy {
+            operation_id: transaction.id,
+        });
     }
     let transaction_hash = evm_rpc::signed_transaction_hash(&raw);
     let generation = current
@@ -621,6 +667,11 @@ pub async fn confirm(
             transaction.kind,
             storage::GovernanceTransactionKind::ExecuteActivation { .. }
         );
+    let rotates_control_plane = succeeded
+        && matches!(
+            transaction.kind,
+            storage::GovernanceTransactionKind::ExecuteControlPlaneRotation { .. }
+        );
     if activates {
         let runtime_attested = crate::api::runtime_attested(&config)
             .map_err(|_| BaseGovernanceError::StorageFailure)?;
@@ -649,6 +700,44 @@ pub async fn confirm(
             );
             return Err(BaseGovernanceError::ObservationUnavailable);
         }
+    }
+    if rotates_control_plane {
+        let storage::GovernanceTransactionKind::ExecuteControlPlaneRotation {
+            bridge_signer,
+            governance_operator,
+            runtime_administrator,
+            independent_canceller,
+            ..
+        } = transaction.kind
+        else {
+            unreachable!();
+        };
+        let runtime_attested = crate::api::runtime_attested(&config)
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
+        let observed =
+            evm_rpc::bridge_snapshot_at(&config, finalized_observation, runtime_attested)
+                .await
+                .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        let deployment = evm_rpc::deployment_postconditions_at(&config, finalized_observation)
+            .await
+            .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        require_confirmation_caller(caller)?;
+        if !control_plane_rotation_postcondition_matches(
+            observed.snapshot.bridge_signer,
+            observed.snapshot.deposits_paused,
+            deployment.runtime_administrator,
+            deployment.timelock_proposer,
+            deployment.timelock_executor,
+            deployment.timelock_canceller,
+            bridge_signer,
+            governance_operator,
+            runtime_administrator,
+            independent_canceller,
+        ) {
+            return Err(BaseGovernanceError::ObservationUnavailable);
+        }
+        crate::api::cache_runtime_attestation(&config, &observed)
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
     }
     transaction.state = if succeeded {
         storage::GovernanceTransactionState::Confirmed {
@@ -714,8 +803,12 @@ pub(crate) fn confirmation_caller_authorized(
     governance: Principal,
     pause: Principal,
 ) -> bool {
-    caller != Principal::anonymous()
-        && (caller == confirmation_relayer || caller == governance || caller == pause)
+    ::bridge_core::kernel::confirmation_caller_authorized(
+        caller != Principal::anonymous(),
+        caller == confirmation_relayer,
+        caller == governance,
+        caller == pause,
+    )
 }
 
 pub fn emergency_pause(caller: Principal) -> Result<EmergencyPauseReceipt, BaseGovernanceError> {
@@ -756,27 +849,40 @@ pub async fn prepare_next_emergency(
     caller: Principal,
 ) -> Result<SignedBaseGovernanceTransaction, BaseGovernanceError> {
     require_governance_or_pause(caller)?;
-    if let Some(pending) = governance_lane()?.3 {
-        require_transaction_authorization(caller, &pending.kind)?;
-        if !is_emergency_kind(&pending.kind) {
-            return Err(BaseGovernanceError::Busy {
-                operation_id: pending.id,
-            });
-        }
-        let config = config()?;
-        let operator = STORE.with(|store| {
-            store
-                .borrow()
-                .governance_operator_address()
-                .map_err(|_| BaseGovernanceError::StorageFailure)?
-                .ok_or(BaseGovernanceError::ObservationUnavailable)
-        })?;
-        return resume_pending(caller, &config, pending, operator).await;
-    }
-    let action = match STORE
+    let next_kind = STORE
         .with(|store| store.borrow().next_emergency_base_action())
-        .map_err(|_| BaseGovernanceError::StorageFailure)?
+        .map_err(|_| BaseGovernanceError::StorageFailure)?;
+    let next_lane = next_kind
+        .as_ref()
+        .map(storage::GovernanceTransactionKind::nonce_lane);
+    if let Some(pending) = next_lane
+        .map(governance_lane)
+        .transpose()?
+        .and_then(|lane| lane.3)
     {
+        if !is_emergency_kind(&pending.kind) {
+            if dangerous_governance_kind(&pending.kind)
+                && matches!(pending.state, storage::GovernanceTransactionState::Prepared)
+            {
+                STORE.with(|store| {
+                    store
+                        .borrow_mut()
+                        .abort_prepared_governance_transaction_for_emergency(&pending)
+                        .map_err(|_| BaseGovernanceError::StorageFailure)
+                })?;
+            } else {
+                return Err(BaseGovernanceError::Busy {
+                    operation_id: pending.id,
+                });
+            }
+        } else {
+            require_transaction_authorization(caller, &pending.kind)?;
+            let config = config()?;
+            let operator = transaction_operator(&pending)?;
+            return resume_pending(caller, &config, pending, operator).await;
+        }
+    }
+    let action = match next_kind {
         Some(storage::GovernanceTransactionKind::PauseDepositMints) => {
             GovernanceAction::PauseDepositMints
         }
@@ -858,9 +964,13 @@ async fn sign_prepared(
     if pending_signature_action(&transaction)? != PendingSignatureAction::Sign {
         return Err(BaseGovernanceError::StorageFailure);
     }
-    let raw = signer::sign_governance(&transaction.envelope, config)
-        .await
-        .map_err(signing_failure)?;
+    let raw = signer::sign_governance_for_role(
+        &transaction.envelope,
+        config,
+        transaction_signer_role(&transaction.kind),
+    )
+    .await
+    .map_err(signing_failure)?;
     require_transaction_authorization(caller, &transaction.kind)?;
     if pending_transaction(transaction.id)? != transaction {
         return Err(BaseGovernanceError::StorageFailure);
@@ -907,6 +1017,12 @@ async fn activation_preflight(
     let governance_operator = crate::api::cached_governance_operator_address(config)
         .await
         .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    let runtime_administrator = signer::runtime_administrator_address(config)
+        .await
+        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    let independent_canceller = signer::canceller_address(config)
+        .await
+        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
     let runtime_attested =
         crate::api::runtime_attested(config).map_err(|_| BaseGovernanceError::StorageFailure)?;
     let observed = evm_rpc::bridge_snapshot(config, runtime_attested)
@@ -931,14 +1047,24 @@ async fn activation_preflight(
         .try_into()
         .map_err(|_| BaseGovernanceError::InvalidArgument)?;
     if deployment.bridge_timelock != timelock
-        || deployment.runtime_administrator != governance_operator
+        || deployment.runtime_administrator != runtime_administrator
         || deployment.timelock_admin != timelock
         || deployment.timelock_proposer != governance_operator
-        || deployment.timelock_canceller != governance_operator
+        || deployment.timelock_canceller != independent_canceller
         || deployment.timelock_executor != governance_operator
+        || runtime_administrator == governance_operator
+        || runtime_administrator == independent_canceller
+        || governance_operator == independent_canceller
         || deployment.timelock_runtime_code_hash
             != deployment.bridge_approved_timelock_runtime_code_hash
+        || deployment.timelock_minimum_delay_seconds
+            != config.expected_timelock_minimum_delay_seconds
         || deployment.bsns_bridge.as_slice() != config.bridge_contract.as_slice()
+        || deployment.bsns_runtime_sha256.as_slice()
+            != config.expected_bsns_runtime_sha256.as_slice()
+        || deployment.bsns_decimals != config.expected_bsns_decimals
+        || deployment.minimum_service_fee != config.expected_minimum_service_fee
+        || observed.snapshot.mint.service_fee.get() < config.expected_minimum_service_fee
         || deployment.bsns_name != "KINIC"
         || deployment.bsns_symbol != "KINIC"
     {
@@ -990,7 +1116,7 @@ async fn require_affordable(
     governance_operator: [u8; 20],
     envelope: &GovernanceTransactionEnvelope,
 ) -> Result<(), BaseGovernanceError> {
-    let required_wei = bridge_core::transaction_liability_wei(
+    let required_wei = ::bridge_core::kernel::transaction_liability_wei(
         envelope.gas_limit,
         envelope.max_fee_per_gas,
         config.governance_evm_fee.l1_fee_per_transaction_ceiling_wei,
@@ -1031,7 +1157,7 @@ fn activation_base_preflight_matches(
     deposits_paused: bool,
     withdrawals_paused: bool,
 ) -> bool {
-    bridge_core::activation_base_preflight_matches(
+    ::bridge_core::kernel::activation_base_preflight_matches(
         observed_signer == expected_signer,
         deposits_paused,
         withdrawals_paused,
@@ -1039,15 +1165,37 @@ fn activation_base_preflight_matches(
 }
 
 fn activation_postcondition_matches(deposits_paused: bool, withdrawals_paused: bool) -> bool {
-    bridge_core::activation_postcondition_matches(deposits_paused, withdrawals_paused)
+    ::bridge_core::kernel::activation_postcondition_matches(deposits_paused, withdrawals_paused)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn control_plane_rotation_postcondition_matches(
+    observed_bridge_signer: [u8; 20],
+    deposits_paused: bool,
+    observed_runtime_administrator: [u8; 20],
+    observed_timelock_proposer: [u8; 20],
+    observed_timelock_executor: [u8; 20],
+    observed_timelock_canceller: [u8; 20],
+    expected_bridge_signer: [u8; 20],
+    expected_governance_operator: [u8; 20],
+    expected_runtime_administrator: [u8; 20],
+    expected_independent_canceller: [u8; 20],
+) -> bool {
+    deposits_paused
+        && observed_bridge_signer == expected_bridge_signer
+        && observed_runtime_administrator == expected_runtime_administrator
+        && observed_timelock_proposer == expected_governance_operator
+        && observed_timelock_executor == expected_governance_operator
+        && observed_timelock_canceller == expected_independent_canceller
 }
 
 fn governance_lane(
+    lane: storage::GovernanceNonceLane,
 ) -> Result<(bool, u64, u64, Option<storage::GovernanceTransaction>), BaseGovernanceError> {
     STORE.with(|store| {
         store
             .borrow()
-            .governance_lane()
+            .governance_lane_for(lane)
             .map_err(|_| BaseGovernanceError::StorageFailure)
     })
 }
@@ -1055,9 +1203,15 @@ fn governance_lane(
 fn pending_transaction(
     operation_id: u64,
 ) -> Result<storage::GovernanceTransaction, BaseGovernanceError> {
-    governance_lane()?
-        .3
-        .filter(|transaction| transaction.id == operation_id)
+    STORE
+        .with(|store| {
+            store
+                .borrow()
+                .pending_governance_transactions()
+                .map_err(|_| BaseGovernanceError::StorageFailure)
+        })?
+        .into_iter()
+        .find(|transaction| transaction.id == operation_id)
         .ok_or(BaseGovernanceError::InvalidArgument)
 }
 
@@ -1067,9 +1221,13 @@ fn completed_transaction(
     STORE.with(|store| {
         store
             .borrow()
-            .last_completed_governance_transaction()
+            .completed_governance_transactions()
             .map_err(|_| BaseGovernanceError::StorageFailure)
-            .map(|transaction| transaction.filter(|transaction| transaction.id == operation_id))
+            .map(|transactions| {
+                transactions
+                    .into_iter()
+                    .find(|transaction| transaction.id == operation_id)
+            })
     })
 }
 
@@ -1183,6 +1341,40 @@ fn kind_view(kind: &storage::GovernanceTransactionKind) -> BaseGovernanceOperati
                 salt: salt.to_vec(),
             }
         }
+        storage::GovernanceTransactionKind::ScheduleControlPlaneRotation {
+            operation_id,
+            salt,
+            generation,
+            bridge_signer,
+            governance_operator,
+            runtime_administrator,
+            independent_canceller,
+        } => BaseGovernanceOperationKind::ScheduleControlPlaneRotation {
+            operation_id: operation_id.to_vec(),
+            salt: salt.to_vec(),
+            generation: *generation,
+            bridge_signer: bridge_signer.to_vec(),
+            governance_operator: governance_operator.to_vec(),
+            runtime_administrator: runtime_administrator.to_vec(),
+            independent_canceller: independent_canceller.to_vec(),
+        },
+        storage::GovernanceTransactionKind::ExecuteControlPlaneRotation {
+            operation_id,
+            salt,
+            generation,
+            bridge_signer,
+            governance_operator,
+            runtime_administrator,
+            independent_canceller,
+        } => BaseGovernanceOperationKind::ExecuteControlPlaneRotation {
+            operation_id: operation_id.to_vec(),
+            salt: salt.to_vec(),
+            generation: *generation,
+            bridge_signer: bridge_signer.to_vec(),
+            governance_operator: governance_operator.to_vec(),
+            runtime_administrator: runtime_administrator.to_vec(),
+            independent_canceller: independent_canceller.to_vec(),
+        },
     }
 }
 
@@ -1301,6 +1493,14 @@ fn action_matches_pending(
         | (
             GovernanceAction::ExecuteActivation,
             storage::GovernanceTransactionKind::ExecuteActivation { .. },
+        )
+        | (
+            GovernanceAction::ScheduleControlPlaneRotation,
+            storage::GovernanceTransactionKind::ScheduleControlPlaneRotation { .. },
+        )
+        | (
+            GovernanceAction::ExecuteControlPlaneRotation,
+            storage::GovernanceTransactionKind::ExecuteControlPlaneRotation { .. },
         ) => true,
         (
             GovernanceAction::SetServiceFee { value },
@@ -1316,6 +1516,8 @@ fn dangerous_governance_kind(kind: &storage::GovernanceTransactionKind) -> bool 
         storage::GovernanceTransactionKind::SetServiceFee { .. }
             | storage::GovernanceTransactionKind::ScheduleActivation { .. }
             | storage::GovernanceTransactionKind::ExecuteActivation { .. }
+            | storage::GovernanceTransactionKind::ScheduleControlPlaneRotation { .. }
+            | storage::GovernanceTransactionKind::ExecuteControlPlaneRotation { .. }
     )
 }
 
@@ -1326,6 +1528,67 @@ fn is_emergency_kind(kind: &storage::GovernanceTransactionKind) -> bool {
             | storage::GovernanceTransactionKind::PauseWithdrawals
             | storage::GovernanceTransactionKind::CancelTimelock { .. }
     )
+}
+
+fn transaction_signer_role(kind: &storage::GovernanceTransactionKind) -> signer::SignerRole {
+    match kind {
+        storage::GovernanceTransactionKind::PauseDepositMints
+        | storage::GovernanceTransactionKind::PauseWithdrawals
+        | storage::GovernanceTransactionKind::SetServiceFee { .. } => {
+            signer::SignerRole::RuntimeAdministrator
+        }
+        storage::GovernanceTransactionKind::CancelTimelock { .. } => signer::SignerRole::Canceller,
+        storage::GovernanceTransactionKind::ScheduleActivation { .. }
+        | storage::GovernanceTransactionKind::ExecuteActivation { .. }
+        | storage::GovernanceTransactionKind::ScheduleControlPlaneRotation { .. }
+        | storage::GovernanceTransactionKind::ExecuteControlPlaneRotation { .. } => {
+            signer::SignerRole::Governance
+        }
+    }
+}
+
+fn action_signer_role(action: &GovernanceAction) -> signer::SignerRole {
+    match action {
+        GovernanceAction::PauseDepositMints
+        | GovernanceAction::PauseWithdrawals
+        | GovernanceAction::SetServiceFee { .. } => signer::SignerRole::RuntimeAdministrator,
+        GovernanceAction::CancelPendingTimelock => signer::SignerRole::Canceller,
+        GovernanceAction::ScheduleActivation
+        | GovernanceAction::ExecuteActivation
+        | GovernanceAction::ScheduleControlPlaneRotation
+        | GovernanceAction::ExecuteControlPlaneRotation => signer::SignerRole::Governance,
+    }
+}
+
+fn action_nonce_lane(action: &GovernanceAction) -> storage::GovernanceNonceLane {
+    match action_signer_role(action) {
+        signer::SignerRole::Governance => storage::GovernanceNonceLane::Governance,
+        signer::SignerRole::RuntimeAdministrator => {
+            storage::GovernanceNonceLane::RuntimeAdministrator
+        }
+        signer::SignerRole::Canceller => storage::GovernanceNonceLane::IndependentCanceller,
+        signer::SignerRole::Mint => unreachable!("mint signer cannot authorize governance"),
+    }
+}
+
+fn operator_address_for_role(role: signer::SignerRole) -> Result<[u8; 20], BaseGovernanceError> {
+    STORE.with(|store| {
+        let store = store.borrow();
+        let address = match role {
+            signer::SignerRole::Mint => Ok(None),
+            signer::SignerRole::Governance => store.governance_operator_address(),
+            signer::SignerRole::RuntimeAdministrator => store.runtime_administrator_address(),
+            signer::SignerRole::Canceller => store.independent_canceller_address(),
+        }
+        .map_err(|_| BaseGovernanceError::StorageFailure)?;
+        address.ok_or(BaseGovernanceError::ObservationUnavailable)
+    })
+}
+
+fn transaction_operator(
+    transaction: &storage::GovernanceTransaction,
+) -> Result<[u8; 20], BaseGovernanceError> {
+    operator_address_for_role(transaction_signer_role(&transaction.kind))
 }
 
 fn emergency_base_actions_pending() -> Result<bool, BaseGovernanceError> {
@@ -1360,7 +1623,7 @@ fn hash32(value: &[u8]) -> Result<[u8; 32], BaseGovernanceError> {
         .map_err(|_| BaseGovernanceError::InvalidArgument)
 }
 
-fn encode_action(
+async fn encode_action(
     action: GovernanceAction,
     governance_operation_id: u64,
 ) -> Result<(storage::GovernanceTransactionKind, [u8; 20], Vec<u8>), BaseGovernanceError> {
@@ -1425,6 +1688,13 @@ fn encode_action(
             ))
         }
         GovernanceAction::ExecuteActivation => {
+            if STORE
+                .with(|store| store.borrow().pending_control_plane_rotation())
+                .map_err(|_| BaseGovernanceError::StorageFailure)?
+                .is_some()
+            {
+                return Err(BaseGovernanceError::InvalidArgument);
+            }
             let pending = STORE
                 .with(|store| store.borrow().pending_timelock_operation())
                 .map_err(|_| BaseGovernanceError::StorageFailure)?
@@ -1436,6 +1706,77 @@ fn encode_action(
                 },
                 timelock,
                 execute_activation_calldata(bridge, pending.salt),
+            ))
+        }
+        GovernanceAction::ScheduleControlPlaneRotation => {
+            let generation = STORE
+                .with(|store| store.borrow().control_plane_key_generation())
+                .map_err(|_| BaseGovernanceError::StorageFailure)?
+                .checked_add(1)
+                .ok_or(BaseGovernanceError::InvalidArgument)?;
+            let addresses = signer::control_plane_addresses_for_generation(&config()?, generation)
+                .await
+                .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+            let salt = control_plane_rotation_salt(deployment_instance_id, generation);
+            let arguments =
+                control_plane_rotation_arguments(bridge, timelock, salt, &addresses, false);
+            let operation_id = keccak(&arguments);
+            let mut calldata =
+                selector("scheduleBatch(address[],uint256[],bytes[],bytes32,bytes32,uint256)");
+            calldata.extend_from_slice(&control_plane_rotation_arguments(
+                bridge, timelock, salt, &addresses, true,
+            ));
+            Ok((
+                storage::GovernanceTransactionKind::ScheduleControlPlaneRotation {
+                    operation_id,
+                    salt,
+                    generation,
+                    bridge_signer: addresses.bridge_signer,
+                    governance_operator: addresses.governance_operator,
+                    runtime_administrator: addresses.runtime_administrator,
+                    independent_canceller: addresses.independent_canceller,
+                },
+                timelock,
+                calldata,
+            ))
+        }
+        GovernanceAction::ExecuteControlPlaneRotation => {
+            let pending = STORE
+                .with(|store| store.borrow().pending_control_plane_rotation())
+                .map_err(|_| BaseGovernanceError::StorageFailure)?
+                .ok_or(BaseGovernanceError::InvalidArgument)?;
+            let timelock_pending = STORE
+                .with(|store| store.borrow().pending_timelock_operation())
+                .map_err(|_| BaseGovernanceError::StorageFailure)?
+                .ok_or(BaseGovernanceError::InvalidArgument)?;
+            let addresses = signer::ControlPlaneAddresses {
+                generation: pending.generation,
+                bridge_signer: pending.bridge_signer,
+                governance_operator: pending.governance_operator,
+                runtime_administrator: pending.runtime_administrator,
+                independent_canceller: pending.independent_canceller,
+            };
+            let mut calldata =
+                selector("executeBatch(address[],uint256[],bytes[],bytes32,bytes32)");
+            calldata.extend_from_slice(&control_plane_rotation_arguments(
+                bridge,
+                timelock,
+                timelock_pending.salt,
+                &addresses,
+                false,
+            ));
+            Ok((
+                storage::GovernanceTransactionKind::ExecuteControlPlaneRotation {
+                    operation_id: timelock_pending.operation_id,
+                    salt: timelock_pending.salt,
+                    generation: pending.generation,
+                    bridge_signer: pending.bridge_signer,
+                    governance_operator: pending.governance_operator,
+                    runtime_administrator: pending.runtime_administrator,
+                    independent_canceller: pending.independent_canceller,
+                },
+                timelock,
+                calldata,
             ))
         }
     }
@@ -1470,7 +1811,7 @@ fn activation_salt(deployment_instance_id: [u8; 32], governance_operation_id: u6
 }
 
 fn nat_u128(value: &Nat) -> Option<u128> {
-    value.0.to_string().parse().ok()
+    crate::api::bounded_nat_u128(value)
 }
 
 fn activation_operation_id(bridge: [u8; 20], salt: [u8; 32]) -> [u8; 32] {
@@ -1491,9 +1832,46 @@ fn execute_activation_calldata(bridge: [u8; 20], salt: [u8; 32]) -> Vec<u8> {
 }
 
 fn activation_arguments(bridge: [u8; 20], salt: [u8; 32], include_delay: bool) -> Vec<u8> {
-    let targets = encode_address_array([bridge, bridge]);
-    let values = encode_u128_array([0, 0]);
-    let payloads = encode_bytes_array(activation_payloads());
+    let targets = encode_address_array(&[bridge, bridge]);
+    let values = encode_u128_array(&[0, 0]);
+    let payloads = encode_bytes_array(&activation_payloads());
+    timelock_batch_arguments(targets, values, payloads, salt, include_delay)
+}
+
+fn control_plane_rotation_salt(deployment_instance_id: [u8; 32], generation: u32) -> [u8; 32] {
+    let mut input = b"KINIC_CONTROL_PLANE_ROTATION_V1".to_vec();
+    input.extend_from_slice(&deployment_instance_id);
+    input.extend_from_slice(&generation.to_be_bytes());
+    keccak(&input)
+}
+
+fn control_plane_rotation_arguments(
+    bridge: [u8; 20],
+    timelock: [u8; 20],
+    salt: [u8; 32],
+    addresses: &signer::ControlPlaneAddresses,
+    include_delay: bool,
+) -> Vec<u8> {
+    let mut rotate_signer = selector("rotateBridgeSigner(address)");
+    rotate_signer.extend_from_slice(&word_address(addresses.bridge_signer));
+    let mut rotate_runtime = selector("rotateRuntimeAdministrator(address)");
+    rotate_runtime.extend_from_slice(&word_address(addresses.runtime_administrator));
+    let mut rotate_timelock = selector("rotateOperationalMembers(address,address)");
+    rotate_timelock.extend_from_slice(&word_address(addresses.governance_operator));
+    rotate_timelock.extend_from_slice(&word_address(addresses.independent_canceller));
+    let targets = encode_address_array(&[bridge, bridge, timelock]);
+    let values = encode_u128_array(&[0, 0, 0]);
+    let payloads = encode_bytes_array(&[rotate_signer, rotate_runtime, rotate_timelock]);
+    timelock_batch_arguments(targets, values, payloads, salt, include_delay)
+}
+
+fn timelock_batch_arguments(
+    targets: Vec<u8>,
+    values: Vec<u8>,
+    payloads: Vec<u8>,
+    salt: [u8; 32],
+    include_delay: bool,
+) -> Vec<u8> {
     let head_words = if include_delay { 6u128 } else { 5u128 };
     let mut encoded = Vec::new();
     encoded.extend_from_slice(&word_u128(head_words * 32));
@@ -1512,31 +1890,41 @@ fn activation_arguments(bridge: [u8; 20], salt: [u8; 32], include_delay: bool) -
     encoded
 }
 
-fn encode_address_array(values: [[u8; 20]; 2]) -> Vec<u8> {
-    let mut encoded = word_u128(2).to_vec();
+fn word_address(value: [u8; 20]) -> [u8; 32] {
+    let mut word = [0; 32];
+    word[12..].copy_from_slice(&value);
+    word
+}
+
+fn encode_address_array(values: &[[u8; 20]]) -> Vec<u8> {
+    let mut encoded = word_u128(values.len() as u128).to_vec();
     for value in values {
         encoded.extend_from_slice(&[0; 12]);
+        encoded.extend_from_slice(value);
+    }
+    encoded
+}
+
+fn encode_u128_array(values: &[u128]) -> Vec<u8> {
+    let mut encoded = word_u128(values.len() as u128).to_vec();
+    for value in values {
+        encoded.extend_from_slice(&word_u128(*value));
+    }
+    encoded
+}
+
+fn encode_bytes_array(values: &[Vec<u8>]) -> Vec<u8> {
+    let encoded_values: Vec<Vec<u8>> = values.iter().map(|value| encode_bytes(value)).collect();
+    let head_len = values.len() * 32;
+    let mut encoded = word_u128(values.len() as u128).to_vec();
+    let mut offset = head_len;
+    for value in &encoded_values {
+        encoded.extend_from_slice(&word_u128(offset as u128));
+        offset += value.len();
+    }
+    for value in encoded_values {
         encoded.extend_from_slice(&value);
     }
-    encoded
-}
-
-fn encode_u128_array(values: [u128; 2]) -> Vec<u8> {
-    let mut encoded = word_u128(2).to_vec();
-    for value in values {
-        encoded.extend_from_slice(&word_u128(value));
-    }
-    encoded
-}
-
-fn encode_bytes_array(values: [Vec<u8>; 2]) -> Vec<u8> {
-    let first = encode_bytes(&values[0]);
-    let second = encode_bytes(&values[1]);
-    let mut encoded = word_u128(2).to_vec();
-    encoded.extend_from_slice(&word_u128(64));
-    encoded.extend_from_slice(&word_u128(64 + first.len() as u128));
-    encoded.extend_from_slice(&first);
-    encoded.extend_from_slice(&second);
     encoded
 }
 
@@ -1560,10 +1948,12 @@ mod tests {
     use super::{
         action_authorized, activation_base_preflight_matches, activation_operation_id,
         activation_postcondition_matches, activation_salt, affordability_error,
-        confirmation_caller_authorized, conservative_observed_balance, execute_activation_calldata,
-        initial_fee, minimum_fee_bump, pending_signature_action, schedule_activation_calldata,
-        selector, transaction_authorized, word_u128, BaseGovernanceError, GovernanceAction,
-        PendingSignatureAction, ACTIVATION_TIMELOCK_DELAY_SECONDS,
+        confirmation_caller_authorized, conservative_observed_balance,
+        control_plane_rotation_arguments, control_plane_rotation_postcondition_matches,
+        execute_activation_calldata, initial_fee, minimum_fee_bump, pending_signature_action,
+        schedule_activation_calldata, selector, transaction_authorized, word_u128,
+        BaseGovernanceError, GovernanceAction, PendingSignatureAction,
+        ACTIVATION_TIMELOCK_DELAY_SECONDS,
     };
     use crate::storage::{
         GovernanceTransaction, GovernanceTransactionKind, GovernanceTransactionState,
@@ -1684,6 +2074,59 @@ mod tests {
         assert!(activation_postcondition_matches(false, false));
         assert!(!activation_postcondition_matches(true, false));
         assert!(!activation_postcondition_matches(false, true));
+    }
+
+    #[test]
+    fn control_plane_rotation_postcondition_rejects_every_partial_or_mismatched_rotation() {
+        let expected = ([1; 20], [2; 20], [3; 20], [4; 20]);
+        let matches = |bridge, paused, runtime, proposer, executor, canceller| {
+            control_plane_rotation_postcondition_matches(
+                bridge, paused, runtime, proposer, executor, canceller, expected.0, expected.1,
+                expected.2, expected.3,
+            )
+        };
+        assert!(matches(
+            expected.0, true, expected.2, expected.1, expected.1, expected.3
+        ));
+        assert!(!matches(
+            [9; 20], true, expected.2, expected.1, expected.1, expected.3
+        ));
+        assert!(!matches(
+            expected.0, false, expected.2, expected.1, expected.1, expected.3
+        ));
+        assert!(!matches(
+            expected.0, true, [9; 20], expected.1, expected.1, expected.3
+        ));
+        assert!(!matches(
+            expected.0, true, expected.2, [9; 20], expected.1, expected.3
+        ));
+        assert!(!matches(
+            expected.0, true, expected.2, expected.1, [9; 20], expected.3
+        ));
+        assert!(!matches(
+            expected.0, true, expected.2, expected.1, expected.1, [9; 20]
+        ));
+    }
+
+    #[test]
+    fn control_plane_rotation_operation_id_matches_solidity_abi_known_answer() {
+        let addresses = crate::signer::ControlPlaneAddresses {
+            generation: 1,
+            bridge_signer: [1; 20],
+            governance_operator: [2; 20],
+            runtime_administrator: [3; 20],
+            independent_canceller: [4; 20],
+        };
+        let encoded =
+            control_plane_rotation_arguments([7; 20], [8; 20], [9; 32], &addresses, false);
+        assert_eq!(
+            super::keccak(&encoded),
+            [
+                0x0d, 0x3a, 0xcc, 0x22, 0x86, 0xd3, 0x77, 0xaa, 0xf6, 0xd0, 0xcd, 0x90, 0x72, 0x39,
+                0xd7, 0x2a, 0x48, 0x0a, 0x50, 0xfa, 0x08, 0x56, 0x00, 0xbd, 0xd8, 0x15, 0xa2, 0x02,
+                0xc0, 0xa7, 0xc1, 0xba,
+            ]
+        );
     }
 
     #[test]

@@ -7,8 +7,9 @@ remappings = ["bridge-src/=../../contracts/src/"]
 solc = "0.8.36"
 evm_version = "prague"
 optimizer = false
-via_ir = false
+via_ir = true
 deny = "warnings"
+ast = true
 
 [profile.default.model_checker]
 engine = "chc"

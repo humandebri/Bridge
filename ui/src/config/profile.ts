@@ -6,8 +6,12 @@ const hash = z.custom<`0x${string}`>((value) => typeof value === "string" && /^0
 const sha256 = z.string().regex(/^[0-9a-fA-F]{64}$/).refine((value) => !/^0+$/.test(value), "hash must be nonzero")
 const tokenMetadata = z.object({
   symbol: z.string().min(1),
-  decimals: z.number().int().nonnegative(),
+  decimals: z.literal(8),
 })
+
+export function canonicalRpcUrl(value: string): string {
+  return new URL(value).href
+}
 
 export const deploymentProfileSchema = z.object({
   environment: z.string().min(1),
@@ -20,7 +24,12 @@ export const deploymentProfileSchema = z.object({
   profileCanonicalSha256: sha256.nullable(),
   icHost: z.url(),
   baseRpcUrl: z.url(),
-  baseHistoryRpcUrls: z.array(z.url()).min(1).optional(),
+  baseHistoryRpcUrls: z.array(z.url()).min(1)
+    .refine(
+      (urls) => new Set(urls.map(canonicalRpcUrl)).size === urls.length,
+      "Base history RPC URLs must be distinct",
+    )
+    .optional(),
   chainId: z.number().int().positive(),
   bridgeCanisterId: z.string().min(1).nullable(),
   deploymentInstanceId: hash.nullable(),
@@ -75,8 +84,9 @@ function assertEmbeddedTestUiProfile(profile: {
   if (profile.environment === "sepolia-staging" && (profile.chainId !== 84532 || profile.evmRpcCanisterId !== "7hfb6-caaaa-aaaar-qadga-cai")) {
     throw new Error("Sepolia staging requires Base Sepolia and the official EVM RPC Canister")
   }
-  if (profile.environment === "sepolia-staging" && !profile.baseHistoryRpcUrls?.length) {
-    throw new Error("Sepolia staging requires reviewed Base history RPC URLs")
+  if (profile.environment === "sepolia-staging"
+    && new Set((profile.baseHistoryRpcUrls ?? []).map(canonicalRpcUrl)).size < 2) {
+    throw new Error("Sepolia staging requires at least two distinct reviewed Base history RPC URLs")
   }
   if (profile.environment === "sepolia-staging" && (!profile.deploymentInstanceId || !profile.minimumWithdrawalId)) {
     throw new Error("Sepolia staging requires deployment instance and minimum withdrawal IDs")

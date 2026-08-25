@@ -15,7 +15,7 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 | Production | 未デプロイ | 最小Gate A/Bと本番activation完了まで資産受付禁止 |
 
 `bridge-core`はDeposit、Withdrawal、Mint Authorization、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v35・record wire v29の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
+`bridge-canister`はstable schema v34・record wire v29の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
 ICP→BaseではCanisterはFinalized Base timestampから固定期限のEIP-712 Mint Authorizationへ署名するだけで、Base transactionを生成・送信しない。任意のBase walletが`mintDepositWithAuthorization`を送り、そのwalletがgasを支払う。
 期限後、既存のBase Finalized snapshotを使うdeadline順の上限付きローカル走査でmint予約だけを解放する。Depositごとのtimerや個別Base照合、自動返金は行わない。任意の非anonymous Principalが`request_deposit_refund`を明示実行すると、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を照合し、未処理ならrecordに固定された元account・金額・transfer identityでLedger refund、処理済みならexact `DepositMinted` eventとcanonical receiptを保存して`Minted`へ進む。RPC不一致、event欠落、digest不一致では資金を動かさない。
 Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacementは存在しない。Base governanceではCanisterがGovernance Operatorのtransactionをthreshold署名し、外部`governance-relayer` CLIだけがbroadcast、Finalized待機、確定通知を行う。自動replacementはなく、Governanceの明示要求時だけ同一nonceを最大3回、12.5%以上fee bumpして再署名する。
@@ -121,7 +121,7 @@ bootstrap merge後にBranch ProtectionまたはRulesetで`trusted-pr-gate`をreq
 Leanから生成した追跡対象のconformance vectorをRust、Solidity、TypeScriptの実装に適用し、各vector sectionについてmanifestにない仕様・定理・consumerのdriftを拒否する。
 manifestに登録したconsumerはsectionとproduction symbolへの構造的な結合を検査してから許可済みrunnerで個別実行し、対象testが正確に1件成功した場合だけ対応済みと判定する。
 この照合は列挙した境界値に対する限定的なconformanceであり、各言語実装全体の完全なsemantic refinementではない。
-productionと共有するDeposit、Withdrawal、管理判定coreはSMTCheckerとVerusでも証明し、意図的に制約を欠くfixtureが拒否されることを確認する。
+productionと共有するDeposit、Withdrawal、管理判定coreはSMTCheckerとVerusでも証明し、意図的に制約を欠くfixtureが拒否されることを確認する。Verus proofは非executableでは登録specを`ensures`へ、executableでは登録kernelの戻り式をnamed returnと`ensures`へ結合し、obligation側の支援claim集合、claim側の参照集合、production-bound evidence必須集合をそれぞれ完全一致させる。claimが参照する全Verus義務が直接production-bound、または同じclaimのproduction-boundな`executable`／`shared-expression`だけに依存する`derived`として被覆されない限り、claim全体をproduction実装証明済みへ昇格させない。Solidityのproof linkはcompiler AST上の完全なcontract・overload signatureと直接call graphへ解決し、Bridge wrapperでは`digest`の生成元、署名回復、`evaluateMint`入力全フィールドと`effects`生成元、再代入の不在、commit引数の宣言IDと順序を結合する。Halmosは署名検証後の`_commitAuthorizedMint`境界についてstate反映、mint量、外部call失敗時のrollbackをsymbolic検査する。SMTとHalmosはともに`supporting`であり、Verusの`derived`義務と同様にclaimの部分証拠として扱い、単独ではproduction実装済みのclaimへ昇格しない。production transaction testはwrapper、認証、event、永続化を含む具体的なend-to-end挙動を担う。
 `ui`はABI/Candid drift、typecheck、lint、unit test、build、desktop/mobile Playwrightを実行する。`real`は実Ledger suiteとAnvilを使うPlaywright統合テストを実行し、`all`にも含まれるが短時間用の`checks`には含まれない。
 証明範囲と外部仮定は[verification/README.md](verification/README.md)と[verification/obligations.md](verification/obligations.md)に記録する。
 
@@ -139,7 +139,7 @@ python3 scripts/protocol_vectors.py --update
 python3 scripts/protocol_vectors.py --check
 ```
 
-release対象claim、抽象・有限幅・trace定理、Verus/SMT義務、production link、transaction test、外部仮定は[verification/claims.tsv](verification/claims.tsv)で統一管理し、証拠statusはgateが算出する。vector consumerは[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。不可逆なproduction操作の直前にはproof gateに続いてWasmとcontract runtimeをclean sourceから二回buildし、release manifestとのhash完全一致を要求する。
+42件のrelease対象claim、抽象・有限幅・trace定理、型付きVerus/SMT/Halmos obligation、明示的なimplementation basis、production link、transaction test、外部仮定は[verification/claims.tsv](verification/claims.tsv)で統一管理し、証拠statusはgateが算出する。vector consumerは[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。不可逆なproduction操作の直前にはproof gateに続いてWasmとcontract runtimeをclean sourceから二回buildし、release manifestとのhash完全一致を要求する。
 
 ## ローカルdeploy
 
@@ -147,7 +147,7 @@ release対象claim、抽象・有限幅・trace定理、Verus/SMT義務、produc
 
 1. 新規networkの起動時だけ、port 8000が使用中なら`gateway.port`を一時的に空きportへ変更する。
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
-3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 35、全count 0を確認する。
+3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 34、全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
 5. 24時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
@@ -171,4 +171,4 @@ icp network stop --project-root-override .
 
 手動実行の`prepare_local_network.py --write`は`icp.yaml`を永続的に変更する。必要なら停止後に利用者が元のportへ戻す。
 
-本番初回deployまではstable schemaを直接置換し、production向けの旧schema migration、dual-read、fallbackを追加しない。現行v35以外・未知schema・未知wireはfail closedとする。唯一の例外として`test-deployment` staging Wasmだけがreview済みv34／wire v29からv35／wire v29への一方向migrationを持つ。`reinstall`はstate破棄を明示承認した使い捨て環境に限定する。
+本番初回deployまではstable schemaを直接置換し、旧schema migration、dual-read、fallbackを追加しない。現行v34／wire v29以外はfail closedとする。ただし、既にdeploy済みのstaging v33／wire v28だけは、review済みID `bridge-staging-v33-to-v34` を束縛した一度限りのmigrationを許可する。`reinstall`はstate破棄を明示承認した使い捨て環境に限定する。

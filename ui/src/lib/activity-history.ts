@@ -41,8 +41,8 @@ export interface ActivityBoundaries {
   withdrawal: ActivityBoundary
 }
 
-export function activityAutoRefreshEnabled(pageVisible: boolean, icConnected: boolean, evmConnected: boolean): boolean {
-  return pageVisible && (icConnected || evmConnected)
+export function activityAutoRefreshEnabled(pageVisible: boolean, hasAutomaticProgress: boolean): boolean {
+  return pageVisible && hasAutomaticProgress
 }
 
 export function mergeActivityItems(deposits: DepositView[], withdrawals: WithdrawalHistoryItem[]): ActivityItem[] {

@@ -19,7 +19,7 @@ class TrustedProofProfileTests(unittest.TestCase):
     def profile(self, identifier: str, path: str, content: bytes) -> TrustedProofProfile:
         return TrustedProofProfile(
             identifier,
-            "current" if identifier == "current-main" else "hardening",
+            "hardening",
             {path: hashlib.sha256(content).hexdigest()},
         )
 
@@ -27,25 +27,25 @@ class TrustedProofProfileTests(unittest.TestCase):
         policy = "\n".join(
             (
                 "schema\t1\t-\t-",
-                "profile\tcurrent-main\tcurrent\t-",
-                "source\tcurrent-main\tverification/claims.tsv\t" + "0" * 64,
                 "profile\tsecurity-hardening-v1\thardening\t-",
                 "source\tsecurity-hardening-v1\tverification/claims.tsv\t" + "1" * 64,
             )
         )
-        self.assertEqual(set(parse_policy(policy)), {"current-main", "security-hardening-v1"})
+        self.assertEqual(set(parse_policy(policy)), {"security-hardening-v1"})
 
-    def test_selects_each_complete_profile(self) -> None:
-        for identifier, content in (("current-main", b"current"), ("security-hardening-v1", b"hardening")):
-            with self.subTest(identifier=identifier), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                path = root / "verification/claims.tsv"
-                path.parent.mkdir(parents=True)
-                path.write_bytes(content)
-                profiles = {
-                    identifier: self.profile(identifier, "verification/claims.tsv", content),
-                }
-                self.assertEqual([profile.identifier for profile in matching_profiles(root, profiles)], [identifier])
+    def test_selects_the_complete_hardening_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "verification/claims.tsv"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"hardening")
+            profile = self.profile(
+                "security-hardening-v1", "verification/claims.tsv", b"hardening"
+            )
+            self.assertEqual(
+                [item.identifier for item in matching_profiles(root, {profile.identifier: profile})],
+                ["security-hardening-v1"],
+            )
 
     def test_rejects_digest_change_missing_and_extra_sources(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -53,7 +53,7 @@ class TrustedProofProfileTests(unittest.TestCase):
             path = root / "verification/claims.tsv"
             path.parent.mkdir(parents=True)
             path.write_bytes(b"trusted")
-            profile = self.profile("current-main", "verification/claims.tsv", b"trusted")
+            profile = self.profile("security-hardening-v1", "verification/claims.tsv", b"trusted")
             profiles = {profile.identifier: profile}
             path.write_bytes(b"changed")
             self.assertEqual(matching_profiles(root, profiles), [])
@@ -65,23 +65,15 @@ class TrustedProofProfileTests(unittest.TestCase):
             extra.write_bytes(b"extra")
             self.assertEqual(matching_profiles(root, profiles), [])
 
-    def test_rejects_mixed_profile_bundle(self) -> None:
+    def test_rejects_unknown_profile_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             claims = root / "verification/claims.tsv"
             proof_impact = root / "verification/proof-impact.tsv"
             claims.parent.mkdir(parents=True)
-            claims.write_bytes(b"current-claims")
+            claims.write_bytes(b"hardening-claims")
             proof_impact.write_bytes(b"hardening-impact")
             profiles = {
-                "current-main": TrustedProofProfile(
-                    "current-main",
-                    "current",
-                    {
-                        "verification/claims.tsv": hashlib.sha256(b"current-claims").hexdigest(),
-                        "verification/proof-impact.tsv": hashlib.sha256(b"current-impact").hexdigest(),
-                    },
-                ),
                 "security-hardening-v1": TrustedProofProfile(
                     "security-hardening-v1",
                     "hardening",
@@ -91,7 +83,10 @@ class TrustedProofProfileTests(unittest.TestCase):
                     },
                 ),
             }
-            self.assertEqual(matching_profiles(root, profiles), [])
+            self.assertEqual(
+                [item.identifier for item in matching_profiles(root, profiles)],
+                ["security-hardening-v1"],
+            )
 
     def test_rejects_untrusted_lean_manifest_vector_and_smt_config_changes(self) -> None:
         sources = {
@@ -108,8 +103,8 @@ class TrustedProofProfileTests(unittest.TestCase):
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(content)
                 profile = TrustedProofProfile(
-                    "current-main",
-                    "current",
+                    "security-hardening-v1",
+                    "hardening",
                     {
                         relative: hashlib.sha256(content).hexdigest()
                         for relative, content in sources.items()
@@ -136,10 +131,10 @@ class TrustedProofProfileTests(unittest.TestCase):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"generated")
-            profile = self.profile("current-main", "verification/claims.tsv", b"trusted")
+            profile = self.profile("security-hardening-v1", "verification/claims.tsv", b"trusted")
             self.assertEqual(
                 [item.identifier for item in matching_profiles(root, {profile.identifier: profile})],
-                ["current-main"],
+                ["security-hardening-v1"],
             )
 
     def test_rejects_hidden_verification_source_and_nested_halmos_harness(self) -> None:
@@ -154,7 +149,7 @@ class TrustedProofProfileTests(unittest.TestCase):
                 claims.parent.mkdir(parents=True)
                 claims.write_bytes(b"trusted")
                 profile = self.profile(
-                    "current-main", "verification/claims.tsv", b"trusted"
+                    "security-hardening-v1", "verification/claims.tsv", b"trusted"
                 )
                 extra = root / relative
                 extra.parent.mkdir(parents=True, exist_ok=True)

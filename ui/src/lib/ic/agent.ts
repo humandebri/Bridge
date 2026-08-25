@@ -1,4 +1,4 @@
-import { HttpAgent, type Identity } from "@dfinity/agent"
+import { HttpAgent, type Identity } from "@icp-sdk/core/agent"
 
 export async function createIcAgent(host: string, identity?: Identity): Promise<HttpAgent> {
   const agent = HttpAgent.createSync({ host, identity })

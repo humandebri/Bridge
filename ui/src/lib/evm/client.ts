@@ -2,7 +2,7 @@ import { createConfig, http } from "wagmi"
 import { coinbaseWallet, injected, walletConnect } from "wagmi/connectors"
 import { createPublicClient, defineChain } from "viem"
 import { base, baseSepolia } from "viem/chains"
-import { deploymentProfile, type DeploymentProfile } from "@/config/profile"
+import { canonicalRpcUrl, deploymentProfile, type DeploymentProfile } from "@/config/profile"
 
 const baseExplorerByChainId = new Map<number, string>([
   [base.id, base.blockExplorers.default.url],
@@ -36,7 +36,7 @@ export function createBasePublicClient(profile: DeploymentProfile = deploymentPr
 export const basePublicClient = createBasePublicClient()
 
 export function createBaseHistoryClients(profile: DeploymentProfile = deploymentProfile) {
-  const urls = profile.baseHistoryRpcUrls ?? [profile.baseRpcUrl]
+  const urls = [...new Set((profile.baseHistoryRpcUrls ?? [profile.baseRpcUrl]).map(canonicalRpcUrl))]
   return urls.map((url) => createPublicClient({
     chain: createProfileChain(profile),
     transport: http(url, { retryCount: 0 }),
@@ -44,6 +44,30 @@ export function createBaseHistoryClients(profile: DeploymentProfile = deployment
 }
 
 export const baseHistoryClients = createBaseHistoryClients()
+
+export async function hasIndependentFinalizedRevertQuorum(
+  transactionHash: `0x${string}`,
+  clients = baseHistoryClients,
+): Promise<boolean> {
+  if (clients.length < 2) return false
+  const observations = await Promise.allSettled(clients.map(async (client) => {
+    const receipt = await client.getTransactionReceipt({ hash: transactionHash })
+    if (receipt.status !== "reverted" || receipt.blockHash === null) return undefined
+    const finalized = await client.getBlock({ blockTag: "finalized" })
+    if (finalized.number === null || finalized.number < receipt.blockNumber) return undefined
+    const checkpoint = await client.getBlock({ blockNumber: receipt.blockNumber })
+    if (checkpoint.hash === null || checkpoint.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) return undefined
+    return `${receipt.blockNumber}:${receipt.blockHash.toLowerCase()}`
+  }))
+  const counts = new Map<string, number>()
+  for (const observation of observations) {
+    if (observation.status !== "fulfilled" || observation.value === undefined) continue
+    const count = (counts.get(observation.value) ?? 0) + 1
+    if (count >= 2) return true
+    counts.set(observation.value, count)
+  }
+  return false
+}
 
 export async function firstSuccessfulHistoryClient<C, T>(
   clients: readonly C[],

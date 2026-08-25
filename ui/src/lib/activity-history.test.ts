@@ -11,10 +11,9 @@ import {
 
 describe("activity history", () => {
   it("keeps polling while a connected activity source is visible", () => {
-    expect(activityAutoRefreshEnabled(true, true, false)).toBe(true)
-    expect(activityAutoRefreshEnabled(true, false, true)).toBe(true)
-    expect(activityAutoRefreshEnabled(true, false, false)).toBe(false)
-    expect(activityAutoRefreshEnabled(false, true, true)).toBe(false)
+    expect(activityAutoRefreshEnabled(true, true)).toBe(true)
+    expect(activityAutoRefreshEnabled(true, false)).toBe(false)
+    expect(activityAutoRefreshEnabled(false, true)).toBe(false)
   })
 
   it("merges both directions newest-first with a stable tie break", () => {

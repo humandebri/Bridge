@@ -342,7 +342,10 @@ pub async fn notify_withdrawal(
                 finalized_checkpoint_block_number,
             ),
         };
-    if !bridge_core::withdrawal_id_is_admissible(&observed.id, &config.minimum_withdrawal_id) {
+    if !::bridge_core::kernel::withdrawal_id_is_admissible(
+        &observed.id,
+        &config.minimum_withdrawal_id,
+    ) {
         return Err(NotifyWithdrawalError::WithdrawalBeforeAdmissionBoundary {
             observed_withdrawal_id: observed.id.to_vec(),
             minimum_withdrawal_id: config.minimum_withdrawal_id,
@@ -737,7 +740,7 @@ pub(crate) fn runtime_attested(config: &BridgeInitArgs) -> Result<bool, DepositE
             .external_progress()
             .map(|progress| {
                 let observation = progress.finalized_observation;
-                bridge_core::runtime_attestation_matches(
+                ::bridge_core::kernel::runtime_attestation_matches(
                     observation.is_some(),
                     observation.is_some_and(|value| value.chain_id == config.base_chain_id),
                     observation.is_some_and(|value| value.runtime_sha256 == expected_runtime),
@@ -768,12 +771,22 @@ pub(crate) fn cache_runtime_attestation(
     })
 }
 
+pub(crate) fn bounded_nat_u128(value: &Nat) -> Option<u128> {
+    if value.0.bits() > 128 {
+        return None;
+    }
+    let digits = value.0.to_u64_digits();
+    match digits.as_slice() {
+        [] => Some(0),
+        [low] => Some(u128::from(*low)),
+        [low, high] => Some(u128::from(*low) | (u128::from(*high) << 64)),
+        _ => None,
+    }
+}
+
 fn nat_u128(value: &Nat) -> Result<u128, DepositError> {
-    value
-        .0
-        .to_string()
-        .parse()
-        .map_err(|_| DepositError::InvalidRequest("amount exceeds u128".into()))
+    bounded_nat_u128(value)
+        .ok_or_else(|| DepositError::InvalidRequest("amount exceeds u128".into()))
 }
 
 fn hash_concat(parts: &[&[u8]]) -> [u8; 32] {
@@ -909,7 +922,7 @@ fn cached_deposit_preflight(
     user_max_service_fee: Amount,
 ) -> Result<(), bridge_core::CoreError> {
     let net_amount = snapshot.quote(gross_amount, user_max_service_fee)?;
-    let decision = bridge_core::deposit_admission_decision(
+    let decision = ::bridge_core::kernel::deposit_admission_decision(
         gross_amount.get(),
         snapshot.service_fee.get(),
         snapshot.max_service_fee.get(),
@@ -985,6 +998,9 @@ fn deposit_storage_error(error: crate::storage::StorageError) -> DepositError {
         } => DepositError::RateLimited {
             retry_after_seconds,
         },
+        crate::storage::StorageError::LifetimeDepositCapacityExceeded => {
+            DepositError::Rejected("LifetimeDepositCapacityExceeded".into())
+        }
         crate::storage::StorageError::Core(bridge_core::CoreError::ConflictingReplay) => {
             DepositError::DepositConflict
         }
@@ -1242,24 +1258,6 @@ pub async fn request_deposit(
         DepositFundingAttemptState::Prepared | DepositFundingAttemptState::Retryable { .. } => {}
     }
 
-    if let Err(error) = fresh_deposit_preflight(
-        &config,
-        now,
-        deposit_id,
-        Amount::new(gross_amount),
-        Amount::new(max_service_fee),
-    )
-    .await
-    {
-        STORE.with(|store| {
-            store
-                .borrow_mut()
-                .remove_deposit_funding_attempt(caller, &previous)
-                .map_err(|_| DepositError::StorageFailure)
-        })?;
-        return Err(error);
-    }
-
     let mut attempt = previous.clone();
     attempt.state = DepositFundingAttemptState::Dispatched {
         dispatched_at_ns: now,
@@ -1281,14 +1279,28 @@ pub async fn request_deposit(
         bridge_core::LedgerCallOutcome::RetryableFailure { .. } => 4,
     };
     match (
-        bridge_core::funding_attempt_decision(outcome_kind),
+        ::bridge_core::kernel::funding_attempt_decision(outcome_kind),
         ledger_outcome,
     ) {
         (
             bridge_core::FundingAttemptDecision::PromoteSuccess,
             bridge_core::LedgerCallOutcome::Succeeded { block_index }
             | bridge_core::LedgerCallOutcome::Duplicate { block_index },
-        ) => promote_funding_success(&attempt, block_index, &config),
+        ) => {
+            // Funding is irreversible at this point. Run the paid Base
+            // preflight only for this asset-bound identity, but always expose
+            // the funded record even when Base is temporarily unavailable or
+            // rejects the current snapshot; settlement can retry or refund it.
+            let _preflight = fresh_deposit_preflight(
+                &config,
+                ic_cdk::api::time(),
+                deposit_id,
+                Amount::new(gross_amount),
+                Amount::new(max_service_fee),
+            )
+            .await;
+            promote_funding_success(&attempt, block_index, &config)
+        }
         (
             bridge_core::FundingAttemptDecision::PromoteAmbiguous,
             bridge_core::LedgerCallOutcome::Ambiguous,
@@ -1718,7 +1730,7 @@ async fn fresh_deposit_preflight(
         max_service_fee,
     )
     .map_err(preflight_error)?;
-    match bridge_core::deposit_identity_decision(observation.processed) {
+    match ::bridge_core::kernel::deposit_identity_decision(observation.processed) {
         bridge_core::DepositIdentityDecision::Allow => Ok(()),
         bridge_core::DepositIdentityDecision::Conflict => {
             Err(DepositError::DepositIdentityConflict)
@@ -2027,6 +2039,18 @@ pub fn get_withdrawals(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_nat_conversion_rejects_before_decimal_formatting() {
+        assert_eq!(bounded_nat_u128(&Nat::from(0u8)), Some(0));
+        assert_eq!(bounded_nat_u128(&Nat::from(u128::MAX)), Some(u128::MAX));
+        let mut oversized = Nat::from(1u8);
+        oversized.0 <<= 128usize;
+        assert_eq!(bounded_nat_u128(&oversized), None);
+        let mut very_large = Nat::from(1u8);
+        very_large.0 <<= 1_000_000usize;
+        assert_eq!(bounded_nat_u128(&very_large), None);
+    }
 
     fn preflight_snapshot() -> bridge_core::BaseMintSnapshot {
         bridge_core::BaseMintSnapshot {

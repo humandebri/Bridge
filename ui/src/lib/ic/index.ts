@@ -1,5 +1,5 @@
 import { IcrcIndexCanister } from "@icp-sdk/canisters/ledger/icrc"
-import { Principal } from "@dfinity/principal"
+import { Principal } from "@icp-sdk/core/principal"
 import { createIcAgent } from "@/lib/ic/agent"
 
 export interface IndexActor {

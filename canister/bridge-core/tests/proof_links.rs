@@ -4,8 +4,8 @@ use bridge_core::{
     hold_resolution_decision, lease_lane_claim_decision, lease_outcome_decision,
     manual_claim_decision, notification_admission_allowed, payout_decision,
     release_transfer_matches, reservation_decision, service_fee_change_allowed,
-    settlement_decision, withdrawal_finalized_identity_quorum, withdrawal_id_is_admissible,
-    WithdrawalFinalizedIdentity,
+    settlement_decision, withdrawal_common_checkpoint, withdrawal_finalized_checkpoint_quorum,
+    withdrawal_finalized_identity_quorum, withdrawal_id_is_admissible, WithdrawalFinalizedIdentity,
 };
 
 macro_rules! production_link {
@@ -16,8 +16,92 @@ macro_rules! production_link {
     }};
 }
 
+type WithdrawalCheckpointQuorum = fn(
+    [Option<WithdrawalFinalizedIdentity>; 3],
+    [Option<WithdrawalFinalizedIdentity>; 3],
+    u64,
+) -> Option<WithdrawalFinalizedIdentity>;
+
+#[test]
+fn staggered_finalized_heads_select_the_conservative_common_checkpoint() {
+    let at = |height, byte| WithdrawalFinalizedIdentity {
+        block_number: height,
+        block_hash: [byte; 32],
+    };
+    assert_eq!(
+        withdrawal_common_checkpoint(Some(at(100, 1)), Some(at(101, 2)), Some(at(102, 3))),
+        Some(101)
+    );
+    assert_eq!(
+        withdrawal_common_checkpoint(Some(at(100, 1)), None, Some(at(102, 3))),
+        Some(100)
+    );
+    assert_eq!(
+        withdrawal_common_checkpoint(Some(at(99, 1)), Some(at(101, 2)), Some(at(102, 3))),
+        Some(101)
+    );
+    assert_eq!(
+        withdrawal_common_checkpoint(Some(at(100, 1)), Some(at(101, 2)), Some(at(999, 3))),
+        Some(101)
+    );
+    assert_eq!(
+        withdrawal_common_checkpoint(Some(at(100, 1)), None, None),
+        None
+    );
+}
+
+#[test]
+fn withdrawal_checkpoint_quorum_excludes_votes_from_heads_below_the_checkpoint() {
+    let at = |height, byte| WithdrawalFinalizedIdentity {
+        block_number: height,
+        block_hash: [byte; 32],
+    };
+    let finalized_heads = [Some(at(90, 1)), Some(at(100, 2)), Some(at(110, 3))];
+
+    assert_eq!(
+        withdrawal_finalized_checkpoint_quorum(
+            finalized_heads,
+            [
+                Some(at(100, 0xaa)),
+                Some(at(100, 0xaa)),
+                Some(at(100, 0xbb))
+            ],
+            100,
+        ),
+        None
+    );
+    assert_eq!(
+        withdrawal_finalized_checkpoint_quorum(
+            [Some(at(100, 1)), Some(at(101, 2)), Some(at(102, 3))],
+            [
+                Some(at(101, 0xaa)),
+                Some(at(101, 0xbb)),
+                Some(at(101, 0xbb))
+            ],
+            101,
+        ),
+        Some(at(101, 0xbb))
+    );
+}
+
 #[test]
 fn phase5_production_links_typecheck() {
+    production_link!(
+        "withdrawal_finality_quorum",
+        "canister/bridge-core/src/kernel.rs#withdrawal_common_checkpoint",
+        withdrawal_common_checkpoint,
+        fn(
+            Option<WithdrawalFinalizedIdentity>,
+            Option<WithdrawalFinalizedIdentity>,
+            Option<WithdrawalFinalizedIdentity>,
+        ) -> Option<u64>
+    );
+    production_link!(
+        "withdrawal_finality_quorum",
+        "canister/bridge-core/src/kernel.rs#withdrawal_finalized_checkpoint_quorum",
+        withdrawal_finalized_checkpoint_quorum,
+        WithdrawalCheckpointQuorum
+    );
     production_link!(
         "withdrawal_admission_boundary",
         "canister/bridge-core/src/kernel.rs#withdrawal_id_is_admissible",
@@ -66,7 +150,7 @@ fn phase5_production_links_typecheck() {
         "service_fee_maximum",
         "canister/bridge-core/src/kernel.rs#service_fee_change_allowed",
         service_fee_change_allowed,
-        fn(u128, u128) -> bool
+        fn(u128, u128, u128) -> bool
     );
     production_link!(
         "fee_recipient_rotation",

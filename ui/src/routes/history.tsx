@@ -1,5 +1,5 @@
-import { Principal } from "@dfinity/principal"
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Principal } from "@icp-sdk/core/principal"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { createFileRoute } from "@tanstack/react-router"
 import { Clock3, RefreshCcw } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -70,6 +70,32 @@ interface WithdrawalEventLog extends FinalizedEventLog {
 export interface WithdrawalHistoryData extends WithdrawalLogScan<WithdrawalEventLog> {
   items: WithdrawalHistoryItem[]
   olderBoundaryNs: bigint | null
+}
+
+export function mergeWithdrawalHistoryData(
+  current: WithdrawalHistoryData | undefined,
+  result: WithdrawalHistoryData,
+): WithdrawalHistoryData {
+  if (!current) return result
+  const itemKey = (item: WithdrawalHistoryItem) => `${item.hash.toLowerCase()}:${item.logIndex}`
+  const items = new Map(result.items.map((item) => [itemKey(item), item]))
+  for (const item of current.items) items.set(itemKey(item), item)
+  const logKey = (log: WithdrawalEventLog) => `${log.transactionHash?.toLowerCase()}:${log.logIndex}`
+  const logs = new Map(result.logs.map((log) => [logKey(log), log]))
+  for (const log of current.logs) logs.set(logKey(log), log)
+  const currentIsNewer = current.lastFinalizedBlock >= result.lastFinalizedBlock
+  return {
+    ...result,
+    lastFinalizedBlock: currentIsNewer ? current.lastFinalizedBlock : result.lastFinalizedBlock,
+    lastFinalizedBlockHash: currentIsNewer ? current.lastFinalizedBlockHash : result.lastFinalizedBlockHash,
+    reachedDeploymentBlock: current.reachedDeploymentBlock || result.reachedDeploymentBlock,
+    logs: [...logs.values()].sort((left, right) => left.blockNumber === right.blockNumber
+      ? (right.logIndex ?? -1) - (left.logIndex ?? -1)
+      : (right.blockNumber ?? -1n) > (left.blockNumber ?? -1n) ? 1 : -1),
+    items: [...items.values()].sort((left, right) => left.createdAtNs === right.createdAtNs
+      ? right.logIndex - left.logIndex
+      : right.createdAtNs > left.createdAtNs ? 1 : -1),
+  }
 }
 
 type HistorySourceState = "disconnected" | "loading" | "ready" | "unavailable"
@@ -146,24 +172,23 @@ function HistoryPage() {
     queryFn: () => readDepositHistory("refresh", queryClient.getQueryData<DepositHistoryData>(depositQueryKey)),
   })
   const mintRecords = (deposits.data?.items ?? []).filter((record) => record.mint_authorization.length > 0)
-  const depositMintScans = useQueries({
-    queries: mintRecords.map((record) => {
-      const authorization = record.mint_authorization[0]!
-      const depositId = bytesHex(record.deposit_id)
-      const queryKey = [
-        "deposit-mint-events",
-        deploymentProfile.chainId,
-        deploymentProfile.bridgeAddress,
-        depositId,
-        authorization.finalized_block_number.toString(),
-        bytesHex(authorization.digest),
-      ] as const
-      return {
-        queryKey,
-        queryFn: async () => withHistoryClientFailover(baseHistoryClients, failedHistoryClients.current, async (client) => {
+  const earliestMintAuthorizationBlock = mintRecords.reduce<bigint | undefined>((earliest, record) => {
+    const block = record.mint_authorization[0]!.finalized_block_number
+    return earliest === undefined || block < earliest ? block : earliest
+  }, undefined)
+  const depositMintScanKey = [
+    "deposit-mint-events",
+    deploymentProfile.chainId,
+    deploymentProfile.bridgeAddress,
+    earliestMintAuthorizationBlock?.toString(),
+  ] as const
+  const depositMintScan = useQuery({
+    queryKey: depositMintScanKey,
+    enabled: earliestMintAuthorizationBlock !== undefined,
+    queryFn: async () => withHistoryClientFailover(baseHistoryClients, failedHistoryClients.current, async (client) => {
           const finalized = await client.getBlock({ blockTag: "finalized" })
           if (finalized.number === null || finalized.hash === null) throw new Error("finalized Base block is unavailable")
-          let previous = queryClient.getQueryData<DepositMintLogScan>(queryKey)
+          let previous = queryClient.getQueryData<DepositMintLogScan>(depositMintScanKey)
           if (previous && !await finalizedCheckpointMatches({
             finalizedBlock: finalized.number,
             finalizedBlockHash: finalized.hash,
@@ -172,7 +197,7 @@ function HistoryPage() {
             fetchCheckpointBlockHash: async (blockNumber) => (await client.getBlock({ blockNumber })).hash,
           })) previous = undefined
           return scanDepositMintLogs({
-            deploymentBlock: authorization.finalized_block_number,
+            deploymentBlock: earliestMintAuthorizationBlock as bigint,
             finalizedBlock: finalized.number,
             finalizedBlockHash: finalized.hash,
             previous,
@@ -181,7 +206,6 @@ function HistoryPage() {
               address: deploymentProfile.bridgeAddress as `0x${string}`,
               abi: bridgeAbi,
               eventName: "DepositMinted",
-              args: { depositId },
               fromBlock,
               toBlock,
               strict: true,
@@ -193,21 +217,19 @@ function HistoryPage() {
             },
           })
         }),
-        staleTime: 15_000,
-      }
-    }),
+    staleTime: 15_000,
   })
-  const depositMintScanById = new Map(mintRecords.map((record, index) => [
+  const depositMintScanById = new Map(mintRecords.map((record) => [
     bytesHex(record.deposit_id),
     {
-      scan: depositMintScans[index]?.data,
-      state: depositMintScans[index]?.isError
+      scan: depositMintScan.data,
+      state: depositMintScan.isError
         ? "unavailable" as const
-        : depositMintScans[index]?.isFetching ? "checking" as const : "ready" as const,
+        : depositMintScan.isFetching ? "checking" as const : "ready" as const,
     },
   ]))
-  const depositMintScanError = depositMintScans.some((query) => query.isError)
-  const depositMintScanFetching = depositMintScans.some((query) => query.isFetching)
+  const depositMintScanError = depositMintScan.isError
+  const depositMintScanFetching = depositMintScan.isFetching
 
   const withdrawalQueryKey = ["withdraw-history", deploymentProfile.chainId, deploymentProfile.bridgeAddress, address] as const
   const readWithdrawalHistory = async (mode: "refresh" | "older", previous?: WithdrawalHistoryData): Promise<WithdrawalHistoryData> => {
@@ -287,17 +309,24 @@ function HistoryPage() {
   )
   const visibleItems = useMemo(() => visibleActivityItems(allItems, "all", boundaries), [allItems, boundaries])
   const olderSources = useMemo(() => olderActivitySources("all", boundaries), [boundaries])
+  const hasAutomaticProgress = Boolean(deposits.data?.pendingFunding.length)
+    || (deposits.data?.items ?? []).some((record) => !isDepositTerminal(record.state) && record.automatic_progress.length > 0)
+    || (withdrawals.data?.items ?? []).some((item) => !item.canister || !isWithdrawalTerminal(item.canister.state))
+  const hasUnresolvedMint = mintRecords.some((record) => {
+    const depositId = bytesHex(record.deposit_id).toLowerCase()
+    return !depositMintScan.data?.logs.some((log) => log.args.depositId.toLowerCase() === depositId)
+  })
   useEffect(() => {
     const onVisibilityChange = () => setPageVisible(document.visibilityState === "visible")
     document.addEventListener("visibilitychange", onVisibilityChange)
     return () => document.removeEventListener("visibilitychange", onVisibilityChange)
   }, [])
   useActivityAutoRefresh(
-    activityAutoRefreshEnabled(pageVisible, Boolean(historyAccount), Boolean(address)),
+    activityAutoRefreshEnabled(pageVisible, hasAutomaticProgress || hasUnresolvedMint),
     () => {
       void Promise.all([
         historyAccount ? deposits.refetch() : Promise.resolve(),
-        ...depositMintScans.map((scan) => scan.refetch()),
+        hasUnresolvedMint ? depositMintScan.refetch() : Promise.resolve(),
         address ? withdrawals.refetch() : Promise.resolve(),
       ])
     },
@@ -317,7 +346,8 @@ function HistoryPage() {
     if (!withdrawals.data || withdrawals.data.olderCursor === null) return
     try {
       setLoadingOlderWithdrawals(true)
-      queryClient.setQueryData(withdrawalQueryKey, await readWithdrawalHistory("older", withdrawals.data))
+      const result = await readWithdrawalHistory("older", withdrawals.data)
+      queryClient.setQueryData<WithdrawalHistoryData>(withdrawalQueryKey, (current) => mergeWithdrawalHistoryData(current, result))
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Older withdrawal history is unavailable")
     } finally {
@@ -328,7 +358,13 @@ function HistoryPage() {
     if (!deposits.data || deposits.data.nextCursor === null) return
     try {
       setLoadingOlderDeposits(true)
-      queryClient.setQueryData(depositQueryKey, await readDepositHistory("older", deposits.data))
+      const result = await readDepositHistory("older", deposits.data)
+      queryClient.setQueryData<DepositHistoryData>(depositQueryKey, (current) => mergeDepositHistoryPage(result, current?.items ?? [], {
+        nextCursor: result.nextCursor,
+        oldestAvailableCursor: result.oldestAvailableCursor,
+        historyTruncated: result.historyTruncated,
+        pendingFunding: current?.pendingFunding ?? result.pendingFunding,
+      }, "older"))
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Older deposit history is unavailable")
     } finally {
@@ -424,7 +460,7 @@ function HistoryPage() {
     try {
       await Promise.all([
         historyAccount ? deposits.refetch() : Promise.resolve(),
-        ...depositMintScans.map((scan) => scan.refetch()),
+        hasUnresolvedMint ? depositMintScan.refetch() : Promise.resolve(),
         address ? withdrawals.refetch() : Promise.resolve(),
       ])
     } finally {

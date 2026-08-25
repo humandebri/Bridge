@@ -57,6 +57,10 @@ contract MintAuthorizationPolicyTest {
         _assertRejected(input, MintAuthorizationPolicy.RejectReason.Expired);
 
         input = _valid();
+        input.deadline = 15 minutes + 1;
+        _assertRejected(input, MintAuthorizationPolicy.RejectReason.DeadlineTooFar);
+
+        input = _valid();
         input.authorizationEpoch = 2;
         _assertRejected(input, MintAuthorizationPolicy.RejectReason.EpochMismatch);
 
@@ -117,7 +121,7 @@ contract MintAuthorizationPolicyTest {
 
         input = _valid();
         input.timestamp = uint256(type(uint64).max) + 1;
-        input.deadline = type(uint256).max;
+        input.deadline = input.timestamp + 15 minutes;
         input.windowDuration = 0;
         _assertRejected(input, MintAuthorizationPolicy.RejectReason.TimestampExceedsU64);
     }

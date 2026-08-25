@@ -27,9 +27,13 @@ contracts/.forge-snapshots/
 
 # Local tool and proof output
 .tools/
+.certora_internal/
 .pnpm-store/
 verification/output/
+verification/certora/.venv/
 verification/lean/.lake/
+verification/smt/cache/
+verification/smt/out/
 /node_modules/
 ui/node_modules/
 ui/dist/

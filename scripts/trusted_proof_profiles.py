@@ -49,7 +49,7 @@ def parse_policy(text: str) -> dict[str, TrustedProofProfile]:
         if PROFILE_ID.fullmatch(profile_id) is None:
             raise ValueError(f"invalid trusted proof profile ID: {number}")
         if kind == "profile":
-            if value not in {"current", "hardening"} or digest != "-" or profile_id in modes:
+            if value != "hardening" or digest != "-" or profile_id in modes:
                 raise ValueError(f"invalid or duplicate trusted proof profile: {number}")
             modes[profile_id] = value
             sources[profile_id] = {}
@@ -61,8 +61,8 @@ def parse_policy(text: str) -> dict[str, TrustedProofProfile]:
             sources[profile_id][value] = digest
         else:
             raise ValueError(f"unknown trusted proof profile row: {number}")
-    if set(modes) != {"current-main", "security-hardening-v1"}:
-        raise ValueError("trusted proof profiles must be exactly current-main and security-hardening-v1")
+    if set(modes) != {"security-hardening-v1"}:
+        raise ValueError("security-hardening-v1 must be the only trusted proof profile")
     if any(not sources[profile_id] for profile_id in modes):
         raise ValueError("trusted proof profile cannot be empty")
     return {
