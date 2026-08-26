@@ -74,6 +74,18 @@ class CertoraFingerprintTests(unittest.TestCase):
             with self.subTest(relative=relative):
                 self.assertIn(f'- "{relative}"', workflow)
 
+    def test_advisory_workflow_installs_ripgrep_before_solc_installer(self) -> None:
+        workflow = (ROOT / ".github/workflows/certora-advisory.yml").read_text(
+            encoding="utf-8"
+        )
+        ripgrep_install = workflow.index("sudo apt-get install --yes ripgrep")
+        ripgrep_check = workflow.index("command -v rg")
+        solc_installer = workflow.index(
+            "scripts/install-certora-solc.sh", ripgrep_check
+        )
+        self.assertLess(ripgrep_install, ripgrep_check)
+        self.assertLess(ripgrep_check, solc_installer)
+
     def test_certora_fingerprint_rejects_drift_and_wrong_scope(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "fingerprint.json"
