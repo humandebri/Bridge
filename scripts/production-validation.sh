@@ -160,6 +160,7 @@ PY
 
 production_validate_gate() {
   local mode="$1" bundle="$2" expected_hash="$3" canister_install_receipt="${4:-}"
+  local completed_gate_a_receipt="${5:-}"
   local source_root target profile_bin output actual_hash revision tree manifest_revision manifest_tree
   local expected_relayer resolved_relayer bridge_canister refresh_output final_output
   source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -200,6 +201,19 @@ production_validate_gate() {
       echo "live production Canister no longer matches the paused predeploy profile" >&2
       return 1
     }
+    if [[ -n "$completed_gate_a_receipt" ]]; then
+      [[ -f "$completed_gate_a_receipt" && ! -L "$completed_gate_a_receipt" ]] || {
+        rm -rf "$target"
+        echo "controller handover requires the completed schema-2 Gate A receipt" >&2
+        return 1
+      }
+      "$profile_bin" validate-production-handover-receipt \
+        "$bundle" "$completed_gate_a_receipt" "$canister_install_receipt" >/dev/null || {
+        rm -rf "$target"
+        echo "completed Gate A receipt is not valid for controller handover" >&2
+        return 1
+      }
+    fi
     rm -rf "$target"
     return 0
   fi

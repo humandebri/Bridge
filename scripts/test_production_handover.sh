@@ -35,7 +35,8 @@ name = "bridge-profile"
 version = "0.0.0"
 LOCK
 cat >"$T/source/src/main.rs" <<'RS'
-fn main(){println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64));}
+use std::{env,fs};
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="validate-production-handover-receipt"{if a.len()!=4||env::var("HANDOVER_GATE_A_RECEIPT_DRIFT").as_deref()==Ok("true")||!fs::read_to_string(&a[2]).unwrap().contains("\"schema_version\":2"){std::process::exit(1)}println!("{}","c".repeat(64))}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -68,6 +69,7 @@ SH
 chmod +x "$T/bin/icp"
 export PATH="$T/bin:$PATH"
 printf '{}\n' >"$T/production-canister-install-receipt.json"
+printf '{"schema_version":2}\n' >"$T/gate-a-receipt.json"
 
 run_handover() {
   local evidence="$1"
@@ -75,6 +77,7 @@ run_handover() {
   BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" \
   BRIDGE_RELEASE_BUNDLE="$T/bundle" \
   BRIDGE_CANISTER_INSTALL_RECEIPT="$T/production-canister-install-receipt.json" \
+  BRIDGE_GATE_A_RECEIPT="$T/gate-a-receipt.json" \
   BRIDGE_ICP_IDENTITY=production \
   BRIDGE_HANDOVER_EVIDENCE_FILE="$evidence" \
   BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY \
@@ -97,6 +100,21 @@ PY
 rg -q 'settings update bridge-canister -e production --remove-all-controllers --add-controller 7jkta-eyaaa-aaaaq-aaarq-cai --force --identity production --debug' "$TRACE"
 rg -q '^proofs proofs$' "$TRACE"
 rg -q '^rebuild ' "$TRACE"
+
+if BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" \
+  BRIDGE_RELEASE_BUNDLE="$T/bundle" \
+  BRIDGE_CANISTER_INSTALL_RECEIPT="$T/production-canister-install-receipt.json" \
+  BRIDGE_ICP_IDENTITY=production \
+  BRIDGE_HANDOVER_EVIDENCE_FILE="$T/predeploy-handover.json" \
+  BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY \
+  "$T/source/scripts/production-handover-driver.sh" >/dev/null 2>&1; then
+  echo "handover accepted install evidence without a completed Gate A receipt" >&2; exit 1
+fi
+[[ ! -e "$T/predeploy-handover.json" ]]
+if HANDOVER_GATE_A_RECEIPT_DRIFT=true run_handover "$T/gate-a-receipt-drift.json" >/dev/null 2>&1; then
+  echo "handover accepted a Gate A receipt drift" >&2; exit 1
+fi
+[[ ! -e "$T/gate-a-receipt-drift.json" ]]
 
 if PROOF_GATE_FAIL=true run_handover "$T/proof-failed.json" >/dev/null 2>&1; then
   echo "handover accepted a failed proof gate" >&2; exit 1
