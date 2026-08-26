@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   progress: {
     id: "deposit:1",
     direction: "deposit" as const,
-    phase: "authorization-generating" as "authorization-generating" | "attention",
+    phase: "authorization-generating",
     attentionPhase: undefined as "authorization-generating" | "awaiting-base-mint" | undefined,
     source: "aaaaa-aa",
     destination: "0x0000000000000000000000000000000000000002",

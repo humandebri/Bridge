@@ -156,7 +156,7 @@ describe("OISY popup lifecycle", () => {
     expect(changedWallet.disconnect).toHaveBeenCalledOnce()
   })
 
-  it("calls continue_deposit with the exact deposit ID", async () => {
+  it("calls_continue_deposit_with_the_exact_deposit_ID", async () => {
     const depositId = new Uint8Array(32).fill(7)
     const wallet = createWallet()
     wallet.callCanister.mockRejectedValue(new Error("stop after dispatch"))
