@@ -155,6 +155,28 @@ describe("OISY popup lifecycle", () => {
     expect(changedWallet.approve).not.toHaveBeenCalled()
     expect(changedWallet.disconnect).toHaveBeenCalledOnce()
   })
+
+  it("calls_continue_deposit_with_the_exact_deposit_ID", async () => {
+    const depositId = new Uint8Array(32).fill(7)
+    const wallet = createWallet()
+    wallet.callCanister.mockRejectedValue(new Error("stop after dispatch"))
+    const connectWallet = vi.fn().mockResolvedValue(wallet)
+    const adapter = new OisyAdapter("https://icp-api.io", owner, owner, connectWallet, { owner })
+    const method = (bridgeService._fields as Array<[string, IDL.FuncClass]>)
+      .find(([name]) => name === "continue_deposit")?.[1]
+    if (!method) throw new Error("Missing generated continue_deposit codec")
+    const encoded = new Uint8Array(IDL.encode(method.argTypes, [depositId]))
+    const expectedArg = btoa(String.fromCharCode(...encoded))
+
+    await expect(adapter.continueDeposit(depositId)).rejects.toThrow("stop after dispatch")
+    expect(wallet.callCanister).toHaveBeenCalledWith({
+      canisterId: owner,
+      sender: owner,
+      method: "continue_deposit",
+      arg: expectedArg,
+    })
+    expect(wallet.disconnect).toHaveBeenCalledOnce()
+  })
 })
 
 describe("Plug restored account validation", () => {

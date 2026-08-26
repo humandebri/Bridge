@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate advisory Certora specs, configs, and claim ownership."""
+"""Validate advisory Certora specs, configs, source bindings, and claim ownership."""
 
 from __future__ import annotations
 
@@ -21,6 +21,17 @@ EXPECTED_CONFIGS = {
         "BridgeTimelockController",
         "BridgeTimelockController.spec",
     ),
+}
+EXPECTED_FILES = {
+    "Bridge.conf": {
+        "contracts/src/Bridge.sol",
+        "contracts/src/BSNS.sol",
+    },
+    "BSNS.conf": {"contracts/src/BSNS.sol"},
+    "BridgeTimelockController.conf": {
+        "contracts/src/BridgeTimelockController.sol",
+        "verification/certora/harnesses/TimelockNestedOperationTarget.sol",
+    },
 }
 EXPECTED_CLI = "certora-cli==8.17.1"
 EXPECTED_PROVER = "release/15June2026"
@@ -45,10 +56,6 @@ EXPECTED_PACKAGES = {
 FORBIDDEN_CONFIG_KEYS = {
     "assume_no_casting_overflow",
     "disable_local_type_checking",
-    "optimistic_contract_recursion",
-    "optimistic_fallback",
-    "optimistic_hashing",
-    "optimistic_loop",
 }
 RULE = re.compile(r"(?m)^\s*(?:rule|invariant)\s+([A-Za-z_][A-Za-z0-9_]*)\b")
 
@@ -62,8 +69,11 @@ class Obligation:
     claims: tuple[str, ...]
 
 
-def split_entries(value: str) -> tuple[str, ...]:
-    return tuple(value.split(";"))
+def split_entries(value: str, *, field: str, row: int) -> tuple[str, ...]:
+    entries = tuple(value.split(";"))
+    if any(not entry for entry in entries) or len(entries) != len(set(entries)):
+        raise ValueError(f"duplicate or empty {field} entry at row {row}")
+    return entries
 
 
 def parse_link(value: str, root: Path, *, suffix: str) -> tuple[Path, str]:
@@ -78,13 +88,12 @@ def parse_link(value: str, root: Path, *, suffix: str) -> tuple[Path, str]:
 
 def claim_ids(root: Path) -> set[str]:
     values: set[str] = set()
-    for line in (root / "verification/claims.tsv").read_text(encoding="utf-8").splitlines()[1:]:
+    lines = (root / "verification/claims.tsv").read_text(encoding="utf-8").splitlines()
+    for line in lines[1:]:
         fields = line.split("\t")
         if fields and fields[0] in {"contract", "protocol"}:
             if len(fields) < 2 or not fields[1]:
                 raise ValueError("claims.tsv contains a missing claim id")
-            # Each claim intentionally has a `contract` registration followed by
-            # its `protocol` evidence row, so the same id appears in both kinds.
             values.add(fields[1])
     return values
 
@@ -115,10 +124,10 @@ def parse_obligations(root: Path) -> tuple[Obligation, ...]:
         obligations.append(
             Obligation(
                 identifier,
-                split_entries(rules),
-                split_entries(sources),
-                split_entries(assumptions),
-                split_entries(claims),
+                split_entries(rules, field="rule", row=number),
+                split_entries(sources, field="source", row=number),
+                split_entries(assumptions, field="assumption", row=number),
+                split_entries(claims, field="claim", row=number),
             )
         )
     if not obligations:
@@ -133,8 +142,10 @@ def validate_configs(root: Path) -> None:
         raise ValueError(f"unexpected Certora configs: {sorted(actual)}")
     for name, (contract, spec_name) in EXPECTED_CONFIGS.items():
         config = json.loads((config_dir / name).read_text(encoding="utf-8"))
-        if set(config) & FORBIDDEN_CONFIG_KEYS:
-            raise ValueError(f"{name} enables an under-approximating option")
+        forbidden = set(config) & FORBIDDEN_CONFIG_KEYS
+        forbidden.update(key for key in config if key.startswith("optimistic_"))
+        if forbidden:
+            raise ValueError(f"{name} enables an under-approximating option: {sorted(forbidden)}")
         expected_verify = f"{contract}:verification/certora/specs/{spec_name}"
         required = {
             "verify": expected_verify,
@@ -145,6 +156,8 @@ def validate_configs(root: Path) -> None:
             "yul_optimizer_steps": EXPECTED_YUL_STEPS,
             "prover_version": EXPECTED_PROVER,
             "rule_sanity": "advanced",
+            "assert_source_finders_success": True,
+            "unused_summary_hard_fail": "on",
             "wait_for_results": "ALL",
             "url_visibility": "private",
             "process": "emv",
@@ -155,10 +168,10 @@ def validate_configs(root: Path) -> None:
         if set(config.get("packages", [])) != EXPECTED_PACKAGES[name]:
             raise ValueError(f"{name} does not use the reviewed production remappings")
         files = config.get("files")
-        if not isinstance(files, list) or not files or not all(
+        if not isinstance(files, list) or set(files) != EXPECTED_FILES[name] or not all(
             isinstance(item, str) and (root / item).is_file() for item in files
         ):
-            raise ValueError(f"{name} contains a missing Solidity input")
+            raise ValueError(f"{name} contains an unexpected or missing Solidity input")
 
 
 def validate_tool_pin(root: Path) -> None:
@@ -186,13 +199,17 @@ def validate(root: Path = ROOT, ast_index: AstIndex | None = None) -> None:
             if rule in declared:
                 raise ValueError(f"duplicate Certora rule: {rule}")
             declared[rule] = spec
-    referenced: set[str] = set()
+    owners: dict[str, str] = {}
     for obligation in obligations:
         for link in obligation.rules:
             path, rule = parse_link(link, root, suffix=".spec")
             if declared.get(rule) != path:
                 raise ValueError(f"Certora obligation references an undeclared rule: {link}")
-            referenced.add(rule)
+            if rule in owners:
+                raise ValueError(
+                    f"duplicate Certora rule ownership: {rule}/{owners[rule]}/{obligation.identifier}"
+                )
+            owners[rule] = obligation.identifier
         unknown_assumptions = set(obligation.assumptions) - assumptions
         unknown_claims = set(obligation.claims) - claims
         if unknown_assumptions:
@@ -200,7 +217,7 @@ def validate(root: Path = ROOT, ast_index: AstIndex | None = None) -> None:
         if unknown_claims:
             raise ValueError(f"unknown Certora claims: {sorted(unknown_claims)}")
         for link in obligation.sources:
-            parse_link(link, root, suffix=".sol")
+            source, _ = parse_link(link, root, suffix=".sol")
             if ast_index is None:
                 ast_index = AstIndex(
                     root / "contracts" / "out", root / "contracts", root
@@ -210,7 +227,10 @@ def validate(root: Path = ROOT, ast_index: AstIndex | None = None) -> None:
                 raise ValueError(
                     f"Certora source ownership must resolve exactly once: {link}"
                 )
-    unowned = set(declared) - referenced
+            artifact = records[0].artifact
+            if artifact is not None and artifact.stat().st_mtime_ns < source.stat().st_mtime_ns:
+                raise ValueError(f"stale Solidity AST source link: {link}")
+    unowned = set(declared) - set(owners)
     if unowned:
         raise ValueError(f"Certora rules missing obligation ownership: {sorted(unowned)}")
 

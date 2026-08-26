@@ -78,6 +78,23 @@ class CandidateDependencyTests(unittest.TestCase):
                 candidate_dependency_sources(source),
             )
 
+    def test_certora_generated_manifests_are_not_candidate_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = self._copy_inputs(Path(temporary))
+            generated = (
+                source
+                / ".certora_internal"
+                / "run"
+                / ".certora_sources"
+                / "package.json"
+            )
+            generated.parent.mkdir(parents=True)
+            generated.write_text("{}\n", encoding="utf-8")
+            self.assertNotIn(
+                generated.relative_to(source).as_posix(),
+                candidate_dependency_sources(source),
+            )
+
     def test_submodule_manifests_are_not_workspace_manifest_placements(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = self._copy_inputs(Path(temporary))

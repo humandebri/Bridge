@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { browserLocalStorage } from "./browser-lock"
 import {
+  bridgeProgressLabel,
   bridgeProgressSteps,
   createBridgeProgress,
   readLatestBridgeProgress,
@@ -180,12 +181,14 @@ describe("latest bridge progress persistence", () => {
       receiveSymbol: "KINIC",
       deposit: { owner: "aaaaa-aa", ownerSequence: "3", depositId: `0x${"07".repeat(32)}` },
       attentionMessage: "Review the canonical refund state.",
+      attentionPhase: "authorization-generating",
     })
 
+    expect(bridgeProgressLabel(record)).toBe("Bridge processing paused")
     expect(bridgeProgressSteps(record)).toEqual([
       { label: "IC token approval", status: "complete", note: "Not required" },
       { label: "IC deposit transaction", status: "complete" },
-      { label: "Bridge authorization", status: "current" },
+      { label: "Bridge authorization", status: "attention" },
       { label: "Base mint transaction", status: "waiting" },
     ])
   })
@@ -307,8 +310,8 @@ describe("latest bridge progress persistence", () => {
     })
 
     expect(bridgeProgressSteps(withdrawal)[1]).toEqual({ label: "Base token approval", status: "complete", note: "Not required" })
-    expect(bridgeProgressSteps(withdrawal)[2]).toEqual({ label: "Base withdrawal transaction", status: "current" })
-    expect(bridgeProgressSteps({ ...withdrawal, attentionPhase: "verifying-ic-destination" })[0]).toEqual({ label: "IC destination verification", status: "current" })
+    expect(bridgeProgressSteps(withdrawal)[2]).toEqual({ label: "Base withdrawal transaction", status: "attention" })
+    expect(bridgeProgressSteps({ ...withdrawal, attentionPhase: "verifying-ic-destination" })[0]).toEqual({ label: "IC destination verification", status: "attention" })
   })
 
   it("reports exact Withdrawal finality block progress without changing Deposit presentation", () => {

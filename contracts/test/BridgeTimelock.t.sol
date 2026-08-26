@@ -14,6 +14,35 @@ import {
     StagingTimelockPolicyNegativeFixture
 } from "./fixtures/TimelockPolicyNegativeFixtures.sol";
 
+contract NestedSchedulingTarget {
+    BridgeTimelockController private timelock;
+    uint256 private immutable delay;
+
+    constructor(uint256 delay_) {
+        delay = delay_;
+    }
+
+    function bindTimelock(BridgeTimelockController timelock_) external {
+        assert(address(timelock) == address(0));
+        timelock = timelock_;
+    }
+
+    function schedule(address target, bytes calldata data, bytes32 salt) external {
+        timelock.schedule(target, 0, data, bytes32(0), salt, delay);
+    }
+
+    function execute(address target, bytes calldata data, bytes32 salt) external {
+        timelock.execute(target, 0, data, bytes32(0), salt);
+    }
+
+    function scheduleNested(bytes32 salt) external {
+        bytes memory data = abi.encodeCall(this.noop, ());
+        timelock.schedule(address(this), 0, data, bytes32(0), salt, delay);
+    }
+
+    function noop() external pure {}
+}
+
 contract BridgeTimelockTest is TestBase {
     address private constant BRIDGE_SIGNER = address(0x11);
     address private constant RUNTIME_ADMINISTRATOR = address(0x22);
@@ -141,6 +170,35 @@ contract BridgeTimelockTest is TestBase {
         vm.expectPartialRevert(TimelockController.TimelockUnexpectedOperationState.selector);
         vm.prank(BASE_ADMIN_WALLET);
         timelock.execute(address(bridge), 0, data, bytes32(0), salt);
+    }
+
+    function testExecuteTracksNestedSchedulePerOperation() public {
+        NestedSchedulingTarget target = new NestedSchedulingTarget(TIMELOCK_DELAY);
+        address[] memory proposers = new address[](1);
+        proposers[0] = address(target);
+        address[] memory executors = new address[](1);
+        executors[0] = address(target);
+        address[] memory cancellers = new address[](1);
+        cancellers[0] = CANCELLER;
+        BridgeTimelockController nestedTimelock =
+            new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
+        target.bindTimelock(nestedTimelock);
+
+        bytes32 nestedSalt = keccak256("nested-operation");
+        bytes memory outerData = abi.encodeCall(target.scheduleNested, (nestedSalt));
+        bytes32 outerSalt = keccak256("outer-operation");
+        target.schedule(address(target), outerData, outerSalt);
+        assert(nestedTimelock.pendingOperationCount() == 1);
+
+        _advanceTime(TIMELOCK_DELAY);
+        target.execute(address(target), outerData, outerSalt);
+
+        bytes memory nestedData = abi.encodeCall(target.noop, ());
+        bytes32 nestedId = nestedTimelock.hashOperation(address(target), 0, nestedData, bytes32(0), nestedSalt);
+        bytes32 outerId = nestedTimelock.hashOperation(address(target), 0, outerData, bytes32(0), outerSalt);
+        assert(nestedTimelock.isOperationDone(outerId));
+        assert(nestedTimelock.isOperationPending(nestedId));
+        assert(nestedTimelock.pendingOperationCount() == 1);
     }
 
     function testOperationalRoleRotationRequiresTheTimelockAndRotatesAllMembersAtomically() public {

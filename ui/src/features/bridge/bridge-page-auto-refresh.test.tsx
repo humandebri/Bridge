@@ -69,7 +69,7 @@ vi.mock("@/features/status/use-status", () => ({
           withdrawalsPaused: mocks.heartbeatWithdrawalsPaused.value,
           bridgeSigner: "0x0000000000000000000000000000000000000001",
           mintAuthorizationEpoch: 1n,
-          blockTimestamp: 1_000n,
+          blockTimestamp: BigInt(Math.floor(Date.now() / 1_000)),
         },
       },
       isError: mocks.heartbeatIsError.value,
@@ -90,7 +90,7 @@ vi.mock("@/features/status/use-status", () => ({
       withdrawalsPaused: mocks.heartbeatWithdrawalsPaused.value,
       bridgeSigner: "0x0000000000000000000000000000000000000001",
       mintAuthorizationEpoch: 1n,
-      blockTimestamp: 1_000n,
+      blockTimestamp: BigInt(Math.floor(Date.now() / 1_000)),
     },
     isError: false,
     isFetching: mocks.heartbeatIsFetching.value,
@@ -148,6 +148,32 @@ function Wrapper({ children }: { children: ReactNode }) {
   return <StrictMode><QueryClientProvider client={client}><BridgeProgressProvider>{children}</BridgeProgressProvider></QueryClientProvider></StrictMode>
 }
 
+function runtimeObservationAt(blockTimestamp: bigint) {
+  return {
+    data: {
+      ready: true,
+      blockers: [],
+      checkedAt: Date.now(),
+      snapshot: {
+        serviceFee: 50_000_000n,
+        maxServiceFee: 50_000_000n,
+        perDepositLimit: 15_000_000_000_000n,
+        minted: 0n,
+        limit: 15_000_000_000_000n,
+        startedAt: 0n,
+        duration: 86_400n,
+        depositsPaused: false,
+        withdrawalsPaused: false,
+        bridgeSigner: "0x0000000000000000000000000000000000000001",
+        mintAuthorizationEpoch: 1n,
+        blockTimestamp,
+      },
+    },
+    isError: false,
+    isStale: false,
+  }
+}
+
 describe("BridgePage automatic wallet refresh", () => {
   afterEach(cleanup)
 
@@ -196,7 +222,7 @@ describe("BridgePage automatic wallet refresh", () => {
           withdrawalsPaused: false,
           bridgeSigner: "0x0000000000000000000000000000000000000001",
           mintAuthorizationEpoch: 1n,
-          blockTimestamp: 1_000n,
+          blockTimestamp: BigInt(Math.floor(Date.now() / 1_000)),
         },
       },
       isError: false,
@@ -598,7 +624,7 @@ describe("BridgePage automatic wallet refresh", () => {
         withdrawalsPaused: false,
         bridgeSigner: "0x0000000000000000000000000000000000000001",
         mintAuthorizationEpoch: 1n,
-        blockTimestamp: 1_000n,
+        blockTimestamp: BigInt(Math.floor(Date.now() / 1_000)),
       },
     } }))
     expect(screen.queryByRole("heading", { name: "Review bridge to IC" })).not.toBeInTheDocument()
@@ -887,6 +913,82 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(screen.getByText(/Complete the current deposit above/)).toBeVisible()
   })
 
+  it("rejects review when finalized Base time leaves less than five minutes for authorization", async () => {
+    const account = { owner: "aaaaa-aa" }
+    const adapter = {
+      prepare: vi.fn(),
+      getAccount: vi.fn().mockResolvedValue(account),
+      approve: vi.fn(),
+      requestDeposit: vi.fn(),
+    }
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter,
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    const now = BigInt(Math.floor(Date.now() / 1_000))
+    mocks.baseRefetch.mockResolvedValue(runtimeObservationAt(now - 601n))
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to Base" }))
+
+    expect((await screen.findAllByText(/Base finality is too far behind to provide at least 5 minutes/)).length).toBeGreaterThan(0)
+    expect(screen.queryByRole("button", { name: "Continue to IC wallet" })).not.toBeInTheDocument()
+    expect(adapter.prepare).not.toHaveBeenCalled()
+    expect(adapter.approve).not.toHaveBeenCalled()
+    expect(adapter.requestDeposit).not.toHaveBeenCalled()
+    expect(mocks.saveDepositIntent).not.toHaveBeenCalled()
+  })
+
+  it("stops after approval when the final refresh drops below the five-minute window", async () => {
+    const account = { owner: "aaaaa-aa" }
+    const adapter = {
+      prepare: vi.fn().mockResolvedValue(vi.fn().mockResolvedValue(undefined)),
+      getAccount: vi.fn().mockResolvedValue(account),
+      approve: vi.fn().mockResolvedValue(7n),
+      requestDeposit: vi.fn(),
+    }
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter,
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    mocks.ledgerAllowance.mockResolvedValue({ allowance: 0n })
+    const now = BigInt(Math.floor(Date.now() / 1_000))
+    mocks.baseRefetch
+      .mockResolvedValueOnce(runtimeObservationAt(now))
+      .mockResolvedValueOnce(runtimeObservationAt(now))
+      .mockResolvedValueOnce(runtimeObservationAt(now - 601n))
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to Base" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Continue to IC wallet" }))
+
+    await waitFor(() => expect(adapter.approve).toHaveBeenCalledOnce())
+    await waitFor(() => expect(mocks.baseRefetch).toHaveBeenCalledTimes(3))
+    expect(adapter.requestDeposit).not.toHaveBeenCalled()
+    expect(mocks.saveDepositIntent).not.toHaveBeenCalled()
+    expect(await screen.findByText(/Base finality is too far behind to provide at least 5 minutes/)).toBeVisible()
+  })
+
   it("fails closed before saving or requesting a Deposit when the post-approval heartbeat fails", async () => {
     const account = { owner: "aaaaa-aa" }
     const adapter = {
@@ -926,7 +1028,7 @@ describe("BridgePage automatic wallet refresh", () => {
             withdrawalsPaused: false,
             bridgeSigner: "0x0000000000000000000000000000000000000001",
             mintAuthorizationEpoch: 1n,
-            blockTimestamp: 1_000n,
+            blockTimestamp: BigInt(Math.floor(Date.now() / 1_000)),
           },
         },
         isError: false,
@@ -949,7 +1051,7 @@ describe("BridgePage automatic wallet refresh", () => {
             withdrawalsPaused: false,
             bridgeSigner: "0x0000000000000000000000000000000000000001",
             mintAuthorizationEpoch: 1n,
-            blockTimestamp: 1_000n,
+            blockTimestamp: BigInt(Math.floor(Date.now() / 1_000)),
           },
         },
         isError: false,

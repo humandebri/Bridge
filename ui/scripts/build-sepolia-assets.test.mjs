@@ -17,8 +17,9 @@ describe("Base Sepolia asset profile template", () => {
 
   it("can publish the staging Worker from a frozen artifact receipt without rebuilding", async () => {
     const manifest = JSON.parse(await readFile(path.resolve(import.meta.dirname, "../package.json"), "utf8"))
-    expect(manifest.scripts["artifact:test"]).toContain("staging-assets.mjs generate")
-    expect(manifest.scripts["deploy:test:artifact"]).toContain("staging-assets.mjs deploy")
+    expect(manifest.scripts["artifact:test"]).toBe("scripts/run-staging-assets.sh generate \"$BRIDGE_STAGING_UI_RECEIPT\"")
+    expect(manifest.scripts["artifact:test:verify"]).toBe("scripts/run-staging-assets.sh verify \"$BRIDGE_STAGING_UI_RECEIPT\"")
+    expect(manifest.scripts["deploy:test:artifact"]).toBe("scripts/run-staging-assets.sh deploy \"$BRIDGE_STAGING_UI_RECEIPT\"")
     expect(manifest.scripts["deploy:test:artifact"]).not.toContain("build:sepolia")
   })
 

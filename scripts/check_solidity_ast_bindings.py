@@ -45,6 +45,7 @@ class FunctionRecord:
     signature: str
     declaration_id: int
     node: dict[str, object]
+    artifact: Path | None = None
 
 
 class AstIndex:
@@ -101,6 +102,7 @@ class AstIndex:
                             f"{function_name}({','.join(types)})",
                             declaration_id,
                             node,
+                            artifact,
                         )
                     )
 

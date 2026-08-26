@@ -97,7 +97,7 @@ pub fn consent_message(
     {
         return unavailable("consent request exceeds supported size limits");
     }
-    if request.method == "continue_withdrawal" {
+    if request.method == "continue_deposit" || request.method == "continue_withdrawal" {
         return settlement_consent(caller, canister, request);
     }
     if request.method == "continue_fee_payout" {
@@ -450,6 +450,21 @@ mod tests {
         }
     }
 
+    fn settlement_request(method: &str, id: Vec<u8>) -> Icrc21ConsentMessageRequest {
+        Icrc21ConsentMessageRequest {
+            arg: Encode!(&id).expect("encode settlement ID"),
+            method: method.into(),
+            user_preferences: request(&api::DepositArgs {
+                owner_sequence: 0,
+                base_recipient: vec![2; 20],
+                from_subaccount: None,
+                gross_amount: Nat::from(200_000_000u64),
+                max_service_fee: Nat::from(1_000_000u64),
+            })
+            .user_preferences,
+        }
+    }
+
     fn account(tag: u8) -> Account {
         Account::new(vec![tag], [tag; 32]).expect("valid test account")
     }
@@ -568,6 +583,45 @@ mod tests {
         };
         assert!(matches!(
             consent_message(caller, caller, withdrawal_request, Some(10_000)),
+            Icrc21ConsentMessageResponse::Err(Icrc21Error::ConsentMessageUnavailable(_))
+        ));
+    }
+
+    #[test]
+    fn continue_deposit_consent_requires_an_authenticated_caller_and_exact_id() {
+        let caller = Principal::management_canister();
+        let canister = Principal::from_slice(&[9]);
+        let response = consent_message(
+            caller,
+            canister,
+            settlement_request("continue_deposit", vec![7; 32]),
+            None,
+        );
+        let Icrc21ConsentMessageResponse::Ok(info) = response else {
+            panic!("valid continue_deposit consent must be available");
+        };
+        let Icrc21ConsentMessage::GenericDisplayMessage(message) = info.consent_message;
+        assert!(message.contains("Action: `continue_deposit`"));
+        assert!(message.contains(&format!("Settlement ID: `0x{}`", "07".repeat(32))));
+
+        for invalid_id in [vec![7; 31], vec![7; 33]] {
+            assert!(matches!(
+                consent_message(
+                    caller,
+                    canister,
+                    settlement_request("continue_deposit", invalid_id),
+                    None,
+                ),
+                Icrc21ConsentMessageResponse::Err(Icrc21Error::ConsentMessageUnavailable(_))
+            ));
+        }
+        assert!(matches!(
+            consent_message(
+                Principal::anonymous(),
+                canister,
+                settlement_request("continue_deposit", vec![7; 32]),
+                None,
+            ),
             Icrc21ConsentMessageResponse::Err(Icrc21Error::ConsentMessageUnavailable(_))
         ));
     }

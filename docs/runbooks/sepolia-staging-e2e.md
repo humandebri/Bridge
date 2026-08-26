@@ -55,8 +55,8 @@ preflight
 予定値、手入力した成功要約、失敗commandの出力をPASS証跡にしない。
 
 Canister upgradeの前にはlive runtime bindingをJSONへ保存し、次のgateを必ず通す。
-review済みlive schema v33／wire v28の同一instanceからschema v34／wire v29への一度限りのupgradeだけを受理し、upgrade前後のstate count、
-source v33／target v34、instance ID、`storage_integrity_check = ok`を照合する。異なるinstance、reinstall、その他の旧・未知schema、欠落、ゼロ値はfail closedにする。新規Canisterへの初回installだけはこのupgrade gateの対象外である。
+review済みlive schema v33／wire v28からschema v34／wire v29への一度限りのmigration、またはreview済みlive schema v34／wire v29から同一schema・同一instanceへのupgradeだけを受理し、upgrade前後のstate count、
+source／target schema、instance ID、`storage_integrity_check = ok`を照合する。異なるinstance、reinstall、その他の旧・未知schema、欠落、ゼロ値はfail closedにする。新規Canisterへの初回installだけはこのupgrade gateの対象外である。
 出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、manifest検証でも同じ比較を行う。
 
 ```sh
@@ -82,9 +82,10 @@ current-schema upgradeではさらに、同じ観測時点の次のJSON artifact
 - `live-canister-status`: module hash、controller principals、cycles balanceを保持する。
 - `live-storage-integrity`: 認可済みcallerによる`storage_integrity_check()`の`ok`結果を保持する。
 - `live-ledger-balance`: Bridge principalのTICRC1 raw balanceを保持する。
-- install stageにはupgrade前後の全count、source schema v33／wire v28とtarget schema v34／wire v29、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致ならUI公開へ進まない。
+- install stageにはupgrade前後の全count、source／target schema・wire、同一instance ID、`storage_integrity_check = ok`を記録する。migrationではv33／wire v28からv34／wire v29、current-schema upgradeではv34／wire v29の維持を要求し、いずれかが不一致ならUI公開へ進まない。
 
 manifest validatorは全artifactを再hashし、snapshot間のcount、module hash、balance、instance IDを再比較する。pending Timelock operationはupgrade前にゼロでなければならない。Deposit、reservation、Withdrawal、pending Ledger operation、hold、監査履歴は同一schema upgrade後も保持する。
+wire v27で保存されたrefund retry、EVM transaction replacement、fee quote、revert recovery、旧fee recipient、reserve gateのaudit variantは履歴decode専用として現行Candidにも残す。新規処理はこれらを生成しないが、migrationで別eventへ置換または破棄してはならない。
 
 `test-deployment` Wasmに限り、IC HTTPS outcallで401を返すOnFinalityをdRPCへ置換する今回専用のupgrade引数を受理する。引数なしの`()`はRPC設定を変更しない。更新指定は次のCandidに固定し、PublicNode、`sepolia.base.org`、dRPCの順序を変えない。
 
@@ -114,12 +115,11 @@ manifest validatorは全artifactを再hashし、snapshot間のcount、module has
 )
 ```
 
-staging upgrade gateはlive stable schema v33／wire v28だけをschema v34／wire v29へ更新する。`v33-to-v34-upgrade-policy.json`は
-Canister、deployment、controller認証済みlive source module／certified Candid、migration ID、v34 immutable設定を固定し、repo外のlocal E2E evidenceはclean HEADとtarget Wasm／Candidを固定する。
-preflightはcertified live Candidをsource `get_public_config` として読み、binding、state count、controller、cycles、storage integrity、
-pending Timelock／governance transaction数を記録する。executeは同じpreflightを再構築できた場合だけinstallし、全state countを
-`expected_status_counts`として渡す。`post_upgrade()`は固定migration IDと設定を検証して全blobを原子的に再エンコードし、count drift時はtrapして
-module更新全体をrollbackする。driverは直後にcontrollerとして`initialize_public_config`を実行してからtarget `get_runtime_binding`を検証する。production Wasmの引数なし`post_upgrade()`はv34／wire v29だけを受理する。
+staging upgrade gateはreview済みのlive module／certified Candidの組をsourceとして固定する。既存のv33／wire v28 sourceは一度限りのmigration引数でv34／wire v29へ更新し、v34／wire v29 sourceはmigration引数を渡さず同一schema・同一instanceのまま更新する。`v33-to-v34-upgrade-policy.json`は
+Canister、deployment、controller認証済みlive source module／certified Candid、migration ID、v34 immutable設定を固定し、repo外のlocal E2E evidenceはclean HEADとtarget Wasm／Candidを固定する。moduleとCandidの組がreview済みsourceまたはtargetのどちらでもなければ拒否する。
+preflightはcertified live Candidを読み、v33 sourceでは`get_public_config`、v34 sourceでは`get_runtime_binding`からbindingを取得し、state count、controller、cycles、storage integrity、
+pending Timelock／governance transaction数、全audit pageのcanonical digestとretention metadataを記録する。v34 sourceでは`get_runtime_binding`全体のdigestも記録する。executeは同じpreflightを再構築できた場合だけinstallし、全state countを
+`expected_status_counts`として渡す。`post_upgrade()`はcount drift時にtrapしてmodule更新全体をrollbackする。v33 migrationだけは固定migration IDと設定を検証して全blobを原子的に再エンコードし、直後にcontrollerとして`initialize_public_config`を実行する。v34 same-schema upgradeは再初期化せず、runtime binding、全audit content、retention metadataを前後比較する。production Wasmの引数なし`post_upgrade()`はv34／wire v29だけを受理する。
 
 ```sh
 BRIDGE_STAGING_IDENTITY=<identity> \

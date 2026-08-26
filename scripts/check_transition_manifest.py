@@ -170,7 +170,10 @@ def body_calls(body: str, symbol: str) -> bool:
 
 
 def production_body_calls(
-    body: str, symbol: str, *, kernel_internal: bool = False
+    body: str,
+    symbol: str,
+    *,
+    kernel_internal: bool = False,
 ) -> bool:
     paths = (
         (KERNEL,)

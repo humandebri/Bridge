@@ -410,6 +410,25 @@ macro_rules! refund_request_identity_decision_body {
     };
 }
 
+macro_rules! deposit_continuation_decision_body {
+    (
+        $authenticated:expr,
+        $authorization_phase:expr,
+        $retryable_stop:expr,
+        $allow:expr,
+        $anonymous:expr,
+        $wrong_state:expr
+    ) => {
+        if !$authenticated {
+            $anonymous
+        } else if $authorization_phase && $retryable_stop {
+            $allow
+        } else {
+            $wrong_state
+        }
+    };
+}
+
 macro_rules! confirmation_caller_authorized_body {
     ($non_anonymous:expr, $relayer:expr, $governance:expr, $pause:expr) => {
         $non_anonymous && ($relayer || $governance || $pause)
@@ -519,6 +538,13 @@ verus! {
     pub enum RefundRequestIdentityDecision {
         Allow,
         AnonymousCaller,
+    }
+
+    #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
+    pub enum DepositContinuationDecision {
+        Allow,
+        AnonymousCaller,
+        WrongState,
     }
 
     #[cfg_attr(not(verus_keep_ghost), derive(Clone, Copy, Debug, PartialEq, Eq))]
@@ -1461,6 +1487,32 @@ verus! {
             relayer_is_pause,
             governance_is_pause,
             allow_staging_relayer_governance
+        )
+    }
+}
+
+verus! {
+    pub fn deposit_continuation_decision(
+        authenticated: bool,
+        authorization_phase: bool,
+        retryable_stop: bool,
+    ) -> (result: DepositContinuationDecision)
+        ensures
+            match result {
+                DepositContinuationDecision::Allow =>
+                    authenticated && authorization_phase && retryable_stop,
+                DepositContinuationDecision::AnonymousCaller => !authenticated,
+                DepositContinuationDecision::WrongState =>
+                    authenticated && (!authorization_phase || !retryable_stop),
+            },
+    {
+        deposit_continuation_decision_body!(
+            authenticated,
+            authorization_phase,
+            retryable_stop,
+            DepositContinuationDecision::Allow,
+            DepositContinuationDecision::AnonymousCaller,
+            DepositContinuationDecision::WrongState
         )
     }
 }
