@@ -18,7 +18,7 @@ Gate B uses a new manifest containing those six files plus `rpc-e2e.json`, `gate
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "release_id": "release-identifier",
   "test_only": false,
   "source_revision": "reviewed-revision",
@@ -44,6 +44,6 @@ Gate Bの`monitoring-receipt.json` schema v1は、source、Bridge Canister、Wit
 
 `controller-handover.json` schema v2 is durably reserved before the fixed ICP CLI command. An ambiguous command failure is retained as `controller_update_uncertain`, a submitted request awaiting a readable public postcondition is retained as `controller_update_submitted`, and only a Root-only public controller result becomes `complete`. Gate B accepts only `complete`; it binds the request ID, exact argv, exit code, stdout/stderrのraw bytes、combined response digest, executing principal, cycles balance, freezing requirement, and the Root-only final controller set. Validatorはraw transcriptからresponse digestとrequest IDを再導出し、自由記述の成功要約だけを証跡にしない。`sns-upgrade.json` schema v3 retains the exact authenticated `get_proposal` response. Gate B re-queries it with query-signature verification and independently reads controller/module state before accepting the upgrade.
 
-Activation submission and receipt files are deliberately outside the fixed sixteen-artifact Gate B bundle. A schema v3 submission records the fixed generic-function proposal only; it is not success evidence. A schema v3 activation receipt is created with exclusive-create semantics only after an authenticated executed proposal, exact live function registry target, Root-only controller/module binding, authenticated `get_activation_status`, and the Canister's independently confirmed Finalized Base transaction all agree. Execute receipts additionally hash-bind the prior verified schedule receipt.
+Activation submission and receipt files are deliberately outside the fixed sixteen-artifact Gate B bundle. A schema v3 submission records the fixed generic-function proposal only; it is not success evidence. A schema v4 activation receipt is created with exclusive-create semantics only after an authenticated executed proposal, exact live function registry target, Root-only controller/module binding, authenticated `get_activation_status`, and the Canister's independently confirmed Finalized Base transaction all agree. Execute receipts additionally hash-bind the prior verified schedule receipt.
 
 Do not put a seed, private key, backup, device serial, API token, credential-bearing URL, or other secret in this directory.
