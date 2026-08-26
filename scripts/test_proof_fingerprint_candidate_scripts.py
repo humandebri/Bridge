@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for candidate-script closure in the hardening profile."""
+"""Regression tests for candidate-script closure in the proof fingerprint."""
 
 from pathlib import Path
 from types import SimpleNamespace

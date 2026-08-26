@@ -34,10 +34,6 @@ from check_claim_manifest import (
     validate_lean_axiom_output,
 )
 from smt_obligations import parse_smt_obligations, validate_trusted_smt_sources
-from trusted_proof_profiles import select_profile
-
-
-TRUSTED_PROOF_PROFILE = select_profile().identifier
 
 
 class ClaimContractTests(unittest.TestCase):
@@ -548,10 +544,6 @@ class VerusImplementationCoverageTests(unittest.TestCase):
             {"derived_proof"},
         )
 
-    @unittest.skipUnless(
-        TRUSTED_PROOF_PROFILE in {"current-main", "security-hardening-v1"},
-        "requires the current hardening claim schema",
-    )
     def test_current_mixed_strength_claims_are_not_implementation_covered(self) -> None:
         root = Path(__file__).resolve().parents[1]
         claims = parse_claim_manifest(

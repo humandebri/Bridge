@@ -125,13 +125,7 @@ run_step() {
 }
 
 run_versions() {
-  local selected_profile
-  selected_profile="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"
-  if [[ -n "${BRIDGE_TRUSTED_PROFILE:-}" && "$BRIDGE_TRUSTED_PROFILE" != "$selected_profile" ]]; then
-    echo "trusted proof profile differs: expected=$BRIDGE_TRUSTED_PROFILE actual=$selected_profile" >&2
-    return 1
-  fi
-  export BRIDGE_TRUSTED_PROFILE="$selected_profile"
+  python3 "$ROOT/scripts/trusted_execution_context.py" --check >/dev/null
   verify_no_npm_lockfiles "$ROOT"
   shellcheck -x -S warning \
     "$ROOT/scripts/ci-local.sh" \
@@ -156,8 +150,8 @@ run_versions() {
   python3 "$ROOT/scripts/check_certora_manifest.py"
   python3 "$ROOT/scripts/test_certora_manifest.py"
   python3 "$ROOT/scripts/test_proof_impact.py"
-  python3 "$ROOT/scripts/test_trusted_proof_profiles.py"
-  python3 "$ROOT/scripts/test_trusted_dependency_profiles.py"
+  python3 "$ROOT/scripts/test_trusted_execution_context.py"
+  python3 "$ROOT/scripts/test_candidate_dependencies.py"
   python3 "$ROOT/scripts/test_proof_fingerprint_candidate_scripts.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"
@@ -702,13 +696,7 @@ run_proof_stage() {
 }
 
 run_proofs() {
-  local selected_profile
-  selected_profile="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"
-  if [[ -n "${BRIDGE_TRUSTED_PROFILE:-}" && "$BRIDGE_TRUSTED_PROFILE" != "$selected_profile" ]]; then
-    echo "trusted proof profile differs: expected=$BRIDGE_TRUSTED_PROFILE actual=$selected_profile" >&2
-    return 1
-  fi
-  export BRIDGE_TRUSTED_PROFILE="$selected_profile"
+  python3 "$ROOT/scripts/trusted_execution_context.py" --check >/dev/null
   CLAIM_CHECK="$ROOT/scripts/check_claim_manifest.py"
   CLAIM_TEST_CHECK="$ROOT/scripts/check_claim_test_manifest.py"
   CLAIM_TEST_TEST="$ROOT/scripts/test_claim_test_manifest.py"
@@ -735,7 +723,7 @@ run_proofs() {
   python3 "$ROOT/scripts/test_solidity_ast_bindings.py"
   python3 "$ROOT/scripts/test_verus_manifest.py"
   python3 "$ROOT/scripts/test_check_failure_manifests.py"
-  python3 "$ROOT/scripts/test_trusted_proof_profiles.py"
+  python3 "$ROOT/scripts/test_trusted_execution_context.py"
   bash "$CONCRETE_RUNTIME_TEST"
   python3 "$FAILURE_MANIFEST_CHECK"
   run_proof_stage claim-manifest python3 "$CLAIM_CHECK"
