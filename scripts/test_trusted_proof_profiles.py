@@ -11,10 +11,12 @@ import unittest
 from unittest.mock import patch
 
 from trusted_proof_profiles import (
+    TRUSTED_PROFILE_IDS,
     TrustedProofProfile,
     matching_profiles,
     parse_policy,
     require_environment_profile,
+    select_profile,
 )
 
 
@@ -53,11 +55,13 @@ class TrustedProofProfileTests(unittest.TestCase):
             parse_policy(policy)
 
     def test_environment_profile_must_match_the_exact_checkout(self) -> None:
-        with patch.dict(os.environ, {"BRIDGE_TRUSTED_PROFILE": "current-main"}):
-            self.assertEqual(require_environment_profile().identifier, "current-main")
+        selected = select_profile().identifier
+        mismatched = next(iter(TRUSTED_PROFILE_IDS - {selected}))
+        with patch.dict(os.environ, {"BRIDGE_TRUSTED_PROFILE": selected}):
+            self.assertEqual(require_environment_profile().identifier, selected)
         with patch.dict(
             os.environ,
-            {"BRIDGE_TRUSTED_PROFILE": "security-hardening-v1"},
+            {"BRIDGE_TRUSTED_PROFILE": mismatched},
         ):
             with self.assertRaisesRegex(ValueError, "trusted proof profile differs"):
                 require_environment_profile()
