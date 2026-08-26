@@ -258,4 +258,15 @@ describe("BridgeProgressProvider", () => {
 
     expect(screen.queryByRole("button", { name: "Retry transfer" })).not.toBeInTheDocument()
   })
+
+  it("renders a stopped step as attention instead of an in-progress spinner", () => {
+    render(<BridgeProgressProvider><Harness /></BridgeProgressProvider>)
+    fireEvent.click(screen.getByRole("button", { name: "Start" }))
+    fireEvent.click(screen.getByRole("button", { name: "Fail", hidden: true }))
+
+    const stopped = screen.getByRole("listitem", { current: "step" })
+    expect(stopped.querySelector(".lucide-triangle-alert")).toBeVisible()
+    expect(stopped.querySelector(".lucide-loader-circle")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Close" })).toBeEnabled()
+  })
 })

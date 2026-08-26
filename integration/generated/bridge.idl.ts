@@ -98,67 +98,6 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'Ok' : BaseGovernanceConfirmation,
     'Err' : BaseGovernanceError,
   });
-  const FeePayoutState = IDL.Variant({
-    'Failed' : IDL.Null,
-    'Succeeded' : IDL.Record({ 'block_index' : IDL.Nat }),
-    'ReconciliationHold' : IDL.Null,
-    'Pending' : IDL.Null,
-  });
-  const SettlementStopReason = IDL.Variant({
-    'LedgerFeeExceedsServiceFee' : IDL.Null,
-    'LedgerRejected' : IDL.Text,
-    'RpcUnavailable' : IDL.Null,
-    'RpcInconsistent' : IDL.Null,
-    'LedgerAmbiguous' : IDL.Null,
-    'LedgerUnavailable' : IDL.Null,
-    'AuthorizationExpired' : IDL.Null,
-    'BaseStateMismatch' : IDL.Null,
-    'BridgeSignerMismatch' : IDL.Null,
-    'SigningUnavailable' : IDL.Null,
-    'InvalidBaseResponse' : IDL.Null,
-  });
-  const FeePayoutActionResult = IDL.Variant({
-    'Stopped' : IDL.Record({
-      'state' : FeePayoutState,
-      'reason' : SettlementStopReason,
-    }),
-    'Complete' : IDL.Record({ 'state' : FeePayoutState }),
-    'ReconciliationProgress' : IDL.Record({ 'state' : FeePayoutState }),
-  });
-  const SettlementActionError = IDL.Variant({
-    'AutomaticProgressPending' : IDL.Record({
-      'next_run_at_ns' : IDL.Opt(IDL.Nat64),
-    }),
-    'InvalidId' : IDL.Null,
-    'Busy' : IDL.Null,
-    'WrongState' : IDL.Null,
-    'NotFound' : IDL.Null,
-    'InsufficientCycles' : IDL.Null,
-    'Unauthorized' : IDL.Null,
-    'RateLimited' : IDL.Record({ 'retry_after_seconds' : IDL.Nat64 }),
-    'StorageFailure' : IDL.Null,
-    'AnonymousCaller' : IDL.Null,
-  });
-  const Result_1 = IDL.Variant({
-    'Ok' : FeePayoutActionResult,
-    'Err' : SettlementActionError,
-  });
-  const StorageValidationStatus = IDL.Record({
-    'complete' : IDL.Bool,
-    'phase' : IDL.Text,
-    'scanned_rows' : IDL.Nat64,
-  });
-  const StorageMaintenanceError = IDL.Variant({
-    'StateChanged' : IDL.Null,
-    'Unauthorized' : IDL.Null,
-    'InvalidArgument' : IDL.Record({ 'message' : IDL.Text }),
-    'StorageFailure' : IDL.Null,
-    'NotStarted' : IDL.Null,
-  });
-  const Result_2 = IDL.Variant({
-    'Ok' : StorageValidationStatus,
-    'Err' : StorageMaintenanceError,
-  });
   const DepositPhase = IDL.Variant({
     'Refunded' : IDL.Null,
     'FundingReconciliationHold' : IDL.Null,
@@ -180,6 +119,20 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'Deposit' : DepositPhase,
     'Withdrawal' : WithdrawalPhase,
   });
+  const SettlementStopReason = IDL.Variant({
+    'LedgerFeeExceedsServiceFee' : IDL.Null,
+    'LedgerRejected' : IDL.Text,
+    'RpcUnavailable' : IDL.Null,
+    'RpcInconsistent' : IDL.Null,
+    'LedgerAmbiguous' : IDL.Null,
+    'LedgerUnavailable' : IDL.Null,
+    'Unknown' : IDL.Text,
+    'AuthorizationExpired' : IDL.Null,
+    'BaseStateMismatch' : IDL.Null,
+    'BridgeSignerMismatch' : IDL.Null,
+    'SigningUnavailable' : IDL.Null,
+    'InvalidBaseResponse' : IDL.Null,
+  });
   const SettlementActionResult = IDL.Variant({
     'Stopped' : IDL.Record({
       'state' : SettlementState,
@@ -192,9 +145,57 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       'next_run_at_ns' : IDL.Nat64,
     }),
   });
-  const Result_3 = IDL.Variant({
+  const SettlementActionError = IDL.Variant({
+    'AutomaticProgressPending' : IDL.Record({
+      'next_run_at_ns' : IDL.Opt(IDL.Nat64),
+    }),
+    'InvalidId' : IDL.Null,
+    'Busy' : IDL.Null,
+    'WrongState' : IDL.Null,
+    'NotFound' : IDL.Null,
+    'InsufficientCycles' : IDL.Null,
+    'Unauthorized' : IDL.Null,
+    'RateLimited' : IDL.Record({ 'retry_after_seconds' : IDL.Nat64 }),
+    'StorageFailure' : IDL.Null,
+    'AnonymousCaller' : IDL.Null,
+  });
+  const Result_1 = IDL.Variant({
     'Ok' : SettlementActionResult,
     'Err' : SettlementActionError,
+  });
+  const FeePayoutState = IDL.Variant({
+    'Failed' : IDL.Null,
+    'Succeeded' : IDL.Record({ 'block_index' : IDL.Nat }),
+    'ReconciliationHold' : IDL.Null,
+    'Pending' : IDL.Null,
+  });
+  const FeePayoutActionResult = IDL.Variant({
+    'Stopped' : IDL.Record({
+      'state' : FeePayoutState,
+      'reason' : SettlementStopReason,
+    }),
+    'Complete' : IDL.Record({ 'state' : FeePayoutState }),
+    'ReconciliationProgress' : IDL.Record({ 'state' : FeePayoutState }),
+  });
+  const Result_2 = IDL.Variant({
+    'Ok' : FeePayoutActionResult,
+    'Err' : SettlementActionError,
+  });
+  const StorageValidationStatus = IDL.Record({
+    'complete' : IDL.Bool,
+    'phase' : IDL.Text,
+    'scanned_rows' : IDL.Nat64,
+  });
+  const StorageMaintenanceError = IDL.Variant({
+    'StateChanged' : IDL.Null,
+    'Unauthorized' : IDL.Null,
+    'InvalidArgument' : IDL.Record({ 'message' : IDL.Text }),
+    'StorageFailure' : IDL.Null,
+    'NotStarted' : IDL.Null,
+  });
+  const Result_3 = IDL.Variant({
+    'Ok' : StorageValidationStatus,
+    'Err' : StorageMaintenanceError,
   });
   const EmergencyPauseReceipt = IDL.Record({
     'local_pause_audit_sequence' : IDL.Nat64,
@@ -539,7 +540,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'max_service_fee' : IDL.Nat,
     'funding_ledger_block_index' : IDL.Opt(IDL.Nat),
     'from_subaccount' : IDL.Opt(IDL.Vec(IDL.Nat8)),
-    'last_settlement_stop_reason' : IDL.Opt(IDL.Text),
+    'last_settlement_stop_reason' : IDL.Opt(SettlementStopReason),
     'created_at_ns' : IDL.Nat64,
     'state' : DepositPhase,
     'available_refund_amount' : IDL.Opt(IDL.Nat),
@@ -611,7 +612,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'withdrawal_id' : IDL.Vec(IDL.Nat8),
     'max_service_fee' : IDL.Nat,
     'release_ledger_block_index' : IDL.Opt(IDL.Nat),
-    'last_settlement_stop_reason' : IDL.Opt(IDL.Text),
+    'last_settlement_stop_reason' : IDL.Opt(SettlementStopReason),
     'amount_out' : IDL.Nat,
     'state' : WithdrawalPhase,
     'ledger_fee' : IDL.Nat,
@@ -864,9 +865,10 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
         [Result],
         [],
       ),
-    'continue_fee_payout' : IDL.Func([IDL.Nat64], [Result_1], []),
-    'continue_storage_validation' : IDL.Func([IDL.Nat16], [Result_2], []),
-    'continue_withdrawal' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_3], []),
+    'continue_deposit' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_1], []),
+    'continue_fee_payout' : IDL.Func([IDL.Nat64], [Result_2], []),
+    'continue_storage_validation' : IDL.Func([IDL.Nat16], [Result_3], []),
+    'continue_withdrawal' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_1], []),
     'emergency_pause' : IDL.Func([], [Result_4], []),
     'execute_activation' : IDL.Func([], [Result_5], []),
     'get_activation_attestation' : IDL.Func([], [Result_6], ['query']),
@@ -957,7 +959,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
         [Result_22],
         [],
       ),
-    'start_storage_validation' : IDL.Func([], [Result_2], []),
+    'start_storage_validation' : IDL.Func([], [Result_3], []),
     'storage_integrity_check' : IDL.Func([], [Result_23], ['query']),
   });
 };

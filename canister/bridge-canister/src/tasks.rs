@@ -41,6 +41,34 @@ pub enum SettlementStopReason {
     BaseStateMismatch,
     BridgeSignerMismatch,
     LedgerFeeExceedsServiceFee,
+    Unknown(String),
+}
+
+pub(crate) fn settlement_stop_reason_from_text(value: String) -> SettlementStopReason {
+    match value.as_str() {
+        "Ledger unavailable" => SettlementStopReason::LedgerUnavailable,
+        "Ledger result is ambiguous" => SettlementStopReason::LedgerAmbiguous,
+        "Base RPC unavailable" => SettlementStopReason::RpcUnavailable,
+        "Base RPC providers disagreed" => SettlementStopReason::RpcInconsistent,
+        "Invalid Base response" => SettlementStopReason::InvalidBaseResponse,
+        "Threshold signing unavailable" => SettlementStopReason::SigningUnavailable,
+        "Mint authorization expired before signing completed" => {
+            SettlementStopReason::AuthorizationExpired
+        }
+        "Confirmed Base withdrawal state does not match the creation receipt" => {
+            SettlementStopReason::BaseStateMismatch
+        }
+        "Confirmed Base bridge signer does not match the chain-key signer" => {
+            SettlementStopReason::BridgeSignerMismatch
+        }
+        "Ledger fee exceeds the charged withdrawal service fee" | "LedgerFeeExceedsServiceFee" => {
+            SettlementStopReason::LedgerFeeExceedsServiceFee
+        }
+        _ => value
+            .strip_prefix("Ledger rejected the transfer: ")
+            .map(|message| SettlementStopReason::LedgerRejected(message.to_owned()))
+            .unwrap_or(SettlementStopReason::Unknown(value)),
+    }
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -113,6 +141,7 @@ pub(crate) fn stop_reason_text(result: &SettlementActionResult) -> Option<String
             SettlementStopReason::LedgerFeeExceedsServiceFee => {
                 "Ledger fee exceeds the charged withdrawal service fee".into()
             }
+            SettlementStopReason::Unknown(message) => message.clone(),
         }),
         _ => None,
     }
@@ -1626,5 +1655,25 @@ mod tests {
             [3; 20],
             &authorization
         ));
+    }
+
+    #[test]
+    fn persisted_stop_reasons_decode_to_typed_public_reasons_and_unknowns_fail_closed() {
+        assert_eq!(
+            settlement_stop_reason_from_text("Base RPC unavailable".to_owned()),
+            SettlementStopReason::RpcUnavailable
+        );
+        assert_eq!(
+            settlement_stop_reason_from_text("Ledger rejected the transfer: BadFee".to_owned()),
+            SettlementStopReason::LedgerRejected("BadFee".to_owned())
+        );
+        assert_eq!(
+            settlement_stop_reason_from_text("LedgerFeeExceedsServiceFee".to_owned()),
+            SettlementStopReason::LedgerFeeExceedsServiceFee
+        );
+        assert_eq!(
+            settlement_stop_reason_from_text("future stop".to_owned()),
+            SettlementStopReason::Unknown("future stop".to_owned())
+        );
     }
 }

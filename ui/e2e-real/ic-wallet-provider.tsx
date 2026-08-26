@@ -47,6 +47,7 @@ class HarnessWalletAdapter implements IcWalletAdapter {
   requestDepositRefund(depositId: Uint8Array) {
     return request<DepositView>("/ic/request-deposit-refund", { id: hex(depositId) }, (value) => value as DepositView)
   }
+  continueDeposit(depositId: Uint8Array) { return request<SettlementActionResult>("/ic/continue-deposit", { id: hex(depositId) }) }
   continueWithdrawal(withdrawalId: Uint8Array) { return request<SettlementActionResult>("/ic/continue-withdrawal", { id: hex(withdrawalId) }) }
 }
 

@@ -352,7 +352,7 @@ export interface DepositView {
   'max_service_fee' : bigint,
   'funding_ledger_block_index' : [] | [bigint],
   'from_subaccount' : [] | [Uint8Array | number[]],
-  'last_settlement_stop_reason' : [] | [string],
+  'last_settlement_stop_reason' : [] | [SettlementStopReason],
   'created_at_ns' : bigint,
   'state' : DepositPhase,
   'available_refund_amount' : [] | [bigint],
@@ -560,7 +560,7 @@ export interface ReserveStatus {
 }
 export type Result = { 'Ok' : BaseGovernanceConfirmation } |
   { 'Err' : BaseGovernanceError };
-export type Result_1 = { 'Ok' : FeePayoutActionResult } |
+export type Result_1 = { 'Ok' : SettlementActionResult } |
   { 'Err' : SettlementActionError };
 export type Result_10 = { 'Ok' : Array<SignedBaseGovernanceTransaction> } |
   { 'Err' : BaseGovernanceError };
@@ -582,8 +582,8 @@ export type Result_18 = { 'Ok' : ChecksumRefreshStatus } |
   { 'Err' : StorageMaintenanceError };
 export type Result_19 = { 'Ok' : DepositReceipt } |
   { 'Err' : DepositError };
-export type Result_2 = { 'Ok' : StorageValidationStatus } |
-  { 'Err' : StorageMaintenanceError };
+export type Result_2 = { 'Ok' : FeePayoutActionResult } |
+  { 'Err' : SettlementActionError };
 export type Result_20 = { 'Ok' : DepositView } |
   { 'Err' : RequestDepositRefundError };
 export type Result_21 = { 'Ok' : FeePayoutReceipt } |
@@ -592,8 +592,8 @@ export type Result_22 = { 'Ok' : OperationalConfigSealReceipt } |
   { 'Err' : BaseGovernanceError };
 export type Result_23 = { 'Ok' : string } |
   { 'Err' : StorageMaintenanceError };
-export type Result_3 = { 'Ok' : SettlementActionResult } |
-  { 'Err' : SettlementActionError };
+export type Result_3 = { 'Ok' : StorageValidationStatus } |
+  { 'Err' : StorageMaintenanceError };
 export type Result_4 = { 'Ok' : EmergencyPauseReceipt } |
   { 'Err' : BaseGovernanceError };
 export type Result_5 = { 'Ok' : SignedBaseGovernanceTransaction } |
@@ -659,6 +659,7 @@ export type SettlementStopReason = { 'LedgerFeeExceedsServiceFee' : null } |
   { 'RpcInconsistent' : null } |
   { 'LedgerAmbiguous' : null } |
   { 'LedgerUnavailable' : null } |
+  { 'Unknown' : string } |
   { 'AuthorizationExpired' : null } |
   { 'BaseStateMismatch' : null } |
   { 'BridgeSignerMismatch' : null } |
@@ -719,7 +720,7 @@ export interface WithdrawalView {
   'withdrawal_id' : Uint8Array | number[],
   'max_service_fee' : bigint,
   'release_ledger_block_index' : [] | [bigint],
-  'last_settlement_stop_reason' : [] | [string],
+  'last_settlement_stop_reason' : [] | [SettlementStopReason],
   'amount_out' : bigint,
   'state' : WithdrawalPhase,
   'ledger_fee' : bigint,
@@ -730,9 +731,10 @@ export interface _SERVICE {
     [ConfirmBaseGovernanceTransactionArgs],
     Result
   >,
-  'continue_fee_payout' : ActorMethod<[bigint], Result_1>,
-  'continue_storage_validation' : ActorMethod<[number], Result_2>,
-  'continue_withdrawal' : ActorMethod<[Uint8Array | number[]], Result_3>,
+  'continue_deposit' : ActorMethod<[Uint8Array | number[]], Result_1>,
+  'continue_fee_payout' : ActorMethod<[bigint], Result_2>,
+  'continue_storage_validation' : ActorMethod<[number], Result_3>,
+  'continue_withdrawal' : ActorMethod<[Uint8Array | number[]], Result_1>,
   'emergency_pause' : ActorMethod<[], Result_4>,
   'execute_activation' : ActorMethod<[], Result_5>,
   'get_activation_attestation' : ActorMethod<[], Result_6>,
@@ -787,7 +789,7 @@ export interface _SERVICE {
   'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_17>,
   'schedule_activation' : ActorMethod<[], Result_5>,
   'seal_operational_config' : ActorMethod<[OperationalConfigArgs], Result_22>,
-  'start_storage_validation' : ActorMethod<[], Result_2>,
+  'start_storage_validation' : ActorMethod<[], Result_3>,
   'storage_integrity_check' : ActorMethod<[], Result_23>,
 }
 export declare const idlFactory: IDL.InterfaceFactory;

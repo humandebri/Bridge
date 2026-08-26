@@ -105,7 +105,7 @@ pub struct DepositView {
     pub base_recipient: Vec<u8>,
     pub from_subaccount: Option<Vec<u8>>,
     pub state: DepositPhase,
-    pub last_settlement_stop_reason: Option<String>,
+    pub last_settlement_stop_reason: Option<crate::tasks::SettlementStopReason>,
     pub mint_authorization: Option<MintAuthorizationView>,
     pub automatic_progress: Option<AutomaticProgressView>,
 }
@@ -202,7 +202,7 @@ pub struct WithdrawalView {
     pub ledger_fee: Nat,
     pub release_ledger_block_index: Option<Nat>,
     pub state: WithdrawalPhase,
-    pub last_settlement_stop_reason: Option<String>,
+    pub last_settlement_stop_reason: Option<crate::tasks::SettlementStopReason>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1852,7 +1852,9 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
             from_subaccount: (intent.from_subaccount != [0; 32])
                 .then(|| intent.from_subaccount.to_vec()),
             state: DepositPhase::from(&record.state),
-            last_settlement_stop_reason: record.last_settlement_stop_reason,
+            last_settlement_stop_reason: record
+                .last_settlement_stop_reason
+                .map(crate::tasks::settlement_stop_reason_from_text),
             mint_authorization: record
                 .mint_authorization
                 .as_ref()
@@ -2022,7 +2024,9 @@ pub fn get_withdrawal(id: Vec<u8>) -> Option<WithdrawalView> {
             }),
             release_ledger_block_index: withdrawal_release_ledger_block_index(&record),
             state,
-            last_settlement_stop_reason: record.last_settlement_stop_reason,
+            last_settlement_stop_reason: record
+                .last_settlement_stop_reason
+                .map(crate::tasks::settlement_stop_reason_from_text),
         })
     })
 }

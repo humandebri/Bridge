@@ -1,4 +1,4 @@
-import type { DepositPhase, SettlementActionResult, SettlementState, WithdrawalPhase } from "@/generated/bridge.did"
+import type { DepositPhase, DepositView, SettlementActionResult, SettlementState, SettlementStopReason, WithdrawalPhase } from "@/generated/bridge.did"
 
 const depositNames = ["EscrowedUnquoted", "AuthorizationPending", "AuthorizationAvailable", "RefundAvailable", "Minted", "FundingReconciliationHold", "RefundProcessing", "Refunded", "Cancelled"] as const
 const withdrawalNames = ["Observed", "ReleasePending", "Paid", "ReconciliationHold"] as const
@@ -78,18 +78,81 @@ export function depositPhaseTone(phase: DepositPhase): "good" | "warn" | "neutra
   return isDepositTerminal(phase) ? "warn" : "neutral"
 }
 
+export type DepositContinuation = {
+  mode: "active" | "automatic" | "stopped"
+  action?: "retry-authorization" | "request-refund"
+  message?: string
+  reason?: SettlementStopReason
+}
+
+export function settlementStopReasonName(reason: SettlementStopReason): string {
+  return Object.keys(reason)[0] ?? "Unknown"
+}
+
+export function depositContinuation(record: DepositView): DepositContinuation {
+  const reason = record.last_settlement_stop_reason?.[0]
+  if ((record.automatic_progress?.length ?? 0) > 0) {
+    return { mode: "automatic", reason, message: reason ? "The previous attempt stopped temporarily. The Bridge will retry automatically." : undefined }
+  }
+  if (!reason) return { mode: "active" }
+  const name = settlementStopReasonName(reason)
+  const authorizationPhase = "EscrowedUnquoted" in record.state || "AuthorizationPending" in record.state
+  if (authorizationPhase && ["RpcUnavailable", "RpcInconsistent", "SigningUnavailable"].includes(name)) {
+    return {
+      mode: "stopped",
+      action: "retry-authorization",
+      reason,
+      message: name === "SigningUnavailable"
+        ? "Bridge signing stopped temporarily. Retry the same authorization."
+        : "Base confirmation stopped temporarily. Retrying checks the same deposit again.",
+    }
+  }
+  if (authorizationPhase && name === "AuthorizationExpired") {
+    return {
+      mode: "stopped",
+      action: "request-refund",
+      reason,
+      message: "Mint authorization expired before signing completed. Request the finalized refund from History.",
+    }
+  }
+  if (name === "BridgeSignerMismatch") {
+    return { mode: "stopped", reason, message: "Bridge signer verification failed. Bridge configuration review is required before this deposit can continue." }
+  }
+  if (name === "InvalidBaseResponse" || name === "BaseStateMismatch") {
+    return { mode: "stopped", reason, message: "Base verification failed. Bridge review is required before funds can move." }
+  }
+  const unknown = "Unknown" in reason ? reason.Unknown : undefined
+  return { mode: "stopped", reason, message: unknown ? `Processing stopped: ${unknown}` : "Processing stopped. Bridge review is required." }
+}
+
+export type AuthorizationExpiredRefundStatus = "checking-finality" | "waiting-finality" | "ready"
+
+export function authorizationExpiredRefundStatus(
+  record: DepositView,
+  finalizedBlockTimestamp?: bigint,
+): AuthorizationExpiredRefundStatus {
+  const authorization = record.mint_authorization[0]
+  if (!authorization || finalizedBlockTimestamp === undefined) return "checking-finality"
+  return finalizedBlockTimestamp > authorization.deadline ? "ready" : "waiting-finality"
+}
+
 export function depositReconciliationMessage(
   phase: DepositPhase,
-  stopReason?: string,
+  stopReason?: SettlementStopReason,
 ): string | undefined {
   if (!("RefundAvailable" in phase) && !("RefundProcessing" in phase)) {
-    return stopReason ? "Processing stopped — retry from History" : undefined
+    if (!stopReason) return undefined
+    const name = settlementStopReasonName(stopReason)
+    if (["RpcUnavailable", "RpcInconsistent", "SigningUnavailable"].includes(name)) return "Processing stopped — retry from History"
+    if (name === "AuthorizationExpired") return "Authorization expired — request a refund from History"
+    return "Processing stopped — Bridge review required"
   }
   if (!stopReason) return undefined
-  if (["RpcUnavailable", "RpcInconsistent", "InvalidBaseResponse"].includes(stopReason)) {
+  const name = settlementStopReasonName(stopReason)
+  if (["RpcUnavailable", "RpcInconsistent", "InvalidBaseResponse"].includes(name)) {
     return "Base RPC confirmation stopped — requesting again is safe"
   }
-  if (["BaseStateMismatch", "BridgeSignerMismatch"].includes(stopReason)) {
+  if (["BaseStateMismatch", "BridgeSignerMismatch"].includes(name)) {
     return "Mint evidence requires audit — refund is blocked"
   }
   return "Finalized Base confirmation stopped — request again from History"
@@ -123,7 +186,7 @@ function isSettlementStopReason(value: unknown): boolean {
   const key = keys[0]
   if (key === undefined) return false
   const payload: unknown = Reflect.get(value, key)
-  if (key === "LedgerRejected") return typeof payload === "string"
+  if (key === "LedgerRejected" || key === "Unknown") return typeof payload === "string"
   return [
     "LedgerFeeExceedsServiceFee", "RpcUnavailable",
     "RpcInconsistent", "LedgerAmbiguous", "LedgerUnavailable", "BaseStateMismatch",

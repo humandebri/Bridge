@@ -4,15 +4,15 @@ import { base64ToUint8Array, uint8ArrayToBase64 } from "@dfinity/utils"
 import type { ApproveParams } from "@icp-sdk/canisters/ledger/icrc"
 import { AnonymousIdentity, Cbor, Certificate, HttpAgent, lookupResultToBuffer, requestIdOf } from "@icp-sdk/core/agent"
 import { Principal } from "@icp-sdk/core/principal"
-import type { _SERVICE, DepositReceipt, DepositView } from "@/generated/bridge.did"
+import type { _SERVICE, DepositReceipt, DepositView, SettlementActionResult } from "@/generated/bridge.did"
 import { idlFactory } from "@/generated/bridge.idl"
-import { isDepositPhase } from "@/lib/settlement-phase"
+import { isDepositPhase, isSettlementActionResult } from "@/lib/settlement-phase"
 
 const CALL_TIMEOUT_MS = 120_000
 const OISY_SIGNER_URL = "https://oisy.com/sign"
 const BRIDGE_SERVICE = idlFactory({ IDL })
 
-type BridgeWalletMethod = "request_deposit" | "request_deposit_refund"
+type BridgeWalletMethod = "continue_deposit" | "request_deposit" | "request_deposit_refund"
 
 export type IcWalletProvider = "oisy" | "plug"
 export interface IcAccount { owner: string; subaccount?: Uint8Array }
@@ -29,6 +29,7 @@ export interface IcWalletAdapter {
   approve(call: ApprovalCall): Promise<bigint>
   requestDeposit(call: DepositCall): Promise<DepositReceipt>
   requestDepositRefund(depositId: Uint8Array): Promise<DepositView>
+  continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult>
 }
 
 type IcrcCallCanisterRequestParams = { canisterId: string; sender: string; method: string; arg: string; nonce?: string }
@@ -140,6 +141,10 @@ export class OisyAdapter implements IcWalletAdapter {
 
   async requestDepositRefund(depositId: Uint8Array): Promise<DepositView> {
     return unwrapRequestDepositRefundResult(await this.bridgeCall("request_deposit_refund", () => [depositId]))
+  }
+
+  async continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult> {
+    return unwrapContinueDepositResult(await this.bridgeCall("continue_deposit", () => [depositId]))
   }
 
   private async bridgeCall(method: BridgeWalletMethod, createArgs: (account: IcAccount) => unknown[] = () => []): Promise<unknown> {
@@ -285,6 +290,14 @@ export class PlugAdapter implements IcWalletAdapter {
     const result = await actor.request_deposit_refund(depositId)
     await this.assertSameConnectedAccount(account, "refund")
     return unwrapRequestDepositRefundResult(result)
+  }
+
+  async continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult> {
+    const account = await this.assertConnectedPrincipal()
+    const actor = await requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
+    const result = await actor.continue_deposit(depositId)
+    await this.assertSameConnectedAccount(account, "authorization retry")
+    return unwrapContinueDepositResult(result)
   }
 
   private async assertConnectedPrincipal(): Promise<IcAccount> {
@@ -440,6 +453,14 @@ function unwrapRequestDepositRefundResult(result: unknown): DepositView {
     throw new Error("Wallet reply has an invalid refund claim receipt")
   }
   return record as unknown as DepositView
+}
+
+function unwrapContinueDepositResult(result: unknown): SettlementActionResult {
+  if (!isObject(result)) throw new Error("Wallet reply has an invalid authorization retry result")
+  if ("Err" in result) throw new Error(settlementActionErrorMessage(Reflect.get(result, "Err")))
+  const value: unknown = Reflect.get(result, "Ok")
+  if (!isSettlementActionResult(value)) throw new Error("Wallet reply has an invalid authorization retry state")
+  return value
 }
 
 export function requestDepositRefundErrorMessage(error: unknown): string {

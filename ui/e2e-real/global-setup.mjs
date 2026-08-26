@@ -771,6 +771,11 @@ async function setup() {
         if ("Err" in result) throw new Error(`refund claim rejected: ${json(result.Err)}`)
         return send(response, 200, result.Ok)
       }
+      if (request.url === "/ic/continue-deposit") {
+        const result = await bridge.actor.continue_deposit(hexToBytes(body.id))
+        if ("Err" in result) throw new Error(`deposit continuation rejected: ${json(result.Err)}`)
+        return send(response, 200, settlementJson(result.Ok))
+      }
       if (request.url === "/ic/continue-withdrawal") {
         const result = await bridge.actor.continue_withdrawal(hexToBytes(body.id))
         if ("Err" in result) throw new Error(`withdrawal continuation rejected: ${json(result.Err)}`)

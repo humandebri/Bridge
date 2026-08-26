@@ -327,7 +327,7 @@ type DepositView = record {
   max_service_fee : nat;
   funding_ledger_block_index : opt nat;
   from_subaccount : opt blob;
-  last_settlement_stop_reason : opt text;
+  last_settlement_stop_reason : opt SettlementStopReason;
   created_at_ns : nat64;
   state : DepositPhase;
   available_refund_amount : opt nat;
@@ -535,7 +535,7 @@ type Result = variant {
   Err : BaseGovernanceError;
 };
 type Result_1 = variant {
-  Ok : FeePayoutActionResult;
+  Ok : SettlementActionResult;
   Err : SettlementActionError;
 };
 type Result_10 = variant {
@@ -567,8 +567,8 @@ type Result_18 = variant {
 };
 type Result_19 = variant { Ok : DepositReceipt; Err : DepositError };
 type Result_2 = variant {
-  Ok : StorageValidationStatus;
-  Err : StorageMaintenanceError;
+  Ok : FeePayoutActionResult;
+  Err : SettlementActionError;
 };
 type Result_20 = variant { Ok : DepositView; Err : RequestDepositRefundError };
 type Result_21 = variant { Ok : FeePayoutReceipt; Err : AdminError };
@@ -578,8 +578,8 @@ type Result_22 = variant {
 };
 type Result_23 = variant { Ok : text; Err : StorageMaintenanceError };
 type Result_3 = variant {
-  Ok : SettlementActionResult;
-  Err : SettlementActionError;
+  Ok : StorageValidationStatus;
+  Err : StorageMaintenanceError;
 };
 type Result_4 = variant {
   Ok : EmergencyPauseReceipt;
@@ -651,6 +651,7 @@ type SettlementStopReason = variant {
   RpcInconsistent;
   LedgerAmbiguous;
   LedgerUnavailable;
+  Unknown : text;
   AuthorizationExpired;
   BaseStateMismatch;
   BridgeSignerMismatch;
@@ -718,7 +719,7 @@ type WithdrawalView = record {
   withdrawal_id : blob;
   max_service_fee : nat;
   release_ledger_block_index : opt nat;
-  last_settlement_stop_reason : opt text;
+  last_settlement_stop_reason : opt SettlementStopReason;
   amount_out : nat;
   state : WithdrawalPhase;
   ledger_fee : nat;
@@ -728,9 +729,10 @@ service : {
   confirm_base_governance_transaction : (
       ConfirmBaseGovernanceTransactionArgs,
     ) -> (Result);
-  continue_fee_payout : (nat64) -> (Result_1);
-  continue_storage_validation : (nat16) -> (Result_2);
-  continue_withdrawal : (blob) -> (Result_3);
+  continue_deposit : (blob) -> (Result_1);
+  continue_fee_payout : (nat64) -> (Result_2);
+  continue_storage_validation : (nat16) -> (Result_3);
+  continue_withdrawal : (blob) -> (Result_1);
   emergency_pause : () -> (Result_4);
   execute_activation : () -> (Result_5);
   get_activation_attestation : () -> (Result_6) query;
@@ -768,6 +770,6 @@ service : {
   rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_17);
   schedule_activation : () -> (Result_5);
   seal_operational_config : (OperationalConfigArgs) -> (Result_22);
-  start_storage_validation : () -> (Result_2);
+  start_storage_validation : () -> (Result_3);
   storage_integrity_check : () -> (Result_23) query;
 }

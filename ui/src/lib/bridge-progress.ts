@@ -178,6 +178,9 @@ export function bridgeProgressLabel(record: BridgeProgressRecord): string {
   if (record.direction === "deposit" && record.phase === "base-mint-included" && record.baseTransactionOutcome === "reverted") {
     return "Base transaction reverted"
   }
+  if (record.direction === "deposit" && record.phase === "attention" && record.attentionPhase === "authorization-generating") {
+    return "Bridge processing paused"
+  }
   const labels: Record<BridgeProgressPhase, string> = {
     "verifying-ic-destination": "Verifying the destination IC account",
     "awaiting-ic-allowance": "Confirm token access in your IC wallet",
@@ -228,7 +231,7 @@ export function bridgeProgressDetail(record: BridgeProgressRecord): string {
 
 export interface BridgeProgressStep {
   label: string
-  status: "complete" | "current" | "waiting"
+  status: "attention" | "complete" | "current" | "waiting"
   note?: string
 }
 
@@ -258,7 +261,9 @@ export function bridgeProgressSteps(record: BridgeProgressRecord): BridgeProgres
     const approvalNotRequired = label === approvalLabel && record.tokenApproval === "not-required"
     const step: BridgeProgressStep = {
       label,
-      status: record.phase === "complete" || depositTransactionComplete || approvalNotRequired
+      status: record.phase === "attention" && index === currentIndex
+        ? "attention"
+        : record.phase === "complete" || depositTransactionComplete || approvalNotRequired
         ? "complete"
         : index < currentIndex ? "complete" : index === currentIndex ? "current" : "waiting",
     }
