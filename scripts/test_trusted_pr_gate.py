@@ -12,6 +12,14 @@ WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
 
 
 class TrustedPrGateTests(unittest.TestCase):
+    def test_main_gate_binds_ci_to_the_exact_checkout_head(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        binding = "BRIDGE_EXPECTED_HEAD_SHA: ${{ github.sha }}"
+        self.assertIn(binding, workflow)
+        self.assertLess(workflow.index(binding), workflow.index("scripts/ci-local.sh all"))
+
     def test_staging_upgrade_policy_uses_only_the_canonical_path(self) -> None:
         canonical_name = "staging-bridge-upgrade-policy.json"
         obsolete_name = "v33-to-v34-upgrade-policy.json"

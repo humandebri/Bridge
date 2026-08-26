@@ -18,6 +18,7 @@ concurrency:
 
 env:
   CI: "true"
+  BRIDGE_EXPECTED_HEAD_SHA: ${{ github.sha }}
 
 jobs:
   full:
