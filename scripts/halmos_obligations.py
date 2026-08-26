@@ -9,7 +9,7 @@ import hashlib
 from pathlib import Path
 import re
 
-from trusted_proof_profiles import require_profile
+from trusted_proof_profiles import require_environment_profile
 
 
 SCHEMA_VERSION = "1"
@@ -89,7 +89,7 @@ def validate_trusted_halmos_sources(
     root: Path = ROOT, expected: dict[str, str] | None = None
 ) -> None:
     if expected is None:
-        require_profile("security-hardening-v1", root)
+        require_environment_profile(root)
         return
     for relative, digest in expected.items():
         path = root / relative

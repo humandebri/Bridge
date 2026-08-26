@@ -82,7 +82,7 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("path: trusted-policy", workflow)
         self.assertIn("path: source", workflow)
         self.assertIn("trusted-policy/scripts/install-ci-tools.sh \"$mode\"", workflow)
-        self.assertEqual(select_profile(ROOT).identifier, "security-hardening-v1")
+        self.assertEqual(select_profile(ROOT).identifier, "current-main")
         self.assertIn("proofs) mode=\"all\"", workflow)
         self.assertIn("*) mode=\"ci\"", workflow)
         self.assertEqual(workflow.count("docker build --file"), 1)
@@ -207,6 +207,10 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertNotIn("trusted Elan settings are missing", wrapper)
         self.assertNotIn("cp /home/runner/.elan/settings.toml", wrapper)
         self.assertIn("BRIDGE_TRUSTED_DEPS_READY=1", wrapper)
+        self.assertIn(
+            'BRIDGE_TRUSTED_PROFILE="${BRIDGE_TRUSTED_PROFILE:?missing trusted profile}"',
+            wrapper,
+        )
         self.assertIn("PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false", wrapper)
         self.assertIn("ELAN_HOME=/scratch/home/.elan", wrapper)
         self.assertIn("CARGO_NET_OFFLINE=true", wrapper)
@@ -227,6 +231,8 @@ class TrustedPrGateTests(unittest.TestCase):
         driver = (ROOT / "scripts" / "ci-local.sh").read_text(encoding="utf-8")
         self.assertIn("require_workspace_dependencies", driver)
         self.assertIn("BRIDGE_TRUSTED_DEPS_READY", driver)
+        self.assertIn('export BRIDGE_TRUSTED_PROFILE="$selected_profile"', driver)
+        self.assertIn("trusted proof profile differs:", driver)
         self.assertIn(
             'pnpm --dir "$ROOT/ui" exec playwright test --config playwright.real.config.ts',
             driver,
