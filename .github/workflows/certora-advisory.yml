@@ -64,6 +64,11 @@ jobs:
           enable-cache: true
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
+          command -v rg
       - name: Install locked Certora client and Solidity compiler
         run: |
           uv sync --project verification/certora --frozen

@@ -44,6 +44,8 @@ jobs:
         with:
           version: 11.0.8
           run_install: false
+      - name: Install root dependencies
+        run: pnpm install --frozen-lockfile
       - name: Install uv 0.8.4
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
