@@ -130,8 +130,9 @@ class CertoraManifestTests(unittest.TestCase):
     def test_stale_solidity_ast_is_rejected(self) -> None:
         source = self.root / "contracts/src/BSNS.sol"
         artifact = self.root / "contracts/out/BSNS.sol/BSNS.json"
-        artifact.touch()
-        source.touch()
+        source.write_bytes(source.read_bytes() + b"\n")
+        artifact_mtime = artifact.stat().st_mtime_ns
+        os.utime(source, ns=(artifact_mtime, artifact_mtime))
         with self.assertRaisesRegex(ValueError, "stale Solidity AST source link"):
             check_certora_manifest.validate(self.root)
 
