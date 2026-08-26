@@ -3507,6 +3507,42 @@ fn validate_live_runtime_binding(
     Ok(())
 }
 
+fn live_runtime_binding_from_view(observed: &RuntimeBindingView) -> LiveRuntimeBinding {
+    LiveRuntimeBinding {
+        base_chain_id: observed.base_chain_id,
+        bridge_contract: format!("0x{}", hex(&observed.bridge_contract)),
+        timelock_contract: format!("0x{}", hex(&observed.timelock_contract)),
+        deployment_instance_id: format!("0x{}", hex(&observed.deployment_instance_id)),
+        minimum_withdrawal_id: format!("0x{}", hex(&observed.minimum_withdrawal_id)),
+        ledger_canister_id: observed.ledger_canister_id.to_text(),
+        index_canister_id: observed.index_canister_id.to_text(),
+        schema_version: observed.schema_version,
+        expected_bridge_signer: format!("0x{}", hex(&observed.expected_bridge_signer)),
+        evm_rpc_canister_id: observed.evm_rpc_canister_id.to_text(),
+        rpc_provider_urls_sha256: hex(&observed.rpc_provider_urls_sha256),
+        operational_config_sha256: hex(&observed.operational_config_sha256),
+    }
+}
+
+fn validate_empty_paused_production_status(status: &BridgeStatusLiveView) -> Result<(), String> {
+    let counts = &status.counts;
+    if !status.deposits_paused
+        || !status.reserve.sufficient
+        || counts.deposits != 0
+        || counts.withdrawals != 0
+        || counts.reconciliation_holds != 0
+        || counts.pending_ledger_operations != 0
+        || counts.reserved_deposit_mint_amount != 0
+        || counts.reserved_deposit_mint_operations != 0
+        || counts.retained_audit_events != 0
+        || counts.pruned_audit_events != 0
+        || counts.retained_deposit_index_entries != 0
+    {
+        return Err("production Canister state is not paused, empty, and reserved".into());
+    }
+    Ok(())
+}
+
 fn expected_operational_config_sha256(
     profile: &Profile,
     mint_authorization_ttl_seconds: u64,
@@ -3591,20 +3627,7 @@ fn verify_live_inputs(
     })?;
     let public = Decode!(&public_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
     let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
-    let observed = LiveRuntimeBinding {
-        base_chain_id: public.base_chain_id,
-        bridge_contract: format!("0x{}", hex(&public.bridge_contract)),
-        timelock_contract: format!("0x{}", hex(&public.timelock_contract)),
-        deployment_instance_id: format!("0x{}", hex(&public.deployment_instance_id)),
-        minimum_withdrawal_id: format!("0x{}", hex(&public.minimum_withdrawal_id)),
-        ledger_canister_id: public.ledger_canister_id.to_text(),
-        index_canister_id: public.index_canister_id.to_text(),
-        schema_version: public.schema_version,
-        expected_bridge_signer: format!("0x{}", hex(&public.expected_bridge_signer)),
-        evm_rpc_canister_id: public.evm_rpc_canister_id.to_text(),
-        rpc_provider_urls_sha256: hex(&public.rpc_provider_urls_sha256),
-        operational_config_sha256: hex(&public.operational_config_sha256),
-    };
+    let observed = live_runtime_binding_from_view(&public);
     let operational_config_sha256 = expected_operational_config_sha256(
         &bundle.profile,
         status.mint_authorization_ttl_seconds,
@@ -3698,20 +3721,7 @@ fn verify_production_canister_predeploy(
     ) {
         return Err("production Canister left Bootstrap before Base deployment".into());
     }
-    let observed = LiveRuntimeBinding {
-        base_chain_id: runtime.base_chain_id,
-        bridge_contract: format!("0x{}", hex(&runtime.bridge_contract)),
-        timelock_contract: format!("0x{}", hex(&runtime.timelock_contract)),
-        deployment_instance_id: format!("0x{}", hex(&runtime.deployment_instance_id)),
-        minimum_withdrawal_id: format!("0x{}", hex(&runtime.minimum_withdrawal_id)),
-        ledger_canister_id: runtime.ledger_canister_id.to_text(),
-        index_canister_id: runtime.index_canister_id.to_text(),
-        schema_version: runtime.schema_version,
-        expected_bridge_signer: format!("0x{}", hex(&runtime.expected_bridge_signer)),
-        evm_rpc_canister_id: runtime.evm_rpc_canister_id.to_text(),
-        rpc_provider_urls_sha256: hex(&runtime.rpc_provider_urls_sha256),
-        operational_config_sha256: hex(&runtime.operational_config_sha256),
-    };
+    let observed = live_runtime_binding_from_view(&runtime);
     let operational = expected_operational_config_sha256(
         &profile,
         status.mint_authorization_ttl_seconds,
@@ -3723,25 +3733,12 @@ fn verify_production_canister_predeploy(
         &hex(&canonical_sha256(&Vec::<String>::new())?),
         &operational,
     )?;
-    let counts = status.counts;
     if runtime.expected_bridge_runtime_sha256
         != decode_hex(&profile.bridge_runtime_bytecode_sha256)?
-        || !status.deposits_paused
-        || !status.reserve.sufficient
-        || counts.deposits != 0
-        || counts.withdrawals != 0
-        || counts.reconciliation_holds != 0
-        || counts.pending_ledger_operations != 0
-        || counts.reserved_deposit_mint_amount != 0
-        || counts.reserved_deposit_mint_operations != 0
-        || counts.retained_audit_events != 0
-        || counts.pruned_audit_events != 0
-        || counts.retained_deposit_index_entries != 0
     {
-        return Err(
-            "production Canister predeploy state is not paused, empty, and reserved".into(),
-        );
+        return Err("production Canister runtime code binding differs from the profile".into());
     }
+    validate_empty_paused_production_status(&status)?;
     println!(
         "production_canister_predeploy=verified canister={}",
         profile.bridge_canister_id
@@ -3749,27 +3746,53 @@ fn verify_production_canister_predeploy(
     Ok(())
 }
 
+struct ProductionHandoverCanisterObservation<'a> {
+    lifecycle: &'a ProductionLifecycleView,
+    attestation: Option<&'a ActivationAttestationView>,
+    runtime: &'a RuntimeBindingView,
+    status: &'a BridgeStatusLiveView,
+    controllers: &'a [Principal],
+    module_hash: &'a [u8],
+}
+
 fn validate_production_handover_canister_state(
     profile: &Profile,
     install_receipt: &ProductionCanisterInstallReceipt,
     gate_a_receipt: &GateAReceipt,
-    lifecycle: &ProductionLifecycleView,
-    attestation: Option<&ActivationAttestationView>,
-    controllers: &[Principal],
-    module_hash: &[u8],
+    observation: &ProductionHandoverCanisterObservation<'_>,
     manifest_created_at_unix: u64,
     now: u64,
 ) -> Result<(), String> {
-    if !matches!(lifecycle, ProductionLifecycleView::OperationalConfigSealed) {
+    if !matches!(
+        observation.lifecycle,
+        ProductionLifecycleView::OperationalConfigSealed
+    ) {
         return Err("production Canister must be OperationalConfigSealed before handover".into());
     }
     validate_production_canister_management_state(
         profile,
         install_receipt,
-        controllers,
-        module_hash,
+        observation.controllers,
+        observation.module_hash,
     )?;
-    let attestation = attestation.ok_or(
+    let operational_config_sha256 = expected_operational_config_sha256(
+        profile,
+        observation.status.mint_authorization_ttl_seconds,
+        observation.status.mint_authorization_epoch,
+    )?;
+    validate_live_runtime_binding(
+        &live_runtime_binding_from_view(observation.runtime),
+        profile,
+        &hex(&canonical_sha256(&Vec::<String>::new())?),
+        &operational_config_sha256,
+    )?;
+    if observation.runtime.expected_bridge_runtime_sha256
+        != decode_hex(&profile.bridge_runtime_bytecode_sha256)?
+    {
+        return Err("production Canister runtime code binding differs from the profile".into());
+    }
+    validate_empty_paused_production_status(observation.status)?;
+    let attestation = observation.attestation.ok_or(
         "authenticated activation attestation is unavailable after operational configuration seal",
     )?;
     validate_activation_attestation(
@@ -3801,7 +3824,7 @@ fn verify_production_canister_handover(
     let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
     let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
-    let (lifecycle_raw, attestation_raw, controllers, module_hash) =
+    let (lifecycle_raw, attestation_raw, runtime_raw, status_raw, controllers, module_hash) =
         async_runtime()?.block_on(async {
             let empty = Encode!().map_err(|error| error.to_string())?;
             let lifecycle = agent
@@ -3816,6 +3839,18 @@ fn verify_production_canister_handover(
                 .call_with_verification()
                 .await
                 .map_err(|error| error.to_string())?;
+            let runtime = agent
+                .query(&bridge, "get_runtime_binding")
+                .with_arg(Encode!().map_err(|error| error.to_string())?)
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let status = agent
+                .query(&bridge, "get_bridge_status")
+                .with_arg(Encode!().map_err(|error| error.to_string())?)
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
             let controllers = agent
                 .read_state_canister_controllers(bridge)
                 .await
@@ -3824,7 +3859,14 @@ fn verify_production_canister_handover(
                 .read_state_canister_module_hash(bridge)
                 .await
                 .map_err(|error| error.to_string())?;
-            Ok::<_, String>((lifecycle, attestation, controllers, module_hash))
+            Ok::<_, String>((
+                lifecycle,
+                attestation,
+                runtime,
+                status,
+                controllers,
+                module_hash,
+            ))
         })?;
     let lifecycle = match Decode!(&lifecycle_raw, ProductionLifecycleResultView)
         .map_err(|error| error.to_string())?
@@ -3840,14 +3882,21 @@ fn verify_production_canister_handover(
         ActivationAttestationResultView::Ok(value) => Some(value),
         ActivationAttestationResultView::Err(_) => None,
     };
+    let runtime = Decode!(&runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
+    let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
+    let observation = ProductionHandoverCanisterObservation {
+        lifecycle: &lifecycle,
+        attestation: attestation.as_deref(),
+        runtime: &runtime,
+        status: &status,
+        controllers: &controllers,
+        module_hash: &module_hash,
+    };
     validate_production_handover_canister_state(
         &bundle.profile,
         &install_receipt,
         &gate_a_receipt,
-        &lifecycle,
-        attestation.as_deref(),
-        &controllers,
-        &module_hash,
+        &observation,
         bundle.manifest.created_at_unix,
         now_unix()?,
     )?;
@@ -5224,6 +5273,56 @@ mod tests {
         }
     }
 
+    fn matching_handover_status() -> BridgeStatusLiveView {
+        BridgeStatusLiveView {
+            reserve: ReserveStatusView { sufficient: true },
+            deposits_paused: true,
+            mint_authorization_ttl_seconds: 900,
+            mint_authorization_epoch: 7,
+            counts: ProductionStatusCountsView {
+                deposits: 0,
+                withdrawals: 0,
+                reconciliation_holds: 0,
+                pending_ledger_operations: 0,
+                reserved_deposit_mint_amount: 0,
+                reserved_deposit_mint_operations: 0,
+                retained_audit_events: 0,
+                pruned_audit_events: 0,
+                retained_deposit_index_entries: 0,
+            },
+        }
+    }
+
+    fn matching_handover_runtime(
+        profile: &Profile,
+        status: &BridgeStatusLiveView,
+    ) -> RuntimeBindingView {
+        RuntimeBindingView {
+            base_chain_id: profile.chain_id,
+            bridge_contract: decode_address(&profile.bridge_contract).unwrap().to_vec(),
+            expected_bridge_runtime_sha256: decode_hex(&profile.bridge_runtime_bytecode_sha256)
+                .unwrap(),
+            timelock_contract: decode_address(&profile.timelock.address).unwrap().to_vec(),
+            deployment_instance_id: decode_hex(&profile.deployment_instance_id).unwrap(),
+            minimum_withdrawal_id: decode_hex(&profile.minimum_withdrawal_id).unwrap(),
+            ledger_canister_id: Principal::from_text(&profile.ledger_canister_id).unwrap(),
+            index_canister_id: Principal::from_text(&profile.index_canister_id).unwrap(),
+            schema_version: profile.canister_schema_version,
+            expected_bridge_signer: decode_address(&profile.expected_bridge_signer)
+                .unwrap()
+                .to_vec(),
+            evm_rpc_canister_id: Principal::from_text(&profile.evm_rpc_canister_id).unwrap(),
+            rpc_provider_urls_sha256: canonical_sha256(&Vec::<String>::new()).unwrap().to_vec(),
+            operational_config_sha256: expected_operational_config_sha256(
+                profile,
+                status.mint_authorization_ttl_seconds,
+                status.mint_authorization_epoch,
+            )
+            .unwrap()
+            .to_vec(),
+        }
+    }
+
     fn handover_gate_a_receipt(
         profile: &Profile,
         install_receipt: ProductionCanisterInstallReceipt,
@@ -5259,18 +5358,25 @@ mod tests {
         let created = 1_000_000;
         let now = created + 600;
         let attestation = matching_activation_attestation(&profile, now, 101);
+        let status = matching_handover_status();
+        let runtime = matching_handover_runtime(&profile, &status);
         let validate = |lifecycle: &ProductionLifecycleView,
                         attestation: Option<&ActivationAttestationView>,
                         controllers: &[Principal],
                         module_hash: &[u8]| {
+            let observation = ProductionHandoverCanisterObservation {
+                lifecycle,
+                attestation,
+                runtime: &runtime,
+                status: &status,
+                controllers,
+                module_hash,
+            };
             validate_production_handover_canister_state(
                 &profile,
                 &install_receipt,
                 &gate_a_receipt,
-                lifecycle,
-                attestation,
-                controllers,
-                module_hash,
+                &observation,
                 created,
                 now,
             )
@@ -5336,7 +5442,7 @@ mod tests {
             &module_hash,
         )
         .is_err());
-        let mut drifted_module = module_hash;
+        let mut drifted_module = module_hash.clone();
         drifted_module[0] ^= 1;
         assert!(validate(
             &ProductionLifecycleView::OperationalConfigSealed,
@@ -5345,6 +5451,58 @@ mod tests {
             &drifted_module,
         )
         .is_err());
+
+        let sealed_lifecycle = ProductionLifecycleView::OperationalConfigSealed;
+        let validate_runtime =
+            |candidate_profile: &Profile,
+             candidate_runtime: &RuntimeBindingView,
+             candidate_status: &BridgeStatusLiveView| {
+                let candidate_attestation =
+                    matching_activation_attestation(candidate_profile, now, 101);
+                let observation = ProductionHandoverCanisterObservation {
+                    lifecycle: &sealed_lifecycle,
+                    attestation: Some(&candidate_attestation),
+                    runtime: candidate_runtime,
+                    status: candidate_status,
+                    controllers: &controllers,
+                    module_hash: &module_hash,
+                };
+                validate_production_handover_canister_state(
+                    candidate_profile,
+                    &install_receipt,
+                    &gate_a_receipt,
+                    &observation,
+                    created,
+                    now,
+                )
+            };
+        let mut fee_drift_profile = profile.clone();
+        fee_drift_profile.parameters.gas_limit_ceiling += 1;
+        assert!(validate_runtime(&fee_drift_profile, &runtime, &status).is_err());
+        let mut cycles_drift_profile = profile.clone();
+        cycles_drift_profile.parameters.cycles_floor += 1;
+        assert!(validate_runtime(&cycles_drift_profile, &runtime, &status).is_err());
+        let mut settlement_cycles_drift_profile = profile.clone();
+        settlement_cycles_drift_profile
+            .parameters
+            .settlement_cycle_ceiling += 1;
+        assert!(validate_runtime(&settlement_cycles_drift_profile, &runtime, &status).is_err());
+
+        let mut runtime_drift = matching_handover_runtime(&profile, &status);
+        runtime_drift.rpc_provider_urls_sha256[0] ^= 1;
+        assert!(validate_runtime(&profile, &runtime_drift, &status).is_err());
+        let mut runtime_code_drift = matching_handover_runtime(&profile, &status);
+        runtime_code_drift.expected_bridge_runtime_sha256[0] ^= 1;
+        assert!(validate_runtime(&profile, &runtime_code_drift, &status).is_err());
+        let mut unpaused = matching_handover_status();
+        unpaused.deposits_paused = false;
+        assert!(validate_runtime(&profile, &runtime, &unpaused).is_err());
+        let mut insufficient_reserve = matching_handover_status();
+        insufficient_reserve.reserve.sufficient = false;
+        assert!(validate_runtime(&profile, &runtime, &insufficient_reserve).is_err());
+        let mut nonempty = matching_handover_status();
+        nonempty.counts.deposits = 1;
+        assert!(validate_runtime(&profile, &runtime, &nonempty).is_err());
     }
 
     #[test]

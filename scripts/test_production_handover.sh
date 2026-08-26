@@ -36,7 +36,7 @@ version = "0.0.0"
 LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs};
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="validate-production-handover-receipt"{if a.len()!=5||env::var("HANDOVER_GATE_A_RECEIPT_DRIFT").as_deref()==Ok("true")||env::var("HANDOVER_DEPLOYMENT_BINDING_DRIFT").as_deref()==Ok("true")||!fs::read_to_string(&a[2]).unwrap().contains("\"schema_version\":2"){std::process::exit(1)}println!("{}","c".repeat(64))}else if a[0]=="verify-production-canister-handover"{if a.len()!=5||["HANDOVER_BOOTSTRAP","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="validate-production-handover-receipt"{if a.len()!=5||env::var("HANDOVER_GATE_A_RECEIPT_DRIFT").as_deref()==Ok("true")||env::var("HANDOVER_DEPLOYMENT_BINDING_DRIFT").as_deref()==Ok("true")||!fs::read_to_string(&a[2]).unwrap().contains("\"schema_version\":2"){std::process::exit(1)}println!("{}","c".repeat(64))}else if a[0]=="verify-production-canister-handover"{if a.len()!=5||["HANDOVER_BOOTSTRAP","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_FEE_CYCLES_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_PAUSE_RESERVE_DRIFT","HANDOVER_NONEMPTY_STATE"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -134,7 +134,8 @@ fi
 [[ ! -e "$T/deployment-binding-drift.json" ]]
 for scenario in \
   BOOTSTRAP ATTESTATION_MISSING ATTESTATION_STALE ATTESTATION_PREDEPLOY \
-  PROFILE_DRIFT CONTROLLER_DRIFT MODULE_DRIFT; do
+  PROFILE_DRIFT CONTROLLER_DRIFT MODULE_DRIFT FEE_CYCLES_DRIFT \
+  RUNTIME_BINDING_DRIFT PAUSE_RESERVE_DRIFT NONEMPTY_STATE; do
   evidence="$T/$(printf '%s' "$scenario" | tr '[:upper:]_' '[:lower:]-').json"
   export "HANDOVER_${scenario}=true"
   if run_handover "$evidence" >/dev/null 2>&1; then
