@@ -92,7 +92,7 @@ case "$1 $2" in
   'tx withdrawal-action') echo '{"to":"0x3333333333333333333333333333333333333333","input":"0x2222"}';;
   'tx cancel-action') echo '{"to":"0x2222222222222222222222222222222222222222","input":"0x3333"}';;
   'tx 0x8888888888888888888888888888888888888888888888888888888888888888') echo '{"to":"0x3333333333333333333333333333333333333333","input":"0x4444"}';;
-  'receipt 0x'*) if [[ "${DEPLOYMENT_RECEIPT_UNAVAILABLE:-}" == true ]]; then exit 1; fi; if [[ "$2" == "0x$(printf 'a%.0s' {1..64})" ]]; then address=0x3333333333333333333333333333333333333333; bh=b; else address=0x2222222222222222222222222222222222222222; bh=c; fi; if [[ "${DEPLOYMENT_RECEIPT_DRIFT:-}" == true || ( "${ACTIVATION_RECEIPT_DRIFT:-}" == true && "$2" != "0x$(printf 'a%.0s' {1..64})" && "$2" != "0x$(printf 'b%.0s' {1..64})" ) ]]; then bh=f; fi; if [[ "${DEPLOYMENT_BLOCK_HASH_INVALID:-}" == true ]]; then block_hash=12; else block_hash="$(printf "$bh%.0s" {1..64})"; fi; printf '{"blockNumber":"0x1","blockHash":"0x%s","status":"0x1","contractAddress":"%s"}\n' "$block_hash" "$address";;
+  'receipt 0x'*) if [[ "${DEPLOYMENT_RECEIPT_UNAVAILABLE:-}" == true ]]; then exit 1; fi; if [[ "$2" == "0x$(printf 'a%.0s' {1..64})" ]]; then address=0x3333333333333333333333333333333333333333; bh=b; else address=0x2222222222222222222222222222222222222222; bh=c; fi; if [[ "${DEPLOYMENT_RECEIPT_DRIFT:-}" == true || ( "${ACTIVATION_RECEIPT_DRIFT:-}" == true && "$2" != "0x$(printf 'a%.0s' {1..64})" && "$2" != "0x$(printf 'b%.0s' {1..64})" ) ]]; then bh=f; fi; if [[ "${DEPLOYMENT_BLOCK_HASH_INVALID:-}" == true ]]; then block_hash=12; else block_hash="$(printf "$bh%.0s" {1..64})"; fi; [[ "${DEPLOYMENT_RECEIPT_STATUS_DRIFT:-}" == true ]] && status=0 || status=1; printf '{"blockNumber":"0x1","blockHash":"0x%s","status":"0x%s","contractAddress":"%s"}\n' "$block_hash" "$status" "$address";;
   'logs --address') if [[ "${ROLE_EVENT_DRIFT:-}" == true ]]; then role="$(printf 'ff%.0s' {1..32})"; else role="$(printf '00%.0s' {1..32})"; fi; if [[ "${ROLE_EVENT_HASH_DRIFT:-}" == true ]]; then eh=f; else eh=c; fi; printf '[{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]},{"blockNumber":"0x1","blockHash":"0x%s","topics":["0x%s","0x%s","0x%s"]}]\n' \
     "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$role" "$(printf '00%.0s' {1..12})2222222222222222222222222222222222222222" \
     "$(printf "$eh%.0s" {1..64})" "$(printf '44%.0s' {1..32})" "$(printf '11%.0s' {1..32})" "$(printf '00%.0s' {1..12})6666666666666666666666666666666666666666" \
@@ -108,7 +108,7 @@ case "$1 $2" in
     if [[ "${PROVIDER_EIP1898_FAILURES:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_EIP1898_FAILURES:-0}" -ge 2 && "$*" == *two.example* ]]; then exit 1; fi
     if [[ "$*" == *'"blockHash":"0xffff'* ]] || [[ "${MID_READ_REORG:-}" == all ]] || [[ "${MID_READ_REORG:-}" == one && "$*" == *three.example* ]] || [[ "${SIGNED_BLOCK_DRIFT:-}" == all ]]; then exit 1; fi
     if [[ "$*" == *eth_getCode* ]]; then
-      if [[ "${TIMELOCK_CODE_DRIFT:-}" == true && "$*" == *0x2222222222222222222222222222222222222222* ]]; then echo '"0x01"'; else echo '"0x00"'; fi
+      if [[ "${TIMELOCK_CODE_DRIFT:-}" == true && "$*" == *0x2222222222222222222222222222222222222222* ]] || [[ "${BRIDGE_CODE_DRIFT:-}" == true && "$*" == *0x3333333333333333333333333333333333333333* ]]; then echo '"0x01"'; else echo '"0x00"'; fi
     elif [[ "$*" == *bridgeSnapshot* ]]; then
       if [[ "${CANONICAL_PROBE_MALFORMED:-}" == true ]]; then echo '"0x00"'; elif [[ "${CANONICAL_PROBE_BLOCK_MISMATCH:-}" == true ]]; then printf '"0x%064x%s"\n' 99 "$(printf '0%.0s' {1..704})"; elif [[ "$*" == *'"blockHash":"0xbbbb'* ]]; then printf '"0x%064x%s"\n' 1 "$(printf '0%.0s' {1..704})"; else printf '"0x%064x%s"\n' 100 "$(printf '0%.0s' {1..704})"; fi
     elif [[ "$*" == *bridgeSigner* ]]; then if [[ "${PROVIDER_DRIFT:-}" == all && "$*" == *one.example* ]]; then v=0x9999999999999999999999999999999999999991; elif [[ "${PROVIDER_DRIFT:-}" == all && "$*" == *two.example* ]]; then v=0x9999999999999999999999999999999999999992; elif [[ "${PROVIDER_DRIFT:-}" == all ]]; then v=0x9999999999999999999999999999999999999993; else v=0x1111111111111111111111111111111111111111; fi; printf '"0x%s"\n' "$v";
@@ -225,6 +225,27 @@ if CANONICAL_PROBE_MALFORMED=true \
   echo "monitor drill accepted malformed canonical probes" >&2
   exit 1
 fi
+printf '{"deployer_address":"0x4444444444444444444444444444444444444444","starting_nonce":0,"timelock":{"transaction_hash":"0x%s","address":"0x2222222222222222222222222222222222222222","block_number":1,"block_hash":"0x%s"},"bridge":{"transaction_hash":"0x%s","address":"0x3333333333333333333333333333333333333333","block_number":1,"block_hash":"0x%s"}}\n' \
+  "$(printf 'b%.0s' {1..64})" "$(printf 'c%.0s' {1..64})" \
+  "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" >"$T/handover-deployment-binding.json"
+BRIDGE_MONITOR_RPC_URL_1=https://one.example BRIDGE_MONITOR_RPC_URL_2=https://two.example BRIDGE_MONITOR_RPC_URL_3=https://three.example \
+  "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-handover-deployment \
+  "$T/bundle/profile.json" "$T/handover-deployment-binding.json" >/dev/null
+if BRIDGE_MONITOR_RPC_URL_1=https://one.example \
+  "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-handover-deployment \
+  "$T/bundle/profile.json" "$T/handover-deployment-binding.json" >/dev/null 2>&1; then
+  echo "handover Base preflight accepted only one monitor provider" >&2; exit 1
+fi
+for fault in chain receipt code; do
+  if [[ "$fault" == chain ]]; then fault_env=(PROVIDER_WRONG_CHAINS=1)
+  elif [[ "$fault" == receipt ]]; then fault_env=(DEPLOYMENT_RECEIPT_DRIFT=true)
+  else fault_env=(BRIDGE_CODE_DRIFT=true); fi
+  if env "${fault_env[@]}" BRIDGE_MONITOR_RPC_URL_1=https://one.example BRIDGE_MONITOR_RPC_URL_2=https://two.example BRIDGE_MONITOR_RPC_URL_3=https://three.example \
+    "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-handover-deployment \
+    "$T/bundle/profile.json" "$T/handover-deployment-binding.json" >/dev/null 2>&1; then
+    echo "handover Base preflight accepted $fault drift" >&2; exit 1
+  fi
+done
 if BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
   echo "deploy driver accepted a forged Gate A hash" >&2; exit 1
 fi

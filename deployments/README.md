@@ -23,7 +23,7 @@ scripts/production-release.sh deploy --bundle evidence/release-id \
   --receipt evidence/release-id/gate-a-receipt.json -- scripts/production-deploy-driver.sh
 ```
 
-配置後は、Canisterをpauseしたままprofile記載のSNS Rootへcontroller handoverし、その結果をlive snapshotで確認する。handover driverには配置完了後のschema 2 Gate A receiptと、その内部に埋め込まれたものと完全一致するinstall receiptを渡す。Gate A receiptが未生成、deployment bindingが未完了、またはreceipt間にdriftがある場合は不可逆なcontroller変更前に拒否する。`activate`はGate Bのlive検証を再実行し、SNS function registryから固定`schedule_activation` / `execute_activation` targetを解決して提案を1件だけ提出する。提出成功はactivation完了を意味しない。`verify-activation`が、認証済みSNS proposal、function registry、Canister module/controller、activation状態、保存済みFinalized activation結果を照合して初めて検証済みreceiptを発行する。任意のunpause commandは受け付けない。
+配置後は、Canisterをpauseしたままprofile記載のSNS Rootへcontroller handoverし、その結果をlive snapshotで確認する。handover driverには配置完了後のschema 2 Gate A receipt、その内部に埋め込まれたものと完全一致するinstall receipt、Gate A wrapperが使ったcanonical deployment bindingを渡す。Gate A receiptが未生成、bindingのdeployer/nonce/address/transaction/blockがreceipt・profileと一致しない、またはreceipt間にdriftがある場合は不可逆なcontroller変更前に拒否する。さらにprofile記載のcredential-free HTTPS monitor RPC 3本すべてでBase chain ID 8453を確認し、2-of-3で一致したFinalized head以下にTimelock/Bridgeの成功receiptとcanonical runtime codeが存在し、bindingと期待code hashに一致することを確認する。`activate`はGate Bのlive検証を再実行し、SNS function registryから固定`schedule_activation` / `execute_activation` targetを解決して提案を1件だけ提出する。提出成功はactivation完了を意味しない。`verify-activation`が、認証済みSNS proposal、function registry、Canister module/controller、activation状態、保存済みFinalized activation結果を照合して初めて検証済みreceiptを発行する。任意のunpause commandは受け付けない。
 
 ```sh
 scripts/production-release.sh activate --phase schedule --bundle evidence/release-id \

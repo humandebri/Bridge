@@ -2,8 +2,96 @@
 # Verify the staging monitor rehearsal against its independently bound Custom RPC URLs.
 set -euo pipefail
 
+if [[ "${1:-}" == verify-handover-deployment && "$#" == 3 ]]; then
+  PROFILE="$2"
+  DEPLOYMENT_BINDING="$3"
+  [[ -f "$PROFILE" && -f "$DEPLOYMENT_BINDING" ]] || {
+    echo "handover Base profile or deployment binding is missing" >&2
+    exit 1
+  }
+  for tool in cast python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
+  : "${BRIDGE_MONITOR_RPC_URL_1:?missing BRIDGE_MONITOR_RPC_URL_1}"
+  : "${BRIDGE_MONITOR_RPC_URL_2:?missing BRIDGE_MONITOR_RPC_URL_2}"
+  : "${BRIDGE_MONITOR_RPC_URL_3:?missing BRIDGE_MONITOR_RPC_URL_3}"
+  python3 - "$PROFILE" "$DEPLOYMENT_BINDING" "$BRIDGE_MONITOR_RPC_URL_1" "$BRIDGE_MONITOR_RPC_URL_2" "$BRIDGE_MONITOR_RPC_URL_3" <<'PY'
+import hashlib,json,re,subprocess,sys
+from urllib.parse import urlsplit
+
+profile=json.load(open(sys.argv[1],encoding='utf-8'))
+binding=json.load(open(sys.argv[2],encoding='utf-8'))
+providers=sys.argv[3:]
+expected_providers=[item['url'] for item in profile.get('rpc_providers',[])]
+if len(set(providers))!=3 or providers!=expected_providers:
+ raise SystemExit('handover requires the three ordered monitor RPC providers bound by the profile')
+for rpc in providers:
+ p=urlsplit(rpc)
+ if p.scheme!='https' or not p.hostname or p.username or p.password or p.query or p.fragment:
+  raise SystemExit('handover monitor RPC providers must be credential-free HTTPS URLs')
+
+def run(args): return subprocess.check_output(args,text=True,stderr=subprocess.DEVNULL).strip()
+def number(value):
+ if isinstance(value,int): return value
+ value=str(value); return int(value,16) if value.startswith('0x') else int(value)
+def normalized_rpc_result(raw):
+ try: value=json.loads(raw)
+ except json.JSONDecodeError: value=raw
+ if not isinstance(value,str): raise ValueError('RPC result is not a string')
+ return value
+
+for index,rpc in enumerate(providers):
+ try: chain_id=int(run(['cast','chain-id','--rpc-url',rpc]))
+ except (OSError,subprocess.CalledProcessError,ValueError):
+  raise SystemExit(f'handover monitor RPC provider {index} chain ID check failed')
+ if chain_id!=8453: raise SystemExit(f'handover monitor RPC provider {index} is not Base mainnet')
+
+heads=[]
+for index,rpc in enumerate(providers):
+ try:
+  value=json.loads(run(['cast','block','finalized','--rpc-url',rpc,'--json']))
+  height=number(value['number']); block_hash=str(value['hash']).lower()
+  if not re.fullmatch(r'0x[0-9a-f]{64}',block_hash): raise ValueError('invalid Finalized hash')
+  heads.append((index,height,block_hash))
+ except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass
+pairs=[(height,block_hash) for _,height,block_hash in heads]
+if not pairs: raise SystemExit('handover has no usable Finalized Base provider')
+winner=max(set(pairs),key=pairs.count)
+eligible={index for index,height,block_hash in heads if (height,block_hash)==winner}
+if len(eligible)<2: raise SystemExit('handover Finalized Base head has no 2-of-3 agreement')
+
+contracts=(
+ ('timelock',profile['timelock']['address'],profile['timelock']['runtime_code_hash'],'keccak'),
+ ('bridge',profile['bridge_contract'],profile['bridge_runtime_bytecode_sha256'],'sha256'),
+)
+for name,address,expected_hash,hash_kind in contracts:
+ expected=binding[name]
+ matches=0
+ for index in eligible:
+  rpc=providers[index]
+  try:
+   receipt=json.loads(run(['cast','receipt',expected['transaction_hash'],'--rpc-url',rpc,'--json']))
+   receipt_number=number(receipt['blockNumber']); receipt_hash=str(receipt['blockHash']).lower()
+   status=number(receipt['status']); contract_address=str(receipt['contractAddress']).lower()
+   selector=json.dumps({'blockHash':receipt_hash,'requireCanonical':True},separators=(',',':'))
+   code=normalized_rpc_result(run(['cast','rpc','--rpc-url',rpc,'eth_getCode',address,selector])).lower()
+   if not re.fullmatch(r'0x[0-9a-f]+',code) or code=='0x': raise ValueError('empty deployed code')
+   if hash_kind=='sha256': actual_hash=hashlib.sha256(bytes.fromhex(code[2:])).hexdigest()
+   else: actual_hash=run(['cast','keccak',code]).removeprefix('0x').lower()
+   if (status==1 and contract_address==address.lower()
+       and receipt_number==number(expected['block_number'])
+       and receipt_hash==str(expected['block_hash']).lower()
+       and winner[0]>=receipt_number
+       and actual_hash==str(expected_hash).removeprefix('0x').lower()):
+    matches+=1
+  except (OSError,subprocess.CalledProcessError,ValueError,KeyError,json.JSONDecodeError): pass
+ if matches<2: raise SystemExit(f'handover {name} deployment lacks 2-of-3 canonical Finalized agreement')
+print('handover_base_deployment=pass')
+PY
+  exit 0
+fi
+
 [[ "${1:-}" == verify-monitor-drill && "$#" == 2 ]] || {
   echo "usage: production-live-preflight.sh verify-monitor-drill BUNDLE" >&2
+  echo "       production-live-preflight.sh verify-handover-deployment PROFILE DEPLOYMENT_BINDING" >&2
   exit 2
 }
 BUNDLE="$2"

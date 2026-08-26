@@ -161,6 +161,7 @@ PY
 production_validate_gate() {
   local mode="$1" bundle="$2" expected_hash="$3" canister_install_receipt="${4:-}"
   local completed_gate_a_receipt="${5:-}"
+  local deployment_binding="${6:-}"
   local source_root target profile_bin output actual_hash revision tree manifest_revision manifest_tree
   local expected_relayer resolved_relayer bridge_canister refresh_output final_output
   source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -207,10 +208,22 @@ production_validate_gate() {
         echo "controller handover requires the completed schema-2 Gate A receipt" >&2
         return 1
       }
+      [[ -f "$deployment_binding" && ! -L "$deployment_binding" ]] || {
+        rm -rf "$target"
+        echo "controller handover requires the canonical deployment binding" >&2
+        return 1
+      }
       "$profile_bin" validate-production-handover-receipt \
-        "$bundle" "$completed_gate_a_receipt" "$canister_install_receipt" >/dev/null || {
+        "$bundle" "$completed_gate_a_receipt" "$canister_install_receipt" \
+        "$deployment_binding" >/dev/null || {
         rm -rf "$target"
         echo "completed Gate A receipt is not valid for controller handover" >&2
+        return 1
+      }
+      "$source_root/scripts/production-live-preflight.sh" verify-handover-deployment \
+        "$bundle/profile.json" "$deployment_binding" >/dev/null || {
+        rm -rf "$target"
+        echo "live Base deployment is not final or does not match the handover binding" >&2
         return 1
       }
     fi

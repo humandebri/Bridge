@@ -342,6 +342,24 @@ struct GateAReceipt {
     canister_install: ProductionCanisterInstallReceipt,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionDeploymentBinding {
+    deployer_address: String,
+    starting_nonce: u64,
+    timelock: ProductionContractDeploymentBinding,
+    bridge: ProductionContractDeploymentBinding,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionContractDeploymentBinding {
+    transaction_hash: String,
+    address: String,
+    block_number: u64,
+    block_hash: String,
+}
+
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct ProductionCanisterPlan {
@@ -2326,6 +2344,7 @@ fn validate_completed_gate_a_receipt(
     bundle: &ValidatedBundle,
     receipt: &GateAReceipt,
     install_receipt: &ProductionCanisterInstallReceipt,
+    deployment_binding: &ProductionDeploymentBinding,
 ) -> Result<(), String> {
     validate_production_canister_receipt(&bundle.profile, install_receipt)?;
     validate_production_canister_receipt(&bundle.profile, &receipt.canister_install)?;
@@ -2364,6 +2383,37 @@ fn validate_completed_gate_a_receipt(
         || receipt.bridge_deployment_block_number == 0
         || receipt.timelock_deployment_block_number == 0
         || receipt.timelock_deployment_block_number > receipt.bridge_deployment_block_number
+        || !deployment_binding
+            .deployer_address
+            .eq_ignore_ascii_case(&bundle.profile.initial_base_deployment.deployer_address)
+        || deployment_binding.starting_nonce
+            != bundle.profile.initial_base_deployment.starting_nonce
+        || !deployment_binding
+            .timelock
+            .address
+            .eq_ignore_ascii_case(&bundle.profile.timelock.address)
+        || !deployment_binding
+            .bridge
+            .address
+            .eq_ignore_ascii_case(&bundle.profile.bridge_contract)
+        || !deployment_binding
+            .timelock
+            .transaction_hash
+            .eq_ignore_ascii_case(&receipt.timelock_deployment_transaction_hash)
+        || deployment_binding.timelock.block_number != receipt.timelock_deployment_block_number
+        || !deployment_binding
+            .timelock
+            .block_hash
+            .eq_ignore_ascii_case(&receipt.timelock_deployment_block_hash)
+        || !deployment_binding
+            .bridge
+            .transaction_hash
+            .eq_ignore_ascii_case(&receipt.bridge_deployment_transaction_hash)
+        || deployment_binding.bridge.block_number != receipt.bridge_deployment_block_number
+        || !deployment_binding
+            .bridge
+            .block_hash
+            .eq_ignore_ascii_case(&receipt.bridge_deployment_block_hash)
         || embedded_install_sha256 != external_install_sha256
         || receipt.canister_install.source_revision != bundle.manifest.source_revision
         || !receipt
@@ -2383,11 +2433,23 @@ fn validate_production_handover_receipt_files(
     bundle_path: &Path,
     gate_a_receipt_path: &Path,
     install_receipt_path: &Path,
+    deployment_binding_path: &Path,
 ) -> Result<String, String> {
     let bundle = validate_bundle(bundle_path, false)?;
     let gate_a_receipt: GateAReceipt = read_json(gate_a_receipt_path)?;
     let install_receipt: ProductionCanisterInstallReceipt = read_json(install_receipt_path)?;
-    validate_completed_gate_a_receipt(&bundle, &gate_a_receipt, &install_receipt)?;
+    let deployment_binding: ProductionDeploymentBinding = read_json(deployment_binding_path)?;
+    if fs::read(deployment_binding_path).map_err(|error| error.to_string())?
+        != canonical_bytes(&deployment_binding)?
+    {
+        return Err("deployment binding is not the canonical driver output".into());
+    }
+    validate_completed_gate_a_receipt(
+        &bundle,
+        &gate_a_receipt,
+        &install_receipt,
+        &deployment_binding,
+    )?;
     Ok(hex(&Sha256::digest(
         fs::read(gate_a_receipt_path).map_err(|error| error.to_string())?,
     )))
@@ -4521,13 +4583,14 @@ fn run() -> Result<(), String> {
                 )?
             );
         }
-        Some("validate-production-handover-receipt") if args.len() == 5 => {
+        Some("validate-production-handover-receipt") if args.len() == 6 => {
             println!(
                 "{}",
                 validate_production_handover_receipt_files(
                     Path::new(&args[2]),
                     Path::new(&args[3]),
                     Path::new(&args[4]),
+                    Path::new(&args[5]),
                 )?
             );
         }
@@ -4614,7 +4677,7 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[3]
             );
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
     }
     Ok(())
 }
@@ -5724,24 +5787,71 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 cycles_reserve_sufficient: true,
             },
         };
-        assert!(
-            validate_completed_gate_a_receipt(&gate_a, &receipt, &receipt.canister_install,)
-                .is_ok()
-        );
+        let deployment_binding = ProductionDeploymentBinding {
+            deployer_address: profile.initial_base_deployment.deployer_address.clone(),
+            starting_nonce: profile.initial_base_deployment.starting_nonce,
+            timelock: ProductionContractDeploymentBinding {
+                transaction_hash: receipt.timelock_deployment_transaction_hash.clone(),
+                address: profile.timelock.address.clone(),
+                block_number: receipt.timelock_deployment_block_number,
+                block_hash: receipt.timelock_deployment_block_hash.clone(),
+            },
+            bridge: ProductionContractDeploymentBinding {
+                transaction_hash: receipt.bridge_deployment_transaction_hash.clone(),
+                address: profile.bridge_contract.clone(),
+                block_number: receipt.bridge_deployment_block_number,
+                block_hash: receipt.bridge_deployment_block_hash.clone(),
+            },
+        };
+        assert!(validate_completed_gate_a_receipt(
+            &gate_a,
+            &receipt,
+            &receipt.canister_install,
+            &deployment_binding,
+        )
+        .is_ok());
         let mut predeploy_receipt = receipt.clone();
         predeploy_receipt.bridge_deployment_block_number = 0;
         assert!(validate_completed_gate_a_receipt(
             &gate_a,
             &predeploy_receipt,
             &receipt.canister_install,
+            &deployment_binding,
         )
         .is_err());
         let mut drifted_install_receipt = receipt.canister_install.clone();
         drifted_install_receipt.installer_principal = test_principal(30);
-        assert!(
-            validate_completed_gate_a_receipt(&gate_a, &receipt, &drifted_install_receipt,)
-                .is_err()
-        );
+        assert!(validate_completed_gate_a_receipt(
+            &gate_a,
+            &receipt,
+            &drifted_install_receipt,
+            &deployment_binding,
+        )
+        .is_err());
+        let mut forged_binding = ProductionDeploymentBinding {
+            deployer_address: deployment_binding.deployer_address.clone(),
+            starting_nonce: deployment_binding.starting_nonce,
+            timelock: ProductionContractDeploymentBinding {
+                transaction_hash: deployment_binding.timelock.transaction_hash.clone(),
+                address: deployment_binding.timelock.address.clone(),
+                block_number: deployment_binding.timelock.block_number,
+                block_hash: deployment_binding.timelock.block_hash.clone(),
+            },
+            bridge: ProductionContractDeploymentBinding {
+                transaction_hash: deployment_binding.bridge.transaction_hash.clone(),
+                address: deployment_binding.bridge.address.clone(),
+                block_number: deployment_binding.bridge.block_number,
+                block_hash: deployment_binding.bridge.block_hash.clone(),
+            },
+        };
+        forged_binding.bridge.transaction_hash = format!("0x{}", "ee".repeat(32));
+        assert!(validate_completed_gate_a_receipt(
+            &gate_a,
+            &receipt,
+            &receipt.canister_install,
+            &forged_binding,
+        )
+        .is_err());
         let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
         fs::write(root.join("gate-a-receipt.json"), &receipt_bytes).unwrap();
         artifacts.push(ArtifactDigest {
