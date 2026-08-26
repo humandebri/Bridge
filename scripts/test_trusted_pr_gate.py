@@ -7,9 +7,6 @@ import subprocess
 import tempfile
 import unittest
 
-from trusted_proof_profiles import select_profile
-
-
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
 
@@ -42,6 +39,7 @@ class TrustedPrGateTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("Require complete trusted classifier outputs", workflow)
+        self.assertIn("review_required: ${{ steps.classify.outputs.review_required }}", workflow)
         self.assertLess(
             workflow.index("Require complete trusted classifier outputs"),
             workflow.index("Install trusted classifier dependencies"),
@@ -77,12 +75,28 @@ class TrustedPrGateTests(unittest.TestCase):
             revision = line.split("@", 1)[1].split()[0]
             self.assertRegex(revision, r"^[0-9a-f]{40}$")
 
+    def test_sensitive_changes_wait_for_one_exact_head_environment_review(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("trusted-change-review:", workflow)
+        self.assertIn("name: trusted-change-review", workflow)
+        self.assertIn("if: needs.classify.outputs.review_required == 'true'", workflow)
+        self.assertIn("Bind approval to the current PR head", workflow)
+        self.assertIn("EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}", workflow)
+        self.assertIn("needs: [classify, trusted-change-review]", workflow)
+        self.assertIn("needs.trusted-change-review.result == 'success'", workflow)
+        self.assertIn("needs.trusted-change-review.result == 'skipped'", workflow)
+        self.assertIn("needs: [classify, trusted-change-review, test]", workflow)
+        self.assertIn("group: trusted-pr-gate-${{ github.event.pull_request.number }}", workflow)
+        self.assertIn("cancel-in-progress: true", workflow)
+        self.assertIn('true) test "$REVIEW_RESULT" = success', workflow)
+        self.assertIn('false) test "$REVIEW_RESULT" = skipped', workflow)
+        self.assertNotIn("pull_request_review:", workflow)
+
     def test_untrusted_lifecycle_never_runs_before_policy_and_isolation_are_fixed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("path: trusted-policy", workflow)
         self.assertIn("path: source", workflow)
         self.assertIn("trusted-policy/scripts/install-ci-tools.sh \"$mode\"", workflow)
-        self.assertEqual(select_profile(ROOT).identifier, "current-main")
         self.assertIn("proofs) mode=\"all\"", workflow)
         self.assertIn("*) mode=\"ci\"", workflow)
         self.assertEqual(workflow.count("docker build --file"), 1)
@@ -102,7 +116,7 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertIn("ICP_CLI_DISABLE_UPDATE: \"1\"", workflow)
         self.assertIn("ICP_TELEMETRY_DISABLED: \"1\"", workflow)
-        self.assertIn("prepare_trusted_dependencies.py", workflow)
+        self.assertIn("prepare_candidate_dependencies.py", workflow)
         self.assertIn("BRIDGE_TRUSTED_DEPENDENCY_ROOT", workflow)
         self.assertIn(
             'pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts',
@@ -137,10 +151,10 @@ class TrustedPrGateTests(unittest.TestCase):
         ):
             self.assertLess(
                 workflow.index(prefetch),
-                workflow.index("Check out exact untrusted head as authenticated data input"),
+                workflow.index("Check out exact candidate head as reviewed data input"),
             )
         self.assertLess(
-            workflow.index("Authenticate and isolate profile dependency manifests"),
+            workflow.index("Isolate reviewed candidate dependency inputs"),
             workflow.index("Prefetch verified real-E2E ledger artifacts"),
         )
         self.assertLess(
@@ -153,8 +167,8 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertNotIn("pnpm --dir source/ui install", workflow)
         self.assertLess(
-            workflow.index("Authenticate and isolate profile dependency manifests"),
-            workflow.index("Install authenticated workspace dependencies"),
+            workflow.index("Isolate reviewed candidate dependency inputs"),
+            workflow.index("Install reviewed workspace dependencies"),
         )
 
     def test_each_check_uses_fresh_read_only_container_boundaries(self) -> None:
@@ -206,9 +220,10 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertNotIn("cp /home/runner/.elan/settings.toml", wrapper)
         self.assertIn("BRIDGE_TRUSTED_DEPS_READY=1", wrapper)
         self.assertIn(
-            'BRIDGE_TRUSTED_PROFILE="${BRIDGE_TRUSTED_PROFILE:?missing trusted profile}"',
+            'BRIDGE_EXPECTED_HEAD_SHA="${BRIDGE_EXPECTED_HEAD_SHA:?missing expected head SHA}"',
             wrapper,
         )
+        self.assertNotIn("BRIDGE_TRUSTED_PROFILE", wrapper)
         self.assertIn("PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false", wrapper)
         self.assertIn("ELAN_HOME=/scratch/home/.elan", wrapper)
         self.assertIn("CARGO_NET_OFFLINE=true", wrapper)
@@ -229,8 +244,9 @@ class TrustedPrGateTests(unittest.TestCase):
         driver = (ROOT / "scripts" / "ci-local.sh").read_text(encoding="utf-8")
         self.assertIn("require_workspace_dependencies", driver)
         self.assertIn("BRIDGE_TRUSTED_DEPS_READY", driver)
-        self.assertIn('export BRIDGE_TRUSTED_PROFILE="$selected_profile"', driver)
-        self.assertIn("trusted proof profile differs:", driver)
+        self.assertIn("trusted_execution_context.py\" --check", driver)
+        self.assertNotIn("BRIDGE_TRUSTED_PROFILE", driver)
+        self.assertNotIn("trusted proof profile differs:", driver)
         self.assertIn(
             'pnpm --dir "$ROOT/ui" exec playwright test --config playwright.real.config.ts',
             driver,

@@ -9,7 +9,7 @@ import hashlib
 from pathlib import Path
 import re
 
-from trusted_proof_profiles import require_environment_profile
+from trusted_execution_context import require_trusted_execution_context
 
 
 SCHEMA_VERSION = "2"
@@ -82,7 +82,7 @@ def validate_trusted_smt_sources(
     root: Path = ROOT, expected: dict[str, str] | None = None
 ) -> None:
     if expected is None:
-        require_environment_profile(root)
+        require_trusted_execution_context(root)
         return
     for relative, digest in expected.items():
         path = root / relative

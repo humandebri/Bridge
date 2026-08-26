@@ -1,12 +1,10 @@
 name: trusted-pr-gate
 
-# This file is intentionally promoted to the default branch before dependent PRs.
+# Sensitive validation-boundary changes require one exact-head Environment review.
 
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
-  pull_request_review:
-    types: [submitted, dismissed]
 
 permissions:
   contents: read
@@ -25,6 +23,7 @@ jobs:
       base_sha: ${{ steps.base.outputs.sha }}
       matrix: ${{ steps.classify.outputs.matrix }}
       any: ${{ steps.classify.outputs.any }}
+      review_required: ${{ steps.classify.outputs.review_required }}
     steps:
       - name: Check out trusted base
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -54,10 +53,15 @@ jobs:
         env:
           CLASSIFY_ANY: ${{ steps.classify.outputs.any }}
           CLASSIFY_MATRIX: ${{ steps.classify.outputs.matrix }}
+          REVIEW_REQUIRED: ${{ steps.classify.outputs.review_required }}
         run: |
           case "$CLASSIFY_ANY" in
             true|false) ;;
             *) echo "trusted classifier did not emit a boolean any output" >&2; exit 1 ;;
+          esac
+          case "$REVIEW_REQUIRED" in
+            true|false) ;;
+            *) echo "trusted classifier did not emit a boolean review_required output" >&2; exit 1 ;;
           esac
           test -n "$CLASSIFY_MATRIX"
       - name: Install trusted classifier dependencies
@@ -70,9 +74,31 @@ jobs:
           python3 scripts/test_ci_modes.py
           python3 scripts/test_trusted_pr_gate.py
 
-  test:
+  trusted-change-review:
     needs: classify
-    if: needs.classify.outputs.any == 'true'
+    if: needs.classify.outputs.review_required == 'true'
+    runs-on: ubuntu-24.04
+    permissions: {}
+    environment:
+      name: trusted-change-review
+    steps:
+      - name: Bind approval to the current PR head
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          echo "Approved trusted validation inputs for exact head $EXPECTED_HEAD_SHA"
+
+  test:
+    needs: [classify, trusted-change-review]
+    if: >-
+      always() &&
+      needs.classify.result == 'success' &&
+      needs.classify.outputs.any == 'true' &&
+      (
+        (needs.classify.outputs.review_required == 'true' && needs.trusted-change-review.result == 'success') ||
+        (needs.classify.outputs.review_required == 'false' && needs.trusted-change-review.result == 'skipped')
+      )
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -147,7 +173,7 @@ jobs:
           ICP_CLI_DISABLE_UPDATE: "1"
           ICP_TELEMETRY_DISABLED: "1"
         run: icp project show --project-root-override . >/dev/null
-      - name: Check out exact untrusted head as authenticated data input
+      - name: Check out exact candidate head as reviewed data input
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
@@ -156,16 +182,15 @@ jobs:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
-      - name: Authenticate and isolate profile dependency manifests
+      - name: Isolate reviewed candidate dependency inputs
         run: |
           dependency_root="$RUNNER_TEMP/bridge-trusted-dependencies"
-          profile="$(python3 trusted-policy/scripts/prepare_trusted_dependencies.py \
-            --source source --destination "$dependency_root")"
+          python3 trusted-policy/scripts/prepare_candidate_dependencies.py \
+            --source source --destination "$dependency_root"
           echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$dependency_root" >> "$GITHUB_ENV"
-          echo "BRIDGE_TRUSTED_PROFILE=$profile" >> "$GITHUB_ENV"
-      - name: Install authenticated workspace dependencies without lifecycle scripts
+      - name: Install reviewed workspace dependencies without lifecycle scripts
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts
-      - name: Install authenticated UI dependencies without lifecycle scripts
+      - name: Install reviewed UI dependencies without lifecycle scripts
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" install --frozen-lockfile --ignore-scripts
       - name: Install Chromium when required
         if: contains(fromJSON(needs.classify.outputs.matrix), 'ui') || contains(fromJSON(needs.classify.outputs.matrix), 'real')
@@ -214,7 +239,7 @@ jobs:
 
   trusted-pr-gate:
     if: always()
-    needs: [classify, test]
+    needs: [classify, trusted-change-review, test]
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
@@ -222,9 +247,16 @@ jobs:
         env:
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           ANY: ${{ needs.classify.outputs.any }}
+          REVIEW_REQUIRED: ${{ needs.classify.outputs.review_required }}
+          REVIEW_RESULT: ${{ needs.trusted-change-review.result }}
           TEST_RESULT: ${{ needs.test.result }}
         run: |
           test "$CLASSIFY_RESULT" = success
+          case "$REVIEW_REQUIRED" in
+            true) test "$REVIEW_RESULT" = success ;;
+            false) test "$REVIEW_RESULT" = skipped ;;
+            *) echo "invalid trusted review classification" >&2; exit 1 ;;
+          esac
           if [[ "$ANY" == true ]]; then
             test "$TEST_RESULT" = success
           else

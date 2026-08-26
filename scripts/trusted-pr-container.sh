@@ -5,7 +5,7 @@ set -euo pipefail
 SOURCE_ROOT="$(cd "${1:?missing candidate source}" && pwd)"
 POLICY_ROOT="$(cd "${2:?missing trusted policy}" && pwd)"
 MODE="${3:?missing CI mode}"
-DEPENDENCY_ROOT="$(cd "${4:?missing authenticated dependencies}" && pwd)"
+DEPENDENCY_ROOT="$(cd "${4:?missing reviewed dependencies}" && pwd)"
 IMAGE="${BRIDGE_TRUSTED_PR_IMAGE:-kinic-bridge-trusted-pr:local}"
 
 case "$MODE" in
@@ -165,7 +165,7 @@ docker run --rm \
   "${CACHE_MOUNTS[@]}" \
   --env CI=true \
   --env BRIDGE_TRUSTED_DEPS_READY=1 \
-  --env BRIDGE_TRUSTED_PROFILE="${BRIDGE_TRUSTED_PROFILE:?missing trusted profile}" \
+  --env BRIDGE_EXPECTED_HEAD_SHA="${BRIDGE_EXPECTED_HEAD_SHA:?missing expected head SHA}" \
   --env BRIDGE_CANDIDATE_SCRIPTS=/scratch/candidate-scripts \
   --env PLAYWRIGHT_BROWSERS_PATH=/home/runner/.cache/ms-playwright \
   --env PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false \

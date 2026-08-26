@@ -16,6 +16,65 @@ from pathlib import PurePosixPath
 AREAS = ("rust", "contracts", "proofs", "ui", "real", "icp")
 ROOT = Path(__file__).resolve().parents[1]
 
+SENSITIVE_PREFIXES = (
+    ".github/",
+    ".icp/data/mappings/",
+    "contracts/lib/",
+    "contracts/test/",
+    "deployments/",
+    "integration/",
+    "recipes/",
+    "scripts/",
+    "tools/",
+    "ui/e2e",
+    "ui/patches/",
+    "ui/scripts/",
+    "verification/",
+)
+SENSITIVE_EXACT_PATHS = frozenset(
+    {
+        ".gitmodules",
+        "Cargo.lock",
+        "Cargo.toml",
+        "contracts/foundry.toml",
+        "icp.yaml",
+        "lean-toolchain",
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "rust-toolchain.toml",
+        "ui/package.json",
+        "ui/pnpm-lock.yaml",
+        "ui/pnpm-workspace.yaml",
+    }
+)
+SENSITIVE_FILENAMES = frozenset(
+    {
+        "Cargo.toml",
+        "Dockerfile",
+        "Makefile",
+        "build.rs",
+        "foundry.toml",
+        "icp.yaml",
+        "lean-toolchain",
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "rust-toolchain",
+        "rust-toolchain.toml",
+        "toolchain.toml",
+    }
+)
+SAFE_SOURCE_PREFIXES = (
+    "canister/",
+    "contracts/abi/",
+    "contracts/src/",
+    "ui/public/",
+    "ui/src/",
+)
+
 
 @lru_cache(maxsize=1)
 def _proof_owned_paths() -> frozenset[str]:
@@ -44,6 +103,56 @@ def _enable_all(result: dict[str, bool]) -> None:
 def _is_documentation(path: str) -> bool:
     name = PurePosixPath(path).name
     return path.endswith(".md") or name.startswith("LICENSE") or name == ".gitignore"
+
+
+def _is_test_path(path: str) -> bool:
+    parts = PurePosixPath(path).parts
+    name = PurePosixPath(path).name
+    return (
+        any(
+            part in {"test", "tests", "benches", "fixtures", "snapshots", "__tests__"}
+            or part.startswith("e2e")
+            for part in parts
+        )
+        or name.endswith(
+            (
+                ".test.ts",
+                ".test.tsx",
+                ".test.js",
+                ".test.mjs",
+                ".spec.ts",
+                ".spec.tsx",
+                ".spec.js",
+                ".spec.mjs",
+                "_test.rs",
+                "_tests.rs",
+            )
+        )
+        or name.startswith("test_")
+    )
+
+
+def review_required(paths: list[str]) -> bool:
+    """Require an exact-head review when a PR changes its validation boundary."""
+    for raw_path in paths:
+        path = PurePosixPath(raw_path.strip()).as_posix()
+        if not path or path == ".":
+            continue
+        name = PurePosixPath(path).name
+        if (
+            path in SENSITIVE_EXACT_PATHS
+            or path.startswith(SENSITIVE_PREFIXES)
+            or _is_test_path(path)
+            or name in SENSITIVE_FILENAMES
+            or name.endswith((".lock", ".lockb"))
+            or name.endswith((".config.js", ".config.mjs", ".config.ts"))
+        ):
+            return True
+        if _is_documentation(path):
+            continue
+        if not path.startswith(SAFE_SOURCE_PREFIXES):
+            return True
+    return False
 
 
 def classify(paths: list[str]) -> dict[str, bool]:
@@ -151,6 +260,7 @@ def main() -> int:
     result = classify(paths)
     lines = [f"{area}={'true' if enabled else 'false'}" for area, enabled in result.items()]
     lines.append(f"any={'true' if any(result.values()) else 'false'}")
+    lines.append(f"review_required={'true' if review_required(paths) else 'false'}")
     lines.append(
         "matrix="
         + json.dumps(

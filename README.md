@@ -113,7 +113,7 @@ scripts/ci-local.sh smoke
 scripts/ci-local.sh real
 ```
 
-GitHub Actionsの`trusted-pr-gate`は`pull_request_target`でbase branch版classifierだけを実行し、PRの正確なhead SHAをread-only・secretなしのephemeral runnerで検証する。未知pathとCI関連変更は全suiteへfail closedする。
+GitHub Actionsの`trusted-pr-gate`は`pull_request_target`でbase branch版classifierだけを実行し、PRの正確なhead SHAをread-only・secretなしのephemeral runnerで検証する。docsと既知のproduction sourceだけの変更は自動検証し、workflow、script、proof、test、dependency、toolchain、build設定、submodule、未知pathの変更は同じrunの`trusted-change-review` Environmentでexact headの承認を1回要求する。head更新時は旧runをcancelし、新しいSHAを再承認する。
 bootstrap merge後にBranch ProtectionまたはRulesetで`trusted-pr-gate`をrequiredかつstrictに設定する必要がある。旧`pr-gate`はrequired判定から外し、`main`へのpush、夜間schedule、手動実行では完全な`all` gateを実行する。
 
 `contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、coverage summaryを検証する。
