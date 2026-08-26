@@ -15,7 +15,7 @@ class TrustedDependencyProfileTests(unittest.TestCase):
     def test_hardening_profile_materializes_exact_manifests(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "dependencies"
-            self.assertEqual(materialize(ROOT, destination), "security-hardening-v1")
+            self.assertEqual(materialize(ROOT, destination), "current-main")
             self.assertEqual(
                 {
                     path.relative_to(destination).as_posix()
@@ -24,7 +24,7 @@ class TrustedDependencyProfileTests(unittest.TestCase):
                 },
                 set(
                     parse_policy(POLICY.read_text(encoding="utf-8"))[
-                        "security-hardening-v1"
+                        "current-main"
                     ]
                 ),
             )

@@ -165,6 +165,7 @@ docker run --rm \
   "${CACHE_MOUNTS[@]}" \
   --env CI=true \
   --env BRIDGE_TRUSTED_DEPS_READY=1 \
+  --env BRIDGE_TRUSTED_PROFILE="${BRIDGE_TRUSTED_PROFILE:?missing trusted profile}" \
   --env BRIDGE_CANDIDATE_SCRIPTS=/scratch/candidate-scripts \
   --env PLAYWRIGHT_BROWSERS_PATH=/home/runner/.cache/ms-playwright \
   --env PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false \

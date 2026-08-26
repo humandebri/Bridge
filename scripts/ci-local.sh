@@ -125,7 +125,13 @@ run_step() {
 }
 
 run_versions() {
-  python3 "$ROOT/scripts/trusted_proof_profiles.py" --print >/dev/null
+  local selected_profile
+  selected_profile="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"
+  if [[ -n "${BRIDGE_TRUSTED_PROFILE:-}" && "$BRIDGE_TRUSTED_PROFILE" != "$selected_profile" ]]; then
+    echo "trusted proof profile differs: expected=$BRIDGE_TRUSTED_PROFILE actual=$selected_profile" >&2
+    return 1
+  fi
+  export BRIDGE_TRUSTED_PROFILE="$selected_profile"
   verify_no_npm_lockfiles "$ROOT"
   shellcheck -x -S warning \
     "$ROOT/scripts/ci-local.sh" \
@@ -696,7 +702,13 @@ run_proof_stage() {
 }
 
 run_proofs() {
-  python3 "$ROOT/scripts/trusted_proof_profiles.py" --print >/dev/null
+  local selected_profile
+  selected_profile="$(python3 "$ROOT/scripts/trusted_proof_profiles.py" --print)"
+  if [[ -n "${BRIDGE_TRUSTED_PROFILE:-}" && "$BRIDGE_TRUSTED_PROFILE" != "$selected_profile" ]]; then
+    echo "trusted proof profile differs: expected=$BRIDGE_TRUSTED_PROFILE actual=$selected_profile" >&2
+    return 1
+  fi
+  export BRIDGE_TRUSTED_PROFILE="$selected_profile"
   CLAIM_CHECK="$ROOT/scripts/check_claim_manifest.py"
   CLAIM_TEST_CHECK="$ROOT/scripts/check_claim_test_manifest.py"
   CLAIM_TEST_TEST="$ROOT/scripts/test_claim_test_manifest.py"

@@ -59,7 +59,7 @@ class ChangedAreaTests(unittest.TestCase):
                 expected = (
                     ("ui", "real", "proofs")
                     if path == "ui/src/lib/withdrawal-submit.ts"
-                    and TRUSTED_PROOF_PROFILE == "security-hardening-v1"
+                    and TRUSTED_PROOF_PROFILE in {"current-main", "security-hardening-v1"}
                     else ("ui", "real")
                 )
                 self.assert_areas([path], *expected)
