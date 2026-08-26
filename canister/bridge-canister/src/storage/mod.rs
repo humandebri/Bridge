@@ -2160,8 +2160,6 @@ pub enum AuditEventKind {
         gas_limit: u128,
         initial_max_fee_per_gas: u128,
         reachable_max_fee_per_gas: u128,
-        observed_l1_fee_upper_bound_wei: u128,
-        reserved_l1_fee_wei: u128,
         reserved_eth_wei: u128,
     },
     FeePayoutRequested {
@@ -9877,6 +9875,7 @@ mod tests {
         WithdrawalId,
     };
     use ic_sqlite_vfs::DefaultMemoryImpl as VectorMemory;
+
     use serial_test::serial;
 
     #[test]
@@ -12995,8 +12994,6 @@ mod tests {
                 gas_limit: 9,
                 initial_max_fee_per_gas: 10,
                 reachable_max_fee_per_gas: 11,
-                observed_l1_fee_upper_bound_wei: 12,
-                reserved_l1_fee_wei: 13,
                 reserved_eth_wei: 14,
             },
             AuditEventKind::EvmOperationReverted {

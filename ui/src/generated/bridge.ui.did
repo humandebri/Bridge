@@ -138,8 +138,6 @@ type AuditEventKind = variant {
     ledger_fee : nat;
   };
   EvmFeeQuoteObserved : record {
-    reserved_l1_fee_wei : nat;
-    observed_l1_fee_upper_bound_wei : nat;
     base_fee_per_gas : nat;
     max_priority_fee_per_gas : nat;
     observed_at_ns : nat64;

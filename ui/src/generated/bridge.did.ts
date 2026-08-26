@@ -168,8 +168,6 @@ export type AuditEventKind = {
   } |
   {
     'EvmFeeQuoteObserved' : {
-      'reserved_l1_fee_wei' : bigint,
-      'observed_l1_fee_upper_bound_wei' : bigint,
       'base_fee_per_gas' : bigint,
       'max_priority_fee_per_gas' : bigint,
       'observed_at_ns' : bigint,

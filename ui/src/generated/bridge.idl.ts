@@ -341,8 +341,6 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       'ledger_fee' : IDL.Nat,
     }),
     'EvmFeeQuoteObserved' : IDL.Record({
-      'reserved_l1_fee_wei' : IDL.Nat,
-      'observed_l1_fee_upper_bound_wei' : IDL.Nat,
       'base_fee_per_gas' : IDL.Nat,
       'max_priority_fee_per_gas' : IDL.Nat,
       'observed_at_ns' : IDL.Nat64,
