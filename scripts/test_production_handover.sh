@@ -67,12 +67,14 @@ fi
 SH
 chmod +x "$T/bin/icp"
 export PATH="$T/bin:$PATH"
+printf '{}\n' >"$T/production-canister-install-receipt.json"
 
 run_handover() {
   local evidence="$1"
   shift
   BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" \
   BRIDGE_RELEASE_BUNDLE="$T/bundle" \
+  BRIDGE_CANISTER_INSTALL_RECEIPT="$T/production-canister-install-receipt.json" \
   BRIDGE_ICP_IDENTITY=production \
   BRIDGE_HANDOVER_EVIDENCE_FILE="$evidence" \
   BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY \

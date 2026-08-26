@@ -159,7 +159,7 @@ PY
 }
 
 production_validate_gate() {
-  local mode="$1" bundle="$2" expected_hash="$3"
+  local mode="$1" bundle="$2" expected_hash="$3" canister_install_receipt="${4:-}"
   local source_root target profile_bin output actual_hash revision tree manifest_revision manifest_tree
   local expected_relayer resolved_relayer bridge_canister refresh_output final_output
   source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -189,7 +189,13 @@ production_validate_gate() {
   "$source_root/scripts/rebuild-release-artifacts.sh" \
     "$bundle" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
   if [[ "$mode" == gate-a ]]; then
-    "$profile_bin" verify-production-canister-predeploy "$bundle/profile.json" >/dev/null || {
+    [[ -f "$canister_install_receipt" && ! -L "$canister_install_receipt" ]] || {
+      rm -rf "$target"
+      echo "Gate A requires the verified production Canister install receipt" >&2
+      return 1
+    }
+    "$profile_bin" verify-production-canister-predeploy \
+      "$bundle/profile.json" "$canister_install_receipt" >/dev/null || {
       rm -rf "$target"
       echo "live production Canister no longer matches the paused predeploy profile" >&2
       return 1

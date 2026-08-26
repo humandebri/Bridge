@@ -3494,34 +3494,69 @@ fn verify_live_inputs(
     Ok(())
 }
 
-fn verify_production_canister_predeploy(profile_path: &Path) -> Result<(), String> {
+fn validate_production_canister_management_state(
+    profile: &Profile,
+    receipt: &ProductionCanisterInstallReceipt,
+    controllers: &[Principal],
+    module_hash: &[u8],
+) -> Result<(), String> {
+    let installer =
+        Principal::from_text(&receipt.installer_principal).map_err(|error| error.to_string())?;
+    if controllers != [installer]
+        || !hex(module_hash).eq_ignore_ascii_case(&receipt.module_sha256)
+        || !hex(module_hash).eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+    {
+        return Err(
+            "certified Canister module hash or controller set differs from the install receipt"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn verify_production_canister_predeploy(
+    profile_path: &Path,
+    receipt_path: &Path,
+) -> Result<(), String> {
     let profile: Profile = read_json(profile_path)?;
     validate_profile(&profile, true)?;
+    let receipt: ProductionCanisterInstallReceipt = read_json(receipt_path)?;
+    validate_production_canister_receipt(&profile, &receipt)?;
     let bridge =
         Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
     let agent = mainnet_agent(&profile.ic_host, false)?;
-    let (runtime_raw, status_raw, lifecycle_raw) = async_runtime()?.block_on(async {
-        let empty = Encode!().map_err(|error| error.to_string())?;
-        let runtime = agent
-            .query(&bridge, "get_runtime_binding")
-            .with_arg(empty.clone())
-            .call_with_verification()
-            .await
-            .map_err(|error| error.to_string())?;
-        let status = agent
-            .query(&bridge, "get_bridge_status")
-            .with_arg(empty.clone())
-            .call_with_verification()
-            .await
-            .map_err(|error| error.to_string())?;
-        let lifecycle = agent
-            .query(&bridge, "get_production_lifecycle")
-            .with_arg(empty)
-            .call_with_verification()
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok::<_, String>((runtime, status, lifecycle))
-    })?;
+    let (runtime_raw, status_raw, lifecycle_raw, controllers, module_hash) = async_runtime()?
+        .block_on(async {
+            let empty = Encode!().map_err(|error| error.to_string())?;
+            let runtime = agent
+                .query(&bridge, "get_runtime_binding")
+                .with_arg(empty.clone())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let status = agent
+                .query(&bridge, "get_bridge_status")
+                .with_arg(empty.clone())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let lifecycle = agent
+                .query(&bridge, "get_production_lifecycle")
+                .with_arg(empty)
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let controllers = agent
+                .read_state_canister_controllers(bridge)
+                .await
+                .map_err(|error| error.to_string())?;
+            let module_hash = agent
+                .read_state_canister_module_hash(bridge)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok::<_, String>((runtime, status, lifecycle, controllers, module_hash))
+        })?;
+    validate_production_canister_management_state(&profile, &receipt, &controllers, &module_hash)?;
     let runtime = Decode!(&runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
     let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
     if !matches!(
@@ -4415,8 +4450,8 @@ fn run() -> Result<(), String> {
                 )?
             );
         }
-        Some("verify-production-canister-predeploy") if args.len() == 3 => {
-            verify_production_canister_predeploy(Path::new(&args[2]))?;
+        Some("verify-production-canister-predeploy") if args.len() == 4 => {
+            verify_production_canister_predeploy(Path::new(&args[2]), Path::new(&args[3]))?;
         }
         Some("storage-validation-complete") if args.len() == 3 => {
             println!("{}", storage_validation_complete(&args[2])?);
@@ -4498,7 +4533,7 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[3]
             );
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
     }
     Ok(())
 }
@@ -4774,6 +4809,33 @@ mod tests {
         }
     }
 
+    fn production_canister_receipt(profile: &Profile) -> ProductionCanisterInstallReceipt {
+        let plan = production_canister_plan(profile);
+        let init_candid_sha256 = hex(&Sha256::digest(
+            validate_production_canister_plan(&plan).unwrap(),
+        ));
+        ProductionCanisterInstallReceipt {
+            schema_version: 1,
+            plan_sha256: hex(&canonical_sha256(&plan).unwrap()),
+            plan: plan.clone(),
+            source_revision: plan.source_revision.clone(),
+            source_tree_sha256: plan.source_tree_sha256.clone(),
+            canister_id: profile.bridge_canister_id.clone(),
+            installer_principal: test_principal(31),
+            module_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            init_candid_sha256,
+            runtime_binding: live_runtime_binding(profile),
+            governance_operator: profile.governance_operator.clone(),
+            mint_authorization_ttl_seconds: 900,
+            mint_authorization_epoch: 7,
+            storage_validation_complete: true,
+            storage_checksum_complete: true,
+            deposits_paused: true,
+            state_is_empty: true,
+            cycles_reserve_sufficient: true,
+        }
+    }
+
     #[test]
     fn production_canister_plan_generates_the_typed_candid_init_argument() {
         let profile = valid_profile();
@@ -4794,30 +4856,7 @@ mod tests {
     #[test]
     fn production_canister_receipt_fails_closed_on_postcondition_drift() {
         let profile = valid_profile();
-        let plan = production_canister_plan(&profile);
-        let init_candid_sha256 = hex(&Sha256::digest(
-            validate_production_canister_plan(&plan).unwrap(),
-        ));
-        let mut receipt = ProductionCanisterInstallReceipt {
-            schema_version: 1,
-            plan_sha256: hex(&canonical_sha256(&plan).unwrap()),
-            plan: plan.clone(),
-            source_revision: plan.source_revision.clone(),
-            source_tree_sha256: plan.source_tree_sha256.clone(),
-            canister_id: profile.bridge_canister_id.clone(),
-            installer_principal: test_principal(31),
-            module_sha256: profile.bridge_canister_wasm_sha256.clone(),
-            init_candid_sha256,
-            runtime_binding: live_runtime_binding(&profile),
-            governance_operator: profile.governance_operator.clone(),
-            mint_authorization_ttl_seconds: 900,
-            mint_authorization_epoch: 7,
-            storage_validation_complete: true,
-            storage_checksum_complete: true,
-            deposits_paused: true,
-            state_is_empty: true,
-            cycles_reserve_sufficient: true,
-        };
+        let mut receipt = production_canister_receipt(&profile);
         assert!(validate_production_canister_receipt(&profile, &receipt).is_ok());
         receipt.deposits_paused = false;
         assert!(validate_production_canister_receipt(&profile, &receipt).is_err());
@@ -4828,6 +4867,47 @@ mod tests {
             validate_production_canister_plan(&receipt.plan).unwrap(),
         ));
         assert!(validate_production_canister_receipt(&profile, &receipt).is_err());
+    }
+
+    #[test]
+    fn production_canister_predeploy_rejects_certified_module_drift() {
+        let profile = valid_profile();
+        let receipt = production_canister_receipt(&profile);
+        let controllers = [Principal::from_text(&receipt.installer_principal).unwrap()];
+        let mut module_hash = decode_hex(&receipt.module_sha256).unwrap();
+        assert!(validate_production_canister_management_state(
+            &profile,
+            &receipt,
+            &controllers,
+            &module_hash,
+        )
+        .is_ok());
+        module_hash[0] ^= 1;
+        assert!(validate_production_canister_management_state(
+            &profile,
+            &receipt,
+            &controllers,
+            &module_hash,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn production_canister_predeploy_rejects_certified_extra_controller() {
+        let profile = valid_profile();
+        let receipt = production_canister_receipt(&profile);
+        let controllers = [
+            Principal::from_text(&receipt.installer_principal).unwrap(),
+            Principal::anonymous(),
+        ];
+        let module_hash = decode_hex(&receipt.module_sha256).unwrap();
+        assert!(validate_production_canister_management_state(
+            &profile,
+            &receipt,
+            &controllers,
+            &module_hash,
+        )
+        .is_err());
     }
 
     #[test]

@@ -289,6 +289,7 @@ if [[ "$MODE" == "deploy" ]]; then
   production_reserve_output "$RECEIPT" "Gate A receipt"
   production_reserve_output "$POST_DEPLOY_PROFILE" "post-deploy profile"
   export BRIDGE_GATE_A_MANIFEST_SHA256="$GATE_MANIFEST_SHA256"
+  export BRIDGE_CANISTER_INSTALL_RECEIPT="$CANISTER_INSTALL_RECEIPT"
   GATE_A_PROFILE_CANONICAL_SHA256="$(run_profile_gate validate "$BUNDLE/profile.json")"
   [[ "$GATE_A_PROFILE_CANONICAL_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || {
     echo "Gate A profile canonicalization did not return SHA-256" >&2
