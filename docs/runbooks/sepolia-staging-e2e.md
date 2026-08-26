@@ -85,6 +85,7 @@ current-schema upgradeではさらに、同じ観測時点の次のJSON artifact
 - install stageにはupgrade前後の全count、source schema v33／wire v28とtarget schema v34／wire v29、同一instance ID、`storage_integrity_check = ok`を記録し、いずれかが不一致ならUI公開へ進まない。
 
 manifest validatorは全artifactを再hashし、snapshot間のcount、module hash、balance、instance IDを再比較する。pending Timelock operationはupgrade前にゼロでなければならない。Deposit、reservation、Withdrawal、pending Ledger operation、hold、監査履歴は同一schema upgrade後も保持する。
+wire v27で保存されたrefund retry、EVM transaction replacement、fee quote、revert recovery、旧fee recipient、reserve gateのaudit variantは履歴decode専用として現行Candidにも残す。新規処理はこれらを生成しないが、migrationで別eventへ置換または破棄してはならない。
 
 `test-deployment` Wasmに限り、IC HTTPS outcallで401を返すOnFinalityをdRPCへ置換する今回専用のupgrade引数を受理する。引数なしの`()`はRPC設定を変更しない。更新指定は次のCandidに固定し、PublicNode、`sepolia.base.org`、dRPCの順序を変えない。
 

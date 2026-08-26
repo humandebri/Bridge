@@ -2112,7 +2112,35 @@ pub enum AuditEventKind {
         charged_service_fee: u128,
     },
     WithdrawalFeeGuardCleared,
+    // These variants are no longer emitted, but staging can contain them in its append-only
+    // wire-v27 audit history. Keep their original shapes so the reviewed v33 migration can
+    // decode and preserve every historical record instead of discarding audit evidence.
+    DepositRefundRetried {
+        deposit_id: Vec<u8>,
+        previous_attempt_no: u64,
+        previous_fee: u128,
+        next_attempt_no: Option<u64>,
+        next_fee: u128,
+        compensated: bool,
+    },
+    EvmTransactionRebroadcasted {
+        operation_id: u64,
+        transaction_hash: Vec<u8>,
+        attempt: u8,
+    },
+    EvmTransactionReplaced {
+        operation_id: u64,
+        previous_transaction_hash: Vec<u8>,
+        transaction_hash: Vec<u8>,
+        generation: u8,
+        max_fee_per_gas: u128,
+        max_priority_fee_per_gas: u128,
+    },
     PausePrincipalRotated,
+    FeeRecipientChanged {
+        previous: FeeRecipientConfig,
+        current: FeeRecipientConfig,
+    },
     FeeRecipientRotated {
         previous_sha256: Vec<u8>,
         current_sha256: Vec<u8>,
@@ -2122,8 +2150,46 @@ pub enum AuditEventKind {
     ReserveGateChanged {
         sufficient: bool,
     },
+    EvmFeeQuoteObserved {
+        safe_block_number: u64,
+        safe_block_hash: Vec<u8>,
+        observed_at_ns: u64,
+        base_fee_per_gas: u128,
+        max_priority_fee_per_gas: u128,
+        gas_estimate: u128,
+        gas_limit: u128,
+        initial_max_fee_per_gas: u128,
+        reachable_max_fee_per_gas: u128,
+        observed_l1_fee_upper_bound_wei: u128,
+        reserved_l1_fee_wei: u128,
+        reserved_eth_wei: u128,
+    },
     FeePayoutRequested {
         amount: u128,
+    },
+    EvmOperationReverted {
+        operation_id: u64,
+        kind: AuditedEvmOperationKind,
+        transaction_hash: Vec<u8>,
+        finalized_head_block_number: u64,
+    },
+    MintRevertRecoveryStarted {
+        target_id: Vec<u8>,
+        reverted_operation_id: u64,
+        replacement_operation_id: u64,
+        kind: AuditedEvmOperationKind,
+        finalized_block_number: u64,
+        finalized_block_hash: Vec<u8>,
+        result: String,
+    },
+    MintRevertRecoveryCompleted {
+        target_id: Vec<u8>,
+        reverted_operation_id: u64,
+        replacement_operation_id: u64,
+        kind: AuditedEvmOperationKind,
+        finalized_block_number: u64,
+        finalized_block_hash: Vec<u8>,
+        result: String,
     },
     EvmRpcObservation {
         evm_rpc_canister_id: Principal,
@@ -2146,6 +2212,11 @@ pub enum AuditEventKind {
         automatically_resigned: bool,
         transaction_hash: Option<Vec<u8>>,
     },
+}
+
+#[derive(CandidType, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuditedEvmOperationKind {
+    MintDeposit,
 }
 
 #[derive(CandidType, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -12885,6 +12956,77 @@ mod tests {
     }
 
     #[cfg(feature = "test-deployment")]
+    fn historical_v27_audit_kinds(initial: &BridgeInitArgs) -> Vec<AuditEventKind> {
+        let recipient = initial.fee_recipient.clone();
+        vec![
+            AuditEventKind::DepositRefundRetried {
+                deposit_id: vec![1; 32],
+                previous_attempt_no: 1,
+                previous_fee: 10_000,
+                next_attempt_no: Some(2),
+                next_fee: 20_000,
+                compensated: false,
+            },
+            AuditEventKind::EvmTransactionRebroadcasted {
+                operation_id: 2,
+                transaction_hash: vec![2; 32],
+                attempt: 2,
+            },
+            AuditEventKind::EvmTransactionReplaced {
+                operation_id: 3,
+                previous_transaction_hash: vec![3; 32],
+                transaction_hash: vec![4; 32],
+                generation: 1,
+                max_fee_per_gas: 5,
+                max_priority_fee_per_gas: 1,
+            },
+            AuditEventKind::FeeRecipientChanged {
+                previous: recipient.clone(),
+                current: recipient,
+            },
+            AuditEventKind::ReserveGateChanged { sufficient: true },
+            AuditEventKind::EvmFeeQuoteObserved {
+                safe_block_number: 4,
+                safe_block_hash: vec![5; 32],
+                observed_at_ns: 5,
+                base_fee_per_gas: 6,
+                max_priority_fee_per_gas: 7,
+                gas_estimate: 8,
+                gas_limit: 9,
+                initial_max_fee_per_gas: 10,
+                reachable_max_fee_per_gas: 11,
+                observed_l1_fee_upper_bound_wei: 12,
+                reserved_l1_fee_wei: 13,
+                reserved_eth_wei: 14,
+            },
+            AuditEventKind::EvmOperationReverted {
+                operation_id: 6,
+                kind: AuditedEvmOperationKind::MintDeposit,
+                transaction_hash: vec![6; 32],
+                finalized_head_block_number: 7,
+            },
+            AuditEventKind::MintRevertRecoveryStarted {
+                target_id: vec![7; 32],
+                reverted_operation_id: 8,
+                replacement_operation_id: 9,
+                kind: AuditedEvmOperationKind::MintDeposit,
+                finalized_block_number: 10,
+                finalized_block_hash: vec![8; 32],
+                result: "started".into(),
+            },
+            AuditEventKind::MintRevertRecoveryCompleted {
+                target_id: vec![9; 32],
+                reverted_operation_id: 11,
+                replacement_operation_id: 12,
+                kind: AuditedEvmOperationKind::MintDeposit,
+                finalized_block_number: 13,
+                finalized_block_hash: vec![10; 32],
+                result: "completed".into(),
+            },
+        ]
+    }
+
+    #[cfg(feature = "test-deployment")]
     #[test]
     #[serial]
     fn staging_schema_33_migrates_to_34_and_reopens_without_state_loss() {
@@ -12894,16 +13036,60 @@ mod tests {
             StableStore::init_configured(memory.clone(), &initial).expect("initialize v34 fixture");
         let deposit = deposit_for(initial.governance_principal);
         store.put_deposit(&deposit).expect("seed deposit");
+        let historical_count = historical_v27_audit_kinds(&initial).len();
+        for (index, kind) in historical_v27_audit_kinds(&initial).into_iter().enumerate() {
+            store
+                .append_audit_event_at(
+                    initial.governance_principal,
+                    kind,
+                    1_000 + u64::try_from(index).expect("audit index"),
+                )
+                .expect("seed historical audit");
+        }
         store
             .append_audit_event_at(
                 initial.governance_principal,
-                AuditEventKind::ReserveGateChanged { sufficient: true },
-                1_000,
+                AuditEventKind::EvmRpcDecision {
+                    kind: "QuorumContinued".into(),
+                    operation: "request_deposit_identity_preflight".into(),
+                    configured_provider_count: 3,
+                    required_threshold: 2,
+                    stop_reason: None,
+                    ledger_call_performed: false,
+                    bridge_operation_continued: true,
+                    deposits_paused: false,
+                    automatically_resigned: false,
+                    transaction_hash: None,
+                },
+                2_000,
             )
-            .expect("seed audit");
+            .expect("seed v28 audit");
         let counts = store.status_counts().expect("counts before");
-        let audit = store.audit_events(0, 10).expect("audit before").events;
+        let audit = store.audit_events(0, 32).expect("audit before").events;
         write_v33_fixture(&store, &initial);
+        store
+            .handle
+            .update(|connection| {
+                for sequence in 0..u64::try_from(historical_count).expect("historical count") {
+                    let key = sequence.to_sql_bytes();
+                    let bytes = connection.query_scalar::<Vec<u8>>(
+                        "SELECT value FROM audit_events WHERE key = ?1",
+                        params![key.clone()],
+                    )?;
+                    let legacy = replace_staging_wire_version(
+                        bytes,
+                        STAGING_SOURCE_WIRE_VERSION,
+                        STAGING_LEGACY_AUDIT_WIRE_VERSION,
+                        "historical audit_events",
+                    )?;
+                    connection.execute(
+                        "UPDATE audit_events SET value = ?1 WHERE key = ?2",
+                        params![legacy, key],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("write mixed v27 and v28 audit fixture");
         drop(store);
 
         let relayer = initial.governance_principal;
@@ -12938,7 +13124,7 @@ mod tests {
         assert_eq!(admission.independent_canceller_address, None);
         assert_eq!(reopened.status_counts().expect("counts after"), counts);
         assert_eq!(
-            reopened.audit_events(0, 10).expect("audit after").events,
+            reopened.audit_events(0, 32).expect("audit after").events,
             audit
         );
         assert_eq!(
