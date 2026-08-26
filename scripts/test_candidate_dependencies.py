@@ -58,6 +58,30 @@ class CandidateDependencyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unknown dependency manifest placement"):
                 candidate_dependency_sources(source)
 
+    def test_materialized_node_modules_are_not_candidate_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = self._copy_inputs(Path(temporary))
+            installed = source / "node_modules" / "dependency" / "package.json"
+            installed.parent.mkdir(parents=True)
+            installed.write_text("{}\n", encoding="utf-8")
+            self.assertNotIn(
+                installed.relative_to(source).as_posix(),
+                candidate_dependency_sources(source),
+            )
+
+    def test_submodule_manifests_are_not_workspace_manifest_placements(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = self._copy_inputs(Path(temporary))
+            nested = source / "vendor" / "submodule"
+            nested.mkdir(parents=True)
+            (nested / ".git").write_text("gitdir: fixture\n", encoding="utf-8")
+            package = nested / "package.json"
+            package.write_text("{}\n", encoding="utf-8")
+            self.assertNotIn(
+                package.relative_to(source).as_posix(),
+                candidate_dependency_sources(source),
+            )
+
     def test_unknown_patch_input_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = self._copy_inputs(Path(temporary))
