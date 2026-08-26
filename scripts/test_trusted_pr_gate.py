@@ -20,6 +20,14 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn(binding, workflow)
         self.assertLess(workflow.index(binding), workflow.index("scripts/ci-local.sh all"))
 
+    def test_main_gate_installs_root_dependencies_before_repository_gate(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        root_install = workflow.index("run: pnpm install --frozen-lockfile")
+        repository_gate = workflow.index("run: scripts/ci-local.sh all")
+        self.assertLess(root_install, repository_gate)
+
     def test_staging_upgrade_policy_uses_only_the_canonical_path(self) -> None:
         canonical_name = "staging-bridge-upgrade-policy.json"
         obsolete_name = "v33-to-v34-upgrade-policy.json"
