@@ -63,8 +63,12 @@ def candidate_dependency_sources(source: Path) -> tuple[str, ...]:
         _regular_file(source, relative)
 
     patch_root = source / PATCH_ROOT
-    if not patch_root.is_dir() or patch_root.is_symlink():
-        raise ValueError("candidate patch directory is missing or symlinked: ui/patches")
+    if patch_root.is_symlink():
+        raise ValueError("candidate patch directory is symlinked: ui/patches")
+    if not patch_root.exists():
+        return tuple(sorted(inputs))
+    if not patch_root.is_dir():
+        raise ValueError("candidate patch path is not a directory: ui/patches")
     for directory, directory_names, file_names in os.walk(patch_root, followlinks=False):
         directory_path = Path(directory)
         for name in directory_names:
@@ -83,9 +87,14 @@ def candidate_dependency_sources(source: Path) -> tuple[str, ...]:
 
 def materialize(source: Path, destination: Path) -> tuple[str, ...]:
     source = source.resolve()
-    destination = destination.resolve()
-    if destination.exists():
+    if destination.exists() or destination.is_symlink():
         raise ValueError("candidate dependency destination already exists")
+    for parent in destination.parents:
+        if parent.is_symlink():
+            raise ValueError("candidate dependency destination has a symlinked parent")
+        if parent.exists():
+            break
+    destination = destination.resolve()
     inputs = candidate_dependency_sources(source)
     for relative in inputs:
         source_path = source / relative

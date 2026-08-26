@@ -48,7 +48,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" |
-            python3 scripts/ci_changed_areas.py --null --github-output "$GITHUB_OUTPUT"
+            python3 scripts/ci_changed_areas.py --null --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" --github-output "$GITHUB_OUTPUT"
       - name: Require complete trusted classifier outputs
         env:
           CLASSIFY_ANY: ${{ steps.classify.outputs.any }}
@@ -75,12 +75,14 @@ jobs:
           python3 scripts/test_trusted_pr_gate.py
 
   trusted-change-review:
+    name: Review exact head ${{ github.event.pull_request.head.sha }}
     needs: classify
     if: needs.classify.outputs.review_required == 'true'
     runs-on: ubuntu-24.04
     permissions: {}
     environment:
       name: trusted-change-review
+      url: https://github.com/${{ github.event.pull_request.head.repo.full_name }}/commit/${{ github.event.pull_request.head.sha }}
     steps:
       - name: Bind approval to the current PR head
         env:

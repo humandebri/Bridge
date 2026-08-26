@@ -35,7 +35,7 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("base_sha: ${{ steps.base.outputs.sha }}", workflow)
         self.assertIn("ref: ${{ needs.classify.outputs.base_sha }}", workflow)
         self.assertIn(
-            "python3 scripts/ci_changed_areas.py --null --github-output \"$GITHUB_OUTPUT\"",
+            "python3 scripts/ci_changed_areas.py --null --base-sha \"$BASE_SHA\" --head-sha \"$HEAD_SHA\" --github-output \"$GITHUB_OUTPUT\"",
             workflow,
         )
         self.assertIn("Require complete trusted classifier outputs", workflow)
@@ -78,7 +78,11 @@ class TrustedPrGateTests(unittest.TestCase):
     def test_sensitive_changes_wait_for_one_exact_head_environment_review(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("trusted-change-review:", workflow)
+        self.assertIn("name: Review exact head ${{ github.event.pull_request.head.sha }}", workflow)
         self.assertIn("name: trusted-change-review", workflow)
+        self.assertIn("url: https://github.com/${{ github.event.pull_request.head.repo.full_name }}/commit/${{ github.event.pull_request.head.sha }}", workflow)
+        self.assertIn("types: [opened, reopened, synchronize, ready_for_review]", workflow)
+        self.assertIn("permissions: {}", workflow)
         self.assertIn("if: needs.classify.outputs.review_required == 'true'", workflow)
         self.assertIn("Bind approval to the current PR head", workflow)
         self.assertIn("EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}", workflow)
@@ -91,6 +95,17 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn('true) test "$REVIEW_RESULT" = success', workflow)
         self.assertIn('false) test "$REVIEW_RESULT" = skipped', workflow)
         self.assertNotIn("pull_request_review:", workflow)
+
+    def test_proof_validators_require_the_exact_trusted_execution_context(self) -> None:
+        for relative in (
+            "scripts/smt_obligations.py",
+            "scripts/halmos_obligations.py",
+            "scripts/check_verus_manifest.py",
+        ):
+            with self.subTest(relative=relative):
+                source = (ROOT / relative).read_text(encoding="utf-8")
+                self.assertIn("require_trusted_execution_context", source)
+                self.assertNotIn("BRIDGE_TRUSTED_PROFILE", source)
 
     def test_untrusted_lifecycle_never_runs_before_policy_and_isolation_are_fixed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

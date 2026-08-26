@@ -26,7 +26,7 @@ def checkout_head(root: Path = ROOT) -> str:
 
 def require_trusted_execution_context(root: Path = ROOT) -> str | None:
     """Require an exact expected HEAD in CI; local validation needs no profile."""
-    if "CI" not in os.environ:
+    if os.environ.get("CI") != "true":
         return None
     expected = os.environ.get("BRIDGE_EXPECTED_HEAD_SHA", "")
     if FULL_SHA.fullmatch(expected) is None:

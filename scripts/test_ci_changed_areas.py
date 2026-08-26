@@ -64,6 +64,7 @@ class ChangedAreaTests(unittest.TestCase):
 
     def test_review_is_not_required_for_docs_and_production_sources(self) -> None:
         self.assert_review(["docs/bridge-flow.md"], False)
+        self.assert_review(["README.md", "AGENTS.md", "LICENSE"], False)
         self.assert_review(["canister/bridge-canister/src/api.rs"], False)
         self.assert_review(["contracts/src/Bridge.sol"], False)
         self.assert_review(["ui/src/features/bridge/bridge-page.tsx"], False)
@@ -79,10 +80,16 @@ class ChangedAreaTests(unittest.TestCase):
             "contracts/test/Bridge.t.sol",
             "integration/phase3.spec.ts",
             "pnpm-lock.yaml",
+            "rust-toolchain.toml",
             "scripts/ci-local.sh",
             "ui/e2e-real/bridge-real.spec.ts",
             "ui/src/lib/runtime-validation.test.ts",
             "ui/src/lib/runtime-validation.spec.ts",
+            "ui/src/widget.test.jsx",
+            "ui/src/bridge.e2e.ts",
+            "canister/foo/src/parser_test.py",
+            "ui/vite.real.config.ts",
+            "ui/package.json",
             "verification/claims.tsv",
             "verification/README.md",
         ):
@@ -91,6 +98,33 @@ class ChangedAreaTests(unittest.TestCase):
 
     def test_review_fails_closed_for_unknown_paths(self) -> None:
         self.assert_review(["config/new-policy.toml"], True)
+        self.assert_review(["config/new-policy.md"], True)
+
+    def test_raw_diff_detects_added_removed_or_changed_gitlinks(self) -> None:
+        ordinary = (
+            b":100644 100644 "
+            + b"0" * 40
+            + b" "
+            + b"1" * 40
+            + b" M\0ui/src/app.tsx\0"
+        )
+        added = (
+            b":000000 160000 "
+            + b"0" * 40
+            + b" "
+            + b"1" * 40
+            + b" A\0ui/src/vendor\0"
+        )
+        removed = (
+            b":160000 000000 "
+            + b"1" * 40
+            + b" "
+            + b"0" * 40
+            + b" D\0ui/src/vendor\0"
+        )
+        self.assertFalse(ci_changed_areas.raw_diff_has_gitlink(ordinary))
+        self.assertTrue(ci_changed_areas.raw_diff_has_gitlink(added))
+        self.assertTrue(ci_changed_areas.raw_diff_has_gitlink(removed))
 
     def test_proof_owned_runtime_validation_runs_proofs_and_real(self) -> None:
         self.assert_areas(

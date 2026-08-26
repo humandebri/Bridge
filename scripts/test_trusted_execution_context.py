@@ -11,13 +11,15 @@ from trusted_execution_context import require_trusted_execution_context
 
 class TrustedExecutionContextTests(unittest.TestCase):
     def test_local_execution_does_not_require_a_profile_or_expected_sha(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            self.assertIsNone(require_trusted_execution_context(Path("/missing")))
+        for environment in ({}, {"CI": ""}, {"CI": "false"}, {"CI": "1"}):
+            with self.subTest(environment=environment), patch.dict(
+                os.environ, environment, clear=True
+            ):
+                self.assertIsNone(require_trusted_execution_context(Path("/missing")))
 
     def test_ci_requires_a_lowercase_full_sha(self) -> None:
         invalid_contexts = (
             ("true", ""),
-            ("1", ""),
             ("true", "abc123"),
             ("true", "A" * 40),
             ("true", "g" * 40),

@@ -7,6 +7,8 @@ import argparse
 import csv
 import json
 import os
+import re
+import subprocess
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +17,7 @@ from pathlib import PurePosixPath
 
 AREAS = ("rust", "contracts", "proofs", "ui", "real", "icp")
 ROOT = Path(__file__).resolve().parents[1]
+FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 SENSITIVE_PREFIXES = (
     ".github/",
@@ -102,7 +105,11 @@ def _enable_all(result: dict[str, bool]) -> None:
 
 def _is_documentation(path: str) -> bool:
     name = PurePosixPath(path).name
-    return path.endswith(".md") or name.startswith("LICENSE") or name == ".gitignore"
+    return (
+        path.startswith("docs/")
+        or path in {"README.md", "AGENTS.md", ".gitignore"}
+        or ("/" not in path and name.startswith("LICENSE"))
+    )
 
 
 def _is_test_path(path: str) -> bool:
@@ -114,22 +121,47 @@ def _is_test_path(path: str) -> bool:
             or part.startswith("e2e")
             for part in parts
         )
-        or name.endswith(
-            (
-                ".test.ts",
-                ".test.tsx",
-                ".test.js",
-                ".test.mjs",
-                ".spec.ts",
-                ".spec.tsx",
-                ".spec.js",
-                ".spec.mjs",
-                "_test.rs",
-                "_tests.rs",
-            )
+        or any(
+            marker in name
+            for marker in (".test.", ".spec.", ".e2e.", "_test.", "_tests.")
         )
         or name.startswith("test_")
     )
+
+
+def raw_diff_has_gitlink(raw_diff: bytes) -> bool:
+    """Return whether a raw git diff changes a 160000-mode entry."""
+    for record in raw_diff.split(b"\0"):
+        if not record.startswith(b":"):
+            continue
+        fields = record.split()
+        if len(fields) >= 2 and (
+            fields[0][1:] == b"160000" or fields[1] == b"160000"
+        ):
+            return True
+    return False
+
+
+def gitlink_changed(base_sha: str, head_sha: str, root: Path = ROOT) -> bool:
+    """Inspect trusted Git metadata so a safe-looking submodule path cannot bypass review."""
+    if FULL_SHA.fullmatch(base_sha) is None or FULL_SHA.fullmatch(head_sha) is None:
+        raise ValueError("base and head must be lowercase full Git SHAs")
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "diff",
+            "--raw",
+            "--no-abbrev",
+            "-z",
+            base_sha,
+            head_sha,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return raw_diff_has_gitlink(result.stdout)
 
 
 def review_required(paths: list[str]) -> bool:
@@ -249,7 +281,11 @@ def main() -> int:
     parser.add_argument("paths", nargs="*")
     parser.add_argument("--null", action="store_true", help="read NUL-delimited paths from stdin")
     parser.add_argument("--github-output", help="append key=value outputs to this file")
+    parser.add_argument("--base-sha")
+    parser.add_argument("--head-sha")
     args = parser.parse_args()
+    if bool(args.base_sha) != bool(args.head_sha):
+        parser.error("--base-sha and --head-sha must be provided together")
 
     paths = list(args.paths)
     if not sys.stdin.isatty():
@@ -260,7 +296,10 @@ def main() -> int:
     result = classify(paths)
     lines = [f"{area}={'true' if enabled else 'false'}" for area, enabled in result.items()]
     lines.append(f"any={'true' if any(result.values()) else 'false'}")
-    lines.append(f"review_required={'true' if review_required(paths) else 'false'}")
+    requires_review = review_required(paths)
+    if args.base_sha:
+        requires_review = requires_review or gitlink_changed(args.base_sha, args.head_sha)
+    lines.append(f"review_required={'true' if requires_review else 'false'}")
     lines.append(
         "matrix="
         + json.dumps(
