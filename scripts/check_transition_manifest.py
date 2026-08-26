@@ -9,6 +9,11 @@ import tempfile
 from pathlib import Path
 
 from claim_manifest import LEAN_NAME, parse_claim_manifest
+from rust_canonical_calls import (
+    production_call_is_canonical,
+    rust_body as canonical_rust_body,
+    rust_function_parameter_names,
+)
 from verus_manifest import parse_verus_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -157,28 +162,7 @@ def function_declaration(source: str, name: str) -> str:
 
 
 def rust_function_body(source: str, name: str) -> str:
-    cleaned = strip_comments_and_strings(source)
-    marker = re.compile(
-        rf"\b(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?fn\s+{re.escape(name)}\s*\("
-    )
-    match = marker.search(cleaned)
-    if match is None:
-        raise ValueError(f"missing function body: {name}")
-    depth = 0
-    start = None
-    for index in range(match.end(), len(cleaned)):
-        if cleaned[index] == "{":
-            if depth == 0:
-                start = index
-            depth += 1
-        elif cleaned[index] == "}":
-            if depth == 0:
-                break
-            depth -= 1
-            if depth == 0:
-                assert start is not None
-                return cleaned[start : index + 1]
-    raise ValueError(f"unbalanced function body: {name}")
+    return canonical_rust_body(strip_comments_and_strings(source), name)
 
 
 def body_calls(body: str, symbol: str) -> bool:
@@ -190,22 +174,19 @@ def production_body_calls(
     symbol: str,
     *,
     kernel_internal: bool = False,
-    external_kernel: bool = False,
 ) -> bool:
-    if kernel_internal:
-        kernel_call = re.compile(
-            rf"(?<![A-Za-z0-9_:])self\s*::\s*{re.escape(symbol)}\s*\("
+    paths = (
+        (KERNEL,)
+        if kernel_internal
+        else (
+            ROOT / "canister" / "bridge-core" / "src" / "lib.rs",
+            ROOT / "canister" / "bridge-canister" / "src" / "lib.rs",
         )
-        kernel_macro = re.compile(
-            rf"(?<![A-Za-z0-9_]){re.escape(symbol)}_body\s*!\s*\("
-        )
-        return kernel_call.search(body) is not None or kernel_macro.search(body) is not None
-    prefix = r"::\s*bridge_core" if external_kernel else "crate"
-    qualified = re.compile(
-        rf"(?<![A-Za-z0-9_:]){prefix}\s*::\s*kernel\s*::\s*"
-        rf"{re.escape(symbol)}\s*\("
     )
-    return qualified.search(body) is not None
+    return any(
+        production_call_is_canonical(body, symbol, path, source_scope=body)
+        for path in paths
+    )
 
 
 def checked_kernel_link(link: str) -> str:
@@ -227,15 +208,14 @@ def check_production_call_site(link: str, kernel_symbol: str) -> None:
     path = ROOT / path_text
     if not path.is_file():
         raise ValueError(f"missing production call-site file: {link}")
-    source = path.read_text(encoding="utf-8")
-    body = function_body(source, function) if path.resolve() == KERNEL.resolve() else rust_function_body(source, function)
-    if not production_body_calls(
+    cleaned = strip_comments_and_strings(path.read_text(encoding="utf-8"))
+    body = canonical_rust_body(cleaned, function)
+    if not production_call_is_canonical(
         body,
         kernel_symbol,
-        kernel_internal=path.resolve() == KERNEL.resolve(),
-        external_kernel=path.resolve().is_relative_to(
-            (ROOT / "canister" / "bridge-canister" / "src").resolve()
-        ),
+        path,
+        source_scope=cleaned,
+        parameter_names=rust_function_parameter_names(cleaned, function),
     ):
         raise ValueError(
             f"production call-site does not call registered kernel: {link} -> {kernel_symbol}"

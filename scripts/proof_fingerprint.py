@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 from typing import Any
+
+from source_resolution import logical_source_path, source_path, source_root
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,30 +66,14 @@ CERTORA_ONLY_RELEASE_EXCLUSIONS = frozenset(
 def excluded_release_path(path: Path, repo_root: Path) -> bool:
     """Return whether a tracked input affects only advisory Certora evidence."""
 
-    relative = path.relative_to(repo_root).as_posix()
+    relative = logical_source_path(path, repo_root).as_posix()
     return relative in CERTORA_ONLY_RELEASE_EXCLUSIONS or relative.startswith(
         "verification/certora/"
     )
 
 
-def logical_source_path(path: Path, repo_root: Path = ROOT) -> Path:
-    """Map an isolated candidate script back to its repository-relative path."""
-
-    resolved = path.resolve()
-    root = repo_root.resolve()
-    if resolved.is_relative_to(root):
-        return resolved.relative_to(root)
-    candidate_scripts = os.environ.get("BRIDGE_CANDIDATE_SCRIPTS")
-    if candidate_scripts:
-        candidate_root = Path(candidate_scripts).resolve()
-        if resolved.is_relative_to(candidate_root):
-            return Path("scripts") / resolved.relative_to(candidate_root)
-    raise ValueError(f"proof fingerprint input is outside reviewed source roots: {path}")
-
-
 def excluded_verification_path(path: Path, verification: Path) -> bool:
-    relative = path.relative_to(verification)
-    return any(part.startswith(".") for part in relative.parts) or any(
+    return any(
         verification.joinpath(*parts) in path.parents
         for parts in FINGERPRINT_EXCLUDED_VERIFICATION_DIRS
     )
@@ -99,11 +84,15 @@ def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> t
         from check_proof_impact import load_manifest
 
         manifest = load_manifest(repo_root)
-    paths = {
-        repo_root / source
+    manifest_paths = {
+        source_path(source, repo_root)
         for area in manifest.areas
         for source in area.sources
-        if not excluded_release_path(repo_root / source, repo_root)
+    }
+    paths = {
+        path
+        for path in manifest_paths
+        if not excluded_release_path(path, repo_root)
     }
     verification = repo_root / "verification"
     paths.update(
@@ -114,18 +103,18 @@ def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> t
         and not excluded_release_path(path, repo_root)
     )
     for relative_root, suffixes in FINGERPRINT_SOURCE_ROOTS:
-        source_root = repo_root / relative_root
-        if not source_root.is_dir():
+        resolved_root = source_root(relative_root, repo_root)
+        if not resolved_root.is_dir():
             raise ValueError(f"missing proof fingerprint root: {relative_root}")
         paths.update(
             path
-            for path in source_root.rglob("*")
+            for path in resolved_root.rglob("*")
             if path.is_file()
             and path.suffix in suffixes
             and not excluded_release_path(path, repo_root)
             and not (
                 relative_root == "verification"
-                and excluded_verification_path(path, verification)
+                and excluded_verification_path(path, resolved_root)
             )
         )
     patches = repo_root / "ui" / "patches"
@@ -136,9 +125,18 @@ def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> t
     if missing:
         raise ValueError(
             "missing proof fingerprint inputs: "
-            + ", ".join(path.relative_to(repo_root).as_posix() for path in sorted(missing))
+            + ", ".join(
+                logical_source_path(path, repo_root).as_posix()
+                for path in sorted(missing)
+            )
         )
-    return tuple(sorted(paths))
+    logical_inputs: dict[str, Path] = {}
+    for path in paths:
+        logical = logical_source_path(path, repo_root).as_posix()
+        previous = logical_inputs.setdefault(logical, path)
+        if previous != path:
+            raise ValueError(f"duplicate logical proof fingerprint input: {logical}")
+    return tuple(logical_inputs[logical] for logical in sorted(logical_inputs))
 
 
 def source_fingerprint(repo_root: Path = ROOT, manifest: Any | None = None) -> dict[str, object]:

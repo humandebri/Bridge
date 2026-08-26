@@ -9,6 +9,10 @@ import sys
 import tempfile
 
 import ci_changed_areas
+from trusted_proof_profiles import select_profile
+
+
+TRUSTED_PROOF_PROFILE = select_profile().identifier
 
 
 class ChangedAreaTests(unittest.TestCase):
@@ -52,7 +56,12 @@ class ChangedAreaTests(unittest.TestCase):
             "ui/src/lib/future-settlement-module.ts",
         ):
             with self.subTest(path=path):
-                expected = ("ui", "real", "proofs") if path == "ui/src/lib/withdrawal-submit.ts" else ("ui", "real")
+                expected = (
+                    ("ui", "real", "proofs")
+                    if path == "ui/src/lib/withdrawal-submit.ts"
+                    and TRUSTED_PROOF_PROFILE == "security-hardening-v1"
+                    else ("ui", "real")
+                )
                 self.assert_areas([path], *expected)
 
     def test_proof_owned_runtime_validation_runs_proofs_and_real(self) -> None:

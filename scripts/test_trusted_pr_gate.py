@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import unittest
 
+from trusted_proof_profiles import select_profile
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
@@ -80,7 +82,9 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("path: trusted-policy", workflow)
         self.assertIn("path: source", workflow)
         self.assertIn("trusted-policy/scripts/install-ci-tools.sh \"$mode\"", workflow)
-        self.assertIn("if jq -e 'index(\"proofs\") != null'", workflow)
+        self.assertEqual(select_profile(ROOT).identifier, "security-hardening-v1")
+        self.assertIn("proofs) mode=\"all\"", workflow)
+        self.assertIn("*) mode=\"ci\"", workflow)
         self.assertEqual(workflow.count("docker build --file"), 1)
         self.assertIn("actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
         self.assertIn("actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
@@ -98,16 +102,32 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertIn("ICP_CLI_DISABLE_UPDATE: \"1\"", workflow)
         self.assertIn("ICP_TELEMETRY_DISABLED: \"1\"", workflow)
+        self.assertIn("prepare_trusted_dependencies.py", workflow)
+        self.assertIn("BRIDGE_TRUSTED_DEPENDENCY_ROOT", workflow)
         self.assertIn(
-            "pnpm --dir trusted-policy/ui install --frozen-lockfile --ignore-scripts",
+            'pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts',
             workflow,
         )
         self.assertIn(
-            "pnpm --dir trusted-policy install --frozen-lockfile",
+            'pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" install --frozen-lockfile --ignore-scripts',
+            workflow,
+        )
+        self.assertIn(
+            'node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic/postinstall.mjs"',
+            workflow,
+        )
+        self.assertIn(
+            'node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"',
+            workflow,
+        )
+        self.assertIn(
+            "contains(fromJSON(needs.classify.outputs.matrix), 'rust') || "
+            "contains(fromJSON(needs.classify.outputs.matrix), 'real')",
             workflow,
         )
         self.assertIn("trusted-policy/.github/trusted-pr/Dockerfile", workflow)
-        self.assertIn("trusted-policy/scripts/trusted-pr-container.sh source trusted-policy", workflow)
+        self.assertIn("trusted-policy/scripts/trusted-pr-container.sh", workflow)
+        self.assertIn('source trusted-policy "$1" "$BRIDGE_TRUSTED_DEPENDENCY_ROOT"', workflow)
         self.assertIn("certora) run_check certora", workflow)
         self.assertIn(
             "node trusted-policy/ui/scripts/download-ledger-artifacts.mjs",
@@ -116,17 +136,28 @@ class TrustedPrGateTests(unittest.TestCase):
         for prefetch in (
             "Prefetch locked Rust dependencies from trusted policy",
             "Prefetch pinned ICP recipes from trusted policy",
-            "Prefetch verified real-E2E ledger artifacts",
         ):
             self.assertLess(
                 workflow.index(prefetch),
-                workflow.index("Check out exact untrusted head as read-only container input"),
+                workflow.index("Check out exact untrusted head as authenticated data input"),
             )
         self.assertLess(
+            workflow.index("Authenticate and isolate profile dependency manifests"),
+            workflow.index("Prefetch verified real-E2E ledger artifacts"),
+        )
+        self.assertLess(
+            workflow.index("Prefetch verified real-E2E ledger artifacts"),
+            workflow.index("Run selected trusted check"),
+        )
+        self.assertLess(
             workflow.index("Build the pinned isolation image from trusted policy"),
-            workflow.index("Check out exact untrusted head as read-only container input"),
+            workflow.index("Run selected trusted check"),
         )
         self.assertNotIn("pnpm --dir source/ui install", workflow)
+        self.assertLess(
+            workflow.index("Authenticate and isolate profile dependency manifests"),
+            workflow.index("Install authenticated workspace dependencies"),
+        )
 
     def test_each_check_uses_fresh_read_only_container_boundaries(self) -> None:
         wrapper = (ROOT / "scripts" / "trusted-pr-container.sh").read_text(encoding="utf-8")
@@ -149,6 +180,8 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertIn("dst=/workspace/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
+        self.assertIn("DEPENDENCY_ROOT", wrapper)
+        self.assertNotIn("src=$POLICY_ROOT/node_modules", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.tmp", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.vite-temp", wrapper)
         self.assertIn("dst=/workspace/ui/.e2e-runtime", wrapper)

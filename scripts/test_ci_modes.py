@@ -54,18 +54,17 @@ class CiModeTests(unittest.TestCase):
         self.assertLess(real, smoke)
         self.assertTrue(body.rstrip().endswith("run_step smoke run_smoke_step"))
 
-    def test_smoke_bridge_deploy_uses_current_constructor_shape(self) -> None:
+    def test_smoke_bridge_deploy_uses_profile_specific_constructor_shape(self) -> None:
         start = SOURCE.index('bridge_address="$(deploy_contract \\\n    "src/Bridge.sol:Bridge"')
-        terminator = '    "$service_fee")"'
+        terminator = '    "${bridge_fee_constructor_args[@]}")"'
         end = SOURCE.index(terminator, start) + len(terminator)
         deployment = SOURCE[start:end]
         self.assertNotIn('"kinic"', deployment)
         self.assertNotIn('"KINIC"', deployment)
-        self.assertEqual(
-            deployment.count('\n    '),
-            11,
-            "Bridge smoke deployment must pass the contract plus exactly ten constructor arguments",
+        self.assertIn(
+            'bridge_fee_constructor_args=("1" "100000000" "$service_fee")', SOURCE
         )
+        self.assertNotIn('bridge_fee_constructor_args=("100000000" "$service_fee")', SOURCE)
         self.assertIn('require_equal "bSNS name" "$token_name" \'"KINIC"\'', SOURCE)
 
     def test_legacy_aggregate_modes_remain_complete(self) -> None:
@@ -77,24 +76,58 @@ class CiModeTests(unittest.TestCase):
         body = function_body("run_proofs")
         receipt_regression = body.index('python3 "$ROOT/scripts/test_write_proof_receipt.py"')
         claim_manifest = body.index(
-            'run_proof_stage claim-manifest python3 "$ROOT/scripts/check_claim_manifest.py"'
+            'run_proof_stage claim-manifest python3 "$CLAIM_CHECK"'
         )
         self.assertLess(receipt_regression, claim_manifest)
-        self.assertIn('python3 "$ROOT/scripts/test_claim_test_manifest.py"', body)
+        self.assertIn('python3 "$CLAIM_TEST_TEST"', body)
         self.assertIn('python3 "$ROOT/scripts/test_check_claim_manifest.py"', body)
         self.assertIn("run_proof_stage claim-transaction-tests", body)
+
+    def test_certora_preflight_precedes_proof_impact_validation(self) -> None:
+        body = function_body("run_versions")
+        ast_build = body.index('forge build --root "$ROOT/contracts" --ast')
+        certora_manifest = body.index(
+            'python3 "$ROOT/scripts/check_certora_manifest.py"'
+        )
+        certora_tests = body.index('python3 "$ROOT/scripts/test_certora_manifest.py"')
+        proof_impact = body.index('python3 "$ROOT/scripts/test_proof_impact.py"')
+        self.assertLess(ast_build, certora_manifest)
+        self.assertLess(certora_manifest, certora_tests)
+        self.assertLess(certora_tests, proof_impact)
 
     def test_shared_verus_kernels_may_be_const_or_non_const(self) -> None:
         body = function_body("run_verus")
         self.assertIn('pub (const )?fn ${kernel_name}\\b', body)
 
+    def test_halmos_runs_each_manifest_obligation_individually(self) -> None:
+        body = function_body("run_halmos")
+        self.assertIn(
+            "read -r row_type obligation_id _strength positive_link",
+            body,
+        )
+        self.assertIn('--function "$positive_function"', body)
+        self.assertIn("Symbolic test result: 1 passed; 0 failed", body)
+        self.assertNotIn("Symbolic test result: 3 passed; 0 failed", body)
+
+    def test_smt_checks_trusted_sources_before_building(self) -> None:
+        body = function_body("run_smt")
+        source_check = body.index('smt_obligations.py" --check-sources')
+        build = body.index("forge build")
+        self.assertLess(source_check, build)
+
+    def test_smoke_uses_profile_specific_bridge_constructor_arguments(self) -> None:
+        self.assertIn(
+            'bridge_fee_constructor_args=("1" "100000000" "$service_fee")', SOURCE
+        )
+        self.assertNotIn('bridge_fee_constructor_args=("100000000"', SOURCE)
+        self.assertIn('"${bridge_fee_constructor_args[@]}"', SOURCE)
+
     def test_proof_stage_stops_on_the_first_failed_command(self) -> None:
         body = function_body("run_proof_stage")
-        before = body.index('proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE"')
+        marker = '"$PROOF_FINGERPRINT" --check "$PROOF_SOURCE_BASELINE"'
+        before = body.index(marker)
         command = body.index('    if ! "$@"; then')
-        after = body.index(
-            'proof_fingerprint.py" --check "$PROOF_SOURCE_BASELINE"', before + 1
-        )
+        after = body.index(marker, before + 1)
         pass_record = body.index("    stage_status=pass")
         self.assertLess(before, command)
         self.assertLess(command, after)

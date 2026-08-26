@@ -19,10 +19,11 @@ trap cleanup EXIT
 
 CANDIDATE="$FIXTURE/candidate"
 POLICY="$FIXTURE/policy"
+DEPENDENCIES="$FIXTURE/dependencies"
 SCRATCH="$FIXTURE/scratch"
 mkdir -p "$CANDIDATE/ui" "$CANDIDATE/contracts" "$CANDIDATE/verification/lean" \
   "$CANDIDATE/scripts" \
-  "$POLICY/scripts" "$POLICY/node_modules" "$POLICY/ui/node_modules" \
+  "$POLICY/scripts" "$DEPENDENCIES/node_modules" "$DEPENDENCIES/ui/node_modules" \
   "$POLICY/ui/.e2e-cache" "$SCRATCH"
 git -C "$CANDIDATE" init --quiet
 printf 'fixture\n' >"$POLICY/scripts/fixture.txt"
@@ -39,9 +40,9 @@ for path in node_modules ui/node_modules target contracts/out contracts/out-stag
   ui/test-results ui/.e2e-cache ui/.e2e-runtime .tools; do
   bridge_prepare_candidate_mountpoint "$CANDIDATE" "$path"
 done
-bridge_prepare_mountpoint "$POLICY/ui/node_modules" .tmp
-bridge_prepare_mountpoint "$POLICY/ui/node_modules" .vite-temp
-bridge_prepare_mountpoint "$POLICY/ui/node_modules" .vite
+bridge_prepare_mountpoint "$DEPENDENCIES/ui/node_modules" .tmp
+bridge_prepare_mountpoint "$DEPENDENCIES/ui/node_modules" .vite-temp
+bridge_prepare_mountpoint "$DEPENDENCIES/ui/node_modules" .vite
 
 for path in target contracts-out contracts-cache contracts-staging-out contracts-staging-cache proof-output \
   lean-lake smt-out smt-cache icp-cache ui-dist ui-results ui-tsbuildinfo ui-vite-temp ui-vite e2e-runtime \
@@ -60,8 +61,8 @@ docker run --rm \
   --mount "type=bind,src=$CANDIDATE,dst=/workspace,readonly" \
   --mount "type=bind,src=$POLICY/scripts,dst=/workspace/scripts,readonly" \
   --mount "type=bind,src=$CANDIDATE/scripts,dst=/scratch/candidate-scripts,readonly" \
-  --mount "type=bind,src=$POLICY/node_modules,dst=/workspace/node_modules,readonly" \
-  --mount "type=bind,src=$POLICY/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \
+  --mount "type=bind,src=$DEPENDENCIES/node_modules,dst=/workspace/node_modules,readonly" \
+  --mount "type=bind,src=$DEPENDENCIES/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \
   --mount "type=bind,src=$SCRATCH/ui-tsbuildinfo,dst=/workspace/ui/node_modules/.tmp" \
   --mount "type=bind,src=$SCRATCH/ui-vite-temp,dst=/workspace/ui/node_modules/.vite-temp" \
   --mount "type=bind,src=$SCRATCH/ui-vite,dst=/workspace/ui/node_modules/.vite" \
@@ -114,4 +115,4 @@ bridge_cleanup_mountpoints
 test ! -e "$CANDIDATE/target"
 test ! -e "$CANDIDATE/node_modules"
 test ! -e "$CANDIDATE/ui/node_modules"
-test ! -e "$POLICY/ui/node_modules/.tmp"
+test ! -e "$DEPENDENCIES/ui/node_modules/.tmp"

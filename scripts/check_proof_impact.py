@@ -21,6 +21,7 @@ from claim_manifest import (
     REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS,
     parse_claim_manifest,
 )
+from source_resolution import source_path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -201,7 +202,7 @@ def load_manifest(repo_root: Path = ROOT) -> ImpactManifest:
     if len(registered_sources) != len(set(registered_sources)):
         raise ValueError("a safety source is registered by multiple impact areas")
     for source in registered_sources:
-        if not (repo_root / source).is_file():
+        if not source_path(source, repo_root).is_file():
             raise ValueError(f"missing registered safety source: {source}")
     missing_production_sources = _claim_production_sources(repo_root) - set(
         registered_sources

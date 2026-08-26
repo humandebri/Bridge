@@ -3,13 +3,19 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
+import hashlib
+from pathlib import Path
 import re
+
+from trusted_proof_profiles import require_profile
 
 
 SCHEMA_VERSION = "2"
 IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
 STRENGTHS = {"supporting"}
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -70,3 +76,31 @@ def parse_smt_obligations(text: str) -> dict[str, SmtObligation]:
             raise ValueError(f"invalid SMT claim ID: {obligation_id}")
         obligations[obligation_id] = parsed
     return obligations
+
+
+def validate_trusted_smt_sources(
+    root: Path = ROOT, expected: dict[str, str] | None = None
+) -> None:
+    if expected is None:
+        require_profile("security-hardening-v1", root)
+        return
+    for relative, digest in expected.items():
+        path = root / relative
+        if not path.is_file():
+            raise ValueError(f"missing trusted SMT source: {relative}")
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != digest:
+            raise ValueError(f"trusted SMT source digest differs: {relative}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check-sources", action="store_true", required=True)
+    parser.parse_args()
+    validate_trusted_smt_sources()
+    print("trusted SMT sources passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

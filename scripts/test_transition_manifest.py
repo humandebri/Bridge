@@ -55,9 +55,7 @@ let text = "kernel::deposit_transition(0, 0)";
         )
         self.assertTrue(
             production_body_calls(
-                "{ ::bridge_core::kernel::transition(1); }",
-                "transition",
-                external_kernel=True,
+                "{ ::bridge_core::kernel::transition(1); }", "transition"
             )
         )
         self.assertTrue(
@@ -86,8 +84,10 @@ let text = "kernel::deposit_transition(0, 0)";
             production_body_calls(
                 "{ bridge_core::kernel::transition(1); }",
                 "transition",
-                external_kernel=True,
             )
+        )
+        self.assertFalse(
+            production_body_calls("{ bridge_core::transition(1); }", "transition")
         )
 
     def test_nested_function_declaration_is_not_a_production_call(self) -> None:
