@@ -3749,6 +3749,115 @@ fn verify_production_canister_predeploy(
     Ok(())
 }
 
+fn validate_production_handover_canister_state(
+    profile: &Profile,
+    install_receipt: &ProductionCanisterInstallReceipt,
+    gate_a_receipt: &GateAReceipt,
+    lifecycle: &ProductionLifecycleView,
+    attestation: Option<&ActivationAttestationView>,
+    controllers: &[Principal],
+    module_hash: &[u8],
+    manifest_created_at_unix: u64,
+    now: u64,
+) -> Result<(), String> {
+    if !matches!(lifecycle, ProductionLifecycleView::OperationalConfigSealed) {
+        return Err("production Canister must be OperationalConfigSealed before handover".into());
+    }
+    validate_production_canister_management_state(
+        profile,
+        install_receipt,
+        controllers,
+        module_hash,
+    )?;
+    let attestation = attestation.ok_or(
+        "authenticated activation attestation is unavailable after operational configuration seal",
+    )?;
+    validate_activation_attestation(
+        profile,
+        attestation,
+        manifest_created_at_unix,
+        gate_a_receipt
+            .bridge_deployment_block_number
+            .max(gate_a_receipt.timelock_deployment_block_number),
+        now,
+    )
+}
+
+fn verify_production_canister_handover(
+    bundle_path: &Path,
+    gate_a_receipt_path: &Path,
+    install_receipt_path: &Path,
+    deployment_binding_path: &Path,
+) -> Result<(), String> {
+    validate_production_handover_receipt_files(
+        bundle_path,
+        gate_a_receipt_path,
+        install_receipt_path,
+        deployment_binding_path,
+    )?;
+    let bundle = validate_bundle(bundle_path, false)?;
+    let gate_a_receipt: GateAReceipt = read_json(gate_a_receipt_path)?;
+    let install_receipt: ProductionCanisterInstallReceipt = read_json(install_receipt_path)?;
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let (lifecycle_raw, attestation_raw, controllers, module_hash) =
+        async_runtime()?.block_on(async {
+            let empty = Encode!().map_err(|error| error.to_string())?;
+            let lifecycle = agent
+                .query(&bridge, "get_production_lifecycle")
+                .with_arg(empty.clone())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let attestation = agent
+                .query(&bridge, "get_activation_attestation")
+                .with_arg(empty)
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let controllers = agent
+                .read_state_canister_controllers(bridge)
+                .await
+                .map_err(|error| error.to_string())?;
+            let module_hash = agent
+                .read_state_canister_module_hash(bridge)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok::<_, String>((lifecycle, attestation, controllers, module_hash))
+        })?;
+    let lifecycle = match Decode!(&lifecycle_raw, ProductionLifecycleResultView)
+        .map_err(|error| error.to_string())?
+    {
+        ProductionLifecycleResultView::Ok(value) => value,
+        ProductionLifecycleResultView::Err(_) => {
+            return Err("authenticated production lifecycle is unavailable".into())
+        }
+    };
+    let attestation = match Decode!(&attestation_raw, ActivationAttestationResultView)
+        .map_err(|error| error.to_string())?
+    {
+        ActivationAttestationResultView::Ok(value) => Some(value),
+        ActivationAttestationResultView::Err(_) => None,
+    };
+    validate_production_handover_canister_state(
+        &bundle.profile,
+        &install_receipt,
+        &gate_a_receipt,
+        &lifecycle,
+        attestation.as_deref(),
+        &controllers,
+        &module_hash,
+        bundle.manifest.created_at_unix,
+        now_unix()?,
+    )?;
+    println!(
+        "production_canister_handover=verified canister={}",
+        bundle.profile.bridge_canister_id
+    );
+    Ok(())
+}
+
 fn mainnet_agent(host: &str, evidence_window: bool) -> Result<Agent, String> {
     let mut builder = Agent::builder()
         .with_url(host)
@@ -3866,6 +3975,53 @@ fn verify_keeper_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_activation_attestation(
+    profile: &Profile,
+    attestation: &ActivationAttestationView,
+    manifest_created_at_unix: u64,
+    minimum_finalized_block: u64,
+    now: u64,
+) -> Result<(), String> {
+    validate_activation_attestation_time(
+        attestation.observed_at_ns,
+        manifest_created_at_unix,
+        now,
+    )?;
+    let expected_signer = decode_address(&profile.expected_bridge_signer)?;
+    let expected_runtime = decode_hex(&profile.bridge_runtime_bytecode_sha256)?;
+    let expected_timelock = decode_address(&profile.timelock.address)?;
+    let expected_operator = decode_address(&profile.governance_operator)?;
+    if attestation.chain_id != profile.chain_id
+        || attestation.finalized_block_number < minimum_finalized_block
+        || attestation.finalized_block_hash.len() != 32
+        || attestation.bridge_signer != expected_signer
+        || attestation.bridge_runtime_sha256 != expected_runtime
+        || !attestation.deposits_paused
+        || !attestation.withdrawals_paused
+        || attestation.bridge_timelock != expected_timelock
+        || attestation.runtime_administrator != expected_operator
+        || attestation.timelock_admin != expected_timelock
+        || attestation.timelock_proposer != expected_operator
+        || attestation.timelock_canceller != expected_operator
+        || attestation.timelock_executor != expected_operator
+        || attestation.timelock_runtime_code_hash
+            != decode_hex(&profile.timelock.runtime_code_hash)?
+        || attestation.bridge_approved_timelock_runtime_code_hash
+            != decode_hex(&profile.timelock.runtime_code_hash)?
+        || attestation.timelock_minimum_delay_seconds != profile.timelock.minimum_delay_seconds
+        || attestation.bsns_address != decode_address(&profile.bsns_contract)?
+        || attestation.bsns_runtime_sha256 != decode_hex(&profile.bsns_runtime_bytecode_sha256)?
+        || attestation.bsns_name != "KINIC"
+        || attestation.bsns_symbol != "KINIC"
+        || attestation.bsns_decimals != profile.decimals
+        || attestation.bsns_bridge != decode_address(&profile.bridge_contract)?
+        || attestation.base_service_fee != profile.parameters.service_fee
+    {
+        return Err("authenticated activation attestation does not match the release".into());
+    }
+    Ok(())
+}
+
 fn verify_activation_attestation_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
     let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
@@ -3883,47 +4039,13 @@ fn verify_activation_attestation_authenticity(bundle: &ValidatedBundle) -> Resul
     else {
         return Err("authenticated activation attestation is unavailable".into());
     };
-    let now = now_unix()?;
-    validate_activation_attestation_time(
-        attestation.observed_at_ns,
+    validate_activation_attestation(
+        &bundle.profile,
+        &attestation,
         bundle.manifest.created_at_unix,
-        now,
-    )?;
-    let expected_signer = decode_address(&bundle.profile.expected_bridge_signer)?;
-    let expected_runtime = decode_hex(&bundle.profile.bridge_runtime_bytecode_sha256)?;
-    let expected_timelock = decode_address(&bundle.profile.timelock.address)?;
-    let expected_operator = decode_address(&bundle.profile.governance_operator)?;
-    if attestation.chain_id != bundle.profile.chain_id
-        || attestation.finalized_block_number == 0
-        || attestation.finalized_block_hash.len() != 32
-        || attestation.bridge_signer != expected_signer
-        || attestation.bridge_runtime_sha256 != expected_runtime
-        || !attestation.deposits_paused
-        || !attestation.withdrawals_paused
-        || attestation.bridge_timelock != expected_timelock
-        || attestation.runtime_administrator != expected_operator
-        || attestation.timelock_admin != expected_timelock
-        || attestation.timelock_proposer != expected_operator
-        || attestation.timelock_canceller != expected_operator
-        || attestation.timelock_executor != expected_operator
-        || attestation.timelock_runtime_code_hash
-            != decode_hex(&bundle.profile.timelock.runtime_code_hash)?
-        || attestation.bridge_approved_timelock_runtime_code_hash
-            != decode_hex(&bundle.profile.timelock.runtime_code_hash)?
-        || attestation.timelock_minimum_delay_seconds
-            != bundle.profile.timelock.minimum_delay_seconds
-        || attestation.bsns_address != decode_address(&bundle.profile.bsns_contract)?
-        || attestation.bsns_runtime_sha256
-            != decode_hex(&bundle.profile.bsns_runtime_bytecode_sha256)?
-        || attestation.bsns_name != "KINIC"
-        || attestation.bsns_symbol != "KINIC"
-        || attestation.bsns_decimals != bundle.profile.decimals
-        || attestation.bsns_bridge != decode_address(&bundle.profile.bridge_contract)?
-        || attestation.base_service_fee != bundle.profile.parameters.service_fee
-    {
-        return Err("authenticated activation attestation does not match the release".into());
-    }
-    Ok(())
+        1,
+        now_unix()?,
+    )
 }
 
 fn verify_sns_upgrade_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
@@ -4597,6 +4719,14 @@ fn run() -> Result<(), String> {
         Some("verify-production-canister-predeploy") if args.len() == 4 => {
             verify_production_canister_predeploy(Path::new(&args[2]), Path::new(&args[3]))?;
         }
+        Some("verify-production-canister-handover") if args.len() == 6 => {
+            verify_production_canister_handover(
+                Path::new(&args[2]),
+                Path::new(&args[3]),
+                Path::new(&args[4]),
+                Path::new(&args[5]),
+            )?;
+        }
         Some("storage-validation-complete") if args.len() == 3 => {
             println!("{}", storage_validation_complete(&args[2])?);
         }
@@ -4677,7 +4807,7 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[3]
             );
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
     }
     Ok(())
 }
@@ -5050,6 +5180,169 @@ mod tests {
             &receipt,
             &controllers,
             &module_hash,
+        )
+        .is_err());
+    }
+
+    fn matching_activation_attestation(
+        profile: &Profile,
+        observed_at_unix: u64,
+        finalized_block_number: u64,
+    ) -> ActivationAttestationView {
+        let operator = decode_address(&profile.governance_operator).unwrap();
+        let timelock = decode_address(&profile.timelock.address).unwrap();
+        ActivationAttestationView {
+            chain_id: profile.chain_id,
+            finalized_block_number,
+            finalized_block_hash: vec![0xaa; 32],
+            observed_at_ns: observed_at_unix * 1_000_000_000,
+            bridge_signer: decode_address(&profile.expected_bridge_signer)
+                .unwrap()
+                .to_vec(),
+            bridge_runtime_sha256: decode_hex(&profile.bridge_runtime_bytecode_sha256).unwrap(),
+            deposits_paused: true,
+            withdrawals_paused: true,
+            bridge_timelock: timelock.to_vec(),
+            runtime_administrator: operator.to_vec(),
+            timelock_admin: timelock.to_vec(),
+            timelock_proposer: operator.to_vec(),
+            timelock_canceller: operator.to_vec(),
+            timelock_executor: operator.to_vec(),
+            timelock_runtime_code_hash: decode_hex(&profile.timelock.runtime_code_hash).unwrap(),
+            bridge_approved_timelock_runtime_code_hash: decode_hex(
+                &profile.timelock.runtime_code_hash,
+            )
+            .unwrap(),
+            timelock_minimum_delay_seconds: profile.timelock.minimum_delay_seconds,
+            bsns_address: decode_address(&profile.bsns_contract).unwrap().to_vec(),
+            bsns_runtime_sha256: decode_hex(&profile.bsns_runtime_bytecode_sha256).unwrap(),
+            bsns_name: "KINIC".into(),
+            bsns_symbol: "KINIC".into(),
+            bsns_decimals: profile.decimals,
+            bsns_bridge: decode_address(&profile.bridge_contract).unwrap().to_vec(),
+            base_service_fee: profile.parameters.service_fee,
+        }
+    }
+
+    fn handover_gate_a_receipt(
+        profile: &Profile,
+        install_receipt: ProductionCanisterInstallReceipt,
+    ) -> GateAReceipt {
+        GateAReceipt {
+            schema_version: 2,
+            gate_a_manifest_sha256: "a".repeat(64),
+            release_id: "release".into(),
+            source_revision: "b".repeat(40),
+            source_tree_sha256: "c".repeat(64),
+            gate_a_profile_sha256: "d".repeat(64),
+            post_deploy_profile_sha256: "e".repeat(64),
+            bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            bridge_runtime_bytecode_sha256: profile.bridge_runtime_bytecode_sha256.clone(),
+            bridge_deployment_transaction_hash: format!("0x{}", "11".repeat(32)),
+            bridge_deployment_block_number: 101,
+            bridge_deployment_block_hash: format!("0x{}", "22".repeat(32)),
+            timelock_deployment_transaction_hash: format!("0x{}", "33".repeat(32)),
+            timelock_deployment_block_number: 100,
+            timelock_deployment_block_hash: format!("0x{}", "44".repeat(32)),
+            canister_install: install_receipt,
+        }
+    }
+
+    #[test]
+    fn production_handover_requires_sealed_fresh_post_deployment_attestation() {
+        let profile = valid_profile();
+        assert!(profile.rpc_providers.is_empty());
+        let install_receipt = production_canister_receipt(&profile);
+        let gate_a_receipt = handover_gate_a_receipt(&profile, install_receipt.clone());
+        let controllers = [Principal::from_text(&install_receipt.installer_principal).unwrap()];
+        let module_hash = decode_hex(&install_receipt.module_sha256).unwrap();
+        let created = 1_000_000;
+        let now = created + 600;
+        let attestation = matching_activation_attestation(&profile, now, 101);
+        let validate = |lifecycle: &ProductionLifecycleView,
+                        attestation: Option<&ActivationAttestationView>,
+                        controllers: &[Principal],
+                        module_hash: &[u8]| {
+            validate_production_handover_canister_state(
+                &profile,
+                &install_receipt,
+                &gate_a_receipt,
+                lifecycle,
+                attestation,
+                controllers,
+                module_hash,
+                created,
+                now,
+            )
+        };
+        assert!(validate(
+            &ProductionLifecycleView::OperationalConfigSealed,
+            Some(&attestation),
+            &controllers,
+            &module_hash,
+        )
+        .is_ok());
+        assert!(validate(
+            &ProductionLifecycleView::Bootstrap,
+            Some(&attestation),
+            &controllers,
+            &module_hash,
+        )
+        .is_err());
+        assert!(validate(
+            &ProductionLifecycleView::OperationalConfigSealed,
+            None,
+            &controllers,
+            &module_hash,
+        )
+        .is_err());
+
+        let mut stale = matching_activation_attestation(
+            &profile,
+            now - MAX_ACTIVATION_ATTESTATION_AGE_SECS - 1,
+            101,
+        );
+        assert!(validate(
+            &ProductionLifecycleView::OperationalConfigSealed,
+            Some(&stale),
+            &controllers,
+            &module_hash,
+        )
+        .is_err());
+        stale.observed_at_ns = now * 1_000_000_000;
+        stale.finalized_block_number = 100;
+        assert!(validate(
+            &ProductionLifecycleView::OperationalConfigSealed,
+            Some(&stale),
+            &controllers,
+            &module_hash,
+        )
+        .is_err());
+
+        let mut profile_drift = attestation;
+        profile_drift.chain_id = 84532;
+        assert!(validate(
+            &ProductionLifecycleView::OperationalConfigSealed,
+            Some(&profile_drift),
+            &controllers,
+            &module_hash,
+        )
+        .is_err());
+        let extra_controllers = [controllers[0], Principal::anonymous()];
+        assert!(validate(
+            &ProductionLifecycleView::OperationalConfigSealed,
+            Some(&matching_activation_attestation(&profile, now, 101)),
+            &extra_controllers,
+            &module_hash,
+        )
+        .is_err());
+        let mut drifted_module = module_hash;
+        drifted_module[0] ^= 1;
+        assert!(validate(
+            &ProductionLifecycleView::OperationalConfigSealed,
+            Some(&matching_activation_attestation(&profile, now, 101)),
+            &controllers,
+            &drifted_module,
         )
         .is_err());
     }

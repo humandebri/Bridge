@@ -19,17 +19,8 @@ set -euo pipefail
 printf 'rebuild %s\n' "$*" >>"$TRACE"
 [[ "${REPRODUCIBLE_BUILD_FAIL:-false}" != true ]]
 SH
-cat >"$T/source/scripts/production-live-preflight.sh" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'live-preflight %s\n' "$*" >>"$TRACE"
-[[ "$#" == 3 && "$1" == verify-handover-deployment && -f "$2" && -f "$3" ]]
-: "${BRIDGE_MONITOR_RPC_URL_1:?}" "${BRIDGE_MONITOR_RPC_URL_2:?}" "${BRIDGE_MONITOR_RPC_URL_3:?}"
-[[ "${HANDOVER_LIVE_BASE_DRIFT:-false}" != true ]]
-SH
 chmod +x "$T/source/scripts/ci-local.sh"
 chmod +x "$T/source/scripts/rebuild-release-artifacts.sh"
-chmod +x "$T/source/scripts/production-live-preflight.sh"
 printf '/target\n' >"$T/source/.gitignore"
 cat >"$T/source/Cargo.toml" <<'TOML'
 [package]
@@ -45,7 +36,7 @@ version = "0.0.0"
 LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs};
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="validate-production-handover-receipt"{if a.len()!=5||env::var("HANDOVER_GATE_A_RECEIPT_DRIFT").as_deref()==Ok("true")||env::var("HANDOVER_DEPLOYMENT_BINDING_DRIFT").as_deref()==Ok("true")||!fs::read_to_string(&a[2]).unwrap().contains("\"schema_version\":2"){std::process::exit(1)}println!("{}","c".repeat(64))}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="validate-production-handover-receipt"{if a.len()!=5||env::var("HANDOVER_GATE_A_RECEIPT_DRIFT").as_deref()==Ok("true")||env::var("HANDOVER_DEPLOYMENT_BINDING_DRIFT").as_deref()==Ok("true")||!fs::read_to_string(&a[2]).unwrap().contains("\"schema_version\":2"){std::process::exit(1)}println!("{}","c".repeat(64))}else if a[0]=="verify-production-canister-handover"{if a.len()!=5||["HANDOVER_BOOTSTRAP","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -89,9 +80,6 @@ run_handover() {
   BRIDGE_CANISTER_INSTALL_RECEIPT="$T/production-canister-install-receipt.json" \
   BRIDGE_GATE_A_RECEIPT="$T/gate-a-receipt.json" \
   BRIDGE_DEPLOYMENT_BINDING_FILE="$T/deployment-binding.json" \
-  BRIDGE_MONITOR_RPC_URL_1=https://one.example \
-  BRIDGE_MONITOR_RPC_URL_2=https://two.example \
-  BRIDGE_MONITOR_RPC_URL_3=https://three.example \
   BRIDGE_ICP_IDENTITY=production \
   BRIDGE_HANDOVER_EVIDENCE_FILE="$evidence" \
   BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY \
@@ -129,9 +117,6 @@ if BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" \
   BRIDGE_RELEASE_BUNDLE="$T/bundle" \
   BRIDGE_CANISTER_INSTALL_RECEIPT="$T/production-canister-install-receipt.json" \
   BRIDGE_GATE_A_RECEIPT="$T/gate-a-receipt.json" \
-  BRIDGE_MONITOR_RPC_URL_1=https://one.example \
-  BRIDGE_MONITOR_RPC_URL_2=https://two.example \
-  BRIDGE_MONITOR_RPC_URL_3=https://three.example \
   BRIDGE_ICP_IDENTITY=production \
   BRIDGE_HANDOVER_EVIDENCE_FILE="$T/missing-binding.json" \
   BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY \
@@ -147,10 +132,17 @@ if HANDOVER_DEPLOYMENT_BINDING_DRIFT=true run_handover "$T/deployment-binding-dr
   echo "handover accepted a deployment binding drift" >&2; exit 1
 fi
 [[ ! -e "$T/deployment-binding-drift.json" ]]
-if HANDOVER_LIVE_BASE_DRIFT=true run_handover "$T/live-base-drift.json" >/dev/null 2>&1; then
-  echo "handover accepted a live Base deployment drift" >&2; exit 1
-fi
-[[ ! -e "$T/live-base-drift.json" ]]
+for scenario in \
+  BOOTSTRAP ATTESTATION_MISSING ATTESTATION_STALE ATTESTATION_PREDEPLOY \
+  PROFILE_DRIFT CONTROLLER_DRIFT MODULE_DRIFT; do
+  evidence="$T/$(printf '%s' "$scenario" | tr '[:upper:]_' '[:lower:]-').json"
+  export "HANDOVER_${scenario}=true"
+  if run_handover "$evidence" >/dev/null 2>&1; then
+    echo "handover accepted invalid certified Canister state: $scenario" >&2; exit 1
+  fi
+  unset "HANDOVER_${scenario}"
+  [[ ! -e "$evidence" ]]
+done
 
 if PROOF_GATE_FAIL=true run_handover "$T/proof-failed.json" >/dev/null 2>&1; then
   echo "handover accepted a failed proof gate" >&2; exit 1

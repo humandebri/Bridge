@@ -196,12 +196,6 @@ production_validate_gate() {
       echo "Gate A requires the verified production Canister install receipt" >&2
       return 1
     }
-    "$profile_bin" verify-production-canister-predeploy \
-      "$bundle/profile.json" "$canister_install_receipt" >/dev/null || {
-      rm -rf "$target"
-      echo "live production Canister no longer matches the paused predeploy profile" >&2
-      return 1
-    }
     if [[ -n "$completed_gate_a_receipt" ]]; then
       [[ -f "$completed_gate_a_receipt" && ! -L "$completed_gate_a_receipt" ]] || {
         rm -rf "$target"
@@ -220,10 +214,18 @@ production_validate_gate() {
         echo "completed Gate A receipt is not valid for controller handover" >&2
         return 1
       }
-      "$source_root/scripts/production-live-preflight.sh" verify-handover-deployment \
-        "$bundle/profile.json" "$deployment_binding" >/dev/null || {
+      "$profile_bin" verify-production-canister-handover \
+        "$bundle" "$completed_gate_a_receipt" "$canister_install_receipt" \
+        "$deployment_binding" >/dev/null || {
         rm -rf "$target"
-        echo "live Base deployment is not final or does not match the handover binding" >&2
+        echo "production Canister is not sealed and attested for controller handover" >&2
+        return 1
+      }
+    else
+      "$profile_bin" verify-production-canister-predeploy \
+        "$bundle/profile.json" "$canister_install_receipt" >/dev/null || {
+        rm -rf "$target"
+        echo "live production Canister no longer matches the paused predeploy profile" >&2
         return 1
       }
     fi
