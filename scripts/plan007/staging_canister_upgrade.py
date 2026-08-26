@@ -8,7 +8,7 @@ from typing import Any
 from candid_values import blob, integrity_ok, nat, principal
 
 ROOT = Path(__file__).resolve().parents[2]
-POLICY = ROOT / "deployments/sepolia-staging/staging-bridge-upgrade-policy.json"
+POLICY = ROOT / "deployments/sepolia-staging/v33-to-v34-upgrade-policy.json"
 PROFILE = ROOT / "deployments/sepolia-staging/frontend-profile.json"
 DID = ROOT / "canister/bridge-canister/bridge.did"
 METADATA_READER = ROOT / "scripts/plan007/read-public-canister-metadata.mjs"
