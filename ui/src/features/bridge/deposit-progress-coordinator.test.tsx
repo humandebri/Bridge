@@ -156,7 +156,7 @@ describe("DepositProgressCoordinator", () => {
     expect(mocks.toastError).not.toHaveBeenCalled()
   })
 
-  it("does not overwrite wallet attention while polling canonical deposit state", async () => {
+  it("does_not_overwrite_wallet_attention_while_polling_canonical_deposit_state", async () => {
     mocks.progress.phase = "attention"
     mocks.progress.attentionPhase = "awaiting-base-mint"
 
@@ -168,7 +168,7 @@ describe("DepositProgressCoordinator", () => {
     expect(mocks.mintAuthorizationAction).not.toHaveBeenCalled()
   })
 
-  it("continues polling canonical authorization attention until the deposit is minted", async () => {
+  it("continues_polling_canonical_authorization_attention_until_the_deposit_is_minted", async () => {
     mocks.progress.phase = "attention"
     mocks.progress.attentionPhase = "authorization-generating"
 

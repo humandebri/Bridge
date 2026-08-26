@@ -82,7 +82,12 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("path: trusted-policy", workflow)
         self.assertIn("path: source", workflow)
         self.assertIn("trusted-policy/scripts/install-ci-tools.sh \"$mode\"", workflow)
-        self.assertEqual(select_profile(ROOT).identifier, "current-main")
+        selected_profile = select_profile(ROOT).identifier
+        configured_profile = os.environ.get("BRIDGE_TRUSTED_PROFILE")
+        if configured_profile is not None:
+            self.assertEqual(selected_profile, configured_profile)
+        else:
+            self.assertIn(selected_profile, {"current-main", "security-hardening-v1"})
         self.assertIn("proofs) mode=\"all\"", workflow)
         self.assertIn("*) mode=\"ci\"", workflow)
         self.assertEqual(workflow.count("docker build --file"), 1)

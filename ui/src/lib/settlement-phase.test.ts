@@ -36,7 +36,7 @@ describe("settlement phase helpers", () => {
     expect(depositReconciliationMessage(phase, { BaseStateMismatch: null })).toBe("Mint evidence requires audit — refund is blocked")
   })
 
-  it("derives automatic, retry, refund, and blocked authorization recovery from canonical facts", () => {
+  it("derives_automatic_retry_refund_and_blocked_authorization_recovery_from_canonical_facts", () => {
     const record = (reason: DepositView["last_settlement_stop_reason"], automatic = false) => ({
       state: { AuthorizationPending: null },
       last_settlement_stop_reason: reason,
@@ -73,7 +73,7 @@ describe("settlement phase helpers", () => {
     }
   })
 
-  it("enables an expired-authorization refund only after finalized Base time passes the deadline", () => {
+  it("enables_an_expired_authorization_refund_only_after_finalized_Base_time_passes_the_deadline", () => {
     const record = {
       mint_authorization: [{ deadline: 1_000n }],
     } as DepositView
