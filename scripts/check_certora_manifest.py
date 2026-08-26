@@ -9,6 +9,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from check_solidity_ast_bindings import AstIndex
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CERTORA = Path("verification/certora")
@@ -56,10 +58,6 @@ FORBIDDEN_CONFIG_KEYS = {
     "disable_local_type_checking",
 }
 RULE = re.compile(r"(?m)^\s*(?:rule|invariant)\s+([A-Za-z_][A-Za-z0-9_]*)\b")
-SOURCE_LINK = re.compile(
-    r"(?P<path>[^#]+)#(?P<contract>[A-Za-z_][A-Za-z0-9_]*)\."
-    r"(?P<function>[A-Za-z_][A-Za-z0-9_]*)\((?P<parameters>.*)\)"
-)
 
 
 @dataclass(frozen=True)
@@ -69,14 +67,6 @@ class Obligation:
     sources: tuple[str, ...]
     assumptions: tuple[str, ...]
     claims: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class SolidityFunction:
-    source: Path
-    contract: str
-    signature: str
-    artifact: Path
 
 
 def split_entries(value: str, *, field: str, row: int) -> tuple[str, ...]:
@@ -94,71 +84,6 @@ def parse_link(value: str, root: Path, *, suffix: str) -> tuple[Path, str]:
     if not path.is_file() or not symbol or not raw_path.endswith(suffix):
         raise ValueError(f"invalid Certora link: {value}")
     return path, symbol
-
-
-def canonical_type(value: str) -> str:
-    for prefix in ("struct ", "enum ", "contract "):
-        if value.startswith(prefix):
-            return value.removeprefix(prefix)
-    return value
-
-
-class SolidityAstIndex:
-    def __init__(self, root: Path, artifact_root: Path) -> None:
-        if not artifact_root.is_dir():
-            raise ValueError(f"missing fresh Solidity AST root: {artifact_root}")
-        self.root = root
-        self.functions: dict[tuple[Path, str, str], SolidityFunction] = {}
-        for artifact in artifact_root.rglob("*.json"):
-            try:
-                ast = json.loads(artifact.read_text(encoding="utf-8")).get("ast")
-            except (OSError, json.JSONDecodeError):
-                continue
-            if not isinstance(ast, dict) or not isinstance(ast.get("absolutePath"), str):
-                continue
-            raw_source = Path(ast["absolutePath"])
-            source = raw_source if raw_source.is_absolute() else root / "contracts" / raw_source
-            source = source.resolve()
-            for contract in ast.get("nodes", []):
-                if not isinstance(contract, dict) or contract.get("nodeType") != "ContractDefinition":
-                    continue
-                contract_name = contract.get("name")
-                if not isinstance(contract_name, str):
-                    continue
-                for node in contract.get("nodes", []):
-                    if not isinstance(node, dict) or node.get("nodeType") != "FunctionDefinition":
-                        continue
-                    function_name = node.get("name")
-                    parameters = node.get("parameters", {}).get("parameters", [])
-                    if not isinstance(function_name, str) or not isinstance(parameters, list):
-                        continue
-                    try:
-                        types = [
-                            canonical_type(parameter["typeDescriptions"]["typeString"])
-                            for parameter in parameters
-                        ]
-                    except (KeyError, TypeError):
-                        continue
-                    signature = f"{function_name}({','.join(types)})"
-                    key = (source, contract_name, signature)
-                    self.functions.setdefault(
-                        key, SolidityFunction(source, contract_name, signature, artifact)
-                    )
-
-    def resolve(self, link: str) -> SolidityFunction:
-        match = SOURCE_LINK.fullmatch(link)
-        if match is None:
-            raise ValueError(f"invalid canonical Solidity source link: {link}")
-        source = (self.root / match.group("path")).resolve()
-        if not source.is_file() or not match.group("path").endswith(".sol"):
-            raise ValueError(f"missing Solidity source in link: {link}")
-        signature = f"{match.group('function')}({match.group('parameters')})"
-        record = self.functions.get((source, match.group("contract"), signature))
-        if record is None:
-            raise ValueError(f"unresolved Solidity AST source link: {link}")
-        if record.artifact.stat().st_mtime_ns < source.stat().st_mtime_ns:
-            raise ValueError(f"stale Solidity AST source link: {link}")
-        return record
 
 
 def claim_ids(root: Path) -> set[str]:
@@ -261,13 +186,12 @@ def validate_tool_pin(root: Path) -> None:
         raise ValueError("Certora uv.lock does not pin certora-cli 8.17.1")
 
 
-def validate(root: Path = ROOT, artifact_root: Path | None = None) -> None:
+def validate(root: Path = ROOT, ast_index: AstIndex | None = None) -> None:
     validate_tool_pin(root)
     validate_configs(root)
     claims = claim_ids(root)
     assumptions = assumption_ids(root)
     obligations = parse_obligations(root)
-    ast_index = SolidityAstIndex(root, artifact_root or root / "contracts" / "out")
 
     declared: dict[str, Path] = {}
     for spec in sorted((root / CERTORA / "specs").glob("*.spec")):
@@ -286,14 +210,26 @@ def validate(root: Path = ROOT, artifact_root: Path | None = None) -> None:
                     f"duplicate Certora rule ownership: {rule}/{owners[rule]}/{obligation.identifier}"
                 )
             owners[rule] = obligation.identifier
-        for link in obligation.sources:
-            ast_index.resolve(link)
         unknown_assumptions = set(obligation.assumptions) - assumptions
         unknown_claims = set(obligation.claims) - claims
         if unknown_assumptions:
             raise ValueError(f"unknown Certora assumptions: {sorted(unknown_assumptions)}")
         if unknown_claims:
             raise ValueError(f"unknown Certora claims: {sorted(unknown_claims)}")
+        for link in obligation.sources:
+            source, _ = parse_link(link, root, suffix=".sol")
+            if ast_index is None:
+                ast_index = AstIndex(
+                    root / "contracts" / "out", root / "contracts", root
+                )
+            records = ast_index.resolve(link)
+            if len(records) != 1:
+                raise ValueError(
+                    f"Certora source ownership must resolve exactly once: {link}"
+                )
+            artifact = records[0].artifact
+            if artifact is not None and artifact.stat().st_mtime_ns < source.stat().st_mtime_ns:
+                raise ValueError(f"stale Solidity AST source link: {link}")
     unowned = set(declared) - set(owners)
     if unowned:
         raise ValueError(f"Certora rules missing obligation ownership: {sorted(unowned)}")

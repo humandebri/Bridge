@@ -50,8 +50,16 @@ let text = "kernel::deposit_transition(0, 0)";
         self.assertTrue(body_calls(function_body(cleaned, "proof"), "x"))
 
     def test_production_calls_accept_supported_rust_paths(self) -> None:
-        self.assertTrue(production_body_calls("{ crate::transition(1); }", "transition"))
-        self.assertTrue(production_body_calls("{ bridge_core::transition(1); }", "transition"))
+        self.assertTrue(
+            production_body_calls("{ crate::kernel::transition(1); }", "transition")
+        )
+        self.assertTrue(
+            production_body_calls(
+                "{ ::bridge_core::kernel::transition(1); }",
+                "transition",
+                external_kernel=True,
+            )
+        )
         self.assertTrue(
             production_body_calls(
                 "{ self::transition(1); }", "transition", kernel_internal=True
@@ -71,7 +79,15 @@ let text = "kernel::deposit_transition(0, 0)";
             )
         )
         self.assertFalse(
-            production_body_calls("{ module::crate::transition(1); }", "transition")
+            production_body_calls("{ module::crate::kernel::transition(1); }", "transition")
+        )
+        self.assertFalse(production_body_calls("{ crate::transition(1); }", "transition"))
+        self.assertFalse(
+            production_body_calls(
+                "{ bridge_core::kernel::transition(1); }",
+                "transition",
+                external_kernel=True,
+            )
         )
 
     def test_nested_function_declaration_is_not_a_production_call(self) -> None:
@@ -83,9 +99,9 @@ let text = "kernel::deposit_transition(0, 0)";
 
     def test_strings_cannot_forge_production_calls(self) -> None:
         source = r'''fn registered() {
-let normal = "crate::transition(1)";
-let raw = r#"bridge_core::transition(1)"#;
-let bytes = b"crate::transition(1)";
+let normal = "crate::kernel::transition(1)";
+let raw = r#"::bridge_core::kernel::transition(1)"#;
+let bytes = b"crate::kernel::transition(1)";
 }'''
         self.assertFalse(
             production_body_calls(function_body(source, "registered"), "transition")
@@ -93,8 +109,8 @@ let bytes = b"crate::transition(1)";
 
     def test_production_comments_and_other_functions_do_not_count(self) -> None:
         source = """
-fn registered() { /* crate::transition(1); */ }
-fn other() { crate::transition(1); }
+fn registered() { /* crate::kernel::transition(1); */ }
+fn other() { crate::kernel::transition(1); }
 """
         self.assertFalse(
             production_body_calls(function_body(source, "registered"), "transition")
@@ -106,8 +122,8 @@ fn other() { crate::transition(1); }
 
     def test_rust_function_body_stops_before_later_visibility_forms(self) -> None:
         source = """
-fn registered() { crate::transition(1); }
-pub(crate) fn later() { crate::other(1); }
+fn registered() { crate::kernel::transition(1); }
+pub(crate) fn later() { crate::kernel::other(1); }
 """
         body = rust_function_body(source, "registered")
         self.assertTrue(production_body_calls(body, "transition"))

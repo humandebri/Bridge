@@ -450,20 +450,12 @@ def main() -> int:
                 )
             cleaned = cleaned_sources[path]
             body = rust_body(cleaned, function)
-            imported_kernel = re.escape(obligation.kernel)
-            imported = re.search(
-                rf"\buse\s+bridge_core\s*::\s*\{{[^}}]*\b{imported_kernel}\b[^}}]*\}}\s*;",
-                cleaned,
-                re.DOTALL,
-            ) is not None
-            unqualified = re.search(
-                rf"(?<![A-Za-z0-9_:]){re.escape(obligation.kernel)}\s*\(", body
-            ) is not None and re.search(
-                rf"\b(?:let|fn)\s+{re.escape(obligation.kernel)}\b", body
-            ) is None
             if not production_body_calls(
-                body, obligation.kernel, kernel_internal=path == KERNEL.resolve()
-            ) and not (imported and unqualified):
+                body,
+                obligation.kernel,
+                kernel_internal=path == KERNEL.resolve(),
+                external_kernel=path.is_relative_to(PRODUCTION_ROOTS[1]),
+            ):
                 raise ValueError(
                     f"production call-site does not call registered kernel: "
                     f"{call_site} -> {obligation.kernel}"

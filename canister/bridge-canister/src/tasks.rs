@@ -418,7 +418,7 @@ async fn advance_hold(
             Ok(HoldAdvance::Progress)
         }
         ledger::ReconciliationOutcome::Succeeded { block_index } => {
-            match bridge_core::hold_resolution_decision(true, false) {
+            match ::bridge_core::kernel::hold_resolution_decision(true, false) {
                 bridge_core::HoldResolutionDecision::ResolveSucceeded => {
                     resolve_reconciliation_success(config, target, block_index);
                     Ok(HoldAdvance::Continue)
@@ -431,7 +431,7 @@ async fn advance_hold(
             index_watermark,
         } => {
             let complete_absence = index_watermark >= ledger_watermark;
-            match bridge_core::hold_resolution_decision(false, complete_absence) {
+            match ::bridge_core::kernel::hold_resolution_decision(false, complete_absence) {
                 bridge_core::HoldResolutionDecision::ResolveAbsent => {
                     resolve_reconciliation_absence(config, target, hold.transfer, index_watermark);
                     Ok(HoldAdvance::Continue)
@@ -474,7 +474,7 @@ pub(crate) fn prepare_deposit_refund(
         } else {
             Amount::ZERO
         };
-        let amount = bridge_core::deposit_refund_amount(
+        let amount = ::bridge_core::kernel::deposit_refund_amount(
             deposit.gross_amount.get(),
             charged_service_fee.get(),
             fee.get(),

@@ -570,7 +570,9 @@ async fn request_deposit_refund(
     use api::RequestDepositRefundError as Error;
 
     let caller = ic_cdk::api::msg_caller();
-    match bridge_core::refund_request_identity_decision(caller != candid::Principal::anonymous()) {
+    match ::bridge_core::kernel::refund_request_identity_decision(
+        caller != candid::Principal::anonymous(),
+    ) {
         bridge_core::RefundRequestIdentityDecision::Allow => {}
         bridge_core::RefundRequestIdentityDecision::AnonymousCaller => {
             return Err(Error::AnonymousCaller);

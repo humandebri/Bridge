@@ -596,7 +596,7 @@ impl BridgeInitArgs {
         if self.governance_principal == Principal::anonymous()
             || self.pause_principal == Principal::anonymous()
             || self.confirmation_relayer_principal == Principal::anonymous()
-            || !bridge_core::confirmation_roles_distinct(
+            || !::bridge_core::kernel::confirmation_roles_distinct(
                 self.confirmation_relayer_principal == self.governance_principal,
                 self.confirmation_relayer_principal == self.pause_principal,
                 self.governance_principal == self.pause_principal,

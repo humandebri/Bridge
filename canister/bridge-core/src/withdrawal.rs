@@ -62,7 +62,8 @@ impl TransferAttempt {
             return Err(CoreError::AttemptPayloadChanged);
         }
         Ok(Self {
-            attempt_no: crate::next_attempt(self.attempt_no).ok_or(CoreError::AttemptOverflow)?,
+            attempt_no: crate::kernel::next_attempt(self.attempt_no)
+                .ok_or(CoreError::AttemptOverflow)?,
             identity,
         })
     }
@@ -167,7 +168,7 @@ impl WithdrawalRecord {
             } => (1, *release_ledger_block_index),
             _ => (0, 0),
         };
-        let expected_release = crate::withdrawal_ledger_block_transition(
+        let expected_release = crate::kernel::withdrawal_ledger_block_transition(
             current_release,
             ledger_event.0,
             ledger_event.1,
@@ -180,7 +181,7 @@ impl WithdrawalRecord {
 
         let state_code = self.state.phase_code();
         let event_code = event.phase_code();
-        if !crate::withdrawal_phase_allows(state_code, event_code) {
+        if !crate::kernel::withdrawal_phase_allows(state_code, event_code) {
             return Err(CoreError::InvalidTransition {
                 entity: "withdrawal",
                 event: event.name(),
@@ -260,7 +261,7 @@ impl WithdrawalRecord {
                 event: "ledger_block_effect_mismatch",
             });
         }
-        let effects = crate::withdrawal_transition_effects(
+        let effects = crate::kernel::withdrawal_transition_effects(
             state_code,
             event_code,
             settlement_for_effects.amount_out.get(),
@@ -286,7 +287,7 @@ impl WithdrawalRecord {
             return Err(CoreError::InvalidLedgerOperation);
         }
         if attempt.identity.operation != LedgerOperation::ReleaseWithdrawal
-            || !crate::release_transfer_matches(
+            || !crate::kernel::release_transfer_matches(
                 attempt.identity.amount.get(),
                 attempt.identity.fee.get(),
                 self.amount_out.get(),

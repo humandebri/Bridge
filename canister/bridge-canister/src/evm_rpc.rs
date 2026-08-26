@@ -3,8 +3,8 @@ use async_trait::async_trait;
 #[cfg(test)]
 use bridge_core::withdrawal_finalized_identity_quorum;
 use bridge_core::{
-    withdrawal_common_checkpoint, withdrawal_finalized_checkpoint_quorum, Amount, BaseMintSnapshot,
-    FinalizedObservationRecord, WithdrawalFinalizedIdentity,
+    withdrawal_common_checkpoint, Amount, BaseMintSnapshot, FinalizedObservationRecord,
+    WithdrawalFinalizedIdentity,
 };
 use candid::{utils::ArgumentEncoder, CandidType, Principal};
 use evm_rpc_client::{CandidResponseConverter, EvmRpcClient, NoRetry};
@@ -956,7 +956,7 @@ async fn observe_bridge_snapshot_at(
     let snapshot_selector = selector("bridgeSnapshot()");
     let value = eth_call_at_observation(args, &snapshot_selector, observation).await?;
     let snapshot = decode_bridge_snapshot(&value)?;
-    if !bridge_core::canonical_probe_matches(
+    if !::bridge_core::kernel::canonical_probe_matches(
         observation.block_number,
         snapshot.mint.finalized_head_block_number,
     ) {
@@ -1462,7 +1462,7 @@ fn exact_withdrawal_finalized_block(
                 .iter()
                 .map(|(_, identity)| *identity)
                 .collect::<Vec<_>>();
-            let selected = withdrawal_finalized_checkpoint_quorum(
+            let selected = ::bridge_core::kernel::withdrawal_finalized_checkpoint_quorum(
                 [
                     finalized_head_identities[0],
                     finalized_head_identities[1],

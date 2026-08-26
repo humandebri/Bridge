@@ -1854,7 +1854,7 @@ fn claim_settlement_job_transaction(
             .map_err(|_| DbError::Constraint("invalid lease deadline".into()))?;
         let scheduled = *status == 0;
         let active = *status == 1 && lease_until.is_some_and(|deadline| deadline > now_ns);
-        match bridge_core::lease_lane_claim_decision(
+        match ::bridge_core::kernel::lease_lane_claim_decision(
             active,
             *active_lane == SettlementLeaseLane::Automatic.sql(),
             0,
@@ -1879,7 +1879,7 @@ fn claim_settlement_job_transaction(
         let automatic_schedule_is_authoritative =
             scheduled && kind != SettlementJobKind::Withdrawal;
         if !matches!(
-            bridge_core::manual_claim_decision(
+            ::bridge_core::kernel::manual_claim_decision(
                 automatic_schedule_is_authoritative,
                 active,
                 stopped,
@@ -1900,7 +1900,12 @@ fn claim_settlement_job_transaction(
     let active_in_lane = u64::try_from(active_in_lane)
         .map_err(|_| DbError::Constraint("invalid lane lease count".into()))?;
     if matches!(
-        bridge_core::lease_lane_claim_decision(false, false, active_in_lane, lane.capacity()),
+        ::bridge_core::kernel::lease_lane_claim_decision(
+            false,
+            false,
+            active_in_lane,
+            lane.capacity()
+        ),
         bridge_core::LeaseLaneClaimDecision::Busy
     ) {
         return Ok(ManualClaimTransaction::Busy);
@@ -3973,8 +3978,8 @@ impl StableStore {
             )
             .map_err(|_| StorageMaintenanceError::StorageFailure)?;
             let sequence = counters.next_audit_sequence;
-            counters.next_audit_sequence =
-                bridge_core::audit_next(sequence).ok_or(StorageMaintenanceError::StorageFailure)?;
+            counters.next_audit_sequence = ::bridge_core::kernel::audit_next(sequence)
+                .ok_or(StorageMaintenanceError::StorageFailure)?;
             rows.push((
                 id,
                 encode(&withdrawal).map_err(|_| StorageMaintenanceError::StorageFailure)?,
@@ -4395,7 +4400,7 @@ impl StableStore {
         } else {
             (admission.public_verification_count, public_limit)
         };
-        if !bridge_core::notification_admission_allowed(
+        if !::bridge_core::kernel::notification_admission_allowed(
             lane_count,
             caller_count,
             lane_limit,
@@ -4536,8 +4541,10 @@ impl StableStore {
                 failed_transactions: admission.failed_transactions,
             };
         }
-        if !bridge_core::notification_ingestion_allowed(admission.ingestion_count, ingestion_limit)
-        {
+        if !::bridge_core::kernel::notification_ingestion_allowed(
+            admission.ingestion_count,
+            ingestion_limit,
+        ) {
             return Err(StorageError::NotificationRateLimited);
         }
         admission.ingestion_count = admission
@@ -4557,7 +4564,7 @@ impl StableStore {
                 .failed_transactions
                 .iter()
                 .any(|entry| {
-                    bridge_core::notification_failure_cooldown_active(
+                    ::bridge_core::kernel::notification_failure_cooldown_active(
                         entry.transaction_hash == transaction_hash,
                         now_ns,
                         entry.retry_after_ns,
@@ -4999,8 +5006,9 @@ impl StableStore {
                 let Some(candidate) = candidate else {
                     return Ok(TransactionEffect::Unchanged(SettlementJobClaim::None));
                 };
-                let generation = bridge_core::lease_generation_next(candidate.lease_generation)
-                    .ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
+                let generation =
+                    ::bridge_core::kernel::lease_generation_next(candidate.lease_generation)
+                        .ok_or_else(|| DbError::Constraint("lease generation overflow".into()))?;
                 connection.execute(
                     "UPDATE settlement_jobs SET status = 1, next_run_at_ns = NULL,
                      lease_generation = ?1, lease_until_ns = ?2, lease_lane = 0, updated_at_ns = ?3
@@ -5168,7 +5176,7 @@ impl StableStore {
             .map_err(|_| StorageError::DecodeFailed)?;
         Ok(current.is_some_and(|current| {
             matches!(
-                bridge_core::lease_outcome_decision(current, job.lease_generation, true),
+                ::bridge_core::kernel::lease_outcome_decision(current, job.lease_generation, true),
                 bridge_core::LeaseOutcomeDecision::Accept
             )
         }))
@@ -5392,7 +5400,7 @@ impl StableStore {
             return Ok(None);
         }
         admission.refresh_generation =
-            bridge_core::refresh_generation_next(admission.refresh_generation)
+            ::bridge_core::kernel::refresh_generation_next(admission.refresh_generation)
                 .ok_or(StorageError::DatabaseFailure)?;
         let owner = admission.refresh_generation;
         admission.refresh_started_at_ns = Some(now_ns);
@@ -5412,7 +5420,7 @@ impl StableStore {
         deposits_paused: bool,
     ) -> Result<(), StorageError> {
         let mut admission = self.deposit_admission()?;
-        if !bridge_core::refresh_owner_matches(admission.refresh_owner, owner) {
+        if !::bridge_core::kernel::refresh_owner_matches(admission.refresh_owner, owner) {
             return Err(StorageError::StaleSnapshotRefresh);
         }
         admission.base_snapshot = Some(CachedBaseMintSnapshot {
@@ -8087,9 +8095,11 @@ impl StableStore {
         )?;
         counters.reserved_deposit_mint_amount =
             adjust_reserved_mint_amount(counters.reserved_deposit_mint_amount, None, record)?;
-        let reservation =
-            bridge_core::reservation_decision(previous_counters.reserved_deposit_mint_amount, 0)
-                .ok_or(StorageError::CounterOverflow)?;
+        let reservation = ::bridge_core::kernel::reservation_decision(
+            previous_counters.reserved_deposit_mint_amount,
+            0,
+        )
+        .ok_or(StorageError::CounterOverflow)?;
         if reservation.reserved != counters.reserved_deposit_mint_amount
             || reservation.candidate != 0
         {
@@ -9634,7 +9644,7 @@ fn is_open_hold(value: &ReconciliationHoldRecord) -> bool {
         ReconciliationHoldState::ResolvedSucceeded { .. } => 1,
         ReconciliationHoldState::ResolvedAbsent { .. } => 2,
     };
-    bridge_core::reconciliation_hold_indexed(state)
+    ::bridge_core::kernel::reconciliation_hold_indexed(state)
 }
 
 fn is_pending_deposit_ledger(value: &DepositRecord) -> bool {
@@ -9645,7 +9655,7 @@ fn is_pending_deposit_ledger(value: &DepositRecord) -> bool {
 }
 
 fn is_terminal_deposit(value: &DepositRecord) -> bool {
-    !bridge_core::deposit_nonterminal_indexed(value.state.code())
+    !::bridge_core::kernel::deposit_nonterminal_indexed(value.state.code())
 }
 
 fn is_deposit_mint_reserved(value: &DepositRecord) -> bool {
@@ -9721,7 +9731,7 @@ fn is_nonterminal_withdrawal(value: &WithdrawalRecord) -> bool {
         WithdrawalState::Paid { .. } => 2,
         WithdrawalState::ReconciliationHold { .. } => 3,
     };
-    bridge_core::withdrawal_liability_indexed(state)
+    ::bridge_core::kernel::withdrawal_liability_indexed(state)
 }
 
 fn is_pending_fee_payout(value: &crate::admin::FeePayoutRecord) -> bool {
@@ -9732,7 +9742,7 @@ fn is_pending_fee_payout(value: &crate::admin::FeePayoutRecord) -> bool {
 }
 
 fn fee_payout_debit(value: &crate::admin::FeePayoutRecord) -> Result<u128, StorageError> {
-    bridge_core::payout_debit(true, value.amount, value.transfer.fee.get())
+    ::bridge_core::kernel::payout_debit(true, value.amount, value.transfer.fee.get())
         .ok_or(StorageError::CounterOverflow)
 }
 
@@ -9762,11 +9772,13 @@ fn adjust_active_count(
     was_active: bool,
     is_active: bool,
 ) -> Result<u64, StorageError> {
-    bridge_core::checked_counter_transition(current, was_active, is_active).ok_or(if is_active {
-        StorageError::CounterOverflow
-    } else {
-        StorageError::CounterUnderflow
-    })
+    ::bridge_core::kernel::checked_counter_transition(current, was_active, is_active).ok_or(
+        if is_active {
+            StorageError::CounterOverflow
+        } else {
+            StorageError::CounterUnderflow
+        },
+    )
 }
 
 fn encode<T: Serialize>(value: &T) -> Result<StableBlob, StorageError> {

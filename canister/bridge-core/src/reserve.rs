@@ -37,7 +37,7 @@ impl ReservePolicy {
             .checked_add(u128::from(reserved_deposits))
             .and_then(|value| value.checked_add(u128::from(candidate_deposits)))
             .ok_or(CoreError::ArithmeticOverflow)?;
-        crate::checked_requirement(self.cycles_floor, self.settlement_cycle_ceiling, count)
+        crate::kernel::checked_requirement(self.cycles_floor, self.settlement_cycle_ceiling, count)
             .ok_or(CoreError::ArithmeticOverflow)
     }
 

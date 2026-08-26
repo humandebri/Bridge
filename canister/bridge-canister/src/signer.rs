@@ -254,7 +254,7 @@ async fn threshold_signature(
             )
             .map_err(signing_storage_error)
     })?;
-    let required_balance = bridge_core::signing_cycle_requirement(
+    let required_balance = ::bridge_core::kernel::signing_cycle_requirement(
         required_reserve,
         cycles,
         config.settlement_cycle_ceiling,

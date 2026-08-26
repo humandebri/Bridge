@@ -186,22 +186,26 @@ def body_calls(body: str, symbol: str) -> bool:
 
 
 def production_body_calls(
-    body: str, symbol: str, *, kernel_internal: bool = False
+    body: str,
+    symbol: str,
+    *,
+    kernel_internal: bool = False,
+    external_kernel: bool = False,
 ) -> bool:
+    if kernel_internal:
+        kernel_call = re.compile(
+            rf"(?<![A-Za-z0-9_:])self\s*::\s*{re.escape(symbol)}\s*\("
+        )
+        kernel_macro = re.compile(
+            rf"(?<![A-Za-z0-9_]){re.escape(symbol)}_body\s*!\s*\("
+        )
+        return kernel_call.search(body) is not None or kernel_macro.search(body) is not None
+    prefix = r"::\s*bridge_core" if external_kernel else "crate"
     qualified = re.compile(
-        rf"(?<![A-Za-z0-9_:])(?:crate|bridge_core)\s*::\s*{re.escape(symbol)}\s*\("
+        rf"(?<![A-Za-z0-9_:]){prefix}\s*::\s*kernel\s*::\s*"
+        rf"{re.escape(symbol)}\s*\("
     )
-    if qualified.search(body) is not None:
-        return True
-    if not kernel_internal:
-        return False
-    kernel_call = re.compile(
-        rf"(?<![A-Za-z0-9_:])self\s*::\s*{re.escape(symbol)}\s*\("
-    )
-    kernel_macro = re.compile(
-        rf"(?<![A-Za-z0-9_]){re.escape(symbol)}_body\s*!\s*\("
-    )
-    return kernel_call.search(body) is not None or kernel_macro.search(body) is not None
+    return qualified.search(body) is not None
 
 
 def checked_kernel_link(link: str) -> str:
@@ -226,7 +230,12 @@ def check_production_call_site(link: str, kernel_symbol: str) -> None:
     source = path.read_text(encoding="utf-8")
     body = function_body(source, function) if path.resolve() == KERNEL.resolve() else rust_function_body(source, function)
     if not production_body_calls(
-        body, kernel_symbol, kernel_internal=path.resolve() == KERNEL.resolve()
+        body,
+        kernel_symbol,
+        kernel_internal=path.resolve() == KERNEL.resolve(),
+        external_kernel=path.resolve().is_relative_to(
+            (ROOT / "canister" / "bridge-canister" / "src").resolve()
+        ),
     ):
         raise ValueError(
             f"production call-site does not call registered kernel: {link} -> {kernel_symbol}"

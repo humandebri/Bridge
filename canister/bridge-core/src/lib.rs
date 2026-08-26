@@ -7,7 +7,7 @@ mod accounting;
 mod authorization;
 mod deposit;
 mod external;
-mod kernel;
+pub mod kernel;
 mod reconciliation;
 mod reserve;
 mod types;

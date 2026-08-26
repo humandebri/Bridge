@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 import check_certora_manifest
+from check_solidity_ast_bindings import AstIndex
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +38,9 @@ class CertoraManifestTests(unittest.TestCase):
             )
         openzeppelin = self.root / "contracts/lib/openzeppelin-contracts/contracts"
         openzeppelin.mkdir(parents=True)
+        self.ast_index = AstIndex(
+            self.root / "contracts/out", self.root / "contracts", self.root
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -63,22 +69,62 @@ class CertoraManifestTests(unittest.TestCase):
     def test_unknown_claim_is_rejected(self) -> None:
         path = self.root / "verification/certora/obligations.tsv"
         text = path.read_text(encoding="utf-8")
-        path.write_text(text.replace("deposit_admission;deposit_backing;exact_mint_finalization", "not_a_claim", 1), encoding="utf-8")
+        path.write_text(
+            text.replace(
+                "deposit_admission;deposit_backing;exact_mint_finalization",
+                "not_a_claim",
+                1,
+            ),
+            encoding="utf-8",
+        )
         with self.assertRaisesRegex(ValueError, "unknown Certora claims"):
-            check_certora_manifest.validate(self.root)
+            check_certora_manifest.validate(self.root, self.ast_index)
+
+    def test_noncanonical_source_symbol_is_rejected(self) -> None:
+        path = self.root / "verification/certora/obligations.tsv"
+        text = path.read_text(encoding="utf-8").replace(
+            "contracts/src/BSNS.sol#BSNS.bridgeMint(address,uint256)",
+            "contracts/src/BSNS.sol#bridgeMint",
+            1,
+        )
+        path.write_text(text, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "canonical Solidity function link"):
+            check_certora_manifest.validate(self.root, self.ast_index)
+
+    def test_wrong_source_signature_is_rejected(self) -> None:
+        path = self.root / "verification/certora/obligations.tsv"
+        text = path.read_text(encoding="utf-8").replace(
+            "contracts/src/BSNS.sol#BSNS.bridgeMint(address,uint256)",
+            "contracts/src/BSNS.sol#BSNS.bridgeMint(address,uint128)",
+            1,
+        )
+        path.write_text(text, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "unresolved Solidity AST function link"):
+            check_certora_manifest.validate(self.root, self.ast_index)
+
+    def test_wrong_source_contract_is_rejected(self) -> None:
+        path = self.root / "verification/certora/obligations.tsv"
+        text = path.read_text(encoding="utf-8").replace(
+            "contracts/src/BSNS.sol#BSNS.bridgeMint(address,uint256)",
+            "contracts/src/BSNS.sol#Decoy.bridgeMint(address,uint256)",
+            1,
+        )
+        path.write_text(text, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "unresolved Solidity AST function link"):
+            check_certora_manifest.validate(self.root, self.ast_index)
 
     def test_missing_solidity_symbol_is_rejected(self) -> None:
         path = self.root / "verification/certora/obligations.tsv"
         text = path.read_text(encoding="utf-8")
         path.write_text(text.replace("BSNS.bridgeMint", "BSNS.definitelyMissing"), encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "unresolved Solidity AST source link"):
+        with self.assertRaisesRegex(ValueError, "unresolved Solidity AST function link"):
             check_certora_manifest.validate(self.root)
 
     def test_noncanonical_solidity_link_is_rejected(self) -> None:
         path = self.root / "verification/certora/obligations.tsv"
         text = path.read_text(encoding="utf-8")
         path.write_text(text.replace("BSNS.bridgeMint", "bridgeMint"), encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "invalid canonical Solidity source link"):
+        with self.assertRaisesRegex(ValueError, "invalid canonical Solidity function link"):
             check_certora_manifest.validate(self.root)
 
     def test_stale_solidity_ast_is_rejected(self) -> None:
@@ -121,7 +167,39 @@ class CertoraManifestTests(unittest.TestCase):
         path = self.root / "verification/certora/specs/BSNS.spec"
         path.write_text(path.read_text(encoding="utf-8") + "\nrule unownedRule() { assert true; }\n", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "missing obligation ownership"):
-            check_certora_manifest.validate(self.root)
+            check_certora_manifest.validate(self.root, self.ast_index)
+
+    def test_runner_redacts_secrets_before_console_and_artifact_output(self) -> None:
+        source = self.root / "raw-certora.log"
+        destination = self.root / "sanitized-certora.log"
+        secret = "certora-secret-value"
+        source.write_text(
+            f"key={secret}\n"
+            "https://prover.certora.com/output/?anonymousKey=public-token&jobId=private-token\n",
+            encoding="utf-8",
+        )
+        environment = os.environ.copy()
+        environment["CERTORAKEY"] = secret
+        result = subprocess.run(
+            [
+                str(ROOT / "scripts/run_certora_advisory.sh"),
+                "--test-redaction",
+                str(source),
+                str(destination),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        persisted = destination.read_text(encoding="utf-8")
+        for output in (result.stdout, result.stderr, persisted):
+            self.assertNotIn(secret, output)
+            self.assertNotIn("public-token", output)
+            self.assertNotIn("private-token", output)
+        self.assertIn("[REDACTED_CERTORAKEY]", persisted)
+        self.assertIn("anonymousKey=[REDACTED]", persisted)
+        self.assertIn("jobId=[REDACTED]", persisted)
 
 
 if __name__ == "__main__":

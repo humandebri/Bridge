@@ -45,10 +45,14 @@ class FunctionRecord:
     signature: str
     declaration_id: int
     node: dict[str, object]
+    artifact: Path | None = None
 
 
 class AstIndex:
-    def __init__(self, artifact_root: Path, project_root: Path) -> None:
+    def __init__(
+        self, artifact_root: Path, project_root: Path, link_root: Path = ROOT
+    ) -> None:
+        self.link_root = link_root.resolve()
         self.functions: list[FunctionRecord] = []
         self.contract_nodes: dict[tuple[Path, str], list[dict[str, object]]] = {}
         seen_contracts: set[tuple[Path, str, int]] = set()
@@ -98,6 +102,7 @@ class AstIndex:
                             f"{function_name}({','.join(types)})",
                             declaration_id,
                             node,
+                            artifact,
                         )
                     )
 
@@ -105,7 +110,7 @@ class AstIndex:
         match = LINK.fullmatch(link)
         if match is None:
             raise ValueError(f"invalid canonical Solidity function link: {link}")
-        source = (ROOT / match.group("path")).resolve()
+        source = (self.link_root / match.group("path")).resolve()
         signature = f"{match.group('function')}({match.group('parameters')})"
         records = tuple(
             record

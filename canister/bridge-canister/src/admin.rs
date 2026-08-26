@@ -10,7 +10,7 @@ const ACTION_PAYOUT: u8 = 2;
 const ACTION_ROTATE: u8 = 3;
 
 fn authorized(state: &AdminState, caller: Principal, action: u8) -> bool {
-    bridge_core::administrator_authorized(
+    ::bridge_core::kernel::administrator_authorized(
         action,
         state.pause_principal == caller,
         state.governance_principal == caller,
@@ -191,7 +191,7 @@ pub fn rotate_fee_recipient(caller: Principal, next: FeeRecipientConfig) -> Resu
             .map_err(|_| AdminError::StorageFailure)?
             .map(|config| config.confirmation_relayer_principal)
             .ok_or(AdminError::StorageFailure)?;
-        match bridge_core::fee_recipient_rotation_decision(
+        match ::bridge_core::kernel::fee_recipient_rotation_decision(
             authorized(&state, caller, ACTION_ROTATE),
             next.owner == Principal::anonymous(),
             next.owner == state.governance_principal
@@ -273,8 +273,9 @@ pub fn request_fee_payout(caller: Principal, amount: Nat) -> Result<FeePayoutRec
             .map_err(|_| AdminError::StorageFailure)?
             .fee_reserve
             .get();
-        let payout = bridge_core::payout_decision(reserve, reserved, amount, fee.get(), true)
-            .ok_or(AdminError::InsufficientFeeReserve)?;
+        let payout =
+            ::bridge_core::kernel::payout_decision(reserve, reserved, amount, fee.get(), true)
+                .ok_or(AdminError::InsufficientFeeReserve)?;
         let payout_amount = payout
             .debit
             .checked_sub(fee.get())

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -40,11 +41,11 @@ FINGERPRINT_CONFIG_FILES = (
 )
 FINGERPRINT_EXCLUDED_VERIFICATION_DIRS = (
     ("output",),
-    ("certora",),
     ("lean", ".lake"),
     ("smt", "out"),
     ("smt", "cache"),
     ("halmos", ".venv"),
+    ("certora", ".venv"),
 )
 CERTORA_ONLY_RELEASE_EXCLUSIONS = frozenset(
     {
@@ -68,6 +69,21 @@ def excluded_release_path(path: Path, repo_root: Path) -> bool:
     return relative in CERTORA_ONLY_RELEASE_EXCLUSIONS or relative.startswith(
         "verification/certora/"
     )
+
+
+def logical_source_path(path: Path, repo_root: Path = ROOT) -> Path:
+    """Map an isolated candidate script back to its repository-relative path."""
+
+    resolved = path.resolve()
+    root = repo_root.resolve()
+    if resolved.is_relative_to(root):
+        return resolved.relative_to(root)
+    candidate_scripts = os.environ.get("BRIDGE_CANDIDATE_SCRIPTS")
+    if candidate_scripts:
+        candidate_root = Path(candidate_scripts).resolve()
+        if resolved.is_relative_to(candidate_root):
+            return Path("scripts") / resolved.relative_to(candidate_root)
+    raise ValueError(f"proof fingerprint input is outside reviewed source roots: {path}")
 
 
 def excluded_verification_path(path: Path, verification: Path) -> bool:
@@ -129,7 +145,7 @@ def source_fingerprint(repo_root: Path = ROOT, manifest: Any | None = None) -> d
     digest = hashlib.sha256()
     inputs = fingerprint_inputs(repo_root, manifest)
     for path in inputs:
-        relative = path.relative_to(repo_root).as_posix().encode()
+        relative = logical_source_path(path, repo_root).as_posix().encode()
         content = path.read_bytes()
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)

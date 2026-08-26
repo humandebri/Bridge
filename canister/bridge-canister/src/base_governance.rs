@@ -368,7 +368,7 @@ pub async fn prepare(
         crate::api::cache_runtime_attestation(&config, &observed)
             .map_err(|_| BaseGovernanceError::StorageFailure)?;
         require_action_authorization(caller, &action)?;
-        if !bridge_core::service_fee_change_allowed(
+        if !::bridge_core::kernel::service_fee_change_allowed(
             value,
             config.expected_minimum_service_fee,
             observed.snapshot.mint.max_service_fee.get(),
@@ -803,7 +803,7 @@ pub(crate) fn confirmation_caller_authorized(
     governance: Principal,
     pause: Principal,
 ) -> bool {
-    bridge_core::confirmation_caller_authorized(
+    ::bridge_core::kernel::confirmation_caller_authorized(
         caller != Principal::anonymous(),
         caller == confirmation_relayer,
         caller == governance,
@@ -1116,7 +1116,7 @@ async fn require_affordable(
     governance_operator: [u8; 20],
     envelope: &GovernanceTransactionEnvelope,
 ) -> Result<(), BaseGovernanceError> {
-    let required_wei = bridge_core::transaction_liability_wei(
+    let required_wei = ::bridge_core::kernel::transaction_liability_wei(
         envelope.gas_limit,
         envelope.max_fee_per_gas,
         config.governance_evm_fee.l1_fee_per_transaction_ceiling_wei,
@@ -1157,7 +1157,7 @@ fn activation_base_preflight_matches(
     deposits_paused: bool,
     withdrawals_paused: bool,
 ) -> bool {
-    bridge_core::activation_base_preflight_matches(
+    ::bridge_core::kernel::activation_base_preflight_matches(
         observed_signer == expected_signer,
         deposits_paused,
         withdrawals_paused,
@@ -1165,7 +1165,7 @@ fn activation_base_preflight_matches(
 }
 
 fn activation_postcondition_matches(deposits_paused: bool, withdrawals_paused: bool) -> bool {
-    bridge_core::activation_postcondition_matches(deposits_paused, withdrawals_paused)
+    ::bridge_core::kernel::activation_postcondition_matches(deposits_paused, withdrawals_paused)
 }
 
 #[allow(clippy::too_many_arguments)]
