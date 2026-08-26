@@ -14,7 +14,7 @@ from rust_canonical_calls import (
     rust_function_parameter_names,
     split_top_level as _split_top_level,
 )
-from trusted_proof_profiles import require_profile
+from trusted_proof_profiles import require_environment_profile
 from verus_manifest import VerusObligation, parse_verus_manifest
 
 
@@ -362,7 +362,7 @@ def main() -> int:
     pass_bytes = PASS.read_bytes()
     pass_source = pass_bytes.decode()
     cleaned_pass = strip_comments_and_strings(pass_source)
-    require_profile("security-hardening-v1")
+    require_environment_profile()
     cleaned_sources: dict[Path, str] = {KERNEL.resolve(): cleaned_kernel}
 
     for obligation in obligations.values():
