@@ -163,6 +163,7 @@ print(json.dumps({"response_candid":candid}))
         self.assertIn("expected_minimum_service_fee = 10000", evidence["upgrade_arguments"])
         self.assertIn('confirmation_relayer_principal = opt principal', evidence["upgrade_arguments"])
         self.assertIn("rpc_provider_update = null", evidence["upgrade_arguments"])
+        self.assertEqual(evidence["upgrade_arguments"].count("{"), evidence["upgrade_arguments"].count("}"))
 
     def test_rpc_provider_chain_mismatch_rejects_before_live_state_reads(self) -> None:
         result = self.run_driver(MOCK_CHAIN_ID="1")
@@ -187,6 +188,7 @@ print(json.dumps({"response_candid":candid}))
         self.assertIn("migration_config = null", evidence["upgrade_arguments"])
         self.assertIn("confirmation_relayer_principal = null", evidence["upgrade_arguments"])
         self.assertIn("expected_status_counts = opt record", evidence["upgrade_arguments"])
+        self.assertEqual(evidence["upgrade_arguments"].count("{"), evidence["upgrade_arguments"].count("}"))
 
     def test_current_schema_preflight_hashes_all_audit_pages_and_pruning_metadata(self) -> None:
         counts = {**COUNTS, "retained_audit_events": 205, "pruned_audit_events": 7}

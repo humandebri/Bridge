@@ -353,7 +353,7 @@ def upgrade_args(counts: dict[str, Any], policy: dict[str, Any], source_kind: st
         migration_fields = "migration_id = null; migration_config = null; confirmation_relayer_principal = null; "
     return (f'(record {{ {migration_fields}status_counts_guard_version = 1 : nat8; '
             'expected_status_counts = opt record { ' + f"{fields}" + " }; rpc_provider_update = null; "
-            "minimum_withdrawal_id = null }})")
+            "minimum_withdrawal_id = null })")
 
 
 def initialize_public_config(policy: dict[str, Any], identity: str) -> None:
