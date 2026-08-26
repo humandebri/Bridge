@@ -189,6 +189,11 @@ production_validate_gate() {
   "$source_root/scripts/rebuild-release-artifacts.sh" \
     "$bundle" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
   if [[ "$mode" == gate-a ]]; then
+    "$profile_bin" verify-production-canister-predeploy "$bundle/profile.json" >/dev/null || {
+      rm -rf "$target"
+      echo "live production Canister no longer matches the paused predeploy profile" >&2
+      return 1
+    }
     rm -rf "$target"
     return 0
   fi

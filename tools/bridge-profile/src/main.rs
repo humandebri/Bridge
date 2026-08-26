@@ -339,6 +339,175 @@ struct GateAReceipt {
     timelock_deployment_transaction_hash: String,
     timelock_deployment_block_number: u64,
     timelock_deployment_block_hash: String,
+    canister_install: ProductionCanisterInstallReceipt,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+struct ProductionCanisterPlan {
+    schema_version: u8,
+    environment: String,
+    source_revision: String,
+    source_tree_sha256: String,
+    bridge_canister_id: String,
+    bridge_canister_wasm_sha256: String,
+    init: ProductionCanisterInitInput,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+struct ProductionCanisterInitInput {
+    ledger_canister_id: String,
+    index_canister_id: String,
+    evm_rpc_canister_id: String,
+    custom_evm_rpc_urls: Vec<String>,
+    base_chain_id: u64,
+    bridge_contract_hex: String,
+    expected_bridge_runtime_sha256_hex: String,
+    timelock_contract_hex: String,
+    expected_timelock_minimum_delay_seconds: u64,
+    expected_bsns_runtime_sha256_hex: String,
+    expected_bsns_decimals: u8,
+    #[serde(with = "u128_string")]
+    expected_minimum_service_fee: u128,
+    deployment_instance_id_hex: String,
+    minimum_withdrawal_id_hex: String,
+    ecdsa_key_name: String,
+    ecdsa_derivation_path_utf8: Vec<String>,
+    governance_ecdsa_derivation_path_utf8: Vec<String>,
+    deposit_rate_limit_window_seconds: u64,
+    deposit_rate_limit_global: u16,
+    deposit_rate_limit_per_principal: u16,
+    notification_rate_limit_window_seconds: u64,
+    notification_rate_limit_global: u16,
+    notification_ingestion_rate_limit_global: u16,
+    settlement_rate_limit_window_seconds: u64,
+    settlement_rate_limit_global: u16,
+    settlement_rate_limit_per_principal: u16,
+    settlement_rate_limit_per_record: u16,
+    settlement_retry_interval_seconds: u64,
+    governance_evm_fee: EvmFeePolicy,
+    governance_replacement: GovernanceReplacementPolicy,
+    #[serde(with = "u128_string")]
+    cycles_floor: u128,
+    #[serde(with = "u128_string")]
+    settlement_cycle_ceiling: u128,
+    governance_principal: String,
+    pause_principal: String,
+    confirmation_relayer_principal: String,
+    fee_recipient: ProductionFeeRecipientInput,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+struct ProductionFeeRecipientInput {
+    owner: String,
+    subaccount_hex: String,
+}
+
+#[derive(CandidType)]
+struct ProductionCanisterInitArgs {
+    ledger_canister_id: Principal,
+    index_canister_id: Principal,
+    evm_rpc_canister_id: Principal,
+    custom_evm_rpc_urls: Vec<String>,
+    base_chain_id: u64,
+    bridge_contract: Vec<u8>,
+    expected_bridge_runtime_sha256: Vec<u8>,
+    timelock_contract: Vec<u8>,
+    expected_timelock_minimum_delay_seconds: u64,
+    expected_bsns_runtime_sha256: Vec<u8>,
+    expected_bsns_decimals: u8,
+    expected_minimum_service_fee: u128,
+    deployment_instance_id: Vec<u8>,
+    minimum_withdrawal_id: Vec<u8>,
+    ecdsa_key_name: String,
+    ecdsa_derivation_path: Vec<Vec<u8>>,
+    governance_ecdsa_derivation_path: Vec<Vec<u8>>,
+    deposit_rate_limit_window_seconds: u64,
+    deposit_rate_limit_global: u16,
+    deposit_rate_limit_per_principal: u16,
+    notification_rate_limit_window_seconds: u64,
+    notification_rate_limit_global: u16,
+    notification_ingestion_rate_limit_global: u16,
+    settlement_rate_limit_window_seconds: u64,
+    settlement_rate_limit_global: u16,
+    settlement_rate_limit_per_principal: u16,
+    settlement_rate_limit_per_record: u16,
+    settlement_retry_interval_seconds: u64,
+    governance_evm_fee: EvmFeePolicy,
+    governance_replacement: GovernanceReplacementPolicy,
+    cycles_floor: u128,
+    settlement_cycle_ceiling: u128,
+    governance_principal: Principal,
+    pause_principal: Principal,
+    confirmation_relayer_principal: Principal,
+    fee_recipient: OperationalFeeRecipientView,
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[derive(CandidType, Deserialize)]
+struct ProductionCanisterInitArgsCallView {
+    ledger_canister_id: Principal,
+    index_canister_id: Principal,
+    evm_rpc_canister_id: Principal,
+    custom_evm_rpc_urls: Vec<String>,
+    base_chain_id: u64,
+    bridge_contract: Vec<u8>,
+    expected_bridge_runtime_sha256: Vec<u8>,
+    timelock_contract: Vec<u8>,
+    expected_timelock_minimum_delay_seconds: u64,
+    expected_bsns_runtime_sha256: Vec<u8>,
+    expected_bsns_decimals: u8,
+    expected_minimum_service_fee: u128,
+    deployment_instance_id: Vec<u8>,
+    minimum_withdrawal_id: Vec<u8>,
+    ecdsa_key_name: String,
+    ecdsa_derivation_path: Vec<Vec<u8>>,
+    governance_ecdsa_derivation_path: Vec<Vec<u8>>,
+    deposit_rate_limit_window_seconds: u64,
+    deposit_rate_limit_global: u16,
+    deposit_rate_limit_per_principal: u16,
+    notification_rate_limit_window_seconds: u64,
+    notification_rate_limit_global: u16,
+    notification_ingestion_rate_limit_global: u16,
+    settlement_rate_limit_window_seconds: u64,
+    settlement_rate_limit_global: u16,
+    settlement_rate_limit_per_principal: u16,
+    settlement_rate_limit_per_record: u16,
+    settlement_retry_interval_seconds: u64,
+    governance_evm_fee: EvmFeePolicyCallView,
+    governance_replacement: GovernanceReplacementPolicy,
+    cycles_floor: u128,
+    settlement_cycle_ceiling: u128,
+    governance_principal: Principal,
+    pause_principal: Principal,
+    confirmation_relayer_principal: Principal,
+    fee_recipient: OperationalFeeRecipientCallView,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionCanisterInstallReceipt {
+    schema_version: u8,
+    plan_sha256: String,
+    plan: ProductionCanisterPlan,
+    source_revision: String,
+    source_tree_sha256: String,
+    canister_id: String,
+    installer_principal: String,
+    module_sha256: String,
+    init_candid_sha256: String,
+    runtime_binding: LiveRuntimeBinding,
+    governance_operator: String,
+    mint_authorization_ttl_seconds: u64,
+    mint_authorization_epoch: u64,
+    storage_validation_complete: bool,
+    storage_checksum_complete: bool,
+    deposits_paused: bool,
+    state_is_empty: bool,
+    cycles_reserve_sufficient: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -831,6 +1000,168 @@ struct BridgeStatusLiveView {
     deposits_paused: bool,
     mint_authorization_ttl_seconds: u64,
     mint_authorization_epoch: u64,
+    counts: ProductionStatusCountsView,
+}
+
+#[derive(CandidType, Deserialize)]
+struct ProductionStatusCountsView {
+    deposits: u64,
+    withdrawals: u64,
+    reconciliation_holds: u64,
+    pending_ledger_operations: u64,
+    reserved_deposit_mint_amount: u128,
+    reserved_deposit_mint_operations: u64,
+    retained_audit_events: u64,
+    pruned_audit_events: u64,
+    retained_deposit_index_entries: u64,
+}
+
+#[derive(CandidType, Deserialize)]
+struct StorageValidationStatusView {
+    complete: bool,
+    phase: String,
+    scanned_rows: u64,
+}
+
+#[derive(CandidType, Deserialize)]
+enum StorageValidationResultView {
+    Ok(StorageValidationStatusView),
+    Err(Reserved),
+}
+
+#[derive(CandidType, Deserialize)]
+struct StorageChecksumStatusView {
+    complete: bool,
+    checksum: u64,
+    scanned_bytes: u64,
+    db_size: u64,
+}
+
+#[derive(CandidType, Deserialize)]
+enum StorageChecksumResultView {
+    Ok(StorageChecksumStatusView),
+    Err(Reserved),
+}
+
+#[derive(CandidType, Deserialize)]
+enum PublicConfigInitializationResultView {
+    Ok(()),
+    Err(Reserved),
+}
+
+#[derive(CandidType, Deserialize)]
+enum OperationalConfigResultView {
+    Ok(Box<OperationalConfigCallView>),
+    Err(Reserved),
+}
+
+#[derive(CandidType, Deserialize)]
+struct OperationalConfigCallView {
+    mint_authorization_ttl_seconds: u64,
+    mint_authorization_epoch: u64,
+    governance_operator: Vec<u8>,
+    deposit_rate_limit_window_seconds: u64,
+    deposit_rate_limit_global: u16,
+    deposit_rate_limit_per_principal: u16,
+    notification_rate_limit_window_seconds: u64,
+    notification_rate_limit_global: u16,
+    notification_ingestion_rate_limit_global: u16,
+    settlement_rate_limit_window_seconds: u64,
+    settlement_rate_limit_global: u16,
+    settlement_rate_limit_per_principal: u16,
+    settlement_rate_limit_per_record: u16,
+    settlement_retry_interval_seconds: u64,
+    governance_evm_fee: EvmFeePolicyCallView,
+    governance_replacement: GovernanceReplacementPolicy,
+    cycles_floor: u128,
+    settlement_cycle_ceiling: u128,
+    governance_principal: Principal,
+    pause_principal: Principal,
+    confirmation_relayer_principal: Principal,
+    fee_recipient: OperationalFeeRecipientCallView,
+}
+
+#[derive(CandidType, Deserialize)]
+struct EvmFeePolicyCallView {
+    gas_limit_ceiling: u128,
+    max_fee_per_gas_ceiling: u128,
+    max_priority_fee_per_gas_ceiling: u128,
+    l1_fee_per_transaction_ceiling_wei: u128,
+    quote_validity_seconds: u64,
+    gas_limit_multiplier_bps: u32,
+    base_fee_multiplier_bps: u32,
+    l1_fee_multiplier_bps: u32,
+}
+
+#[derive(CandidType, Deserialize)]
+struct OperationalFeeRecipientCallView {
+    owner: Principal,
+    subaccount: Vec<u8>,
+}
+
+impl From<OperationalConfigCallView> for OperationalConfigView {
+    fn from(value: OperationalConfigCallView) -> Self {
+        Self {
+            mint_authorization_ttl_seconds: value.mint_authorization_ttl_seconds,
+            mint_authorization_epoch: value.mint_authorization_epoch,
+            governance_operator: value.governance_operator,
+            deposit_rate_limit_window_seconds: value.deposit_rate_limit_window_seconds,
+            deposit_rate_limit_global: value.deposit_rate_limit_global,
+            deposit_rate_limit_per_principal: value.deposit_rate_limit_per_principal,
+            notification_rate_limit_window_seconds: value.notification_rate_limit_window_seconds,
+            notification_rate_limit_global: value.notification_rate_limit_global,
+            notification_ingestion_rate_limit_global: value
+                .notification_ingestion_rate_limit_global,
+            settlement_rate_limit_window_seconds: value.settlement_rate_limit_window_seconds,
+            settlement_rate_limit_global: value.settlement_rate_limit_global,
+            settlement_rate_limit_per_principal: value.settlement_rate_limit_per_principal,
+            settlement_rate_limit_per_record: value.settlement_rate_limit_per_record,
+            settlement_retry_interval_seconds: value.settlement_retry_interval_seconds,
+            governance_evm_fee: EvmFeePolicy {
+                gas_limit_ceiling: value.governance_evm_fee.gas_limit_ceiling,
+                max_fee_per_gas_ceiling: value.governance_evm_fee.max_fee_per_gas_ceiling,
+                max_priority_fee_per_gas_ceiling: value
+                    .governance_evm_fee
+                    .max_priority_fee_per_gas_ceiling,
+                l1_fee_per_transaction_ceiling_wei: value
+                    .governance_evm_fee
+                    .l1_fee_per_transaction_ceiling_wei,
+                quote_validity_seconds: value.governance_evm_fee.quote_validity_seconds,
+                gas_limit_multiplier_bps: value.governance_evm_fee.gas_limit_multiplier_bps,
+                base_fee_multiplier_bps: value.governance_evm_fee.base_fee_multiplier_bps,
+                l1_fee_multiplier_bps: value.governance_evm_fee.l1_fee_multiplier_bps,
+            },
+            governance_replacement: value.governance_replacement,
+            cycles_floor: value.cycles_floor,
+            settlement_cycle_ceiling: value.settlement_cycle_ceiling,
+            governance_principal: value.governance_principal,
+            pause_principal: value.pause_principal,
+            confirmation_relayer_principal: value.confirmation_relayer_principal,
+            fee_recipient: OperationalFeeRecipientView {
+                owner: value.fee_recipient.owner,
+                subaccount: value.fee_recipient.subaccount,
+            },
+        }
+    }
+}
+
+#[derive(CandidType, Deserialize)]
+enum StorageIntegrityResultView {
+    Ok(String),
+    Err(Reserved),
+}
+
+#[derive(CandidType, Deserialize)]
+enum ProductionLifecycleView {
+    Bootstrap,
+    OperationalConfigSealed,
+    Activated,
+}
+
+#[derive(CandidType, Deserialize)]
+enum ProductionLifecycleResultView {
+    Ok(ProductionLifecycleView),
+    Err(Reserved),
 }
 
 #[derive(CandidType, Deserialize)]
@@ -1692,6 +2023,530 @@ fn write_generated<T: Serialize>(root: &Path, name: &str, value: &T) -> Result<S
     Ok(hex(&Sha256::digest(bytes)))
 }
 
+fn production_init_args(
+    input: &ProductionCanisterInitInput,
+) -> Result<ProductionCanisterInitArgs, String> {
+    let bytes = |name: &str, value: &str, expected: usize| -> Result<Vec<u8>, String> {
+        let decoded = decode_hex(value)?;
+        if decoded.len() != expected || decoded.iter().all(|byte| *byte == 0) {
+            return Err(format!("{name} must be a nonzero {expected}-byte value"));
+        }
+        Ok(decoded)
+    };
+    let principal = |name: &str, value: &str| -> Result<Principal, String> {
+        let parsed = Principal::from_text(value).map_err(|error| format!("{name}: {error}"))?;
+        if parsed == Principal::anonymous() {
+            return Err(format!("{name} must not be anonymous"));
+        }
+        Ok(parsed)
+    };
+    if !input.custom_evm_rpc_urls.is_empty()
+        || input.base_chain_id != 8453
+        || input.ledger_canister_id != KINIC_LEDGER
+        || input.index_canister_id != KINIC_INDEX
+        || input.evm_rpc_canister_id != OFFICIAL_EVM_RPC_CANISTER
+        || input.ecdsa_key_name != "key_1"
+        || input.ecdsa_derivation_path_utf8.is_empty()
+        || input.governance_ecdsa_derivation_path_utf8.is_empty()
+        || input.ecdsa_derivation_path_utf8 == input.governance_ecdsa_derivation_path_utf8
+        || input
+            .ecdsa_derivation_path_utf8
+            .iter()
+            .chain(input.governance_ecdsa_derivation_path_utf8.iter())
+            .any(|part| part.is_empty() || part.len() > 128)
+        || !input.fee_recipient.subaccount_hex.is_empty()
+        || input.expected_minimum_service_fee != 100_000
+        || input.expected_bsns_decimals != 8
+        || input.expected_timelock_minimum_delay_seconds < 86_400
+        || input.cycles_floor == 0
+        || input.settlement_cycle_ceiling == 0
+        || !(60..=300).contains(&input.deposit_rate_limit_window_seconds)
+        || input.deposit_rate_limit_per_principal == 0
+        || input.deposit_rate_limit_per_principal > input.deposit_rate_limit_global
+        || input.deposit_rate_limit_global > 100
+        || !(60..=3_600).contains(&input.notification_rate_limit_window_seconds)
+        || input.notification_rate_limit_global == 0
+        || input.notification_ingestion_rate_limit_global == 0
+        || !(60..=3_600).contains(&input.settlement_rate_limit_window_seconds)
+        || input.settlement_rate_limit_per_record == 0
+        || input.settlement_rate_limit_per_record > input.settlement_rate_limit_per_principal
+        || input.settlement_rate_limit_per_principal > input.settlement_rate_limit_global
+        || !(1..=900).contains(&input.settlement_retry_interval_seconds)
+        || input.governance_evm_fee.gas_limit_ceiling == 0
+        || input.governance_evm_fee.max_fee_per_gas_ceiling == 0
+        || input.governance_evm_fee.max_priority_fee_per_gas_ceiling
+            > input.governance_evm_fee.max_fee_per_gas_ceiling
+        || !(30..=300).contains(&input.governance_evm_fee.quote_validity_seconds)
+        || !(1..=8).contains(&input.governance_replacement.max_replacements)
+        || !(1_000..=5_000).contains(&input.governance_replacement.fee_bump_bps)
+    {
+        return Err("unsafe production Canister initialization input".into());
+    }
+    Ok(ProductionCanisterInitArgs {
+        ledger_canister_id: principal("ledger_canister_id", &input.ledger_canister_id)?,
+        index_canister_id: principal("index_canister_id", &input.index_canister_id)?,
+        evm_rpc_canister_id: principal("evm_rpc_canister_id", &input.evm_rpc_canister_id)?,
+        custom_evm_rpc_urls: Vec::new(),
+        base_chain_id: input.base_chain_id,
+        bridge_contract: bytes("bridge_contract_hex", &input.bridge_contract_hex, 20)?,
+        expected_bridge_runtime_sha256: bytes(
+            "expected_bridge_runtime_sha256_hex",
+            &input.expected_bridge_runtime_sha256_hex,
+            32,
+        )?,
+        timelock_contract: bytes("timelock_contract_hex", &input.timelock_contract_hex, 20)?,
+        expected_timelock_minimum_delay_seconds: input.expected_timelock_minimum_delay_seconds,
+        expected_bsns_runtime_sha256: bytes(
+            "expected_bsns_runtime_sha256_hex",
+            &input.expected_bsns_runtime_sha256_hex,
+            32,
+        )?,
+        expected_bsns_decimals: input.expected_bsns_decimals,
+        expected_minimum_service_fee: input.expected_minimum_service_fee,
+        deployment_instance_id: bytes(
+            "deployment_instance_id_hex",
+            &input.deployment_instance_id_hex,
+            32,
+        )?,
+        minimum_withdrawal_id: bytes(
+            "minimum_withdrawal_id_hex",
+            &input.minimum_withdrawal_id_hex,
+            32,
+        )?,
+        ecdsa_key_name: input.ecdsa_key_name.clone(),
+        ecdsa_derivation_path: input
+            .ecdsa_derivation_path_utf8
+            .iter()
+            .map(|part| part.as_bytes().to_vec())
+            .collect(),
+        governance_ecdsa_derivation_path: input
+            .governance_ecdsa_derivation_path_utf8
+            .iter()
+            .map(|part| part.as_bytes().to_vec())
+            .collect(),
+        deposit_rate_limit_window_seconds: input.deposit_rate_limit_window_seconds,
+        deposit_rate_limit_global: input.deposit_rate_limit_global,
+        deposit_rate_limit_per_principal: input.deposit_rate_limit_per_principal,
+        notification_rate_limit_window_seconds: input.notification_rate_limit_window_seconds,
+        notification_rate_limit_global: input.notification_rate_limit_global,
+        notification_ingestion_rate_limit_global: input.notification_ingestion_rate_limit_global,
+        settlement_rate_limit_window_seconds: input.settlement_rate_limit_window_seconds,
+        settlement_rate_limit_global: input.settlement_rate_limit_global,
+        settlement_rate_limit_per_principal: input.settlement_rate_limit_per_principal,
+        settlement_rate_limit_per_record: input.settlement_rate_limit_per_record,
+        settlement_retry_interval_seconds: input.settlement_retry_interval_seconds,
+        governance_evm_fee: input.governance_evm_fee,
+        governance_replacement: input.governance_replacement,
+        cycles_floor: input.cycles_floor,
+        settlement_cycle_ceiling: input.settlement_cycle_ceiling,
+        governance_principal: principal("governance_principal", &input.governance_principal)?,
+        pause_principal: principal("pause_principal", &input.pause_principal)?,
+        confirmation_relayer_principal: principal(
+            "confirmation_relayer_principal",
+            &input.confirmation_relayer_principal,
+        )?,
+        fee_recipient: OperationalFeeRecipientView {
+            owner: principal("fee_recipient.owner", &input.fee_recipient.owner)?,
+            subaccount: Vec::new(),
+        },
+    })
+}
+
+fn validate_production_canister_plan(plan: &ProductionCanisterPlan) -> Result<Vec<u8>, String> {
+    if plan.schema_version != 1
+        || plan.environment != "production"
+        || plan.source_revision.trim().is_empty()
+        || !valid_sha256(&plan.source_tree_sha256)
+        || !principal(&plan.bridge_canister_id)
+        || !valid_sha256(&plan.bridge_canister_wasm_sha256)
+    {
+        return Err("invalid production Canister install plan identity".into());
+    }
+    Encode!(&production_init_args(&plan.init)?).map_err(|error| error.to_string())
+}
+
+fn validate_production_canister_plan_against_profile(
+    plan: &ProductionCanisterPlan,
+    profile: &Profile,
+) -> Result<(), String> {
+    let init = &plan.init;
+    let matches = plan.bridge_canister_id == profile.bridge_canister_id
+        && plan
+            .bridge_canister_wasm_sha256
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        && init.ledger_canister_id == profile.ledger_canister_id
+        && init.index_canister_id == profile.index_canister_id
+        && init.evm_rpc_canister_id == profile.evm_rpc_canister_id
+        && init.base_chain_id == profile.chain_id
+        && format!("0x{}", init.bridge_contract_hex).eq_ignore_ascii_case(&profile.bridge_contract)
+        && init
+            .expected_bridge_runtime_sha256_hex
+            .eq_ignore_ascii_case(&profile.bridge_runtime_bytecode_sha256)
+        && format!("0x{}", init.timelock_contract_hex)
+            .eq_ignore_ascii_case(&profile.timelock.address)
+        && init.expected_timelock_minimum_delay_seconds == profile.timelock.minimum_delay_seconds
+        && init
+            .expected_bsns_runtime_sha256_hex
+            .eq_ignore_ascii_case(&profile.bsns_runtime_bytecode_sha256)
+        && init.expected_bsns_decimals == profile.decimals
+        && init.expected_minimum_service_fee == profile.parameters.ledger_fee
+        && format!("0x{}", init.deployment_instance_id_hex)
+            .eq_ignore_ascii_case(&profile.deployment_instance_id)
+        && format!("0x{}", init.minimum_withdrawal_id_hex)
+            .eq_ignore_ascii_case(&profile.minimum_withdrawal_id)
+        && init.ecdsa_key_name == profile.ecdsa_key_name
+        && init.ecdsa_derivation_path_utf8 == profile.ecdsa_derivation_path
+        && init.governance_ecdsa_derivation_path_utf8 == profile.governance_ecdsa_derivation_path
+        && init.deposit_rate_limit_window_seconds == profile.rate_limits.deposit_window_seconds
+        && init.deposit_rate_limit_global == profile.rate_limits.deposit_global
+        && init.deposit_rate_limit_per_principal == profile.rate_limits.deposit_per_principal
+        && init.notification_rate_limit_window_seconds
+            == profile.rate_limits.notification_window_seconds
+        && init.notification_rate_limit_global == profile.rate_limits.notification_global
+        && init.notification_ingestion_rate_limit_global
+            == profile.rate_limits.notification_ingestion_global
+        && init.settlement_rate_limit_window_seconds
+            == profile.rate_limits.settlement_window_seconds
+        && init.settlement_rate_limit_global == profile.rate_limits.settlement_global
+        && init.settlement_rate_limit_per_principal == profile.rate_limits.settlement_per_principal
+        && init.settlement_rate_limit_per_record == profile.rate_limits.settlement_per_record
+        && init.settlement_retry_interval_seconds
+            == profile.rate_limits.settlement_retry_interval_seconds
+        && init.governance_evm_fee == profile.parameters.governance_evm_fee()
+        && init.governance_replacement == profile.governance_replacement
+        && init.cycles_floor == profile.parameters.cycles_floor
+        && init.settlement_cycle_ceiling == profile.parameters.settlement_cycle_ceiling
+        && init.governance_principal == profile.governance_principal
+        && init.pause_principal == profile.pause_principal
+        && init.confirmation_relayer_principal == profile.confirmation_relayer_principal
+        && init.fee_recipient.owner == profile.fee_recipient
+        && init.fee_recipient.subaccount_hex.is_empty();
+    if !matches {
+        return Err("production Canister install plan does not match the release profile".into());
+    }
+    Ok(())
+}
+
+fn render_production_canister_inputs(plan_path: &Path, output: &Path) -> Result<(), String> {
+    let plan: ProductionCanisterPlan = read_json(plan_path)?;
+    let candid = validate_production_canister_plan(&plan)?;
+    let plan_sha256 = hex(&canonical_sha256(&plan)?);
+    let init_sha256 = write_generated(output, "canister-init.json", &plan.init)?;
+    fs::create_dir_all(output).map_err(|error| error.to_string())?;
+    let temporary = output.join(format!(".canister-init.bin.tmp-{}", process::id()));
+    fs::write(&temporary, &candid).map_err(|error| error.to_string())?;
+    let candid_path = output.join("canister-init.bin");
+    fs::rename(&temporary, &candid_path).map_err(|error| error.to_string())?;
+    let candid_sha256 = hex(&Sha256::digest(&candid));
+    let manifest = serde_json::json!({
+        "schema_version": 1,
+        "plan_sha256": plan_sha256,
+        "source_revision": plan.source_revision,
+        "source_tree_sha256": plan.source_tree_sha256,
+        "canister_id": plan.bridge_canister_id,
+        "module_sha256": plan.bridge_canister_wasm_sha256,
+        "canister_init_sha256": init_sha256,
+        "init_candid_sha256": candid_sha256,
+    });
+    write_generated(output, "production-canister-install-inputs.json", &manifest)?;
+    println!("rendered production Canister install inputs plan_sha256={plan_sha256}");
+    Ok(())
+}
+
+fn validate_production_canister_receipt(
+    profile: &Profile,
+    receipt: &ProductionCanisterInstallReceipt,
+) -> Result<(), String> {
+    let init_candid = validate_production_canister_plan(&receipt.plan)?;
+    validate_production_canister_plan_against_profile(&receipt.plan, profile)?;
+    let plan_sha256 = hex(&canonical_sha256(&receipt.plan)?);
+    let rpc_url_hash = hex(&canonical_sha256(&Vec::<String>::new())?);
+    let operational = expected_operational_config_sha256(
+        profile,
+        receipt.mint_authorization_ttl_seconds,
+        receipt.mint_authorization_epoch,
+    )?;
+    validate_live_runtime_binding(
+        &receipt.runtime_binding,
+        profile,
+        &rpc_url_hash,
+        &operational,
+    )?;
+    if receipt.schema_version != 1
+        || !receipt.plan_sha256.eq_ignore_ascii_case(&plan_sha256)
+        || receipt.source_revision != receipt.plan.source_revision
+        || !receipt
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&receipt.plan.source_tree_sha256)
+        || receipt.canister_id != receipt.plan.bridge_canister_id
+        || !receipt
+            .module_sha256
+            .eq_ignore_ascii_case(&receipt.plan.bridge_canister_wasm_sha256)
+        || !receipt
+            .init_candid_sha256
+            .eq_ignore_ascii_case(&hex(&Sha256::digest(init_candid)))
+        || receipt.source_revision.trim().is_empty()
+        || !valid_sha256(&receipt.source_tree_sha256)
+        || receipt.canister_id != profile.bridge_canister_id
+        || !principal(&receipt.installer_principal)
+        || !receipt
+            .module_sha256
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || !valid_sha256(&receipt.init_candid_sha256)
+        || !receipt
+            .governance_operator
+            .eq_ignore_ascii_case(&profile.governance_operator)
+        || !receipt.storage_validation_complete
+        || !receipt.storage_checksum_complete
+        || !receipt.deposits_paused
+        || !receipt.state_is_empty
+        || !receipt.cycles_reserve_sufficient
+    {
+        return Err(
+            "production Canister install receipt does not match the release profile".into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_production_canister_receipt_files(
+    profile_path: &Path,
+    receipt_path: &Path,
+) -> Result<String, String> {
+    let profile: Profile = read_json(profile_path)?;
+    validate_profile(&profile, true)?;
+    let receipt: ProductionCanisterInstallReceipt = read_json(receipt_path)?;
+    validate_production_canister_receipt(&profile, &receipt)?;
+    Ok(hex(&Sha256::digest(
+        fs::read(receipt_path).map_err(|error| error.to_string())?,
+    )))
+}
+
+fn decode_candid_hex<T: CandidType + for<'de> Deserialize<'de>>(value: &str) -> Result<T, String> {
+    let bytes = decode_hex(value.trim())?;
+    Decode!(&bytes, T).map_err(|error| error.to_string())
+}
+
+fn storage_validation_complete(value: &str) -> Result<bool, String> {
+    match decode_candid_hex::<StorageValidationResultView>(value)? {
+        StorageValidationResultView::Ok(status) => {
+            if status.phase.trim().is_empty() {
+                return Err("storage validation returned an empty phase".into());
+            }
+            let _ = status.scanned_rows;
+            Ok(status.complete)
+        }
+        StorageValidationResultView::Err(_) => Err("storage validation call failed".into()),
+    }
+}
+
+fn storage_checksum_complete(value: &str) -> Result<bool, String> {
+    match decode_candid_hex::<StorageChecksumResultView>(value)? {
+        StorageChecksumResultView::Ok(status) => {
+            if status.scanned_bytes > status.db_size {
+                return Err("storage checksum scanned beyond the database size".into());
+            }
+            let _ = status.checksum;
+            Ok(status.complete)
+        }
+        StorageChecksumResultView::Err(_) => Err("storage checksum call failed".into()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_production_canister_install_receipt(
+    plan_path: &Path,
+    installer_principal: &str,
+    module_sha256: &str,
+    init_response: &str,
+    validation_response: &str,
+    checksum_response: &str,
+    runtime_response: &str,
+    operational_response: &str,
+    status_response: &str,
+    lifecycle_response: &str,
+    integrity_response: &str,
+    output: &Path,
+) -> Result<(), String> {
+    let plan: ProductionCanisterPlan = read_json(plan_path)?;
+    validate_production_canister_plan(&plan)?;
+    if !principal(installer_principal)
+        || !valid_sha256(module_sha256)
+        || !module_sha256.eq_ignore_ascii_case(&plan.bridge_canister_wasm_sha256)
+    {
+        return Err("install observation does not match the production Canister plan".into());
+    }
+    if !matches!(
+        decode_candid_hex::<PublicConfigInitializationResultView>(init_response)?,
+        PublicConfigInitializationResultView::Ok(())
+    ) {
+        return Err("public configuration initialization did not succeed".into());
+    }
+    if !storage_validation_complete(validation_response)?
+        || !storage_checksum_complete(checksum_response)?
+    {
+        return Err("storage validation or checksum is incomplete".into());
+    }
+    let runtime = decode_candid_hex::<RuntimeBindingView>(runtime_response)?;
+    let operational = match decode_candid_hex::<OperationalConfigResultView>(operational_response)?
+    {
+        OperationalConfigResultView::Ok(value) => value,
+        OperationalConfigResultView::Err(_) => {
+            return Err("operational configuration query failed".into())
+        }
+    };
+    let observed_governance_operator = operational.governance_operator.clone();
+    let observed_operational: OperationalConfigView = (*operational).into();
+    let status = decode_candid_hex::<BridgeStatusLiveView>(status_response)?;
+    if !matches!(
+        decode_candid_hex::<ProductionLifecycleResultView>(lifecycle_response)?,
+        ProductionLifecycleResultView::Ok(ProductionLifecycleView::Bootstrap)
+    ) {
+        return Err("new production Canister is not in Bootstrap lifecycle".into());
+    }
+    match decode_candid_hex::<StorageIntegrityResultView>(integrity_response)? {
+        StorageIntegrityResultView::Ok(value) if value == "ok" => {}
+        _ => return Err("storage integrity check did not return ok".into()),
+    }
+
+    let init = &plan.init;
+    let expected_operational = OperationalConfigView {
+        mint_authorization_ttl_seconds: status.mint_authorization_ttl_seconds,
+        mint_authorization_epoch: status.mint_authorization_epoch,
+        governance_operator: observed_governance_operator.clone(),
+        deposit_rate_limit_window_seconds: init.deposit_rate_limit_window_seconds,
+        deposit_rate_limit_global: init.deposit_rate_limit_global,
+        deposit_rate_limit_per_principal: init.deposit_rate_limit_per_principal,
+        notification_rate_limit_window_seconds: init.notification_rate_limit_window_seconds,
+        notification_rate_limit_global: init.notification_rate_limit_global,
+        notification_ingestion_rate_limit_global: init.notification_ingestion_rate_limit_global,
+        settlement_rate_limit_window_seconds: init.settlement_rate_limit_window_seconds,
+        settlement_rate_limit_global: init.settlement_rate_limit_global,
+        settlement_rate_limit_per_principal: init.settlement_rate_limit_per_principal,
+        settlement_rate_limit_per_record: init.settlement_rate_limit_per_record,
+        settlement_retry_interval_seconds: init.settlement_retry_interval_seconds,
+        governance_evm_fee: init.governance_evm_fee,
+        governance_replacement: init.governance_replacement,
+        cycles_floor: init.cycles_floor,
+        settlement_cycle_ceiling: init.settlement_cycle_ceiling,
+        governance_principal: Principal::from_text(&init.governance_principal)
+            .map_err(|error| error.to_string())?,
+        pause_principal: Principal::from_text(&init.pause_principal)
+            .map_err(|error| error.to_string())?,
+        confirmation_relayer_principal: Principal::from_text(&init.confirmation_relayer_principal)
+            .map_err(|error| error.to_string())?,
+        fee_recipient: OperationalFeeRecipientView {
+            owner: Principal::from_text(&init.fee_recipient.owner)
+                .map_err(|error| error.to_string())?,
+            subaccount: Vec::new(),
+        },
+    };
+    let operational_digest = |value: OperationalConfigView| -> Result<Vec<u8>, String> {
+        let binding = OperationalConfigBindingView {
+            ledger_fee: init.expected_minimum_service_fee,
+            operational_config: value,
+        };
+        let encoded = Encode!(&binding).map_err(|error| error.to_string())?;
+        let mut digest = Sha256::new();
+        digest.update(OPERATIONAL_CONFIG_BINDING_DOMAIN);
+        digest.update(encoded);
+        Ok(digest.finalize().to_vec())
+    };
+    let expected_digest = operational_digest(expected_operational)?;
+    let observed_digest = operational_digest(observed_operational)?;
+    let empty_state = status.counts.deposits == 0
+        && status.counts.withdrawals == 0
+        && status.counts.reconciliation_holds == 0
+        && status.counts.pending_ledger_operations == 0
+        && status.counts.reserved_deposit_mint_amount == 0
+        && status.counts.reserved_deposit_mint_operations == 0
+        && status.counts.retained_audit_events == 0
+        && status.counts.pruned_audit_events == 0
+        && status.counts.retained_deposit_index_entries == 0;
+    let expected_rpc_digest = canonical_sha256(&Vec::<String>::new())?;
+    if runtime.base_chain_id != init.base_chain_id
+        || runtime.bridge_contract != decode_hex(&init.bridge_contract_hex)?
+        || runtime.expected_bridge_runtime_sha256
+            != decode_hex(&init.expected_bridge_runtime_sha256_hex)?
+        || runtime.timelock_contract != decode_hex(&init.timelock_contract_hex)?
+        || runtime.deployment_instance_id != decode_hex(&init.deployment_instance_id_hex)?
+        || runtime.minimum_withdrawal_id != decode_hex(&init.minimum_withdrawal_id_hex)?
+        || runtime.ledger_canister_id.to_text() != init.ledger_canister_id
+        || runtime.index_canister_id.to_text() != init.index_canister_id
+        || runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || runtime.expected_bridge_signer.len() != 20
+        || runtime.expected_bridge_signer.iter().all(|byte| *byte == 0)
+        || runtime.evm_rpc_canister_id.to_text() != init.evm_rpc_canister_id
+        || runtime.rpc_provider_urls_sha256 != expected_rpc_digest
+        || runtime.operational_config_sha256 != expected_digest
+        || runtime.operational_config_sha256 != observed_digest
+        || !status.deposits_paused
+        || !status.reserve.sufficient
+        || !empty_state
+    {
+        return Err("installed production Canister does not match the approved plan".into());
+    }
+    let candid = validate_production_canister_plan(&plan)?;
+    let receipt = ProductionCanisterInstallReceipt {
+        schema_version: 1,
+        plan_sha256: hex(&canonical_sha256(&plan)?),
+        plan: plan.clone(),
+        source_revision: plan.source_revision.clone(),
+        source_tree_sha256: plan.source_tree_sha256.clone(),
+        canister_id: plan.bridge_canister_id.clone(),
+        installer_principal: installer_principal.to_owned(),
+        module_sha256: module_sha256.to_ascii_lowercase(),
+        init_candid_sha256: hex(&Sha256::digest(candid)),
+        runtime_binding: LiveRuntimeBinding {
+            base_chain_id: runtime.base_chain_id,
+            bridge_contract: format!("0x{}", hex(&runtime.bridge_contract)),
+            timelock_contract: format!("0x{}", hex(&runtime.timelock_contract)),
+            deployment_instance_id: format!("0x{}", hex(&runtime.deployment_instance_id)),
+            minimum_withdrawal_id: format!("0x{}", hex(&runtime.minimum_withdrawal_id)),
+            ledger_canister_id: runtime.ledger_canister_id.to_text(),
+            index_canister_id: runtime.index_canister_id.to_text(),
+            schema_version: runtime.schema_version,
+            expected_bridge_signer: format!("0x{}", hex(&runtime.expected_bridge_signer)),
+            evm_rpc_canister_id: runtime.evm_rpc_canister_id.to_text(),
+            rpc_provider_urls_sha256: hex(&runtime.rpc_provider_urls_sha256),
+            operational_config_sha256: hex(&runtime.operational_config_sha256),
+        },
+        governance_operator: format!("0x{}", hex(&observed_governance_operator)),
+        mint_authorization_ttl_seconds: status.mint_authorization_ttl_seconds,
+        mint_authorization_epoch: status.mint_authorization_epoch,
+        storage_validation_complete: true,
+        storage_checksum_complete: true,
+        deposits_paused: true,
+        state_is_empty: true,
+        cycles_reserve_sufficient: true,
+    };
+    if observed_governance_operator.len() != 20
+        || observed_governance_operator.iter().all(|byte| *byte == 0)
+    {
+        return Err("governance operator is not a nonzero EVM address".into());
+    }
+    if output.exists() {
+        return Err(format!("{} already exists", output.display()));
+    }
+    let bytes = canonical_bytes(&receipt)?;
+    let parent = output.parent().ok_or("receipt output has no parent")?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(output)
+        .and_then(|mut file| {
+            file.write_all(&bytes)?;
+            file.sync_all()
+        })
+        .map_err(|error| format!("{}: {error}", output.display()))?;
+    println!(
+        "production_canister_install=verified receipt={}",
+        output.display()
+    );
+    Ok(())
+}
+
 fn render_release_inputs(
     profile_path: &Path,
     output: &Path,
@@ -2417,7 +3272,7 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
         let mut gate_a_profile = profile.clone();
         gate_a_profile.deployment_block = 0;
         let expected_gate_a_profile_hash = hex(&canonical_sha256(&gate_a_profile)?);
-        if receipt.schema_version != 1
+        if receipt.schema_version != 2
             || !receipt.gate_a_manifest_sha256.eq_ignore_ascii_case(
                 manifest
                     .parent_gate_a_manifest_sha256
@@ -2450,6 +3305,15 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
             || receipt.timelock_deployment_block_number > receipt.bridge_deployment_block_number
         {
             return Err("Gate B evidence is not bound to the Gate A release".into());
+        }
+        validate_production_canister_receipt(&profile, &receipt.canister_install)?;
+        if receipt.canister_install.source_revision != manifest.source_revision
+            || !receipt
+                .canister_install
+                .source_tree_sha256
+                .eq_ignore_ascii_case(&manifest.source_tree_sha256)
+        {
+            return Err("Gate B does not descend from the installed production Canister".into());
         }
     }
     if profile.test_assets_only != manifest.test_only {
@@ -2627,6 +3491,93 @@ fn verify_live_inputs(
         return Err("authenticated live Canister state does not satisfy Gate B".into());
     }
     validate_rpc_rehearsal(bundle)?;
+    Ok(())
+}
+
+fn verify_production_canister_predeploy(profile_path: &Path) -> Result<(), String> {
+    let profile: Profile = read_json(profile_path)?;
+    validate_profile(&profile, true)?;
+    let bridge =
+        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&profile.ic_host, false)?;
+    let (runtime_raw, status_raw, lifecycle_raw) = async_runtime()?.block_on(async {
+        let empty = Encode!().map_err(|error| error.to_string())?;
+        let runtime = agent
+            .query(&bridge, "get_runtime_binding")
+            .with_arg(empty.clone())
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let status = agent
+            .query(&bridge, "get_bridge_status")
+            .with_arg(empty.clone())
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let lifecycle = agent
+            .query(&bridge, "get_production_lifecycle")
+            .with_arg(empty)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((runtime, status, lifecycle))
+    })?;
+    let runtime = Decode!(&runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
+    let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
+    if !matches!(
+        Decode!(&lifecycle_raw, ProductionLifecycleResultView).map_err(|error| error.to_string())?,
+        ProductionLifecycleResultView::Ok(ProductionLifecycleView::Bootstrap)
+    ) {
+        return Err("production Canister left Bootstrap before Base deployment".into());
+    }
+    let observed = LiveRuntimeBinding {
+        base_chain_id: runtime.base_chain_id,
+        bridge_contract: format!("0x{}", hex(&runtime.bridge_contract)),
+        timelock_contract: format!("0x{}", hex(&runtime.timelock_contract)),
+        deployment_instance_id: format!("0x{}", hex(&runtime.deployment_instance_id)),
+        minimum_withdrawal_id: format!("0x{}", hex(&runtime.minimum_withdrawal_id)),
+        ledger_canister_id: runtime.ledger_canister_id.to_text(),
+        index_canister_id: runtime.index_canister_id.to_text(),
+        schema_version: runtime.schema_version,
+        expected_bridge_signer: format!("0x{}", hex(&runtime.expected_bridge_signer)),
+        evm_rpc_canister_id: runtime.evm_rpc_canister_id.to_text(),
+        rpc_provider_urls_sha256: hex(&runtime.rpc_provider_urls_sha256),
+        operational_config_sha256: hex(&runtime.operational_config_sha256),
+    };
+    let operational = expected_operational_config_sha256(
+        &profile,
+        status.mint_authorization_ttl_seconds,
+        status.mint_authorization_epoch,
+    )?;
+    validate_live_runtime_binding(
+        &observed,
+        &profile,
+        &hex(&canonical_sha256(&Vec::<String>::new())?),
+        &operational,
+    )?;
+    let counts = status.counts;
+    if runtime.expected_bridge_runtime_sha256
+        != decode_hex(&profile.bridge_runtime_bytecode_sha256)?
+        || !status.deposits_paused
+        || !status.reserve.sufficient
+        || counts.deposits != 0
+        || counts.withdrawals != 0
+        || counts.reconciliation_holds != 0
+        || counts.pending_ledger_operations != 0
+        || counts.reserved_deposit_mint_amount != 0
+        || counts.reserved_deposit_mint_operations != 0
+        || counts.retained_audit_events != 0
+        || counts.pruned_audit_events != 0
+        || counts.retained_deposit_index_entries != 0
+    {
+        return Err(
+            "production Canister predeploy state is not paused, empty, and reserved".into(),
+        );
+    }
+    println!(
+        "production_canister_predeploy=verified canister={}",
+        profile.bridge_canister_id
+    );
     Ok(())
 }
 
@@ -3447,6 +4398,48 @@ fn run() -> Result<(), String> {
                 Some(&bundle.manifest_sha256),
             )?;
         }
+        Some("validate-production-canister-plan") if args.len() == 3 => {
+            let plan: ProductionCanisterPlan = read_json(Path::new(&args[2]))?;
+            validate_production_canister_plan(&plan)?;
+            println!("{}", hex(&canonical_sha256(&plan)?));
+        }
+        Some("render-production-canister-inputs") if args.len() == 4 => {
+            render_production_canister_inputs(Path::new(&args[2]), Path::new(&args[3]))?;
+        }
+        Some("validate-production-canister-receipt") if args.len() == 4 => {
+            println!(
+                "{}",
+                validate_production_canister_receipt_files(
+                    Path::new(&args[2]),
+                    Path::new(&args[3]),
+                )?
+            );
+        }
+        Some("verify-production-canister-predeploy") if args.len() == 3 => {
+            verify_production_canister_predeploy(Path::new(&args[2]))?;
+        }
+        Some("storage-validation-complete") if args.len() == 3 => {
+            println!("{}", storage_validation_complete(&args[2])?);
+        }
+        Some("storage-checksum-complete") if args.len() == 3 => {
+            println!("{}", storage_checksum_complete(&args[2])?);
+        }
+        Some("write-production-canister-receipt") if args.len() == 14 => {
+            write_production_canister_install_receipt(
+                Path::new(&args[2]),
+                &args[3],
+                &args[4],
+                &args[5],
+                &args[6],
+                &args[7],
+                &args[8],
+                &args[9],
+                &args[10],
+                &args[11],
+                &args[12],
+                Path::new(&args[13]),
+            )?;
+        }
         Some("validate-bundle") if args.len() == 4 && args[2] == "--offline" => {
             let bundle = validate_bundle(Path::new(&args[3]), false)?;
             println!(
@@ -3505,7 +4498,7 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[3]
             );
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
     }
     Ok(())
 }
@@ -3713,6 +4706,128 @@ mod tests {
             rpc_provider_urls_sha256: rpc_url_hash,
             operational_config_sha256,
         }
+    }
+
+    fn production_canister_plan(profile: &Profile) -> ProductionCanisterPlan {
+        ProductionCanisterPlan {
+            schema_version: 1,
+            environment: "production".into(),
+            source_revision: "a".repeat(40),
+            source_tree_sha256: "b".repeat(64),
+            bridge_canister_id: profile.bridge_canister_id.clone(),
+            bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            init: ProductionCanisterInitInput {
+                ledger_canister_id: profile.ledger_canister_id.clone(),
+                index_canister_id: profile.index_canister_id.clone(),
+                evm_rpc_canister_id: profile.evm_rpc_canister_id.clone(),
+                custom_evm_rpc_urls: Vec::new(),
+                base_chain_id: profile.chain_id,
+                bridge_contract_hex: profile.bridge_contract.trim_start_matches("0x").into(),
+                expected_bridge_runtime_sha256_hex: profile.bridge_runtime_bytecode_sha256.clone(),
+                timelock_contract_hex: profile.timelock.address.trim_start_matches("0x").into(),
+                expected_timelock_minimum_delay_seconds: profile.timelock.minimum_delay_seconds,
+                expected_bsns_runtime_sha256_hex: profile.bsns_runtime_bytecode_sha256.clone(),
+                expected_bsns_decimals: profile.decimals,
+                expected_minimum_service_fee: profile.parameters.ledger_fee,
+                deployment_instance_id_hex: profile
+                    .deployment_instance_id
+                    .trim_start_matches("0x")
+                    .into(),
+                minimum_withdrawal_id_hex: profile
+                    .minimum_withdrawal_id
+                    .trim_start_matches("0x")
+                    .into(),
+                ecdsa_key_name: profile.ecdsa_key_name.clone(),
+                ecdsa_derivation_path_utf8: profile.ecdsa_derivation_path.clone(),
+                governance_ecdsa_derivation_path_utf8: profile
+                    .governance_ecdsa_derivation_path
+                    .clone(),
+                deposit_rate_limit_window_seconds: profile.rate_limits.deposit_window_seconds,
+                deposit_rate_limit_global: profile.rate_limits.deposit_global,
+                deposit_rate_limit_per_principal: profile.rate_limits.deposit_per_principal,
+                notification_rate_limit_window_seconds: profile
+                    .rate_limits
+                    .notification_window_seconds,
+                notification_rate_limit_global: profile.rate_limits.notification_global,
+                notification_ingestion_rate_limit_global: profile
+                    .rate_limits
+                    .notification_ingestion_global,
+                settlement_rate_limit_window_seconds: profile.rate_limits.settlement_window_seconds,
+                settlement_rate_limit_global: profile.rate_limits.settlement_global,
+                settlement_rate_limit_per_principal: profile.rate_limits.settlement_per_principal,
+                settlement_rate_limit_per_record: profile.rate_limits.settlement_per_record,
+                settlement_retry_interval_seconds: profile
+                    .rate_limits
+                    .settlement_retry_interval_seconds,
+                governance_evm_fee: profile.parameters.governance_evm_fee(),
+                governance_replacement: profile.governance_replacement,
+                cycles_floor: profile.parameters.cycles_floor,
+                settlement_cycle_ceiling: profile.parameters.settlement_cycle_ceiling,
+                governance_principal: profile.governance_principal.clone(),
+                pause_principal: profile.pause_principal.clone(),
+                confirmation_relayer_principal: profile.confirmation_relayer_principal.clone(),
+                fee_recipient: ProductionFeeRecipientInput {
+                    owner: profile.fee_recipient.clone(),
+                    subaccount_hex: String::new(),
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn production_canister_plan_generates_the_typed_candid_init_argument() {
+        let profile = valid_profile();
+        let plan = production_canister_plan(&profile);
+        let encoded = validate_production_canister_plan(&plan).unwrap();
+        assert!(encoded.starts_with(b"DIDL"));
+        let decoded = Decode!(&encoded, ProductionCanisterInitArgsCallView).unwrap();
+        assert_eq!(decoded.base_chain_id, 8453);
+        assert_eq!(decoded.bridge_contract.len(), 20);
+        assert_eq!(decoded.deployment_instance_id.len(), 32);
+        assert!(decoded.custom_evm_rpc_urls.is_empty());
+
+        let mut unsafe_plan = plan;
+        unsafe_plan.init.custom_evm_rpc_urls = vec!["https://unreviewed.example".into()];
+        assert!(validate_production_canister_plan(&unsafe_plan).is_err());
+    }
+
+    #[test]
+    fn production_canister_receipt_fails_closed_on_postcondition_drift() {
+        let profile = valid_profile();
+        let plan = production_canister_plan(&profile);
+        let init_candid_sha256 = hex(&Sha256::digest(
+            validate_production_canister_plan(&plan).unwrap(),
+        ));
+        let mut receipt = ProductionCanisterInstallReceipt {
+            schema_version: 1,
+            plan_sha256: hex(&canonical_sha256(&plan).unwrap()),
+            plan: plan.clone(),
+            source_revision: plan.source_revision.clone(),
+            source_tree_sha256: plan.source_tree_sha256.clone(),
+            canister_id: profile.bridge_canister_id.clone(),
+            installer_principal: test_principal(31),
+            module_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            init_candid_sha256,
+            runtime_binding: live_runtime_binding(&profile),
+            governance_operator: profile.governance_operator.clone(),
+            mint_authorization_ttl_seconds: 900,
+            mint_authorization_epoch: 7,
+            storage_validation_complete: true,
+            storage_checksum_complete: true,
+            deposits_paused: true,
+            state_is_empty: true,
+            cycles_reserve_sufficient: true,
+        };
+        assert!(validate_production_canister_receipt(&profile, &receipt).is_ok());
+        receipt.deposits_paused = false;
+        assert!(validate_production_canister_receipt(&profile, &receipt).is_err());
+        receipt.deposits_paused = true;
+        receipt.plan.init.cycles_floor += 1;
+        receipt.plan_sha256 = hex(&canonical_sha256(&receipt.plan).unwrap());
+        receipt.init_candid_sha256 = hex(&Sha256::digest(
+            validate_production_canister_plan(&receipt.plan).unwrap(),
+        ));
+        assert!(validate_production_canister_receipt(&profile, &receipt).is_err());
     }
 
     #[test]
@@ -4405,8 +5520,14 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .find(|a| a.path == "profile.json")
             .unwrap()
             .sha256 = post_deploy_profile_sha256.clone();
+        let mut canister_plan = production_canister_plan(&profile);
+        canister_plan.source_tree_sha256 = "2".repeat(64);
+        let canister_plan_sha256 = hex(&canonical_sha256(&canister_plan).unwrap());
+        let canister_init_candid_sha256 = hex(&Sha256::digest(
+            validate_production_canister_plan(&canister_plan).unwrap(),
+        ));
         let receipt = GateAReceipt {
-            schema_version: 1,
+            schema_version: 2,
             gate_a_manifest_sha256: gate_a.manifest_sha256.clone(),
             release_id: "release-1".into(),
             source_revision: "a".repeat(40),
@@ -4421,6 +5542,26 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             timelock_deployment_transaction_hash,
             timelock_deployment_block_number,
             timelock_deployment_block_hash,
+            canister_install: ProductionCanisterInstallReceipt {
+                schema_version: 1,
+                plan_sha256: canister_plan_sha256,
+                plan: canister_plan,
+                source_revision: "a".repeat(40),
+                source_tree_sha256: "2".repeat(64),
+                canister_id: profile.bridge_canister_id.clone(),
+                installer_principal: test_principal(31),
+                module_sha256: profile.bridge_canister_wasm_sha256.clone(),
+                init_candid_sha256: canister_init_candid_sha256,
+                runtime_binding: live_runtime_binding(&profile),
+                governance_operator: profile.governance_operator.clone(),
+                mint_authorization_ttl_seconds: 900,
+                mint_authorization_epoch: 7,
+                storage_validation_complete: true,
+                storage_checksum_complete: true,
+                deposits_paused: true,
+                state_is_empty: true,
+                cycles_reserve_sufficient: true,
+            },
         };
         let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
         fs::write(root.join("gate-a-receipt.json"), &receipt_bytes).unwrap();

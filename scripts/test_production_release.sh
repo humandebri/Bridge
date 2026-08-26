@@ -44,6 +44,8 @@ printf '%s\n' '#!/usr/bin/env bash' 'touch "$PROFILE_OVERRIDE_MARKER"' 'exit 0' 
 chmod +x "$TEST_TMP_ROOT/malicious-profile"
 SOURCE_REVISION="$(git -C "$TEST_TMP_ROOT/source" rev-parse HEAD)"
 SOURCE_TREE_SHA256="$(git -C "$TEST_TMP_ROOT/source" archive HEAD | shasum -a 256 | awk '{print $1}')"
+printf '{"source_revision":"%s","source_tree_sha256":"%s"}\n' \
+  "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" >"$TEST_TMP_ROOT/canister-install-receipt.json"
 PROFILE_CONTENT='{"deployment_block":0,"name":"planned-profile"}'
 PROFILE_SHA256="$(printf '%s' "$PROFILE_CONTENT" | shasum -a 256 | awk '{print $1}')"
 WASM_SHA256="$(printf wasm | shasum -a 256 | awk '{print $1}')"
@@ -102,18 +104,18 @@ ACTIVATION_ARGS=(
 )
 
 write_gate 1
-expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
+expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --canister-install-receipt "$TEST_TMP_ROOT/canister-install-receipt.json" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
 [[ ! -e "$TEST_TMP_ROOT/deployed" ]]
 
 write_gate 0
-expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --receipt "$TEST_TMP_ROOT/receipt.json" -- touch extra-argument
+expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --canister-install-receipt "$TEST_TMP_ROOT/canister-install-receipt.json" --receipt "$TEST_TMP_ROOT/receipt.json" -- touch extra-argument
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --release-inputs "$TEST_TMP_ROOT/release-inputs" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 [[ ! -e "$TEST_TMP_ROOT/activated" ]]
 
-GATE_AUTHORIZING=false expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
+GATE_AUTHORIZING=false expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --canister-install-receipt "$TEST_TMP_ROOT/canister-install-receipt.json" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
 [[ ! -e "$TEST_TMP_ROOT/deployed" ]]
 
-ACTION_MARKER="$TEST_TMP_ROOT/deployed" run_release deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
+ACTION_MARKER="$TEST_TMP_ROOT/deployed" run_release deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --canister-install-receipt "$TEST_TMP_ROOT/canister-install-receipt.json" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
 [[ -e "$TEST_TMP_ROOT/deployed" ]]
 [[ -s "$TEST_TMP_ROOT/receipt.json" ]]
 [[ -s "$TEST_TMP_ROOT/receipt.json.post-deploy-profile.json" ]]
@@ -121,6 +123,8 @@ ACTION_MARKER="$TEST_TMP_ROOT/deployed" run_release deploy --bundle "$TEST_TMP_R
 python3 - "$TEST_TMP_ROOT/receipt.json" <<'PY'
 import json,sys
 receipt=json.load(open(sys.argv[1],encoding='utf-8'))
+assert receipt['schema_version']==2
+assert receipt['canister_install']['source_revision']
 assert receipt['bridge_deployment_transaction_hash']=='0x'+'a'*64
 assert receipt['bridge_deployment_block_number']==1
 assert receipt['bridge_deployment_block_hash']=='0x'+'c'*64

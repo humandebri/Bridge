@@ -13,6 +13,7 @@ BUNDLE=""
 CONFIRMATION=""
 RECEIPT=""
 RELEASE_INPUTS=""
+CANISTER_INSTALL_RECEIPT=""
 ACTIVATION_PHASE=""
 ACTIVATION_SUBMISSION=""
 SNS_IDENTITY=""
@@ -35,6 +36,11 @@ while [[ "$#" -gt 0 ]]; do
     --release-inputs)
       [[ "$#" -ge 2 ]] || { echo "--release-inputs requires a directory" >&2; exit 2; }
       RELEASE_INPUTS="$2"
+      shift 2
+      ;;
+    --canister-install-receipt)
+      [[ "$#" -ge 2 ]] || { echo "--canister-install-receipt requires a path" >&2; exit 2; }
+      CANISTER_INSTALL_RECEIPT="$2"
       shift 2
       ;;
     --confirm-asset-acceptance)
@@ -89,7 +95,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 usage() {
-  echo "usage: $0 deploy --bundle DIR --release-inputs DIR --receipt FILE -- DEPLOY_DRIVER" >&2
+  echo "usage: $0 deploy --bundle DIR --release-inputs DIR --canister-install-receipt FILE --receipt FILE -- DEPLOY_DRIVER" >&2
   echo "       $0 activate --phase schedule --bundle DIR --release-inputs DIR --receipt FILE --submission FILE --sns-identity NAME --confirmation-relayer-identity NAME --sns-neuron-subaccount HEX --sns-proposer-principal PRINCIPAL --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION -- scripts/production-activate-driver.sh" >&2
   echo "       $0 activate --phase execute [same options] --prior-schedule-receipt FILE --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- scripts/production-activate-driver.sh" >&2
   exit 2
@@ -182,6 +188,32 @@ export BRIDGE_SOURCE_ROOT="$SOURCE_ROOT"
 
 GATE_OUTPUT=""
 if [[ "$MODE" == "deploy" ]]; then
+  [[ -f "$CANISTER_INSTALL_RECEIPT" && ! -L "$CANISTER_INSTALL_RECEIPT" ]] || {
+    echo "deploy requires the verified production Canister install receipt" >&2
+    exit 1
+  }
+  FROZEN_CANISTER_INSTALL_RECEIPT="$RENDERED_INPUTS/production-canister-install-receipt.json"
+  python3 - "$CANISTER_INSTALL_RECEIPT" "$FROZEN_CANISTER_INSTALL_RECEIPT" <<'PY'
+import os, sys
+source, target = sys.argv[1:]
+with open(source, "rb") as input_file:
+    value = input_file.read()
+fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+try:
+    os.write(fd, value)
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+  CANISTER_INSTALL_RECEIPT="$FROZEN_CANISTER_INSTALL_RECEIPT"
+  run_profile_gate validate-production-canister-receipt \
+    "$BUNDLE/profile.json" "$CANISTER_INSTALL_RECEIPT" >/dev/null
+  python3 - "$CANISTER_INSTALL_RECEIPT" "$CURRENT_SOURCE_REVISION" "$CURRENT_SOURCE_TREE_SHA256" <<'PY'
+import json, sys
+receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+if receipt.get("source_revision") != sys.argv[2] or str(receipt.get("source_tree_sha256", "")).lower() != sys.argv[3].lower():
+    raise SystemExit("production Canister install receipt is not bound to the current clean source")
+PY
   STRUCTURAL_GATE_OUTPUT="$(run_profile_gate validate-bundle --offline "$BUNDLE")"
   printf '%s\n' "$STRUCTURAL_GATE_OUTPUT"
   [[ "$STRUCTURAL_GATE_OUTPUT" =~ ^gate_a=pass[[:space:]]authorizing=true[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || {
@@ -290,10 +322,11 @@ PY
   python3 -c '
 import json, sys
 binding = json.load(open(sys.argv[10], encoding="utf-8"))
+canister_install = json.load(open(sys.argv[11], encoding="utf-8"))
 with open(sys.argv[1], "w", encoding="utf-8") as output:
-    json.dump({"schema_version": 1, "gate_a_manifest_sha256": sys.argv[2], "release_id": sys.argv[3], "source_revision": sys.argv[4], "source_tree_sha256": sys.argv[5], "gate_a_profile_sha256": sys.argv[6], "post_deploy_profile_sha256": sys.argv[7], "bridge_canister_wasm_sha256": sys.argv[8], "bridge_runtime_bytecode_sha256": sys.argv[9], "bridge_deployment_transaction_hash": binding["bridge"]["transaction_hash"], "bridge_deployment_block_number": binding["bridge"]["block_number"], "bridge_deployment_block_hash": binding["bridge"]["block_hash"], "timelock_deployment_transaction_hash": binding["timelock"]["transaction_hash"], "timelock_deployment_block_number": binding["timelock"]["block_number"], "timelock_deployment_block_hash": binding["timelock"]["block_hash"]}, output, sort_keys=True, separators=(",", ":"))
+    json.dump({"schema_version": 2, "gate_a_manifest_sha256": sys.argv[2], "release_id": sys.argv[3], "source_revision": sys.argv[4], "source_tree_sha256": sys.argv[5], "gate_a_profile_sha256": sys.argv[6], "post_deploy_profile_sha256": sys.argv[7], "bridge_canister_wasm_sha256": sys.argv[8], "bridge_runtime_bytecode_sha256": sys.argv[9], "bridge_deployment_transaction_hash": binding["bridge"]["transaction_hash"], "bridge_deployment_block_number": binding["bridge"]["block_number"], "bridge_deployment_block_hash": binding["bridge"]["block_hash"], "timelock_deployment_transaction_hash": binding["timelock"]["transaction_hash"], "timelock_deployment_block_number": binding["timelock"]["block_number"], "timelock_deployment_block_hash": binding["timelock"]["block_hash"], "canister_install": canister_install}, output, sort_keys=True, separators=(",", ":"))
     output.write("\n")
-' "$RECEIPT_TMP" "$GATE_MANIFEST_SHA256" "$RELEASE_ID" "$CURRENT_SOURCE_REVISION" "$CURRENT_SOURCE_TREE_SHA256" "$GATE_A_PROFILE_CANONICAL_SHA256" "$POST_DEPLOY_PROFILE_SHA256" "$CANISTER_WASM_SHA256" "$BRIDGE_RUNTIME_SHA256" "$DEPLOYMENT_BINDING"
+' "$RECEIPT_TMP" "$GATE_MANIFEST_SHA256" "$RELEASE_ID" "$CURRENT_SOURCE_REVISION" "$CURRENT_SOURCE_TREE_SHA256" "$GATE_A_PROFILE_CANONICAL_SHA256" "$POST_DEPLOY_PROFILE_SHA256" "$CANISTER_WASM_SHA256" "$BRIDGE_RUNTIME_SHA256" "$DEPLOYMENT_BINDING" "$CANISTER_INSTALL_RECEIPT"
   production_atomic_replace "$POST_DEPLOY_PROFILE_TMP" "$POST_DEPLOY_PROFILE"
   production_atomic_replace "$RECEIPT_TMP" "$RECEIPT"
   printf 'post_deploy_profile=%s\n' "$POST_DEPLOY_PROFILE"
