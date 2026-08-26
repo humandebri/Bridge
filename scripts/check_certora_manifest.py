@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +59,7 @@ FORBIDDEN_CONFIG_KEYS = {
     "disable_local_type_checking",
 }
 RULE = re.compile(r"(?m)^\s*(?:rule|invariant)\s+([A-Za-z_][A-Za-z0-9_]*)\b")
+KECCAK256 = re.compile(r"0x[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,40 @@ class Obligation:
     sources: tuple[str, ...]
     assumptions: tuple[str, ...]
     claims: tuple[str, ...]
+
+
+def source_keccak256(source: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["cast", "keccak"],
+            input=source.read_bytes(),
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError(
+            f"failed to hash Solidity source with cast: {source}"
+        ) from error
+    digest = result.stdout.decode("ascii").strip()
+    if KECCAK256.fullmatch(digest) is None:
+        raise ValueError(f"cast returned an invalid Solidity source digest: {source}")
+    return digest
+
+
+def artifact_source_keccak256(artifact: Path, source: Path, root: Path) -> str:
+    metadata = json.loads(artifact.read_text(encoding="utf-8")).get("metadata")
+    source_key = source.relative_to(root / "contracts").as_posix()
+    try:
+        digest = metadata["sources"][source_key]["keccak256"]
+    except (KeyError, TypeError) as error:
+        raise ValueError(
+            f"Solidity AST artifact has no source digest: {source_key}"
+        ) from error
+    if not isinstance(digest, str) or KECCAK256.fullmatch(digest) is None:
+        raise ValueError(
+            f"Solidity AST artifact has an invalid source digest: {source_key}"
+        )
+    return digest
 
 
 def split_entries(value: str, *, field: str, row: int) -> tuple[str, ...]:
@@ -228,7 +264,9 @@ def validate(root: Path = ROOT, ast_index: AstIndex | None = None) -> None:
                     f"Certora source ownership must resolve exactly once: {link}"
                 )
             artifact = records[0].artifact
-            if artifact is not None and artifact.stat().st_mtime_ns < source.stat().st_mtime_ns:
+            if artifact is not None and artifact_source_keccak256(
+                artifact, source, root
+            ) != source_keccak256(source):
                 raise ValueError(f"stale Solidity AST source link: {link}")
     unowned = set(declared) - set(owners)
     if unowned:
