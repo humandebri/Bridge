@@ -115,7 +115,7 @@ wire v27で保存されたrefund retry、EVM transaction replacement、fee quote
 )
 ```
 
-staging upgrade gateはreview済みのlive module／certified Candidの組をsourceとして固定する。既存のv33／wire v28 sourceは一度限りのmigration引数でv34／wire v29へ更新し、v34／wire v29 sourceはmigration引数を渡さず同一schema・同一instanceのまま更新する。`v33-to-v34-upgrade-policy.json`は
+staging upgrade gateはreview済みのlive module／certified Candidの組をsourceとして固定する。既存のv33／wire v28 sourceは一度限りのmigration引数でv34／wire v29へ更新し、v34／wire v29 sourceはmigration引数を渡さず同一schema・同一instanceのまま更新する。`staging-bridge-upgrade-policy.json`は
 Canister、deployment、controller認証済みlive source module／certified Candid、migration ID、v34 immutable設定を固定し、repo外のlocal E2E evidenceはclean HEADとtarget Wasm／Candidを固定する。moduleとCandidの組がreview済みsourceまたはtargetのどちらでもなければ拒否する。
 preflightはcertified live Candidを読み、v33 sourceでは`get_public_config`、v34 sourceでは`get_runtime_binding`からbindingを取得し、state count、controller、cycles、storage integrity、
 pending Timelock／governance transaction数、全audit pageのcanonical digestとretention metadataを記録する。v34 sourceでは`get_runtime_binding`全体のdigestも記録する。executeは同じpreflightを再構築できた場合だけinstallし、全state countを

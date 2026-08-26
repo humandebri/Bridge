@@ -12,6 +12,24 @@ WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
 
 
 class TrustedPrGateTests(unittest.TestCase):
+    def test_staging_upgrade_policy_uses_only_the_canonical_path(self) -> None:
+        canonical_name = "staging-bridge-upgrade-policy.json"
+        obsolete_name = "v33-to-v34-upgrade-policy.json"
+        policy_dir = ROOT / "deployments" / "sepolia-staging"
+
+        self.assertTrue((policy_dir / canonical_name).is_file())
+        self.assertFalse((policy_dir / obsolete_name).exists())
+        for relative in (
+            "scripts/plan007/staging_canister_upgrade.py",
+            "scripts/plan007/test_staging_canister_upgrade.py",
+            "docs/runbooks/sepolia-staging-e2e.md",
+            "verification/proof-impact.tsv",
+        ):
+            with self.subTest(relative=relative):
+                source = (ROOT / relative).read_text(encoding="utf-8")
+                self.assertIn(canonical_name, source)
+                self.assertNotIn(obsolete_name, source)
+
     def test_trusted_bootstrap_files_are_present_and_pinned(self) -> None:
         dockerfile = ROOT / ".github" / "trusted-pr" / "Dockerfile"
         wrapper = ROOT / "scripts" / "trusted-pr-container.sh"
