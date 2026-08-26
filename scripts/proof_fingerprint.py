@@ -40,11 +40,34 @@ FINGERPRINT_CONFIG_FILES = (
 )
 FINGERPRINT_EXCLUDED_VERIFICATION_DIRS = (
     ("output",),
+    ("certora",),
     ("lean", ".lake"),
     ("smt", "out"),
     ("smt", "cache"),
     ("halmos", ".venv"),
 )
+CERTORA_ONLY_RELEASE_EXCLUSIONS = frozenset(
+    {
+        ".github/workflows/certora-advisory.yml",
+        "scripts/certora_fingerprint.py",
+        "scripts/certora_results.py",
+        "scripts/check_certora_manifest.py",
+        "scripts/install-certora-solc.sh",
+        "scripts/run_certora_advisory.sh",
+        "scripts/test_certora_fingerprint.py",
+        "scripts/test_certora_manifest.py",
+        "scripts/test_certora_results.py",
+    }
+)
+
+
+def excluded_release_path(path: Path, repo_root: Path) -> bool:
+    """Return whether a tracked input affects only advisory Certora evidence."""
+
+    relative = path.relative_to(repo_root).as_posix()
+    return relative in CERTORA_ONLY_RELEASE_EXCLUSIONS or relative.startswith(
+        "verification/certora/"
+    )
 
 
 def excluded_verification_path(path: Path, verification: Path) -> bool:
@@ -60,13 +83,19 @@ def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> t
         from check_proof_impact import load_manifest
 
         manifest = load_manifest(repo_root)
-    paths = {repo_root / source for area in manifest.areas for source in area.sources}
+    paths = {
+        repo_root / source
+        for area in manifest.areas
+        for source in area.sources
+        if not excluded_release_path(repo_root / source, repo_root)
+    }
     verification = repo_root / "verification"
     paths.update(
         path
         for path in verification.rglob("*")
         if path.is_file()
         and not excluded_verification_path(path, verification)
+        and not excluded_release_path(path, repo_root)
     )
     for relative_root, suffixes in FINGERPRINT_SOURCE_ROOTS:
         source_root = repo_root / relative_root
@@ -77,6 +106,7 @@ def fingerprint_inputs(repo_root: Path = ROOT, manifest: Any | None = None) -> t
             for path in source_root.rglob("*")
             if path.is_file()
             and path.suffix in suffixes
+            and not excluded_release_path(path, repo_root)
             and not (
                 relative_root == "verification"
                 and excluded_verification_path(path, verification)

@@ -114,6 +114,7 @@ class CiModeTests(unittest.TestCase):
             "rust-integration",
             "contracts-fast",
             "contracts-coverage",
+            "certora",
             "ui-fast",
             "ui-e2e",
         ):
@@ -304,6 +305,11 @@ class CiModeTests(unittest.TestCase):
     def test_versions_rejects_npm_lockfiles(self) -> None:
         body = function_body("run_versions")
         self.assertLess(body.index('  verify_no_npm_lockfiles "$ROOT"\n'), body.index("check_tool_versions.sh"))
+        self.assertNotIn(
+            "run_certora_advisory_checks",
+            body,
+            "advisory Certora checks must not become an existing release-gate prerequisite",
+        )
         guard = GUARDS
         for relative_path in (
             "package-lock.json",

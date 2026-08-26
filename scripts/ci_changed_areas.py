@@ -12,9 +12,12 @@ from functools import lru_cache
 from pathlib import Path
 from pathlib import PurePosixPath
 
+from proof_fingerprint import CERTORA_ONLY_RELEASE_EXCLUSIONS
 
-AREAS = ("rust", "contracts", "proofs", "ui", "real", "icp")
+
+AREAS = ("rust", "contracts", "proofs", "ui", "real", "icp", "certora")
 ROOT = Path(__file__).resolve().parents[1]
+CERTORA_ADVISORY_EXACT_PATHS = CERTORA_ONLY_RELEASE_EXCLUSIONS
 
 
 @lru_cache(maxsize=1)
@@ -46,6 +49,12 @@ def _is_documentation(path: str) -> bool:
     return path.endswith(".md") or name.startswith("LICENSE") or name == ".gitignore"
 
 
+def _is_certora_advisory_only(path: str) -> bool:
+    return path in CERTORA_ADVISORY_EXACT_PATHS or path.startswith(
+        "verification/certora/"
+    )
+
+
 def classify(paths: list[str]) -> dict[str, bool]:
     result = {area: False for area in AREAS}
     for raw_path in paths:
@@ -53,6 +62,9 @@ def classify(paths: list[str]) -> dict[str, bool]:
         if not path or path == ".":
             continue
         if _is_documentation(path):
+            continue
+        if _is_certora_advisory_only(path):
+            result["certora"] = True
             continue
 
         infrastructure = _matches(

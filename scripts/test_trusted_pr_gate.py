@@ -108,6 +108,7 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertIn("trusted-policy/.github/trusted-pr/Dockerfile", workflow)
         self.assertIn("trusted-policy/scripts/trusted-pr-container.sh source trusted-policy", workflow)
+        self.assertIn("certora) run_check certora", workflow)
         self.assertIn(
             "node trusted-policy/ui/scripts/download-ledger-artifacts.mjs",
             workflow,

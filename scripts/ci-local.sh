@@ -124,6 +124,17 @@ run_step() {
   return "$status"
 }
 
+run_certora_advisory_checks() {
+  shellcheck -x -S warning \
+    "$ROOT/scripts/install-certora-solc.sh" \
+    "$ROOT/scripts/run_certora_advisory.sh"
+  forge build --root "$ROOT/contracts"
+  python3 "$ROOT/scripts/check_certora_manifest.py"
+  python3 "$ROOT/scripts/test_certora_fingerprint.py"
+  python3 "$ROOT/scripts/test_certora_manifest.py"
+  python3 "$ROOT/scripts/test_certora_results.py"
+}
+
 run_versions() {
   verify_no_npm_lockfiles "$ROOT"
   shellcheck -x -S warning \
@@ -139,8 +150,6 @@ run_versions() {
   "$ROOT/scripts/check_tool_versions.sh"
   "$ROOT/scripts/test_tool_version_gate.sh"
   python3 "$ROOT/scripts/check_schema_consistency.py"
-  python3 "$ROOT/scripts/check_certora_manifest.py"
-  python3 "$ROOT/scripts/test_certora_manifest.py"
   python3 "$ROOT/scripts/check_no_obsolete_release_dependencies.py"
   python3 "$ROOT/scripts/test_no_obsolete_release_dependencies.py"
   verify_no_obsolete_withdrawal_terms \
@@ -1556,6 +1565,9 @@ case "$MODE" in
     ;;
   contracts-coverage)
     run_step contracts-coverage run_contracts_coverage
+    ;;
+  certora)
+    run_step certora run_certora_advisory_checks
     ;;
   proofs)
     run_step versions run_versions

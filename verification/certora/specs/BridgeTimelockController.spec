@@ -11,6 +11,11 @@ methods {
     function MINIMUM_DELAY() external returns (uint256) envfree;
     function MAXIMUM_DELAY() external returns (uint256) envfree;
     function pendingOperationCount() external returns (uint256) envfree;
+
+    unresolved external in BridgeTimelockController.execute(address,uint256,bytes,bytes32,bytes32)
+        => DISPATCH [ TimelockNestedOperationTarget._ ] default HAVOC_ECF;
+    unresolved external in BridgeTimelockController.executeBatch(address[],uint256[],bytes[],bytes32,bytes32)
+        => DISPATCH [ TimelockNestedOperationTarget._ ] default HAVOC_ECF;
 }
 
 definition operationalRolePolicy(address account) returns bool =
@@ -24,6 +29,37 @@ definition operationalRolePolicy(address account) returns bool =
     hasRole(CANCELLER_ROLE(), account) == (account == roleMember(CANCELLER_ROLE())) &&
     hasRole(DEFAULT_ADMIN_ROLE(), account) == (account == currentContract);
 
+definition isPendingTimestamp(uint256 timestamp) returns bool = timestamp > 1;
+
+ghost mathint scheduledTransitions;
+ghost mathint terminalTransitions;
+ghost mathint counterIncrements;
+ghost mathint counterDecrements;
+
+hook Sstore _timestamps[KEY bytes32 id] uint256 newTimestamp (uint256 oldTimestamp) {
+    if (executingContract == currentContract) {
+        if (oldTimestamp == 0 && isPendingTimestamp(newTimestamp)) {
+            scheduledTransitions = scheduledTransitions + 1;
+        } else if (isPendingTimestamp(oldTimestamp) && (newTimestamp == 0 || newTimestamp == 1)) {
+            terminalTransitions = terminalTransitions + 1;
+        } else if (oldTimestamp != newTimestamp) {
+            assert false, "every timestamp write is a recognized operation lifecycle transition";
+        }
+    }
+}
+
+hook Sstore pendingOperationCount uint256 newCount (uint256 oldCount) {
+    if (executingContract == currentContract && newCount != oldCount) {
+        if (newCount > oldCount) {
+            assert newCount == oldCount + 1, "a counter increment is exactly one";
+            counterIncrements = counterIncrements + 1;
+        } else {
+            assert oldCount == newCount + 1, "a counter decrement is exactly one";
+            counterDecrements = counterDecrements + 1;
+        }
+    }
+}
+
 rule operationalRolesRemainClosed(env e, method f, calldataarg args, address account) {
     require operationalRolePolicy(account);
     f@withrevert(e, args);
@@ -36,109 +72,27 @@ rule delayAlwaysRemainsBounded(env e, method f, calldataarg args) {
     assert MINIMUM_DELAY() <= getMinDelay() && getMinDelay() <= MAXIMUM_DELAY();
 }
 
-rule pendingCountChangesOnlyThroughLifecycle(env e, method f, calldataarg args) {
-    uint256 before = pendingOperationCount();
+rule pendingCounterTracksLifecycleTransitions(env e, method f, calldataarg args) {
+    uint256 countBefore = pendingOperationCount();
+    storage stateBefore = lastStorage;
+    scheduledTransitions = 0;
+    terminalTransitions = 0;
+    counterIncrements = 0;
+    counterDecrements = 0;
+
     f@withrevert(e, args);
-    uint256 after = pendingOperationCount();
 
-    assert after > before =>
-        f.selector == sig:schedule(address,uint256,bytes,bytes32,bytes32,uint256).selector ||
-        f.selector == sig:scheduleBatch(address[],uint256[],bytes[],bytes32,bytes32,uint256).selector;
-    assert after < before =>
-        f.selector == sig:cancel(bytes32).selector ||
-        f.selector == sig:execute(address,uint256,bytes,bytes32,bytes32).selector ||
-        f.selector == sig:executeBatch(address[],uint256[],bytes[],bytes32,bytes32).selector;
-}
-
-rule scheduleChangesPendingCountExactly(env e) {
-    require e.msg.value == 0;
-
-    address target;
-    uint256 value;
-    bytes data;
-    bytes32 predecessor;
-    bytes32 salt;
-    uint256 delay;
-    uint256 before = pendingOperationCount();
-    storage stateBefore = lastStorage;
-
-    schedule@withrevert(e, target, value, data, predecessor, salt, delay);
     if (lastReverted) {
-        assert lastStorage[timelock] == stateBefore[timelock];
+        assert lastStorage[timelock] == stateBefore[timelock],
+            "a reverted lifecycle call preserves all timelock storage";
     } else {
-        assert pendingOperationCount() == before + 1;
-    }
-}
-
-rule scheduleBatchChangesPendingCountExactly(env e) {
-    require e.msg.value == 0;
-
-    address[] targets;
-    uint256[] values;
-    bytes[] payloads;
-    bytes32 predecessor;
-    bytes32 salt;
-    uint256 delay;
-    uint256 before = pendingOperationCount();
-    storage stateBefore = lastStorage;
-
-    scheduleBatch@withrevert(e, targets, values, payloads, predecessor, salt, delay);
-    if (lastReverted) {
-        assert lastStorage[timelock] == stateBefore[timelock];
-    } else {
-        assert pendingOperationCount() == before + 1;
-    }
-}
-
-rule cancelChangesPendingCountExactly(env e) {
-    require e.msg.value == 0;
-
-    bytes32 id;
-    uint256 before = pendingOperationCount();
-    storage stateBefore = lastStorage;
-
-    cancel@withrevert(e, id);
-    if (lastReverted) {
-        assert lastStorage[timelock] == stateBefore[timelock];
-    } else {
-        assert before > 0;
-        assert pendingOperationCount() + 1 == before;
-    }
-}
-
-rule executeChangesPendingCountExactly(env e) {
-    address target;
-    uint256 value;
-    bytes payload;
-    bytes32 predecessor;
-    bytes32 salt;
-    uint256 before = pendingOperationCount();
-    storage stateBefore = lastStorage;
-
-    execute@withrevert(e, target, value, payload, predecessor, salt);
-    if (lastReverted) {
-        assert lastStorage[timelock] == stateBefore[timelock];
-    } else {
-        assert before > 0;
-        assert pendingOperationCount() + 1 == before;
-    }
-}
-
-rule executeBatchChangesPendingCountExactly(env e) {
-    address[] targets;
-    uint256[] values;
-    bytes[] payloads;
-    bytes32 predecessor;
-    bytes32 salt;
-    uint256 before = pendingOperationCount();
-    storage stateBefore = lastStorage;
-
-    executeBatch@withrevert(e, targets, values, payloads, predecessor, salt);
-    if (lastReverted) {
-        assert lastStorage[timelock] == stateBefore[timelock];
-    } else {
-        assert before > 0;
-        assert pendingOperationCount() + 1 == before;
+        assert counterIncrements == scheduledTransitions,
+            "every pending operation creation has one counter increment";
+        assert counterDecrements == terminalTransitions,
+            "every cancel or execute transition has one counter decrement";
+        assert to_mathint(pendingOperationCount()) ==
+            to_mathint(countBefore) + counterIncrements - counterDecrements,
+            "the counter net change equals all nested lifecycle transitions";
     }
 }
 

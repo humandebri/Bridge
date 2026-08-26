@@ -66,6 +66,37 @@ class ChangedAreaTests(unittest.TestCase):
     def test_proof_change_runs_proofs_only(self) -> None:
         self.assert_areas(["verification/lean/Bridge.lean"], "proofs")
 
+    def test_certora_only_change_runs_only_advisory_checks(self) -> None:
+        for path in (
+            "verification/certora/specs/Bridge.spec",
+            "verification/certora/confs/Bridge.conf",
+            "scripts/certora_fingerprint.py",
+            "scripts/certora_results.py",
+            ".github/workflows/certora-advisory.yml",
+        ):
+            with self.subTest(path=path):
+                self.assert_areas([path], "certora")
+
+    def test_shared_timelock_test_keeps_release_checks(self) -> None:
+        self.assert_areas(
+            ["contracts/test/BridgeTimelock.t.sol"],
+            "contracts",
+            "proofs",
+        )
+
+    def test_certora_and_production_mix_keeps_both_boundaries(self) -> None:
+        self.assert_areas(
+            [
+                "verification/certora/specs/Bridge.spec",
+                "contracts/src/Bridge.sol",
+            ],
+            "certora",
+            "contracts",
+            "proofs",
+            "ui",
+            "real",
+        )
+
     def test_proof_owned_ui_adapter_runs_proofs_and_runtime_checks(self) -> None:
         self.assert_areas(
             ["ui/src/lib/pending-confirmations.ts"],

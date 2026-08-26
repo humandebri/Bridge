@@ -45,9 +45,10 @@ for item in "${targets[@]}"; do
   baseline="$OUTPUT_ROOT/$item-fingerprint.json"
   log="$OUTPUT_ROOT/$item.log"
   summary="$OUTPUT_ROOT/$item-summary.json"
+  rm -f "$summary"
   raw_log="$(mktemp "${TMPDIR:-/tmp}/certora-$item.XXXXXX")"
   trap 'rm -f "${raw_log:-}"' EXIT
-  python3 "$ROOT/scripts/proof_fingerprint.py" --write "$baseline" >/dev/null
+  python3 "$ROOT/scripts/certora_fingerprint.py" --write "$baseline" >/dev/null
   started="$(date +%s)"
   job_status=0
   args=("$config")
@@ -57,20 +58,16 @@ for item in "${targets[@]}"; do
   job_status=${PIPESTATUS[0]}
   set -e
   finished="$(date +%s)"
-  python3 "$ROOT/scripts/proof_fingerprint.py" --check "$baseline" >/dev/null
+  python3 "$ROOT/scripts/certora_fingerprint.py" --check "$baseline" >/dev/null
 
-  public_report=0
   if rg -q 'anonymousKey=' "$raw_log"; then
-    echo "Certora emitted a public anonymous report URL" >&2
-    public_report=1
+    echo "Certora emitted an anonymous access key in CLI output" >&2
     job_status=1
   fi
   if rg -qi '(^|[^[:alpha:]])(TIMEOUT|UNKNOWN)([^[:alpha:]]|$)|sanity[^\n]*(fail|warning)|unresolved[^\n]*(assert|havoc)|optimizer steps missing' "$raw_log"; then
     echo "Certora reported timeout, unknown, sanity, or assertion-resolution problems" >&2
     job_status=1
   fi
-  report_url="$(rg -o 'https://[^[:space:]]*certora[^[:space:]]*' "$raw_log" | tail -n 1 || true)"
-  if (( public_report != 0 )); then report_url=""; fi
   CERTORA_REDACT_VALUE="${CERTORAKEY:-}" python3 - "$raw_log" "$log" <<'PY'
 import os
 import re
@@ -85,7 +82,28 @@ if secret:
 text = re.sub(r"([?&]anonymousKey=)[^&\s]+", r"\1[REDACTED]", text)
 destination.write_text(text, encoding="utf-8")
 PY
-  python3 - "$summary" "$item" "$MODE" "$job_status" "$started" "$finished" "$baseline" "$cli_version" "$solc_version" "$report_url" "$git_commit" "$ROOT" "$config" <<'PY'
+  if (( job_status == 0 )) && [[ "$MODE" == cloud ]]; then
+    set +e
+    python3 "$ROOT/scripts/certora_results.py" \
+      --target "$item" \
+      --config "$config" \
+      --root "$ROOT" \
+      --recent-jobs "$ROOT/.certora_internal/.certora_recent_jobs.json" \
+      --started-at "$started" \
+      --duration-seconds "$((finished - started))" \
+      --git-commit "$git_commit" \
+      --fingerprint "$baseline" \
+      --cli-version "$cli_version" \
+      --solc-version "$solc_version" \
+      --output "$summary"
+    result_status=$?
+    set -e
+    if (( result_status != 0 )); then
+      echo "Certora machine-readable result validation failed" >&2
+      job_status=$result_status
+    fi
+  elif (( job_status == 0 )); then
+    python3 - "$summary" "$item" "$started" "$finished" "$baseline" "$cli_version" "$solc_version" "$git_commit" "$ROOT" "$config" <<'PY'
 import json
 import re
 import sys
@@ -94,14 +112,11 @@ from pathlib import Path
 (
     path,
     target,
-    mode,
-    status,
     started,
     finished,
     baseline,
     cli,
     solc,
-    report,
     commit,
     root,
     config_path,
@@ -111,31 +126,29 @@ config = json.loads(Path(config_path).read_text(encoding="utf-8"))
 spec_path = config["verify"].split(":", 1)[1]
 spec = (Path(root) / spec_path).read_text(encoding="utf-8")
 rules = re.findall(r"(?m)^\s*(?:rule|invariant)\s+([A-Za-z_][A-Za-z0-9_]*)\b", spec)
-result = "PASS" if status == "0" and mode == "cloud" else (
-    "COMPILED" if status == "0" else "RUN_FAILED"
-)
 Path(path).write_text(
     json.dumps(
         {
-            "schema": 1,
+            "schema": 2,
             "target": target,
-            "mode": mode,
-            "status": "pass" if status == "0" else "fail",
+            "mode": "compile",
+            "status": "pass",
             "git_commit": commit,
             "started_at_epoch": int(started),
             "duration_seconds": int(finished) - int(started),
             "source_fingerprint": fingerprint,
+            "fingerprint_scope": "certora-advisory-v1",
             "certora_cli": cli.strip(),
-            "prover_version": "release/15June2026",
+            "prover_candidate": "release/15June2026",
             "solc": solc.strip(),
-            "rule_results": {rule: result for rule in rules},
-            **({"private_report_url": report} if report else {}),
+            "rule_results": {rule: "COMPILED" for rule in rules},
         },
         indent=2,
     ) + "\n",
     encoding="utf-8",
 )
 PY
+  fi
   rm -f "$raw_log"
   raw_log=""
   if (( job_status != 0 )); then

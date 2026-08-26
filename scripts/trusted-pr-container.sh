@@ -8,7 +8,7 @@ MODE="${3:?missing CI mode}"
 IMAGE="${BRIDGE_TRUSTED_PR_IMAGE:-kinic-bridge-trusted-pr:local}"
 
 case "$MODE" in
-  rust-fast|rust-integration|contracts-fast|contracts-coverage|proofs|ui-fast|ui-e2e|real|icp) ;;
+  rust-fast|rust-integration|contracts-fast|contracts-coverage|proofs|ui-fast|ui-e2e|real|icp|certora) ;;
   *) echo "unapproved trusted PR mode: $MODE" >&2; exit 2 ;;
 esac
 
