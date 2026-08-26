@@ -1,4 +1,6 @@
 import { IcrcWallet } from "@dfinity/oisy-wallet-signer/icrc-wallet"
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const SIGNER_ORIGIN = "https://oisy.com"
@@ -126,5 +128,19 @@ describe("patched OISY signer status polling", () => {
 
     expect(popup.close).toHaveBeenCalledOnce()
     await expect(wallet.accounts()).rejects.toThrow("The signer has been disconnected")
+  })
+})
+
+describe("patched OISY signer certificate verification", () => {
+  it("passes the ledger canister ID through the Core 5 principal option", () => {
+    const signerRuntime = readFileSync(
+      fileURLToPath(import.meta.resolve("@dfinity/oisy-wallet-signer/icrc-wallet")),
+      "utf8",
+    )
+
+    expect(signerRuntime).toMatch(
+      /rootKey:[^,]+,principal:\{canisterId:[^}]+\}/,
+    )
+    expect(signerRuntime).not.toMatch(/rootKey:[^,]+,canisterId:/)
   })
 })
