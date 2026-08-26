@@ -9,16 +9,15 @@ import sys
 import tempfile
 
 import ci_changed_areas
-from trusted_proof_profiles import select_profile
-
-
-TRUSTED_PROOF_PROFILE = select_profile().identifier
 
 
 class ChangedAreaTests(unittest.TestCase):
     def assert_areas(self, paths: list[str], *expected: str) -> None:
         actual = {area for area, enabled in ci_changed_areas.classify(paths).items() if enabled}
         self.assertEqual(actual, set(expected))
+
+    def assert_review(self, paths: list[str], expected: bool) -> None:
+        self.assertEqual(ci_changed_areas.review_required(paths), expected)
 
     def test_docs_only_runs_no_component_gate(self) -> None:
         self.assert_areas(["docs/bridge-flow.md", "README.md", "LICENSE", ".gitignore"])
@@ -59,10 +58,73 @@ class ChangedAreaTests(unittest.TestCase):
                 expected = (
                     ("ui", "real", "proofs")
                     if path == "ui/src/lib/withdrawal-submit.ts"
-                    and TRUSTED_PROOF_PROFILE in {"current-main", "security-hardening-v1"}
                     else ("ui", "real")
                 )
                 self.assert_areas([path], *expected)
+
+    def test_review_is_not_required_for_docs_and_production_sources(self) -> None:
+        self.assert_review(["docs/bridge-flow.md"], False)
+        self.assert_review(["README.md", "AGENTS.md", "LICENSE"], False)
+        self.assert_review(["canister/bridge-canister/src/api.rs"], False)
+        self.assert_review(["contracts/src/Bridge.sol"], False)
+        self.assert_review(["ui/src/features/bridge/bridge-page.tsx"], False)
+
+    def test_review_is_required_for_validation_and_dependency_inputs(self) -> None:
+        for path in (
+            ".github/workflows/trusted-pr-gate.yml",
+            ".github/README.md",
+            ".gitmodules",
+            "Cargo.lock",
+            "canister/bridge-core/tests/protocol_vectors.rs",
+            "canister/bridge-core/benches/throughput.rs",
+            "contracts/test/Bridge.t.sol",
+            "integration/phase3.spec.ts",
+            "pnpm-lock.yaml",
+            "rust-toolchain.toml",
+            "scripts/ci-local.sh",
+            "ui/e2e-real/bridge-real.spec.ts",
+            "ui/src/lib/runtime-validation.test.ts",
+            "ui/src/lib/runtime-validation.spec.ts",
+            "ui/src/widget.test.jsx",
+            "ui/src/bridge.e2e.ts",
+            "canister/foo/src/parser_test.py",
+            "ui/vite.real.config.ts",
+            "ui/package.json",
+            "verification/claims.tsv",
+            "verification/README.md",
+        ):
+            with self.subTest(path=path):
+                self.assert_review([path], True)
+
+    def test_review_fails_closed_for_unknown_paths(self) -> None:
+        self.assert_review(["config/new-policy.toml"], True)
+        self.assert_review(["config/new-policy.md"], True)
+
+    def test_raw_diff_detects_added_removed_or_changed_gitlinks(self) -> None:
+        ordinary = (
+            b":100644 100644 "
+            + b"0" * 40
+            + b" "
+            + b"1" * 40
+            + b" M\0ui/src/app.tsx\0"
+        )
+        added = (
+            b":000000 160000 "
+            + b"0" * 40
+            + b" "
+            + b"1" * 40
+            + b" A\0ui/src/vendor\0"
+        )
+        removed = (
+            b":160000 000000 "
+            + b"1" * 40
+            + b" "
+            + b"0" * 40
+            + b" D\0ui/src/vendor\0"
+        )
+        self.assertFalse(ci_changed_areas.raw_diff_has_gitlink(ordinary))
+        self.assertTrue(ci_changed_areas.raw_diff_has_gitlink(added))
+        self.assertTrue(ci_changed_areas.raw_diff_has_gitlink(removed))
 
     def test_proof_owned_runtime_validation_runs_proofs_and_real(self) -> None:
         self.assert_areas(
@@ -211,6 +273,7 @@ class ChangedAreaTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(json.loads(values["matrix"]), list(ci_changed_areas.AREAS))
         self.assertEqual(values["any"], "true")
+        self.assertEqual(values["review_required"], "true")
 
 
 if __name__ == "__main__":
