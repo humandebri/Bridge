@@ -13,7 +13,7 @@ export TRACE="$T/trace"
 export TEST_ROOT="$T/source"
 export TEST_CANISTER_ID="2vxsx-fae"
 export TEST_CONTROLLER="aaaaa-aa"
-export EXPECTED_SUBNET="pzp6e-ekpqk-3c5x7-2h6so-njoeq-mt45d-h3h6c-q3mxf-vpeez-fez7a-iae"
+export EXPECTED_SUBNET="pzp6e-ekpqk-3c5x7-2h6so-njoeq-mt45d-h3h6c-q3mxf-vpeq5-fk5o7-yae"
 cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
 printf 'icp %s\n' "$*" >>"$TRACE"
