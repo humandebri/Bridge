@@ -4,14 +4,17 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from trusted_proof_profiles import (
     TrustedProofProfile,
     matching_profiles,
     parse_policy,
+    require_environment_profile,
 )
 
 
@@ -27,11 +30,40 @@ class TrustedProofProfileTests(unittest.TestCase):
         policy = "\n".join(
             (
                 "schema\t1\t-\t-",
+                "profile\tcurrent-main\thardening\t-",
+                "source\tcurrent-main\tverification/claims.tsv\t" + "0" * 64,
                 "profile\tsecurity-hardening-v1\thardening\t-",
                 "source\tsecurity-hardening-v1\tverification/claims.tsv\t" + "1" * 64,
             )
         )
-        self.assertEqual(set(parse_policy(policy)), {"security-hardening-v1"})
+        self.assertEqual(
+            set(parse_policy(policy)),
+            {"current-main", "security-hardening-v1"},
+        )
+
+    def test_policy_rejects_a_single_profile_catalog(self) -> None:
+        policy = "\n".join(
+            (
+                "schema\t1\t-\t-",
+                "profile\tsecurity-hardening-v1\thardening\t-",
+                "source\tsecurity-hardening-v1\tverification/claims.tsv\t" + "1" * 64,
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "exactly current-main"):
+            parse_policy(policy)
+
+    def test_environment_profile_must_match_the_exact_checkout(self) -> None:
+        with patch.dict(os.environ, {"BRIDGE_TRUSTED_PROFILE": "current-main"}):
+            self.assertEqual(require_environment_profile().identifier, "current-main")
+        with patch.dict(
+            os.environ,
+            {"BRIDGE_TRUSTED_PROFILE": "security-hardening-v1"},
+        ):
+            with self.assertRaisesRegex(ValueError, "trusted proof profile differs"):
+                require_environment_profile()
+        with patch.dict(os.environ, {"BRIDGE_TRUSTED_PROFILE": "unknown"}):
+            with self.assertRaisesRegex(ValueError, "unsupported trusted proof profile"):
+                require_environment_profile()
 
     def test_selects_the_complete_hardening_profile(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

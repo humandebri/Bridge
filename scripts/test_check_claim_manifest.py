@@ -549,8 +549,8 @@ class VerusImplementationCoverageTests(unittest.TestCase):
         )
 
     @unittest.skipUnless(
-        TRUSTED_PROOF_PROFILE == "security-hardening-v1",
-        "requires the security-hardening-v1 claim schema",
+        TRUSTED_PROOF_PROFILE in {"current-main", "security-hardening-v1"},
+        "requires the current hardening claim schema",
     )
     def test_current_mixed_strength_claims_are_not_implementation_covered(self) -> None:
         root = Path(__file__).resolve().parents[1]

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import hashlib
+import os
 from pathlib import Path
 import re
 
@@ -26,6 +27,7 @@ EXCLUDED_FILENAMES = frozenset({".DS_Store"})
 SOURCE_GLOBS = (
     "contracts/test/halmos/**/*.sol",
 )
+TRUSTED_PROFILE_IDS = frozenset({"current-main", "security-hardening-v1"})
 
 
 @dataclass(frozen=True)
@@ -61,8 +63,11 @@ def parse_policy(text: str) -> dict[str, TrustedProofProfile]:
             sources[profile_id][value] = digest
         else:
             raise ValueError(f"unknown trusted proof profile row: {number}")
-    if set(modes) != {"security-hardening-v1"}:
-        raise ValueError("security-hardening-v1 must be the only trusted proof profile")
+    if set(modes) != TRUSTED_PROFILE_IDS:
+        raise ValueError(
+            "trusted proof profiles must be exactly current-main and "
+            "security-hardening-v1"
+        )
     if any(not sources[profile_id] for profile_id in modes):
         raise ValueError("trusted proof profile cannot be empty")
     return {
@@ -128,6 +133,13 @@ def require_profile(identifier: str, root: Path = ROOT) -> TrustedProofProfile:
             f"trusted proof profile differs: expected={identifier} actual={profile.identifier}"
         )
     return profile
+
+
+def require_environment_profile(root: Path = ROOT) -> TrustedProofProfile:
+    identifier = os.environ.get("BRIDGE_TRUSTED_PROFILE", "")
+    if identifier not in TRUSTED_PROFILE_IDS:
+        raise ValueError(f"unsupported trusted proof profile: {identifier}")
+    return require_profile(identifier, root)
 
 
 def main() -> int:
