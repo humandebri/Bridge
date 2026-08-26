@@ -114,7 +114,7 @@ manifest validatorは全artifactを再hashし、snapshot間のcount、module has
 )
 ```
 
-staging upgrade gateはlive stable schema v33／wire v28だけをschema v34／wire v29へ更新する。`v33-to-v34-upgrade-policy.json`は
+staging upgrade gateはlive stable schema v33／wire v28だけをschema v34／wire v29へ更新する。`staging-bridge-upgrade-policy.json`は
 Canister、deployment、controller認証済みlive source module／certified Candid、migration ID、v34 immutable設定を固定し、repo外のlocal E2E evidenceはclean HEADとtarget Wasm／Candidを固定する。
 preflightはcertified live Candidをsource `get_public_config` として読み、binding、state count、controller、cycles、storage integrity、
 pending Timelock／governance transaction数を記録する。executeは同じpreflightを再構築できた場合だけinstallし、全state countを

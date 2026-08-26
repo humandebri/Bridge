@@ -11,7 +11,7 @@ from source_resolution import source_path
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_FILES = ("scripts/plan007/staging-canister-upgrade.sh", "scripts/plan007/staging_canister_upgrade.py",
          "scripts/plan007/candid_values.py", "scripts/plan007/read-public-canister-metadata.mjs")
-POLICY = "deployments/sepolia-staging/v33-to-v34-upgrade-policy.json"
+POLICY = "deployments/sepolia-staging/staging-bridge-upgrade-policy.json"
 PROFILE = "deployments/sepolia-staging/frontend-profile.json"
 COUNTS = {"retained_audit_events": 15, "reconciliation_holds": 0, "retained_deposit_index_entries": 1,
           "pending_ledger_operations": 0, "withdrawals": 1, "deposits": 1,
