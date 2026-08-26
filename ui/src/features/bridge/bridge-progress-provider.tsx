@@ -177,10 +177,10 @@ function ProgressDialog({ progress, action, onMinimize, onDismiss }: { progress:
         <p className="mt-1 text-sm leading-6 text-[var(--muted)]">{bridgeProgressDetail(progress)}</p>
       </div>}
       <ol className="mt-5 space-y-1" aria-label="Transfer progress">
-        {steps.map((step, index) => <li key={step.label} aria-current={step.status === "current" ? "step" : undefined} aria-label={depositTransactionComplete && step.label === "Base mint transaction" ? "Base mint transaction complete" : undefined} className="relative flex min-h-11 items-start gap-3">
+        {steps.map((step, index) => <li key={step.label} aria-current={step.status === "current" || step.status === "attention" ? "step" : undefined} aria-label={depositTransactionComplete && step.label === "Base mint transaction" ? "Base mint transaction complete" : undefined} className="relative flex min-h-11 items-start gap-3">
           {index < steps.length - 1 && <span aria-hidden="true" className="absolute left-[15px] top-8 h-[calc(100%-1rem)] w-px bg-[var(--line)]" />}
-          <span className={`relative z-10 grid size-8 shrink-0 place-items-center rounded-full border ${step.status === "complete" ? "border-[#9ed8b3] bg-[#eaf8ef] text-[#157347]" : step.status === "current" ? "border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink)]" : "border-[var(--line)] bg-white text-[var(--muted)]"}`}>
-            {step.status === "complete" ? <Check className="size-4" /> : step.status === "current" ? <LoaderCircle className="size-4 animate-spin" /> : <Circle className="size-3" />}
+          <span className={`relative z-10 grid size-8 shrink-0 place-items-center rounded-full border ${step.status === "attention" ? "border-[#ffbdad] bg-[#fff0ec] text-[#b42318]" : step.status === "complete" ? "border-[#9ed8b3] bg-[#eaf8ef] text-[#157347]" : step.status === "current" ? "border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink)]" : "border-[var(--line)] bg-white text-[var(--muted)]"}`}>
+            {step.status === "attention" ? <TriangleAlert className="size-4" /> : step.status === "complete" ? <Check className="size-4" /> : step.status === "current" ? <LoaderCircle className="size-4 animate-spin" /> : <Circle className="size-3" />}
           </span>
           <span className={`min-w-0 pt-1 text-sm font-bold ${step.status === "waiting" ? "text-[var(--muted)]" : "text-black"}`}>
             <span className="block">{step.label}</span>

@@ -167,6 +167,16 @@ pub open spec fn manual_claim_decision_view(result: kernel::ManualClaimDecision)
     }
 }
 
+pub open spec fn deposit_continuation_decision_view(
+    result: kernel::DepositContinuationDecision,
+) -> int {
+    match result {
+        kernel::DepositContinuationDecision::Allow => 0,
+        kernel::DepositContinuationDecision::AnonymousCaller => 1,
+        kernel::DepositContinuationDecision::WrongState => 2,
+    }
+}
+
 pub open spec fn refund_request_identity_decision_view(
     result: kernel::RefundRequestIdentityDecision,
 ) -> int {
@@ -740,6 +750,23 @@ fn manual_claim_decision_matches_shared_guard(
 {
     kernel::manual_claim_decision(
         scheduled, active, stopped, overdue, expired)
+}
+
+fn deposit_continuation_requires_authenticated_retryable_stop(
+    authenticated: bool,
+    authorization_phase: bool,
+    retryable_stop: bool,
+) -> (result: kernel::DepositContinuationDecision)
+    ensures
+        deposit_continuation_decision_view(result) == 0
+            <==> authenticated && authorization_phase && retryable_stop,
+        deposit_continuation_decision_view(result) == 1
+            <==> !authenticated,
+        deposit_continuation_decision_view(result) == 2
+            <==> authenticated && (!authorization_phase || !retryable_stop),
+{
+    kernel::deposit_continuation_decision(
+        authenticated, authorization_phase, retryable_stop)
 }
 
 fn refund_request_requires_authenticated_caller(

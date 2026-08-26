@@ -5,12 +5,23 @@ on:
     branches:
       - main
     paths:
+      - ".gitmodules"
+      - "contracts/foundry.toml"
       - "contracts/src/**"
+      - "contracts/test/BridgeTimelock.t.sol"
       - "contracts/lib/openzeppelin-contracts"
+      - "verification/assumptions.tsv"
+      - "verification/claims.tsv"
       - "verification/certora/**"
       - "scripts/check_certora_manifest.py"
+      - "scripts/certora_fingerprint.py"
+      - "scripts/certora_results.py"
       - "scripts/install-certora-solc.sh"
+      - "scripts/proof_fingerprint.py"
       - "scripts/run_certora_advisory.sh"
+      - "scripts/test_certora_manifest.py"
+      - "scripts/test_certora_fingerprint.py"
+      - "scripts/test_certora_results.py"
       - ".github/workflows/certora-advisory.yml"
   workflow_dispatch:
 
@@ -51,12 +62,19 @@ jobs:
         with:
           version: 0.8.4
           enable-cache: true
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
       - name: Install locked Certora client and Solidity compiler
         run: |
           uv sync --project verification/certora --frozen
           scripts/install-certora-solc.sh
       - name: Validate advisory evidence
-        run: python3 scripts/check_certora_manifest.py
+        run: |
+          forge build --root contracts
+          python3 scripts/check_certora_manifest.py
+          python3 scripts/test_certora_fingerprint.py
+          python3 scripts/test_certora_manifest.py
+          python3 scripts/test_certora_results.py
       - name: Compile and run private Certora verification
         env:
           CERTORAKEY: ${{ secrets.CERTORAKEY }}

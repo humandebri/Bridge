@@ -1,11 +1,17 @@
 using Bridge as bridge;
 using BSNS as token;
 
+ghost bool authenticationSummaryCalled;
+ghost address authenticationSummaryRecoveredSigner;
+ghost ECDSA.RecoverError authenticationSummaryRecoverError;
+
 links {
     bridge.bsns => token;
 }
 
 methods {
+    function ECDSA.tryRecoverCalldata(bytes32, bytes calldata) internal
+        returns (address, ECDSA.RecoverError, bytes32) => summarizeAuthentication();
     function bridgeSigner() external returns (address) envfree;
     function runtimeAdministrator() external returns (address) envfree;
     function baseAdminTimelock() external returns (address) envfree;
@@ -23,6 +29,17 @@ methods {
     function token.balanceOf(address) external returns (uint256) envfree;
 }
 
+function summarizeAuthentication() returns (address, ECDSA.RecoverError, bytes32) {
+    address recoveredSigner;
+    ECDSA.RecoverError recoverError;
+    bytes32 errorArgument;
+
+    authenticationSummaryCalled = true;
+    authenticationSummaryRecoveredSigner = recoveredSigner;
+    authenticationSummaryRecoverError = recoverError;
+    return (recoveredSigner, recoverError, errorArgument);
+}
+
 definition rolesAreSafe() returns bool =
     bridgeSigner() != 0 &&
     runtimeAdministrator() != 0 &&
@@ -33,6 +50,9 @@ definition rolesAreSafe() returns bool =
 
 definition feeIsSafe() returns bool =
     MIN_SERVICE_FEE() <= serviceFee() && serviceFee() <= MAX_SERVICE_FEE();
+
+invariant activeBridgeSignerIsNotRetired()
+    !currentContract._retiredBridgeSigners[bridgeSigner()];
 
 ghost bool depositMintedEventSeen;
 ghost bytes32 depositMintedEventDepositId;
@@ -178,6 +198,7 @@ rule administrationPreservesSafety(env e, method f, calldataarg args) {
 
 rule retiredSignerCannotBeReappointed(env e) {
     require e.msg.value == 0;
+    requireInvariant activeBridgeSignerIsNotRetired();
 
     address retiredSigner;
     require currentContract._retiredBridgeSigners[retiredSigner];
@@ -209,18 +230,61 @@ rule signerRotationRetiresPreviousAndAdvancesEpoch(env e) {
     assert lastReverted || newSigner == previousSigner || bridgeSigner() == newSigner;
 }
 
-rule unpauseRequiresSignerRotationAfterPause(env e) {
+rule recordedPauseRequiresSignerRotationBeforeUnpause(env e) {
     require e.msg.value == 0;
+    require depositMintsPaused();
 
     address signerAtLastPause = currentContract._bridgeSignerAtLastPause;
+    require signerAtLastPause != 0;
     unpauseDepositMints@withrevert(e);
 
     if (!lastReverted) {
         assert !depositMintsPaused();
-        assert signerAtLastPause == 0 || bridgeSigner() != signerAtLastPause,
-            "a non-initial pause cannot be lifted with the same signer";
+        assert bridgeSigner() != signerAtLastPause,
+            "a recorded pause cannot be lifted with the same signer";
     }
     assert lastReverted || !depositMintsPaused();
+}
+
+rule initialUnpauseClearsPauseAndAdvancesEpoch(env e) {
+    require e.msg.value == 0;
+    require depositMintsPaused();
+    require currentContract._bridgeSignerAtLastPause == 0;
+
+    uint256 epochBefore = mintAuthorizationEpoch();
+    unpauseDepositMints@withrevert(e);
+
+    satisfy !lastReverted, "the initial paused deployment can be activated";
+    if (!lastReverted) {
+        assert !depositMintsPaused();
+        assert mintAuthorizationEpoch() == epochBefore + 1;
+    }
+    assert lastReverted || (!depositMintsPaused() && mintAuthorizationEpoch() == epochBefore + 1);
+}
+
+rule authenticationSummaryHasRejectingPath(env e) {
+    require e.msg.value == 0;
+
+    IBridge.MintAuthorization authorization;
+    bytes signature;
+    storage before = lastStorage;
+    authenticationSummaryCalled = false;
+
+    mintDepositWithAuthorization@withrevert(e, authorization, signature);
+
+    bool mintReverted = lastReverted;
+    bool authenticationRejected = authenticationSummaryRecoverError != ECDSA.RecoverError.NoError ||
+        authenticationSummaryRecoveredSigner != bridgeSigner();
+    satisfy authenticationSummaryCalled && authenticationRejected && mintReverted,
+        "the authentication abstraction reaches the production signature rejection";
+    assert authenticationSummaryCalled, "the production mint path invokes the authentication summary";
+    if (authenticationRejected) {
+        assert mintReverted, "a rejected authentication cannot reach the mint policy or commit";
+        assert lastStorage[bridge] == before[bridge];
+        assert lastStorage[token] == before[token];
+    }
+    assert !authenticationRejected ||
+        (mintReverted && lastStorage[bridge] == before[bridge] && lastStorage[token] == before[token]);
 }
 
 rule processedFlagIsMonotone(env e, method f, calldataarg args, bytes32 depositId) {

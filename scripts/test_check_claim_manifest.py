@@ -581,22 +581,21 @@ class VerusImplementationCoverageTests(unittest.TestCase):
                 rows,
             )
         }
-        self.assertEqual(
-            actual,
-            {
-                "settlement_backing",
-                "payment_identity",
-                "deposit_admission",
-                "fee_payout",
-                "hold_resolution",
-                "lease_outcome",
-                "expiry_refund",
-                "reservation_lifecycle",
-                "fee_accounting_once",
-                "deposit_backing",
-                "refund_evidence_enforcement",
-            },
-        )
+        expected = {
+            "settlement_backing",
+            "payment_identity",
+            "deposit_admission",
+            "fee_payout",
+            "hold_resolution",
+            "lease_outcome",
+            "expiry_refund",
+            "reservation_lifecycle",
+            "fee_accounting_once",
+            "deposit_backing",
+            "refund_evidence_enforcement",
+            "authorization_binding",
+        }
+        self.assertEqual(actual, expected)
 
 
 class HalmosObligationTests(unittest.TestCase):

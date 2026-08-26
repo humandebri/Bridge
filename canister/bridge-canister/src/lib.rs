@@ -1059,6 +1059,120 @@ fn can_continue_withdrawal(caller: candid::Principal) -> bool {
     caller != candid::Principal::anonymous()
 }
 
+fn deposit_continuation_authorization_phase(state: &bridge_core::DepositState) -> bool {
+    match state {
+        bridge_core::DepositState::EscrowedUnquoted { .. }
+        | bridge_core::DepositState::AuthorizationPending { .. } => true,
+        bridge_core::DepositState::FundingPending
+        | bridge_core::DepositState::AuthorizationAvailable { .. }
+        | bridge_core::DepositState::RefundAvailable { .. }
+        | bridge_core::DepositState::Minted { .. }
+        | bridge_core::DepositState::FundingReconciliationHold { .. }
+        | bridge_core::DepositState::RefundPending { .. }
+        | bridge_core::DepositState::RefundReconciliationHold { .. }
+        | bridge_core::DepositState::Refunded { .. }
+        | bridge_core::DepositState::Cancelled { .. } => false,
+    }
+}
+
+fn deposit_continuation_retryable_stop(reason: Option<&tasks::SettlementStopReason>) -> bool {
+    match reason {
+        Some(
+            tasks::SettlementStopReason::RpcUnavailable
+            | tasks::SettlementStopReason::RpcInconsistent
+            | tasks::SettlementStopReason::SigningUnavailable,
+        ) => true,
+        None
+        | Some(
+            tasks::SettlementStopReason::LedgerUnavailable
+            | tasks::SettlementStopReason::LedgerAmbiguous
+            | tasks::SettlementStopReason::LedgerRejected(_)
+            | tasks::SettlementStopReason::InvalidBaseResponse
+            | tasks::SettlementStopReason::AuthorizationExpired
+            | tasks::SettlementStopReason::BaseStateMismatch
+            | tasks::SettlementStopReason::BridgeSignerMismatch
+            | tasks::SettlementStopReason::LedgerFeeExceedsServiceFee
+            | tasks::SettlementStopReason::Unknown(_),
+        ) => false,
+    }
+}
+
+#[ic_cdk::update]
+async fn continue_deposit(
+    deposit_id: Vec<u8>,
+) -> Result<tasks::SettlementActionResult, tasks::SettlementActionError> {
+    let id = deposit_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| tasks::SettlementActionError::InvalidId)?;
+    let caller = ic_cdk::api::msg_caller();
+    if matches!(
+        ::bridge_core::kernel::deposit_continuation_decision(
+            caller != candid::Principal::anonymous(),
+            false,
+            false,
+        ),
+        bridge_core::DepositContinuationDecision::AnonymousCaller
+    ) {
+        return Err(tasks::SettlementActionError::AnonymousCaller);
+    }
+    let Some(guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
+        return Err(tasks::SettlementActionError::Busy);
+    };
+    let decision = STORE.with(|store| {
+        let record = store
+            .borrow()
+            .deposit(id)
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+            .ok_or(tasks::SettlementActionError::NotFound)?;
+        let reason = record
+            .last_settlement_stop_reason
+            .map(tasks::settlement_stop_reason_from_text);
+        Ok::<_, tasks::SettlementActionError>(::bridge_core::kernel::deposit_continuation_decision(
+            true,
+            deposit_continuation_authorization_phase(&record.state),
+            deposit_continuation_retryable_stop(reason.as_ref()),
+        ))
+    })?;
+    match decision {
+        bridge_core::DepositContinuationDecision::Allow => {}
+        bridge_core::DepositContinuationDecision::AnonymousCaller => {
+            return Err(tasks::SettlementActionError::AnonymousCaller);
+        }
+        bridge_core::DepositContinuationDecision::WrongState => {
+            return Err(tasks::SettlementActionError::WrongState);
+        }
+    }
+    let config = STORE.with(|store| {
+        store
+            .borrow()
+            .config()
+            .map_err(|_| tasks::SettlementActionError::StorageFailure)?
+            .ok_or(tasks::SettlementActionError::StorageFailure)
+    })?;
+    let reserve_token = STORE
+        .with(|store| {
+            let store = store.borrow();
+            Ok::<_, storage::StorageError>((
+                store.deposit_reserve_token()?,
+                store.deposit_funding_reservation_count()?,
+            ))
+        })
+        .map_err(|_| tasks::SettlementActionError::StorageFailure)?;
+    if !has_liability_cycle_budget(
+        ic_cdk::api::canister_liquid_cycle_balance(),
+        config.reserve_policy(),
+        reserve_token.0,
+        reserve_token.1,
+        1,
+    ) {
+        return Err(tasks::SettlementActionError::InsufficientCycles);
+    }
+    drop(guard);
+    let job = claim_manual_job(storage::SettlementJobKind::Deposit, id, caller)?;
+    scheduler::run_claimed(job).await
+}
+
 #[ic_cdk::update]
 async fn continue_withdrawal(
     withdrawal_id: Vec<u8>,
@@ -2012,9 +2126,11 @@ pub fn generated_candid_interface() -> String {
 #[cfg(test)]
 mod candid_tests {
     use super::{
-        can_continue_withdrawal, has_notification_cycle_budget, storage::DepositReserveToken,
-        storage::StorageError, storage_or_trap, ActionKey, DefaultMemoryImpl, InFlightGuard,
-        NotificationAdmissionGuard, StableStore, NOTIFICATION_CALLER_ADMISSION,
+        can_continue_withdrawal, deposit_continuation_authorization_phase,
+        deposit_continuation_retryable_stop, has_notification_cycle_budget,
+        storage::DepositReserveToken, storage::StorageError, storage_or_trap, ActionKey,
+        DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard, StableStore,
+        NOTIFICATION_CALLER_ADMISSION,
     };
 
     #[cfg(not(feature = "test-deployment"))]
@@ -2234,6 +2350,59 @@ mod candid_tests {
         assert!(can_continue_withdrawal(
             candid::Principal::self_authenticating([1; 32])
         ));
+    }
+
+    #[test]
+    fn deposit_continuation_classification_is_fail_closed() {
+        use super::tasks::SettlementStopReason as Reason;
+        use bridge_core::DepositContinuationDecision as Decision;
+
+        let pending = bridge_core::DepositState::AuthorizationPending {
+            funding_ledger_block_index: 1,
+        };
+        assert!(deposit_continuation_authorization_phase(&pending));
+        assert!(!deposit_continuation_authorization_phase(
+            &bridge_core::DepositState::AuthorizationAvailable {
+                funding_ledger_block_index: 1,
+            }
+        ));
+        for reason in [
+            Reason::RpcUnavailable,
+            Reason::RpcInconsistent,
+            Reason::SigningUnavailable,
+        ] {
+            assert!(deposit_continuation_retryable_stop(Some(&reason)));
+            assert_eq!(
+                ::bridge_core::kernel::deposit_continuation_decision(true, true, true),
+                Decision::Allow
+            );
+            assert_eq!(
+                ::bridge_core::kernel::deposit_continuation_decision(false, true, true),
+                Decision::AnonymousCaller
+            );
+        }
+        for reason in [
+            Reason::LedgerUnavailable,
+            Reason::LedgerAmbiguous,
+            Reason::LedgerRejected("rejected".to_owned()),
+            Reason::AuthorizationExpired,
+            Reason::InvalidBaseResponse,
+            Reason::BaseStateMismatch,
+            Reason::BridgeSignerMismatch,
+            Reason::LedgerFeeExceedsServiceFee,
+            Reason::Unknown("future stop".to_owned()),
+        ] {
+            assert!(!deposit_continuation_retryable_stop(Some(&reason)));
+        }
+        assert!(!deposit_continuation_retryable_stop(None));
+        assert_eq!(
+            ::bridge_core::kernel::deposit_continuation_decision(true, false, true),
+            Decision::WrongState
+        );
+        assert_eq!(
+            ::bridge_core::kernel::deposit_continuation_decision(true, true, false),
+            Decision::WrongState
+        );
     }
 
     #[test]

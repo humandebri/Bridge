@@ -124,6 +124,17 @@ run_step() {
   return "$status"
 }
 
+run_certora_advisory_checks() {
+  shellcheck -x -S warning \
+    "$ROOT/scripts/install-certora-solc.sh" \
+    "$ROOT/scripts/run_certora_advisory.sh"
+  forge build --root "$ROOT/contracts"
+  python3 "$ROOT/scripts/check_certora_manifest.py"
+  python3 "$ROOT/scripts/test_certora_fingerprint.py"
+  python3 "$ROOT/scripts/test_certora_manifest.py"
+  python3 "$ROOT/scripts/test_certora_results.py"
+}
+
 run_versions() {
   python3 "$ROOT/scripts/trusted_execution_context.py" --check >/dev/null
   verify_no_npm_lockfiles "$ROOT"
@@ -168,6 +179,7 @@ run_versions() {
   python3 "$ROOT/scripts/plan007/test_candid_values.py"
   python3 "$ROOT/scripts/plan007/test_staging_wasm_artifact.py"
   python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
+  python3 "$ROOT/scripts/test_staging_ui_node_wrapper.py"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \
     "$ROOT/scripts/evm-rpc-rehearsal/rehearsal.py"
@@ -1600,6 +1612,9 @@ case "$MODE" in
     ;;
   contracts-coverage)
     run_step contracts-coverage run_contracts_coverage
+    ;;
+  certora)
+    run_step certora run_certora_advisory_checks
     ;;
   proofs)
     run_step versions run_versions

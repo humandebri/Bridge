@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "kind": "staging-bridge-v33-to-v34-upgrade",
+  "kind": "staging-bridge-upgrade",
   "environment": "sepolia-staging",
   "canister_name": "bridge-sepolia",
   "canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
@@ -20,6 +20,8 @@
   "governance_principal": "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae",
   "source_module_sha256": "61f7b019154aed70917db5a43ea2c5de80dc882d62476446ae89ae2e930c2199",
   "source_candid_sha256": "e074f6dd9be750ec7321adc81697ee2af33019ee264d61307c5bdd613eda3b28",
+  "current_schema_source_module_sha256": "222053032045e1c661e24ee9de9f5074e3bed6c1cefdfc78168630cd719e7636",
+  "current_schema_source_candid_sha256": "16b544fdae487f72241ca211b93f89d25984c641a75e3baab2bb319c1c0a0f7c",
   "source_api": "get_public_config",
   "target_api": "get_runtime_binding"
 }

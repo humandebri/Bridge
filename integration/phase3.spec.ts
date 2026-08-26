@@ -916,7 +916,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(stored[0].quote[0].net_amount).toBe(199_999n);
     expect(phaseName(stored[0].state)).toBe("AuthorizationPending");
     expect(stored[0].mint_authorization[0].signature).toEqual([]);
-    expect(stored[0].last_settlement_stop_reason[0]).toContain("Invalid Base response");
+    expect(stored[0].last_settlement_stop_reason[0]).toEqual({ InvalidBaseResponse: null });
     expect((await (ledger.actor as any).ledger_transactions())).toHaveLength(1);
   });
 
@@ -1039,7 +1039,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(phaseName(stopped[0].state)).toBe("RefundProcessing");
     expect(stopped[0].refund[0]).toMatchObject({ amount: 189_999n, ledger_fee: testLedgerFee, attempt_no: 0n });
     expect(stopped[0].refund[0].status).toEqual({ Sending: null });
-    expect(stopped[0].last_settlement_stop_reason[0]).toContain("BadFee");
+    expect(stopped[0].last_settlement_stop_reason[0].LedgerRejected).toContain("BadFee");
 
     await (ledger.actor as any).set_refund_ledger_mode([{ Succeed: null }]);
     expect(await (bridge.actor as any).request_deposit_refund(accepted.Ok.deposit_id)).toHaveProperty("Ok.state.Refunded");
@@ -1142,14 +1142,50 @@ describe("Phase 3 PocketIC saga", () => {
     const deadline = BigInt(stopped[0].mint_authorization[0].deadline);
     const now = BigInt(Math.floor((await pic!.getTime()) / 1_000));
     expect(deadline).toBeLessThan(now);
-    expect(stopped[0].last_settlement_stop_reason).toEqual([
-      "Mint authorization expired before signing completed",
-    ]);
+    expect(stopped[0].last_settlement_stop_reason).toEqual([{ AuthorizationExpired: null }]);
   }
 
   it(
     "stops an expired pending authorization before installing a signature",
     stops_an_expired_pending_authorization_before_installing_a_signature,
+  );
+
+  async function continues_only_a_retryable_stopped_deposit_authorization() {
+    const { evm, bridge, runtimePrincipal } = await setup();
+    const result: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n });
+    expect(result).toHaveProperty("Ok.state.EscrowedUnquoted");
+
+    await (evm.actor as any).set_block_mode({ FinalizedUnavailable: null });
+    await advanceDepositJobs(bridge, result.Ok.deposit_id);
+    await (evm.actor as any).set_block_mode({ Canonical: null });
+    const stopped: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
+    expect(stopped[0].last_settlement_stop_reason).toEqual([{ RpcUnavailable: null }]);
+
+    bridge.actor.setPrincipal(Principal.anonymous());
+    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id))
+      .toEqual({ Err: { AnonymousCaller: null } });
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const automatic: any = await (bridge.actor as any).continue_deposit(result.Ok.deposit_id);
+    expect(automatic).toHaveProperty("Err.AutomaticProgressPending");
+    const nextRunAtNs = automatic.Err.AutomaticProgressPending.next_run_at_ns[0];
+    expect(nextRunAtNs).toBeDefined();
+    const nowNs = BigInt(await pic!.getTime()) * 1_000_000n;
+    const manualRetryAtNs = nextRunAtNs + 300_000_000_000n + 1_000_000n;
+    await (evm.actor as any).set_block_timestamp(manualRetryAtNs / 1_000_000_000n);
+    await pic!.advanceTime(Number((manualRetryAtNs - nowNs) / 1_000_000n));
+    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id))
+      .toHaveProperty("Ok.Stopped.reason.AuthorizationExpired");
+
+    const resumed: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
+    expect(phaseName(resumed[0].state)).toBe("AuthorizationPending");
+    expect(resumed[0].last_settlement_stop_reason).toEqual([{ AuthorizationExpired: null }]);
+    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id))
+      .toEqual({ Err: { WrongState: null } });
+  }
+
+  it(
+    "continues only a retryable stopped deposit authorization",
+    continues_only_a_retryable_stopped_deposit_authorization,
   );
 
   it("rate-limits new deposit admissions while preserving idempotent retries", async () => {
@@ -1811,7 +1847,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
     const blocked: any = await (bridge.actor as any).get_withdrawal(id);
     expect(phaseName(blocked[0].state)).toBe("Observed");
-    expect(blocked[0].last_settlement_stop_reason).toEqual(["LedgerFeeExceedsServiceFee"]);
+    expect(blocked[0].last_settlement_stop_reason).toEqual([{ LedgerFeeExceedsServiceFee: null }]);
     expect((await (bridge.actor as any).get_bridge_status()).withdrawal_fee_guard_active).toBe(true);
   });
 
@@ -1843,7 +1879,7 @@ describe("Phase 3 PocketIC saga", () => {
     const stopped: any = await (bridge.actor as any).get_withdrawal(id);
     expect(phaseName(stopped[0].state)).toBe("ReleasePending");
     expect(stopped[0].ledger_fee).toBe(testLedgerFee);
-    expect(stopped[0].last_settlement_stop_reason[0]).toContain("BadFee");
+    expect(stopped[0].last_settlement_stop_reason[0].LedgerRejected).toContain("BadFee");
 
     await (ledger.actor as any).set_ledger_mode({ Succeed: null });
     expect(await continueWithdrawal(bridge, id)).toHaveProperty("Ok.Complete");

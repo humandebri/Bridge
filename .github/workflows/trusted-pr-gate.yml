@@ -228,6 +228,7 @@ jobs:
                 run_check contracts-fast
                 run_check contracts-coverage
                 ;;
+              certora) run_check certora ;;
               proofs) run_check proofs ;;
               ui)
                 run_check ui-fast

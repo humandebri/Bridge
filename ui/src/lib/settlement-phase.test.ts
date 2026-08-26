@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { depositPhaseName, depositPhaseTone, depositReconciliationMessage, depositUsesPendingMintStatus, isDepositPhase, isDepositTerminal, isSettlementActionResult, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName } from "./settlement-phase"
+import type { DepositView } from "@/generated/bridge.did"
+import { authorizationExpiredRefundStatus, depositContinuation, depositPhaseName, depositPhaseTone, depositReconciliationMessage, depositUsesPendingMintStatus, isDepositPhase, isDepositTerminal, isSettlementActionResult, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName } from "./settlement-phase"
 
 describe("settlement phase helpers", () => {
   it("preserves public display names and terminal tones", () => {
@@ -31,8 +32,30 @@ describe("settlement phase helpers", () => {
   it("distinguishes finalized confirmation, RPC stops, and audit stops", () => {
     const phase = { RefundAvailable: null } as const
     expect(depositReconciliationMessage(phase)).toBeUndefined()
-    expect(depositReconciliationMessage(phase, "RpcUnavailable")).toBe("Base RPC confirmation stopped — requesting again is safe")
-    expect(depositReconciliationMessage(phase, "BaseStateMismatch")).toBe("Mint evidence requires audit — refund is blocked")
+    expect(depositReconciliationMessage(phase, { RpcUnavailable: null })).toBe("Base RPC confirmation stopped — requesting again is safe")
+    expect(depositReconciliationMessage(phase, { BaseStateMismatch: null })).toBe("Mint evidence requires audit — refund is blocked")
+  })
+
+  it("derives_automatic_retry_refund_and_blocked_authorization_recovery_from_canonical_facts", () => {
+    const record = (reason: DepositView["last_settlement_stop_reason"], automatic = false) => ({
+      state: { AuthorizationPending: null },
+      last_settlement_stop_reason: reason,
+      automatic_progress: automatic ? [{ state: { Scheduled: { next_run_at_ns: 10n } } }] : [],
+    }) as DepositView
+
+    expect(depositContinuation(record([{ SigningUnavailable: null }], true)).mode).toBe("automatic")
+    expect(depositContinuation(record([{ RpcInconsistent: null }])).action).toBe("retry-authorization")
+    expect(depositContinuation(record([{ AuthorizationExpired: null }])).action).toBe("request-refund")
+    expect(depositContinuation(record([{ BridgeSignerMismatch: null }]))).toMatchObject({ mode: "stopped" })
+    expect(depositContinuation(record([{ BridgeSignerMismatch: null }])).action).toBeUndefined()
+    expect(depositContinuation(record([{ Unknown: "future stop" }])).message).toContain("future stop")
+
+    const refundRecord = {
+      ...record([{ RpcUnavailable: null }]),
+      state: { RefundProcessing: null },
+    } as DepositView
+    expect(depositContinuation(refundRecord)).toMatchObject({ mode: "stopped" })
+    expect(depositContinuation(refundRecord).action).toBeUndefined()
   })
 
   it("uses a browser pending mint only while the canonical Deposit remains mintable", () => {
@@ -48,5 +71,16 @@ describe("settlement phase helpers", () => {
     ] as const) {
       expect(depositUsesPendingMintStatus(phase, true, false)).toBe(false)
     }
+  })
+
+  it("enables_an_expired_authorization_refund_only_after_finalized_Base_time_passes_the_deadline", () => {
+    const record = {
+      mint_authorization: [{ deadline: 1_000n }],
+    } as DepositView
+
+    expect(authorizationExpiredRefundStatus(record)).toBe("checking-finality")
+    expect(authorizationExpiredRefundStatus(record, 999n)).toBe("waiting-finality")
+    expect(authorizationExpiredRefundStatus(record, 1_000n)).toBe("waiting-finality")
+    expect(authorizationExpiredRefundStatus(record, 1_001n)).toBe("ready")
   })
 })

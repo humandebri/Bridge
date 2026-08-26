@@ -81,6 +81,12 @@ let text = "kernel::deposit_transition(0, 0)";
         )
         self.assertFalse(production_body_calls("{ crate::transition(1); }", "transition"))
         self.assertFalse(
+            production_body_calls(
+                "{ bridge_core::kernel::transition(1); }",
+                "transition",
+            )
+        )
+        self.assertFalse(
             production_body_calls("{ bridge_core::transition(1); }", "transition")
         )
 

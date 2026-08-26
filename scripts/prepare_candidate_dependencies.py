@@ -19,7 +19,7 @@ REQUIRED_MANIFESTS = (
     "ui/pnpm-workspace.yaml",
 )
 MANIFEST_NAMES = frozenset({"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"})
-IGNORED_DISCOVERY_PARTS = frozenset({".git", "node_modules"})
+IGNORED_DISCOVERY_PARTS = frozenset({".certora_internal", ".git", "node_modules"})
 PATCH_ROOT = PurePosixPath("ui/patches")
 
 
@@ -34,23 +34,25 @@ def _regular_file(source: Path, relative: str) -> None:
         raise ValueError(f"candidate dependency input is missing or not regular: {relative}")
 
 
-def _inside_nested_git_checkout(source: Path, path: Path) -> bool:
-    for parent in path.relative_to(source).parents:
-        if parent != Path(".") and (source / parent / ".git").exists():
-            return True
-    return False
+def _dependency_manifest_paths(source: Path) -> set[str]:
+    discovered: set[str] = set()
+    for directory, directory_names, file_names in os.walk(source, followlinks=False):
+        directory_path = Path(directory)
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if name not in IGNORED_DISCOVERY_PARTS
+            and not (directory_path / name / ".git").exists()
+        ]
+        for name in MANIFEST_NAMES.intersection(file_names):
+            discovered.add((directory_path / name).relative_to(source).as_posix())
+    return discovered
 
 
 def candidate_dependency_sources(source: Path) -> tuple[str, ...]:
     source = source.resolve()
     expected = set(REQUIRED_MANIFESTS)
-    discovered = {
-        path.relative_to(source).as_posix()
-        for name in MANIFEST_NAMES
-        for path in source.rglob(name)
-        if IGNORED_DISCOVERY_PARTS.isdisjoint(path.relative_to(source).parts)
-        and not _inside_nested_git_checkout(source, path)
-    }
+    discovered = _dependency_manifest_paths(source)
     unknown = discovered - expected
     missing = expected - discovered
     if unknown:
