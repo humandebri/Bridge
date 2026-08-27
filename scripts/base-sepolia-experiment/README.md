@@ -30,6 +30,26 @@ scripts/base-sepolia-experiment/run-with-keychain.sh flow
 scripts/base-sepolia-experiment/experiment.sh verify
 ```
 
+Fresh staging uses the same state machine with a repository-external manifest and
+the explicitly test-only five-minute policy:
+
+```sh
+BASE_SEPOLIA_MANIFEST=/secure/evidence/contracts.json \
+BASE_SEPOLIA_TIMELOCK_DELAY_SECONDS=300 \
+BASE_SEPOLIA_SHORT_DELAY_TEST_ONLY=true \
+BASE_SEPOLIA_EXTERNAL_BRIDGE_SIGNER=0x... \
+BASE_SEPOLIA_EXTERNAL_GOVERNANCE_OPERATOR=0x... \
+BASE_SEPOLIA_EXTERNAL_RUNTIME_ADMINISTRATOR=0x... \
+BASE_SEPOLIA_EXTERNAL_INDEPENDENT_CANCELLER=0x... \
+scripts/base-sepolia-experiment/run-with-keychain.sh preflight
+```
+
+The 300-second override is rejected unless the test-only acknowledgement is set.
+It must never be used for production or Gate B evidence.
+The four external addresses must be derived from the fresh IC Canister's
+`key_1` control plane. In this mode only the deployer keystore is loaded, the
+deployer receives no Timelock or Bridge role, and no ETH is sent to the signer.
+
 `preflight` runs Foundry, ABI drift, formatting, and diff checks. It estimates
 both deployments and adds a conservative five-million-gas call budget. No
 broadcast is permitted when the resulting cost exceeds `0.02 ETH`.

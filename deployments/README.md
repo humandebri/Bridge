@@ -59,7 +59,7 @@ credential、seed、private key、hardware wallet backup、credential入りRPC U
 
 ## IC mainnet × Base Sepolia test staging
 
-Plan 007のIC stagingで新規作成またはinstallするCanisterは`sepolia-staging`環境の`bridge-sepolia`だけとする。test tokenには既存の共有`testicrc` Canisterを再利用し、staging専用LedgerまたはIndex Canisterを新規作成しない。`testicrc`の実Canister IDとmetadataは外部配置前にlive状態から確認し、Bridge初期化値と`frontend-profile.json`へ固定する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。`rlhjx-iyaaa-aaaaf-qcnyq-cai`は未配置の旧production候補からstaging専用Bridgeへ再分類し、production mappingから除外する。KINIC Ledger、Base Mainnet、SNSには触れない。
+Plan 007のIC stagingで新規作成またはinstallするCanisterは`sepolia-staging`環境の`bridge-sepolia-v35`だけとする。test tokenには既存の共有`testicrc` Canisterを再利用し、staging専用LedgerまたはIndex Canisterを新規作成しない。`testicrc`の実Canister IDとmetadataは外部配置前にlive状態から確認し、Bridge初期化値と`frontend-profile.json`へ固定する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。旧`bridge-sepolia` mappingと`rlhjx-iyaaa-aaaaf-qcnyq-cai`は`abandoned-test-only`証跡として保持し、新規installへ再利用しない。KINIC Ledger、Base Mainnet、SNSには触れない。
 
 外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh /secure/work/local-e2e.json`をclean commitで実行し、repo外へ証跡を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、Cloudflare Worker公開はそれぞれ別の明示承認後に行う。
 
@@ -69,7 +69,9 @@ Plan 007のIC stagingで新規作成またはinstallするCanisterは`sepolia-st
 
 ## ICP mainnet上のBase Sepolia staging Bridge deploy先
 
-staging deploy先は`rlhjx-iyaaa-aaaaf-qcnyq-cai`とする。2026年7月22日のpreflightではWasm未インストール（`module_hash = null`）で、controllerは`production` identityだった。このIDは`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`にだけ割り当て、production環境は未割当のままにする。
+旧deploy先`rlhjx-iyaaa-aaaaf-qcnyq-cai`は`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`に残して履歴identityを保持する。fresh deployは同じmapping fileへ別名`bridge-sepolia-v35`として新規作成し、初回`install`だけを許可する。
+
+fresh Canisterの初期化planは`staging-canister-plan.template.json`から生成し、`bridge-profile validate-staging-canister-plan`と`render-staging-canister-inputs`を通す。これはBase Sepolia、共有TICRC1 Ledger/Index、固定Custom RPC 3本、5分Timelock、test-only Wasmだけを許可し、本番planとして再利用しない。
 
 deploy前に対象IDとcontrollerを再確認し、必要なcyclesを補充する。test-only stagingであり、本番資産、production controller handover、SNS操作には使用しない。
 

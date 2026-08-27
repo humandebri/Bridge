@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "environment": "sepolia-staging",
+  "source_revision": "<clean-git-revision>",
+  "source_tree_sha256": "<clean-git-tree-sha256>",
+  "bridge_canister_id": "<new-staging-canister-principal>",
+  "bridge_canister_wasm_sha256": "<bridge-canister-wasm-sha256>",
+  "init": {
+    "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+    "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai",
+    "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+    "custom_evm_rpc_urls": [
+      "https://base-sepolia-rpc.publicnode.com",
+      "https://sepolia.base.org",
+      "https://base-sepolia.drpc.org"
+    ],
+    "base_chain_id": 84532,
+    "bridge_contract_hex": "<20-byte-hex-without-0x>",
+    "expected_bridge_runtime_sha256_hex": "<32-byte-hex-without-0x>",
+    "timelock_contract_hex": "<20-byte-hex-without-0x>",
+    "expected_timelock_minimum_delay_seconds": 300,
+    "expected_bsns_runtime_sha256_hex": "<32-byte-hex-without-0x>",
+    "expected_bsns_decimals": 8,
+    "expected_minimum_service_fee": "10000",
+    "deployment_instance_id_hex": "<nonzero-32-byte-hex-without-0x>",
+    "minimum_withdrawal_id_hex": "0000000000000000000000000000000000000000000000000000000000000001",
+    "ecdsa_key_name": "key_1",
+    "ecdsa_derivation_path_utf8": ["KINIC-BASE-SEPOLIA-BRIDGE-V35"],
+    "governance_ecdsa_derivation_path_utf8": ["KINIC-BASE-SEPOLIA-GOVERNANCE-V35"],
+    "deposit_rate_limit_window_seconds": 60,
+    "deposit_rate_limit_global": 30,
+    "deposit_rate_limit_per_principal": 3,
+    "notification_rate_limit_window_seconds": 600,
+    "notification_rate_limit_global": 60,
+    "notification_ingestion_rate_limit_global": 30,
+    "settlement_rate_limit_window_seconds": 600,
+    "settlement_rate_limit_global": 60,
+    "settlement_rate_limit_per_principal": 6,
+    "settlement_rate_limit_per_record": 3,
+    "settlement_retry_interval_seconds": 60,
+    "governance_evm_fee": {
+      "gas_limit_ceiling": "500000",
+      "max_fee_per_gas_ceiling": "10000000000",
+      "max_priority_fee_per_gas_ceiling": "1000000000",
+      "l1_fee_per_transaction_ceiling_wei": "10000000000000000",
+      "quote_validity_seconds": 90,
+      "gas_limit_multiplier_bps": 13000,
+      "base_fee_multiplier_bps": 60000,
+      "l1_fee_multiplier_bps": 15000
+    },
+    "governance_replacement": {
+      "max_replacements": 3,
+      "fee_bump_bps": 1250
+    },
+    "cycles_floor": "20000000000",
+    "settlement_cycle_ceiling": "5000000000",
+    "governance_principal": "<staging-governance-principal>",
+    "pause_principal": "<staging-pause-principal>",
+    "confirmation_relayer_principal": "<staging-confirmation-relayer-principal>",
+    "fee_recipient": {
+      "owner": "<new-staging-canister-principal>",
+      "subaccount_hex": ""
+    }
+  }
+}

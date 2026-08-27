@@ -13,7 +13,11 @@ CANCELLER_KEYSTORE="${BASE_SEPOLIA_CANCELLER_KEYSTORE:-$HOME/.foundry/keystores/
 DEPLOYER_PASSWORD_FILE="${BASE_SEPOLIA_DEPLOYER_PASSWORD_FILE:-}"
 SIGNER_PASSWORD_FILE="${BASE_SEPOLIA_SIGNER_PASSWORD_FILE:-}"
 CANCELLER_PASSWORD_FILE="${BASE_SEPOLIA_CANCELLER_PASSWORD_FILE:-}"
-TIMELOCK_DELAY=259200
+EXTERNAL_BRIDGE_SIGNER="${BASE_SEPOLIA_EXTERNAL_BRIDGE_SIGNER:-}"
+EXTERNAL_GOVERNANCE_OPERATOR="${BASE_SEPOLIA_EXTERNAL_GOVERNANCE_OPERATOR:-}"
+EXTERNAL_RUNTIME_ADMINISTRATOR="${BASE_SEPOLIA_EXTERNAL_RUNTIME_ADMINISTRATOR:-}"
+EXTERNAL_INDEPENDENT_CANCELLER="${BASE_SEPOLIA_EXTERNAL_INDEPENDENT_CANCELLER:-}"
+TIMELOCK_DELAY="${BASE_SEPOLIA_TIMELOCK_DELAY_SECONDS:-259200}"
 ZERO_ADDRESS="0x0000000000000000000000000000000000000000"
 ZERO_BYTES32="0x0000000000000000000000000000000000000000000000000000000000000000"
 MAX_EXPERIMENT_COST_WEI=20000000000000000
@@ -25,10 +29,28 @@ DEFAULT_MINT_WINDOW_LIMIT=15000000000000
 DEFAULT_MAX_SERVICE_FEE=1000000000
 DEFAULT_INITIAL_SERVICE_FEE=50000000
 
+external_control_plane() {
+  [[ -n "$EXTERNAL_BRIDGE_SIGNER" || -n "$EXTERNAL_GOVERNANCE_OPERATOR" \
+    || -n "$EXTERNAL_RUNTIME_ADMINISTRATOR" || -n "$EXTERNAL_INDEPENDENT_CANCELLER" ]]
+}
+
+require_external_control_plane() {
+  [[ -n "$EXTERNAL_BRIDGE_SIGNER" && -n "$EXTERNAL_GOVERNANCE_OPERATOR" \
+    && -n "$EXTERNAL_RUNTIME_ADMINISTRATOR" && -n "$EXTERNAL_INDEPENDENT_CANCELLER" ]] \
+    || die "external control plane requires signer, governance operator, runtime administrator, and independent canceller"
+}
+
 die() {
   echo "error: $*" >&2
   exit 1
 }
+
+if [[ "$TIMELOCK_DELAY" != 259200 && "$TIMELOCK_DELAY" != 300 ]]; then
+  die "Base Sepolia Timelock delay must be 259200 or the test-only staging value 300"
+fi
+if [[ "$TIMELOCK_DELAY" == 300 && "${BASE_SEPOLIA_SHORT_DELAY_TEST_ONLY:-}" != true ]]; then
+  die "the 300-second Timelock requires BASE_SEPOLIA_SHORT_DELAY_TEST_ONLY=true"
+fi
 
 log() {
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >&2
@@ -330,24 +352,38 @@ preflight() {
   check_chain
   require_file "$DEPLOYER_PASSWORD_FILE"
   check_wallet "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$DEPLOYER"
-  require_file "$SIGNER_PASSWORD_FILE"
-  require_file "$CANCELLER_PASSWORD_FILE"
-  local signer canceller
-  signer="$(wallet_address "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE")"
-  canceller="$(wallet_address "$CANCELLER_KEYSTORE" "$CANCELLER_PASSWORD_FILE")"
-  address_eq "$signer" "$DEPLOYER" && die "bridge signer must differ from deployer/runtime administrator"
-  address_eq "$canceller" "$DEPLOYER" && die "canceller must differ from proposer/executor"
+  local signer governance_operator runtime_administrator canceller
+  if external_control_plane; then
+    require_external_control_plane
+    signer="$EXTERNAL_BRIDGE_SIGNER"
+    governance_operator="$EXTERNAL_GOVERNANCE_OPERATOR"
+    runtime_administrator="$EXTERNAL_RUNTIME_ADMINISTRATOR"
+    canceller="$EXTERNAL_INDEPENDENT_CANCELLER"
+  else
+    require_file "$SIGNER_PASSWORD_FILE"
+    require_file "$CANCELLER_PASSWORD_FILE"
+    signer="$(wallet_address "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE")"
+    governance_operator="$DEPLOYER"
+    runtime_administrator="$DEPLOYER"
+    canceller="$(wallet_address "$CANCELLER_KEYSTORE" "$CANCELLER_PASSWORD_FILE")"
+  fi
+  for role in "$signer" "$governance_operator" "$runtime_administrator" "$canceller"; do
+    [[ "$role" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "invalid control-plane address: $role"
+  done
+  address_eq "$signer" "$runtime_administrator" && die "bridge signer must differ from runtime administrator"
+  address_eq "$canceller" "$governance_operator" && die "canceller must differ from governance operator"
   address_eq "$canceller" "$signer" && die "canceller must differ from bridge signer"
   init_manifest
   require_manifest_chain
   manifest_update \
-    '.wallets.bridge_signer = $signer | .wallets.independent_canceller = $canceller | .source.revision = $revision | .source.dirty_diff_sha256 = $dirty | .source.source_tree_sha256 = $tree' \
-    --arg signer "$signer" --arg canceller "$canceller" --arg revision "$(git -C "$ROOT" rev-parse HEAD)" \
+    '.wallets.bridge_signer = $signer | .wallets.governance_operator = $governance | .wallets.runtime_administrator = $runtime | .wallets.independent_canceller = $canceller | .source.revision = $revision | .source.dirty_diff_sha256 = $dirty | .source.source_tree_sha256 = $tree' \
+    --arg signer "$signer" --arg governance "$governance_operator" --arg runtime "$runtime_administrator" \
+    --arg canceller "$canceller" --arg revision "$(git -C "$ROOT" rev-parse HEAD)" \
     --arg dirty "$(dirty_diff_hash)" --arg tree "$(source_tree_hash)"
 
   log "running local Solidity and ABI gates"
-  forge fmt --root "$CONTRACTS" --check
-  forge test --root "$CONTRACTS"
+  FOUNDRY_PROFILE=staging forge fmt --root "$CONTRACTS" --check
+  FOUNDRY_PROFILE=staging forge test --root "$CONTRACTS"
   python3 "$ROOT/scripts/abi_snapshot.py" --check
   git -C "$ROOT" diff --check
 
@@ -356,10 +392,10 @@ preflight() {
     die "obsolete mint limit selector is present in Bridge ABI"
   fi
 
-  forge build --root "$CONTRACTS"
+  FOUNDRY_PROFILE=staging forge build --root "$CONTRACTS"
   local timelock_bytecode timelock_args timelock_creation
-  timelock_bytecode="$(jq -r '.bytecode.object' "$CONTRACTS/out/BridgeTimelockController.sol/BridgeTimelockController.json")"
-  timelock_args="$(cast abi-encode 'constructor(uint256,address[],address[],address[])' "$TIMELOCK_DELAY" "[$DEPLOYER]" "[$canceller]" "[$DEPLOYER]")"
+  timelock_bytecode="$(jq -r '.bytecode.object' "$CONTRACTS/out-staging/BridgeTimelockController.sol/BridgeTimelockController.json")"
+  timelock_args="$(cast abi-encode 'constructor(uint256,address[],address[],address[])' "$TIMELOCK_DELAY" "[$governance_operator]" "[$canceller]" "[$governance_operator]")"
   timelock_creation="${timelock_bytecode}${timelock_args#0x}"
   local timelock_gas bridge_gas gas_price total_gas upper_cost balance
   timelock_gas="$(cast estimate --rpc-url "$RPC_URL" --from "$DEPLOYER" --create "$timelock_creation")"
@@ -372,7 +408,7 @@ preflight() {
   upper_cost=$((total_gas * gas_price))
   (( upper_cost <= MAX_EXPERIMENT_COST_WEI )) || die "gas upper bound $upper_cost wei exceeds 0.02 ETH"
   balance="$(cast balance "$DEPLOYER" --rpc-url "$RPC_URL")"
-  (( balance >= upper_cost + SIGNER_FUNDING_WEI )) || die "deployer balance is below gas bound plus signer funding"
+  (( balance >= upper_cost )) || die "deployer balance is below gas bound"
   manifest_update \
     '.preflight = {timelock_deploy_gas:$timelock_gas,bridge_deploy_gas:$bridge_gas,call_gas_budget:$call_gas,total_gas_upper_bound:$total_gas,gas_price_wei:$gas_price,cost_upper_bound_wei:$cost,balance_wei:$balance,maximum_cost_wei:$max} | .checks.local_gates = true | .state = "READY_TO_DEPLOY"' \
     --argjson timelock_gas "$timelock_gas" --argjson bridge_gas "$bridge_gas" --argjson call_gas "$CALL_GAS_BUDGET" \
@@ -397,7 +433,7 @@ deploy_contract() {
   fi
   local nonce result tx_hash address receipt block
   nonce="$(cast nonce "$sender" --block pending --rpc-url "$RPC_URL")"
-  result="$(forge create --root "$CONTRACTS" "$contract" --broadcast --rpc-url "$RPC_URL" --chain "$CHAIN_ID" \
+  result="$(FOUNDRY_PROFILE=staging forge create --root "$CONTRACTS" "$contract" --broadcast --rpc-url "$RPC_URL" --chain "$CHAIN_ID" \
     --keystore "$keystore" --password-file "$password_file" --json --constructor-args "$@")"
   tx_hash="$(jq -r '.transactionHash // empty' <<<"$result")"
   address="$(jq -r '.deployedTo // empty' <<<"$result")"
@@ -413,17 +449,21 @@ deploy() {
   require_manifest_chain
   require_state READY_TO_DEPLOY
   check_wallet "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$DEPLOYER"
-  local signer canceller signer_balance fund_tx timelock bridge bsns
+  local signer governance_operator runtime_administrator canceller signer_balance fund_tx timelock bridge bsns
   signer="$(manifest_get '.wallets.bridge_signer')"
+  governance_operator="$(manifest_get '.wallets.governance_operator')"
+  runtime_administrator="$(manifest_get '.wallets.runtime_administrator')"
   canceller="$(manifest_get '.wallets.independent_canceller')"
-  check_wallet "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$signer"
-  check_wallet "$CANCELLER_KEYSTORE" "$CANCELLER_PASSWORD_FILE" "$canceller"
+  if ! external_control_plane; then
+    check_wallet "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$signer"
+    check_wallet "$CANCELLER_KEYSTORE" "$CANCELLER_PASSWORD_FILE" "$canceller"
+  fi
   signer_balance="$(cast balance "$signer" --rpc-url "$RPC_URL")"
-  if (( signer_balance < SIGNER_FUNDING_WEI )); then
+  if ! external_control_plane && (( signer_balance < SIGNER_FUNDING_WEI )); then
     fund_tx="$(send_success fund_bridge_signer "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" \
       "$signer" --value "$SIGNER_FUNDING_WEI")"
     log "funded signer: $fund_tx"
-  else
+  elif ! external_control_plane; then
     if ! jq -e '.transactions.fund_bridge_signer.hash' "$MANIFEST" >/dev/null; then
       local recovered_funding_tx recovered_receipt recovered_tx recovered_from recovered_to recovered_value recovered_nonce
       recovered_funding_tx="${BASE_SEPOLIA_FUNDING_TX:-}"
@@ -445,16 +485,20 @@ deploy() {
   timelock="$(deploy_contract timelock \
     'src/BridgeTimelockController.sol:BridgeTimelockController' \
     "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" \
-    "$TIMELOCK_DELAY" "[$DEPLOYER]" "[$canceller]" "[$DEPLOYER]")"
+    "$TIMELOCK_DELAY" "[$governance_operator]" "[$canceller]" "[$governance_operator]")"
   local timelock_code_hash
   timelock_code_hash="$(cast codehash "$timelock" --rpc-url "$RPC_URL")"
   bridge="$(deploy_contract bridge 'src/Bridge.sol:Bridge' "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" \
-    kinic KINIC 8 "$signer" "$DEPLOYER" "$timelock" "$timelock_code_hash" \
+    "$signer" "$runtime_administrator" "$timelock" "$timelock_code_hash" \
     "$(manifest_get '.parameters.per_deposit_limit')" "$(manifest_get '.parameters.mint_window_limit')" 3600 \
     "$(manifest_get '.parameters.max_service_fee')" "$(manifest_get '.parameters.initial_service_fee')")"
   bsns="$(cast call "$bridge" 'bsns()(address)' --rpc-url "$RPC_URL")"
   record_contract bsns "$bsns" "$(manifest_get '.contracts.bridge.deployment_transaction')"
-  wait_transactions_confirmed fund_bridge_signer deploy_timelock deploy_bridge
+  if external_control_plane; then
+    wait_transactions_confirmed deploy_timelock deploy_bridge
+  else
+    wait_transactions_confirmed fund_bridge_signer deploy_timelock deploy_bridge
+  fi
   manifest_update '.state = "DEPLOYED" | .balances.deployer_after_deploy = $deployer | .balances.signer_after_deploy = $signer' \
     --argjson deployer "$(cast balance "$DEPLOYER" --rpc-url "$RPC_URL")" \
     --argjson signer "$(cast balance "$signer" --rpc-url "$RPC_URL")"
@@ -469,11 +513,11 @@ verify_deployment() {
   bridge="$(manifest_get '.contracts.bridge.address')"
   bsns="$(manifest_get '.contracts.bsns.address')"
   assert_address_call "$signer" "$bridge" 'bridgeSigner()(address)'
-  assert_address_call "$DEPLOYER" "$bridge" 'runtimeAdministrator()(address)'
+  assert_address_call "$(manifest_get '.wallets.runtime_administrator')" "$bridge" 'runtimeAdministrator()(address)'
   assert_address_call "$timelock" "$bridge" 'baseAdminTimelock()(address)'
   assert_address_call "$bsns" "$bridge" 'bsns()(address)'
   assert_address_call "$bridge" "$bsns" 'bridge()(address)'
-  assert_call_eq 259200 "$timelock" 'getMinDelay()(uint256)'
+  assert_call_eq "$TIMELOCK_DELAY" "$timelock" 'getMinDelay()(uint256)'
   assert_call_eq "$(manifest_get '.parameters.per_deposit_limit')" "$bridge" 'perDepositLimit()(uint256)'
   assert_call_eq "$(manifest_get '.parameters.mint_window_limit')" "$bridge" 'mintWindowLimit()(uint256)'
   assert_call_eq 3600 "$bridge" 'mintWindowDuration()(uint64)'
@@ -499,14 +543,18 @@ verify_deployment() {
   canceller="$(cast call "$timelock" 'CANCELLER_ROLE()(bytes32)' --rpc-url "$RPC_URL")"
   executor="$(cast call "$timelock" 'EXECUTOR_ROLE()(bytes32)' --rpc-url "$RPC_URL")"
   admin="$(cast call "$timelock" 'DEFAULT_ADMIN_ROLE()(bytes32)' --rpc-url "$RPC_URL")"
-  assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$proposer" "$DEPLOYER"
+  assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$proposer" "$(manifest_get '.wallets.governance_operator')"
   assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$canceller" "$DEPLOYER"
   assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$canceller" "$independent_canceller"
   assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$proposer" "$independent_canceller"
   assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$executor" "$independent_canceller"
-  assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$executor" "$DEPLOYER"
+  assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$executor" "$(manifest_get '.wallets.governance_operator')"
   assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$admin" "$timelock"
   assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$admin" "$DEPLOYER"
+  if external_control_plane; then
+    assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$proposer" "$DEPLOYER"
+    assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$executor" "$DEPLOYER"
+  fi
   local set_selector reduce_selector
   set_selector="$(cast sig 'setMintLimits(uint256,uint256,uint64)')"
   reduce_selector="$(cast sig 'reduceMintLimits(uint256,uint256,uint64)')"
