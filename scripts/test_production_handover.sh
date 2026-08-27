@@ -36,7 +36,7 @@ version = "0.0.0"
 LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs};
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="validate-production-handover-receipt"{if a.len()!=5||env::var("HANDOVER_GATE_A_RECEIPT_DRIFT").as_deref()==Ok("true")||env::var("HANDOVER_DEPLOYMENT_BINDING_DRIFT").as_deref()==Ok("true")||!fs::read_to_string(&a[2]).unwrap().contains("\"schema_version\":2"){std::process::exit(1)}println!("{}","c".repeat(64))}else if a[0]=="verify-production-canister-handover"{if a.len()!=5||["HANDOVER_BOOTSTRAP","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_FEE_CYCLES_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_PAUSE_RESERVE_DRIFT","HANDOVER_NONEMPTY_STATE"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="validate-production-handover-receipt"{if a.len()!=5||env::var("HANDOVER_GATE_A_RECEIPT_DRIFT").as_deref()==Ok("true")||env::var("HANDOVER_DEPLOYMENT_BINDING_DRIFT").as_deref()==Ok("true")||!fs::read_to_string(&a[2]).unwrap().contains("\"schema_version\":2"){std::process::exit(1)}println!("{}","c".repeat(64))}else if a[0]=="verify-production-canister-handover"{if a.len()!=7||["HANDOVER_BOOTSTRAP","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_FEE_CYCLES_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_PAUSE_RESERVE_DRIFT","HANDOVER_NONEMPTY_STATE"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -71,6 +71,8 @@ export PATH="$T/bin:$PATH"
 printf '{}\n' >"$T/production-canister-install-receipt.json"
 printf '{"schema_version":2}\n' >"$T/gate-a-receipt.json"
 printf '{}\n' >"$T/deployment-binding.json"
+cp "$T/bundle/profile.json" "$T/final-profile.json"
+printf '{}\n' >"$T/fee-cycles-measurements.json"
 
 run_handover() {
   local evidence="$1"
@@ -80,6 +82,8 @@ run_handover() {
   BRIDGE_CANISTER_INSTALL_RECEIPT="$T/production-canister-install-receipt.json" \
   BRIDGE_GATE_A_RECEIPT="$T/gate-a-receipt.json" \
   BRIDGE_DEPLOYMENT_BINDING_FILE="$T/deployment-binding.json" \
+  BRIDGE_FINAL_PROFILE="$T/final-profile.json" \
+  BRIDGE_FEE_CYCLES_MEASUREMENTS="$T/fee-cycles-measurements.json" \
   BRIDGE_ICP_IDENTITY=production \
   BRIDGE_HANDOVER_EVIDENCE_FILE="$evidence" \
   BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY \

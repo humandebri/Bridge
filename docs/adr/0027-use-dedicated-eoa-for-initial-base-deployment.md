@@ -14,4 +14,4 @@ Canisterはcontract creation、deploy署名、deploy nonce、deploy replacement�
 
 confirmationはcaller認可をsingleflightとRPCより前に行い、安価なoperation/hash検査と既存singleflightを適用する。追加のstable rate limitとcooldownはこの決定には含めない。専用relayer identityにはcontroller、Governance/Pause、EVM鍵、contract role、資産移動権限を与えない。
 
-Gate Aはpause状態の配置完了を表す。7日間かつ10件以上のfee／cycles計測、monitor drill、emergency pause、主要RPC rehearsal、controller handover、運用設定の一回限りの封印はGate Bの必須証跡とし、asset activation前に完了させる。
+Gate AはBootstrap運用値でのCanister導入とpause状態のBase配置完了を表す。7日間かつ10件以上のfee／cycles計測は配置後に収集してよいが、その結果から導出した最終値を一回限り封印し、controller handover、monitor drill、emergency pause、主要RPC rehearsalとともにGate Bの必須証跡としてasset activation前に完了させる。

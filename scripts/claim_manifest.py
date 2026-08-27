@@ -23,6 +23,7 @@ REQUIRED_CLAIM_IDS = frozenset(
     governance_transaction_affordability hold_resolution lease_lane_isolation
     lease_outcome ledger_block_provenance nonterminal_deposit_index_consistency
     notification_quota_isolation payment_identity pending_queue
+    operational_config_seal
     refund_evidence_enforcement refund_request_authorization reservation_commit
     reservation_lifecycle runtime_attestation_reuse service_fee_maximum
     settlement_backing signing_cycle_reserve withdrawal_admission_boundary
@@ -33,7 +34,7 @@ REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS = frozenset(
     fee_recipient_rotation funding_attempt_lifecycle funding_reconciliation_freshness
     governance_confirmation_authorization governance_transaction_affordability
     lease_lane_isolation ledger_block_provenance nonterminal_deposit_index_consistency
-    notification_quota_isolation refund_request_authorization reservation_commit
+    notification_quota_isolation operational_config_seal refund_request_authorization reservation_commit
     runtime_attestation_reuse service_fee_maximum signing_cycle_reserve
     withdrawal_admission_boundary""".split()
 )

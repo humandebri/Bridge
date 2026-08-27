@@ -26,6 +26,7 @@ from check_claim_manifest import (
     require_exact_claim_coverage,
     require_exact_implementation_basis,
     require_exact_smt_claim_coverage,
+    require_guard_dominance,
     require_unique_smt_obligations,
     required_strength_met,
     solidity_function_body,
@@ -37,6 +38,16 @@ from smt_obligations import parse_smt_obligations, validate_trusted_smt_sources
 
 
 class ClaimContractTests(unittest.TestCase):
+    def test_lifecycle_guard_must_precede_state_effects(self) -> None:
+        valid = "fn entry() { require_sealed()?; STORE.with(|store| store.write()); }"
+        require_guard_dominance(valid, "entry", "require_sealed()", ("STORE.with",))
+        reordered = "fn entry() { STORE.with(|store| store.write()); require_sealed()?; }"
+        with self.assertRaisesRegex(ValueError, "must dominate"):
+            require_guard_dominance(reordered, "entry", "require_sealed()", ("STORE.with",))
+        shadowed = 'fn entry() { let note = "require_sealed()"; STORE.with(|s| s.write()); }'
+        with self.assertRaisesRegex(ValueError, "must contain one"):
+            require_guard_dominance(shadowed, "entry", "require_sealed()", ("STORE.with",))
+
     def manifest(self, contract: str, witness: str) -> str:
         return (
             "schema\t6\t-\t-\t-\t-\t-\n"

@@ -3,6 +3,7 @@ use crate::storage::DepositFundingAttemptState;
 #[cfg(target_arch = "wasm32")]
 use crate::storage::SettlementJobClaim;
 use crate::{
+    current_asset_operation_lifecycle_decision,
     storage::{SettlementJob, SettlementJobKind, SettlementSchedulerHealth},
     tasks::{self, SettlementActionError, SettlementActionResult},
     ActionKey, InFlightGuard, STORE,
@@ -30,6 +31,19 @@ const FUNDING_RECOVERY_INTERVAL_SECONDS: u64 = 30;
 const LEDGER_DEDUP_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 #[cfg(any(target_arch = "wasm32", test))]
 const LEDGER_DEDUP_EXPIRY_MARGIN_NS: u64 = 60 * 1_000_000_000;
+
+fn asset_operations_allowed() -> bool {
+    asset_operations_allowed_for(current_asset_operation_lifecycle_decision())
+}
+
+fn asset_operations_allowed_for(
+    decision: Result<bridge_core::AssetOperationLifecycleDecision, crate::storage::StorageError>,
+) -> bool {
+    matches!(
+        decision,
+        Ok(bridge_core::AssetOperationLifecycleDecision::Allow)
+    )
+}
 
 #[cfg(any(target_arch = "wasm32", test))]
 fn funding_dedup_expired(created_at_time_ns: u64, now_ns: u64) -> bool {
@@ -158,6 +172,12 @@ thread_local! {
 pub fn arm_funding_recovery() {
     #[cfg(target_arch = "wasm32")]
     FUNDING_RECOVERY_TIMER.with(|slot| {
+        if !asset_operations_allowed() {
+            if let Some(timer) = slot.borrow_mut().take() {
+                ic_cdk_timers::clear_timer(timer);
+            }
+            return;
+        }
         if slot.borrow().is_some()
             || !STORE.with(|store| store.borrow().has_deposit_funding_attempts())
         {
@@ -179,6 +199,9 @@ pub fn arm_funding_recovery() {
 
 #[cfg(target_arch = "wasm32")]
 async fn recover_one_funding_attempt() {
+    if !asset_operations_allowed() {
+        return;
+    }
     let now = ic_cdk::api::time();
     let attempt = STORE.with(|store| {
         store
@@ -405,6 +428,14 @@ mod funding_recovery_tests {
 pub fn arm() {
     #[cfg(target_arch = "wasm32")]
     {
+        if !asset_operations_allowed() {
+            SETTLEMENT_TIMER.with(|slot| {
+                if let Some(timer) = slot.borrow_mut().take() {
+                    ic_cdk_timers::clear_timer(timer);
+                }
+            });
+            return;
+        }
         let now = ic_cdk::api::time();
         let next = STORE.with(|store| store.borrow().next_settlement_wakeup_ns(now));
         let Ok(next) = next else {
@@ -447,6 +478,9 @@ fn arm_at(next_run_at_ns: u64) {
 
 #[cfg(target_arch = "wasm32")]
 async fn dispatch_due() -> Option<u64> {
+    if !asset_operations_allowed() {
+        return None;
+    }
     let now = ic_cdk::api::time();
     let claim = STORE.with(|store| {
         store.borrow_mut().claim_due_settlement_job(
@@ -496,12 +530,18 @@ async fn dispatch_due() -> Option<u64> {
 pub(crate) async fn run_claimed(
     job: SettlementJob,
 ) -> Result<SettlementActionResult, SettlementActionError> {
+    if !asset_operations_allowed() {
+        return Err(SettlementActionError::WrongState);
+    }
     run_claimed_inner(job).await
 }
 
 pub(crate) async fn run_claimed_fee_payout(
     job: SettlementJob,
 ) -> Result<tasks::FeePayoutActionResult, SettlementActionError> {
+    if !asset_operations_allowed() {
+        return Err(SettlementActionError::WrongState);
+    }
     let now = ic_cdk::api::time();
     let retry_interval_seconds = settlement_retry_interval_seconds()?;
     let payout_id = crate::storage::fee_payout_id_from_job(job.settlement_id)
@@ -785,6 +825,16 @@ fn mark_fault(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scheduler_rejects_bootstrap_and_allows_sealed_lifecycle() {
+        assert!(!asset_operations_allowed_for(Ok(
+            bridge_core::AssetOperationLifecycleDecision::OperationalConfigNotSealed,
+        )));
+        assert!(asset_operations_allowed_for(Ok(
+            bridge_core::AssetOperationLifecycleDecision::Allow,
+        )));
+    }
 
     #[test]
     fn lease_strictly_exceeds_the_longest_sequential_rpc_step() {

@@ -15,7 +15,7 @@
 
 `release-ready`は外部仮定やTCBがないことを意味しない。manifestとchecker側固定policyで
 完全一致したtarget・最低強度、および宣言したproduction結合を満たすことだけを意味する。
-現在の固定policyは37件すべてをrelease対象とし、19件へ`implementation-proved`、18件へ
+現在の固定policyは38件すべてをrelease対象とし、20件へ`implementation-proved`、18件へ
 `production-linked`を要求する。SMT、Halmos、生成vector、model-only
 Verusはsupporting evidenceであり、それ単独で`implementation-proved`にならない。
 
@@ -25,6 +25,6 @@ Lean定理、強い仮定、production未結合境界は`conditional-liveness.ts
 完全一致させ、Leanによる型検査とaxiom dependency検査を行う。
 
 監査提出前には固定toolchainで`scripts/ci-local.sh proofs`を実行し、receipt schema 7の
-source fingerprint、全10 stageの`pass`、`complete: true`、37件の`release-ready`、
+source fingerprint、全10 stageの`pass`、`complete: true`、38件の`release-ready`、
 `release-blocked: 0`、`model-support: 0`、19/18件の証拠強度区分を確認する。receipt自体はgit追跡せず、監査対象checkout
 から再生成する。

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "environment": "production",
   "source_revision": "<clean-git-revision>",
   "source_tree_sha256": "<clean-git-tree-sha256>",
@@ -35,21 +35,21 @@
     "settlement_rate_limit_per_record": 3,
     "settlement_retry_interval_seconds": 60,
     "governance_evm_fee": {
-      "gas_limit_ceiling": "<approved-u128>",
-      "max_fee_per_gas_ceiling": "<approved-u128>",
-      "max_priority_fee_per_gas_ceiling": "<approved-u128>",
-      "l1_fee_per_transaction_ceiling_wei": "<approved-u128>",
-      "quote_validity_seconds": 90,
-      "gas_limit_multiplier_bps": 13000,
-      "base_fee_multiplier_bps": 60000,
-      "l1_fee_multiplier_bps": 15000
+      "gas_limit_ceiling": "1",
+      "max_fee_per_gas_ceiling": "1",
+      "max_priority_fee_per_gas_ceiling": "0",
+      "l1_fee_per_transaction_ceiling_wei": "1",
+      "quote_validity_seconds": 30,
+      "gas_limit_multiplier_bps": 10000,
+      "base_fee_multiplier_bps": 10000,
+      "l1_fee_multiplier_bps": 10000
     },
     "governance_replacement": {
       "max_replacements": 3,
       "fee_bump_bps": 1250
     },
-    "cycles_floor": "<approved-u128>",
-    "settlement_cycle_ceiling": "<approved-u128>",
+    "cycles_floor": "1",
+    "settlement_cycle_ceiling": "340282366920938463463374607431768211455",
     "governance_principal": "74ncn-fqaaa-aaaaq-aaasa-cai",
     "pause_principal": "7jkta-eyaaa-aaaaq-aaarq-cai",
     "confirmation_relayer_principal": "<reviewed-relayer-principal>",

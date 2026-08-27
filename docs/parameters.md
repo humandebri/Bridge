@@ -60,11 +60,13 @@ service_fee初期値 = 0.5 KINIC
 - ETH固定floor: 未確定。Sepolia governance gas 10回計測とBase mainnet 7日fee分布の証跡が揃った後、承認済みreserve window内のGovernance transaction数へ2倍の余裕を掛けて設定する。
 - max fee per gas上限: 未確定。Base mainnet直近7日のbase fee p99×20、priority fee p95×4、L1 fee p99×10で各ceilingを算出する。
 - cycles floor: 未確定。pause状態の基礎日次消費、10回のsettlement cycles計測、承認済み日次最大件数から次式で設定する。
+
+production installとGate Aでは、上記3値が未確定のためschema 2 template固定のBootstrap運用値を使う。この値は運用上限ではなく、`Bootstrap` lifecycleとshared kernel gateの組でasset update、scheduler、Base governance transactionをfail closedにするための非運用値である。Baseをpause配置した後に計測を完了し、Gate B profileで3値だけを最終値へ置換して一度だけ封印する。
 - `cycles floor = (baseline cycles/day + max(settlement cycles) × expected daily settlements) × 30 × 2`
 - `settlement cycle ceiling = ceil(max(settlement cycles) × 1.5)`
 - N: 30日
 
-未確定値をzeroや仮値でmainnet plan/profileへ入れてはならない。production Canister install plan/receiptは`schema_version: 1`、release profileは`schema_version: 4`、Gate A/B release manifestは`schema_version: 3`、Gate A receiptは`schema_version: 2`、Activation Receiptは`schema_version: 4`だけを受理し、旧versionや未知versionをmigrationせずfail closedにする。`bridge-profile validate-bundle --offline`、`validate-bundle --offline --gate-b`、`verify-live`は、実artifact、署名、zero reserve、証跡欠落をfail closedで拒否する。Gate Bのoffline検証結果は`authorizing=false`であり、proofと再build後の`verify-live`だけがactivation proposalを認可する。
+未確定値をzeroや任意の仮値でmainnet plan/profileへ入れてはならない。install時だけはprotocol定義済みの固定Bootstrap sentinelを使用する。production Canister install plan/receiptは`schema_version: 2`、release profileは`schema_version: 4`、Gate A/B release manifestは`schema_version: 3`、Gate A receiptは`schema_version: 2`、Activation Receiptは`schema_version: 4`だけを受理し、旧versionや未知versionをmigrationせずfail closedにする。`bridge-profile validate-bundle --offline`、`validate-bundle --offline --gate-b`、`verify-live`は、実artifact、署名、zero reserve、証跡欠落をfail closedで拒否する。Gate Bのoffline検証結果は`authorizing=false`であり、proofと再build後の`verify-live`だけがactivation proposalを認可する。
 
 ## timelock 遅延（Base Admin）
 

@@ -105,7 +105,7 @@ class ProofReceiptTests(unittest.TestCase):
                 document["claim_report_schema"], write_proof_receipt.CLAIM_REPORT_SCHEMA
             )
             self.assertTrue(document["complete"])
-            self.assertEqual(document["claim_summary"]["release-ready"], 37)
+            self.assertEqual(document["claim_summary"]["release-ready"], 38)
             self.assertEqual(document["claim_summary"]["conditional-liveness"], 5)
 
     def test_missing_report_writes_incomplete_receipt_and_fails(self) -> None:
