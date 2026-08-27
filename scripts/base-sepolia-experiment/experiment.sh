@@ -26,6 +26,7 @@ CALL_GAS_BUDGET=5000000
 BRIDGE_DEPLOY_GAS_BUDGET=5000000
 DEFAULT_PER_DEPOSIT_LIMIT=15000000000000
 DEFAULT_MINT_WINDOW_LIMIT=15000000000000
+DEFAULT_MIN_SERVICE_FEE=10000
 DEFAULT_MAX_SERVICE_FEE=1000000000
 DEFAULT_INITIAL_SERVICE_FEE=50000000
 
@@ -307,9 +308,10 @@ init_manifest() {
     --argjson chain "$CHAIN_ID" --argjson delay "$TIMELOCK_DELAY" \
     --argjson per_deposit_limit "$DEFAULT_PER_DEPOSIT_LIMIT" \
     --argjson mint_window_limit "$DEFAULT_MINT_WINDOW_LIMIT" \
+    --argjson min_service_fee "$DEFAULT_MIN_SERVICE_FEE" \
     --argjson max_service_fee "$DEFAULT_MAX_SERVICE_FEE" \
     --argjson initial_service_fee "$DEFAULT_INITIAL_SERVICE_FEE" \
-    '{schema_version:1,experiment:"base-sepolia-contract-only",test_only:true,state:"PREFLIGHT",created_at:$created,chain_id:$chain,rpc_url:$rpc,wallets:{deployer_base_admin_runtime:$deployer},source:{revision:$revision,dirty_diff_sha256:$dirty,source_tree_sha256:$tree},parameters:{token_name:"kinic",token_symbol:"KINIC",token_decimals:8,timelock_delay_seconds:$delay,per_deposit_limit:$per_deposit_limit,mint_window_limit:$mint_window_limit,mint_window_duration_seconds:3600,max_service_fee:$max_service_fee,initial_service_fee:$initial_service_fee},contracts:{},transactions:{},checks:{}}' \
+    '{schema_version:1,experiment:"base-sepolia-contract-only",test_only:true,state:"PREFLIGHT",created_at:$created,chain_id:$chain,rpc_url:$rpc,wallets:{deployer_base_admin_runtime:$deployer},source:{revision:$revision,dirty_diff_sha256:$dirty,source_tree_sha256:$tree},parameters:{token_name:"kinic",token_symbol:"KINIC",token_decimals:8,timelock_delay_seconds:$delay,per_deposit_limit:$per_deposit_limit,mint_window_limit:$mint_window_limit,mint_window_duration_seconds:3600,min_service_fee:$min_service_fee,max_service_fee:$max_service_fee,initial_service_fee:$initial_service_fee},contracts:{},transactions:{},checks:{}}' \
     >"$MANIFEST"
 }
 
@@ -491,7 +493,8 @@ deploy() {
   bridge="$(deploy_contract bridge 'src/Bridge.sol:Bridge' "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" \
     "$signer" "$runtime_administrator" "$timelock" "$timelock_code_hash" \
     "$(manifest_get '.parameters.per_deposit_limit')" "$(manifest_get '.parameters.mint_window_limit')" 3600 \
-    "$(manifest_get '.parameters.max_service_fee')" "$(manifest_get '.parameters.initial_service_fee')")"
+    "$(manifest_get '.parameters.min_service_fee')" "$(manifest_get '.parameters.max_service_fee')" \
+    "$(manifest_get '.parameters.initial_service_fee')")"
   bsns="$(cast call "$bridge" 'bsns()(address)' --rpc-url "$RPC_URL")"
   record_contract bsns "$bsns" "$(manifest_get '.contracts.bridge.deployment_transaction')"
   if external_control_plane; then
@@ -521,6 +524,7 @@ verify_deployment() {
   assert_call_eq "$(manifest_get '.parameters.per_deposit_limit')" "$bridge" 'perDepositLimit()(uint256)'
   assert_call_eq "$(manifest_get '.parameters.mint_window_limit')" "$bridge" 'mintWindowLimit()(uint256)'
   assert_call_eq 3600 "$bridge" 'mintWindowDuration()(uint64)'
+  assert_call_eq "$(manifest_get '.parameters.min_service_fee')" "$bridge" 'MIN_SERVICE_FEE()(uint256)'
   assert_call_eq "$(manifest_get '.parameters.max_service_fee')" "$bridge" 'MAX_SERVICE_FEE()(uint256)'
   local deployment_state
   deployment_state="$(manifest_get '.state')"
@@ -573,6 +577,8 @@ flow() {
     || die "flow requires per-deposit limit=$DEFAULT_PER_DEPOSIT_LIMIT"
   [[ "$(manifest_get '.parameters.mint_window_limit')" == "$DEFAULT_MINT_WINDOW_LIMIT" ]] \
     || die "flow requires mint window limit=$DEFAULT_MINT_WINDOW_LIMIT"
+  [[ "$(manifest_get '.parameters.min_service_fee')" == "$DEFAULT_MIN_SERVICE_FEE" ]] \
+    || die "flow requires MIN_SERVICE_FEE=$DEFAULT_MIN_SERVICE_FEE"
   [[ "$(manifest_get '.parameters.max_service_fee')" == "$DEFAULT_MAX_SERVICE_FEE" ]] \
     || die "flow requires MAX_SERVICE_FEE=$DEFAULT_MAX_SERVICE_FEE"
   [[ "$(manifest_get '.parameters.initial_service_fee')" == "$DEFAULT_INITIAL_SERVICE_FEE" ]] \
