@@ -20,8 +20,8 @@
     "expected_bridge_signer": "<new-address>"
   },
   "acceptance": {
-    "legacy_stack_paused": false,
-    "legacy_stack_unsettled_liabilities_zero": false,
+    "legacy_stack_excluded_from_active_profile": false,
+    "legacy_stack_test_state_abandoned": false,
     "status_ttl_is_600": false,
     "onchain_horizon_is_900": false,
     "delayed_finalized_review_passed": false,
