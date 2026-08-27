@@ -16,6 +16,7 @@ from proof_fingerprint import (
     validate_fingerprint,
 )
 from claim_manifest import (
+    OPTIONAL_BOOTSTRAP_CLAIM_POLICY,
     REQUIRED_CLAIM_IDS,
     REQUIRED_CONDITIONAL_LIVENESS_IDS,
     REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS,
@@ -74,7 +75,14 @@ def summarize_claim_report(
 
 
 def release_summary_is_complete(summary: object) -> bool:
-    return summary == EXPECTED_CLAIM_SUMMARY
+    if summary == EXPECTED_CLAIM_SUMMARY:
+        return True
+    bootstrap = dict(EXPECTED_CLAIM_SUMMARY)
+    for _, (_, strength) in OPTIONAL_BOOTSTRAP_CLAIM_POLICY.items():
+        bootstrap["total"] += 1
+        bootstrap["release-ready"] += 1
+        bootstrap[strength] += 1
+    return summary == bootstrap
 
 
 @dataclass(frozen=True)

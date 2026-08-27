@@ -111,6 +111,25 @@ class ProofImpactTests(unittest.TestCase):
     def test_receipt_accepts_complete_recomputed_contents(self) -> None:
         self.check_receipt(self.valid_receipt())
 
+    def test_release_summary_accepts_only_exact_bootstrap_claim_increment(self) -> None:
+        expected = dict(check_proof_impact.EXPECTED_CLAIM_SUMMARY)
+        bootstrap = dict(expected)
+        bootstrap["total"] += 1
+        bootstrap["release-ready"] += 1
+        bootstrap["implementation-proved"] += 1
+        self.assertTrue(check_proof_impact.release_summary_is_complete(expected))
+        self.assertTrue(check_proof_impact.release_summary_is_complete(bootstrap))
+
+        for field in ("total", "release-ready", "implementation-proved"):
+            drift = dict(bootstrap)
+            drift[field] += 1
+            self.assertFalse(check_proof_impact.release_summary_is_complete(drift))
+
+        downgraded = dict(bootstrap)
+        downgraded["implementation-proved"] -= 1
+        downgraded["production-linked"] += 1
+        self.assertFalse(check_proof_impact.release_summary_is_complete(downgraded))
+
     def test_receipt_rejects_missing_duplicate_unknown_and_failed_stages(self) -> None:
         mutations = {
             "missing": lambda stages: stages.pop(),
