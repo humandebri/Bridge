@@ -47,13 +47,6 @@ pub const OFFICIAL_EVM_RPC_CANISTER_ID: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 #[cfg(feature = "test-deployment")]
 pub const BASE_SEPOLIA_CHAIN_ID: u64 = 84_532;
 #[cfg(feature = "test-deployment")]
-pub const STAGING_V33_TO_V34_MIGRATION_ID: &str = "bridge-staging-v33-to-v34";
-#[cfg(feature = "test-deployment")]
-const STAGING_V34_BSNS_RUNTIME_SHA256: [u8; 32] = [
-    0xf3, 0xc6, 0x73, 0xc3, 0xe3, 0xd7, 0xb9, 0x7e, 0x96, 0x76, 0x09, 0x64, 0xc3, 0x5a, 0xed, 0x87,
-    0x4b, 0x69, 0xc4, 0x14, 0xdf, 0x14, 0x17, 0x38, 0x87, 0xa7, 0xeb, 0xbd, 0x38, 0xa2, 0xfd, 0x9b,
-];
-#[cfg(feature = "test-deployment")]
 pub const STAGING_OLD_RPC_URLS: [&str; 3] = [
     "https://base-sepolia-rpc.publicnode.com",
     "https://sepolia.base.org",
@@ -126,8 +119,6 @@ pub struct OperationalConfigArgs {
 #[cfg(feature = "test-deployment")]
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct StagingUpgradeArgs {
-    pub migration_id: Option<String>,
-    pub migration_config: Option<StagingV33MigrationConfig>,
     pub status_counts_guard_version: u8,
     pub expected_status_counts: Option<StagingExpectedStatusCounts>,
     pub rpc_provider_update: Option<StagingRpcProviderUpdate>,
@@ -139,33 +130,12 @@ pub struct StagingUpgradeArgs {
 impl Default for StagingUpgradeArgs {
     fn default() -> Self {
         Self {
-            migration_id: None,
-            migration_config: None,
             status_counts_guard_version: 1,
             expected_status_counts: None,
             rpc_provider_update: None,
             minimum_withdrawal_id: None,
             confirmation_relayer_principal: None,
         }
-    }
-}
-
-#[cfg(feature = "test-deployment")]
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct StagingV33MigrationConfig {
-    pub expected_timelock_minimum_delay_seconds: u64,
-    pub expected_bsns_runtime_sha256: Vec<u8>,
-    pub expected_bsns_decimals: u8,
-    pub expected_minimum_service_fee: u128,
-}
-
-#[cfg(feature = "test-deployment")]
-impl StagingV33MigrationConfig {
-    pub(crate) fn is_reviewed_staging_value(&self) -> bool {
-        self.expected_timelock_minimum_delay_seconds == 300
-            && self.expected_bsns_runtime_sha256 == STAGING_V34_BSNS_RUNTIME_SHA256
-            && self.expected_bsns_decimals == 8
-            && self.expected_minimum_service_fee == 10_000
     }
 }
 
@@ -244,127 +214,6 @@ pub(crate) struct ImmutableBridgeConfig {
     pub settlement_cycle_ceiling: u128,
     pub confirmation_relayer_principal: Principal,
     pub activation_attestation: Option<ActivationAttestation>,
-}
-
-#[cfg(feature = "test-deployment")]
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct V33ImmutableBridgeConfig {
-    pub ledger_canister_id: Principal,
-    pub index_canister_id: Principal,
-    pub evm_rpc_canister_id: Principal,
-    pub custom_evm_rpc_urls: Vec<String>,
-    pub base_chain_id: u64,
-    pub bridge_contract: Vec<u8>,
-    pub expected_bridge_runtime_sha256: Vec<u8>,
-    pub timelock_contract: Vec<u8>,
-    pub deployment_instance_id: Vec<u8>,
-    pub minimum_withdrawal_id: Vec<u8>,
-    pub ecdsa_key_name: String,
-    pub ecdsa_derivation_path: Vec<Vec<u8>>,
-    pub governance_ecdsa_derivation_path: Vec<Vec<u8>>,
-    pub deposit_rate_limit_window_seconds: u64,
-    pub deposit_rate_limit_global: u16,
-    pub deposit_rate_limit_per_principal: u16,
-    pub notification_rate_limit_window_seconds: u64,
-    pub notification_rate_limit_global: u16,
-    #[serde(default = "default_notification_ingestion_rate_limit_global")]
-    pub notification_ingestion_rate_limit_global: u16,
-    pub settlement_rate_limit_window_seconds: u64,
-    pub settlement_rate_limit_global: u16,
-    pub settlement_rate_limit_per_principal: u16,
-    pub settlement_rate_limit_per_record: u16,
-    pub settlement_retry_interval_seconds: u64,
-    pub governance_evm_fee: EvmFeePolicy,
-    pub governance_replacement: GovernanceReplacementPolicy,
-    pub cycles_floor: u128,
-    pub settlement_cycle_ceiling: u128,
-}
-
-#[cfg(feature = "test-deployment")]
-impl V33ImmutableBridgeConfig {
-    #[cfg(test)]
-    pub(crate) fn from_current(value: &ImmutableBridgeConfig) -> Self {
-        Self {
-            ledger_canister_id: value.ledger_canister_id,
-            index_canister_id: value.index_canister_id,
-            evm_rpc_canister_id: value.evm_rpc_canister_id,
-            custom_evm_rpc_urls: value.custom_evm_rpc_urls.clone(),
-            base_chain_id: value.base_chain_id,
-            bridge_contract: value.bridge_contract.clone(),
-            expected_bridge_runtime_sha256: value.expected_bridge_runtime_sha256.clone(),
-            timelock_contract: value.timelock_contract.clone(),
-            deployment_instance_id: value.deployment_instance_id.clone(),
-            minimum_withdrawal_id: value.minimum_withdrawal_id.clone(),
-            ecdsa_key_name: value.ecdsa_key_name.clone(),
-            ecdsa_derivation_path: value.ecdsa_derivation_path.clone(),
-            governance_ecdsa_derivation_path: value.governance_ecdsa_derivation_path.clone(),
-            deposit_rate_limit_window_seconds: value.deposit_rate_limit_window_seconds,
-            deposit_rate_limit_global: value.deposit_rate_limit_global,
-            deposit_rate_limit_per_principal: value.deposit_rate_limit_per_principal,
-            notification_rate_limit_window_seconds: value.notification_rate_limit_window_seconds,
-            notification_rate_limit_global: value.notification_rate_limit_global,
-            notification_ingestion_rate_limit_global: value
-                .notification_ingestion_rate_limit_global,
-            settlement_rate_limit_window_seconds: value.settlement_rate_limit_window_seconds,
-            settlement_rate_limit_global: value.settlement_rate_limit_global,
-            settlement_rate_limit_per_principal: value.settlement_rate_limit_per_principal,
-            settlement_rate_limit_per_record: value.settlement_rate_limit_per_record,
-            settlement_retry_interval_seconds: value.settlement_retry_interval_seconds,
-            governance_evm_fee: value.governance_evm_fee,
-            governance_replacement: value.governance_replacement,
-            cycles_floor: value.cycles_floor,
-            settlement_cycle_ceiling: value.settlement_cycle_ceiling,
-        }
-    }
-
-    pub(crate) fn into_current(
-        self,
-        confirmation_relayer_principal: Principal,
-        migration: &StagingV33MigrationConfig,
-    ) -> ImmutableBridgeConfig {
-        ImmutableBridgeConfig {
-            ledger_canister_id: self.ledger_canister_id,
-            index_canister_id: self.index_canister_id,
-            evm_rpc_canister_id: self.evm_rpc_canister_id,
-            custom_evm_rpc_urls: self.custom_evm_rpc_urls,
-            base_chain_id: self.base_chain_id,
-            bridge_contract: self.bridge_contract,
-            expected_bridge_runtime_sha256: self.expected_bridge_runtime_sha256,
-            timelock_contract: self.timelock_contract,
-            expected_timelock_minimum_delay_seconds: migration
-                .expected_timelock_minimum_delay_seconds,
-            expected_bsns_runtime_sha256: migration.expected_bsns_runtime_sha256.clone(),
-            expected_bsns_decimals: migration.expected_bsns_decimals,
-            expected_minimum_service_fee: migration.expected_minimum_service_fee,
-            deployment_instance_id: self.deployment_instance_id,
-            minimum_withdrawal_id: self.minimum_withdrawal_id,
-            ecdsa_key_name: self.ecdsa_key_name,
-            ecdsa_derivation_path: self.ecdsa_derivation_path,
-            governance_ecdsa_derivation_path: self.governance_ecdsa_derivation_path,
-            deposit_rate_limit_window_seconds: self.deposit_rate_limit_window_seconds,
-            deposit_rate_limit_global: self.deposit_rate_limit_global,
-            deposit_rate_limit_per_principal: self.deposit_rate_limit_per_principal,
-            notification_rate_limit_window_seconds: self.notification_rate_limit_window_seconds,
-            notification_rate_limit_global: self.notification_rate_limit_global,
-            notification_ingestion_rate_limit_global: self.notification_ingestion_rate_limit_global,
-            settlement_rate_limit_window_seconds: self.settlement_rate_limit_window_seconds,
-            settlement_rate_limit_global: self.settlement_rate_limit_global,
-            settlement_rate_limit_per_principal: self.settlement_rate_limit_per_principal,
-            settlement_rate_limit_per_record: self.settlement_rate_limit_per_record,
-            settlement_retry_interval_seconds: self.settlement_retry_interval_seconds,
-            governance_evm_fee: self.governance_evm_fee,
-            governance_replacement: self.governance_replacement,
-            cycles_floor: self.cycles_floor,
-            settlement_cycle_ceiling: self.settlement_cycle_ceiling,
-            confirmation_relayer_principal,
-            activation_attestation: None,
-        }
-    }
-}
-
-#[cfg(feature = "test-deployment")]
-const fn default_notification_ingestion_rate_limit_global() -> u16 {
-    30
 }
 
 impl ImmutableBridgeConfig {

@@ -16,7 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { useFinalizedBaseClock, useRuntimeHeartbeat, useRuntimeValidation } from "@/features/status/use-status"
+import { useFinalizedBaseClock, useLatestBaseClock, useRuntimeHeartbeat, useRuntimeValidation } from "@/features/status/use-status"
 import { withBrowserLock } from "@/lib/browser-lock"
 import { refetchRuntimeAttestedWriteReady } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
@@ -24,6 +24,7 @@ import {
   contractAuthorization,
   validateMintAuthorization,
 } from "@/lib/mint-authorization"
+import { mintAuthorizationWindow } from "@/lib/mint-authorization-window"
 import { exactMintReceiptFinalization, type ExpectedDepositMint } from "@/lib/deposit-mint-finalization"
 import {
   readPendingMint,
@@ -80,6 +81,7 @@ export function MintAuthorizationAction({
     enabled: false,
   })
   const finalizedBaseClock = useFinalizedBaseClock({ enabled: true, staleTime: 15_000, refetchInterval: 15_000 })
+  const latestBaseClock = useLatestBaseClock({ enabled: true, staleTime: 15_000, refetchInterval: 15_000 })
   const authorization = record.mint_authorization[0]
   const contract = useMemo(
     () => authorization ? contractAuthorization(authorization) : undefined,
@@ -194,18 +196,23 @@ export function MintAuthorizationAction({
     mutationFn: async () => {
       if (!address) throw new Error("Connect a Base wallet to pay gas")
       if (chainId !== deploymentProfile.chainId) throw new Error("Switch the gas-paying wallet to Base")
-      const observation = await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
-      const validated = await validateMintAuthorization(record, observation)
-      onProgress?.({ phase: "awaiting-wallet" })
-      const hash = await withBrowserLock(
+      const { hash, validated } = await withBrowserLock(
         `kinic-wallet-prompt:base:${address.toLowerCase()}`,
-        () => write.writeContractAsync({
-          account: address,
-          address: deploymentProfile.bridgeAddress as `0x${string}`,
-          abi: bridgeAbi,
-          functionName: "mintDepositWithAuthorization",
-          args: [validated.authorization, validated.signature],
-        }),
+        async () => {
+          // A different wallet prompt may hold this lock long enough to consume
+          // the authorization window, so revalidate only after acquiring it.
+          const observation = await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
+          const validated = await validateMintAuthorization(record, observation)
+          onProgress?.({ phase: "awaiting-wallet" })
+          const hash = await write.writeContractAsync({
+            account: address,
+            address: deploymentProfile.bridgeAddress as `0x${string}`,
+            abi: bridgeAbi,
+            functionName: "mintDepositWithAuthorization",
+            args: [validated.authorization, validated.signature],
+          })
+          return { hash, validated }
+        },
       )
       const expected = pendingExpectation
       if (!expected || validated.digest.toLowerCase() !== expected.authorizationDigest.toLowerCase()) {
@@ -248,12 +255,17 @@ export function MintAuthorizationAction({
     ? `0x${Array.from(authorization.recipient, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
     : ""
   const finalizedTimestamp = finalizedBaseClock.data?.timestamp
-  const estimatedTimestamp = finalizedBaseClock.data
-    ? finalizedBaseClock.data.timestamp + BigInt(Math.max(0, Math.floor((clockNow - finalizedBaseClock.dataUpdatedAt) / 1_000)))
+  const estimatedLatestTimestamp = latestBaseClock.data
+    ? latestBaseClock.data.timestamp + BigInt(Math.max(0, Math.floor((clockNow - latestBaseClock.dataUpdatedAt) / 1_000)))
     : undefined
-  const estimatedDeadlinePassed = authorization !== undefined
-    && estimatedTimestamp !== undefined
-    && estimatedTimestamp > authorization.deadline
+  const authorizationWindow = authorization !== undefined && estimatedLatestTimestamp !== undefined
+    ? mintAuthorizationWindow(authorization.deadline, estimatedLatestTimestamp)
+    : undefined
+  const submissionWindowTooShort = authorizationWindow !== undefined
+    && !authorizationWindow.hasMinimumRemainingTime
+  const latestClockUnavailable = estimatedLatestTimestamp === undefined
+    || latestBaseClock.isError
+    || latestBaseClock.isStale
   const finalizedDeadlinePassed = authorization !== undefined
     && finalizedTimestamp !== undefined
     && finalizedTimestamp > authorization.deadline
@@ -262,7 +274,7 @@ export function MintAuthorizationAction({
 
   useEffect(() => {
     if (!registerAction) return
-    if (pending || identityConflict || finalizedDeadlinePassed || mintBlockedReason || !address || finalizedTimestamp === undefined || finalizedBaseClock.isError || finalizedBaseClock.isStale) {
+    if (pending || identityConflict || submissionWindowTooShort || mintBlockedReason || !address || latestClockUnavailable) {
       registerAction(undefined)
       return
     }
@@ -272,7 +284,7 @@ export function MintAuthorizationAction({
       run: async () => { await runMint() },
     })
     return () => registerAction(undefined)
-  }, [address, finalizedBaseClock.isError, finalizedBaseClock.isStale, finalizedDeadlinePassed, finalizedTimestamp, identityConflict, mintBlockedReason, mintPending, pending, registerAction, runMint, write.isPending])
+  }, [address, identityConflict, latestClockUnavailable, mintBlockedReason, mintPending, pending, registerAction, runMint, submissionWindowTooShort, write.isPending])
 
   useEffect(() => {
     if (finalizedDeadlinePassed && !pending) onProgress?.({ phase: "attention", message: "The Mint Authorization expired before a Base transaction was submitted. Open History to confirm the refund path." })
@@ -285,10 +297,10 @@ export function MintAuthorizationAction({
       || !address
       || address.toLowerCase() !== recipient.toLowerCase()
       || chainId !== deploymentProfile.chainId
-      || finalizedTimestamp === undefined
-      || finalizedBaseClock.isError
-      || finalizedBaseClock.isStale
-      || finalizedDeadlinePassed
+      || estimatedLatestTimestamp === undefined
+      || latestBaseClock.isError
+      || latestBaseClock.isStale
+      || submissionWindowTooShort
       || mintBlockedReason
       || identityConflict
       || pending
@@ -296,14 +308,12 @@ export function MintAuthorizationAction({
       || write.isPending) return
     attemptedAutoMintPrompts.add(autoPromptKey)
     mint.mutate()
-  }, [address, authorizationAvailable, autoPromptKey, chainId, finalizedBaseClock.isError, finalizedBaseClock.isStale, finalizedDeadlinePassed, finalizedTimestamp, identityConflict, mint, mintBlockedReason, pending, recipient, write.isPending])
+  }, [address, authorizationAvailable, autoPromptKey, chainId, estimatedLatestTimestamp, identityConflict, latestBaseClock.isError, latestBaseClock.isStale, mint, mintBlockedReason, pending, recipient, submissionWindowTooShort, write.isPending])
 
   if (!authorization || !authorizationAvailable) return null
-  const remaining = estimatedTimestamp === undefined
+  const remaining = authorizationWindow?.remainingSeconds === undefined
     ? undefined
-    : authorization.deadline > estimatedTimestamp
-      ? authorization.deadline - estimatedTimestamp
-      : 0n
+    : authorizationWindow.remainingSeconds > 0n ? authorizationWindow.remainingSeconds : 0n
   const payerDiffers = Boolean(address && address.toLowerCase() !== recipient.toLowerCase())
   const pendingLabel = receiptObservation === "sequencer-success"
     ? "Included on Base; awaiting finality"
@@ -328,14 +338,24 @@ export function MintAuthorizationAction({
       ? <p className="font-bold text-[#176b3a]">Minted on Base</p>
       : finalizedDeadlinePassed && !pending
       ? <div className="space-y-2">
-          <p className="text-xs font-bold text-[#8a4b08]">Expired. Claim a refund from History after Base Finalized time passes the deadline.</p>
+          <p className="text-xs font-bold text-[#8a4b08]">The authorization deadline passed and Base Finalized time now permits the refund check.</p>
+          {latestClockUnavailable && <p className="text-xs font-bold text-[#8a4b08]">Latest Base time is unavailable, but it is not required for the finalized refund path.</p>}
           {onRequestRefund && <Button size="sm" variant="ghost" disabled={claimingRefund} onClick={onRequestRefund}>
+            {claimingRefund ? "Checking Base…" : "Claim refund"}
+          </Button>}
+        </div>
+      : latestClockUnavailable && !pending
+      ? <p className="text-xs font-bold text-[#8a4b08]">Latest Base time could not be refreshed. No Base transaction was sent.</p>
+      : submissionWindowTooShort && !pending
+      ? <div className="space-y-2">
+          <p className="text-xs font-bold text-[#8a4b08]">Less than five minutes remain, so no Base transaction will be sent. A refund becomes available after Base Finalized time passes the deadline.</p>
+          {finalizedBaseClock.isError && <p className="text-xs font-bold text-[#8a4b08]">Base Finalized state could not be refreshed, so refund eligibility cannot be checked yet.</p>}
+          {finalizedDeadlinePassed && onRequestRefund && <Button size="sm" variant="ghost" disabled={claimingRefund} onClick={onRequestRefund}>
             {claimingRefund ? "Checking Base…" : "Claim refund"}
           </Button>}
         </div>
       : <div className="space-y-1">
           {pending && finalizedDeadlinePassed && receiptObservation === "unavailable" && <p className="text-xs font-bold text-[#8a4b08]">The authorization deadline passed after submission, but no receipt is available yet. The transaction may still be pending or may revert; review the saved transaction before clearing it.</p>}
-          {estimatedDeadlinePassed && <p className="text-xs font-bold text-[#8a4b08]">Estimated Base time has passed the deadline. A fresh finalized check will decide whether mint or refund is available.</p>}
           {mintBlockedReason && <p className="text-xs font-bold text-[#8a4b08]">{mintBlockedReason}</p>}
           {pending
             ? <p className={`text-xs font-bold ${receiptObservation === "sequencer-success" ? "text-[#176b3a]" : receiptObservation === "sequencer-reverted" ? "text-[#8a4b08]" : "text-[var(--muted)]"}`}>{pendingLabel}</p>

@@ -237,6 +237,7 @@ contract BridgeDepositTest is TestBase {
 
     function testPauseInvalidatesOutstandingAuthorizationByEpoch() public {
         IBridge.MintAuthorization memory authorization = _authorization(keccak256("old-epoch"), RECIPIENT, 110, 10);
+        authorization.deadline = block.timestamp + 10 minutes;
         vm.prank(RUNTIME_ADMINISTRATOR);
         bridge.pauseDepositMints();
         assert(bridge.mintAuthorizationEpoch() == 3);

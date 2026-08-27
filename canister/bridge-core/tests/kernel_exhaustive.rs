@@ -436,7 +436,7 @@ fn deposit_transition_decision_effects_cover_every_state_event_and_idempotency()
                 dispatched: true,
                 signature_absent: true,
                 signature_length_valid: true,
-                deadline_open: true,
+                minimum_remaining: true,
             },
             6 => DepositEventGuard::MintFinalization {
                 fixed_fields_match: true,

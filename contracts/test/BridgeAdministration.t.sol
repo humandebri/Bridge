@@ -259,6 +259,7 @@ contract BridgeAdministrationTest is TestBase {
     function testRoleRotationsRejectInvalidSetsAndImmediatelyRevokeOldAuthority() public {
         IBridge.MintAuthorization memory oldAuthorization =
             _authorization(keccak256("old-signer"), USER, 11, SERVICE_FEE);
+        oldAuthorization.deadline = block.timestamp + 10 minutes;
         vm.expectEmit(true, true, false, true, address(bridge));
         emit BridgeSignerChanged(BRIDGE_SIGNER, NEW_BRIDGE_SIGNER);
         vm.prank(BASE_ADMIN_TIMELOCK);

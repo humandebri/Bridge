@@ -35,7 +35,6 @@ import { readDepositIntent, removeDepositIntent, saveDepositIntent } from "@/lib
 import { withBrowserLock } from "@/lib/browser-lock"
 import { depositContinuation, isDepositTerminal } from "@/lib/settlement-phase"
 import type { BridgeProgressPhase } from "@/lib/bridge-progress"
-import { mintAuthorizationWindow } from "@/lib/mint-authorization-window"
 
 export type BridgeDirection = "deposit" | "withdraw"
 type BridgeNetwork = "ic" | "base"
@@ -79,9 +78,6 @@ function validatedDepositWriteGate(input: {
   if (amount > quote.perDepositLimit) throw new Error("Amount exceeds the current per-deposit limit")
   if (amount <= quote.serviceFee) throw new Error("Amount must exceed the current service fee")
   const now = currentUnixSeconds()
-  if (!mintAuthorizationWindow(quote.blockTimestamp, now).hasMinimumRemainingTime) {
-    throw new Error("Base finality is too far behind to provide at least 5 minutes for mint authorization. No transaction was sent. Try again after Base finality advances.")
-  }
   if (now < quote.startedAt + quote.duration && quote.minted + amount - quote.serviceFee > quote.limit) throw new Error("Amount exceeds the remaining mint window limit")
   if (sequence !== expectedSequence) throw new Error("Another deposit used this owner sequence; refresh and review again")
   if (ledger.balance < requiredDepositBalance(amount, ledger.fee, ledger.allowance)) throw new Error(`${deploymentProfile.icToken.symbol} balance does not cover the deposit and required ledger fees`)
@@ -975,7 +971,7 @@ function preflightAnnouncement(preflight?: PreflightState): string {
   if (!preflight) return ""
   if (preflight.phase === "ready") return "Transfer review ready."
   const failed = preflight.checks.find((check) => check.status === "failed")
-  if (failed) return `${failed.label} failed. ${failed.error ?? ""}`.trim()
+  if (failed) return "Transfer check failed. Review the displayed error."
   const checking = preflight.checks.find((check) => check.status === "checking")
   return checking ? `Checking ${checking.label}.` : "Preparing preflight checks."
 }

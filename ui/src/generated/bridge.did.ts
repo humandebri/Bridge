@@ -59,46 +59,7 @@ export interface AuditEvent {
   'caller' : Principal,
   'sequence' : bigint,
 }
-export type AuditEventKind = {
-    'DepositRefundRetried' : {
-      'next_fee' : bigint,
-      'deposit_id' : Uint8Array | number[],
-      'next_attempt_no' : [] | [bigint],
-      'previous_attempt_no' : bigint,
-      'compensated' : boolean,
-      'previous_fee' : bigint,
-    }
-  } |
-  {
-    'MintRevertRecoveryStarted' : {
-      'result' : string,
-      'finalized_block_number' : bigint,
-      'kind' : AuditedEvmOperationKind,
-      'target_id' : Uint8Array | number[],
-      'finalized_block_hash' : Uint8Array | number[],
-      'reverted_operation_id' : bigint,
-      'replacement_operation_id' : bigint,
-    }
-  } |
-  { 'PausePrincipalRotated' : null } |
-  {
-    'EvmTransactionReplaced' : {
-      'transaction_hash' : Uint8Array | number[],
-      'max_priority_fee_per_gas' : bigint,
-      'generation' : number,
-      'operation_id' : bigint,
-      'max_fee_per_gas' : bigint,
-      'previous_transaction_hash' : Uint8Array | number[],
-    }
-  } |
-  {
-    'EvmOperationReverted' : {
-      'transaction_hash' : Uint8Array | number[],
-      'finalized_head_block_number' : bigint,
-      'kind' : AuditedEvmOperationKind,
-      'operation_id' : bigint,
-    }
-  } |
+export type AuditEventKind = { 'PausePrincipalRotated' : null } |
   { 'DepositsPauseRepeated' : null } |
   {
     'EvmRpcObservation' : {
@@ -109,12 +70,6 @@ export type AuditEventKind = {
       'finalized_block_hash' : Uint8Array | number[],
       'quorum_response_digest' : Uint8Array | number[],
       'request_digest' : Uint8Array | number[],
-    }
-  } |
-  {
-    'FeeRecipientChanged' : {
-      'previous' : FeeRecipientConfig,
-      'current' : FeeRecipientConfig,
     }
   } |
   { 'WithdrawalFeeGuardCleared' : null } |
@@ -139,45 +94,12 @@ export type AuditEventKind = {
       'current_sha256' : Uint8Array | number[],
     }
   } |
-  {
-    'EvmTransactionRebroadcasted' : {
-      'transaction_hash' : Uint8Array | number[],
-      'attempt' : number,
-      'operation_id' : bigint,
-    }
-  } |
   { 'DepositsResumed' : null } |
   { 'FeePayoutRequested' : { 'amount' : bigint } } |
-  {
-    'MintRevertRecoveryCompleted' : {
-      'result' : string,
-      'finalized_block_number' : bigint,
-      'kind' : AuditedEvmOperationKind,
-      'target_id' : Uint8Array | number[],
-      'finalized_block_hash' : Uint8Array | number[],
-      'reverted_operation_id' : bigint,
-      'replacement_operation_id' : bigint,
-    }
-  } |
-  { 'ReserveGateChanged' : { 'sufficient' : boolean } } |
   {
     'WithdrawalFeeGuardTripped' : {
       'charged_service_fee' : bigint,
       'ledger_fee' : bigint,
-    }
-  } |
-  {
-    'EvmFeeQuoteObserved' : {
-      'base_fee_per_gas' : bigint,
-      'max_priority_fee_per_gas' : bigint,
-      'observed_at_ns' : bigint,
-      'gas_estimate' : bigint,
-      'initial_max_fee_per_gas' : bigint,
-      'safe_block_hash' : Uint8Array | number[],
-      'reserved_eth_wei' : bigint,
-      'reachable_max_fee_per_gas' : bigint,
-      'gas_limit' : bigint,
-      'safe_block_number' : bigint,
     }
   };
 export interface AuditEventPage {
@@ -188,7 +110,6 @@ export interface AuditEventPage {
   'pruned_count' : bigint,
   'pruned_through_sequence' : [] | [bigint],
 }
-export type AuditedEvmOperationKind = { 'MintDeposit' : null };
 export type AutomaticProgressState = {
     'Scheduled' : { 'next_run_at_ns' : bigint }
   } |
@@ -452,6 +373,7 @@ export interface MintAuthorizationView {
   'finalized_block_number' : bigint,
   'signature' : [] | [Uint8Array | number[]],
   'deposit_id' : Uint8Array | number[],
+  'issued_at_timestamp' : bigint,
   'domain_name' : string,
   'charged_service_fee' : bigint,
   'recipient' : Uint8Array | number[],
@@ -663,6 +585,7 @@ export type SettlementStopReason = { 'LedgerFeeExceedsServiceFee' : null } |
   { 'AuthorizationExpired' : null } |
   { 'BaseStateMismatch' : null } |
   { 'BridgeSignerMismatch' : null } |
+  { 'AuthorizationWindowTooShort' : null } |
   { 'SigningUnavailable' : null } |
   { 'InvalidBaseResponse' : null };
 export interface SignedBaseGovernanceTransaction {

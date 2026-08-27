@@ -151,4 +151,15 @@ contract MintAuthorizationPolicyTest {
         assert(effects.eventServiceFee == 1);
         assert(effects.eventMintedAmount == 10);
     }
+
+    function testDeadlineAcceptsFifteenMinutesAndRejectsOneSecondMore() public pure {
+        MintAuthorizationPolicy.MintTransitionInput memory input = _valid();
+        input.timestamp = 1_000;
+        input.deadline = input.timestamp + 15 minutes;
+        (MintAuthorizationPolicy.RejectReason accepted,,) = MintAuthorizationPolicy.evaluateMint(input);
+        assert(accepted == MintAuthorizationPolicy.RejectReason.None);
+
+        input.deadline += 1;
+        _assertRejected(input, MintAuthorizationPolicy.RejectReason.DeadlineTooFar);
+    }
 }

@@ -2,12 +2,12 @@ import BridgeSpec.Model
 
 namespace BridgeSpec.MintAuthorization
 
-def authorizationTtl : Nat := 7200
+def authorizationTtl : Nat := 600
 def maxU64 : Nat := 2 ^ 64 - 1
 
-def deadlineFromFinalized (finalizedTimestamp : Nat) : Option Nat :=
-  if finalizedTimestamp + authorizationTtl ≤ maxU64 then
-    some (finalizedTimestamp + authorizationTtl)
+def deadlineFromIssuedAt (issuedAtTimestamp : Nat) : Option Nat :=
+  if issuedAtTimestamp + authorizationTtl ≤ maxU64 then
+    some (issuedAtTimestamp + authorizationTtl)
   else none
 
 structure Authorization where
@@ -28,6 +28,7 @@ structure AuthorizationOrigin where
   finalizedBlock : Nat
   finalizedHash : Nat
   finalizedTimestamp : Nat
+  issuedAtTimestamp : Nat
   expectedChainId : Nat
   expectedVerifyingContract : Nat
   expectedEpoch : Nat
@@ -42,8 +43,8 @@ def Authorization.valid (authorization : Authorization) (origin : AuthorizationO
     origin.finalizedHash ≠ 0 ∧
     authorization.netAmount + authorization.chargedServiceFee =
       authorization.grossAmount ∧
-    authorization.deadline = origin.finalizedTimestamp + authorizationTtl ∧
-    deadlineFromFinalized origin.finalizedTimestamp = some authorization.deadline
+    authorization.deadline = origin.issuedAtTimestamp + authorizationTtl ∧
+    deadlineFromIssuedAt origin.issuedAtTimestamp = some authorization.deadline
 
 instance (authorization : Authorization) (origin : AuthorizationOrigin) :
     Decidable (authorization.valid origin) := by
@@ -287,11 +288,11 @@ theorem accepted_authorization_is_exact_and_has_fixed_deadline
     next.authorization = some authorization ∧
       next.phase = .authorizationPending ∧
       next.reservedMint = authorization.netAmount ∧
-      authorization.deadline = origin.finalizedTimestamp + authorizationTtl ∧
+      authorization.deadline = origin.issuedAtTimestamp + authorizationTtl ∧
       authorization.chainId = origin.expectedChainId ∧
       authorization.verifyingContract = origin.expectedVerifyingContract ∧
       authorization.epoch = origin.expectedEpoch ∧
-      deadlineFromFinalized origin.finalizedTimestamp = some authorization.deadline := by
+      deadlineFromIssuedAt origin.issuedAtTimestamp = some authorization.deadline := by
   unfold commitAuthorization at accepted
   split at accepted
   next valid =>
@@ -301,6 +302,15 @@ theorem accepted_authorization_is_exact_and_has_fixed_deadline
     subst next
     exact ⟨rfl, rfl, rfl, deadline, chain, contract, epoch, checked⟩
   next => simp at accepted
+
+theorem accepted_authorization_deadline_uses_issue_time
+    {state next : DepositState} {authorization : Authorization}
+    {origin : AuthorizationOrigin}
+    (accepted : commitAuthorization state authorization origin = some next) :
+    authorization.deadline = origin.issuedAtTimestamp + authorizationTtl := by
+  rcases accepted_authorization_is_exact_and_has_fixed_deadline accepted with
+    ⟨_, _, _, deadline, _, _, _, _⟩
+  exact deadline
 
 theorem committed_authorization_cannot_be_reissued
     {state : DepositState} {current replacement : Authorization}
@@ -313,8 +323,8 @@ theorem committed_authorization_cannot_be_reissued
   next => rfl
 
 theorem deadline_overflow_is_rejected :
-    deadlineFromFinalized maxU64 = none := by
-  simp [deadlineFromFinalized, maxU64, authorizationTtl]
+    deadlineFromIssuedAt maxU64 = none := by
+  simp [deadlineFromIssuedAt, maxU64, authorizationTtl]
 
 theorem accepted_expiry_refund_requires_finalized_unprocessed_expiry
     {state next : DepositState} {origin : AuthorizationOrigin}

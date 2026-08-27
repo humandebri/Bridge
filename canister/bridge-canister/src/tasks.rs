@@ -38,6 +38,7 @@ pub enum SettlementStopReason {
     InvalidBaseResponse,
     SigningUnavailable,
     AuthorizationExpired,
+    AuthorizationWindowTooShort,
     BaseStateMismatch,
     BridgeSignerMismatch,
     LedgerFeeExceedsServiceFee,
@@ -54,6 +55,9 @@ pub(crate) fn settlement_stop_reason_from_text(value: String) -> SettlementStopR
         "Threshold signing unavailable" => SettlementStopReason::SigningUnavailable,
         "Mint authorization expired before signing completed" => {
             SettlementStopReason::AuthorizationExpired
+        }
+        "Mint authorization has less than five minutes remaining" => {
+            SettlementStopReason::AuthorizationWindowTooShort
         }
         "Confirmed Base withdrawal state does not match the creation receipt" => {
             SettlementStopReason::BaseStateMismatch
@@ -131,6 +135,9 @@ pub(crate) fn stop_reason_text(result: &SettlementActionResult) -> Option<String
             SettlementStopReason::SigningUnavailable => "Threshold signing unavailable".into(),
             SettlementStopReason::AuthorizationExpired => {
                 "Mint authorization expired before signing completed".into()
+            }
+            SettlementStopReason::AuthorizationWindowTooShort => {
+                "Mint authorization has less than five minutes remaining".into()
             }
             SettlementStopReason::BaseStateMismatch => {
                 "Confirmed Base withdrawal state does not match the creation receipt".into()
@@ -612,10 +619,10 @@ async fn prepare_escrowed_deposit(
         service_fee: snapshot.service_fee,
         net_amount,
     };
-    let deadline = bridge_core::MintAuthorization::deadline_from_finalized_timestamp(
-        snapshot.confirmed_block_timestamp,
-    )
-    .ok_or(SettlementActionError::StorageFailure)?;
+    let issued_at_timestamp = ic_cdk::api::time() / 1_000_000_000;
+    let deadline =
+        bridge_core::MintAuthorization::deadline_from_issued_at_timestamp(issued_at_timestamp)
+            .ok_or(SettlementActionError::StorageFailure)?;
     let authorization = bridge_core::MintAuthorization {
         deposit_id: deposit.id.bytes(),
         recipient: STORE.with(|store| {
@@ -648,6 +655,7 @@ async fn prepare_escrowed_deposit(
             finalized_block_number: finalized.block_number,
             finalized_block_hash: finalized.block_hash,
             finalized_block_timestamp: snapshot.confirmed_block_timestamp,
+            issued_at_timestamp,
         },
         signature_dispatch_attempt: 0,
         signature_dispatched: false,
@@ -881,10 +889,13 @@ pub(crate) async fn advance_deposit(
                     .mint_authorization
                     .as_ref()
                     .ok_or(SettlementActionError::StorageFailure)?;
-                if observed_timestamp > pending_authorization.authorization.deadline {
+                if !pending_authorization
+                    .authorization
+                    .has_minimum_remaining_time(observed_timestamp)
+                {
                     return Ok(SettlementActionResult::Stopped {
                         state,
-                        reason: SettlementStopReason::AuthorizationExpired,
+                        reason: SettlementStopReason::AuthorizationWindowTooShort,
                     });
                 }
                 lease.renew_before_external_call()?;
@@ -911,7 +922,10 @@ pub(crate) async fn advance_deposit(
                         .mint_authorization
                         .as_mut()
                         .ok_or(SettlementActionError::StorageFailure)?;
-                    if observed_timestamp > authorization.authorization.deadline {
+                    if !authorization
+                        .authorization
+                        .has_minimum_remaining_time(observed_timestamp)
+                    {
                         return Ok::<_, SettlementActionError>(None);
                     }
                     authorization
@@ -926,7 +940,7 @@ pub(crate) async fn advance_deposit(
                 let Some(digest) = digest else {
                     return Ok(SettlementActionResult::Stopped {
                         state,
-                        reason: SettlementStopReason::AuthorizationExpired,
+                        reason: SettlementStopReason::AuthorizationWindowTooShort,
                     });
                 };
                 lease.renew_before_external_call()?;
@@ -986,7 +1000,9 @@ pub(crate) async fn advance_deposit(
                         .mint_authorization
                         .as_ref()
                         .is_some_and(|authorization| {
-                            observed_timestamp > authorization.authorization.deadline
+                            !authorization
+                                .authorization
+                                .has_minimum_remaining_time(observed_timestamp)
                         })
                     {
                         return Ok::<_, SettlementActionError>(false);
@@ -1005,7 +1021,7 @@ pub(crate) async fn advance_deposit(
                 if !installed {
                     return Ok(SettlementActionResult::Stopped {
                         state,
-                        reason: SettlementStopReason::AuthorizationExpired,
+                        reason: SettlementStopReason::AuthorizationWindowTooShort,
                     });
                 }
                 return Ok(SettlementActionResult::Complete {
@@ -1580,6 +1596,7 @@ mod tests {
                 finalized_block_number: 10,
                 finalized_block_hash: [6; 32],
                 finalized_block_timestamp: 20,
+                issued_at_timestamp: 0,
             },
             signature_dispatch_attempt: 0,
             signature_dispatched: false,

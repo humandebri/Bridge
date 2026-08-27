@@ -16,8 +16,9 @@ mod withdrawal;
 pub use accounting::{AccountingState, FeeKind};
 pub use authorization::{
     MintAuthorization, MintAuthorizationDomain, MintAuthorizationOrigin, MintAuthorizationRecord,
-    MintExpiryEvidence, MintFinalizationEvidence, MINT_AUTHORIZATION_DOMAIN_NAME,
-    MINT_AUTHORIZATION_DOMAIN_VERSION, MINT_AUTHORIZATION_TTL_SECONDS,
+    MintExpiryEvidence, MintFinalizationEvidence, MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS,
+    MINT_AUTHORIZATION_DOMAIN_NAME, MINT_AUTHORIZATION_DOMAIN_VERSION,
+    MINT_AUTHORIZATION_TTL_SECONDS,
 };
 pub use deposit::{
     DepositEvent, DepositQuote, DepositRecord, DepositRefundReason, DepositRequest, DepositState,

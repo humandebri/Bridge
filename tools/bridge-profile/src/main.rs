@@ -24,7 +24,7 @@ const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
 const MAX_ACTIVATION_ATTESTATION_AGE_SECS: u64 = 5 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 34;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 35;
 const GATE_A_ARTIFACTS: [&str; 6] = [
     "profile.json",
     "bridge-canister.wasm",
@@ -5047,7 +5047,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         )
         .unwrap());
-        let operational_config_sha256 = expected_operational_config_sha256(profile, 900, 7)
+        let operational_config_sha256 = expected_operational_config_sha256(profile, 600, 7)
             .map(|digest| hex(&digest))
             .unwrap();
         LiveRuntimeBinding {
@@ -5149,7 +5149,7 @@ mod tests {
             init_candid_sha256,
             runtime_binding: live_runtime_binding(profile),
             governance_operator: profile.governance_operator.clone(),
-            mint_authorization_ttl_seconds: 900,
+            mint_authorization_ttl_seconds: 600,
             mint_authorization_epoch: 7,
             storage_validation_complete: true,
             storage_checksum_complete: true,
@@ -5277,7 +5277,7 @@ mod tests {
         BridgeStatusLiveView {
             reserve: ReserveStatusView { sufficient: true },
             deposits_paused: true,
-            mint_authorization_ttl_seconds: 900,
+            mint_authorization_ttl_seconds: 600,
             mint_authorization_epoch: 7,
             counts: ProductionStatusCountsView {
                 deposits: 0,
@@ -5517,7 +5517,7 @@ mod tests {
         )
         .unwrap());
         let operational_config_sha256 =
-            expected_operational_config_sha256(&profile, 900, 7).unwrap();
+            expected_operational_config_sha256(&profile, 600, 7).unwrap();
         let mut observed = live_runtime_binding(&profile);
         assert!(validate_live_runtime_binding(
             &observed,
@@ -5540,13 +5540,13 @@ mod tests {
     fn live_runtime_binding_rejects_operational_profile_drift() {
         let mut profile = valid_profile();
         assert_eq!(
-            hex(&expected_operational_config_sha256(&profile, 900, 7).unwrap()),
-            "5b28cf270243b84dd41cb18918f79d0e4457c10852bd6fa8b866431e67d7fa48"
+            hex(&expected_operational_config_sha256(&profile, 600, 7).unwrap()),
+            "efe2862b6cfba28ace6b5008221961556a7549588269001bb5a15904a5d5f0c3"
         );
         let observed = live_runtime_binding(&profile);
         let rpc_url_hash = observed.rpc_provider_urls_sha256.clone();
         profile.rate_limits.notification_global -= 1;
-        let changed = expected_operational_config_sha256(&profile, 900, 7).unwrap();
+        let changed = expected_operational_config_sha256(&profile, 600, 7).unwrap();
         assert!(
             validate_live_runtime_binding(&observed, &profile, &rpc_url_hash, &changed).is_err()
         );
@@ -6229,7 +6229,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 init_candid_sha256: canister_init_candid_sha256,
                 runtime_binding: live_runtime_binding(&profile),
                 governance_operator: profile.governance_operator.clone(),
-                mint_authorization_ttl_seconds: 900,
+                mint_authorization_ttl_seconds: 600,
                 mint_authorization_epoch: 7,
                 storage_validation_complete: true,
                 storage_checksum_complete: true,
