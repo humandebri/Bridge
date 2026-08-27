@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Atomically transfer the paused production Bridge Canister to the KINIC SNS Root only.
 set -euo pipefail
-[[ $# -eq 0 ]] || { echo "production handover driver accepts no arguments" >&2; exit 2; }
+[[ $# -eq 0 ]] || {
+  echo "usage: BRIDGE_GATE_A_RECEIPT=gate-a-receipt.json BRIDGE_CANISTER_INSTALL_RECEIPT=install-receipt.json BRIDGE_DEPLOYMENT_BINDING_FILE=deployment-binding.json $0" >&2
+  exit 2
+}
 
 SOURCE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=production-validation.sh
@@ -9,6 +12,9 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 
 : "${BRIDGE_GATE_A_MANIFEST_SHA256:?missing Gate A approval}"
 : "${BRIDGE_RELEASE_BUNDLE:?missing release bundle}"
+: "${BRIDGE_CANISTER_INSTALL_RECEIPT:?missing verified production Canister install receipt}"
+: "${BRIDGE_GATE_A_RECEIPT:?missing completed schema-2 Gate A receipt}"
+: "${BRIDGE_DEPLOYMENT_BINDING_FILE:?missing canonical Base deployment binding}"
 : "${BRIDGE_ICP_IDENTITY:?missing reviewed ICP CLI identity}"
 : "${BRIDGE_HANDOVER_EVIDENCE_FILE:?missing handover evidence output path}"
 : "${BRIDGE_HANDOVER_CONFIRMATION:?set BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY}"
@@ -20,7 +26,9 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 }
 for tool in icp python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
 
-production_validate_gate gate-a "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_A_MANIFEST_SHA256"
+production_validate_gate gate-a "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_A_MANIFEST_SHA256" \
+  "$BRIDGE_CANISTER_INSTALL_RECEIPT" "$BRIDGE_GATE_A_RECEIPT" \
+  "$BRIDGE_DEPLOYMENT_BINDING_FILE"
 PROFILE="$BRIDGE_RELEASE_BUNDLE/profile.json"
 read -r CANISTER ROOT CYCLES_FLOOR < <(python3 -c '
 import json,sys

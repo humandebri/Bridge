@@ -6,6 +6,7 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 
 : "${BRIDGE_GATE_A_MANIFEST_SHA256:?missing Gate A approval}"
 : "${BRIDGE_RELEASE_BUNDLE:?missing release bundle}"
+: "${BRIDGE_CANISTER_INSTALL_RECEIPT:?missing verified production Canister install receipt}"
 : "${BRIDGE_DEPLOYER_KEYSTORE:?missing encrypted Foundry keystore path}"
 : "${BRIDGE_DEPLOYER_PASSWORD_FILE:?missing separate password-file path}"
 : "${BRIDGE_DEPLOYMENT_BINDING_FILE:?missing deployment evidence output path}"
@@ -23,7 +24,8 @@ for tool in awk cast forge python3; do command -v "$tool" >/dev/null || { echo "
   echo "deployment evidence/checkpoint already exists; track it instead of redeploying" >&2; exit 1;
 }
 
-production_validate_gate gate-a "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_A_MANIFEST_SHA256"
+production_validate_gate gate-a "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_A_MANIFEST_SHA256" \
+  "$BRIDGE_CANISTER_INSTALL_RECEIPT"
 INPUTS="$(mktemp -d "${TMPDIR:-/tmp}/bridge-eoa-deploy.XXXXXX")"; trap 'rm -rf "$INPUTS"' EXIT
 production_render_release_inputs "$BRIDGE_RELEASE_BUNDLE" "$INPUTS"
 PROFILE="$BRIDGE_RELEASE_BUNDLE/profile.json"; CONSTRUCTORS="$INPUTS/contract-constructor-args.json"

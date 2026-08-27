@@ -159,7 +159,9 @@ PY
 }
 
 production_validate_gate() {
-  local mode="$1" bundle="$2" expected_hash="$3"
+  local mode="$1" bundle="$2" expected_hash="$3" canister_install_receipt="${4:-}"
+  local completed_gate_a_receipt="${5:-}"
+  local deployment_binding="${6:-}"
   local source_root target profile_bin output actual_hash revision tree manifest_revision manifest_tree
   local expected_relayer resolved_relayer bridge_canister refresh_output final_output
   source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -189,6 +191,44 @@ production_validate_gate() {
   "$source_root/scripts/rebuild-release-artifacts.sh" \
     "$bundle" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
   if [[ "$mode" == gate-a ]]; then
+    [[ -f "$canister_install_receipt" && ! -L "$canister_install_receipt" ]] || {
+      rm -rf "$target"
+      echo "Gate A requires the verified production Canister install receipt" >&2
+      return 1
+    }
+    if [[ -n "$completed_gate_a_receipt" ]]; then
+      [[ -f "$completed_gate_a_receipt" && ! -L "$completed_gate_a_receipt" ]] || {
+        rm -rf "$target"
+        echo "controller handover requires the completed schema-2 Gate A receipt" >&2
+        return 1
+      }
+      [[ -f "$deployment_binding" && ! -L "$deployment_binding" ]] || {
+        rm -rf "$target"
+        echo "controller handover requires the canonical deployment binding" >&2
+        return 1
+      }
+      "$profile_bin" validate-production-handover-receipt \
+        "$bundle" "$completed_gate_a_receipt" "$canister_install_receipt" \
+        "$deployment_binding" >/dev/null || {
+        rm -rf "$target"
+        echo "completed Gate A receipt is not valid for controller handover" >&2
+        return 1
+      }
+      "$profile_bin" verify-production-canister-handover \
+        "$bundle" "$completed_gate_a_receipt" "$canister_install_receipt" \
+        "$deployment_binding" >/dev/null || {
+        rm -rf "$target"
+        echo "production Canister is not sealed and attested for controller handover" >&2
+        return 1
+      }
+    else
+      "$profile_bin" verify-production-canister-predeploy \
+        "$bundle/profile.json" "$canister_install_receipt" >/dev/null || {
+        rm -rf "$target"
+        echo "live production Canister no longer matches the paused predeploy profile" >&2
+        return 1
+      }
+    fi
     rm -rf "$target"
     return 0
   fi
