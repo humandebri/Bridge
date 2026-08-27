@@ -361,6 +361,9 @@ impl Drop for InFlightGuard {
 #[ic_cdk::init]
 fn init(args: config::BridgeInitArgs) {
     args.validate().unwrap_or_else(|error| ic_cdk::trap(error));
+    #[cfg(not(feature = "test-deployment"))]
+    args.validate_production_bootstrap_operational_config()
+        .unwrap_or_else(|error| ic_cdk::trap(error));
     let store =
         StableStore::init_configured(DefaultMemoryImpl::default(), &args).unwrap_or_else(|error| {
             ic_cdk::trap(format!("stable state initialization failed: {error}"))
@@ -368,6 +371,72 @@ fn init(args: config::BridgeInitArgs) {
     install_store(store);
     scheduler::arm();
     scheduler::arm_funding_recovery();
+}
+
+pub(crate) fn current_asset_operation_lifecycle_decision(
+) -> Result<bridge_core::AssetOperationLifecycleDecision, StorageError> {
+    STORE.with(|store| {
+        let sealed = store.borrow().operational_config_sealed()?;
+        Ok(::bridge_core::kernel::asset_operation_lifecycle_decision(
+            sealed,
+        ))
+    })
+}
+
+fn asset_operations_are_available() -> Result<bool, StorageError> {
+    asset_operations_are_available_for(current_asset_operation_lifecycle_decision())
+}
+
+fn asset_operations_are_available_for(
+    decision: Result<bridge_core::AssetOperationLifecycleDecision, StorageError>,
+) -> Result<bool, StorageError> {
+    decision.map(|decision| {
+        matches!(
+            decision,
+            bridge_core::AssetOperationLifecycleDecision::Allow
+        )
+    })
+}
+
+fn require_asset_operations_for_deposit() -> Result<(), api::DepositError> {
+    match asset_operations_are_available() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(api::DepositError::DepositsPaused),
+        Err(_) => Err(api::DepositError::StorageFailure),
+    }
+}
+
+fn require_asset_operations_for_refund() -> Result<(), api::RequestDepositRefundError> {
+    match asset_operations_are_available() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(api::RequestDepositRefundError::NotClaimable),
+        Err(_) => Err(api::RequestDepositRefundError::StorageFailure),
+    }
+}
+
+fn require_asset_operations_for_withdrawal_notification() -> Result<(), api::NotifyWithdrawalError>
+{
+    match asset_operations_are_available() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(api::NotifyWithdrawalError::BaseStateMismatch),
+        Err(_) => Err(api::NotifyWithdrawalError::StorageFailure),
+    }
+}
+
+fn require_asset_operations_for_settlement() -> Result<(), tasks::SettlementActionError> {
+    match asset_operations_are_available() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(tasks::SettlementActionError::WrongState),
+        Err(_) => Err(tasks::SettlementActionError::StorageFailure),
+    }
+}
+
+fn require_asset_operations_for_fee_payout() -> Result<(), admin::AdminError> {
+    match asset_operations_are_available() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(admin::AdminError::Busy),
+        Err(_) => Err(admin::AdminError::StorageFailure),
+    }
 }
 
 #[cfg(not(feature = "test-deployment"))]
@@ -491,6 +560,7 @@ fn post_upgrade(args: config::StagingUpgradeArgs) {
 
 #[ic_cdk::update]
 async fn request_deposit(args: api::DepositArgs) -> Result<api::DepositReceipt, api::DepositError> {
+    require_asset_operations_for_deposit()?;
     let caller = ic_cdk::api::msg_caller();
     let id = api::deposit_action_id(caller, &args)?;
     let existed = STORE.with(|store| {
@@ -568,6 +638,8 @@ async fn request_deposit_refund(
     deposit_id: Vec<u8>,
 ) -> Result<api::DepositView, api::RequestDepositRefundError> {
     use api::RequestDepositRefundError as Error;
+
+    require_asset_operations_for_refund()?;
 
     let caller = ic_cdk::api::msg_caller();
     match ::bridge_core::kernel::refund_request_identity_decision(
@@ -881,6 +953,7 @@ fn get_withdrawals(
 async fn notify_withdrawal(
     args: api::NotifyWithdrawalArgs,
 ) -> Result<api::NotifyWithdrawalReceipt, api::NotifyWithdrawalError> {
+    require_asset_operations_for_withdrawal_notification()?;
     let caller = ic_cdk::api::msg_caller();
     let transaction_hash = api::notification_action_hash(caller, &args)?;
     if let Some(receipt) = api::existing_notified_withdrawal_by_hash(transaction_hash)? {
@@ -1101,6 +1174,7 @@ fn deposit_continuation_retryable_stop(reason: Option<&tasks::SettlementStopReas
 async fn continue_deposit(
     deposit_id: Vec<u8>,
 ) -> Result<tasks::SettlementActionResult, tasks::SettlementActionError> {
+    require_asset_operations_for_settlement()?;
     let id = deposit_id
         .as_slice()
         .try_into()
@@ -1177,6 +1251,7 @@ async fn continue_deposit(
 async fn continue_withdrawal(
     withdrawal_id: Vec<u8>,
 ) -> Result<tasks::SettlementActionResult, tasks::SettlementActionError> {
+    require_asset_operations_for_settlement()?;
     let id = withdrawal_id
         .as_slice()
         .try_into()
@@ -1833,6 +1908,7 @@ async fn prepare_base_governance_action(
     action: base_governance::BaseGovernanceAction,
 ) -> Result<base_governance::SignedBaseGovernanceTransaction, base_governance::BaseGovernanceError>
 {
+    base_governance::require_operational_config_sealed()?;
     let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
@@ -1853,6 +1929,7 @@ async fn seal_operational_config(
 #[ic_cdk::update]
 async fn refresh_activation_attestation(
 ) -> Result<config::ActivationAttestation, base_governance::BaseGovernanceError> {
+    base_governance::require_operational_config_sealed()?;
     let caller = ic_cdk::api::msg_caller();
     base_governance::require_attestation_refresh_caller(caller)?;
     let now_ns = ic_cdk::api::time();
@@ -1898,6 +1975,7 @@ fn get_pending_base_governance_transaction() -> Result<
 async fn confirm_base_governance_transaction(
     args: base_governance::ConfirmBaseGovernanceTransactionArgs,
 ) -> Result<base_governance::BaseGovernanceConfirmation, base_governance::BaseGovernanceError> {
+    base_governance::require_operational_config_sealed()?;
     let caller = ic_cdk::api::msg_caller();
     base_governance::require_confirmation_caller(caller)?;
     let transaction_hash: [u8; 32] = args
@@ -1940,6 +2018,7 @@ async fn prepare_base_governance_replacement(
     args: base_governance::PrepareBaseGovernanceReplacementArgs,
 ) -> Result<base_governance::SignedBaseGovernanceTransaction, base_governance::BaseGovernanceError>
 {
+    base_governance::require_operational_config_sealed()?;
     let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
@@ -1950,6 +2029,7 @@ async fn prepare_base_governance_replacement(
 async fn prepare_next_emergency_base_action(
 ) -> Result<base_governance::SignedBaseGovernanceTransaction, base_governance::BaseGovernanceError>
 {
+    base_governance::require_operational_config_sealed()?;
     let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
@@ -1966,6 +2046,7 @@ fn get_activation_status(
 async fn schedule_activation(
 ) -> Result<base_governance::SignedBaseGovernanceTransaction, base_governance::BaseGovernanceError>
 {
+    base_governance::require_operational_config_sealed()?;
     let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
@@ -1981,6 +2062,7 @@ async fn schedule_activation(
 async fn execute_activation(
 ) -> Result<base_governance::SignedBaseGovernanceTransaction, base_governance::BaseGovernanceError>
 {
+    base_governance::require_operational_config_sealed()?;
     let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
@@ -2015,6 +2097,9 @@ fn icrc21_canister_call_consent_message(
 }
 
 fn admit_consent_request() -> bool {
+    if !asset_operations_are_available().unwrap_or(false) {
+        return false;
+    }
     let Some(config) = STORE.with(|store| store.borrow().config().ok().flatten()) else {
         return false;
     };
@@ -2061,6 +2146,7 @@ fn rotate_fee_recipient(args: config::FeeRecipientConfig) -> Result<(), admin::A
 }
 #[ic_cdk::update]
 fn request_fee_payout(amount: candid::Nat) -> Result<admin::FeePayoutReceipt, admin::AdminError> {
+    require_asset_operations_for_fee_payout()?;
     let Some(_guard) = InFlightGuard::acquire(ActionKey::FeePayoutCreation) else {
         return Err(admin::AdminError::Busy);
     };
@@ -2073,6 +2159,7 @@ fn request_fee_payout(amount: candid::Nat) -> Result<admin::FeePayoutReceipt, ad
 async fn continue_fee_payout(
     payout_id: u64,
 ) -> Result<tasks::FeePayoutActionResult, tasks::SettlementActionError> {
+    require_asset_operations_for_settlement()?;
     let caller = ic_cdk::api::msg_caller();
     if caller == candid::Principal::anonymous() {
         return Err(tasks::SettlementActionError::AnonymousCaller);
@@ -2126,12 +2213,28 @@ pub fn generated_candid_interface() -> String {
 #[cfg(test)]
 mod candid_tests {
     use super::{
-        can_continue_withdrawal, deposit_continuation_authorization_phase,
-        deposit_continuation_retryable_stop, has_notification_cycle_budget,
-        storage::DepositReserveToken, storage::StorageError, storage_or_trap, ActionKey,
-        DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard, StableStore,
-        NOTIFICATION_CALLER_ADMISSION,
+        asset_operations_are_available_for, can_continue_withdrawal,
+        deposit_continuation_authorization_phase, deposit_continuation_retryable_stop,
+        has_notification_cycle_budget, storage::DepositReserveToken, storage::StorageError,
+        storage_or_trap, ActionKey, DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard,
+        StableStore, NOTIFICATION_CALLER_ADMISSION,
     };
+
+    #[test]
+    fn public_asset_adapters_reject_bootstrap_and_allow_sealed_lifecycle() {
+        assert_eq!(
+            asset_operations_are_available_for(Ok(
+                bridge_core::AssetOperationLifecycleDecision::OperationalConfigNotSealed,
+            )),
+            Ok(false)
+        );
+        assert_eq!(
+            asset_operations_are_available_for(Ok(
+                bridge_core::AssetOperationLifecycleDecision::Allow,
+            )),
+            Ok(true)
+        );
+    }
 
     #[cfg(not(feature = "test-deployment"))]
     #[test]

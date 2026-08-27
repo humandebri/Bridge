@@ -1,20 +1,22 @@
 use bridge_core::{
-    administrator_authorized, audit_next, authorization_commit_allowed, checked_counter_transition,
-    checked_requirement, confirmation_caller_authorized, confirmation_roles_distinct,
-    counter_delta, deposit_admission_decision, deposit_reservation_active, deposit_transition,
+    administrator_authorized, asset_operation_lifecycle_decision, audit_next,
+    authorization_commit_allowed, checked_counter_transition, checked_requirement,
+    confirmation_caller_authorized, confirmation_roles_distinct, counter_delta,
+    deposit_admission_decision, deposit_reservation_active, deposit_transition,
     deposit_transition_decision, evidence_matches, expiry_refund_allowed,
     fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
     funding_reconciliation_decision, hold_resolution_decision, lease_generation_next,
     lease_outcome_is_current, manual_claim_decision, mint_admission_total,
     mint_finalization_allowed, next_attempt, notification_failure_cooldown_active,
-    outbound_settlement, payout_allowed, payout_debit, refresh_generation_next,
-    refresh_owner_matches, release_transfer_matches, replay_matches, reservation_decision,
-    reserve_admission_preserves_requirement, scan_complete, service_fee_change_allowed,
-    settlement_decision, signing_cycle_requirement, transaction_liability_wei,
-    withdrawal_phase_allows, withdrawal_phase_step, withdrawal_transition_effects,
-    DepositEventGuard, DepositTransitionDecision, DepositTransitionInput,
-    FeeRecipientRotationDecision, FundingReconciliationDecision, HoldResolutionDecision,
-    ManualClaimDecision,
+    operational_config_seal_decision, outbound_settlement, payout_allowed, payout_debit,
+    refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
+    reservation_decision, reserve_admission_preserves_requirement, scan_complete,
+    service_fee_change_allowed, settlement_decision, signing_cycle_requirement,
+    transaction_liability_wei, withdrawal_phase_allows, withdrawal_phase_step,
+    withdrawal_transition_effects, AssetOperationLifecycleDecision, DepositEventGuard,
+    DepositTransitionDecision, DepositTransitionInput, FeeRecipientRotationDecision,
+    FundingReconciliationDecision, HoldResolutionDecision, ManualClaimDecision,
+    OperationalConfigSealDecision,
 };
 
 #[test]
@@ -126,6 +128,30 @@ fn fee_rotation_reserve_admission_and_lease_fences_are_fail_closed() {
 
 #[test]
 fn typed_decisions_preserve_every_shared_guard() {
+    assert_eq!(
+        asset_operation_lifecycle_decision(false),
+        AssetOperationLifecycleDecision::OperationalConfigNotSealed
+    );
+    assert_eq!(
+        asset_operation_lifecycle_decision(true),
+        AssetOperationLifecycleDecision::Allow
+    );
+    assert_eq!(
+        operational_config_seal_decision(false, true),
+        OperationalConfigSealDecision::Seal
+    );
+    assert_eq!(
+        operational_config_seal_decision(true, true),
+        OperationalConfigSealDecision::AlreadySealed
+    );
+    assert_eq!(
+        operational_config_seal_decision(false, false),
+        OperationalConfigSealDecision::InvalidCandidate
+    );
+    assert_eq!(
+        operational_config_seal_decision(true, false),
+        OperationalConfigSealDecision::InvalidCandidate
+    );
     assert_eq!(
         fee_recipient_rotation_decision(true, false, false, 32, 0),
         FeeRecipientRotationDecision::Allow

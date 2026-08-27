@@ -39,6 +39,7 @@ pub open spec fn deposit_identity_decision_view(
     }
 }
 
+
 proof fn deposit_ledger_block_transition_preserves_and_rejects_conflict(
     prior: int, different: int,
 )
@@ -768,6 +769,19 @@ fn deposit_continuation_requires_authenticated_retryable_stop(
     kernel::deposit_continuation_decision(
         authenticated, authorization_phase, retryable_stop)
 }
+
+proof fn asset_operations_require_sealed_operational_config(sealed: bool)
+    ensures kernel::asset_operations_allowed_spec(sealed) <==> sealed,
+{}
+
+proof fn operational_config_seal_allows_only_pending_valid_candidate(
+    sealed: bool,
+    candidate_valid: bool,
+)
+    ensures
+        kernel::operational_config_seal_allowed_spec(sealed, candidate_valid)
+            <==> !sealed && candidate_valid,
+{}
 
 fn refund_request_requires_authenticated_caller(
     authenticated: bool,

@@ -19,7 +19,7 @@ REVISION="$(git -C "$T/source" rev-parse HEAD)"
 TREE="$(git -C "$T/source" archive HEAD | shasum -a 256 | awk '{print $1}')"
 printf wasm >"$T/bridge-canister.wasm"
 WASM_SHA256="$(shasum -a 256 "$T/bridge-canister.wasm" | awk '{print $1}')"
-printf '{"schema_version":1,"environment":"production","source_revision":"%s","source_tree_sha256":"%s","bridge_canister_id":"aaaaa-aa","bridge_canister_wasm_sha256":"%s","init":{}}\n' \
+printf '{"schema_version":2,"environment":"production","source_revision":"%s","source_tree_sha256":"%s","bridge_canister_id":"aaaaa-aa","bridge_canister_wasm_sha256":"%s","init":{}}\n' \
   "$REVISION" "$TREE" "$WASM_SHA256" >"$T/plan.json"
 
 cat >"$T/bin/cargo" <<'SH'
@@ -36,7 +36,7 @@ case "$1" in
     mkdir -p "$3"; printf bin >"$3/canister-init.bin"; printf '{}\n' >"$3/production-canister-install-inputs.json" ;;
   storage-validation-complete|storage-checksum-complete) printf 'true\n' ;;
   write-production-canister-receipt)
-    printf '{"schema_version":1}\n' >"${13}" ;;
+    printf '{"schema_version":2}\n' >"${13}" ;;
   *) echo "unexpected bridge-profile command: $*" >&2; exit 90 ;;
 esac
 SH

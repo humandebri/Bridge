@@ -162,6 +162,8 @@ production_validate_gate() {
   local mode="$1" bundle="$2" expected_hash="$3" canister_install_receipt="${4:-}"
   local completed_gate_a_receipt="${5:-}"
   local deployment_binding="${6:-}"
+  local final_profile="${7:-}"
+  local fee_cycles_measurements="${8:-}"
   local source_root target profile_bin output actual_hash revision tree manifest_revision manifest_tree
   local expected_relayer resolved_relayer bridge_canister refresh_output final_output
   source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -207,6 +209,16 @@ production_validate_gate() {
         echo "controller handover requires the canonical deployment binding" >&2
         return 1
       }
+      [[ -f "$final_profile" && ! -L "$final_profile" ]] || {
+        rm -rf "$target"
+        echo "controller handover requires the measurement-derived final profile" >&2
+        return 1
+      }
+      [[ -f "$fee_cycles_measurements" && ! -L "$fee_cycles_measurements" ]] || {
+        rm -rf "$target"
+        echo "controller handover requires the raw fee/cycles measurements" >&2
+        return 1
+      }
       "$profile_bin" validate-production-handover-receipt \
         "$bundle" "$completed_gate_a_receipt" "$canister_install_receipt" \
         "$deployment_binding" >/dev/null || {
@@ -215,7 +227,8 @@ production_validate_gate() {
         return 1
       }
       "$profile_bin" verify-production-canister-handover \
-        "$bundle" "$completed_gate_a_receipt" "$canister_install_receipt" \
+        "$bundle" "$final_profile" "$fee_cycles_measurements" \
+        "$completed_gate_a_receipt" "$canister_install_receipt" \
         "$deployment_binding" >/dev/null || {
         rm -rf "$target"
         echo "production Canister is not sealed and attested for controller handover" >&2

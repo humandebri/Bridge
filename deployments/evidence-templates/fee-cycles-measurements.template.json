@@ -1,0 +1,47 @@
+{
+  "schema_version": 3,
+  "environment": "mainnet-candidate",
+  "ledger_fee": 100000,
+  "governance_gas_samples": [
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-transaction-or-receipt-reference-01" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-transaction-or-receipt-reference-02" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-transaction-or-receipt-reference-03" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-transaction-or-receipt-reference-04" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-transaction-or-receipt-reference-05" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-transaction-or-receipt-reference-06" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-transaction-or-receipt-reference-07" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-transaction-or-receipt-reference-08" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-transaction-or-receipt-reference-09" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-transaction-or-receipt-reference-10" }
+  ],
+  "fee_samples": [
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "observed_at_unix": 0, "source_ref": "replace-with-block-or-rpc-artifact-reference-01" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "observed_at_unix": 0, "source_ref": "replace-with-block-or-rpc-artifact-reference-02" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "observed_at_unix": 0, "source_ref": "replace-with-block-or-rpc-artifact-reference-03" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "observed_at_unix": 0, "source_ref": "replace-with-block-or-rpc-artifact-reference-04" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "observed_at_unix": 0, "source_ref": "replace-with-block-or-rpc-artifact-reference-05" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "observed_at_unix": 0, "source_ref": "replace-with-block-or-rpc-artifact-reference-06" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "observed_at_unix": 0, "source_ref": "replace-with-block-or-rpc-artifact-reference-07" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "observed_at_unix": 0, "source_ref": "replace-with-block-or-rpc-artifact-reference-08" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "observed_at_unix": 0, "source_ref": "replace-with-block-or-rpc-artifact-reference-09" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "observed_at_unix": 0, "source_ref": "replace-with-block-or-rpc-artifact-reference-10" }
+  ],
+  "settlement_cycle_samples": [
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-settlement-receipt-reference-01" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-settlement-receipt-reference-02" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-settlement-receipt-reference-03" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-settlement-receipt-reference-04" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-settlement-receipt-reference-05" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-settlement-receipt-reference-06" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-settlement-receipt-reference-07" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-settlement-receipt-reference-08" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-settlement-receipt-reference-09" },
+    { "value": "1", "observed_at_unix": 0, "source_ref": "replace-with-settlement-receipt-reference-10" }
+  ],
+  "baseline_cycles_sample": {
+    "value": "1",
+    "observed_at_unix": 0,
+    "source_ref": "replace-with-baseline-cycles-reference"
+  },
+  "expected_daily_settlements": 1
+}

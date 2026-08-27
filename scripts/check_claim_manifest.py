@@ -12,7 +12,6 @@ from pathlib import Path
 
 from claim_manifest import (
     REQUIRED_CLAIM_POLICY,
-    OPTIONAL_BOOTSTRAP_CLAIM_POLICY,
     REQUIRED_CLAIM_IDS,
     ClaimManifest,
     ConditionalLivenessProperty,
@@ -26,6 +25,8 @@ from proof_fingerprint import source_fingerprint
 from source_resolution import is_inside_source_roots, source_path
 from smt_obligations import parse_smt_obligations
 from verus_manifest import parse_verus_manifest
+from check_transition_manifest import strip_comments_and_strings
+from rust_canonical_calls import rust_body
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "verification" / "claims.tsv"
@@ -49,6 +50,63 @@ REQUIRED_SCALAR_CALLS = (
     "mintEffectAmounts(",
 )
 ALLOWED_LEAN_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
+
+
+def require_guard_dominance(
+    source: str, function: str, guard: str, effects: tuple[str, ...]
+) -> None:
+    body = rust_body(strip_comments_and_strings(source), function)
+    if body.count(guard) != 1:
+        raise ValueError(f"{function} must contain one lifecycle guard")
+    guard_position = body.index(guard)
+    effect_positions = [body.index(effect) for effect in effects if effect in body]
+    if not effect_positions or guard_position > min(effect_positions):
+        raise ValueError(f"{function} lifecycle guard must dominate state and external effects")
+
+
+def check_operational_config_guard_dominance() -> None:
+    specs = {
+        "canister/bridge-canister/src/lib.rs": {
+            "request_deposit": ("require_asset_operations_for_deposit()", ("msg_caller()", "STORE.with", "InFlightGuard::acquire")),
+            "request_deposit_refund": ("require_asset_operations_for_refund()", ("msg_caller()", "STORE.with", "InFlightGuard::acquire")),
+            "notify_withdrawal": ("require_asset_operations_for_withdrawal_notification()", ("msg_caller()", "STORE.with", "InFlightGuard::acquire")),
+            "continue_deposit": ("require_asset_operations_for_settlement()", ("msg_caller()", "STORE.with", "InFlightGuard::acquire")),
+            "continue_withdrawal": ("require_asset_operations_for_settlement()", ("msg_caller()", "STORE.with", "InFlightGuard::acquire")),
+            "request_fee_payout": ("require_asset_operations_for_fee_payout()", ("msg_caller()", "InFlightGuard::acquire", "admin::request_fee_payout")),
+            "continue_fee_payout": ("require_asset_operations_for_settlement()", ("msg_caller()", "STORE.with", "InFlightGuard::acquire")),
+            "icrc21_canister_call_consent_message": ("admit_consent_request()", ("ledger::KINIC_LEDGER_FEE", "consent::consent_message")),
+            "admit_consent_request": ("asset_operations_are_available()", ("STORE.with", "has_liability_cycle_budget")),
+            "prepare_base_governance_action": ("base_governance::require_operational_config_sealed()", ("InFlightGuard::acquire", "msg_caller()", "base_governance::prepare")),
+            "refresh_activation_attestation": ("base_governance::require_operational_config_sealed()", ("msg_caller()", "activation_attestation()", "admit_control_plane_external_call")),
+            "confirm_base_governance_transaction": ("base_governance::require_operational_config_sealed()", ("msg_caller()", "notification_failure_cooldown_active", "admit_control_plane_external_call")),
+            "prepare_base_governance_replacement": ("base_governance::require_operational_config_sealed()", ("InFlightGuard::acquire", "msg_caller()", "prepare_replacement")),
+            "prepare_next_emergency_base_action": ("base_governance::require_operational_config_sealed()", ("InFlightGuard::acquire", "msg_caller()", "prepare_next_emergency")),
+            "schedule_activation": ("base_governance::require_operational_config_sealed()", ("InFlightGuard::acquire", "msg_caller()", "base_governance::prepare")),
+            "execute_activation": ("base_governance::require_operational_config_sealed()", ("InFlightGuard::acquire", "msg_caller()", "base_governance::prepare")),
+        },
+        "canister/bridge-canister/src/base_governance.rs": {
+            "refresh_activation_attestation": ("require_operational_config_sealed()", ("config()", "activation_preflight")),
+            "prepare": ("require_operational_config_sealed()", ("require_action_authorization", "config()", "STORE.with")),
+            "prepare_replacement": ("require_operational_config_sealed()", ("require_governance_or_pause", "pending_transaction", "sign_prepared")),
+            "confirm": ("require_operational_config_sealed()", ("require_confirmation_caller", "pending_transaction", "evm_rpc::")),
+            "prepare_next_emergency": ("require_operational_config_sealed()", ("require_governance_or_pause", "STORE.with", "prepare(")),
+        },
+        "canister/bridge-canister/src/scheduler.rs": {
+            "arm_funding_recovery": ("asset_operations_allowed()", ("STORE.with", "set_timer")),
+            "recover_one_funding_attempt": ("asset_operations_allowed()", ("STORE.with", "msg_caller()")),
+            "arm": ("asset_operations_allowed()", ("STORE.with", "next_settlement_wakeup_ns")),
+            "dispatch_due": ("asset_operations_allowed()", ("STORE.with", "claim_due_settlement_job")),
+            "run_claimed": ("asset_operations_allowed()", ("run_claimed_inner",)),
+            "run_claimed_fee_payout": ("asset_operations_allowed()", ("SettlementLease::new", "settlement_retry_interval_seconds")),
+        },
+    }
+    for relative_path, functions in specs.items():
+        source = (ROOT / relative_path).read_text(encoding="utf-8")
+        for function, (guard, effects) in functions.items():
+            try:
+                require_guard_dominance(source, function, guard, effects)
+            except ValueError as error:
+                raise ValueError(f"{relative_path}#{error}") from error
 
 
 def items(value: str) -> list[str]:
@@ -378,28 +436,26 @@ def check_conditional_liveness_theorems(
 
 def require_mandatory_claim_catalog(manifest: ClaimManifest) -> None:
     actual = {row[1] for row in manifest.rows}
-    allowed = REQUIRED_CLAIM_IDS | OPTIONAL_BOOTSTRAP_CLAIM_POLICY.keys()
-    if not REQUIRED_CLAIM_IDS <= actual or not actual <= allowed:
+    if actual != REQUIRED_CLAIM_IDS:
         raise ValueError(
             "mandatory claim catalog differs: "
             f"missing={sorted(REQUIRED_CLAIM_IDS - actual)} "
-            f"extra={sorted(actual - allowed)}"
+            f"extra={sorted(actual - REQUIRED_CLAIM_IDS)}"
         )
-    expected_policy = REQUIRED_CLAIM_POLICY | OPTIONAL_BOOTSTRAP_CLAIM_POLICY
     mismatches = {
         claim_id: {
-            "expected": expected_policy[claim_id],
+            "expected": REQUIRED_CLAIM_POLICY[claim_id],
             "actual": (
                 manifest.contracts[claim_id].assurance_target,
                 manifest.contracts[claim_id].required_strength,
             ),
         }
-        for claim_id in actual
+        for claim_id in REQUIRED_CLAIM_IDS
         if (
             manifest.contracts[claim_id].assurance_target,
             manifest.contracts[claim_id].required_strength,
         )
-        != expected_policy[claim_id]
+        != REQUIRED_CLAIM_POLICY[claim_id]
     }
     if mismatches:
         raise ValueError(f"mandatory claim policy differs: {mismatches}")
@@ -847,24 +903,21 @@ def write_claim_report(report: dict[str, object], path: Path = REPORT) -> None:
 
 
 def require_release_ready_catalog(results: list[dict[str, object]]) -> None:
-    claim_ids = {str(claim["id"]) for claim in results}
-    expected = REQUIRED_CLAIM_IDS | (
-        claim_ids & OPTIONAL_BOOTSTRAP_CLAIM_POLICY.keys()
-    )
     ready = {
         str(claim["id"])
         for claim in results
         if claim["status"] == "release-ready"
     }
-    if ready != expected:
+    if ready != REQUIRED_CLAIM_IDS:
         raise ValueError(
             "release safety catalog is not fully ready: "
-            f"missing={sorted(expected - ready)} "
-            f"extra={sorted(ready - expected)}"
+            f"missing={sorted(REQUIRED_CLAIM_IDS - ready)} "
+            f"extra={sorted(ready - REQUIRED_CLAIM_IDS)}"
         )
 
 
 def main() -> int:
+    check_operational_config_guard_dominance()
     report = build_claim_report()
     write_claim_report(report)
     results = report["claims"]

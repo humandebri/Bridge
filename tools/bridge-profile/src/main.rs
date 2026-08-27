@@ -110,14 +110,6 @@ struct InitialBaseDeployment {
     max_priority_fee_per_gas: u128,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FeeCyclesMeasurementsReceipt {
-    schema_version: u16,
-    sample_count: u16,
-    observation_days: u16,
-}
-
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct RpcProvider {
@@ -255,18 +247,36 @@ struct EvmFeePolicy {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct MeasurementSample {
+    #[serde(with = "u128_string")]
+    value: u128,
+    observed_at_unix: u64,
+    source_ref: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FeeMeasurementSample {
+    #[serde(with = "u128_string")]
+    base_fee_per_gas: u128,
+    #[serde(with = "u128_string")]
+    priority_fee_per_gas: u128,
+    #[serde(with = "u128_string")]
+    l1_fee_upper_bound_wei: u128,
+    observed_at_unix: u64,
+    source_ref: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Evidence {
     schema_version: u8,
     environment: String,
     ledger_fee: u128,
-    governance_gas_used: Vec<u128>,
-    fee_observation_start_unix: u64,
-    fee_observation_end_unix: u64,
-    base_fee_per_gas: Vec<u128>,
-    priority_fee_per_gas: Vec<u128>,
-    l1_fee_upper_bound_wei: Vec<u128>,
-    settlement_cycles: Vec<u128>,
-    baseline_cycles_per_day: u128,
+    governance_gas_samples: Vec<MeasurementSample>,
+    fee_samples: Vec<FeeMeasurementSample>,
+    settlement_cycle_samples: Vec<MeasurementSample>,
+    baseline_cycles_sample: MeasurementSample,
     expected_daily_settlements: u128,
 }
 
@@ -414,6 +424,43 @@ struct ProductionCanisterInitInput {
     pause_principal: String,
     confirmation_relayer_principal: String,
     fee_recipient: ProductionFeeRecipientInput,
+}
+
+fn production_bootstrap_evm_fee() -> EvmFeePolicy {
+    EvmFeePolicy {
+        gas_limit_ceiling: 1,
+        max_fee_per_gas_ceiling: 1,
+        max_priority_fee_per_gas_ceiling: 0,
+        l1_fee_per_transaction_ceiling_wei: 1,
+        quote_validity_seconds: 30,
+        gas_limit_multiplier_bps: 10_000,
+        base_fee_multiplier_bps: 10_000,
+        l1_fee_multiplier_bps: 10_000,
+    }
+}
+
+const PRODUCTION_BOOTSTRAP_CYCLES_FLOOR: u128 = 1;
+const PRODUCTION_BOOTSTRAP_SETTLEMENT_CYCLE_CEILING: u128 = u128::MAX;
+
+fn profile_uses_production_bootstrap_operational_config(profile: &Profile) -> bool {
+    profile.parameters.governance_evm_fee() == production_bootstrap_evm_fee()
+        && profile.parameters.cycles_floor == PRODUCTION_BOOTSTRAP_CYCLES_FLOOR
+        && profile.parameters.settlement_cycle_ceiling
+            == PRODUCTION_BOOTSTRAP_SETTLEMENT_CYCLE_CEILING
+}
+
+fn set_production_bootstrap_operational_config(profile: &mut Profile) {
+    let fee = production_bootstrap_evm_fee();
+    profile.parameters.gas_limit_ceiling = fee.gas_limit_ceiling;
+    profile.parameters.max_fee_per_gas_ceiling = fee.max_fee_per_gas_ceiling;
+    profile.parameters.max_priority_fee_per_gas_ceiling = fee.max_priority_fee_per_gas_ceiling;
+    profile.parameters.l1_fee_per_transaction_ceiling_wei = fee.l1_fee_per_transaction_ceiling_wei;
+    profile.parameters.quote_validity_seconds = fee.quote_validity_seconds;
+    profile.parameters.gas_limit_multiplier_bps = fee.gas_limit_multiplier_bps;
+    profile.parameters.base_fee_multiplier_bps = fee.base_fee_multiplier_bps;
+    profile.parameters.l1_fee_multiplier_bps = fee.l1_fee_multiplier_bps;
+    profile.parameters.cycles_floor = PRODUCTION_BOOTSTRAP_CYCLES_FLOOR;
+    profile.parameters.settlement_cycle_ceiling = PRODUCTION_BOOTSTRAP_SETTLEMENT_CYCLE_CEILING;
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -1230,30 +1277,56 @@ fn percentile(values: &[u128], numerator: usize, denominator: usize) -> Result<u
 }
 
 fn derive(evidence: &Evidence) -> Result<DerivedParameters, String> {
-    if evidence.schema_version != 2 {
-        return Err("measurement evidence must use schema v2".into());
+    if evidence.schema_version != 3 {
+        return Err("measurement evidence must use schema v3".into());
     }
-    if evidence.governance_gas_used.len() < 10
-        || evidence.settlement_cycles.len() < 10
-        || evidence.base_fee_per_gas.len() < 10
-        || evidence.priority_fee_per_gas.len() < 10
-        || evidence.l1_fee_upper_bound_wei.len() < 10
+    if evidence.governance_gas_samples.len() < 10
+        || evidence.settlement_cycle_samples.len() < 10
+        || evidence.fee_samples.len() < 10
     {
         return Err(
             "governance gas, fee, and cycle evidence must contain at least 10 samples each".into(),
         );
     }
+    validate_sample_sources(
+        evidence
+            .governance_gas_samples
+            .iter()
+            .map(|sample| sample.source_ref.as_str()),
+    )?;
+    validate_sample_sources(
+        evidence
+            .settlement_cycle_samples
+            .iter()
+            .map(|sample| sample.source_ref.as_str()),
+    )?;
+    validate_sample_sources(
+        evidence
+            .fee_samples
+            .iter()
+            .map(|sample| sample.source_ref.as_str()),
+    )?;
+    validate_sample_sources(std::iter::once(
+        evidence.baseline_cycles_sample.source_ref.as_str(),
+    ))?;
     if evidence.ledger_fee == 0
-        || evidence.baseline_cycles_per_day == 0
+        || evidence.baseline_cycles_sample.value == 0
+        || evidence.baseline_cycles_sample.observed_at_unix == 0
         || evidence.expected_daily_settlements == 0
-        || evidence.governance_gas_used.contains(&0)
-        || evidence.settlement_cycles.contains(&0)
-        || evidence.base_fee_per_gas.is_empty()
-        || evidence.base_fee_per_gas.len() != evidence.priority_fee_per_gas.len()
-        || evidence.base_fee_per_gas.len() != evidence.l1_fee_upper_bound_wei.len()
-        || evidence.base_fee_per_gas.contains(&0)
-        || evidence.priority_fee_per_gas.contains(&0)
-        || evidence.l1_fee_upper_bound_wei.contains(&0)
+        || evidence
+            .governance_gas_samples
+            .iter()
+            .any(|sample| sample.value == 0 || sample.observed_at_unix == 0)
+        || evidence
+            .settlement_cycle_samples
+            .iter()
+            .any(|sample| sample.value == 0 || sample.observed_at_unix == 0)
+        || evidence.fee_samples.iter().any(|sample| {
+            sample.base_fee_per_gas == 0
+                || sample.priority_fee_per_gas == 0
+                || sample.l1_fee_upper_bound_wei == 0
+                || sample.observed_at_unix == 0
+        })
     {
         return Err("measurement evidence values must be positive and fee samples aligned".into());
     }
@@ -1261,43 +1334,73 @@ fn derive(evidence: &Evidence) -> Result<DerivedParameters, String> {
         "base-sepolia" | "mainnet-candidate" => 7,
         _ => return Err("unsupported evidence environment".into()),
     };
-    if evidence
-        .fee_observation_end_unix
-        .checked_sub(evidence.fee_observation_start_unix)
+    let fee_start = evidence
+        .fee_samples
+        .iter()
+        .map(|sample| sample.observed_at_unix)
+        .min()
+        .ok_or("missing fee samples")?;
+    let fee_end = evidence
+        .fee_samples
+        .iter()
+        .map(|sample| sample.observed_at_unix)
+        .max()
+        .ok_or("missing fee samples")?;
+    if fee_end
+        .checked_sub(fee_start)
         .is_none_or(|duration| duration < minimum_days * 24 * 60 * 60)
     {
         return Err(format!(
             "Base fee evidence must cover at least {minimum_days} days"
         ));
     }
-    let gas_max = *evidence
-        .governance_gas_used
+    let gas_max = evidence
+        .governance_gas_samples
         .iter()
+        .map(|sample| sample.value)
         .max()
         .ok_or("missing gas samples")?;
     let gas_limit_ceiling = checked_ratio_ceil(gas_max, 130, 100)?
         .checked_add(999)
         .map(|value| value / 1_000 * 1_000)
         .ok_or("gas limit overflow")?;
-    let max_priority_fee_per_gas_ceiling = percentile(&evidence.priority_fee_per_gas, 95, 100)?
+    let priority_fees = evidence
+        .fee_samples
+        .iter()
+        .map(|sample| sample.priority_fee_per_gas)
+        .collect::<Vec<_>>();
+    let base_fees = evidence
+        .fee_samples
+        .iter()
+        .map(|sample| sample.base_fee_per_gas)
+        .collect::<Vec<_>>();
+    let l1_fees = evidence
+        .fee_samples
+        .iter()
+        .map(|sample| sample.l1_fee_upper_bound_wei)
+        .collect::<Vec<_>>();
+    let max_priority_fee_per_gas_ceiling = percentile(&priority_fees, 95, 100)?
         .checked_mul(4)
         .ok_or("priority fee cap overflow")?;
-    let max_fee_per_gas_ceiling = percentile(&evidence.base_fee_per_gas, 99, 100)?
+    let max_fee_per_gas_ceiling = percentile(&base_fees, 99, 100)?
         .checked_mul(20)
         .ok_or("max fee cap overflow")?;
-    let l1_fee_per_transaction_ceiling_wei = percentile(&evidence.l1_fee_upper_bound_wei, 99, 100)?
+    let l1_fee_per_transaction_ceiling_wei = percentile(&l1_fees, 99, 100)?
         .checked_mul(10)
         .ok_or("L1 fee cap overflow")?;
-    let settlement_cycles_max = *evidence
-        .settlement_cycles
+    let settlement_cycles_max = evidence
+        .settlement_cycle_samples
         .iter()
+        .map(|sample| sample.value)
         .max()
         .ok_or("missing cycle samples")?;
     let settlement_cycle_ceiling = checked_ratio_ceil(settlement_cycles_max, 150, 100)?;
     let cycles_floor = evidence
         .expected_daily_settlements
         .checked_mul(settlement_cycles_max)
-        .and_then(|settlement_daily| settlement_daily.checked_add(evidence.baseline_cycles_per_day))
+        .and_then(|settlement_daily| {
+            settlement_daily.checked_add(evidence.baseline_cycles_sample.value)
+        })
         .and_then(|daily| daily.checked_mul(30))
         .and_then(|thirty_days| thirty_days.checked_mul(2))
         .ok_or("cycles floor overflow")?;
@@ -1318,6 +1421,97 @@ fn derive(evidence: &Evidence) -> Result<DerivedParameters, String> {
         cycles_floor,
         settlement_cycle_ceiling,
     })
+}
+
+fn validate_sample_sources<'a>(sources: impl Iterator<Item = &'a str>) -> Result<(), String> {
+    let mut unique = BTreeSet::new();
+    for source in sources {
+        if source.trim() != source
+            || source.is_empty()
+            || source.len() > 512
+            || source.starts_with("replace-with-")
+            || source.chars().any(char::is_control)
+            || !unique.insert(source)
+        {
+            return Err(
+                "measurement source_ref values must be non-empty, bounded, and unique per sample category"
+                    .into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_gate_b_operational_parameters(
+    profile: &Profile,
+    evidence: &Evidence,
+) -> Result<(), String> {
+    if evidence.environment != "mainnet-candidate" {
+        return Err("Gate B measurements must use the mainnet-candidate environment".into());
+    }
+    let derived = derive(evidence)?;
+    let expected_fee = EvmFeePolicy {
+        gas_limit_ceiling: derived.gas_limit_ceiling,
+        max_fee_per_gas_ceiling: derived.max_fee_per_gas_ceiling,
+        max_priority_fee_per_gas_ceiling: derived.max_priority_fee_per_gas_ceiling,
+        l1_fee_per_transaction_ceiling_wei: derived.l1_fee_per_transaction_ceiling_wei,
+        quote_validity_seconds: 90,
+        gas_limit_multiplier_bps: 13_000,
+        base_fee_multiplier_bps: 60_000,
+        l1_fee_multiplier_bps: 15_000,
+    };
+    if profile.parameters.ledger_fee != derived.ledger_fee
+        || profile.parameters.max_service_fee != derived.max_service_fee
+        || profile.parameters.service_fee != derived.service_fee
+        || profile.parameters.governance_evm_fee() != expected_fee
+        || profile.parameters.cycles_floor != derived.cycles_floor
+        || profile.parameters.settlement_cycle_ceiling != derived.settlement_cycle_ceiling
+    {
+        return Err(
+            "Gate B operational parameters must exactly match the measurement derivation".into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_measurement_time(
+    evidence: &Evidence,
+    evidence_manifest_created_at_unix: u64,
+    now: u64,
+) -> Result<(), String> {
+    let sample_times = evidence
+        .governance_gas_samples
+        .iter()
+        .map(|sample| sample.observed_at_unix)
+        .chain(
+            evidence
+                .fee_samples
+                .iter()
+                .map(|sample| sample.observed_at_unix),
+        )
+        .chain(
+            evidence
+                .settlement_cycle_samples
+                .iter()
+                .map(|sample| sample.observed_at_unix),
+        )
+        .chain(std::iter::once(
+            evidence.baseline_cycles_sample.observed_at_unix,
+        ))
+        .collect::<Vec<_>>();
+    if sample_times.is_empty()
+        || evidence_manifest_created_at_unix > now
+        || sample_times.iter().any(|observed_at| {
+            *observed_at == 0
+                || *observed_at > evidence_manifest_created_at_unix
+                || now.saturating_sub(*observed_at) > MAX_EVIDENCE_AGE_SECS
+        })
+    {
+        return Err(
+            "every fee/cycles sample must predate the evidence manifest and remain current".into(),
+        );
+    }
+    Ok(())
 }
 
 fn evm_address(value: &str) -> bool {
@@ -2171,7 +2365,7 @@ fn production_init_args(
 }
 
 fn validate_production_canister_plan(plan: &ProductionCanisterPlan) -> Result<Vec<u8>, String> {
-    if plan.schema_version != 1
+    if plan.schema_version != 2
         || plan.environment != "production"
         || plan.source_revision.trim().is_empty()
         || !valid_sha256(&plan.source_tree_sha256)
@@ -2179,6 +2373,15 @@ fn validate_production_canister_plan(plan: &ProductionCanisterPlan) -> Result<Ve
         || !valid_sha256(&plan.bridge_canister_wasm_sha256)
     {
         return Err("invalid production Canister install plan identity".into());
+    }
+    if plan.init.governance_evm_fee != production_bootstrap_evm_fee()
+        || plan.init.cycles_floor != PRODUCTION_BOOTSTRAP_CYCLES_FLOOR
+        || plan.init.settlement_cycle_ceiling != PRODUCTION_BOOTSTRAP_SETTLEMENT_CYCLE_CEILING
+    {
+        return Err(
+            "production Canister install plan must use the fixed bootstrap operational config"
+                .into(),
+        );
     }
     Encode!(&production_init_args(&plan.init)?).map_err(|error| error.to_string())
 }
@@ -2230,10 +2433,7 @@ fn validate_production_canister_plan_against_profile(
         && init.settlement_rate_limit_per_record == profile.rate_limits.settlement_per_record
         && init.settlement_retry_interval_seconds
             == profile.rate_limits.settlement_retry_interval_seconds
-        && init.governance_evm_fee == profile.parameters.governance_evm_fee()
         && init.governance_replacement == profile.governance_replacement
-        && init.cycles_floor == profile.parameters.cycles_floor
-        && init.settlement_cycle_ceiling == profile.parameters.settlement_cycle_ceiling
         && init.governance_principal == profile.governance_principal
         && init.pause_principal == profile.pause_principal
         && init.confirmation_relayer_principal == profile.confirmation_relayer_principal
@@ -2257,7 +2457,7 @@ fn render_production_canister_inputs(plan_path: &Path, output: &Path) -> Result<
     fs::rename(&temporary, &candid_path).map_err(|error| error.to_string())?;
     let candid_sha256 = hex(&Sha256::digest(&candid));
     let manifest = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "plan_sha256": plan_sha256,
         "source_revision": plan.source_revision,
         "source_tree_sha256": plan.source_tree_sha256,
@@ -2279,8 +2479,9 @@ fn validate_production_canister_receipt(
     validate_production_canister_plan_against_profile(&receipt.plan, profile)?;
     let plan_sha256 = hex(&canonical_sha256(&receipt.plan)?);
     let rpc_url_hash = hex(&canonical_sha256(&Vec::<String>::new())?);
-    let operational = expected_operational_config_sha256(
-        profile,
+    let operational = expected_bootstrap_operational_config_sha256(
+        &receipt.plan.init,
+        &receipt.governance_operator,
         receipt.mint_authorization_ttl_seconds,
         receipt.mint_authorization_epoch,
     )?;
@@ -2290,7 +2491,7 @@ fn validate_production_canister_receipt(
         &rpc_url_hash,
         &operational,
     )?;
-    if receipt.schema_version != 1
+    if receipt.schema_version != 2
         || !receipt.plan_sha256.eq_ignore_ascii_case(&plan_sha256)
         || receipt.source_revision != receipt.plan.source_revision
         || !receipt
@@ -2453,6 +2654,58 @@ fn validate_production_handover_receipt_files(
     Ok(hex(&Sha256::digest(
         fs::read(gate_a_receipt_path).map_err(|error| error.to_string())?,
     )))
+}
+
+fn validate_production_handover_candidate_files(
+    bundle_path: &Path,
+    final_profile_path: &Path,
+    measurements_path: &Path,
+    gate_a_receipt_path: &Path,
+    install_receipt_path: &Path,
+    deployment_binding_path: &Path,
+) -> Result<
+    (
+        ValidatedBundle,
+        GateAReceipt,
+        ProductionCanisterInstallReceipt,
+        Profile,
+    ),
+    String,
+> {
+    validate_production_handover_receipt_files(
+        bundle_path,
+        gate_a_receipt_path,
+        install_receipt_path,
+        deployment_binding_path,
+    )?;
+    let bundle = validate_bundle(bundle_path, false)?;
+    let gate_a_receipt: GateAReceipt = read_json(gate_a_receipt_path)?;
+    let install_receipt: ProductionCanisterInstallReceipt = read_json(install_receipt_path)?;
+    let final_profile: Profile = read_json(final_profile_path)?;
+    validate_profile(&final_profile, true)?;
+    let measurements: Evidence = read_json(measurements_path)?;
+    let now = now_unix()?;
+    validate_measurement_time(&measurements, now, now)?;
+    validate_gate_b_operational_parameters(&final_profile, &measurements)?;
+    if final_profile.deployment_block != gate_a_receipt.bridge_deployment_block_number
+        || profile_uses_production_bootstrap_operational_config(&final_profile)
+    {
+        return Err(
+            "handover final profile must bind the deployment block and derived operational values"
+                .into(),
+        );
+    }
+    let mut normalized = final_profile.clone();
+    set_production_bootstrap_operational_config(&mut normalized);
+    if !hex(&Sha256::digest(canonical_bytes(&normalized)?))
+        .eq_ignore_ascii_case(&gate_a_receipt.post_deploy_profile_sha256)
+    {
+        return Err(
+            "handover final profile differs from Gate A outside the deferred operational values"
+                .into(),
+        );
+    }
+    Ok((bundle, gate_a_receipt, install_receipt, final_profile))
 }
 
 fn decode_candid_hex<T: CandidType + for<'de> Deserialize<'de>>(value: &str) -> Result<T, String> {
@@ -2621,7 +2874,7 @@ fn write_production_canister_install_receipt(
     }
     let candid = validate_production_canister_plan(&plan)?;
     let receipt = ProductionCanisterInstallReceipt {
-        schema_version: 1,
+        schema_version: 2,
         plan_sha256: hex(&canonical_sha256(&plan)?),
         plan: plan.clone(),
         source_revision: plan.source_revision.clone(),
@@ -3375,19 +3628,22 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
     let profile: Profile = read_json(&root.join("profile.json"))?;
     validate_profile(&profile, !manifest.test_only)?;
     if gate_b {
-        let measurements: FeeCyclesMeasurementsReceipt =
-            read_json(&root.join("fee-cycles-measurements.json"))?;
-        if measurements.schema_version != 2
-            || measurements.sample_count < 10
-            || measurements.observation_days < 7
-        {
-            return Err("Gate B requires at least 7 days and 10 fee/cycles samples".into());
-        }
+        let measurements: Evidence = read_json(&root.join("fee-cycles-measurements.json"))?;
+        validate_measurement_time(&measurements, manifest.created_at_unix, now)?;
+        validate_gate_b_operational_parameters(&profile, &measurements)?;
         if profile.deployment_block == 0 {
             return Err("Gate B profile must bind the actual Bridge deployment block".into());
         }
+        if profile_uses_production_bootstrap_operational_config(&profile) {
+            return Err(
+                "Gate B must replace the bootstrap operational config with reviewed final values"
+                    .into(),
+            );
+        }
     } else if profile.deployment_block != 0 {
         return Err("Gate A profile must leave deployment_block unbound until deployment".into());
+    } else if !profile_uses_production_bootstrap_operational_config(&profile) {
+        return Err("Gate A profile must use the fixed bootstrap operational config".into());
     }
     let wasm_hash = artifacts["bridge-canister.wasm"].sha256.as_str();
     let bytecode_hash = artifacts["bridge-runtime.bin"].sha256.as_str();
@@ -3401,10 +3657,15 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
     }
     if gate_b {
         let receipt: GateAReceipt = read_json(&root.join("gate-a-receipt.json"))?;
-        let profile_hash = artifacts["profile.json"].sha256.as_str();
         let mut gate_a_profile = profile.clone();
         gate_a_profile.deployment_block = 0;
+        set_production_bootstrap_operational_config(&mut gate_a_profile);
         let expected_gate_a_profile_hash = hex(&canonical_sha256(&gate_a_profile)?);
+        let mut expected_post_deploy_profile = profile.clone();
+        set_production_bootstrap_operational_config(&mut expected_post_deploy_profile);
+        let expected_post_deploy_profile_hash = hex(&Sha256::digest(canonical_bytes(
+            &expected_post_deploy_profile,
+        )?));
         if receipt.schema_version != 2
             || !receipt.gate_a_manifest_sha256.eq_ignore_ascii_case(
                 manifest
@@ -3419,7 +3680,7 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
                 .eq_ignore_ascii_case(&manifest.source_tree_sha256)
             || !receipt
                 .post_deploy_profile_sha256
-                .eq_ignore_ascii_case(profile_hash)
+                .eq_ignore_ascii_case(&expected_post_deploy_profile_hash)
             || !receipt
                 .gate_a_profile_sha256
                 .eq_ignore_ascii_case(&expected_gate_a_profile_hash)
@@ -3541,6 +3802,55 @@ fn validate_empty_paused_production_status(status: &BridgeStatusLiveView) -> Res
         return Err("production Canister state is not paused, empty, and reserved".into());
     }
     Ok(())
+}
+
+fn expected_bootstrap_operational_config_sha256(
+    init: &ProductionCanisterInitInput,
+    governance_operator: &str,
+    mint_authorization_ttl_seconds: u64,
+    mint_authorization_epoch: u64,
+) -> Result<[u8; 32], String> {
+    let binding = OperationalConfigBindingView {
+        ledger_fee: init.expected_minimum_service_fee,
+        operational_config: OperationalConfigView {
+            mint_authorization_ttl_seconds,
+            mint_authorization_epoch,
+            governance_operator: decode_hex(governance_operator)?,
+            deposit_rate_limit_window_seconds: init.deposit_rate_limit_window_seconds,
+            deposit_rate_limit_global: init.deposit_rate_limit_global,
+            deposit_rate_limit_per_principal: init.deposit_rate_limit_per_principal,
+            notification_rate_limit_window_seconds: init.notification_rate_limit_window_seconds,
+            notification_rate_limit_global: init.notification_rate_limit_global,
+            notification_ingestion_rate_limit_global: init.notification_ingestion_rate_limit_global,
+            settlement_rate_limit_window_seconds: init.settlement_rate_limit_window_seconds,
+            settlement_rate_limit_global: init.settlement_rate_limit_global,
+            settlement_rate_limit_per_principal: init.settlement_rate_limit_per_principal,
+            settlement_rate_limit_per_record: init.settlement_rate_limit_per_record,
+            settlement_retry_interval_seconds: init.settlement_retry_interval_seconds,
+            governance_evm_fee: init.governance_evm_fee,
+            governance_replacement: init.governance_replacement,
+            cycles_floor: init.cycles_floor,
+            settlement_cycle_ceiling: init.settlement_cycle_ceiling,
+            governance_principal: Principal::from_text(&init.governance_principal)
+                .map_err(|error| error.to_string())?,
+            pause_principal: Principal::from_text(&init.pause_principal)
+                .map_err(|error| error.to_string())?,
+            confirmation_relayer_principal: Principal::from_text(
+                &init.confirmation_relayer_principal,
+            )
+            .map_err(|error| error.to_string())?,
+            fee_recipient: OperationalFeeRecipientView {
+                owner: Principal::from_text(&init.fee_recipient.owner)
+                    .map_err(|error| error.to_string())?,
+                subaccount: Vec::new(),
+            },
+        },
+    };
+    let encoded = Encode!(&binding).map_err(|error| error.to_string())?;
+    let mut digest = Sha256::new();
+    digest.update(OPERATIONAL_CONFIG_BINDING_DOMAIN);
+    digest.update(encoded);
+    Ok(digest.finalize().into())
 }
 
 fn expected_operational_config_sha256(
@@ -3722,8 +4032,9 @@ fn verify_production_canister_predeploy(
         return Err("production Canister left Bootstrap before Base deployment".into());
     }
     let observed = live_runtime_binding_from_view(&runtime);
-    let operational = expected_operational_config_sha256(
-        &profile,
+    let operational = expected_bootstrap_operational_config_sha256(
+        &receipt.plan.init,
+        &receipt.governance_operator,
         status.mint_authorization_ttl_seconds,
         status.mint_authorization_epoch,
     )?;
@@ -3808,22 +4119,24 @@ fn validate_production_handover_canister_state(
 
 fn verify_production_canister_handover(
     bundle_path: &Path,
+    final_profile_path: &Path,
+    measurements_path: &Path,
     gate_a_receipt_path: &Path,
     install_receipt_path: &Path,
     deployment_binding_path: &Path,
 ) -> Result<(), String> {
-    validate_production_handover_receipt_files(
-        bundle_path,
-        gate_a_receipt_path,
-        install_receipt_path,
-        deployment_binding_path,
-    )?;
-    let bundle = validate_bundle(bundle_path, false)?;
-    let gate_a_receipt: GateAReceipt = read_json(gate_a_receipt_path)?;
-    let install_receipt: ProductionCanisterInstallReceipt = read_json(install_receipt_path)?;
-    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+    let (bundle, gate_a_receipt, install_receipt, final_profile) =
+        validate_production_handover_candidate_files(
+            bundle_path,
+            final_profile_path,
+            measurements_path,
+            gate_a_receipt_path,
+            install_receipt_path,
+            deployment_binding_path,
+        )?;
+    let bridge = Principal::from_text(&final_profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
-    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let agent = mainnet_agent(&final_profile.ic_host, false)?;
     let (lifecycle_raw, attestation_raw, runtime_raw, status_raw, controllers, module_hash) =
         async_runtime()?.block_on(async {
             let empty = Encode!().map_err(|error| error.to_string())?;
@@ -3893,7 +4206,7 @@ fn verify_production_canister_handover(
         module_hash: &module_hash,
     };
     validate_production_handover_canister_state(
-        &bundle.profile,
+        &final_profile,
         &install_receipt,
         &gate_a_receipt,
         &observation,
@@ -3902,7 +4215,7 @@ fn verify_production_canister_handover(
     )?;
     println!(
         "production_canister_handover=verified canister={}",
-        bundle.profile.bridge_canister_id
+        final_profile.bridge_canister_id
     );
     Ok(())
 }
@@ -4768,12 +5081,24 @@ fn run() -> Result<(), String> {
         Some("verify-production-canister-predeploy") if args.len() == 4 => {
             verify_production_canister_predeploy(Path::new(&args[2]), Path::new(&args[3]))?;
         }
-        Some("verify-production-canister-handover") if args.len() == 6 => {
+        Some("validate-production-handover-candidate") if args.len() == 8 => {
+            validate_production_handover_candidate_files(
+                Path::new(&args[2]),
+                Path::new(&args[3]),
+                Path::new(&args[4]),
+                Path::new(&args[5]),
+                Path::new(&args[6]),
+                Path::new(&args[7]),
+            )?;
+        }
+        Some("verify-production-canister-handover") if args.len() == 8 => {
             verify_production_canister_handover(
                 Path::new(&args[2]),
                 Path::new(&args[3]),
                 Path::new(&args[4]),
                 Path::new(&args[5]),
+                Path::new(&args[6]),
+                Path::new(&args[7]),
             )?;
         }
         Some("storage-validation-complete") if args.len() == 3 => {
@@ -4856,7 +5181,7 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[3]
             );
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | validate-production-handover-candidate <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
     }
     Ok(())
 }
@@ -4910,6 +5235,49 @@ mod tests {
         let mut value = [0; 20];
         value[19] = seed;
         value
+    }
+
+    fn measurement_samples(value: u128, start: u64) -> Vec<MeasurementSample> {
+        (0..10)
+            .map(|index| MeasurementSample {
+                value,
+                observed_at_unix: start + index,
+                source_ref: format!("measurement-{index}"),
+            })
+            .collect()
+    }
+
+    fn fee_samples(base: u128, priority: u128, l1: u128, start: u64) -> Vec<FeeMeasurementSample> {
+        (0..10)
+            .map(|index| FeeMeasurementSample {
+                base_fee_per_gas: base,
+                priority_fee_per_gas: priority,
+                l1_fee_upper_bound_wei: l1,
+                observed_at_unix: if index == 9 {
+                    start + 7 * 24 * 60 * 60
+                } else {
+                    start + index
+                },
+                source_ref: format!("fee-{index}"),
+            })
+            .collect()
+    }
+
+    fn measurement_evidence(start: u64) -> Evidence {
+        Evidence {
+            schema_version: 3,
+            environment: "mainnet-candidate".into(),
+            ledger_fee: 100_000,
+            governance_gas_samples: measurement_samples(30_001, start),
+            fee_samples: fee_samples(10, 2, 5, start),
+            settlement_cycle_samples: measurement_samples(1_000, start),
+            baseline_cycles_sample: MeasurementSample {
+                value: 10_000,
+                observed_at_unix: start,
+                source_ref: "baseline-cycles".into(),
+            },
+            expected_daily_settlements: 4,
+        }
     }
 
     #[test]
@@ -5068,7 +5436,7 @@ mod tests {
 
     fn production_canister_plan(profile: &Profile) -> ProductionCanisterPlan {
         ProductionCanisterPlan {
-            schema_version: 1,
+            schema_version: 2,
             environment: "production".into(),
             source_revision: "a".repeat(40),
             source_tree_sha256: "b".repeat(64),
@@ -5117,10 +5485,10 @@ mod tests {
                 settlement_retry_interval_seconds: profile
                     .rate_limits
                     .settlement_retry_interval_seconds,
-                governance_evm_fee: profile.parameters.governance_evm_fee(),
+                governance_evm_fee: production_bootstrap_evm_fee(),
                 governance_replacement: profile.governance_replacement,
-                cycles_floor: profile.parameters.cycles_floor,
-                settlement_cycle_ceiling: profile.parameters.settlement_cycle_ceiling,
+                cycles_floor: PRODUCTION_BOOTSTRAP_CYCLES_FLOOR,
+                settlement_cycle_ceiling: PRODUCTION_BOOTSTRAP_SETTLEMENT_CYCLE_CEILING,
                 governance_principal: profile.governance_principal.clone(),
                 pause_principal: profile.pause_principal.clone(),
                 confirmation_relayer_principal: profile.confirmation_relayer_principal.clone(),
@@ -5137,8 +5505,17 @@ mod tests {
         let init_candid_sha256 = hex(&Sha256::digest(
             validate_production_canister_plan(&plan).unwrap(),
         ));
+        let mut runtime_binding = live_runtime_binding(profile);
+        runtime_binding.operational_config_sha256 =
+            hex(&expected_bootstrap_operational_config_sha256(
+                &plan.init,
+                &profile.governance_operator,
+                900,
+                7,
+            )
+            .unwrap());
         ProductionCanisterInstallReceipt {
-            schema_version: 1,
+            schema_version: 2,
             plan_sha256: hex(&canonical_sha256(&plan).unwrap()),
             plan: plan.clone(),
             source_revision: plan.source_revision.clone(),
@@ -5147,7 +5524,7 @@ mod tests {
             installer_principal: test_principal(31),
             module_sha256: profile.bridge_canister_wasm_sha256.clone(),
             init_candid_sha256,
-            runtime_binding: live_runtime_binding(profile),
+            runtime_binding,
             governance_operator: profile.governance_operator.clone(),
             mint_authorization_ttl_seconds: 900,
             mint_authorization_epoch: 7,
@@ -5171,6 +5548,17 @@ mod tests {
         assert_eq!(decoded.deployment_instance_id.len(), 32);
         assert!(decoded.custom_evm_rpc_urls.is_empty());
 
+        let mut obsolete_plan = plan.clone();
+        obsolete_plan.schema_version = 1;
+        assert!(validate_production_canister_plan(&obsolete_plan).is_err());
+
+        let mut premature_final_values = plan.clone();
+        premature_final_values.init.governance_evm_fee = profile.parameters.governance_evm_fee();
+        premature_final_values.init.cycles_floor = profile.parameters.cycles_floor;
+        premature_final_values.init.settlement_cycle_ceiling =
+            profile.parameters.settlement_cycle_ceiling;
+        assert!(validate_production_canister_plan(&premature_final_values).is_err());
+
         let mut unsafe_plan = plan;
         unsafe_plan.init.custom_evm_rpc_urls = vec!["https://unreviewed.example".into()];
         assert!(validate_production_canister_plan(&unsafe_plan).is_err());
@@ -5181,14 +5569,14 @@ mod tests {
         let profile = valid_profile();
         let mut receipt = production_canister_receipt(&profile);
         assert!(validate_production_canister_receipt(&profile, &receipt).is_ok());
+        let mut obsolete_receipt = receipt.clone();
+        obsolete_receipt.schema_version = 1;
+        assert!(validate_production_canister_receipt(&profile, &obsolete_receipt).is_err());
         receipt.deposits_paused = false;
         assert!(validate_production_canister_receipt(&profile, &receipt).is_err());
         receipt.deposits_paused = true;
         receipt.plan.init.cycles_floor += 1;
         receipt.plan_sha256 = hex(&canonical_sha256(&receipt.plan).unwrap());
-        receipt.init_candid_sha256 = hex(&Sha256::digest(
-            validate_production_canister_plan(&receipt.plan).unwrap(),
-        ));
         assert!(validate_production_canister_receipt(&profile, &receipt).is_err());
     }
 
@@ -5554,20 +5942,7 @@ mod tests {
 
     #[test]
     fn conservative_derivation_uses_exact_boundaries() {
-        let evidence = Evidence {
-            schema_version: 2,
-            environment: "mainnet-candidate".into(),
-            ledger_fee: 100_000,
-            governance_gas_used: vec![30_001; 10],
-            fee_observation_start_unix: 1_700_000_000,
-            fee_observation_end_unix: 1_700_000_000 + 7 * 24 * 60 * 60,
-            base_fee_per_gas: vec![10; 10],
-            priority_fee_per_gas: vec![2; 10],
-            l1_fee_upper_bound_wei: vec![5; 10],
-            settlement_cycles: vec![1_000; 10],
-            baseline_cycles_per_day: 10_000,
-            expected_daily_settlements: 4,
-        };
+        let evidence = measurement_evidence(1_700_000_000);
         let result = derive(&evidence).unwrap();
         assert_eq!(result.gas_limit_ceiling, 40_000);
         assert_eq!(result.max_fee_per_gas_ceiling, 200);
@@ -5578,44 +5953,125 @@ mod tests {
     }
 
     #[test]
+    fn gate_b_operational_parameters_are_fully_bound_to_measurements() {
+        let evidence = measurement_evidence(1_700_000_000);
+        let derived = derive(&evidence).unwrap();
+        let mut profile = valid_profile();
+        profile.parameters.gas_limit_ceiling = derived.gas_limit_ceiling;
+        profile.parameters.max_fee_per_gas_ceiling = derived.max_fee_per_gas_ceiling;
+        profile.parameters.max_priority_fee_per_gas_ceiling =
+            derived.max_priority_fee_per_gas_ceiling;
+        profile.parameters.l1_fee_per_transaction_ceiling_wei =
+            derived.l1_fee_per_transaction_ceiling_wei;
+        profile.parameters.cycles_floor = derived.cycles_floor;
+        profile.parameters.settlement_cycle_ceiling = derived.settlement_cycle_ceiling;
+        assert!(validate_gate_b_operational_parameters(&profile, &evidence).is_ok());
+
+        macro_rules! assert_drift_rejected {
+            ($field:ident) => {{
+                let mut drift = profile.clone();
+                drift.parameters.$field += 1;
+                assert!(validate_gate_b_operational_parameters(&drift, &evidence).is_err());
+            }};
+        }
+        assert_drift_rejected!(ledger_fee);
+        assert_drift_rejected!(max_service_fee);
+        assert_drift_rejected!(service_fee);
+        assert_drift_rejected!(gas_limit_ceiling);
+        assert_drift_rejected!(max_fee_per_gas_ceiling);
+        assert_drift_rejected!(max_priority_fee_per_gas_ceiling);
+        assert_drift_rejected!(l1_fee_per_transaction_ceiling_wei);
+        assert_drift_rejected!(quote_validity_seconds);
+        assert_drift_rejected!(gas_limit_multiplier_bps);
+        assert_drift_rejected!(base_fee_multiplier_bps);
+        assert_drift_rejected!(l1_fee_multiplier_bps);
+        assert_drift_rejected!(cycles_floor);
+        assert_drift_rejected!(settlement_cycle_ceiling);
+
+        let mut wrong_environment = evidence;
+        wrong_environment.environment = "base-sepolia".into();
+        assert!(validate_gate_b_operational_parameters(&profile, &wrong_environment).is_err());
+    }
+
+    #[test]
     fn derivation_rejects_incomplete_stale_and_obsolete_measurement_shapes() {
-        let mut evidence = Evidence {
-            schema_version: 2,
-            environment: "mainnet-candidate".into(),
-            ledger_fee: 100_000,
-            governance_gas_used: vec![10_000; 10],
-            fee_observation_start_unix: 1_700_000_000,
-            fee_observation_end_unix: 1_700_000_000 + 7 * 24 * 60 * 60,
-            base_fee_per_gas: vec![10; 10],
-            priority_fee_per_gas: vec![2; 10],
-            l1_fee_upper_bound_wei: vec![5; 10],
-            settlement_cycles: vec![1_001; 10],
-            baseline_cycles_per_day: 10_000,
-            expected_daily_settlements: 4,
-        };
+        let mut evidence = measurement_evidence(1_700_000_000);
+        evidence.governance_gas_samples = measurement_samples(10_000, 1_700_000_000);
+        evidence.settlement_cycle_samples = measurement_samples(1_001, 1_700_000_000);
         let mut value = serde_json::to_value(&evidence).unwrap();
         value["observed_daily_cycles"] = Value::from(10_000);
         assert!(serde_json::from_value::<Evidence>(value).is_err());
+        assert!(serde_json::from_str::<Evidence>(
+            r#"{"schema_version":2,"sample_count":10,"observation_days":7}"#
+        )
+        .is_err());
 
         let mut short = serde_json::to_value(&evidence).unwrap();
-        short["governance_gas_used"] = serde_json::to_value(vec![10_000u128; 9]).unwrap();
+        short["governance_gas_samples"] =
+            serde_json::to_value(&evidence.governance_gas_samples[..9]).unwrap();
         assert!(derive(&serde_json::from_value(short).unwrap()).is_err());
 
         let mut obsolete_schema = serde_json::to_value(&evidence).unwrap();
-        obsolete_schema["schema_version"] = Value::from(1);
+        obsolete_schema["schema_version"] = Value::from(2);
         assert!(derive(&serde_json::from_value(obsolete_schema).unwrap()).is_err());
 
         let mut obsolete_field = serde_json::to_value(&evidence).unwrap();
-        obsolete_field["base_fee_per_gas_30d"] = obsolete_field["base_fee_per_gas"].clone();
+        obsolete_field["base_fee_per_gas"] = serde_json::to_value(vec![10u128; 10]).unwrap();
         assert!(serde_json::from_value::<Evidence>(obsolete_field).is_err());
 
         let mut short_period = serde_json::to_value(&evidence).unwrap();
-        short_period["fee_observation_end_unix"] = Value::from(1_700_000_001u64);
+        short_period["fee_samples"][9]["observed_at_unix"] = Value::from(1_700_000_001u64);
         assert!(derive(&serde_json::from_value(short_period).unwrap()).is_err());
 
+        let mut duplicate_source = serde_json::to_value(&evidence).unwrap();
+        duplicate_source["fee_samples"][1]["source_ref"] =
+            duplicate_source["fee_samples"][0]["source_ref"].clone();
+        assert!(derive(&serde_json::from_value(duplicate_source).unwrap()).is_err());
+
+        let mut empty_source = serde_json::to_value(&evidence).unwrap();
+        empty_source["settlement_cycle_samples"][0]["source_ref"] = Value::from("");
+        assert!(derive(&serde_json::from_value(empty_source).unwrap()).is_err());
+
+        let measurement_end = evidence
+            .fee_samples
+            .iter()
+            .map(|sample| sample.observed_at_unix)
+            .max()
+            .unwrap();
+        let manifest_created = measurement_end + 10;
+        assert!(validate_measurement_time(&evidence, manifest_created, manifest_created).is_ok());
+        assert!(
+            validate_measurement_time(&evidence, measurement_end - 1, manifest_created,).is_err()
+        );
+        assert!(
+            validate_measurement_time(&evidence, manifest_created + 1, manifest_created).is_err()
+        );
+        evidence.governance_gas_samples[0].observed_at_unix = manifest_created + 1;
+        assert!(validate_measurement_time(&evidence, manifest_created, manifest_created).is_err());
+        evidence.governance_gas_samples[0].observed_at_unix = 1_700_000_000;
+        assert!(validate_measurement_time(
+            &evidence,
+            manifest_created,
+            measurement_end + MAX_EVIDENCE_AGE_SECS + 1,
+        )
+        .is_err());
+
         let mut zero = serde_json::to_value(&evidence).unwrap();
-        zero["baseline_cycles_per_day"] = Value::from(0);
+        zero["baseline_cycles_sample"]["value"] = Value::from("0");
         assert!(derive(&serde_json::from_value(zero).unwrap()).is_err());
+
+        let mut placeholder = serde_json::to_value(&evidence).unwrap();
+        placeholder["baseline_cycles_sample"]["source_ref"] =
+            Value::from("replace-with-baseline-reference");
+        assert!(derive(&serde_json::from_value(placeholder).unwrap()).is_err());
+
+        let mut whitespace = serde_json::to_value(&evidence).unwrap();
+        whitespace["governance_gas_samples"][0]["source_ref"] = Value::from(" evidence ");
+        assert!(derive(&serde_json::from_value(whitespace).unwrap()).is_err());
+
+        let mut control = serde_json::to_value(&evidence).unwrap();
+        control["fee_samples"][0]["source_ref"] = Value::from("evidence\nref");
+        assert!(derive(&serde_json::from_value(control).unwrap()).is_err());
 
         evidence.expected_daily_settlements = u128::MAX;
         assert!(derive(&evidence).is_err());
@@ -6068,7 +6524,26 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             artifact_set_sha256: hex(&Sha256::digest(serde_json::to_vec(&ui_files).unwrap())),
             files: ui_files,
         };
+        let measurement_start = now - 7 * 24 * 60 * 60 - 10;
+        let mut measurements = measurement_evidence(measurement_start);
+        measurements.ledger_fee = profile.parameters.ledger_fee;
+        measurements.governance_gas_samples = measurement_samples(1, measurement_start);
+        measurements.fee_samples = fee_samples(1, 1, 1, measurement_start);
+        measurements.settlement_cycle_samples = measurement_samples(1, measurement_start);
+        measurements.baseline_cycles_sample.value = 1;
+        measurements.expected_daily_settlements = 1;
+        let derived_measurements = derive(&measurements).unwrap();
+        profile.parameters.gas_limit_ceiling = derived_measurements.gas_limit_ceiling;
+        profile.parameters.max_fee_per_gas_ceiling = derived_measurements.max_fee_per_gas_ceiling;
+        profile.parameters.max_priority_fee_per_gas_ceiling =
+            derived_measurements.max_priority_fee_per_gas_ceiling;
+        profile.parameters.l1_fee_per_transaction_ceiling_wei =
+            derived_measurements.l1_fee_per_transaction_ceiling_wei;
+        profile.parameters.cycles_floor = derived_measurements.cycles_floor;
+        profile.parameters.settlement_cycle_ceiling = derived_measurements.settlement_cycle_ceiling;
         profile.bsns_runtime_template_sha256 = hex(&Sha256::digest(b"bsns-runtime"));
+        let final_operational_parameters = profile.parameters.clone();
+        set_production_bootstrap_operational_config(&mut profile);
         let mut docs = vec![
             ("profile.json", serde_json::to_vec(&profile).unwrap()),
             ("rpc-e2e.json", fs::read(root.join("rpc-e2e.json")).unwrap()),
@@ -6085,7 +6560,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             ("monitoring-receipt.json", monitoring_receipt_bytes),
             (
                 "fee-cycles-measurements.json",
-                br#"{"schema_version":2,"sample_count":10,"observation_days":7}"#.to_vec(),
+                serde_json::to_vec(&measurements).unwrap(),
             ),
             (
                 "provider-independence.json",
@@ -6161,7 +6636,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             Err(error) => error,
         };
         assert!(premature_error.contains("leave deployment_block unbound"));
-        fs::write(root.join("profile.json"), planned_profile).unwrap();
+        fs::write(root.join("profile.json"), &planned_profile).unwrap();
         fs::write(
             root.join("release-manifest.json"),
             serde_json::to_vec(&gate_a_manifest).unwrap(),
@@ -6187,6 +6662,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         let timelock_deployment_block_number = 1;
         let timelock_deployment_block_hash = format!("0x{}", "dd".repeat(32));
         profile.deployment_block = bridge_deployment_block_number;
+        let gate_a_post_deploy_profile = profile.clone();
         let post_deploy_profile = canonical_bytes(&profile).unwrap();
         fs::write(root.join("profile.json"), &post_deploy_profile).unwrap();
         let post_deploy_profile_sha256 = hex(&Sha256::digest(&post_deploy_profile));
@@ -6201,6 +6677,15 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         let canister_init_candid_sha256 = hex(&Sha256::digest(
             validate_production_canister_plan(&canister_plan).unwrap(),
         ));
+        let mut canister_runtime_binding = live_runtime_binding(&profile);
+        canister_runtime_binding.operational_config_sha256 =
+            hex(&expected_bootstrap_operational_config_sha256(
+                &canister_plan.init,
+                &profile.governance_operator,
+                900,
+                7,
+            )
+            .unwrap());
         let receipt = GateAReceipt {
             schema_version: 2,
             gate_a_manifest_sha256: gate_a.manifest_sha256.clone(),
@@ -6218,7 +6703,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             timelock_deployment_block_number,
             timelock_deployment_block_hash,
             canister_install: ProductionCanisterInstallReceipt {
-                schema_version: 1,
+                schema_version: 2,
                 plan_sha256: canister_plan_sha256,
                 plan: canister_plan,
                 source_revision: "a".repeat(40),
@@ -6227,7 +6712,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 installer_principal: test_principal(31),
                 module_sha256: profile.bridge_canister_wasm_sha256.clone(),
                 init_candid_sha256: canister_init_candid_sha256,
-                runtime_binding: live_runtime_binding(&profile),
+                runtime_binding: canister_runtime_binding,
                 governance_operator: profile.governance_operator.clone(),
                 mint_authorization_ttl_seconds: 900,
                 mint_authorization_epoch: 7,
@@ -6303,8 +6788,67 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             &forged_binding,
         )
         .is_err());
+        profile.parameters = final_operational_parameters;
+        let final_profile_bytes = serde_json::to_vec(&profile).unwrap();
+        fs::write(root.join("profile.json"), &final_profile_bytes).unwrap();
+        artifacts
+            .iter_mut()
+            .find(|artifact| artifact.path == "profile.json")
+            .unwrap()
+            .sha256 = hex(&Sha256::digest(&final_profile_bytes));
         let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
         fs::write(root.join("gate-a-receipt.json"), &receipt_bytes).unwrap();
+        let gate_a_root = root.join("gate-a-bundle");
+        fs::create_dir(&gate_a_root).unwrap();
+        fs::write(gate_a_root.join("profile.json"), &planned_profile).unwrap();
+        for name in GATE_A_ARTIFACTS.iter().skip(1) {
+            fs::copy(root.join(name), gate_a_root.join(name)).unwrap();
+        }
+        fs::write(
+            gate_a_root.join("release-manifest.json"),
+            serde_json::to_vec(&gate_a_manifest).unwrap(),
+        )
+        .unwrap();
+        let final_profile_path = root.join("final-profile.json");
+        fs::write(&final_profile_path, &final_profile_bytes).unwrap();
+        let install_receipt_path = root.join("install-receipt.json");
+        fs::write(
+            &install_receipt_path,
+            serde_json::to_vec(&receipt.canister_install).unwrap(),
+        )
+        .unwrap();
+        let deployment_binding_path = root.join("deployment-binding.json");
+        fs::write(
+            &deployment_binding_path,
+            canonical_bytes(&deployment_binding).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_production_handover_candidate_files(
+            &gate_a_root,
+            &final_profile_path,
+            &root.join("fee-cycles-measurements.json"),
+            &root.join("gate-a-receipt.json"),
+            &install_receipt_path,
+            &deployment_binding_path,
+        )
+        .is_ok());
+        let mut drifted_final_profile = profile.clone();
+        drifted_final_profile.parameters.cycles_floor += 1;
+        fs::write(
+            &final_profile_path,
+            serde_json::to_vec(&drifted_final_profile).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_production_handover_candidate_files(
+            &gate_a_root,
+            &final_profile_path,
+            &root.join("fee-cycles-measurements.json"),
+            &root.join("gate-a-receipt.json"),
+            &install_receipt_path,
+            &deployment_binding_path,
+        )
+        .is_err());
+        fs::write(&final_profile_path, &final_profile_bytes).unwrap();
         artifacts.push(ArtifactDigest {
             path: "gate-a-receipt.json".into(),
             sha256: hex(&Sha256::digest(receipt_bytes)),
@@ -6325,6 +6869,25 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
+        let mut expected_gate_a_profile = profile.clone();
+        expected_gate_a_profile.deployment_block = 0;
+        set_production_bootstrap_operational_config(&mut expected_gate_a_profile);
+        assert_eq!(
+            receipt.gate_a_profile_sha256,
+            hex(&canonical_sha256(&expected_gate_a_profile).unwrap())
+        );
+        let mut expected_post_deploy_profile = profile.clone();
+        set_production_bootstrap_operational_config(&mut expected_post_deploy_profile);
+        assert_eq!(
+            serde_json::to_value(&gate_a_post_deploy_profile).unwrap(),
+            serde_json::to_value(&expected_post_deploy_profile).unwrap()
+        );
+        assert_eq!(
+            receipt.post_deploy_profile_sha256,
+            hex(&Sha256::digest(
+                canonical_bytes(&expected_post_deploy_profile).unwrap()
+            ))
+        );
         let bundle = validate_bundle(&root, true).unwrap();
         // Cryptographic live inputs are verified against the network by `verify-live`;
         // this fixture exercises only deterministic bundle inputs.

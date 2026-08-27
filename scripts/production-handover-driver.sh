@@ -2,7 +2,7 @@
 # Atomically transfer the paused production Bridge Canister to the KINIC SNS Root only.
 set -euo pipefail
 [[ $# -eq 0 ]] || {
-  echo "usage: BRIDGE_GATE_A_RECEIPT=gate-a-receipt.json BRIDGE_CANISTER_INSTALL_RECEIPT=install-receipt.json BRIDGE_DEPLOYMENT_BINDING_FILE=deployment-binding.json $0" >&2
+  echo "usage: BRIDGE_GATE_A_RECEIPT=gate-a-receipt.json BRIDGE_FINAL_PROFILE=final-profile.json BRIDGE_FEE_CYCLES_MEASUREMENTS=fee-cycles-measurements.json BRIDGE_CANISTER_INSTALL_RECEIPT=install-receipt.json BRIDGE_DEPLOYMENT_BINDING_FILE=deployment-binding.json $0" >&2
   exit 2
 }
 
@@ -12,6 +12,8 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 
 : "${BRIDGE_GATE_A_MANIFEST_SHA256:?missing Gate A approval}"
 : "${BRIDGE_RELEASE_BUNDLE:?missing release bundle}"
+: "${BRIDGE_FINAL_PROFILE:?missing measurement-derived final profile}"
+: "${BRIDGE_FEE_CYCLES_MEASUREMENTS:?missing raw fee/cycles measurements}"
 : "${BRIDGE_CANISTER_INSTALL_RECEIPT:?missing verified production Canister install receipt}"
 : "${BRIDGE_GATE_A_RECEIPT:?missing completed schema-2 Gate A receipt}"
 : "${BRIDGE_DEPLOYMENT_BINDING_FILE:?missing canonical Base deployment binding}"
@@ -28,8 +30,9 @@ for tool in icp python3; do command -v "$tool" >/dev/null || { echo "$tool is re
 
 production_validate_gate gate-a "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_A_MANIFEST_SHA256" \
   "$BRIDGE_CANISTER_INSTALL_RECEIPT" "$BRIDGE_GATE_A_RECEIPT" \
-  "$BRIDGE_DEPLOYMENT_BINDING_FILE"
-PROFILE="$BRIDGE_RELEASE_BUNDLE/profile.json"
+  "$BRIDGE_DEPLOYMENT_BINDING_FILE" "$BRIDGE_FINAL_PROFILE" \
+  "$BRIDGE_FEE_CYCLES_MEASUREMENTS"
+PROFILE="$BRIDGE_FINAL_PROFILE"
 read -r CANISTER ROOT CYCLES_FLOOR < <(python3 -c '
 import json,sys
 p=json.load(open(sys.argv[1])); print(p["bridge_canister_id"],p["root_canister_id"],p["parameters"]["cycles_floor"])

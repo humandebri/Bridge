@@ -123,6 +123,38 @@ pub struct OperationalConfigArgs {
     pub settlement_cycle_ceiling: u128,
 }
 
+impl OperationalConfigArgs {
+    pub fn validate_operational(&self) -> Result<(), &'static str> {
+        let fee = self.governance_evm_fee;
+        if fee.gas_limit_ceiling == 0
+            || fee.max_fee_per_gas_ceiling == 0
+            || fee.max_priority_fee_per_gas_ceiling > fee.max_fee_per_gas_ceiling
+            || fee.l1_fee_per_transaction_ceiling_wei == 0
+            || !(30..=300).contains(&fee.quote_validity_seconds)
+            || !(10_000..=20_000).contains(&fee.gas_limit_multiplier_bps)
+            || !(10_000..=100_000).contains(&fee.base_fee_multiplier_bps)
+            || !(10_000..=30_000).contains(&fee.l1_fee_multiplier_bps)
+        {
+            return Err("EVM fee policy is outside the supported safety bounds");
+        }
+        if self.cycles_floor == 0 || self.settlement_cycle_ceiling == 0 {
+            return Err("cycles limits must be non-zero");
+        }
+        Ok(())
+    }
+
+    pub fn validate_seal_candidate(&self) -> Result<(), &'static str> {
+        self.validate_operational()?;
+        if self.governance_evm_fee == PRODUCTION_BOOTSTRAP_EVM_FEE
+            && self.cycles_floor == PRODUCTION_BOOTSTRAP_CYCLES_FLOOR
+            && self.settlement_cycle_ceiling == PRODUCTION_BOOTSTRAP_SETTLEMENT_CYCLE_CEILING
+        {
+            return Err("production bootstrap operational config cannot be sealed");
+        }
+        Ok(())
+    }
+}
+
 #[cfg(feature = "test-deployment")]
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct StagingUpgradeArgs {
@@ -207,6 +239,19 @@ pub struct EvmFeePolicy {
     pub base_fee_multiplier_bps: u32,
     pub l1_fee_multiplier_bps: u32,
 }
+
+pub const PRODUCTION_BOOTSTRAP_EVM_FEE: EvmFeePolicy = EvmFeePolicy {
+    gas_limit_ceiling: 1,
+    max_fee_per_gas_ceiling: 1,
+    max_priority_fee_per_gas_ceiling: 0,
+    l1_fee_per_transaction_ceiling_wei: 1,
+    quote_validity_seconds: 30,
+    gas_limit_multiplier_bps: 10_000,
+    base_fee_multiplier_bps: 10_000,
+    l1_fee_multiplier_bps: 10_000,
+};
+pub const PRODUCTION_BOOTSTRAP_CYCLES_FLOOR: u128 = 1;
+pub const PRODUCTION_BOOTSTRAP_SETTLEMENT_CYCLE_CEILING: u128 = u128::MAX;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ImmutableBridgeConfig {
@@ -470,6 +515,17 @@ impl Default for GovernanceReplacementPolicy {
 }
 
 impl BridgeInitArgs {
+    #[cfg(not(feature = "test-deployment"))]
+    pub fn validate_production_bootstrap_operational_config(&self) -> Result<(), &'static str> {
+        if self.governance_evm_fee != PRODUCTION_BOOTSTRAP_EVM_FEE
+            || self.cycles_floor != PRODUCTION_BOOTSTRAP_CYCLES_FLOOR
+            || self.settlement_cycle_ceiling != PRODUCTION_BOOTSTRAP_SETTLEMENT_CYCLE_CEILING
+        {
+            return Err("production install must use the fixed bootstrap operational config");
+        }
+        Ok(())
+    }
+
     pub fn with_operational_config(&self, value: OperationalConfigArgs) -> Self {
         let mut next = self.clone();
         next.governance_evm_fee = value.governance_evm_fee;
@@ -572,26 +628,17 @@ impl BridgeInitArgs {
         {
             return Err("settlement policy must satisfy 60 <= rate window <= 3600, 1 <= per-record <= per-principal <= global <= 100, and 1 <= retry interval <= 900");
         }
-        let fee = self.governance_evm_fee;
-        if fee.gas_limit_ceiling == 0
-            || fee.max_fee_per_gas_ceiling == 0
-            || fee.max_priority_fee_per_gas_ceiling > fee.max_fee_per_gas_ceiling
-            || fee.l1_fee_per_transaction_ceiling_wei == 0
-            || !(30..=300).contains(&fee.quote_validity_seconds)
-            || !(10_000..=20_000).contains(&fee.gas_limit_multiplier_bps)
-            || !(10_000..=100_000).contains(&fee.base_fee_multiplier_bps)
-            || !(10_000..=30_000).contains(&fee.l1_fee_multiplier_bps)
-        {
-            return Err("EVM fee policy is outside the supported safety bounds");
+        OperationalConfigArgs {
+            governance_evm_fee: self.governance_evm_fee,
+            cycles_floor: self.cycles_floor,
+            settlement_cycle_ceiling: self.settlement_cycle_ceiling,
         }
+        .validate_operational()?;
         let policy = self.governance_replacement;
         if !(1..=8).contains(&policy.max_replacements)
             || !(1_000..=5_000).contains(&policy.fee_bump_bps)
         {
             return Err("governance replacement policy is outside the supported safety bounds");
-        }
-        if self.cycles_floor == 0 || self.settlement_cycle_ceiling == 0 {
-            return Err("cycles limits must be non-zero");
         }
         if self.governance_principal == Principal::anonymous()
             || self.pause_principal == Principal::anonymous()
@@ -801,6 +848,86 @@ mod tests {
         args = valid_args();
         args.governance_evm_fee.l1_fee_per_transaction_ceiling_wei = 0;
         assert!(args.validate().is_err());
+    }
+
+    #[cfg(not(feature = "test-deployment"))]
+    #[test]
+    fn production_bootstrap_operational_config_is_exact_and_fail_closed() {
+        let mut args = valid_args();
+        args.governance_evm_fee = PRODUCTION_BOOTSTRAP_EVM_FEE;
+        args.cycles_floor = PRODUCTION_BOOTSTRAP_CYCLES_FLOOR;
+        args.settlement_cycle_ceiling = PRODUCTION_BOOTSTRAP_SETTLEMENT_CYCLE_CEILING;
+        assert_eq!(args.validate(), Ok(()));
+        assert_eq!(
+            args.validate_production_bootstrap_operational_config(),
+            Ok(())
+        );
+        let bootstrap = OperationalConfigArgs {
+            governance_evm_fee: args.governance_evm_fee,
+            cycles_floor: args.cycles_floor,
+            settlement_cycle_ceiling: args.settlement_cycle_ceiling,
+        };
+        assert!(bootstrap.validate_seal_candidate().is_err());
+        let mut near_bootstrap = Vec::new();
+        let mut candidate = bootstrap;
+        candidate.governance_evm_fee.gas_limit_ceiling += 1;
+        near_bootstrap.push(candidate);
+        let mut candidate = bootstrap;
+        candidate.governance_evm_fee.max_fee_per_gas_ceiling += 1;
+        near_bootstrap.push(candidate);
+        let mut candidate = bootstrap;
+        candidate
+            .governance_evm_fee
+            .max_priority_fee_per_gas_ceiling += 1;
+        near_bootstrap.push(candidate);
+        let mut candidate = bootstrap;
+        candidate
+            .governance_evm_fee
+            .l1_fee_per_transaction_ceiling_wei += 1;
+        near_bootstrap.push(candidate);
+        let mut candidate = bootstrap;
+        candidate.governance_evm_fee.quote_validity_seconds += 1;
+        near_bootstrap.push(candidate);
+        let mut candidate = bootstrap;
+        candidate.governance_evm_fee.gas_limit_multiplier_bps += 1;
+        near_bootstrap.push(candidate);
+        let mut candidate = bootstrap;
+        candidate.governance_evm_fee.base_fee_multiplier_bps += 1;
+        near_bootstrap.push(candidate);
+        let mut candidate = bootstrap;
+        candidate.governance_evm_fee.l1_fee_multiplier_bps += 1;
+        near_bootstrap.push(candidate);
+        let mut candidate = bootstrap;
+        candidate.cycles_floor += 1;
+        near_bootstrap.push(candidate);
+        let mut candidate = bootstrap;
+        candidate.settlement_cycle_ceiling -= 1;
+        near_bootstrap.push(candidate);
+        assert!(near_bootstrap
+            .into_iter()
+            .all(|candidate| candidate.validate_seal_candidate().is_ok()));
+        assert_eq!(
+            args.reserve_policy().required_cycles(0, 0, 0),
+            Ok(PRODUCTION_BOOTSTRAP_CYCLES_FLOOR)
+        );
+        assert!(args.reserve_policy().required_cycles(0, 0, 1).is_err());
+
+        args.cycles_floor += 1;
+        assert!(args
+            .validate_production_bootstrap_operational_config()
+            .is_err());
+
+        args.cycles_floor = PRODUCTION_BOOTSTRAP_CYCLES_FLOOR;
+        args.governance_evm_fee.max_fee_per_gas_ceiling += 1;
+        assert!(args
+            .validate_production_bootstrap_operational_config()
+            .is_err());
+
+        args.governance_evm_fee = PRODUCTION_BOOTSTRAP_EVM_FEE;
+        args.settlement_cycle_ceiling -= 1;
+        assert!(args
+            .validate_production_bootstrap_operational_config()
+            .is_err());
     }
 
     #[test]
