@@ -41,7 +41,7 @@ LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs,path::Path};
 fn copy_dir(from:&Path,to:&Path){fs::create_dir_all(to).unwrap();for e in fs::read_dir(from).unwrap(){let e=e.unwrap();let d=to.join(e.file_name());if e.path().is_dir(){copy_dir(&e.path(),&d)}else{fs::copy(e.path(),d).unwrap();}}}
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if let Ok(trace)=env::var("TRACE"){use std::io::Write;writeln!(fs::OpenOptions::new().create(true).append(true).open(trace).unwrap(),"profile {}",a.join(" ")).unwrap()}if a[0]=="render-release-inputs"{copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="validate-bundle"&&a.iter().any(|v|v=="--gate-b"){println!("gate_b=structural-pass authorizing=false manifest_sha256={}","b".repeat(64))}else if a[0]=="validate-bundle"{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}else if a[0]=="verify-live"{if env::var("FINAL_LIVE_FAIL").as_deref()==Ok("true"){std::process::exit(1)}println!("gate_b=pass manifest_sha256={}","b".repeat(64))}else{println!("gate=pass manifest_sha256={}","b".repeat(64))}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if let Ok(trace)=env::var("TRACE"){use std::io::Write;writeln!(fs::OpenOptions::new().create(true).append(true).open(trace).unwrap(),"profile {}",a.join(" ")).unwrap()}if a[0]=="render-release-inputs"{copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="validate-bundle"&&a.iter().any(|v|v=="--gate-b"){println!("gate_b=structural-pass authorizing=false manifest_sha256={}","b".repeat(64))}else if a[0]=="validate-bundle"{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}else if a[0]=="verify-production-canister-predeploy"{if a.len()!=3||env::var("CANISTER_PREDEPLOY_FAIL").as_deref()==Ok("true")||env::var("CANISTER_MODULE_DRIFT").as_deref()==Ok("true")||env::var("CANISTER_CONTROLLER_DRIFT").as_deref()==Ok("true"){std::process::exit(1)}println!("production_canister_predeploy=verified")}else if a[0]=="verify-live"{if env::var("FINAL_LIVE_FAIL").as_deref()==Ok("true"){std::process::exit(1)}println!("gate_b=pass manifest_sha256={}","b".repeat(64))}else{println!("gate=pass manifest_sha256={}","b".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -165,13 +165,15 @@ export BRIDGE_DEPLOYMENT_RESERVATION_FILE="$BRIDGE_DEPLOYMENT_BINDING_FILE.reser
 export BRIDGE_DEPLOYER_KEYSTORE="$T/deployer-keystore.json"
 export BRIDGE_DEPLOYER_PASSWORD_FILE="$T/deployer-password.txt"
 export BASE_RPC_URL=https://rpc.example
+export BRIDGE_CANISTER_INSTALL_RECEIPT="$T/production-canister-install-receipt.json"
+printf '{}\n' >"$BRIDGE_CANISTER_INSTALL_RECEIPT"
 printf '{}\n' >"$BRIDGE_DEPLOYER_KEYSTORE"
 printf 'test-password\n' >"$BRIDGE_DEPLOYER_PASSWORD_FILE"
 export BRIDGE_DEPLOY_GAS_LIMIT=10000000 BRIDGE_DEPLOY_MAX_FEE_PER_GAS=100 BRIDGE_DEPLOY_PRIORITY_FEE_PER_GAS=2
 export RPC_DIGEST="$(python3 -c 'import hashlib;print(hashlib.sha256(b"[]").hexdigest())')"
 export INDEPENDENT_RPC_DIGEST="$(python3 -c 'import hashlib,json;print(hashlib.sha256(json.dumps(["https://one.example","https://two.example","https://three.example"],separators=(",",":"),ensure_ascii=False).encode()).hexdigest())')"
 cat >"$T/bundle/profile.json" <<'JSON'
-{"chain_id":8453,"evm_rpc_canister_id":"aaaaa-aa","bridge_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","bridge_contract":"0x3333333333333333333333333333333333333333","bsns_contract":"0x7777777777777777777777777777777777777777","decimals":8,"expected_bridge_signer":"0x1111111111111111111111111111111111111111","governance_operator":"0x6666666666666666666666666666666666666666","pause_principal":"7jkta-eyaaa-aaaaq-aaarq-cai","timelock":{"address":"0x2222222222222222222222222222222222222222","runtime_code_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","minimum_delay_seconds":86400,"proposer":"0x6666666666666666666666666666666666666666","executor":"0x6666666666666666666666666666666666666666","canceller":"0x6666666666666666666666666666666666666666"},"root_canister_id":"aaaaa-aa","bridge_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bsns_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bsns_runtime_template_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bridge_canister_wasm_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","ic_host":"https://icp-api.io","base_rpc_url":"https://rpc.example","deployment_block":0,"parameters":{"ledger_fee":100000,"service_fee":50000000},"rpc_providers":[{"url":"https://one.example"},{"url":"https://two.example"},{"url":"https://three.example"}]}
+{"chain_id":8453,"evm_rpc_canister_id":"aaaaa-aa","bridge_canister_id":"aaaaa-aa","ledger_canister_id":"aaaaa-aa","bridge_contract":"0x3333333333333333333333333333333333333333","bsns_contract":"0x7777777777777777777777777777777777777777","decimals":8,"expected_bridge_signer":"0x1111111111111111111111111111111111111111","governance_operator":"0x6666666666666666666666666666666666666666","pause_principal":"7jkta-eyaaa-aaaaq-aaarq-cai","timelock":{"address":"0x2222222222222222222222222222222222222222","runtime_code_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","minimum_delay_seconds":86400,"proposer":"0x6666666666666666666666666666666666666666","executor":"0x6666666666666666666666666666666666666666","canceller":"0x6666666666666666666666666666666666666666"},"root_canister_id":"aaaaa-aa","bridge_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bsns_runtime_bytecode_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bsns_runtime_template_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","bridge_canister_wasm_sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","ic_host":"https://icp-api.io","base_rpc_url":null,"deployment_block":0,"parameters":{"ledger_fee":100000,"service_fee":50000000},"rpc_providers":[]}
 JSON
 python3 - "$T/bundle/profile.json" <<'PY'
 import json,sys
@@ -232,6 +234,18 @@ fi
 [[ ! -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" ]]
 if REPRODUCIBLE_BUILD_FAIL=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
   echo "deploy driver accepted a failed reproducible artifact build" >&2; exit 1
+fi
+[[ ! -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" ]]
+if CANISTER_PREDEPLOY_FAIL=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
+  echo "deploy driver accepted live Canister drift before Base submission" >&2; exit 1
+fi
+[[ ! -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" ]]
+if CANISTER_MODULE_DRIFT=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
+  echo "deploy driver accepted certified Canister module drift" >&2; exit 1
+fi
+[[ ! -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" ]]
+if CANISTER_CONTROLLER_DRIFT=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
+  echo "deploy driver accepted a certified extra Canister controller" >&2; exit 1
 fi
 [[ ! -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" ]]
 if PROOF_GATE_MUTATE_SOURCE=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then

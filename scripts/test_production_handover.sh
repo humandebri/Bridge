@@ -35,7 +35,8 @@ name = "bridge-profile"
 version = "0.0.0"
 LOCK
 cat >"$T/source/src/main.rs" <<'RS'
-fn main(){println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64));}
+use std::{env,fs};
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="validate-production-handover-receipt"{if a.len()!=5||env::var("HANDOVER_GATE_A_RECEIPT_DRIFT").as_deref()==Ok("true")||env::var("HANDOVER_DEPLOYMENT_BINDING_DRIFT").as_deref()==Ok("true")||!fs::read_to_string(&a[2]).unwrap().contains("\"schema_version\":2"){std::process::exit(1)}println!("{}","c".repeat(64))}else if a[0]=="verify-production-canister-handover"{if a.len()!=5||["HANDOVER_BOOTSTRAP","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_FEE_CYCLES_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_PAUSE_RESERVE_DRIFT","HANDOVER_NONEMPTY_STATE"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -67,12 +68,18 @@ fi
 SH
 chmod +x "$T/bin/icp"
 export PATH="$T/bin:$PATH"
+printf '{}\n' >"$T/production-canister-install-receipt.json"
+printf '{"schema_version":2}\n' >"$T/gate-a-receipt.json"
+printf '{}\n' >"$T/deployment-binding.json"
 
 run_handover() {
   local evidence="$1"
   shift
   BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" \
   BRIDGE_RELEASE_BUNDLE="$T/bundle" \
+  BRIDGE_CANISTER_INSTALL_RECEIPT="$T/production-canister-install-receipt.json" \
+  BRIDGE_GATE_A_RECEIPT="$T/gate-a-receipt.json" \
+  BRIDGE_DEPLOYMENT_BINDING_FILE="$T/deployment-binding.json" \
   BRIDGE_ICP_IDENTITY=production \
   BRIDGE_HANDOVER_EVIDENCE_FILE="$evidence" \
   BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY \
@@ -95,6 +102,48 @@ PY
 rg -q 'settings update bridge-canister -e production --remove-all-controllers --add-controller 7jkta-eyaaa-aaaaq-aaarq-cai --force --identity production --debug' "$TRACE"
 rg -q '^proofs proofs$' "$TRACE"
 rg -q '^rebuild ' "$TRACE"
+
+if BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" \
+  BRIDGE_RELEASE_BUNDLE="$T/bundle" \
+  BRIDGE_CANISTER_INSTALL_RECEIPT="$T/production-canister-install-receipt.json" \
+  BRIDGE_ICP_IDENTITY=production \
+  BRIDGE_HANDOVER_EVIDENCE_FILE="$T/predeploy-handover.json" \
+  BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY \
+  "$T/source/scripts/production-handover-driver.sh" >/dev/null 2>&1; then
+  echo "handover accepted install evidence without a completed Gate A receipt" >&2; exit 1
+fi
+[[ ! -e "$T/predeploy-handover.json" ]]
+if BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" \
+  BRIDGE_RELEASE_BUNDLE="$T/bundle" \
+  BRIDGE_CANISTER_INSTALL_RECEIPT="$T/production-canister-install-receipt.json" \
+  BRIDGE_GATE_A_RECEIPT="$T/gate-a-receipt.json" \
+  BRIDGE_ICP_IDENTITY=production \
+  BRIDGE_HANDOVER_EVIDENCE_FILE="$T/missing-binding.json" \
+  BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY \
+  "$T/source/scripts/production-handover-driver.sh" >/dev/null 2>&1; then
+  echo "handover accepted no canonical deployment binding" >&2; exit 1
+fi
+[[ ! -e "$T/missing-binding.json" ]]
+if HANDOVER_GATE_A_RECEIPT_DRIFT=true run_handover "$T/gate-a-receipt-drift.json" >/dev/null 2>&1; then
+  echo "handover accepted a Gate A receipt drift" >&2; exit 1
+fi
+[[ ! -e "$T/gate-a-receipt-drift.json" ]]
+if HANDOVER_DEPLOYMENT_BINDING_DRIFT=true run_handover "$T/deployment-binding-drift.json" >/dev/null 2>&1; then
+  echo "handover accepted a deployment binding drift" >&2; exit 1
+fi
+[[ ! -e "$T/deployment-binding-drift.json" ]]
+for scenario in \
+  BOOTSTRAP ATTESTATION_MISSING ATTESTATION_STALE ATTESTATION_PREDEPLOY \
+  PROFILE_DRIFT CONTROLLER_DRIFT MODULE_DRIFT FEE_CYCLES_DRIFT \
+  RUNTIME_BINDING_DRIFT PAUSE_RESERVE_DRIFT NONEMPTY_STATE; do
+  evidence="$T/$(printf '%s' "$scenario" | tr '[:upper:]_' '[:lower:]-').json"
+  export "HANDOVER_${scenario}=true"
+  if run_handover "$evidence" >/dev/null 2>&1; then
+    echo "handover accepted invalid certified Canister state: $scenario" >&2; exit 1
+  fi
+  unset "HANDOVER_${scenario}"
+  [[ ! -e "$evidence" ]]
+done
 
 if PROOF_GATE_FAIL=true run_handover "$T/proof-failed.json" >/dev/null 2>&1; then
   echo "handover accepted a failed proof gate" >&2; exit 1
