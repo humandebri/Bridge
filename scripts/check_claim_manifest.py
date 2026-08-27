@@ -12,7 +12,6 @@ from pathlib import Path
 
 from claim_manifest import (
     REQUIRED_CLAIM_POLICY,
-    OPTIONAL_BOOTSTRAP_CLAIM_POLICY,
     REQUIRED_CLAIM_IDS,
     ClaimManifest,
     ConditionalLivenessProperty,
@@ -437,28 +436,26 @@ def check_conditional_liveness_theorems(
 
 def require_mandatory_claim_catalog(manifest: ClaimManifest) -> None:
     actual = {row[1] for row in manifest.rows}
-    allowed = REQUIRED_CLAIM_IDS | OPTIONAL_BOOTSTRAP_CLAIM_POLICY.keys()
-    if not REQUIRED_CLAIM_IDS <= actual or not actual <= allowed:
+    if actual != REQUIRED_CLAIM_IDS:
         raise ValueError(
             "mandatory claim catalog differs: "
             f"missing={sorted(REQUIRED_CLAIM_IDS - actual)} "
-            f"extra={sorted(actual - allowed)}"
+            f"extra={sorted(actual - REQUIRED_CLAIM_IDS)}"
         )
-    expected_policy = REQUIRED_CLAIM_POLICY | OPTIONAL_BOOTSTRAP_CLAIM_POLICY
     mismatches = {
         claim_id: {
-            "expected": expected_policy[claim_id],
+            "expected": REQUIRED_CLAIM_POLICY[claim_id],
             "actual": (
                 manifest.contracts[claim_id].assurance_target,
                 manifest.contracts[claim_id].required_strength,
             ),
         }
-        for claim_id in actual
+        for claim_id in REQUIRED_CLAIM_IDS
         if (
             manifest.contracts[claim_id].assurance_target,
             manifest.contracts[claim_id].required_strength,
         )
-        != expected_policy[claim_id]
+        != REQUIRED_CLAIM_POLICY[claim_id]
     }
     if mismatches:
         raise ValueError(f"mandatory claim policy differs: {mismatches}")
@@ -906,20 +903,16 @@ def write_claim_report(report: dict[str, object], path: Path = REPORT) -> None:
 
 
 def require_release_ready_catalog(results: list[dict[str, object]]) -> None:
-    claim_ids = {str(claim["id"]) for claim in results}
-    expected = REQUIRED_CLAIM_IDS | (
-        claim_ids & OPTIONAL_BOOTSTRAP_CLAIM_POLICY.keys()
-    )
     ready = {
         str(claim["id"])
         for claim in results
         if claim["status"] == "release-ready"
     }
-    if ready != expected:
+    if ready != REQUIRED_CLAIM_IDS:
         raise ValueError(
             "release safety catalog is not fully ready: "
-            f"missing={sorted(expected - ready)} "
-            f"extra={sorted(ready - expected)}"
+            f"missing={sorted(REQUIRED_CLAIM_IDS - ready)} "
+            f"extra={sorted(ready - REQUIRED_CLAIM_IDS)}"
         )
 
 
