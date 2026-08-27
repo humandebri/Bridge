@@ -27,6 +27,7 @@ const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const STAGING_LEDGER: &str = "3jkp5-oyaaa-aaaaj-azwqa-cai";
 const STAGING_INDEX: &str = "qzre3-3iaaa-aaaai-aqmsa-cai";
+const STAGING_BRIDGE_CANISTER: &str = "rlhjx-iyaaa-aaaaf-qcnyq-cai";
 const STAGING_RPC_URLS: [&str; 3] = [
     "https://base-sepolia-rpc.publicnode.com",
     "https://sepolia.base.org",
@@ -2254,7 +2255,9 @@ fn validate_staging_canister_plan(plan: &ProductionCanisterPlan) -> Result<Vec<u
         || plan.source_revision.trim().is_empty()
         || !valid_sha256(&plan.source_tree_sha256)
         || !principal(&plan.bridge_canister_id)
+        || plan.bridge_canister_id != STAGING_BRIDGE_CANISTER
         || !valid_sha256(&plan.bridge_canister_wasm_sha256)
+        || plan.init.fee_recipient.owner != plan.bridge_canister_id
     {
         return Err("invalid staging Canister install plan identity".into());
     }
@@ -5300,6 +5303,8 @@ mod tests {
         let profile = valid_profile();
         let mut plan = production_canister_plan(&profile);
         plan.environment = "sepolia-staging".into();
+        plan.bridge_canister_id = STAGING_BRIDGE_CANISTER.into();
+        plan.init.fee_recipient.owner = STAGING_BRIDGE_CANISTER.into();
         plan.init.ledger_canister_id = STAGING_LEDGER.into();
         plan.init.index_canister_id = STAGING_INDEX.into();
         plan.init.custom_evm_rpc_urls = STAGING_RPC_URLS.map(str::to_owned).to_vec();
@@ -5342,6 +5347,11 @@ mod tests {
         let mut production = plan;
         production.environment = "production".into();
         assert!(validate_staging_canister_plan(&production).is_err());
+
+        let mut wrong_canister = staging_canister_plan();
+        wrong_canister.bridge_canister_id = test_principal(30);
+        wrong_canister.init.fee_recipient.owner = wrong_canister.bridge_canister_id.clone();
+        assert!(validate_staging_canister_plan(&wrong_canister).is_err());
     }
 
     #[test]

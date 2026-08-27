@@ -9,6 +9,6 @@
   "governance_principal": "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae",
   "last_reviewed_module_sha256": "222053032045e1c661e24ee9de9f5074e3bed6c1cefdfc78168630cd719e7636",
   "last_reviewed_candid_sha256": "16b544fdae487f72241ca211b93f89d25984c641a75e3baab2bb319c1c0a0f7c",
-  "target_disposition": "abandoned-test-only",
+  "target_disposition": "canister-reinstall-approved-base-stack-abandoned",
   "promotion_blocked_until": []
 }

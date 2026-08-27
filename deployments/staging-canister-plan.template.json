@@ -3,7 +3,7 @@
   "environment": "sepolia-staging",
   "source_revision": "<clean-git-revision>",
   "source_tree_sha256": "<clean-git-tree-sha256>",
-  "bridge_canister_id": "<new-staging-canister-principal>",
+  "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
   "bridge_canister_wasm_sha256": "<bridge-canister-wasm-sha256>",
   "init": {
     "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
@@ -58,7 +58,7 @@
     "pause_principal": "<staging-pause-principal>",
     "confirmation_relayer_principal": "<staging-confirmation-relayer-principal>",
     "fee_recipient": {
-      "owner": "<new-staging-canister-principal>",
+      "owner": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
       "subaccount_hex": ""
     }
   }

@@ -59,19 +59,19 @@ credential、seed、private key、hardware wallet backup、credential入りRPC U
 
 ## IC mainnet × Base Sepolia test staging
 
-Plan 007のIC stagingで新規作成またはinstallするCanisterは`sepolia-staging`環境の`bridge-sepolia-v35`だけとする。test tokenには既存の共有`testicrc` Canisterを再利用し、staging専用LedgerまたはIndex Canisterを新規作成しない。`testicrc`の実Canister IDとmetadataは外部配置前にlive状態から確認し、Bridge初期化値と`frontend-profile.json`へ固定する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。旧`bridge-sepolia` mappingと`rlhjx-iyaaa-aaaaf-qcnyq-cai`は`abandoned-test-only`証跡として保持し、新規installへ再利用しない。KINIC Ledger、Base Mainnet、SNSには触れない。
+Plan 007のIC stagingでは`sepolia-staging`環境の既存`bridge-sepolia`（`rlhjx-iyaaa-aaaaf-qcnyq-cai`）をv35で`reinstall`する。旧stable stateはtest stateとして意図的に破棄し、migrationまたはupgradeは行わない。test tokenには既存の共有`testicrc` Canisterを再利用し、staging専用LedgerまたはIndex Canisterを新規作成しない。`testicrc`の実Canister IDとmetadataは外部配置前にlive状態から確認し、Bridge初期化値と`frontend-profile.json`へ固定する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。KINIC Ledger、Base Mainnet、SNSには触れない。
 
 外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh /secure/work/local-e2e.json`をclean commitで実行し、repo外へ証跡を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、Cloudflare Worker公開はそれぞれ別の明示承認後に行う。
 
-外部stageのschema v7証跡は`scripts/plan007/staging-e2e-driver.sh`で初期化し、固定順序で記録する。`sepolia-e2e.json`は全stageと参照artifactのhashを検証する。Gate B用のpause rehearsalはlive staging promotionと分離し、production activationをblockしない。旧staging stackはexact identityと未処理test stateを記録したうえで`abandoned-test-only`としてactive profile、signer、automationから除外する。fresh Timelock、Bridge、bSNS、signer、deployment instance、schema v35／wire v30 Canisterを新規配置し、旧recordやassetを移送しない。migration、reinstall、異なるcurrent-upgrade instance、旧・未知schema、未登録module／Candidの組はfail closedにする。
+外部stageのschema v7証跡は`scripts/plan007/staging-e2e-driver.sh`で初期化し、固定順序で記録する。`sepolia-e2e.json`は全stageと参照artifactのhashを検証する。Gate B用のpause rehearsalはlive staging promotionと分離し、production activationをblockしない。旧Canister stateと旧Base stackのexact identityを記録したうえで、Canisterだけを明示的な`reinstall`で再利用する。fresh Timelock、Bridge、bSNS、signer、derivation path、deployment instanceを配置し、旧recordやassetを移送しない。初回reinstall後のmigration、異なるcurrent-upgrade instance、旧・未知schema、未登録module／Candidの組はfail closedにする。
 
-新規作成するstaging Bridge Canister IDだけを`.icp/data/mappings/sepolia-staging.ids.json`へ保存する。既存`testicrc`を新規作成対象としてmappingへ追加しない。frontendは`deployments/sepolia-staging/frontend-profile.json`が完成するまでbuildまたは公開せず、完成後に`ui`の`pnpm run deploy:test`でCloudflare Worker `kinic-bridge-ui-test`へ公開する。test frontendはBase Mainnet、production Canister ID、非公式EVM RPC Canister IDを拒否し、TEST bannerを常時表示する。
+既存staging Bridge Canister IDは`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`を正本とし、新しいmappingを作らない。既存`testicrc`を新規作成対象としてmappingへ追加しない。frontendは`deployments/sepolia-staging/frontend-profile.json`が完成するまでbuildまたは公開せず、完成後に`ui`のstaging artifact driverでCloudflare Worker `kinic-bridge-ui-test`へ公開する。test frontendはBase Mainnet、production Canister ID、非公式EVM RPC Canister IDを拒否し、TEST bannerを常時表示する。
 
 ## ICP mainnet上のBase Sepolia staging Bridge deploy先
 
-旧deploy先`rlhjx-iyaaa-aaaaf-qcnyq-cai`は`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`に残して履歴identityを保持する。fresh deployは同じmapping fileへ別名`bridge-sepolia-v35`として新規作成し、初回`install`だけを許可する。
+deploy先は既存`rlhjx-iyaaa-aaaaf-qcnyq-cai`とし、`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`をそのまま使う。schema v34のtest stateを捨てる1回の`reinstall`だけを許可し、`auto`または`upgrade`を使わない。
 
-fresh Canisterの初期化planは`staging-canister-plan.template.json`から生成し、`bridge-profile validate-staging-canister-plan`と`render-staging-canister-inputs`を通す。これはBase Sepolia、共有TICRC1 Ledger/Index、固定Custom RPC 3本、5分Timelock、test-only Wasmだけを許可し、本番planとして再利用しない。
+reinstall用の初期化planは`staging-canister-plan.template.json`から生成し、`bridge-profile validate-staging-canister-plan`と`render-staging-canister-inputs`を通す。これは既存Canister principal、Base Sepolia、共有TICRC1 Ledger/Index、固定Custom RPC 3本、5分Timelock、test-only Wasmだけを許可し、本番planとして再利用しない。
 
 deploy前に対象IDとcontrollerを再確認し、必要なcyclesを補充する。test-only stagingであり、本番資産、production controller handover、SNS操作には使用しない。
 

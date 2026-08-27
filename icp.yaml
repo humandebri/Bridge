@@ -7,7 +7,7 @@ canisters:
         package: bridge-canister
         candid: canister/bridge-canister/bridge.did
         shrink: true
-  - name: bridge-sepolia-v35
+  - name: bridge-sepolia
     recipe:
       type: "file://recipes/test-bridge-rust.hbs"
       configuration:
@@ -31,4 +31,4 @@ environments:
   - name: sepolia-staging
     network: ic
     canisters:
-      - bridge-sepolia-v35
+      - bridge-sepolia
