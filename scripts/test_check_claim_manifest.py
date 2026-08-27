@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from claim_manifest import (
+    OPTIONAL_BOOTSTRAP_CLAIM_POLICY,
     REQUIRED_CLAIM_POLICY,
     REQUIRED_CONDITIONAL_LIVENESS_POLICY,
     REQUIRED_CONDITIONAL_LIVENESS_IDS,
@@ -174,6 +175,32 @@ class ClaimContractTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "mandatory claim policy differs"):
             require_mandatory_claim_catalog(parse_claim_manifest(strength_downgrade))
+
+    def test_release_policy_temporarily_accepts_only_exact_bootstrap_claim(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        manifest = parse_claim_manifest(
+            (root / "verification" / "claims.tsv").read_text(encoding="utf-8")
+        )
+        claim_id = "operational_config_seal"
+        target, strength = OPTIONAL_BOOTSTRAP_CLAIM_POLICY[claim_id]
+        with_bootstrap = SimpleNamespace(
+            rows=[*manifest.rows, ["protocol", claim_id]],
+            contracts={
+                **manifest.contracts,
+                claim_id: SimpleNamespace(
+                    assurance_target=target,
+                    required_strength=strength,
+                ),
+            },
+        )
+        require_mandatory_claim_catalog(with_bootstrap)
+
+        with_bootstrap.contracts[claim_id] = SimpleNamespace(
+            assurance_target=target,
+            required_strength="production-linked",
+        )
+        with self.assertRaisesRegex(ValueError, "mandatory claim policy differs"):
+            require_mandatory_claim_catalog(with_bootstrap)
 
     def test_release_policy_rejects_strength_exchange_between_claims(self) -> None:
         root = Path(__file__).resolve().parents[1]

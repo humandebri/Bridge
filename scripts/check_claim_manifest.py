@@ -12,6 +12,7 @@ from pathlib import Path
 
 from claim_manifest import (
     REQUIRED_CLAIM_POLICY,
+    OPTIONAL_BOOTSTRAP_CLAIM_POLICY,
     REQUIRED_CLAIM_IDS,
     ClaimManifest,
     ConditionalLivenessProperty,
@@ -377,26 +378,28 @@ def check_conditional_liveness_theorems(
 
 def require_mandatory_claim_catalog(manifest: ClaimManifest) -> None:
     actual = {row[1] for row in manifest.rows}
-    if actual != REQUIRED_CLAIM_IDS:
+    allowed = REQUIRED_CLAIM_IDS | OPTIONAL_BOOTSTRAP_CLAIM_POLICY.keys()
+    if not REQUIRED_CLAIM_IDS <= actual or not actual <= allowed:
         raise ValueError(
             "mandatory claim catalog differs: "
             f"missing={sorted(REQUIRED_CLAIM_IDS - actual)} "
-            f"extra={sorted(actual - REQUIRED_CLAIM_IDS)}"
+            f"extra={sorted(actual - allowed)}"
         )
+    expected_policy = REQUIRED_CLAIM_POLICY | OPTIONAL_BOOTSTRAP_CLAIM_POLICY
     mismatches = {
         claim_id: {
-            "expected": REQUIRED_CLAIM_POLICY[claim_id],
+            "expected": expected_policy[claim_id],
             "actual": (
                 manifest.contracts[claim_id].assurance_target,
                 manifest.contracts[claim_id].required_strength,
             ),
         }
-        for claim_id in REQUIRED_CLAIM_IDS
+        for claim_id in actual
         if (
             manifest.contracts[claim_id].assurance_target,
             manifest.contracts[claim_id].required_strength,
         )
-        != REQUIRED_CLAIM_POLICY[claim_id]
+        != expected_policy[claim_id]
     }
     if mismatches:
         raise ValueError(f"mandatory claim policy differs: {mismatches}")
