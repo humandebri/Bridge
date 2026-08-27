@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CANISTER="bridge-canister"
 ENVIRONMENT="production"
-SUBNET="pzp6e-ekpqk-3c5x7-2h6so-njoeq-mt45d-h3h6c-q3mxf-vpeez-fez7a-iae"
+SUBNET="pzp6e-ekpqk-3c5x7-2h6so-njoeq-mt45d-h3h6c-q3mxf-vpeq5-fk5o7-yae"
 REGISTRY="rwlgt-iiaaa-aaaaa-aaaaa-cai"
 MAPPING="$ROOT/.icp/data/mappings/production.ids.json"
 
