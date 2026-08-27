@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class CertoraFingerprintTests(unittest.TestCase):
     def test_release_fingerprint_excludes_only_certora_specific_inputs(self) -> None:
         release_inputs = {
-            path.relative_to(ROOT).as_posix()
+            proof_fingerprint.logical_source_path(path, ROOT).as_posix()
             for path in proof_fingerprint.fingerprint_inputs()
         }
         for relative in (
