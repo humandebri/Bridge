@@ -311,7 +311,7 @@ init_manifest() {
     --argjson min_service_fee "$DEFAULT_MIN_SERVICE_FEE" \
     --argjson max_service_fee "$DEFAULT_MAX_SERVICE_FEE" \
     --argjson initial_service_fee "$DEFAULT_INITIAL_SERVICE_FEE" \
-    '{schema_version:1,experiment:"base-sepolia-contract-only",test_only:true,state:"PREFLIGHT",created_at:$created,chain_id:$chain,rpc_url:$rpc,wallets:{deployer_base_admin_runtime:$deployer},source:{revision:$revision,dirty_diff_sha256:$dirty,source_tree_sha256:$tree},parameters:{token_name:"kinic",token_symbol:"KINIC",token_decimals:8,timelock_delay_seconds:$delay,per_deposit_limit:$per_deposit_limit,mint_window_limit:$mint_window_limit,mint_window_duration_seconds:3600,min_service_fee:$min_service_fee,max_service_fee:$max_service_fee,initial_service_fee:$initial_service_fee},contracts:{},transactions:{},checks:{}}' \
+    '{schema_version:1,experiment:"base-sepolia-contract-only",test_only:true,state:"PREFLIGHT",created_at:$created,chain_id:$chain,rpc_url:$rpc,wallets:{deployer_base_admin_runtime:$deployer},source:{revision:$revision,dirty_diff_sha256:$dirty,source_tree_sha256:$tree},parameters:{token_name:"KINIC",token_symbol:"KINIC",token_decimals:8,timelock_delay_seconds:$delay,per_deposit_limit:$per_deposit_limit,mint_window_limit:$mint_window_limit,mint_window_duration_seconds:3600,min_service_fee:$min_service_fee,max_service_fee:$max_service_fee,initial_service_fee:$initial_service_fee},contracts:{},transactions:{},checks:{}}' \
     >"$MANIFEST"
 }
 
@@ -541,8 +541,10 @@ verify_deployment() {
     assert_call_eq false "$bridge" 'withdrawalsPaused()(bool)'
   fi
   assert_call_eq 8 "$bsns" 'decimals()(uint8)'
-  [[ "$(cast call "$bsns" 'name()(string)' --rpc-url "$RPC_URL")" == '"kinic"' ]] || die "token name mismatch"
-  [[ "$(cast call "$bsns" 'symbol()(string)' --rpc-url "$RPC_URL")" == '"KINIC"' ]] || die "token symbol mismatch"
+  [[ "$(cast call "$bsns" 'name()(string)' --rpc-url "$RPC_URL")" == "\"$(manifest_get '.parameters.token_name')\"" ]] \
+    || die "token name mismatch"
+  [[ "$(cast call "$bsns" 'symbol()(string)' --rpc-url "$RPC_URL")" == "\"$(manifest_get '.parameters.token_symbol')\"" ]] \
+    || die "token symbol mismatch"
   proposer="$(cast call "$timelock" 'PROPOSER_ROLE()(bytes32)' --rpc-url "$RPC_URL")"
   canceller="$(cast call "$timelock" 'CANCELLER_ROLE()(bytes32)' --rpc-url "$RPC_URL")"
   executor="$(cast call "$timelock" 'EXECUTOR_ROLE()(bytes32)' --rpc-url "$RPC_URL")"
