@@ -24,6 +24,7 @@ from check_claim_manifest import (
     abstract_evidence_status,
     missing_scalar_calls,
     require_mandatory_claim_catalog,
+    require_release_ready_catalog,
     require_exact_claim_coverage,
     require_exact_implementation_basis,
     require_exact_smt_claim_coverage,
@@ -201,6 +202,19 @@ class ClaimContractTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "mandatory claim policy differs"):
             require_mandatory_claim_catalog(with_bootstrap)
+
+    def test_optional_bootstrap_claim_must_be_release_ready_when_present(self) -> None:
+        mandatory = [
+            {"id": claim_id, "status": "release-ready"}
+            for claim_id in REQUIRED_CLAIM_POLICY
+        ]
+        optional = {"id": "operational_config_seal", "status": "release-ready"}
+        require_release_ready_catalog([*mandatory, optional])
+
+        with self.assertRaisesRegex(ValueError, "not fully ready"):
+            require_release_ready_catalog(
+                [*mandatory, {**optional, "status": "blocked"}]
+            )
 
     def test_release_policy_rejects_strength_exchange_between_claims(self) -> None:
         root = Path(__file__).resolve().parents[1]

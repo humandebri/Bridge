@@ -846,18 +846,30 @@ def write_claim_report(report: dict[str, object], path: Path = REPORT) -> None:
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
+def require_release_ready_catalog(results: list[dict[str, object]]) -> None:
+    claim_ids = {str(claim["id"]) for claim in results}
+    expected = REQUIRED_CLAIM_IDS | (
+        claim_ids & OPTIONAL_BOOTSTRAP_CLAIM_POLICY.keys()
+    )
+    ready = {
+        str(claim["id"])
+        for claim in results
+        if claim["status"] == "release-ready"
+    }
+    if ready != expected:
+        raise ValueError(
+            "release safety catalog is not fully ready: "
+            f"missing={sorted(expected - ready)} "
+            f"extra={sorted(ready - expected)}"
+        )
+
+
 def main() -> int:
     report = build_claim_report()
     write_claim_report(report)
     results = report["claims"]
     assert isinstance(results, list)
-    ready = {claim["id"] for claim in results if claim["status"] == "release-ready"}
-    if ready != REQUIRED_CLAIM_IDS:
-        raise ValueError(
-            "release safety catalog is not fully ready: "
-            f"missing={sorted(REQUIRED_CLAIM_IDS - ready)} "
-            f"extra={sorted(ready - REQUIRED_CLAIM_IDS)}"
-        )
+    require_release_ready_catalog(results)
     print(f"unified claim manifest passed ({len(results)} claims)")
     return 0
 
