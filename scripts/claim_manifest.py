@@ -47,6 +47,15 @@ REQUIRED_CLAIM_POLICY = {
     for claim_id in REQUIRED_CLAIM_IDS
 }
 
+# Temporary trust bootstrap for the production operational-config claim. The
+# trusted PR runner evaluates candidate evidence with the base branch scripts,
+# so the claim must be admitted with its exact policy before it can become
+# mandatory in the implementation PR. The implementation PR removes this
+# optional path when it adds the claim to REQUIRED_CLAIM_IDS.
+OPTIONAL_BOOTSTRAP_CLAIM_POLICY = {
+    "operational_config_seal": ("release-safety", "implementation-proved"),
+}
+
 REQUIRED_CONDITIONAL_LIVENESS_POLICY = {
     "withdrawal_eventually_paid": (
         "BridgeSpec.Liveness.committed_withdrawal_eventually_paid",
