@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 from proof_fingerprint import validate_fingerprint
@@ -35,10 +37,75 @@ CERTORA_SOURCE_ROOTS = (
     ("verification/certora", None),
 )
 CERTORA_EXCLUDED_PARTS = frozenset({".venv", "__pycache__"})
+CERTORA_PYTHON_SEEDS = (
+    "scripts/check_certora_manifest.py",
+    "scripts/certora_results.py",
+)
+
+
+def _local_python_module(
+    module: str,
+    *,
+    importer: Path,
+    level: int,
+    repo_root: Path,
+) -> Path | None:
+    if level:
+        base = importer.parent
+        for _ in range(level - 1):
+            base = base.parent
+    else:
+        base = repo_root / "scripts"
+    parts = tuple(part for part in module.split(".") if part)
+    candidates = (base.joinpath(*parts).with_suffix(".py"), base.joinpath(*parts, "__init__.py"))
+    existing = [path for path in candidates if path.is_file()]
+    if len(existing) > 1:
+        raise ValueError(f"ambiguous local Python import {module!r} from {importer}")
+    return existing[0] if existing else None
+
+
+def certora_python_dependency_paths(repo_root: Path = ROOT) -> frozenset[str]:
+    pending = [repo_root / relative for relative in CERTORA_PYTHON_SEEDS]
+    resolved: set[Path] = set()
+    while pending:
+        path = pending.pop()
+        if path in resolved:
+            continue
+        if not path.is_file():
+            raise ValueError(f"missing Certora Python dependency: {path.relative_to(repo_root)}")
+        resolved.add(path)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError) as error:
+            raise ValueError(
+                f"cannot parse Certora Python dependency: {path.relative_to(repo_root)}"
+            ) from error
+        imports: list[tuple[str, int]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.extend((alias.name, 0) for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imports.append((node.module or "", node.level))
+        for module, level in imports:
+            local = _local_python_module(
+                module,
+                importer=path,
+                level=level,
+                repo_root=repo_root,
+            )
+            if local is not None:
+                pending.append(local)
+                continue
+            top_level = module.partition(".")[0]
+            if level or (top_level and top_level not in sys.stdlib_module_names):
+                relative = path.relative_to(repo_root).as_posix()
+                raise ValueError(f"unresolved local Python import {module!r} from {relative}")
+    return frozenset(path.relative_to(repo_root).as_posix() for path in resolved)
 
 
 def certora_fingerprint_inputs(repo_root: Path = ROOT) -> tuple[Path, ...]:
     paths = {repo_root / relative for relative in CERTORA_EXACT_INPUTS}
+    paths.update(repo_root / relative for relative in certora_python_dependency_paths(repo_root))
     for relative_root, suffixes in CERTORA_SOURCE_ROOTS:
         source_root = repo_root / relative_root
         if not source_root.is_dir():
