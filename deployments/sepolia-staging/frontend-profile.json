@@ -5,8 +5,8 @@
   "environmentMode": "short-delay-test-only",
   "activationTimelockDelaySeconds": 300,
   "gateBManifestSha256": null,
-  "profileFileSha256": "808f17ef9108a153ff088984129c2a21628462b7257b9b339f3883e32f60a399",
-  "profileCanonicalSha256": "9645c43caa6d9d026d1d5348f33c0ebf86c207e7babcdc18c6d40ca9ae4a5f8f",
+  "profileFileSha256": "17d4632a8733e1b8a70e1b5ba6552c782102293982432c5da7996a538ddc6c9e",
+  "profileCanonicalSha256": "2162452594b5b530dbd551d10ec4a40cc7079b456e14ab4c8d1570db7aa9d2ed",
   "icHost": "https://icp-api.io",
   "baseRpcUrl": "https://base-sepolia-rpc.publicnode.com",
   "baseHistoryRpcUrls": [
@@ -15,8 +15,8 @@
   ],
   "chainId": 84532,
   "bridgeCanisterId": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
-  "deploymentInstanceId": "0x2c344ca868267bc19791a2e1a966c210eef545945b3879223d3cb6c1255d789b",
-  "minimumWithdrawalId": "0x0000000000000000000000000000000000000000000000000000000000000004",
+  "deploymentInstanceId": "0x067b39c87fb0fae8fa5c161fc5e04641adbea230b571e11496e323e30b5bcda1",
+  "minimumWithdrawalId": "0x0000000000000000000000000000000000000000000000000000000000000001",
   "ledgerCanisterId": "3jkp5-oyaaa-aaaaj-azwqa-cai",
   "indexCanisterId": "qzre3-3iaaa-aaaai-aqmsa-cai",
   "icToken": {
@@ -28,13 +28,13 @@
     "symbol": "KINIC",
     "decimals": 8
   },
-  "bridgeAddress": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
-  "bsnsAddress": "0x265e6b05a2f6bda29f464d70867a37acde3ccde8",
-  "timelockAddress": "0xe808780d5f91fdf33f46e9d2f798c71b0c2e0168",
-  "expected_bridge_signer": "0x0b35a70028a546b4983b11724c165a060f4acf01",
+  "bridgeAddress": "0x7936c3587902907db4918a2466cbc225fdc090dc",
+  "bsnsAddress": "0x3a6e18a8bcae2b0e94383e0b5c2117107fcc53cd",
+  "timelockAddress": "0x5ffbd4b328a2d5688c4100183acc7246f7e5a5d3",
+  "expected_bridge_signer": "0x801ddc785d2e79da8366cd282a1e5a9bed2492b5",
   "evmRpcCanisterId": "7hfb6-caaaa-aaaar-qadga-cai",
   "rpcProviderUrlsSha256": "0xdf7e867aaf6abeaf00b0f61e8662fa87c6f8675eb0aebdf7b09f8c99a499d064",
-  "deploymentBlock": "44770225",
-  "bridgeRuntimeHash": "0x93284413d15515a8b785aa69e58963b9e01f4baedc46e5c8f61738251040da99",
-  "bsnsRuntimeHash": "0xf3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b"
+  "deploymentBlock": "46053027",
+  "bridgeRuntimeHash": "0x31d58992a215153ae6068c5fd604463e2a14d9dbf38abfea7bddab04ae61b931",
+  "bsnsRuntimeHash": "0xe7a0c70f94a2b1ecbb85cbc32128b3ff97519c9782abfcd9cedf8611bfeb9664"
 }
