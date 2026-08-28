@@ -1371,17 +1371,14 @@ async fn canonical_finalized_receipt(
     let hash = Hex32::from_str(&format!("0x{}", hex(&transaction_hash)))
         .map_err(|_| ObservationError::InvalidResponse)?;
     let receipt_call = async {
-        match client(args)
-            .get_transaction_receipt(hash.clone())
-            .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
-            .try_send()
-            .await
-            .map_err(|_| ObservationError::Rpc)?
-        {
-            MultiRpcResult::Consistent(Ok(receipt)) => Ok(receipt),
-            MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-            MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
-        }
+        quorum_provider_response(
+            client(args)
+                .get_transaction_receipt(hash.clone())
+                .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
+                .try_send()
+                .await
+                .map_err(|_| ObservationError::Rpc)?,
+        )
     };
     let (finalized, receipt) = futures::join!(finalized_observation(args), receipt_call);
     canonical_finalized_receipt_with_hash(args, hash, transaction_hash, finalized?, receipt?).await
@@ -1393,17 +1390,14 @@ async fn canonical_semantically_finalized_withdrawal_receipt(
 ) -> Result<CanonicalFinalizedReceiptOutcome, ObservationError> {
     let hash = Hex32::from_str(&format!("0x{}", hex(&transaction_hash)))
         .map_err(|_| ObservationError::InvalidResponse)?;
-    let receipt = match client(args)
-        .get_transaction_receipt(hash.clone())
-        .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(receipt)) => receipt,
-        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => return Err(ObservationError::Inconsistent),
-    };
+    let receipt = quorum_provider_response(
+        client(args)
+            .get_transaction_receipt(hash.clone())
+            .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
+            .try_send()
+            .await
+            .map_err(|_| ObservationError::Rpc)?,
+    )?;
     let Some(receipt) = receipt else {
         return Ok(CanonicalFinalizedReceiptOutcome::Missing);
     };
@@ -1515,6 +1509,42 @@ fn has_duplicate_rpc_services<T>(entries: &[(RpcService, T)]) -> bool {
         .any(|(index, (service, _))| entries[..index].iter().any(|(seen, _)| seen == service))
 }
 
+/// Preserves the configured two-of-three RPC policy when one provider returns
+/// an error. Successful values still have to be exactly equal; response fields
+/// are neither projected nor normalized here.
+fn quorum_provider_response<T: Clone + PartialEq>(
+    result: MultiRpcResult<T>,
+) -> Result<T, ObservationError> {
+    match result {
+        MultiRpcResult::Consistent(Ok(value)) => Ok(value),
+        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(results) => exact_provider_response_quorum(results),
+    }
+}
+
+fn exact_provider_response_quorum<T: Clone + PartialEq, E>(
+    results: Vec<(RpcService, Result<T, E>)>,
+) -> Result<T, ObservationError> {
+    if results.len() != 3 || has_duplicate_rpc_services(&results) {
+        return Err(ObservationError::Inconsistent);
+    }
+    let successes = results
+        .iter()
+        .filter_map(|(_, result)| result.as_ref().ok())
+        .collect::<Vec<_>>();
+    successes
+        .iter()
+        .find(|candidate| {
+            successes
+                .iter()
+                .filter(|value| *value == *candidate)
+                .count()
+                >= 2
+        })
+        .map(|value| (*value).clone())
+        .ok_or(ObservationError::Inconsistent)
+}
+
 fn withdrawal_finalized_identity(block: &Block) -> Option<WithdrawalFinalizedIdentity> {
     Some(WithdrawalFinalizedIdentity {
         block_number: u64::try_from(block.number.clone()).ok()?,
@@ -1529,17 +1559,14 @@ async fn canonical_finalized_receipt_at(
 ) -> Result<CanonicalFinalizedReceiptOutcome, ObservationError> {
     let hash = Hex32::from_str(&format!("0x{}", hex(&transaction_hash)))
         .map_err(|_| ObservationError::InvalidResponse)?;
-    let receipt = match client(args)
-        .get_transaction_receipt(hash.clone())
-        .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(receipt)) => receipt,
-        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => return Err(ObservationError::Inconsistent),
-    };
+    let receipt = quorum_provider_response(
+        client(args)
+            .get_transaction_receipt(hash.clone())
+            .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
+            .try_send()
+            .await
+            .map_err(|_| ObservationError::Rpc)?,
+    )?;
     canonical_finalized_receipt_with_hash(args, hash, transaction_hash, finalized, receipt).await
 }
 
@@ -2176,6 +2203,40 @@ mod tests {
         );
         assert_eq!(
             correlate_provider_responses(&heads, &unknown),
+            Err(ObservationError::Inconsistent)
+        );
+    }
+
+    #[test]
+    fn receipt_quorum_accepts_two_exact_values_and_one_provider_error() {
+        let responses = vec![
+            (RpcService::Provider(1), Ok::<_, ()>(Some(42u64))),
+            (RpcService::Provider(2), Err::<Option<u64>, _>(())),
+            (RpcService::Provider(3), Ok::<_, ()>(Some(42u64))),
+        ];
+
+        assert_eq!(exact_provider_response_quorum(responses), Ok(Some(42)));
+    }
+
+    #[test]
+    fn receipt_quorum_requires_exact_values_and_distinct_providers() {
+        let disagreement = vec![
+            (RpcService::Provider(1), Ok::<_, ()>(Some(41u64))),
+            (RpcService::Provider(2), Ok::<_, ()>(Some(42u64))),
+            (RpcService::Provider(3), Err::<Option<u64>, _>(())),
+        ];
+        let duplicate = vec![
+            (RpcService::Provider(1), Ok::<_, ()>(None::<u64>)),
+            (RpcService::Provider(1), Ok::<_, ()>(None::<u64>)),
+            (RpcService::Provider(3), Err::<Option<u64>, _>(())),
+        ];
+
+        assert_eq!(
+            exact_provider_response_quorum(disagreement),
+            Err(ObservationError::Inconsistent)
+        );
+        assert_eq!(
+            exact_provider_response_quorum(duplicate),
             Err(ObservationError::Inconsistent)
         );
     }
