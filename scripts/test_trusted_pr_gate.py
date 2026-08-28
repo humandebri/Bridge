@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import unittest
 
+from source_resolution import CANDIDATE_SCRIPTS, source_path
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
 
@@ -28,13 +30,14 @@ class TrustedPrGateTests(unittest.TestCase):
         repository_gate = workflow.index("run: scripts/ci-local.sh all")
         self.assertLess(root_install, repository_gate)
 
-    def test_staging_policy_is_either_canonical_upgrade_or_complete_replacement(self) -> None:
+    def test_staging_policy_requires_the_layout_for_its_execution_context(self) -> None:
         canonical_name = "staging-bridge-upgrade-policy.json"
         obsolete_name = "v33-to-v34-upgrade-policy.json"
         policy_dir = ROOT / "deployments" / "sepolia-staging"
 
         self.assertFalse((policy_dir / obsolete_name).exists())
-        if (policy_dir / canonical_name).is_file():
+        if CANDIDATE_SCRIPTS is None:
+            self.assertTrue((policy_dir / canonical_name).is_file())
             for relative in (
                 "scripts/plan007/staging_canister_upgrade.py",
                 "scripts/plan007/test_staging_canister_upgrade.py",
@@ -42,15 +45,16 @@ class TrustedPrGateTests(unittest.TestCase):
                 "verification/proof-impact.tsv",
             ):
                 with self.subTest(relative=relative):
-                    source = (ROOT / relative).read_text(encoding="utf-8")
+                    source = source_path(relative).read_text(encoding="utf-8")
                     self.assertIn(canonical_name, source)
                     self.assertNotIn(obsolete_name, source)
         else:
+            self.assertFalse((policy_dir / canonical_name).exists())
             self.assertTrue((policy_dir / "legacy-stack-binding.json").is_file())
             self.assertTrue((policy_dir / "fresh-stack.template.json").is_file())
-            self.assertFalse((ROOT / "scripts/plan007/staging_canister_upgrade.py").exists())
-            self.assertFalse((ROOT / "scripts/plan007/staging-canister-upgrade.sh").exists())
-            self.assertFalse((ROOT / "scripts/plan007/test_staging_canister_upgrade.py").exists())
+            self.assertFalse(source_path("scripts/plan007/staging_canister_upgrade.py").exists())
+            self.assertFalse(source_path("scripts/plan007/staging-canister-upgrade.sh").exists())
+            self.assertFalse(source_path("scripts/plan007/test_staging_canister_upgrade.py").exists())
 
     def test_trusted_bootstrap_files_are_present_and_pinned(self) -> None:
         dockerfile = ROOT / ".github" / "trusted-pr" / "Dockerfile"
