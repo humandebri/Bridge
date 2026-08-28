@@ -2151,12 +2151,13 @@ describe("Phase 3 PocketIC saga", () => {
 
   it("keeps funds fixed when a processed Deposit ID has only another authorization digest", processed_id_with_another_digest_cannot_move_refund_funds);
 
-  it("does not refund when finalized Base RPC observations disagree", async () => {
+  it("does not refund when finalized Base RPC observations cannot prove an exact checkpoint quorum", async () => {
     const { evm, bridge } = await setup();
     const result: any = await requestDefaultDeposit(bridge);
     const authorization = await awaitMintAuthorization(bridge, result.Ok.deposit_id);
     await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
-    await evm.actor.set_block_mode({ FinalizedInconsistent: null });
+    await evm.actor.set_finalized_block_sequence([90n, 100n, 110n]);
+    await evm.actor.set_block_mode({ FinalizedCheckpointFork: null });
     expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id))
       .toEqual({ Err: { RpcInconsistent: null } });
     const stored: any = await bridge.actor.get_deposit(result.Ok.deposit_id);
