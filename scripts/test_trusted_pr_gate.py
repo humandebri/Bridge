@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import unittest
 
+from source_resolution import CANDIDATE_SCRIPTS, source_path
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
 
@@ -28,15 +30,31 @@ class TrustedPrGateTests(unittest.TestCase):
         repository_gate = workflow.index("run: scripts/ci-local.sh all")
         self.assertLess(root_install, repository_gate)
 
-    def test_obsolete_staging_upgrade_path_is_removed(self) -> None:
+    def test_staging_policy_requires_the_layout_for_its_execution_context(self) -> None:
+        canonical_name = "staging-bridge-upgrade-policy.json"
+        obsolete_name = "v33-to-v34-upgrade-policy.json"
         policy_dir = ROOT / "deployments" / "sepolia-staging"
 
-        self.assertTrue((policy_dir / "legacy-stack-binding.json").is_file())
-        self.assertTrue((policy_dir / "fresh-stack.template.json").is_file())
-        self.assertFalse((policy_dir / "staging-bridge-upgrade-policy.json").exists())
-        self.assertFalse((ROOT / "scripts/plan007/staging_canister_upgrade.py").exists())
-        self.assertFalse((ROOT / "scripts/plan007/staging-canister-upgrade.sh").exists())
-        self.assertFalse((ROOT / "scripts/plan007/test_staging_canister_upgrade.py").exists())
+        self.assertFalse((policy_dir / obsolete_name).exists())
+        if CANDIDATE_SCRIPTS is None and (policy_dir / canonical_name).is_file():
+            self.assertTrue((policy_dir / canonical_name).is_file())
+            for relative in (
+                "scripts/plan007/staging_canister_upgrade.py",
+                "scripts/plan007/test_staging_canister_upgrade.py",
+                "docs/runbooks/sepolia-staging-e2e.md",
+                "verification/proof-impact.tsv",
+            ):
+                with self.subTest(relative=relative):
+                    source = source_path(relative).read_text(encoding="utf-8")
+                    self.assertIn(canonical_name, source)
+                    self.assertNotIn(obsolete_name, source)
+        else:
+            self.assertFalse((policy_dir / canonical_name).exists())
+            self.assertTrue((policy_dir / "legacy-stack-binding.json").is_file())
+            self.assertTrue((policy_dir / "fresh-stack.template.json").is_file())
+            self.assertFalse(source_path("scripts/plan007/staging_canister_upgrade.py").exists())
+            self.assertFalse(source_path("scripts/plan007/staging-canister-upgrade.sh").exists())
+            self.assertFalse(source_path("scripts/plan007/test_staging_canister_upgrade.py").exists())
 
     def test_trusted_bootstrap_files_are_present_and_pinned(self) -> None:
         dockerfile = ROOT / ".github" / "trusted-pr" / "Dockerfile"
@@ -341,6 +359,22 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn('"$mode" == "100644" || "$mode" == "100755"', helper)
         self.assertIn("git -C \"$root\" cat-file blob \"$object_id\"", helper)
         self.assertNotIn('cp -p "$root/$path"', helper)
+        staging_upgrade_test_path = (
+            ROOT / "scripts" / "plan007" / "test_staging_canister_upgrade.py"
+        )
+        if staging_upgrade_test_path.is_file():
+            staging_upgrade_test = staging_upgrade_test_path.read_text(encoding="utf-8")
+            self.assertIn(
+                'sys.path.insert(0, str(Path(__file__).resolve().parents[1]))',
+                staging_upgrade_test,
+            )
+            self.assertIn("from source_resolution import source_path", staging_upgrade_test)
+            self.assertIn("source_path(relative) if relative in SCRIPT_FILES", staging_upgrade_test)
+            self.assertIn('"bridge_wasm_sha256": self.target_module', staging_upgrade_test)
+            self.assertIn('policy["source_module_sha256"] = self.source_module', staging_upgrade_test)
+            self.assertIn('policy["source_candid_sha256"] = self.sha(self.source_did)', staging_upgrade_test)
+            self.assertIn('elif method=="get_operational_config":', staging_upgrade_test)
+            self.assertIn('governance_principal = principal', staging_upgrade_test)
 
     def test_failure_manifest_checker_reads_claim_contracts(self) -> None:
         checker = (ROOT / "scripts" / "check_failure_manifests.py").read_text(
@@ -374,6 +408,12 @@ class TrustedPrGateTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0, result.stderr)
             self.assertIn("stable schema mismatch", result.stderr)
+
+    def test_schema_consistency_accepts_both_staging_lifecycle_labels(self) -> None:
+        checker = (ROOT / "scripts" / "check_schema_consistency.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(r"Canister v(\d+) (?:upgrade|install)", checker)
 
     def test_mountpoint_preparation_creates_and_cleans_only_missing_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
