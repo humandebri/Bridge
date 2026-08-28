@@ -1,7 +1,9 @@
 use crate::Amount;
 
-/// Must match the on-chain `Bridge` acceptance ceiling.
-pub const MINT_AUTHORIZATION_TTL_SECONDS: u64 = 15 * 60;
+/// Validity issued by the Canister from the IC consensus timestamp.
+pub const MINT_AUTHORIZATION_TTL_SECONDS: u64 = 10 * 60;
+/// Minimum time that must remain before threshold signing can install a signature.
+pub const MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS: u64 = 5 * 60;
 pub const MINT_AUTHORIZATION_DOMAIN_NAME: &str = "KINIC Bridge";
 pub const MINT_AUTHORIZATION_DOMAIN_VERSION: &str = "1";
 
@@ -44,8 +46,14 @@ pub struct MintAuthorization {
 }
 
 impl MintAuthorization {
-    pub fn deadline_from_finalized_timestamp(finalized_timestamp: u64) -> Option<u64> {
-        finalized_timestamp.checked_add(MINT_AUTHORIZATION_TTL_SECONDS)
+    pub fn deadline_from_issued_at_timestamp(issued_at_timestamp: u64) -> Option<u64> {
+        issued_at_timestamp.checked_add(MINT_AUTHORIZATION_TTL_SECONDS)
+    }
+
+    pub fn has_minimum_remaining_time(&self, observed_timestamp: u64) -> bool {
+        observed_timestamp
+            .checked_add(MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS)
+            .is_some_and(|minimum_deadline| minimum_deadline <= self.deadline)
     }
 }
 
@@ -58,6 +66,7 @@ pub struct MintAuthorizationOrigin {
     pub finalized_block_number: u64,
     pub finalized_block_hash: [u8; 32],
     pub finalized_block_timestamp: u64,
+    pub issued_at_timestamp: u64,
 }
 
 /// Durable proof that an authorization can no longer be accepted on Base.
@@ -155,15 +164,32 @@ mod tests {
 
     #[test]
     fn deadline_is_fixed_and_checked() {
-        assert_eq!(MINT_AUTHORIZATION_TTL_SECONDS, 900);
+        assert_eq!(MINT_AUTHORIZATION_TTL_SECONDS, 600);
+        assert_eq!(MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS, 300);
         assert_eq!(
-            MintAuthorization::deadline_from_finalized_timestamp(10),
-            Some(910)
+            MintAuthorization::deadline_from_issued_at_timestamp(10),
+            Some(610)
         );
         assert_eq!(
-            MintAuthorization::deadline_from_finalized_timestamp(u64::MAX),
+            MintAuthorization::deadline_from_issued_at_timestamp(u64::MAX),
             None
         );
+    }
+
+    #[test]
+    fn minimum_remaining_time_accepts_300_seconds_and_rejects_299_seconds() {
+        let authorization = MintAuthorization {
+            deposit_id: [1; 32],
+            recipient: [2; 20],
+            gross_amount: Amount::new(100),
+            max_service_fee: Amount::new(10),
+            charged_service_fee: Amount::new(5),
+            deadline: 1_000,
+            authorization_epoch: 1,
+        };
+        assert!(authorization.has_minimum_remaining_time(700));
+        assert!(!authorization.has_minimum_remaining_time(701));
+        assert!(!authorization.has_minimum_remaining_time(u64::MAX));
     }
 
     fn unsigned_record() -> MintAuthorizationRecord {
@@ -183,6 +209,7 @@ mod tests {
                 finalized_block_number: 7,
                 finalized_block_hash: [5; 32],
                 finalized_block_timestamp: 0,
+                issued_at_timestamp: 1_200,
             },
             signature_dispatch_attempt: 0,
             signature_dispatched: false,

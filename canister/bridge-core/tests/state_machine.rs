@@ -124,7 +124,7 @@ fn refund_identity(
 }
 
 fn authorization_record(deposit: &DepositRecord) -> MintAuthorizationRecord {
-    let deadline = MintAuthorization::deadline_from_finalized_timestamp(1)
+    let deadline = MintAuthorization::deadline_from_issued_at_timestamp(1)
         .expect("valid test authorization deadline");
     MintAuthorizationRecord {
         authorization: MintAuthorization {
@@ -142,10 +142,73 @@ fn authorization_record(deposit: &DepositRecord) -> MintAuthorizationRecord {
             finalized_block_number: 7,
             finalized_block_hash: [6; 32],
             finalized_block_timestamp: 1,
+            issued_at_timestamp: 1,
         },
         signature_dispatch_attempt: 0,
         signature_dispatched: false,
         signature: None,
+    }
+}
+
+#[test]
+fn authorization_deadline_uses_issue_time_despite_twenty_or_thirty_minute_finality_lag() {
+    for finalized_timestamp in [200, 800] {
+        let mut deposit = accepted_deposit();
+        deposit
+            .apply(DepositEvent::FundingSucceeded {
+                funding_ledger_block_index: 1,
+            })
+            .expect("escrow");
+        let mut authorization = authorization_record(&deposit);
+        authorization.origin.finalized_block_timestamp = finalized_timestamp;
+        authorization.origin.issued_at_timestamp = 2_000;
+        authorization.authorization.deadline = 2_600;
+
+        deposit
+            .apply(DepositEvent::CommitAuthorization {
+                quote: test_deposit_quote(),
+                authorization: Box::new(authorization),
+            })
+            .expect("old finalized evidence does not shorten authorization");
+        assert_eq!(
+            deposit
+                .mint_authorization
+                .as_ref()
+                .expect("authorization")
+                .authorization
+                .deadline,
+            2_600
+        );
+    }
+}
+
+#[test]
+fn authorization_rejects_tampered_issue_time_wrong_deadline_and_overflow() {
+    for mutation in 0..3 {
+        let mut deposit = accepted_deposit();
+        deposit
+            .apply(DepositEvent::FundingSucceeded {
+                funding_ledger_block_index: 1,
+            })
+            .expect("escrow");
+        let mut authorization = authorization_record(&deposit);
+        match mutation {
+            0 => authorization.origin.issued_at_timestamp += 1,
+            1 => authorization.authorization.deadline += 1,
+            2 => {
+                authorization.origin.issued_at_timestamp = u64::MAX;
+                authorization.authorization.deadline = u64::MAX;
+            }
+            _ => unreachable!(),
+        }
+        let before = deposit.clone();
+        assert!(deposit
+            .apply(DepositEvent::CommitAuthorization {
+                quote: test_deposit_quote(),
+                authorization: Box::new(authorization),
+            })
+            .is_err());
+        assert_eq!(deposit, before);
     }
 }
 
@@ -219,7 +282,7 @@ fn minted_state_requires_and_persists_exact_canonical_evidence() {
         .apply(DepositEvent::MarkRefundAvailable {
             reason: bridge_core::DepositRefundReason::AuthorizationExpired,
             finalized_timestamp: Some(
-                MintAuthorization::deadline_from_finalized_timestamp(1).expect("deadline") + 1,
+                MintAuthorization::deadline_from_issued_at_timestamp(1).expect("deadline") + 1,
             ),
         })
         .expect("release reservation");
@@ -318,7 +381,7 @@ fn expired_authorization_refund_requires_persisted_finalized_unprocessed_evidenc
             observed_timestamp: 1,
         })
         .expect("signed");
-    let deadline = MintAuthorization::deadline_from_finalized_timestamp(1).expect("valid deadline");
+    let deadline = MintAuthorization::deadline_from_issued_at_timestamp(1).expect("valid deadline");
     assert!(deposit
         .apply(DepositEvent::MarkRefundAvailable {
             reason: bridge_core::DepositRefundReason::AuthorizationExpired,
@@ -342,7 +405,7 @@ fn expired_authorization_refund_requires_persisted_finalized_unprocessed_evidenc
             reason: bridge_core::DepositRefundReason::AuthorizationExpired,
             attempt: Box::new(refund.clone()),
             expiry_evidence: Some(Box::new(expiry_evidence(
-                MintAuthorization::deadline_from_finalized_timestamp(1)
+                MintAuthorization::deadline_from_issued_at_timestamp(1)
                     .expect("valid deadline boundary"),
             ))),
         }),
@@ -350,7 +413,7 @@ fn expired_authorization_refund_requires_persisted_finalized_unprocessed_evidenc
     );
     assert_eq!(deposit, snapshot);
 
-    let post_deadline = MintAuthorization::deadline_from_finalized_timestamp(1)
+    let post_deadline = MintAuthorization::deadline_from_issued_at_timestamp(1)
         .and_then(|deadline| deadline.checked_add(1))
         .expect("valid post-deadline timestamp");
     let mut wrong_digest = expiry_evidence(post_deadline);
@@ -407,7 +470,7 @@ fn expired_pending_authorization_does_not_require_a_late_signature_to_refund() {
         .apply(DepositEvent::MarkRefundAvailable {
             reason: bridge_core::DepositRefundReason::AuthorizationExpired,
             finalized_timestamp: Some(
-                MintAuthorization::deadline_from_finalized_timestamp(1).expect("deadline") + 1,
+                MintAuthorization::deadline_from_issued_at_timestamp(1).expect("deadline") + 1,
             ),
         })
         .expect("expired pending authorization");
@@ -575,7 +638,7 @@ fn funding_block_replay_is_idempotent_in_every_later_refund_phase() {
         .apply(DepositEvent::MarkRefundAvailable {
             reason: bridge_core::DepositRefundReason::AuthorizationExpired,
             finalized_timestamp: Some(
-                MintAuthorization::deadline_from_finalized_timestamp(1).expect("deadline") + 1,
+                MintAuthorization::deadline_from_issued_at_timestamp(1).expect("deadline") + 1,
             ),
         })
         .expect("refund available");

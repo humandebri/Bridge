@@ -28,23 +28,15 @@ class TrustedPrGateTests(unittest.TestCase):
         repository_gate = workflow.index("run: scripts/ci-local.sh all")
         self.assertLess(root_install, repository_gate)
 
-    def test_staging_upgrade_policy_uses_only_the_canonical_path(self) -> None:
-        canonical_name = "staging-bridge-upgrade-policy.json"
-        obsolete_name = "v33-to-v34-upgrade-policy.json"
+    def test_obsolete_staging_upgrade_path_is_removed(self) -> None:
         policy_dir = ROOT / "deployments" / "sepolia-staging"
 
-        self.assertTrue((policy_dir / canonical_name).is_file())
-        self.assertFalse((policy_dir / obsolete_name).exists())
-        for relative in (
-            "scripts/plan007/staging_canister_upgrade.py",
-            "scripts/plan007/test_staging_canister_upgrade.py",
-            "docs/runbooks/sepolia-staging-e2e.md",
-            "verification/proof-impact.tsv",
-        ):
-            with self.subTest(relative=relative):
-                source = (ROOT / relative).read_text(encoding="utf-8")
-                self.assertIn(canonical_name, source)
-                self.assertNotIn(obsolete_name, source)
+        self.assertTrue((policy_dir / "legacy-stack-binding.json").is_file())
+        self.assertTrue((policy_dir / "fresh-stack.template.json").is_file())
+        self.assertFalse((policy_dir / "staging-bridge-upgrade-policy.json").exists())
+        self.assertFalse((ROOT / "scripts/plan007/staging_canister_upgrade.py").exists())
+        self.assertFalse((ROOT / "scripts/plan007/staging-canister-upgrade.sh").exists())
+        self.assertFalse((ROOT / "scripts/plan007/test_staging_canister_upgrade.py").exists())
 
     def test_trusted_bootstrap_files_are_present_and_pinned(self) -> None:
         dockerfile = ROOT / ".github" / "trusted-pr" / "Dockerfile"
@@ -349,20 +341,6 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn('"$mode" == "100644" || "$mode" == "100755"', helper)
         self.assertIn("git -C \"$root\" cat-file blob \"$object_id\"", helper)
         self.assertNotIn('cp -p "$root/$path"', helper)
-        staging_upgrade_test = (
-            ROOT / "scripts" / "plan007" / "test_staging_canister_upgrade.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn(
-            'sys.path.insert(0, str(Path(__file__).resolve().parents[1]))',
-            staging_upgrade_test,
-        )
-        self.assertIn("from source_resolution import source_path", staging_upgrade_test)
-        self.assertIn("source_path(relative) if relative in SCRIPT_FILES", staging_upgrade_test)
-        self.assertIn('"bridge_wasm_sha256": self.target_module', staging_upgrade_test)
-        self.assertIn('policy["source_module_sha256"] = self.source_module', staging_upgrade_test)
-        self.assertIn('policy["source_candid_sha256"] = self.sha(self.source_did)', staging_upgrade_test)
-        self.assertIn('elif method=="get_operational_config":', staging_upgrade_test)
-        self.assertIn('governance_principal = principal', staging_upgrade_test)
 
     def test_failure_manifest_checker_reads_claim_contracts(self) -> None:
         checker = (ROOT / "scripts" / "check_failure_manifests.py").read_text(

@@ -12,7 +12,7 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 ## 現在の進捗
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v34、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
+Bridge canisterはstable schema v35、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
 Plan 005は10回・7日の本番パラメータ外部計測と単一emergency pause経路演習待ちである。Plan 006のSNS handover、Canister操作型Base管理、主要5 scenarioのGate B真正性検証、固定SNS activation proposal提出とpostcondition receipt経路は実装済みで、実mainnet evidenceの取得・承認・実行は未完了である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、追加wallet互換性と追加5 scenarioの外部実行は明示承認待ちだがproduction activationをblockしない。
 
 ## 全体構成
@@ -122,7 +122,7 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
 Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003および現行ADRで外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorization、役割別governance nonce laneを追加し、現行stable schemaはv34である。
+後続のPlan 002と003および現行ADRで外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorization、役割別governance nonce laneを追加し、現行stable schemaはv35である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 
@@ -130,7 +130,7 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 - 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
 - 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
 - 本番初回deployまではstable schemaを直接置換し、migration、dual-read、fallbackを追加しない。現行version以外はfail closedとする。
-- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v34・record wire v29とする。
+- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v35・record wire v30とする。
 - Deposit record、owner sequence、Base recipientは単一envelopeへ保存する。pending EVM、open hold、nonterminal Withdrawalの件数は対応indexのtable countを正本とする。
 - Withdrawal primary rowとliability index、合計額、stop reason集計はtyped SQLite transactionで同時に更新し、change-log triggerへ依存しない。
 

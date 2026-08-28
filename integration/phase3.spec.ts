@@ -68,8 +68,8 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_bridge_runtime_code(new Uint8Array([0x60, 0x00]));
     // Phase 3 keeps small 1/10 fee boundaries; bind its test-only immutable explicitly.
     await (evm.actor as any).set_minimum_service_fee(init.expected_minimum_service_fee);
-    // Mint authorization deadlines are Base Unix timestamps. Keep the mock Base
-    // clock in the same time domain as the canister before deadline checks run.
+    // Base and IC timestamps share Unix seconds, but Finalized may lag. Most tests
+    // start aligned and dedicated cases move only Finalized behind IC issue time.
     await (evm.actor as any).set_block_timestamp(BigInt(Math.floor((await pic!.getTime()) / 1_000)));
     await (evm.actor as any).set_deposit_mints_paused(true);
     await (evm.actor as any).set_withdrawals_paused(true);
@@ -246,6 +246,22 @@ describe("Phase 3 PocketIC saga", () => {
       max_service_fee: 10n,
     });
   }
+
+  it("mints_when_the_finalized_Base_head_is_twenty_minutes_behind_IC_issue_time", async () => {
+    const { evm, bridge } = await setup();
+    const icTimestamp = BigInt(Math.floor((await pic!.getTime()) / 1_000));
+    await (evm.actor as any).set_block_timestamp(icTimestamp - 20n * 60n);
+
+    const result: any = await requestDefaultDeposit(bridge);
+    expect(result).toHaveProperty("Ok.state.EscrowedUnquoted");
+    await advanceDepositJobs(bridge, result.Ok.deposit_id);
+    const authorization: any = await awaitMintAuthorization(bridge, result.Ok.deposit_id);
+
+    expect(authorization.finalized_block_timestamp).toBeLessThan(authorization.issued_at_timestamp - 19n * 60n);
+    expect(authorization.deadline).toBe(authorization.issued_at_timestamp + 600n);
+    expect(authorization.signature).toHaveLength(1);
+    expect(await mintAuthorizedDeposit(bridge, evm, result.Ok.deposit_id)).toHaveProperty("Ok.state.Minted");
+  });
   async function notifyFixtureWithdrawal(bridge: any, transactionHash = new Uint8Array(32).fill(9)) {
     const result = await bridge.actor.notify_withdrawal({ transaction_hash: transactionHash });
     expect(result).toHaveProperty("Ok");
@@ -792,7 +808,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
     const config: any = await (bridge.actor as any).get_runtime_binding();
     expect(config.base_chain_id).toBe(8453n);
-    expect(config.schema_version).toBe(34);
+    expect(config.schema_version).toBe(35);
     expect(Array.from(config.minimum_withdrawal_id)).toEqual(Array.from(init.minimum_withdrawal_id));
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.evm_rpc_canister_id.toText()).toBe(init.evm_rpc_canister_id.toText());
@@ -1129,25 +1145,31 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
   });
 
-  async function stops_an_expired_pending_authorization_before_installing_a_signature() {
-    const { bridge } = await setup();
+  async function stops_a_less_than_300_second_pending_authorization_before_installing_a_signature() {
+    const { evm, bridge } = await setup();
     const result: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n });
     expect(result).toHaveProperty("Ok.state.EscrowedUnquoted");
-    await pic!.advanceTime(16 * 60_000 + 1);
+    await (evm.actor as any).set_block_mode({ FinalizedUnavailable: null });
+    await advanceDepositJobs(bridge, result.Ok.deposit_id);
+
+    const pending: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
+    expect(phaseName(pending[0].state)).toBe("AuthorizationPending");
+    expect(pending[0].mint_authorization[0].signature).toEqual([]);
+    const deadline = BigInt(pending[0].mint_authorization[0].deadline);
+    const now = BigInt(Math.floor((await pic!.getTime()) / 1_000));
+    expect(deadline - now).toBeLessThan(300n);
+    await (evm.actor as any).set_block_mode({ Canonical: null });
     await pic!.tick(30);
 
     const stopped: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
     expect(phaseName(stopped[0].state)).toBe("AuthorizationPending");
     expect(stopped[0].mint_authorization[0].signature).toEqual([]);
-    const deadline = BigInt(stopped[0].mint_authorization[0].deadline);
-    const now = BigInt(Math.floor((await pic!.getTime()) / 1_000));
-    expect(deadline).toBeLessThan(now);
-    expect(stopped[0].last_settlement_stop_reason).toEqual([{ AuthorizationExpired: null }]);
+    expect(stopped[0].last_settlement_stop_reason).toEqual([{ AuthorizationWindowTooShort: null }]);
   }
 
   it(
-    "stops an expired pending authorization before installing a signature",
-    stops_an_expired_pending_authorization_before_installing_a_signature,
+    "stops_a_less_than_300_second_pending_authorization_before_installing_a_signature",
+    stops_a_less_than_300_second_pending_authorization_before_installing_a_signature,
   );
 
   async function continues_only_a_retryable_stopped_deposit_authorization() {
@@ -1156,7 +1178,10 @@ describe("Phase 3 PocketIC saga", () => {
     expect(result).toHaveProperty("Ok.state.EscrowedUnquoted");
 
     await (evm.actor as any).set_block_mode({ FinalizedUnavailable: null });
-    await advanceDepositJobs(bridge, result.Ok.deposit_id);
+    // The setup observation is still fresh enough to issue the authorization.
+    // Stop on the immediately following Base revalidation attempt, before the
+    // 300-second signing floor becomes the dominant stop reason.
+    await advanceClock(2);
     await (evm.actor as any).set_block_mode({ Canonical: null });
     const stopped: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
     expect(stopped[0].last_settlement_stop_reason).toEqual([{ RpcUnavailable: null }]);
@@ -1174,11 +1199,11 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_block_timestamp(manualRetryAtNs / 1_000_000_000n);
     await pic!.advanceTime(Number((manualRetryAtNs - nowNs) / 1_000_000n));
     expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id))
-      .toHaveProperty("Ok.Stopped.reason.AuthorizationExpired");
+      .toHaveProperty("Ok.Stopped.reason.AuthorizationWindowTooShort");
 
     const resumed: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
     expect(phaseName(resumed[0].state)).toBe("AuthorizationPending");
-    expect(resumed[0].last_settlement_stop_reason).toEqual([{ AuthorizationExpired: null }]);
+    expect(resumed[0].last_settlement_stop_reason).toEqual([{ AuthorizationWindowTooShort: null }]);
     expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id))
       .toEqual({ Err: { WrongState: null } });
   }
@@ -2487,7 +2512,7 @@ describe("Phase 3 PocketIC saga", () => {
       median(hundredJobInstructions) * 2n,
     );
     const before: any = await (bridge.actor as any).get_bridge_status();
-    expect(before.schema_version).toBe(34);
+    expect(before.schema_version).toBe(35);
     expect(before.counts.withdrawals).toBe(10_000n);
     expect(before.counts.retained_audit_events).toBe(10_000n);
     expect(
@@ -2510,7 +2535,7 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     const after: any = await (bridge.actor as any).get_bridge_status();
-    expect(after.schema_version).toBe(34);
+    expect(after.schema_version).toBe(35);
     expect(after.counts).toEqual(before.counts);
     expect(after.settlement_scheduler.scheduled).toBe(before.settlement_scheduler.scheduled);
     expect(after.settlement_scheduler.leased).toBe(before.settlement_scheduler.leased);

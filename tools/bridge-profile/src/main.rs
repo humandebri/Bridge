@@ -2,6 +2,8 @@
 
 use candid::{CandidType, Decode, Encode, Nat, Principal, Reserved};
 use ic_agent::Agent;
+use ic_pub_key::{derive_ecdsa_key, CanisterId, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs};
+use k256::ecdsa::VerifyingKey;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -13,6 +15,7 @@ use std::{
     io::Write,
     path::{Component, Path, PathBuf},
     process::{self, Command},
+    str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tiny_keccak::{Hasher, Keccak};
@@ -22,9 +25,17 @@ const KINIC_INDEX: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
 const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
+const STAGING_LEDGER: &str = "3jkp5-oyaaa-aaaaj-azwqa-cai";
+const STAGING_INDEX: &str = "qzre3-3iaaa-aaaai-aqmsa-cai";
+const STAGING_BRIDGE_CANISTER: &str = "rlhjx-iyaaa-aaaaf-qcnyq-cai";
+const STAGING_RPC_URLS: [&str; 3] = [
+    "https://base-sepolia-rpc.publicnode.com",
+    "https://sepolia.base.org",
+    "https://base-sepolia.drpc.org",
+];
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
 const MAX_ACTIVATION_ATTESTATION_AGE_SECS: u64 = 5 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 34;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 35;
 const GATE_A_ARTIFACTS: [&str; 6] = [
     "profile.json",
     "bridge-canister.wasm",
@@ -1566,6 +1577,38 @@ fn evm_topic(signature: &str) -> String {
     format!("0x{}", hex(&hash))
 }
 
+fn derive_mainnet_ecdsa_address(canister_id: &str, path: &[String]) -> Result<Value, String> {
+    let canister_id = CanisterId::from_str(canister_id)
+        .map_err(|error| format!("invalid canister id: {error}"))?;
+    let derived = derive_ecdsa_key(&EcdsaPublicKeyArgs {
+        canister_id: Some(canister_id),
+        derivation_path: path.iter().map(|part| part.as_bytes().to_vec()).collect(),
+        key_id: EcdsaKeyId {
+            curve: EcdsaCurve::Secp256k1,
+            name: "key_1".to_string(),
+        },
+    })
+    .map_err(|error| format!("mainnet ECDSA key derivation failed: {error:?}"))?;
+    let verifying_key = VerifyingKey::from_sec1_bytes(&derived.public_key)
+        .map_err(|error| format!("derived SEC1 public key is invalid: {error}"))?;
+    let uncompressed = verifying_key.to_encoded_point(false);
+    let public_key = uncompressed.as_bytes();
+    if public_key.len() != 65 || public_key[0] != 4 {
+        return Err("derived ECDSA public key is not uncompressed SEC1".into());
+    }
+    let mut digest = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(&public_key[1..]);
+    hasher.finalize(&mut digest);
+    Ok(serde_json::json!({
+        "canister_id": canister_id.to_string(),
+        "derivation_path_utf8": path,
+        "key_name": "key_1",
+        "public_key_sec1_compressed": format!("0x{}", hex(&derived.public_key)),
+        "ethereum_address": format!("0x{}", hex(&digest[12..])),
+    }))
+}
+
 fn validate_monitor_drill(
     drill: &MonitorDrill,
     manifest: &ReleaseManifest,
@@ -2235,8 +2278,9 @@ fn write_generated<T: Serialize>(root: &Path, name: &str, value: &T) -> Result<S
     Ok(hex(&Sha256::digest(bytes)))
 }
 
-fn production_init_args(
+fn canister_init_args(
     input: &ProductionCanisterInitInput,
+    staging: bool,
 ) -> Result<ProductionCanisterInitArgs, String> {
     let bytes = |name: &str, value: &str, expected: usize| -> Result<Vec<u8>, String> {
         let decoded = decode_hex(value)?;
@@ -2252,10 +2296,22 @@ fn production_init_args(
         }
         Ok(parsed)
     };
-    if !input.custom_evm_rpc_urls.is_empty()
-        || input.base_chain_id != 8453
-        || input.ledger_canister_id != KINIC_LEDGER
-        || input.index_canister_id != KINIC_INDEX
+    let environment_binding_valid = if staging {
+        input.base_chain_id == 84532
+            && input.ledger_canister_id == STAGING_LEDGER
+            && input.index_canister_id == STAGING_INDEX
+            && input.custom_evm_rpc_urls == STAGING_RPC_URLS
+            && input.expected_timelock_minimum_delay_seconds == 300
+            && input.expected_minimum_service_fee == 10_000
+    } else {
+        input.base_chain_id == 8453
+            && input.ledger_canister_id == KINIC_LEDGER
+            && input.index_canister_id == KINIC_INDEX
+            && input.custom_evm_rpc_urls.is_empty()
+            && input.expected_timelock_minimum_delay_seconds >= 86_400
+            && input.expected_minimum_service_fee == 100_000
+    };
+    if !environment_binding_valid
         || input.evm_rpc_canister_id != OFFICIAL_EVM_RPC_CANISTER
         || input.ecdsa_key_name != "key_1"
         || input.ecdsa_derivation_path_utf8.is_empty()
@@ -2267,9 +2323,7 @@ fn production_init_args(
             .chain(input.governance_ecdsa_derivation_path_utf8.iter())
             .any(|part| part.is_empty() || part.len() > 128)
         || !input.fee_recipient.subaccount_hex.is_empty()
-        || input.expected_minimum_service_fee != 100_000
         || input.expected_bsns_decimals != 8
-        || input.expected_timelock_minimum_delay_seconds < 86_400
         || input.cycles_floor == 0
         || input.settlement_cycle_ceiling == 0
         || !(60..=300).contains(&input.deposit_rate_limit_window_seconds)
@@ -2298,7 +2352,7 @@ fn production_init_args(
         ledger_canister_id: principal("ledger_canister_id", &input.ledger_canister_id)?,
         index_canister_id: principal("index_canister_id", &input.index_canister_id)?,
         evm_rpc_canister_id: principal("evm_rpc_canister_id", &input.evm_rpc_canister_id)?,
-        custom_evm_rpc_urls: Vec::new(),
+        custom_evm_rpc_urls: input.custom_evm_rpc_urls.clone(),
         base_chain_id: input.base_chain_id,
         bridge_contract: bytes("bridge_contract_hex", &input.bridge_contract_hex, 20)?,
         expected_bridge_runtime_sha256: bytes(
@@ -2364,6 +2418,18 @@ fn production_init_args(
     })
 }
 
+fn production_init_args(
+    input: &ProductionCanisterInitInput,
+) -> Result<ProductionCanisterInitArgs, String> {
+    canister_init_args(input, false)
+}
+
+fn staging_init_args(
+    input: &ProductionCanisterInitInput,
+) -> Result<ProductionCanisterInitArgs, String> {
+    canister_init_args(input, true)
+}
+
 fn validate_production_canister_plan(plan: &ProductionCanisterPlan) -> Result<Vec<u8>, String> {
     if plan.schema_version != 2
         || plan.environment != "production"
@@ -2384,6 +2450,21 @@ fn validate_production_canister_plan(plan: &ProductionCanisterPlan) -> Result<Ve
         );
     }
     Encode!(&production_init_args(&plan.init)?).map_err(|error| error.to_string())
+}
+
+fn validate_staging_canister_plan(plan: &ProductionCanisterPlan) -> Result<Vec<u8>, String> {
+    if plan.schema_version != 1
+        || plan.environment != "sepolia-staging"
+        || plan.source_revision.trim().is_empty()
+        || !valid_sha256(&plan.source_tree_sha256)
+        || !principal(&plan.bridge_canister_id)
+        || plan.bridge_canister_id != STAGING_BRIDGE_CANISTER
+        || !valid_sha256(&plan.bridge_canister_wasm_sha256)
+        || plan.init.fee_recipient.owner != plan.bridge_canister_id
+    {
+        return Err("invalid staging Canister install plan identity".into());
+    }
+    Encode!(&staging_init_args(&plan.init)?).map_err(|error| error.to_string())
 }
 
 fn validate_production_canister_plan_against_profile(
@@ -2468,6 +2549,32 @@ fn render_production_canister_inputs(plan_path: &Path, output: &Path) -> Result<
     });
     write_generated(output, "production-canister-install-inputs.json", &manifest)?;
     println!("rendered production Canister install inputs plan_sha256={plan_sha256}");
+    Ok(())
+}
+
+fn render_staging_canister_inputs(plan_path: &Path, output: &Path) -> Result<(), String> {
+    let plan: ProductionCanisterPlan = read_json(plan_path)?;
+    let candid = validate_staging_canister_plan(&plan)?;
+    let plan_sha256 = hex(&canonical_sha256(&plan)?);
+    let init_sha256 = write_generated(output, "canister-init.json", &plan.init)?;
+    fs::create_dir_all(output).map_err(|error| error.to_string())?;
+    let temporary = output.join(format!(".canister-init.bin.tmp-{}", process::id()));
+    fs::write(&temporary, &candid).map_err(|error| error.to_string())?;
+    let candid_path = output.join("canister-init.bin");
+    fs::rename(&temporary, &candid_path).map_err(|error| error.to_string())?;
+    let manifest = serde_json::json!({
+        "schema_version": 1,
+        "plan_sha256": plan_sha256,
+        "source_revision": plan.source_revision,
+        "source_tree_sha256": plan.source_tree_sha256,
+        "canister_id": plan.bridge_canister_id,
+        "module_sha256": plan.bridge_canister_wasm_sha256,
+        "canister_init_sha256": init_sha256,
+        "init_candid_sha256": hex(&Sha256::digest(&candid)),
+        "test_only": true,
+    });
+    write_generated(output, "staging-canister-install-inputs.json", &manifest)?;
+    println!("rendered staging Canister install inputs plan_sha256={plan_sha256}");
     Ok(())
 }
 
@@ -5032,6 +5139,16 @@ fn run() -> Result<(), String> {
             validate_profile(&profile, args[1] == "validate")?;
             println!("{}", hex(&canonical_sha256(&profile)?));
         }
+        Some("derive-mainnet-ecdsa-address") if args.len() >= 3 => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&derive_mainnet_ecdsa_address(
+                    &args[2],
+                    &args[3..],
+                )?)
+                .map_err(|error| error.to_string())?
+            );
+        }
         Some("render-release-inputs") if args.len() == 4 => {
             render_release_inputs(Path::new(&args[2]), Path::new(&args[3]), true, None)?;
         }
@@ -5057,6 +5174,14 @@ fn run() -> Result<(), String> {
         }
         Some("render-production-canister-inputs") if args.len() == 4 => {
             render_production_canister_inputs(Path::new(&args[2]), Path::new(&args[3]))?;
+        }
+        Some("validate-staging-canister-plan") if args.len() == 3 => {
+            let plan: ProductionCanisterPlan = read_json(Path::new(&args[2]))?;
+            validate_staging_canister_plan(&plan)?;
+            println!("{}", hex(&canonical_sha256(&plan)?));
+        }
+        Some("render-staging-canister-inputs") if args.len() == 4 => {
+            render_staging_canister_inputs(Path::new(&args[2]), Path::new(&args[3]))?;
         }
         Some("validate-production-canister-receipt") if args.len() == 4 => {
             println!(
@@ -5181,7 +5306,7 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[3]
             );
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | validate-production-handover-candidate <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | derive-mainnet-ecdsa-address <canister-id> [path-part ...] | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-staging-canister-plan <plan.json> | render-staging-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | validate-production-handover-candidate <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
     }
     Ok(())
 }
@@ -5196,6 +5321,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mainnet_ecdsa_address_derivation_is_canister_and_path_bound() {
+        let canister = "rlhjx-iyaaa-aaaaf-qcnyq-cai";
+        let first_path = vec!["kinic-bridge-sepolia-v35".to_string()];
+        let second_path = vec!["kinic-bridge-sepolia-v35-other".to_string()];
+        let first = derive_mainnet_ecdsa_address(canister, &first_path).unwrap();
+        let repeated = derive_mainnet_ecdsa_address(canister, &first_path).unwrap();
+        let second = derive_mainnet_ecdsa_address(canister, &second_path).unwrap();
+        assert_eq!(first, repeated);
+        let address = first["ethereum_address"].as_str().unwrap();
+        assert_eq!(address.len(), 42);
+        assert!(address.starts_with("0x"));
+        assert_ne!(first["ethereum_address"], second["ethereum_address"]);
+    }
 
     #[test]
     fn activation_timestamps_must_follow_gate_b_and_precede_verification() {
@@ -5415,7 +5555,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         )
         .unwrap());
-        let operational_config_sha256 = expected_operational_config_sha256(profile, 900, 7)
+        let operational_config_sha256 = expected_operational_config_sha256(profile, 600, 7)
             .map(|digest| hex(&digest))
             .unwrap();
         LiveRuntimeBinding {
@@ -5510,7 +5650,7 @@ mod tests {
             hex(&expected_bootstrap_operational_config_sha256(
                 &plan.init,
                 &profile.governance_operator,
-                900,
+                600,
                 7,
             )
             .unwrap());
@@ -5526,7 +5666,7 @@ mod tests {
             init_candid_sha256,
             runtime_binding,
             governance_operator: profile.governance_operator.clone(),
-            mint_authorization_ttl_seconds: 900,
+            mint_authorization_ttl_seconds: 600,
             mint_authorization_epoch: 7,
             storage_validation_complete: true,
             storage_checksum_complete: true,
@@ -5534,6 +5674,22 @@ mod tests {
             state_is_empty: true,
             cycles_reserve_sufficient: true,
         }
+    }
+
+    fn staging_canister_plan() -> ProductionCanisterPlan {
+        let profile = valid_profile();
+        let mut plan = production_canister_plan(&profile);
+        plan.schema_version = 1;
+        plan.environment = "sepolia-staging".into();
+        plan.bridge_canister_id = STAGING_BRIDGE_CANISTER.into();
+        plan.init.fee_recipient.owner = STAGING_BRIDGE_CANISTER.into();
+        plan.init.ledger_canister_id = STAGING_LEDGER.into();
+        plan.init.index_canister_id = STAGING_INDEX.into();
+        plan.init.custom_evm_rpc_urls = STAGING_RPC_URLS.map(str::to_owned).to_vec();
+        plan.init.base_chain_id = 84532;
+        plan.init.expected_timelock_minimum_delay_seconds = 300;
+        plan.init.expected_minimum_service_fee = 10_000;
+        plan
     }
 
     #[test]
@@ -5562,6 +5718,29 @@ mod tests {
         let mut unsafe_plan = plan;
         unsafe_plan.init.custom_evm_rpc_urls = vec!["https://unreviewed.example".into()];
         assert!(validate_production_canister_plan(&unsafe_plan).is_err());
+    }
+
+    #[test]
+    fn staging_canister_plan_is_typed_and_fixed_to_reviewed_test_bindings() {
+        let plan = staging_canister_plan();
+        let encoded = validate_staging_canister_plan(&plan).unwrap();
+        let decoded = Decode!(&encoded, ProductionCanisterInitArgsCallView).unwrap();
+        assert_eq!(decoded.base_chain_id, 84532);
+        assert_eq!(decoded.custom_evm_rpc_urls, STAGING_RPC_URLS);
+        assert_eq!(decoded.expected_timelock_minimum_delay_seconds, 300);
+        assert_eq!(decoded.expected_minimum_service_fee, 10_000);
+
+        let mut drift = plan.clone();
+        drift.init.custom_evm_rpc_urls.swap(0, 1);
+        assert!(validate_staging_canister_plan(&drift).is_err());
+        let mut production = plan;
+        production.environment = "production".into();
+        assert!(validate_staging_canister_plan(&production).is_err());
+
+        let mut wrong_canister = staging_canister_plan();
+        wrong_canister.bridge_canister_id = test_principal(30);
+        wrong_canister.init.fee_recipient.owner = wrong_canister.bridge_canister_id.clone();
+        assert!(validate_staging_canister_plan(&wrong_canister).is_err());
     }
 
     #[test]
@@ -5665,7 +5844,7 @@ mod tests {
         BridgeStatusLiveView {
             reserve: ReserveStatusView { sufficient: true },
             deposits_paused: true,
-            mint_authorization_ttl_seconds: 900,
+            mint_authorization_ttl_seconds: 600,
             mint_authorization_epoch: 7,
             counts: ProductionStatusCountsView {
                 deposits: 0,
@@ -5905,7 +6084,7 @@ mod tests {
         )
         .unwrap());
         let operational_config_sha256 =
-            expected_operational_config_sha256(&profile, 900, 7).unwrap();
+            expected_operational_config_sha256(&profile, 600, 7).unwrap();
         let mut observed = live_runtime_binding(&profile);
         assert!(validate_live_runtime_binding(
             &observed,
@@ -5928,13 +6107,13 @@ mod tests {
     fn live_runtime_binding_rejects_operational_profile_drift() {
         let mut profile = valid_profile();
         assert_eq!(
-            hex(&expected_operational_config_sha256(&profile, 900, 7).unwrap()),
-            "5b28cf270243b84dd41cb18918f79d0e4457c10852bd6fa8b866431e67d7fa48"
+            hex(&expected_operational_config_sha256(&profile, 600, 7).unwrap()),
+            "efe2862b6cfba28ace6b5008221961556a7549588269001bb5a15904a5d5f0c3"
         );
         let observed = live_runtime_binding(&profile);
         let rpc_url_hash = observed.rpc_provider_urls_sha256.clone();
         profile.rate_limits.notification_global -= 1;
-        let changed = expected_operational_config_sha256(&profile, 900, 7).unwrap();
+        let changed = expected_operational_config_sha256(&profile, 600, 7).unwrap();
         assert!(
             validate_live_runtime_binding(&observed, &profile, &rpc_url_hash, &changed).is_err()
         );
@@ -6682,7 +6861,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             hex(&expected_bootstrap_operational_config_sha256(
                 &canister_plan.init,
                 &profile.governance_operator,
-                900,
+                600,
                 7,
             )
             .unwrap());
@@ -6714,7 +6893,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 init_candid_sha256: canister_init_candid_sha256,
                 runtime_binding: canister_runtime_binding,
                 governance_operator: profile.governance_operator.clone(),
-                mint_authorization_ttl_seconds: 900,
+                mint_authorization_ttl_seconds: 600,
                 mint_authorization_epoch: 7,
                 storage_validation_complete: true,
                 storage_checksum_complete: true,

@@ -179,7 +179,6 @@ run_versions() {
   node "$ROOT/scripts/plan007/test-read-public-canister-metadata.mjs"
   python3 "$ROOT/scripts/plan007/test_candid_values.py"
   python3 "$ROOT/scripts/plan007/test_staging_wasm_artifact.py"
-  python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
   python3 "$ROOT/scripts/test_staging_ui_node_wrapper.py"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \

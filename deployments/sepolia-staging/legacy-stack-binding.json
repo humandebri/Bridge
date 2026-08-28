@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "kind": "legacy-staging-stack-binding",
+  "environment": "sepolia-staging",
+  "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+  "deployment_instance_id": "0x2c344ca868267bc19791a2e1a966c210eef545945b3879223d3cb6c1255d789b",
+  "base_chain_id": 84532,
+  "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+  "governance_principal": "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae",
+  "last_reviewed_module_sha256": "222053032045e1c661e24ee9de9f5074e3bed6c1cefdfc78168630cd719e7636",
+  "last_reviewed_candid_sha256": "16b544fdae487f72241ca211b93f89d25984c641a75e3baab2bb319c1c0a0f7c",
+  "target_disposition": "canister-reinstall-approved-base-stack-abandoned",
+  "promotion_blocked_until": []
+}

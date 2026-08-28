@@ -775,8 +775,8 @@ macro_rules! mint_finalization_allowed_body {
 }
 
 macro_rules! signature_install_allowed_body {
-    ($dispatched:expr, $absent:expr, $length:expr, $deadline_open:expr) => {
-        $dispatched && $absent && $length && $deadline_open
+    ($dispatched:expr, $absent:expr, $length:expr, $minimum_remaining:expr) => {
+        $dispatched && $absent && $length && $minimum_remaining
     };
 }
 
@@ -1810,13 +1810,13 @@ pub const fn signature_install_allowed(
     signature_dispatched: bool,
     signature_absent: bool,
     signature_length_valid: bool,
-    deadline_open: bool,
+    minimum_remaining: bool,
 ) -> bool {
     signature_install_allowed_body!(
         signature_dispatched,
         signature_absent,
         signature_length_valid,
-        deadline_open
+        minimum_remaining
     )
 }
 
@@ -1924,7 +1924,7 @@ pub enum DepositEventGuard {
         dispatched: bool,
         signature_absent: bool,
         signature_length_valid: bool,
-        deadline_open: bool,
+        minimum_remaining: bool,
     },
     MarkRefundAvailable {
         policy_allowed: bool,
@@ -1978,9 +1978,9 @@ impl DepositEventGuard {
                 dispatched,
                 signature_absent,
                 signature_length_valid,
-                deadline_open,
+                minimum_remaining,
             } => signature_install_allowed_body!(
-                dispatched, signature_absent, signature_length_valid, deadline_open),
+                dispatched, signature_absent, signature_length_valid, minimum_remaining),
             Self::MintFinalization {
                 fixed_fields_match,
                 receipt_succeeded,
@@ -2528,9 +2528,9 @@ verus! {
     }
 
     pub open spec fn signature_install_allowed_spec(
-        dispatched: bool, absent: bool, length: bool, deadline_open: bool,
+        dispatched: bool, absent: bool, length: bool, minimum_remaining: bool,
     ) -> bool {
-        signature_install_allowed_body!(dispatched, absent, length, deadline_open)
+        signature_install_allowed_body!(dispatched, absent, length, minimum_remaining)
     }
 
     pub open spec fn notification_failure_cooldown_active_spec(

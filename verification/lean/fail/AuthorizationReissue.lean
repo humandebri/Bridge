@@ -4,7 +4,7 @@ open BridgeSpec.MintAuthorization
 
 def current : Authorization := {
   depositId := 1, recipient := 2, grossAmount := 11, maxServiceFee := 1,
-  chargedServiceFee := 1, netAmount := 10, deadline := 7200, epoch := 1,
+  chargedServiceFee := 1, netAmount := 10, deadline := 1600, epoch := 1,
   chainId := 8453, verifyingContract := 3, digest := 4
 }
 
@@ -17,7 +17,7 @@ def state : DepositState := {
 }
 
 def origin : AuthorizationOrigin := {
-  finalizedBlock := 1, finalizedHash := 2, finalizedTimestamp := 100,
+  finalizedBlock := 1, finalizedHash := 2, finalizedTimestamp := 100, issuedAtTimestamp := 1_000,
   expectedChainId := 8453, expectedVerifyingContract := 3, expectedEpoch := 1
 }
 

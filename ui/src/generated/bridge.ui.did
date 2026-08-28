@@ -52,38 +52,7 @@ type AuditEvent = record {
   sequence : nat64;
 };
 type AuditEventKind = variant {
-  DepositRefundRetried : record {
-    next_fee : nat;
-    deposit_id : blob;
-    next_attempt_no : opt nat64;
-    previous_attempt_no : nat64;
-    compensated : bool;
-    previous_fee : nat;
-  };
-  MintRevertRecoveryStarted : record {
-    result : text;
-    finalized_block_number : nat64;
-    kind : AuditedEvmOperationKind;
-    target_id : blob;
-    finalized_block_hash : blob;
-    reverted_operation_id : nat64;
-    replacement_operation_id : nat64;
-  };
   PausePrincipalRotated;
-  EvmTransactionReplaced : record {
-    transaction_hash : blob;
-    max_priority_fee_per_gas : nat;
-    generation : nat8;
-    operation_id : nat64;
-    max_fee_per_gas : nat;
-    previous_transaction_hash : blob;
-  };
-  EvmOperationReverted : record {
-    transaction_hash : blob;
-    finalized_head_block_number : nat64;
-    kind : AuditedEvmOperationKind;
-    operation_id : nat64;
-  };
   DepositsPauseRepeated;
   EvmRpcObservation : record {
     finalized_block_number : nat64;
@@ -93,10 +62,6 @@ type AuditEventKind = variant {
     finalized_block_hash : blob;
     quorum_response_digest : blob;
     request_digest : blob;
-  };
-  FeeRecipientChanged : record {
-    previous : FeeRecipientConfig;
-    current : FeeRecipientConfig;
   };
   WithdrawalFeeGuardCleared;
   DepositsPaused;
@@ -116,38 +81,11 @@ type AuditEventKind = variant {
     previous_sha256 : blob;
     current_sha256 : blob;
   };
-  EvmTransactionRebroadcasted : record {
-    transaction_hash : blob;
-    attempt : nat8;
-    operation_id : nat64;
-  };
   DepositsResumed;
   FeePayoutRequested : record { amount : nat };
-  MintRevertRecoveryCompleted : record {
-    result : text;
-    finalized_block_number : nat64;
-    kind : AuditedEvmOperationKind;
-    target_id : blob;
-    finalized_block_hash : blob;
-    reverted_operation_id : nat64;
-    replacement_operation_id : nat64;
-  };
-  ReserveGateChanged : record { sufficient : bool };
   WithdrawalFeeGuardTripped : record {
     charged_service_fee : nat;
     ledger_fee : nat;
-  };
-  EvmFeeQuoteObserved : record {
-    base_fee_per_gas : nat;
-    max_priority_fee_per_gas : nat;
-    observed_at_ns : nat64;
-    gas_estimate : nat;
-    initial_max_fee_per_gas : nat;
-    safe_block_hash : blob;
-    reserved_eth_wei : nat;
-    reachable_max_fee_per_gas : nat;
-    gas_limit : nat;
-    safe_block_number : nat64;
   };
 };
 type AuditEventPage = record {
@@ -158,7 +96,6 @@ type AuditEventPage = record {
   pruned_count : nat64;
   pruned_through_sequence : opt nat64;
 };
-type AuditedEvmOperationKind = variant { MintDeposit };
 type AutomaticProgressState = variant {
   Scheduled : record { next_run_at_ns : nat64 };
   Running : record { lease_until_ns : nat64 };
@@ -426,6 +363,7 @@ type MintAuthorizationView = record {
   finalized_block_number : nat64;
   signature : opt blob;
   deposit_id : blob;
+  issued_at_timestamp : nat64;
   domain_name : text;
   charged_service_fee : nat;
   recipient : blob;
@@ -655,6 +593,7 @@ type SettlementStopReason = variant {
   AuthorizationExpired;
   BaseStateMismatch;
   BridgeSignerMismatch;
+  AuthorizationWindowTooShort;
   SigningUnavailable;
   InvalidBaseResponse;
 };
