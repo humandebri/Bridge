@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 import urllib.error
 from unittest import mock
@@ -19,6 +20,20 @@ from certora_fingerprint import validate_certora_fingerprint
 
 
 class CertoraResultTests(unittest.TestCase):
+    @staticmethod
+    def progress(*rules: object) -> dict[str, str]:
+        return {"verificationProgress": json.dumps({"rules": list(rules)})}
+
+    @staticmethod
+    def node(
+        name: str, status: object = "VERIFIED", children: object = None
+    ) -> dict[str, object]:
+        return {
+            "name": name,
+            "status": status,
+            "children": [] if children is None else children,
+        }
+
     def test_result_parser_requires_certora_fingerprint_scope(self) -> None:
         with self.assertRaisesRegex(ValueError, "shape"):
             validate_certora_fingerprint(
@@ -51,19 +66,76 @@ class CertoraResultTests(unittest.TestCase):
                 with self.assertRaisesRegex(CertoraResultError, "did not pass"):
                     validate_rule_results({"rules": {"one": status}}, {"one"})
 
-    def test_sanity_failures_and_warnings_are_rejected(self) -> None:
-        for status in ("SANITY_FAILED", "SANITY_FAIL"):
+    def test_sanity_failures_warnings_and_unknown_statuses_are_rejected(self) -> None:
+        for status in (
+            False,
+            None,
+            1,
+            "",
+            "SANITY_FAILED",
+            "SANITY_FAIL",
+            "WARNING",
+            "TIMEOUT",
+            "UNKNOWN",
+            "FALSE",
+            "NEW_SUCCESS_STATUS",
+        ):
             with self.subTest(status=status):
                 with self.assertRaisesRegex(CertoraResultError, "sanity result"):
-                    validate_sanity({"status": status})
-        with self.assertRaisesRegex(CertoraResultError, "sanity result"):
-            validate_sanity({"children": [{"sanityStatus": "WARNING: trivial rule"}]})
-        with self.assertRaisesRegex(CertoraResultError, "sanity result"):
-            validate_sanity({"children": [{"type": "SANITY", "severity": "WARNING"}]})
+                    validate_sanity(self.progress(self.node("rule sanity", status)))
 
-    def test_clean_or_unrelated_status_is_accepted(self) -> None:
-        validate_sanity({"children": [{"type": "SANITY", "status": "VERIFIED"}]})
-        validate_sanity({"status": "WARNING"})
+    def test_only_explicit_passing_sanity_statuses_are_accepted(self) -> None:
+        for status in (True, "VERIFIED", "SUCCESS", "PASS", "PASSED", " passed "):
+            with self.subTest(status=status):
+                validate_sanity(self.progress(self.node("rule sanity", status)))
+
+    def test_sanity_evidence_must_be_present_and_non_vacuous(self) -> None:
+        with self.assertRaisesRegex(CertoraResultError, "no positive sanity evidence"):
+            validate_sanity(self.progress(self.node("ordinary rule")))
+        for name in ("vacuity check", "trivial sanity"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(CertoraResultError, "vacuous or trivial"):
+                    validate_sanity(self.progress(self.node(name)))
+
+    def test_progress_envelope_and_node_schema_are_fail_closed(self) -> None:
+        invalid = (
+            None,
+            {},
+            {"verificationProgress": None},
+            {"verificationProgress": ""},
+            {"verificationProgress": "{"},
+            {"verificationProgress": "null"},
+            {"verificationProgress": json.dumps({"rules": []})},
+            {
+                "verificationProgress": json.dumps(
+                    {"rules": [self.node("rule sanity")], "extra": True}
+                )
+            },
+            {
+                "verificationProgress": json.dumps(
+                    {"rules": [{"name": "rule sanity", "status": "VERIFIED"}]}
+                )
+            },
+            {
+                "verificationProgress": json.dumps(
+                    {"rules": [{"name": "rule sanity", "children": []}]}
+                )
+            },
+        )
+        for progress in invalid:
+            with self.subTest(progress=progress):
+                with self.assertRaises(CertoraResultError):
+                    validate_sanity(progress)
+
+    def test_nested_sanity_node_is_required_and_accepted(self) -> None:
+        validate_sanity(
+            self.progress(
+                self.node(
+                    "bridge rule",
+                    children=[self.node("bridge rule sanity", "VERIFIED")],
+                )
+            )
+        )
 
     def test_exact_prover_revision_is_required(self) -> None:
         with self.assertRaisesRegex(CertoraResultError, "exact Prover revision"):

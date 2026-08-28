@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CertoraFingerprintTests(unittest.TestCase):
+    def materialize_minimal_repo(self, root: Path) -> None:
+        dependencies = certora_fingerprint.certora_python_dependency_paths(ROOT)
+        for relative in set(certora_fingerprint.CERTORA_EXACT_INPUTS) | set(dependencies):
+            source = ROOT / relative
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if relative in dependencies:
+                shutil.copy2(source, target)
+            else:
+                target.write_text(f"fixture for {relative}\n", encoding="utf-8")
+        for relative_root, suffixes in certora_fingerprint.CERTORA_SOURCE_ROOTS:
+            source_root = root / relative_root
+            source_root.mkdir(parents=True, exist_ok=True)
+            suffix = ".sol" if suffixes else ".txt"
+            (source_root / f"fixture{suffix}").write_text("fixture\n", encoding="utf-8")
+
     def test_release_fingerprint_excludes_only_certora_specific_inputs(self) -> None:
         release_inputs = {
             proof_fingerprint.logical_source_path(path, ROOT).as_posix()
@@ -53,7 +70,11 @@ class CertoraFingerprintTests(unittest.TestCase):
             "scripts/certora_fingerprint.py",
             "scripts/certora_results.py",
             "scripts/check_certora_manifest.py",
+            "scripts/check_solidity_ast_bindings.py",
             "scripts/proof_fingerprint.py",
+            "scripts/smt_obligations.py",
+            "scripts/source_resolution.py",
+            "scripts/trusted_execution_context.py",
             "verification/certora/specs/Bridge.spec",
             "verification/certora/confs/Bridge.conf",
             "verification/certora/obligations.tsv",
@@ -66,13 +87,42 @@ class CertoraFingerprintTests(unittest.TestCase):
             with self.subTest(relative=relative):
                 self.assertIn(relative, inputs)
 
-    def test_advisory_workflow_watches_every_exact_input(self) -> None:
+    def test_advisory_workflow_watches_every_exact_and_imported_input(self) -> None:
         workflow = (ROOT / ".github/workflows/certora-advisory.yml").read_text(
             encoding="utf-8"
         )
-        for relative in certora_fingerprint.CERTORA_EXACT_INPUTS:
+        watched = set(certora_fingerprint.CERTORA_EXACT_INPUTS) | set(
+            certora_fingerprint.certora_python_dependency_paths(ROOT)
+        )
+        for relative in watched:
             with self.subTest(relative=relative):
                 self.assertIn(f'- "{relative}"', workflow)
+
+    def test_each_transitive_python_dependency_changes_the_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.materialize_minimal_repo(root)
+            baseline = certora_fingerprint.certora_source_fingerprint(root)
+            for relative in certora_fingerprint.certora_python_dependency_paths(root):
+                with self.subTest(relative=relative):
+                    path = root / relative
+                    original = path.read_text(encoding="utf-8")
+                    path.write_text(original + "\n# dependency drift\n", encoding="utf-8")
+                    changed = certora_fingerprint.certora_source_fingerprint(root)
+                    self.assertNotEqual(baseline["digest"], changed["digest"])
+                    path.write_text(original, encoding="utf-8")
+
+    def test_unresolved_local_import_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.materialize_minimal_repo(root)
+            seed = root / certora_fingerprint.CERTORA_PYTHON_SEEDS[0]
+            seed.write_text(
+                seed.read_text(encoding="utf-8") + "\nimport missing_certora_helper\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "unresolved local Python import"):
+                certora_fingerprint.certora_python_dependency_paths(root)
 
     def test_advisory_workflow_installs_ripgrep_before_solc_installer(self) -> None:
         workflow = (ROOT / ".github/workflows/certora-advisory.yml").read_text(

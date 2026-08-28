@@ -27,12 +27,9 @@ REVISION_KEYS = {
     "proverrevision",
     "prover_revision",
 }
-BAD_SANITY = re.compile(
-    r"(?i)(?<![A-Za-z0-9])"
-    r"(fail(?:ed|ure)?|warn(?:ing)?|vacuous|trivial|unknown|timeout)"
-    r"(?![A-Za-z0-9])"
-)
 KNOWN_STATUSES = {"SUCCESS", "FAIL", "TIMEOUT", "UNKNOWN", "SANITY_FAIL"}
+SANITY_NAME = re.compile(r"(?i)(sanity|vacu(?:ous|ity)|trivial)")
+PASSING_SANITY_STATUSES = {"VERIFIED", "SUCCESS", "PASS", "PASSED"}
 
 
 class CertoraResultError(ValueError):
@@ -94,21 +91,61 @@ def validate_rule_results(output: dict[str, Any], declared_rules: set[str]) -> d
     return dict(sorted(normalized.items()))
 
 
-def validate_sanity(treeview: Any) -> None:
-    for node in walk(treeview):
+def _passing_sanity_status(status: Any) -> bool:
+    if status is True:
+        return True
+    if not isinstance(status, str) or not status.strip():
+        return False
+    return status.strip().upper() in PASSING_SANITY_STATUSES
+
+
+def validate_sanity(progress: Any) -> None:
+    """Require positive sanity evidence from Certora's progress endpoint."""
+    if not isinstance(progress, dict) or set(progress) != {"verificationProgress"}:
+        raise CertoraResultError("Certora progress has an unexpected top-level schema")
+    encoded = progress["verificationProgress"]
+    if not isinstance(encoded, str) or not encoded.strip():
+        raise CertoraResultError("Certora verificationProgress must be non-empty JSON text")
+    try:
+        treeview = json.loads(encoded)
+    except json.JSONDecodeError:
+        raise CertoraResultError("Certora verificationProgress is not valid JSON") from None
+    if not isinstance(treeview, dict) or set(treeview) != {"rules"}:
+        raise CertoraResultError("Certora tree view has an unexpected top-level schema")
+    rules = treeview["rules"]
+    if not isinstance(rules, list) or not rules:
+        raise CertoraResultError("Certora tree view has no rule nodes")
+
+    positive_sanity = 0
+
+    def validate_node(node: Any) -> None:
+        nonlocal positive_sanity
         if not isinstance(node, dict):
-            continue
-        is_sanity = any(
-            "sanity" in str(key).lower()
-            or (isinstance(value, str) and "sanity" in value.lower())
-            for key, value in node.items()
-        )
-        for key, value in node.items():
-            status_field = key.lower() in {"severity", "status", "result", "outcome", "warning"}
-            if ("sanity" in key.lower() or (is_sanity and status_field)) and (
-                value is False or (isinstance(value, str) and BAD_SANITY.search(value))
-            ):
-                raise CertoraResultError(f"Certora sanity result is not clean: {key}={value!r}")
+            raise CertoraResultError("Certora progress contains a non-object rule node")
+        name = node.get("name")
+        children = node.get("children")
+        if not isinstance(name, str) or not name.strip():
+            raise CertoraResultError("Certora progress rule node has no name")
+        if not isinstance(children, list):
+            raise CertoraResultError(f"Certora progress rule node has invalid children: {name!r}")
+        if SANITY_NAME.search(name):
+            if "status" not in node:
+                raise CertoraResultError(f"Certora sanity node has no status: {name!r}")
+            status = node["status"]
+            if not _passing_sanity_status(status):
+                raise CertoraResultError(
+                    f"Certora sanity result is not clean: {name!r}={status!r}"
+                )
+            if re.search(r"(?i)(vacu(?:ous|ity)|trivial)", name):
+                raise CertoraResultError(f"Certora sanity evidence is vacuous or trivial: {name!r}")
+            positive_sanity += 1
+        for child in children:
+            validate_node(child)
+
+    for rule in rules:
+        validate_node(rule)
+    if positive_sanity == 0:
+        raise CertoraResultError("Certora progress has no positive sanity evidence")
 
 
 def prover_revision(job_data: Any) -> str:

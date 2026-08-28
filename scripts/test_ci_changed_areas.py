@@ -168,6 +168,14 @@ class ChangedAreaTests(unittest.TestCase):
             "real",
         )
 
+    def test_certora_transitive_python_dependencies_run_proofs_and_certora(self) -> None:
+        for path in ci_changed_areas._certora_python_dependencies():
+            with self.subTest(path=path):
+                areas = ci_changed_areas.classify([path])
+                self.assertTrue(areas["certora"])
+                if path not in ci_changed_areas.CERTORA_ADVISORY_EXACT_PATHS:
+                    self.assertTrue(areas["proofs"])
+
     def test_proof_owned_ui_adapter_runs_proofs_and_runtime_checks(self) -> None:
         self.assert_areas(
             ["ui/src/lib/pending-confirmations.ts"],
