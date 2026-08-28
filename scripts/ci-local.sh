@@ -166,6 +166,7 @@ run_versions() {
   python3 "$ROOT/scripts/test_proof_fingerprint_candidate_scripts.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"
+  python3 "$ROOT/scripts/test_trusted_staging_layout.py"
   "$ROOT/scripts/test_ci_guards.sh"
   "$ROOT/scripts/test_production_canister_bootstrap.sh"
   "$ROOT/scripts/test_production_canister_install.sh"
@@ -179,7 +180,12 @@ run_versions() {
   node "$ROOT/scripts/plan007/test-read-public-canister-metadata.mjs"
   python3 "$ROOT/scripts/plan007/test_candid_values.py"
   python3 "$ROOT/scripts/plan007/test_staging_wasm_artifact.py"
-  python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"
+  staging_layout="$(python3 "$ROOT/scripts/trusted_staging_layout.py")"
+  case "$staging_layout" in
+    upgrade) python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py" ;;
+    replacement) ;;
+    *) echo "unrecognized staging lifecycle layout: $staging_layout" >&2; return 1 ;;
+  esac
   python3 "$ROOT/scripts/test_staging_ui_node_wrapper.py"
   python3 "$ROOT/scripts/plan007/test_fault_injector.py"
   verify_live_evm_rpc_rehearsal_sources \

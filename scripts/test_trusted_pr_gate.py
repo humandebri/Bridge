@@ -56,6 +56,20 @@ class TrustedPrGateTests(unittest.TestCase):
             self.assertFalse(source_path("scripts/plan007/staging-canister-upgrade.sh").exists())
             self.assertFalse(source_path("scripts/plan007/test_staging_canister_upgrade.py").exists())
 
+    def test_versions_gate_classifies_layout_before_selecting_lifecycle_tests(self) -> None:
+        gate = (ROOT / "scripts" / "ci-local.sh").read_text(encoding="utf-8")
+        layout_validation = 'python3 "$ROOT/scripts/test_trusted_pr_gate.py"'
+        classification = 'staging_layout="$(python3 "$ROOT/scripts/trusted_staging_layout.py")"'
+        upgrade_test = (
+            'upgrade) python3 "$ROOT/scripts/plan007/'
+            'test_staging_canister_upgrade.py" ;;'
+        )
+
+        self.assertIn(classification, gate)
+        self.assertIn(upgrade_test, gate)
+        self.assertIn("replacement) ;;", gate)
+        self.assertLess(gate.index(layout_validation), gate.index(classification))
+
     def test_trusted_bootstrap_files_are_present_and_pinned(self) -> None:
         dockerfile = ROOT / ".github" / "trusted-pr" / "Dockerfile"
         wrapper = ROOT / "scripts" / "trusted-pr-container.sh"
