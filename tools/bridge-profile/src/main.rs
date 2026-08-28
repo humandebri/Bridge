@@ -2,11 +2,18 @@
 
 use candid::{CandidType, Decode, Encode, Nat, Principal, Reserved};
 use ic_agent::Agent;
-use ic_pub_key::{derive_ecdsa_key, CanisterId, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs};
-use k256::ecdsa::VerifyingKey;
+use k256::{
+    ecdsa::VerifyingKey,
+    elliptic_curve::{
+        group::prime::PrimeCurveAffine,
+        ops::{MulByGenerator, Reduce},
+        sec1::ToEncodedPoint,
+    },
+    AffinePoint, ProjectivePoint, Scalar, U256,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
@@ -15,7 +22,6 @@ use std::{
     io::Write,
     path::{Component, Path, PathBuf},
     process::{self, Command},
-    str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tiny_keccak::{Hasher, Keccak};
@@ -1577,19 +1583,85 @@ fn evm_topic(signature: &str) -> String {
     format!("0x{}", hex(&hash))
 }
 
+fn hmac_sha512(key: &[u8], data: &[u8]) -> [u8; 64] {
+    const BLOCK_SIZE: usize = 128;
+    let mut key_block = [0u8; BLOCK_SIZE];
+    if key.len() > BLOCK_SIZE {
+        key_block[..64].copy_from_slice(&Sha512::digest(key));
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner_pad = [0x36u8; BLOCK_SIZE];
+    let mut outer_pad = [0x5cu8; BLOCK_SIZE];
+    for index in 0..BLOCK_SIZE {
+        inner_pad[index] ^= key_block[index];
+        outer_pad[index] ^= key_block[index];
+    }
+    let mut inner = Sha512::new();
+    inner.update(inner_pad);
+    inner.update(data);
+    let mut outer = Sha512::new();
+    outer.update(outer_pad);
+    outer.update(inner.finalize());
+    outer.finalize().into()
+}
+
+fn derive_ecdsa_child(
+    point: AffinePoint,
+    chain_code: [u8; 32],
+    index: &[u8],
+) -> Result<(AffinePoint, [u8; 32]), String> {
+    let mut input = k256::PublicKey::from_affine(point)
+        .map_err(|error| format!("invalid ECDSA derivation point: {error}"))?
+        .to_encoded_point(true)
+        .as_bytes()
+        .to_vec();
+    loop {
+        let mut hmac_input = Vec::with_capacity(input.len() + index.len());
+        hmac_input.extend_from_slice(&input);
+        hmac_input.extend_from_slice(index);
+        let output = hmac_sha512(&chain_code, &hmac_input);
+        let left: [u8; 32] = output[..32].try_into().expect("fixed SHA-512 half");
+        let next_chain_code: [u8; 32] = output[32..].try_into().expect("fixed SHA-512 half");
+        let field_bytes = left.into();
+        let offset = <Scalar as Reduce<U256>>::reduce_bytes(&field_bytes);
+        let reduced: [u8; 32] = offset.to_bytes().into();
+        if reduced != left {
+            input.clear();
+            input.push(1);
+            input.extend_from_slice(&next_chain_code);
+            continue;
+        }
+        let next =
+            (ProjectivePoint::from(point) + ProjectivePoint::mul_by_generator(&offset)).to_affine();
+        if bool::from(next.is_identity()) {
+            input.clear();
+            input.push(1);
+            input.extend_from_slice(&next_chain_code);
+            continue;
+        }
+        return Ok((next, next_chain_code));
+    }
+}
+
 fn derive_mainnet_ecdsa_address(canister_id: &str, path: &[String]) -> Result<Value, String> {
-    let canister_id = CanisterId::from_str(canister_id)
+    const MAINNET_ECDSA_KEY_1: &str =
+        "02121bc3a5c38f38ca76487c72007ebbfd34bc6c4cb80a671655aa94585bbd0a02";
+    let canister_id = Principal::from_text(canister_id)
         .map_err(|error| format!("invalid canister id: {error}"))?;
-    let derived = derive_ecdsa_key(&EcdsaPublicKeyArgs {
-        canister_id: Some(canister_id),
-        derivation_path: path.iter().map(|part| part.as_bytes().to_vec()).collect(),
-        key_id: EcdsaKeyId {
-            curve: EcdsaCurve::Secp256k1,
-            name: "key_1".to_string(),
-        },
-    })
-    .map_err(|error| format!("mainnet ECDSA key derivation failed: {error:?}"))?;
-    let verifying_key = VerifyingKey::from_sec1_bytes(&derived.public_key)
+    let master = k256::PublicKey::from_sec1_bytes(&decode_hex(MAINNET_ECDSA_KEY_1)?)
+        .map_err(|error| format!("invalid mainnet ECDSA master key: {error}"))?;
+    let mut point = *master.as_affine();
+    let mut chain_code = [0u8; 32];
+    for index in
+        std::iter::once(canister_id.as_slice()).chain(path.iter().map(|part| part.as_bytes()))
+    {
+        (point, chain_code) = derive_ecdsa_child(point, chain_code, index)?;
+    }
+    let public_key = k256::PublicKey::from_affine(point)
+        .map_err(|error| format!("invalid derived ECDSA public key: {error}"))?;
+    let compressed = public_key.to_encoded_point(true);
+    let verifying_key = VerifyingKey::from_sec1_bytes(compressed.as_bytes())
         .map_err(|error| format!("derived SEC1 public key is invalid: {error}"))?;
     let uncompressed = verifying_key.to_encoded_point(false);
     let public_key = uncompressed.as_bytes();
@@ -1604,7 +1676,7 @@ fn derive_mainnet_ecdsa_address(canister_id: &str, path: &[String]) -> Result<Va
         "canister_id": canister_id.to_string(),
         "derivation_path_utf8": path,
         "key_name": "key_1",
-        "public_key_sec1_compressed": format!("0x{}", hex(&derived.public_key)),
+        "public_key_sec1_compressed": format!("0x{}", hex(compressed.as_bytes())),
         "ethereum_address": format!("0x{}", hex(&digest[12..])),
     }))
 }
@@ -5331,6 +5403,14 @@ mod tests {
         let repeated = derive_mainnet_ecdsa_address(canister, &first_path).unwrap();
         let second = derive_mainnet_ecdsa_address(canister, &second_path).unwrap();
         assert_eq!(first, repeated);
+        assert_eq!(
+            first["public_key_sec1_compressed"],
+            "0x02e5ab5d38a668457c807e851b560dfff2f5f24e7d7020b079ec487f601c4a6fea"
+        );
+        assert_eq!(
+            first["ethereum_address"],
+            "0xf63cb0c2c8bc95b3c43dd9dde340fc87dde83da8"
+        );
         let address = first["ethereum_address"].as_str().unwrap();
         assert_eq!(address.len(), 42);
         assert!(address.starts_with("0x"));
