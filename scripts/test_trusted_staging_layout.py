@@ -50,6 +50,67 @@ class TrustedStagingLayoutTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incomplete or mixed"):
             classify_layout(self.root, self.script_root)
 
+    def test_symlinked_replacement_marker_fails_closed(self) -> None:
+        self.install_replacement_layout()
+        unrelated = self.root / "unrelated.txt"
+        self.touch(unrelated)
+        marker = self.policy_dir / "legacy-stack-binding.json"
+        marker.unlink()
+        marker.symlink_to(unrelated)
+
+        with self.assertRaisesRegex(ValueError, "must not be symlinked"):
+            classify_layout(self.root, self.script_root)
+
+    def test_broken_upgrade_script_symlink_fails_closed(self) -> None:
+        self.install_replacement_layout()
+        script = self.script_root / UPGRADE_SCRIPTS[0]
+        script.parent.mkdir(parents=True)
+        script.symlink_to(self.root / "missing.py")
+
+        with self.assertRaisesRegex(ValueError, "must not be symlinked"):
+            classify_layout(self.root, self.script_root)
+
+    def test_symlinked_policy_directory_fails_closed(self) -> None:
+        self.install_replacement_layout()
+        actual_policy_dir = self.root / "actual-policy"
+        self.policy_dir.rename(actual_policy_dir)
+        self.policy_dir.symlink_to(actual_policy_dir, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "must not be symlinked"):
+            classify_layout(self.root, self.script_root)
+
+    def test_symlinked_candidate_script_root_fails_closed(self) -> None:
+        self.install_upgrade_layout()
+        actual_script_root = self.root / "actual-candidate-scripts"
+        self.script_root.rename(actual_script_root)
+        self.script_root.symlink_to(actual_script_root, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "must not be symlinked"):
+            classify_layout(self.root, self.script_root)
+
+    def test_missing_candidate_script_root_fails_closed(self) -> None:
+        self.install_replacement_layout()
+        self.script_root.rmdir()
+
+        with self.assertRaisesRegex(ValueError, "must be an existing"):
+            classify_layout(self.root, self.script_root)
+
+    def test_non_directory_candidate_script_root_fails_closed(self) -> None:
+        self.install_replacement_layout()
+        self.script_root.rmdir()
+        self.touch(self.script_root)
+
+        with self.assertRaisesRegex(ValueError, "must be an existing"):
+            classify_layout(self.root, self.script_root)
+
+    def test_broken_obsolete_policy_symlink_fails_closed(self) -> None:
+        self.install_upgrade_layout()
+        obsolete = self.policy_dir / "v33-to-v34-upgrade-policy.json"
+        obsolete.symlink_to(self.root / "missing.json")
+
+        with self.assertRaisesRegex(ValueError, "must not be symlinked"):
+            classify_layout(self.root, self.script_root)
+
 
 if __name__ == "__main__":
     unittest.main()
