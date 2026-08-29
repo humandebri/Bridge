@@ -30,38 +30,13 @@ scripts/base-sepolia-experiment/run-with-keychain.sh flow
 scripts/base-sepolia-experiment/experiment.sh verify
 ```
 
-Fresh staging uses the same state machine with a repository-external manifest and
-the explicitly test-only five-minute policy:
-
-```sh
-BASE_SEPOLIA_MANIFEST=/secure/evidence/contracts.json \
-BASE_SEPOLIA_TIMELOCK_DELAY_SECONDS=300 \
-BASE_SEPOLIA_SHORT_DELAY_TEST_ONLY=true \
-BASE_SEPOLIA_EXTERNAL_BRIDGE_SIGNER=0x... \
-BASE_SEPOLIA_EXTERNAL_GOVERNANCE_OPERATOR=0x... \
-BASE_SEPOLIA_EXTERNAL_RUNTIME_ADMINISTRATOR=0x... \
-BASE_SEPOLIA_EXTERNAL_INDEPENDENT_CANCELLER=0x... \
-scripts/base-sepolia-experiment/run-with-keychain.sh preflight
-```
-
-The 300-second override is rejected unless the test-only acknowledgement is set.
-It must never be used for production or Gate B evidence.
-The four external addresses must be derived from the fresh IC Canister's
-`key_1` control plane. In this mode only the deployer keystore is loaded, the
-deployer receives no Timelock or Bridge role, and no ETH is sent to the signer.
-This mode is deploy-only: `schedule`, `resume`, and `flow` fail closed because
-the deployer cannot act as the external Governance Operator or Bridge Signer.
-After the Canister is installed and its public configuration is initialized,
-staging activation must use the Canister governance APIs and governance relayer.
-
 `preflight` runs Foundry, ABI drift, formatting, and diff checks. It estimates
 both deployments and adds a conservative five-million-gas call budget. No
 broadcast is permitted when the resulting cost exceeds `0.02 ETH`.
 
-Bridgeは両asset flowをpauseした状態で配置される。ローカルcontrol planeの
-contract-only実験では`schedule`と72時間後の`resume`がTimelock経由で両方を
-有効化するまで、`flow`は実行できない。`flow`完了時には両方を再度pauseする。
-外部control planeのstagingでは、このscriptでactivationやasset flowを行わない。
+Bridgeは両asset flowをpauseした状態で配置される。`schedule`と72時間後の
+`resume`がTimelock経由で両方を有効化するまで、`flow`は実行できない。
+`flow`完了時には両方を再度pauseする。
 
 Every successful transaction must reach the RPC's `safe` block within 30
 minutes. A timeout changes the manifest to `PENDING_CONFIRMATION` and stops without

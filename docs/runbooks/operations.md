@@ -25,7 +25,7 @@ production Canisterが受け入れるLedger feeは`100000` raw、`test-deploymen
 production artifactへstaging Wasmを流用しない。
 production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
 
-stable schemaはv35、record wireはv30を現行形式とする。Productionとtest-deploymentの`post_upgrade`は現行形式だけを受理する。Base Sepolia stagingだけは承認済みtest-only例外として既存Canister principalを一度reinstallし、旧stateと旧Base stackを`abandoned-test-only`としてactive profileから除外する。
+stable schemaはv35、record wireはv30を現行形式とする。Productionとtest-deploymentの`post_upgrade`は現行形式だけを受理する。Base Sepolia stagingも、review済みv35／wire v30と同一deployment instanceを保つupgradeだけを受理し、reinstallやlegacy migrationは行わない。
 
 ## 保持制限と監査
 
@@ -36,7 +36,7 @@ stable schemaはv35、record wireはv30を現行形式とする。Productionとt
 Productionではschema v35またはwire v30以外のstable state、未知schema、decode不能なDBを、空であってもfail closedで拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。buildが選択した固定`KINIC_LEDGER_FEE`（productionは`100000 raw`、stagingは`10000 raw`）とprepared recordのcharged Service Feeをreview済みprofileに照合した後、任意の非anonymous主体がHistoryから`continue_withdrawal`を実行する。Canisterはruntimeで`icrc1_fee()`を照会せず、固定Ledger Feeがcharged Service Fee以下であることを再検証できた場合だけ、同じrecordからreleaseを開始してguardを解除する。
-現行形式はstable schema v35／record wire v30とし、これ以外をfail closedで拒否する。staging replacement policyは旧stackのexact identityとactive profileからの除外、承認済みの既存test Canister principal、新規target module・Candid hash、immutable設定、confirmation relayer、fresh Base stackとdeployment instanceを固定する。初回のtest-only destructive reinstall後は、同一deployment instanceのcurrent-schema upgradeだけで更新し、再reinstallを禁止する。
+現行形式はstable schema v35／record wire v30とし、これ以外をfail closedで拒否する。staging upgrade policyは既存test Canister principal、現行module・certified Candid、deployment instance、controller、新規target module・Candid hashを固定する。同一deployment instanceのcurrent-schema upgradeだけで更新し、reinstallを禁止する。
 SQLite DBやcounterを手作業で変更しない。
 
 schema versionの正本は`bridge_metadata.application_schema_version`だけである。Depositはrecord、owner sequence、Base recipient、Authorization、失効またはMint確定証拠を一つのstable envelopeへ保存する。pending Ledger、open reconciliation hold、nonterminal Withdrawalの件数は各indexの`table_counts`を正本とし、primary rowとliability index・集計は一つのSQLite transactionで更新する。
@@ -109,7 +109,7 @@ npm run governance-relayer -- run --operation-id <id>
 
 配置後のGovernance relayerは`status`と`relay`を匿名で実行できる。`confirm`とconfirmationを含む`run`は専用confirmation relayer identityを必須とし、障害復旧時だけGovernance/Pause principalを使う。`prepare`、`replace`、activation、緊急操作の明示要求には対応するGovernance/Pause identityを使う。初回配置だけは暗号化Foundry keystoreと別password fileを入力とする`production-deploy-driver.sh`で行う。秘密、実path、RPC URLをrelease artifactやevidenceへ記録しない。
 
-旧stagingの切替前にpending Deposit/Withdrawal、reserve、pending governance transaction、Timelock queueを記録する。これらはtest stateとして放棄し、旧Base stackは変更せずactive profile、signer、automationから除外する。既存IC Bridge Canister principalだけを承認済みtest-only reinstallで再利用し、fresh Timelock、Bridge、bSNS、専用signer、deployment instanceを構築する。旧identityやrecordを新stackへ移送しない。rollbackでは新stackをpauseし、旧stackを自動再開しない。
+staging upgrade前にpending Deposit/Withdrawal、reserve、pending governance transaction、Timelock queueを記録する。既存Base stack、signer、deployment instance、Canister principalを変更せず、upgrade前後のstate count、module、Candid、storage integrityを照合する。不一致時はactivationせず、reinstallや別instanceへの切替は行わない。
 
 初回production Canister作成は`icp.yaml`へsubnetを設定せず、review済みidentityで`BRIDGE_ICP_IDENTITY=<identity> scripts/production-canister-bootstrap.sh`を実行する。このscriptは`pzp6e-ekpqk-3c5x7-2h6so-njoeq-mt45d-h3h6c-q3mxf-vpeq5-fk5o7-yae`を`icp canister create --subnet`へ固定し、作成後または既存mapping再利用時にNNS Registryが返す実subnetとの一致を必須にする。`.icp/data/mappings/production.ids.json`に既存IDがある場合は新規作成しない。
 
@@ -136,7 +136,7 @@ ownerのRefund請求で`isDepositProcessed(depositId) == true`なのに、`Depos
 
 ## Stable Settlement executorと手動復旧
 
-Mint Authorizationは作成元Finalized timestampから固定2時間（7,200秒）の期限を持つ。新規Depositなどが取得したFinalized snapshotでdeadline順indexを上限付きに走査し、`Finalized timestamp > deadline`の予約だけを個別RPCなしで解放する。Depositごとのtimer、自動Base照合、自動Ledger返金はない。任意の非anonymous Principalが`request_deposit_refund`を実行すると、認可発行済みDepositの`isDepositProcessed == false`をcanonical blockで確認して固定宛先へ返金する。期限前、等値、RPC不一致では資金を動かさない。
+Mint AuthorizationはIC合意時刻の`issued_at_timestamp`から固定600秒の期限を持ち、threshold署名のinstallには300秒以上の残存時間を要求する。新規Depositなどが取得したFinalized snapshotでdeadline順indexを上限付きに走査し、`Finalized timestamp > deadline`の予約だけを個別RPCなしで解放する。Depositごとのtimer、自動Base照合、自動Ledger返金はない。任意の非anonymous Principalが`request_deposit_refund`を実行すると、認可発行済みDepositの`isDepositProcessed == false`をcanonical blockで確認して固定宛先へ返金する。期限前、等値、RPC不一致では資金を動かさない。
 
 `settlement_scheduler.health = Degraded`の場合はstopped、5分以上overdueのschedule、expired leaseを特定する。active leaseがある間の次回起床はlease期限であり、別のoverdue jobへ即時timerを再armしない。`Faulted`の場合は`last_internal_error`と`last_dispatcher_run_at_ns`を記録し、新規DepositをpauseしてSQLiteを手作業で変更せず、同じWasmをupgradeしてstable job tableからtimerを再armする。改善しなければ障害Wasmとして調査する。
 一時障害の基準retry間隔は公開設定`settlement_retry_interval_seconds`であり、Governance transactionの監視設定とは独立している。

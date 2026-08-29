@@ -12,11 +12,10 @@ temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/kinic-base-sepolia.XXXXXX")"
 trap 'rm -rf "$temp_dir"' EXIT INT TERM
 
 security find-generic-password -a "$ACCOUNT" -s "$DEPLOYER_SERVICE" -w >"$temp_dir/deployer-password"
+security find-generic-password -a "$ACCOUNT" -s "$SIGNER_SERVICE" -w >"$temp_dir/signer-password"
+security find-generic-password -a "$ACCOUNT" -s "$CANCELLER_SERVICE" -w >"$temp_dir/canceller-password"
+
 export BASE_SEPOLIA_DEPLOYER_PASSWORD_FILE="$temp_dir/deployer-password"
-if [[ -z "${BASE_SEPOLIA_EXTERNAL_BRIDGE_SIGNER:-}" ]]; then
-  security find-generic-password -a "$ACCOUNT" -s "$SIGNER_SERVICE" -w >"$temp_dir/signer-password"
-  security find-generic-password -a "$ACCOUNT" -s "$CANCELLER_SERVICE" -w >"$temp_dir/canceller-password"
-  export BASE_SEPOLIA_SIGNER_PASSWORD_FILE="$temp_dir/signer-password"
-  export BASE_SEPOLIA_CANCELLER_PASSWORD_FILE="$temp_dir/canceller-password"
-fi
+export BASE_SEPOLIA_SIGNER_PASSWORD_FILE="$temp_dir/signer-password"
+export BASE_SEPOLIA_CANCELLER_PASSWORD_FILE="$temp_dir/canceller-password"
 "$SCRIPT_DIR/experiment.sh" "$@"

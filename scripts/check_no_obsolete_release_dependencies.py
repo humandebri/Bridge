@@ -7,8 +7,6 @@ import argparse
 import re
 from pathlib import Path
 
-from trusted_staging_layout import classify_layout
-
 
 FORBIDDEN_PATHS = frozenset(
     {
@@ -63,20 +61,6 @@ def script_references(root: Path, path: Path, source: str) -> set[Path]:
     return references
 
 
-def is_replaced_upgrade_helper(root: Path, path: Path, reference: Path) -> bool:
-    if relative_path(root, path) != "scripts/ci-local.sh":
-        return False
-    if (
-        reference.relative_to(root.resolve()).as_posix()
-        != "scripts/plan007/test_staging_canister_upgrade.py"
-    ):
-        return False
-    try:
-        return classify_layout(root, None) == "replacement"
-    except ValueError:
-        return False
-
-
 def dependency_closure(root: Path) -> tuple[set[Path], list[str]]:
     pending = dependency_entrypoints(root)
     visited: set[Path] = set()
@@ -97,8 +81,6 @@ def dependency_closure(root: Path) -> tuple[set[Path], list[str]]:
                 missing.append(f"{relative_path(root, path)}: outside-root helper {reference}")
                 continue
             if not reference.is_file():
-                if is_replaced_upgrade_helper(root, path, reference):
-                    continue
                 missing.append(
                     f"{relative_path(root, path)}: missing helper "
                     f"{reference.relative_to(root.resolve()).as_posix()}"

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -30,10 +31,8 @@ ADDRESS_C = f"0x{'6' * 40}"
 SOURCE = "a" * 40
 BRIDGE_CANISTER_ID = "rlhjx-iyaaa-aaaaf-qcnyq-cai"
 PROFILE_INSTANCE = f"0x{'9' * 64}"
-LEGACY_INSTANCE = "0x2c344ca868267bc19791a2e1a966c210eef545945b3879223d3cb6c1255d789b"
-LEGACY_MODULE_HASH = "0xedecad666c6777f7d0d6d5f47851d71c4df77633826b7b3906578a6950632697"
-LEGACY_BRIDGE_ADDRESS = "0x722733d0fffd634abd828bf1f9bbedca55c7e004"
-MINIMUM_WITHDRAWAL_ID = f"0x{'0' * 63}1"
+CONTROLLERS = sorted(sepolia_e2e.STAGING_CONTROLLER_PRINCIPALS)
+MINIMUM_WITHDRAWAL_ID = f"0x{'0' * 63}3"
 BOUNDARY_OBSERVED_AT = "2026-07-24T00:00:00Z"
 PREFLIGHT_OBSERVED_AT = "2026-07-24T00:04:00Z"
 
@@ -45,21 +44,47 @@ class SepoliaE2ETests(unittest.TestCase):
         self.manifest = self.root / "sepolia-e2e.json"
         self.local = self.root / "local-e2e.json"
         self.profile = self.root / "frontend-profile.json"
+        runtime = {field: 1 for field in (
+            "minimum_withdrawal_id", "base_chain_id", "bridge_contract", "expected_bridge_runtime_sha256",
+            "timelock_contract", "expected_bridge_signer", "ledger_canister_id", "index_canister_id",
+            "evm_rpc_canister_id", "rpc_provider_urls_sha256", "operational_config_sha256")}
+        runtime.update({"deployment_instance_id": [153] * 32, "schema_version": 35})
+        operational = {field: 1 for field in (
+            "deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal",
+            "notification_rate_limit_window_seconds", "notification_rate_limit_global",
+            "notification_ingestion_rate_limit_global", "settlement_rate_limit_window_seconds",
+            "settlement_rate_limit_global", "settlement_rate_limit_per_principal",
+            "settlement_rate_limit_per_record", "settlement_retry_interval_seconds")}
+        upgrade_state = {"owner_sequence": "1", "status": {"schema_version": 35,
+                         "counts": {"pending_ledger_operations": "0", "reserved_deposit_mint_operations": "1"},
+                         "settlement_scheduler": {}}, "runtime_binding": runtime,
+                         "operational_config": operational,
+                         "deposits": [{"deposit_id": "01", "owner_sequence": "0", "mint_authorization": [{}]}],
+                         "withdrawals": [], "audit_events": {},
+                         "activation_status": {"pending_timelock_operation": None, "deposits_paused": True},
+                         "storage_integrity": "ok"}
         self.local.write_text(
             json.dumps(
                 {
-                    "schema_version": 7,
+                    "schema_version": 8,
                     "environment_mode": "short-delay-test-only",
                     "activation_timelock_delay_seconds": 300,
-                    "deployment_instance_id": TX,
+                    "deployment_instance_id": PROFILE_INSTANCE,
+                    "created_at": "2026-07-24T00:00:00Z",
                     "source_commit": SOURCE,
                     "bridge_wasm_sha256": H64,
                     "bridge_runtime_template_sha256": TX,
                     "bsns_runtime_template_sha256": TX_B,
+                    "candid_sha256": H64,
+                    "bridge_abi_sha256": H64,
+                    "bsns_abi_sha256": H64_B,
+                    "ledger_release": "ledger-suite-icrc-2026-03-09",
+                    "ledger_wasm_sha256": "354dd6ecfdc72b5409805b31dea22c9db11df6e14095a5a68924eb63535e6d8a",
+                    "index_wasm_sha256": "dab6808d0dfc06e5e88336d0c3d3e45e5448c6e36c2a781f3e9e09bd450f528c",
                     "state_upgrade": {
                         "verified": True,
-                        "before": {"status": {"schema_version": 35}},
-                        "after": {"status": {"schema_version": 35}},
+                        "before": upgrade_state,
+                        "after": upgrade_state,
                     },
                     "tests": {
                         "full_local_ci": "passed",
@@ -96,6 +121,19 @@ class SepoliaE2ETests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        self.upgrade_policy = json.loads(
+            sepolia_e2e.STAGING_UPGRADE_POLICY.read_text(encoding="utf-8")
+        )
+        self.upgrade_policy["deployment_instance_id"] = PROFILE_INSTANCE
+        self.upgrade_policy_path = self.root / "staging-bridge-upgrade-policy.json"
+        self.upgrade_policy_path.write_text(
+            json.dumps(self.upgrade_policy), encoding="utf-8"
+        )
+        original_policy_path = sepolia_e2e.STAGING_UPGRADE_POLICY
+        sepolia_e2e.STAGING_UPGRADE_POLICY = self.upgrade_policy_path
+        self.addCleanup(
+            setattr, sepolia_e2e, "STAGING_UPGRADE_POLICY", original_policy_path
+        )
         sepolia_e2e.initialize(self.manifest, self.local, self.profile)
 
     def tearDown(self) -> None:
@@ -114,7 +152,7 @@ class SepoliaE2ETests(unittest.TestCase):
         ]
         if stage == "preflight":
             artifacts.extend(self.reinstall_artifacts())
-            self.add_abandonment_snapshots(artifacts)
+            self.add_upgrade_snapshots(artifacts)
         return artifacts
 
     def reinstall_artifacts(
@@ -124,25 +162,29 @@ class SepoliaE2ETests(unittest.TestCase):
         status: dict[str, object] | None = None,
     ) -> list[dict[str, str]]:
         if live is None:
-            live = {"schema_version": 34, "deployment_instance_id": LEGACY_INSTANCE}
+            live = {"schema_version": 35, "deployment_instance_id": PROFILE_INSTANCE}
         if check is None:
             check = {
-                "replacement_mode": "destructive-reinstall",
-                "live_schema_version": 34,
-                "previous_deployment_instance_id": LEGACY_INSTANCE,
-                "live_module_hash": LEGACY_MODULE_HASH,
+                "replacement_mode": "current-schema-upgrade",
+                "live_schema_version": 35,
+                "previous_deployment_instance_id": PROFILE_INSTANCE,
+                "live_module_hash": "0x" + self.upgrade_policy["source_module_sha256"],
                 "next": PROFILE_INSTANCE,
             }
         if status is None:
             status = {
-                "module_hash": LEGACY_MODULE_HASH,
-                "controller_principals": ["aaaaa-aa"],
+                "canister_id": BRIDGE_CANISTER_ID,
+                "module_hash": "0x" + self.upgrade_policy["source_module_sha256"],
+                "certified_candid_sha256": self.upgrade_policy["source_candid_sha256"],
+                "stable_schema_version": 35,
+                "record_wire_version": 30,
+                "controller_principals": list(CONTROLLERS),
                 "cycles_balance": 1,
             }
         artifacts = self.root / "artifacts"
         artifacts.mkdir(exist_ok=True)
         live_path = artifacts / "live-public-config.json"
-        check_path = artifacts / "replacement-instance-check.json"
+        check_path = artifacts / "upgrade-instance-check.json"
         status_path = artifacts / "live-canister-status.json"
         boundary_path = artifacts / "withdrawal-admission-boundary.json"
         live_path.write_text(json.dumps(live) + "\n", encoding="utf-8")
@@ -158,9 +200,6 @@ class SepoliaE2ETests(unittest.TestCase):
             "finalized_checkpoint_block_hash": TX_B,
             "withdrawals_paused": True,
             "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
-            "legacy_bridge_address": LEGACY_BRIDGE_ADDRESS,
-            "legacy_stack_excluded": True,
-            "legacy_stack_mutation_required": False,
             "providers": [
                 {
                     "provider_url_sha256": digest_char * 64,
@@ -181,9 +220,9 @@ class SepoliaE2ETests(unittest.TestCase):
                 "kind": sepolia_e2e.LIVE_PUBLIC_CONFIG_ARTIFACT_KIND,
             },
             {
-                "path": "artifacts/replacement-instance-check.json",
+                "path": "artifacts/upgrade-instance-check.json",
                 "sha256": sepolia_e2e.digest(check_path),
-                "kind": sepolia_e2e.REPLACEMENT_INSTANCE_CHECK_ARTIFACT_KIND,
+                "kind": sepolia_e2e.UPGRADE_INSTANCE_CHECK_ARTIFACT_KIND,
             },
             {
                 "path": "artifacts/live-canister-status.json",
@@ -211,7 +250,7 @@ class SepoliaE2ETests(unittest.TestCase):
             PREFLIGHT_OBSERVED_AT,
         )
 
-    def add_abandonment_snapshots(
+    def add_upgrade_snapshots(
         self,
         artifacts: list[dict[str, str]],
         *,
@@ -224,12 +263,12 @@ class SepoliaE2ETests(unittest.TestCase):
                 sepolia_e2e.LIVE_BRIDGE_STATUS_ARTIFACT_KIND,
                 bridge_status
                 or {
-                    "deposits": 4,
-                    "withdrawals": 3,
+                    "deposits": 2,
+                    "withdrawals": 0,
                     "pending_ledger_operations": 0,
                     "reconciliation_holds": 0,
-                    "reserved_deposit_mint_operations": 1,
-                    "reserved_deposit_mint_amount": 850_000_000,
+                    "reserved_deposit_mint_operations": 2,
+                    "reserved_deposit_mint_amount": 1_000_000_000,
                     "unpaid_withdrawal_count": 0,
                     "unpaid_withdrawal_amount_out": 0,
                 },
@@ -256,25 +295,29 @@ class SepoliaE2ETests(unittest.TestCase):
                 {"path": f"artifacts/{kind}.json", "sha256": sha256, "kind": kind}
             )
 
-    def reviewed_replacement_artifacts(self) -> list[dict[str, str]]:
+    def current_upgrade_artifacts(self) -> list[dict[str, str]]:
         live = {
-            "schema_version": 34,
-            "deployment_instance_id": LEGACY_INSTANCE,
+        "schema_version": 35,
+            "deployment_instance_id": PROFILE_INSTANCE,
         }
         check = {
-            "replacement_mode": "destructive-reinstall",
-            "live_schema_version": 34,
-            "previous_deployment_instance_id": LEGACY_INSTANCE,
-            "live_module_hash": LEGACY_MODULE_HASH,
+            "replacement_mode": "current-schema-upgrade",
+            "live_schema_version": 35,
+            "previous_deployment_instance_id": PROFILE_INSTANCE,
+            "live_module_hash": "0x" + self.upgrade_policy["source_module_sha256"],
             "next": PROFILE_INSTANCE,
         }
         status = {
-            "module_hash": LEGACY_MODULE_HASH,
-            "controller_principals": ["aaaaa-aa"],
+            "canister_id": BRIDGE_CANISTER_ID,
+            "module_hash": "0x" + self.upgrade_policy["source_module_sha256"],
+            "certified_candid_sha256": self.upgrade_policy["source_candid_sha256"],
+            "stable_schema_version": 35,
+            "record_wire_version": 30,
+            "controller_principals": list(CONTROLLERS),
             "cycles_balance": 1,
         }
         artifacts = self.reinstall_artifacts(live, check, status)
-        self.add_abandonment_snapshots(artifacts)
+        self.add_upgrade_snapshots(artifacts)
         return artifacts
 
     def obsolete_v32_reinstall_artifacts(self) -> list[dict[str, str]]:
@@ -290,12 +333,16 @@ class SepoliaE2ETests(unittest.TestCase):
             "next": PROFILE_INSTANCE,
         }
         status = {
-            "module_hash": TX,
-            "controller_principals": ["aaaaa-aa"],
+            "canister_id": BRIDGE_CANISTER_ID,
+            "module_hash": "0x" + self.upgrade_policy["source_module_sha256"],
+            "certified_candid_sha256": self.upgrade_policy["source_candid_sha256"],
+            "stable_schema_version": 35,
+            "record_wire_version": 30,
+            "controller_principals": list(CONTROLLERS),
             "cycles_balance": 1,
         }
         artifacts = self.reinstall_artifacts(live, check, status)
-        self.add_abandonment_snapshots(artifacts)
+        self.add_upgrade_snapshots(artifacts)
         return artifacts
 
     def details(self, stage: str) -> dict[str, object]:
@@ -310,31 +357,30 @@ class SepoliaE2ETests(unittest.TestCase):
                 "ledger_decimals": 8,
                 "ledger_fee": 100_000,
                 "index_ledger_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
-                "controller_principals": ["aaaaa-aa"],
+                "controller_principals": list(CONTROLLERS),
                 "cycles_balance": 1,
                 "base_deposits_paused": True,
                 "base_withdrawals_paused": True,
-                "canister_deposits_paused": False,
+                "canister_deposits_paused": True,
                 "configured_rpc_url_sha256": [H64, H64_B, H64_C],
-                "replacement_mode": "destructive-reinstall",
-                "live_schema_version": 34,
-                "previous_deployment_instance_id": LEGACY_INSTANCE,
+                "replacement_mode": "current-schema-upgrade",
+                "live_schema_version": 35,
+                "previous_deployment_instance_id": PROFILE_INSTANCE,
                 "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
             }
         if stage == "install":
-            discarded = {field: 0 for field in sepolia_e2e.LEGACY_STATE_COUNT_FIELDS}
-            discarded.update({
-                "deposits": 4,
-                "withdrawals": 3,
-                "reserved_deposit_mint_operations": 1,
-                "reserved_deposit_mint_amount": 850_000_000,
-            })
-            after = {field: 0 for field in sepolia_e2e.LEGACY_STATE_COUNT_FIELDS}
+            counts = {field: 0 for field in sepolia_e2e.UPGRADE_STATE_COUNT_FIELDS}
             return {
-                "install_mode": "reinstall", "module_sha256": H64, "cycles_balance": 1,
-                "controller_principals": ["aaaaa-aa"],
-                "discarded_state_counts": discarded,
-                "post_install_state_counts": after, "schema_version_after": 35,
+                "install_mode": "upgrade", "module_sha256": H64,
+                "source_module_sha256": self.upgrade_policy["source_module_sha256"],
+                "source_candid_sha256": self.upgrade_policy["source_candid_sha256"],
+                "target_candid_sha256": H64,
+                "staging_upgrade_policy_sha256": sepolia_e2e.digest(sepolia_e2e.STAGING_UPGRADE_POLICY),
+                "cycles_balance": 1,
+                "controller_principals": list(CONTROLLERS), "state_counts_before": counts,
+                "state_counts_after": dict(counts), "schema_version_before": 35,
+                "schema_version_after": 35, "record_wire_version_before": 30,
+                "record_wire_version_after": 30,
                 "deployment_instance_id_after": PROFILE_INSTANCE,
                 "minimum_withdrawal_id_after": MINIMUM_WITHDRAWAL_ID,
                 "storage_integrity_after": "ok",
@@ -500,45 +546,50 @@ class SepoliaE2ETests(unittest.TestCase):
         manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
         self.assertEqual(manifest["binding"]["deployment_instance_id"], PROFILE_INSTANCE)
 
-    def test_preflight_accepts_only_the_reviewed_legacy_replacement(self) -> None:
+    def test_current_schema_preflight_accepts_only_the_same_instance(self) -> None:
         self.validate_preflight(
             self.details("preflight"),
             json.loads(self.manifest.read_text(encoding="utf-8"))["binding"],
             self.artifact("preflight"),
         )
 
-    def test_reinstall_requires_exact_discarded_and_empty_state(self) -> None:
+    def test_upgrade_install_requires_exact_state_and_instance_preservation(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         counts = {
-            "deposits": 4,
-            "withdrawals": 3,
+            "deposits": 2,
+            "withdrawals": 0,
             "pending_ledger_operations": 0,
             "reconciliation_holds": 0,
-            "reserved_deposit_mint_operations": 1,
-            "reserved_deposit_mint_amount": 850_000_000,
+            "reserved_deposit_mint_operations": 2,
+            "reserved_deposit_mint_amount": 1_000_000_000,
             "unpaid_withdrawal_count": 0,
             "unpaid_withdrawal_amount_out": 0,
         }
         details = {
-            "install_mode": "reinstall",
+            "install_mode": "upgrade",
             "module_sha256": H64,
+            "source_module_sha256": self.upgrade_policy["source_module_sha256"],
+            "source_candid_sha256": self.upgrade_policy["source_candid_sha256"],
+            "target_candid_sha256": H64,
+            "staging_upgrade_policy_sha256": sepolia_e2e.digest(sepolia_e2e.STAGING_UPGRADE_POLICY),
             "cycles_balance": 1,
-            "controller_principals": ["aaaaa-aa"],
-            "discarded_state_counts": counts,
-            "post_install_state_counts": {
-                field: 0 for field in sepolia_e2e.LEGACY_STATE_COUNT_FIELDS
-            },
+            "controller_principals": list(CONTROLLERS),
+            "state_counts_before": counts,
+            "state_counts_after": dict(counts),
+            "schema_version_before": 35,
             "schema_version_after": 35,
+            "record_wire_version_before": 30,
+            "record_wire_version_after": 30,
             "deployment_instance_id_after": PROFILE_INSTANCE,
             "minimum_withdrawal_id_after": MINIMUM_WITHDRAWAL_ID,
             "storage_integrity_after": "ok",
         }
         sepolia_e2e.validate_install(details, binding)
-        details["post_install_state_counts"]["deposits"] = 1
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "did not produce empty"):
+        details["state_counts_after"] = {**counts, "deposits": 1}
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "changed persisted"):
             sepolia_e2e.validate_install(details, binding)
 
-    def test_preflight_pause_observations_must_match_reviewed_evidence(self) -> None:
+    def test_preflight_requires_all_three_pause_postconditions(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         for field in (
             "base_deposits_paused",
@@ -547,8 +598,8 @@ class SepoliaE2ETests(unittest.TestCase):
         ):
             with self.subTest(field=field):
                 details = self.details("preflight")
-                details[field] = not details[field]
-                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "fresh Base and reviewed Canister"):
+                details[field] = False
+                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "must be true"):
                     self.validate_preflight(
                         details,
                         binding,
@@ -559,37 +610,47 @@ class SepoliaE2ETests(unittest.TestCase):
         schema_path = MODULE_PATH.parents[2] / "deployments/sepolia-staging/sepolia-e2e.schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         self.assertEqual(schema["properties"]["schema_version"]["const"], 7)
+        binding = schema["properties"]["binding"]
+        for field in (
+            "staging_upgrade_policy_sha256",
+            "source_module_sha256",
+            "source_candid_sha256",
+            "target_candid_sha256",
+            "stable_schema_version",
+            "record_wire_version",
+        ):
+            self.assertIn(field, binding["required"])
+            self.assertIn(field, binding["properties"])
         schema_text = schema_path.read_text(encoding="utf-8")
         self.assertNotIn("obsolete-state-disposition", schema_text)
-        self.assertIn("destructive-reinstall", schema_text)
-        self.assertNotIn("current-schema-upgrade", schema_text)
+        self.assertIn("current-schema-upgrade", schema_text)
         self.assertNotIn("obsolete-schema-reinstall", schema_text)
         self.assertNotIn("current-schema-reinstall", schema_text)
         self.assertNotIn("obsolete-pause-evidence", schema_text)
 
-    def test_preflight_rejects_unreviewed_previous_identity(self) -> None:
+    def test_v36_preflight_rejects_a_distinct_previous_instance(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         details = self.details("preflight")
-        details["live_schema_version"] = 34
+        details["live_schema_version"] = 35
         details["previous_deployment_instance_id"] = TX
         artifacts = self.reinstall_artifacts(
-            {"schema_version": 34, "deployment_instance_id": [17] * 32},
+            {"schema_version": 35, "deployment_instance_id": [17] * 32},
             {
-                "replacement_mode": "destructive-reinstall",
-                "live_schema_version": 34,
+                "replacement_mode": "current-schema-upgrade",
+                "live_schema_version": 35,
                 "previous_deployment_instance_id": TX,
-                "live_module_hash": LEGACY_MODULE_HASH,
+                "live_module_hash": TX,
                 "next": PROFILE_INSTANCE,
             },
         )
-        self.add_abandonment_snapshots(artifacts)
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reviewed abandonment"):
+        self.add_upgrade_snapshots(artifacts)
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reinstall is prohibited"):
             self.validate_preflight(details, binding, artifacts)
         for live in (
-            {"schema_version": 34},
-            {"schema_version": 34, "deployment_instance_id": f"0x{'0' * 64}"},
-            {"schema_version": 34, "deployment_instance_id": "0x11"},
-            {"schema_version": 34, "deployment_instance_id": [17] * 31},
+            {"schema_version": 35},
+            {"schema_version": 35, "deployment_instance_id": f"0x{'0' * 64}"},
+            {"schema_version": 35, "deployment_instance_id": "0x11"},
+            {"schema_version": 35, "deployment_instance_id": [17] * 31},
             {"schema_version": 28, "deployment_instance_id": TX},
         ):
             invalid_artifacts = self.reinstall_artifacts(live)
@@ -600,17 +661,17 @@ class SepoliaE2ETests(unittest.TestCase):
                     invalid_artifacts,
                 )
 
-    def test_replacement_preflight_requires_abandonment_snapshots(self) -> None:
+    def test_v36_upgrade_preflight_requires_state_preservation_snapshots(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         details = self.details("preflight")
         details.update(
             {
-                "replacement_mode": "destructive-reinstall",
-                "live_schema_version": 34,
-                "previous_deployment_instance_id": LEGACY_INSTANCE,
+                "replacement_mode": "current-schema-upgrade",
+                "live_schema_version": 35,
+                "previous_deployment_instance_id": PROFILE_INSTANCE,
             }
         )
-        artifacts = self.reviewed_replacement_artifacts()
+        artifacts = self.current_upgrade_artifacts()
         self.validate_preflight(details, binding, artifacts)
         for kind in (
             sepolia_e2e.LIVE_BRIDGE_STATUS_ARTIFACT_KIND,
@@ -632,13 +693,13 @@ class SepoliaE2ETests(unittest.TestCase):
         details = self.details("preflight")
         details.update(
             {
-                "replacement_mode": "destructive-reinstall",
+                "replacement_mode": "current-schema-upgrade",
                 "live_schema_version": 32,
                 "previous_deployment_instance_id": TX,
             }
         )
         artifacts = self.obsolete_v32_reinstall_artifacts()
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reviewed legacy schema v34"):
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "requires current stable schema"):
             self.validate_preflight(details, binding, artifacts)
 
     def test_install_mode_must_match_preflight_replacement_mode(self) -> None:
@@ -648,15 +709,15 @@ class SepoliaE2ETests(unittest.TestCase):
         install_evidence["details"]["install_mode"] = "install"
         path = self.root / "invalid-install-evidence.json"
         path.write_text(json.dumps(install_evidence), encoding="utf-8")
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "explicit destructive reinstall"):
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "only a current-schema same-instance upgrade"):
             sepolia_e2e.record(self.manifest, path)
 
-    def test_preflight_requires_unique_replacement_and_boundary_artifacts(self) -> None:
+    def test_preflight_requires_unique_upgrade_and_boundary_artifacts(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         artifacts = self.artifact("preflight")
         required_kinds = (
             sepolia_e2e.LIVE_PUBLIC_CONFIG_ARTIFACT_KIND,
-            sepolia_e2e.REPLACEMENT_INSTANCE_CHECK_ARTIFACT_KIND,
+            sepolia_e2e.UPGRADE_INSTANCE_CHECK_ARTIFACT_KIND,
             sepolia_e2e.WITHDRAWAL_BOUNDARY_ARTIFACT_KIND,
         )
         for kind in required_kinds:
@@ -684,7 +745,7 @@ class SepoliaE2ETests(unittest.TestCase):
             ("future", "2026-07-24T00:04:01Z"),
         ):
             with self.subTest(name=name):
-                artifacts = self.reviewed_replacement_artifacts()
+                artifacts = self.current_upgrade_artifacts()
                 boundary_path = self.root / "artifacts/withdrawal-admission-boundary.json"
                 boundary = json.loads(boundary_path.read_text(encoding="utf-8"))
                 boundary["observed_at"] = observed_at
@@ -700,7 +761,7 @@ class SepoliaE2ETests(unittest.TestCase):
 
     def test_preflight_rejects_withdrawal_boundary_provider_order_drift(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        artifacts = self.reviewed_replacement_artifacts()
+        artifacts = self.current_upgrade_artifacts()
         boundary_path = self.root / "artifacts/withdrawal-admission-boundary.json"
         boundary = json.loads(boundary_path.read_text(encoding="utf-8"))
         boundary["providers"][0], boundary["providers"][1] = (
@@ -719,7 +780,7 @@ class SepoliaE2ETests(unittest.TestCase):
 
     def test_preflight_rejects_boundary_provider_below_median_checkpoint(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        artifacts = self.reviewed_replacement_artifacts()
+        artifacts = self.current_upgrade_artifacts()
         boundary_path = self.root / "artifacts/withdrawal-admission-boundary.json"
         boundary = json.loads(boundary_path.read_text(encoding="utf-8"))
         boundary["providers"][0]["finalized_head_block_number"] = 99
@@ -733,58 +794,21 @@ class SepoliaE2ETests(unittest.TestCase):
         with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "below the median checkpoint"):
             self.validate_preflight(self.details("preflight"), binding, artifacts)
 
-    def test_preflight_rejects_legacy_base_stack_reuse_or_mutation(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        mutations = (
-            ("legacy_stack_excluded", False, "must be true"),
-            ("legacy_stack_mutation_required", True, "must be false"),
-        )
-        for field, value, message in mutations:
-            with self.subTest(field=field):
-                artifacts = self.reviewed_replacement_artifacts()
-                boundary_path = self.root / "artifacts/withdrawal-admission-boundary.json"
-                boundary = json.loads(boundary_path.read_text(encoding="utf-8"))
-                boundary[field] = value
-                boundary_path.write_text(json.dumps(boundary) + "\n", encoding="utf-8")
-                boundary_artifact = next(
-                    artifact
-                    for artifact in artifacts
-                    if artifact["kind"] == sepolia_e2e.WITHDRAWAL_BOUNDARY_ARTIFACT_KIND
-                )
-                boundary_artifact["sha256"] = sepolia_e2e.digest(boundary_path)
-                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, message):
-                    self.validate_preflight(self.details("preflight"), binding, artifacts)
-
-        reused_binding = {**binding, "bridge_address": LEGACY_BRIDGE_ADDRESS}
-        artifacts = self.reviewed_replacement_artifacts()
-        boundary_path = self.root / "artifacts/withdrawal-admission-boundary.json"
-        boundary = json.loads(boundary_path.read_text(encoding="utf-8"))
-        boundary["bridge_address"] = LEGACY_BRIDGE_ADDRESS
-        boundary_path.write_text(json.dumps(boundary) + "\n", encoding="utf-8")
-        boundary_artifact = next(
-            artifact
-            for artifact in artifacts
-            if artifact["kind"] == sepolia_e2e.WITHDRAWAL_BOUNDARY_ARTIFACT_KIND
-        )
-        boundary_artifact["sha256"] = sepolia_e2e.digest(boundary_path)
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "exclude the legacy Base Bridge"):
-            self.validate_preflight(self.details("preflight"), reused_binding, artifacts)
-
     def test_preflight_rejects_artifact_and_summary_drift(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
         details = self.details("preflight")
         artifacts = self.reinstall_artifacts(
-            {"schema_version": 34, "deployment_instance_id": TX},
+            {"schema_version": 35, "deployment_instance_id": TX},
             {
-                "replacement_mode": "destructive-reinstall",
-                "live_schema_version": 34,
+                "replacement_mode": "current-schema-upgrade",
+                "live_schema_version": 35,
                 "previous_deployment_instance_id": TX,
-                "live_module_hash": LEGACY_MODULE_HASH,
-                "next": PROFILE_INSTANCE,
+                "live_module_hash": TX,
+                "next": TX,
             },
         )
-        self.add_abandonment_snapshots(artifacts)
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reviewed abandonment"):
+        self.add_upgrade_snapshots(artifacts)
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reinstall is prohibited"):
             self.validate_preflight(
                 details,
                 binding,
@@ -792,17 +816,17 @@ class SepoliaE2ETests(unittest.TestCase):
             )
 
         artifacts = self.reinstall_artifacts(
-            {"schema_version": 34, "deployment_instance_id": LEGACY_INSTANCE},
+            {"schema_version": 35, "deployment_instance_id": PROFILE_INSTANCE},
             {
-                "replacement_mode": "destructive-reinstall",
-                "live_schema_version": 34,
-                "previous_deployment_instance_id": LEGACY_INSTANCE,
-                "live_module_hash": LEGACY_MODULE_HASH,
+                "replacement_mode": "current-schema-upgrade",
+                "live_schema_version": 35,
+                "previous_deployment_instance_id": PROFILE_INSTANCE,
+                "live_module_hash": TX,
                 "next": PROFILE_INSTANCE,
                 "unexpected": True,
             },
         )
-        self.add_abandonment_snapshots(artifacts)
+        self.add_upgrade_snapshots(artifacts)
         with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "fields differ"):
             self.validate_preflight(
                 details,
@@ -811,10 +835,10 @@ class SepoliaE2ETests(unittest.TestCase):
             )
 
         artifacts = self.reinstall_artifacts()
-        self.add_abandonment_snapshots(artifacts)
+        self.add_upgrade_snapshots(artifacts)
         with self.assertRaisesRegex(
             sepolia_e2e.EvidenceError,
-            "minimum withdrawal ID differs from the fresh stack binding",
+            "summary differs from the withdrawal admission boundary",
         ):
             self.validate_preflight(
                 {
@@ -852,16 +876,16 @@ class SepoliaE2ETests(unittest.TestCase):
             )
 
     def test_node_checker_output_is_accepted_by_manifest_validation(self) -> None:
-        live = {"schema_version": 34, "deployment_instance_id": LEGACY_INSTANCE}
+        live = {"schema_version": 35, "deployment_instance_id": PROFILE_INSTANCE}
         live_path = self.root / "node-live-public-config.json"
         live_path.write_text(json.dumps(live), encoding="utf-8")
-        status = {"module_hash": LEGACY_MODULE_HASH}
+        status = {"module_hash": TX}
         status_path = self.root / "node-live-canister-status.json"
         status_path.write_text(json.dumps(status), encoding="utf-8")
         output = subprocess.run(
             [
                 "node",
-                str(MODULE_PATH.with_name("check-replacement-instance.mjs")),
+                str(MODULE_PATH.with_name("check-upgrade-instance.mjs")),
                 str(self.profile),
                 str(live_path),
                 str(status_path),
@@ -872,29 +896,97 @@ class SepoliaE2ETests(unittest.TestCase):
         ).stdout
         check = json.loads(output)
         details = self.details("preflight")
-        details["live_schema_version"] = 34
-        details["previous_deployment_instance_id"] = LEGACY_INSTANCE
+        details["live_schema_version"] = 35
+        details["previous_deployment_instance_id"] = PROFILE_INSTANCE
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        artifacts = self.reviewed_replacement_artifacts()
-        check_path = self.root / "artifacts/replacement-instance-check.json"
-        check_path.write_text(json.dumps(check) + "\n", encoding="utf-8")
-        check_artifact = next(
-            artifact
-            for artifact in artifacts
-            if artifact["kind"] == sepolia_e2e.REPLACEMENT_INSTANCE_CHECK_ARTIFACT_KIND
-        )
-        check_artifact["sha256"] = sepolia_e2e.digest(check_path)
         self.validate_preflight(
             details,
             binding,
-            artifacts,
+            self.current_upgrade_artifacts(),
         )
+
+    def test_preflight_and_install_reject_controller_set_drift(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        mutations = (
+            CONTROLLERS[:1],
+            [*CONTROLLERS, "2vxsx-fae"],
+            [CONTROLLERS[0], CONTROLLERS[0]],
+            ["2vxsx-fae", CONTROLLERS[1]],
+        )
+        for controllers in mutations:
+            with self.subTest(controllers=controllers):
+                preflight = self.details("preflight")
+                preflight["controller_principals"] = controllers
+                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reviewed staging controller set"):
+                    self.validate_preflight(
+                        preflight,
+                        binding,
+                        self.current_upgrade_artifacts(),
+                    )
+
+                install = self.details("install")
+                install["controller_principals"] = controllers
+                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reviewed staging controller set"):
+                    sepolia_e2e.validate_install(install, binding)
+
+    def test_preflight_rejects_unreviewed_canister_module_candid_and_wire(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        base_status = {
+            "canister_id": BRIDGE_CANISTER_ID,
+            "module_hash": "0x" + self.upgrade_policy["source_module_sha256"],
+            "certified_candid_sha256": self.upgrade_policy["source_candid_sha256"],
+            "stable_schema_version": 35,
+            "record_wire_version": 30,
+            "controller_principals": list(CONTROLLERS),
+            "cycles_balance": 1,
+        }
+        mutations = (
+            {"canister_id": "2vxsx-fae"},
+            {"module_hash": TX_B},
+            {"certified_candid_sha256": H64_B},
+            {"stable_schema_version": 34},
+            {"record_wire_version": 29},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                artifacts = self.reinstall_artifacts(status={**base_status, **mutation})
+                self.add_upgrade_snapshots(artifacts)
+                with self.assertRaises(sepolia_e2e.EvidenceError):
+                    self.validate_preflight(self.details("preflight"), binding, artifacts)
+
+    def test_install_rejects_schema_wire_policy_and_candid_drift(self) -> None:
+        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
+        for field, value in (
+            ("schema_version_before", 34),
+            ("schema_version_after", 34),
+            ("record_wire_version_before", 29),
+            ("record_wire_version_after", 29),
+            ("source_module_sha256", H64_B),
+            ("source_candid_sha256", H64_B),
+            ("target_candid_sha256", H64_B),
+            ("staging_upgrade_policy_sha256", H64_B),
+        ):
+            with self.subTest(field=field):
+                details = self.details("install")
+                details[field] = value
+                with self.assertRaises(sepolia_e2e.EvidenceError):
+                    sepolia_e2e.validate_install(details, binding)
 
     def test_later_record_revalidates_preflight_artifacts(self) -> None:
         sepolia_e2e.record(self.manifest, self.evidence("preflight"))
         (self.root / "artifacts/live-public-config.json").unlink()
         with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "does not exist"):
             sepolia_e2e.record(self.manifest, self.evidence("contracts"))
+
+    def test_install_record_immediately_rejects_controller_order_drift(self) -> None:
+        sepolia_e2e.record(self.manifest, self.evidence("preflight"))
+        sepolia_e2e.record(self.manifest, self.evidence("contracts"))
+        install_path = self.evidence("install")
+        install = json.loads(install_path.read_text(encoding="utf-8"))
+        install["details"]["controller_principals"] = list(reversed(CONTROLLERS))
+        install_path.write_text(json.dumps(install), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "changed from the reviewed preflight"):
+            sepolia_e2e.record(self.manifest, install_path)
 
     def test_initialize_rejects_profile_instance_mismatch(self) -> None:
         binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
@@ -952,6 +1044,48 @@ class SepoliaE2ETests(unittest.TestCase):
         with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "must use stable schema v35"):
             sepolia_e2e.initialize(self.manifest, self.local, self.profile)
 
+    def test_obsolete_local_evidence_schema_v7_is_rejected(self) -> None:
+        self.manifest.unlink()
+        local = json.loads(self.local.read_text(encoding="utf-8"))
+        local["schema_version"] = 7
+        self.local.write_text(json.dumps(local), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "complete schema v8 pass"):
+            sepolia_e2e.initialize(self.manifest, self.local, self.profile)
+
+    def test_driver_requires_repo_external_local_evidence(self) -> None:
+        environment = os.environ.copy()
+        environment.pop("BRIDGE_LOCAL_E2E_EVIDENCE", None)
+        missing = subprocess.run(
+            ["bash", str(DRIVER_PATH), "init"],
+            env=environment,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("BRIDGE_LOCAL_E2E_EVIDENCE", missing.stderr)
+
+        environment["BRIDGE_LOCAL_E2E_EVIDENCE"] = str(MODULE_PATH.parents[2] / "README.md")
+        inside = subprocess.run(
+            ["bash", str(DRIVER_PATH), "init"],
+            env=environment,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(inside.returncode, 2)
+        self.assertIn("outside the repository", inside.stderr)
+
+        alias = self.root / "repo-evidence-alias.json"
+        alias.symlink_to(MODULE_PATH.parents[2] / "README.md")
+        environment["BRIDGE_LOCAL_E2E_EVIDENCE"] = str(alias)
+        symlinked = subprocess.run(
+            ["bash", str(DRIVER_PATH), "init"],
+            env=environment,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(symlinked.returncode, 2)
+        self.assertIn("outside the repository", symlinked.stderr)
+
     def test_artifact_hash_drift_is_rejected(self) -> None:
         evidence = self.evidence("preflight")
         artifact = self.root / "artifacts/preflight.json"
@@ -959,22 +1093,30 @@ class SepoliaE2ETests(unittest.TestCase):
         with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "does not match"):
             sepolia_e2e.record(self.manifest, evidence)
 
-    def test_initialization_allows_only_fresh_local_evidence_diff(self) -> None:
+    def test_initialization_requires_external_evidence_and_clean_source(self) -> None:
         self.manifest.unlink()
-        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
-        subprocess.run(["git", "config", "user.name", "Plan 007 Test"], cwd=self.root, check=True)
-        subprocess.run(["git", "config", "user.email", "plan007@example.invalid"], cwd=self.root, check=True)
-        subprocess.run(["git", "add", self.local.name, self.profile.name], cwd=self.root, check=True)
-        subprocess.run(["git", "commit", "-qm", "test fixture"], cwd=self.root, check=True)
-        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.root, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
+        repo = self.root / "source-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Plan 007 Test"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "plan007@example.invalid"], cwd=repo, check=True)
+        tracked = repo / "tracked.txt"
+        tracked.write_text("tracked\n", encoding="utf-8")
+        subprocess.run(["git", "add", tracked.name], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "test fixture"], cwd=repo, check=True)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
         local = json.loads(self.local.read_text(encoding="utf-8"))
         local["source_commit"] = head
         self.local.write_text(json.dumps(local), encoding="utf-8")
-        sepolia_e2e.initialize(self.manifest, self.local, self.profile, self.root)
+        sepolia_e2e.initialize(self.manifest, self.local, self.profile, repo)
         self.manifest.unlink()
-        (self.root / "unexpected.txt").write_text("dirty\n", encoding="utf-8")
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "allows only"):
-            sepolia_e2e.initialize(self.manifest, self.local, self.profile, self.root)
+        inside = repo / "local-e2e.json"
+        inside.write_bytes(self.local.read_bytes())
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "outside the repository"):
+            sepolia_e2e.initialize(self.manifest, inside, self.profile, repo)
+        tracked.write_text("dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "clean source worktree"):
+            sepolia_e2e.initialize(self.manifest, self.local, self.profile, repo)
 
 
 if __name__ == "__main__":

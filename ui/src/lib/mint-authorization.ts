@@ -43,6 +43,15 @@ export interface ValidatedMintAuthorization {
   latestBlockTimestamp: bigint
 }
 
+export function assertMintAuthorizationContractHorizon(
+  deadline: bigint,
+  latestBaseTimestamp: bigint,
+): void {
+  if (deadline > latestBaseTimestamp + 900n) {
+    throw new Error("Mint authorization exceeds the Base contract deadline horizon. No Base transaction was sent.")
+  }
+}
+
 function fixedHex(bytes: Uint8Array | number[], length: number, label: string): Hex {
   if (bytes.length !== length) throw new Error(`${label} has an invalid length`)
   return bytesToHex(Uint8Array.from(bytes))
@@ -141,6 +150,7 @@ export async function validateMintAuthorization(
   if (processed) {
     throw new Error("This Deposit ID is already processed on Base. Do not submit another mint; refresh History for finalized status.")
   }
+  assertMintAuthorizationContractHorizon(authorization.deadline, latestBlock.timestamp)
   if (!mintAuthorizationWindow(authorization.deadline, latestBlock.timestamp).hasMinimumRemainingTime) {
     throw new Error("Mint authorization has less than five minutes remaining. No Base transaction was sent.")
   }

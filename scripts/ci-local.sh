@@ -176,11 +176,10 @@ run_versions() {
   "$ROOT/scripts/test_production_handover.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
-  node "$ROOT/scripts/plan007/test-check-replacement-instance.mjs"
+  node "$ROOT/scripts/plan007/test-check-upgrade-instance.mjs"
   node "$ROOT/scripts/plan007/test-read-public-canister-metadata.mjs"
   python3 "$ROOT/scripts/plan007/test_candid_values.py"
   python3 "$ROOT/scripts/plan007/test_staging_wasm_artifact.py"
-  "$ROOT/scripts/base-sepolia-experiment/test-external-control-plane.sh"
   staging_layout="$(python3 "$ROOT/scripts/trusted_staging_layout.py")"
   case "$staging_layout" in
     upgrade) python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py" ;;

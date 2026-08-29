@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "kind": "staging-bridge-upgrade",
+  "environment": "sepolia-staging",
+  "canister_name": "bridge-sepolia",
+  "canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+  "stable_schema_version": 35,
+  "record_wire_version": 30,
+  "deployment_instance_id": "0x067b39c87fb0fae8fa5c161fc5e04641adbea230b571e11496e323e30b5bcda1",
+  "base_chain_id": 84532,
+  "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+  "governance_principal": "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae",
+  "expected_controllers": [
+    "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
+    "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"
+  ],
+  "source_module_sha256": "75b372b94e6daa913eac5e32618d5282a13895484ab7b3a485e78245c61db6d1",
+  "source_candid_sha256": "309069ce5444b7e6ff2745cc2bc8af4e00e244da890a7d355513371fa29b57bc",
+  "source_api": "get_runtime_binding",
+  "target_api": "get_runtime_binding"
+}

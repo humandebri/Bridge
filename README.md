@@ -171,4 +171,4 @@ icp network stop --project-root-override .
 
 手動実行の`prepare_local_network.py --write`は`icp.yaml`を永続的に変更する。必要なら停止後に利用者が元のportへ戻す。
 
-本番初回deployまではstable schemaを直接置換し、旧schema migration、dual-read、fallbackを追加しない。現行v35／wire v30以外はfail closedとする。Base Sepolia stagingだけは明示承認済みのtest-only例外として既存Canister principalを一度reinstallし、旧Base stackと旧test transactionを`abandoned-test-only`として除外する。fresh Base stack、signer、deployment instanceへ置換した後の再reinstallは許可しない。
+本番初回deployまではstable schemaを直接置換し、旧schema migration、dual-read、fallbackを追加しない。現行v35／wire v30以外はfail closedとする。Base Sepolia stagingも、review済みv35／wire v30と同一deployment instanceを保つupgradeだけを許可し、reinstallやlegacy migrationは許可しない。
