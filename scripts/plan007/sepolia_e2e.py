@@ -22,16 +22,17 @@ ENVIRONMENT_MODE = "short-delay-test-only"
 ACTIVATION_TIMELOCK_DELAY_SECONDS = 300
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
 CURRENT_STABLE_SCHEMA = 35
+LEGACY_STABLE_SCHEMA = 34
 LIVE_PUBLIC_CONFIG_ARTIFACT_KIND = "live-public-config"
-UPGRADE_INSTANCE_CHECK_ARTIFACT_KIND = "upgrade-instance-check"
+REPLACEMENT_INSTANCE_CHECK_ARTIFACT_KIND = "replacement-instance-check"
 WITHDRAWAL_BOUNDARY_ARTIFACT_KIND = "withdrawal-admission-boundary"
 LIVE_BRIDGE_STATUS_ARTIFACT_KIND = "live-bridge-status"
 LIVE_ACTIVATION_STATUS_ARTIFACT_KIND = "live-activation-status"
 LIVE_CANISTER_STATUS_ARTIFACT_KIND = "live-canister-status"
 LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND = "live-storage-integrity"
 LIVE_LEDGER_BALANCE_ARTIFACT_KIND = "live-ledger-balance"
-CURRENT_SCHEMA_UPGRADE = "current-schema-upgrade"
-UPGRADE_STATE_COUNT_FIELDS = {
+DESTRUCTIVE_REINSTALL = "destructive-reinstall"
+LEGACY_STATE_COUNT_FIELDS = {
     "deposits",
     "withdrawals",
     "pending_ledger_operations",
@@ -243,7 +244,30 @@ def required_json_artifact(
     return load_object(target)
 
 
-def upgrade_instance_check(
+def reviewed_replacement() -> tuple[dict[str, Any], dict[str, Any]]:
+    root = Path(__file__).resolve().parents[2]
+    legacy = load_object(
+        root / "deployments/sepolia-staging/evidence/legacy-stack-preflight-2026-08-27.json"
+    )
+    decision = load_object(
+        root / "deployments/sepolia-staging/evidence/reinstall-decision-2026-08-27.json"
+    )
+    if (
+        legacy.get("schema_version") != 1
+        or legacy.get("kind") != "legacy-staging-stack-preflight"
+        or legacy.get("result") != "abandoned-test-only"
+        or decision.get("schema_version") != 1
+        or decision.get("kind") != "staging-reinstall-decision"
+        or decision.get("decision") != "reuse-canister-principal-by-destructive-reinstall"
+        or decision.get("bridge_canister_id") != legacy.get("binding", {}).get("bridge_canister_id")
+        or decision.get("discarded_test_state", {}).get("stable_schema_version")
+        != LEGACY_STABLE_SCHEMA
+    ):
+        fail("reviewed staging replacement evidence is malformed or inconsistent")
+    return legacy, decision
+
+
+def replacement_instance_check(
     next_deployment_instance_id: Any,
     live_public_config: dict[str, Any],
     live_canister_status: dict[str, Any],
@@ -258,8 +282,13 @@ def upgrade_instance_check(
         "schema_version",
         "live RuntimeBinding",
     )
-    if schema_version != CURRENT_STABLE_SCHEMA:
-        fail(f"staging upgrade requires current stable schema v{CURRENT_STABLE_SCHEMA}")
+    legacy, _ = reviewed_replacement()
+    reviewed_binding = legacy["binding"]
+    reviewed_observation = legacy["ic_observation"]
+    if bridge_canister_id != reviewed_binding["bridge_canister_id"]:
+        fail("staging replacement targets an unreviewed Canister principal")
+    if schema_version != LEGACY_STABLE_SCHEMA:
+        fail(f"staging replacement requires reviewed legacy schema v{LEGACY_STABLE_SCHEMA}")
     previous = deployment_instance_hex(
         live_public_config.get("deployment_instance_id"),
         "live RuntimeBinding deployment_instance_id",
@@ -272,10 +301,14 @@ def upgrade_instance_check(
     )
     if live_module_hash == "0x" + "0" * 64:
         fail("live canister status module_hash must be nonzero")
-    if previous != next_id:
-        fail("reinstall is prohibited: staging upgrade must preserve the deployment instance ID")
+    if previous != reviewed_binding["deployment_instance_id"]:
+        fail("live staging deployment instance differs from reviewed abandonment evidence")
+    if previous == next_id:
+        fail("destructive replacement requires a fresh deployment instance ID")
+    if live_module_hash != f"0x{reviewed_observation['module_sha256']}":
+        fail("live staging module hash differs from reviewed abandonment evidence")
     return {
-        "replacement_mode": CURRENT_SCHEMA_UPGRADE,
+        "replacement_mode": DESTRUCTIVE_REINSTALL,
         "live_schema_version": schema_version,
         "previous_deployment_instance_id": previous,
         "live_module_hash": live_module_hash,
@@ -283,8 +316,8 @@ def upgrade_instance_check(
     }
 
 
-def normalized_upgrade_check(value: dict[str, Any]) -> dict[str, Any]:
-    context = "upgrade instance check"
+def normalized_replacement_check(value: dict[str, Any]) -> dict[str, Any]:
+    context = "replacement instance check"
     exact_keys(
         value,
         {
@@ -303,10 +336,10 @@ def normalized_upgrade_check(value: dict[str, Any]) -> dict[str, Any]:
         f"{context} previous_deployment_instance_id",
     )
     next_id = deployment_instance_hex(value["next"], f"{context} next")
-    if schema_version != CURRENT_STABLE_SCHEMA or previous != next_id:
-        fail(f"{context} must preserve the current schema and deployment instance ID")
-    if replacement_mode != CURRENT_SCHEMA_UPGRADE:
-        fail(f"{context} replacement_mode must be {CURRENT_SCHEMA_UPGRADE}")
+    if schema_version != LEGACY_STABLE_SCHEMA or previous == next_id:
+        fail(f"{context} must replace the reviewed legacy schema and deployment instance ID")
+    if replacement_mode != DESTRUCTIVE_REINSTALL:
+        fail(f"{context} replacement_mode must be {DESTRUCTIVE_REINSTALL}")
     return {
         "replacement_mode": replacement_mode,
         "live_schema_version": schema_version,
@@ -332,6 +365,8 @@ def validate_withdrawal_boundary(
         "schema_version", "kind", "observed_at", "chain_id", "bridge_address",
         "finalized_checkpoint_block_number", "finalized_checkpoint_block_hash",
         "withdrawals_paused", "minimum_withdrawal_id", "providers",
+        "legacy_bridge_address", "legacy_stack_excluded",
+        "legacy_stack_mutation_required",
     }, context)
     if value["schema_version"] != 1 or value["kind"] != WITHDRAWAL_BOUNDARY_ARTIFACT_KIND:
         fail(f"{context} has an unsupported schema or kind")
@@ -347,6 +382,16 @@ def validate_withdrawal_boundary(
         fail(f"{context} chain ID differs from the binding")
     if require_pattern(value, "bridge_address", EVM_ADDRESS, context).lower() != binding["bridge_address"].lower():
         fail(f"{context} Bridge address differs from the binding")
+    legacy, decision = reviewed_replacement()
+    legacy_bridge = require_pattern(value, "legacy_bridge_address", EVM_ADDRESS, context)
+    if legacy_bridge.lower() != legacy["binding"]["bridge_address"].lower():
+        fail(f"{context} legacy Bridge differs from reviewed abandonment evidence")
+    if legacy_bridge.lower() == binding["bridge_address"].lower():
+        fail(f"{context} must exclude the legacy Base Bridge")
+    require_bool(value, "legacy_stack_excluded", True, context)
+    require_bool(value, "legacy_stack_mutation_required", False, context)
+    if decision["old_base_stack_mutation_required"] is not False:
+        fail("reviewed reinstall decision unexpectedly requires legacy Base stack mutation")
     require_nat(value, "finalized_checkpoint_block_number", context)
     checkpoint_hash = require_pattern(value, "finalized_checkpoint_block_hash", EVM_HASH, context)
     require_bool(value, "withdrawals_paused", True, context)
@@ -388,7 +433,7 @@ def validate_withdrawal_boundary(
     return minimum
 
 
-def validate_upgrade_snapshots(
+def validate_abandonment_snapshots(
     artifacts: Any,
     manifest_path: Path,
 ) -> None:
@@ -396,41 +441,50 @@ def validate_upgrade_snapshots(
         artifacts,
         manifest_path,
         LIVE_BRIDGE_STATUS_ARTIFACT_KIND,
-        "upgrade preflight",
+        "replacement preflight",
     )
-    exact_keys(bridge_status, UPGRADE_STATE_COUNT_FIELDS, "live bridge status")
-    for field in UPGRADE_STATE_COUNT_FIELDS:
+    exact_keys(bridge_status, LEGACY_STATE_COUNT_FIELDS, "live bridge status")
+    for field in LEGACY_STATE_COUNT_FIELDS:
         require_nat(bridge_status, field, "live bridge status")
+    legacy, decision = reviewed_replacement()
+    discarded = decision["discarded_test_state"]
+    for field in (
+        "deposits",
+        "withdrawals",
+        "reserved_deposit_mint_operations",
+        "reserved_deposit_mint_amount",
+    ):
+        if bridge_status[field] != discarded[field]:
+            fail(f"live bridge status {field} differs from reviewed abandonment evidence")
 
     activation = required_json_artifact(
         artifacts,
         manifest_path,
         LIVE_ACTIVATION_STATUS_ARTIFACT_KIND,
-        "upgrade preflight",
+        "replacement preflight",
     )
     exact_keys(activation, {"pending_timelock_operations"}, "live activation status")
-    if require_nat(
-        activation,
-        "pending_timelock_operations",
-        "live activation status",
-    ) != 0:
-        fail("upgrade requires zero pending Timelock operations")
+    pending_timelock = require_nat(
+        activation, "pending_timelock_operations", "live activation status"
+    )
+    if pending_timelock != legacy["ic_observation"]["pending_timelock_operations"]:
+        fail("live activation status differs from reviewed abandonment evidence")
 
     integrity = required_json_artifact(
         artifacts,
         manifest_path,
         LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND,
-        "upgrade preflight",
+        "replacement preflight",
     )
     exact_keys(integrity, {"result"}, "live storage integrity")
-    if integrity["result"] != "ok":
-        fail("upgrade requires storage_integrity_check to return ok")
+    if integrity["result"] != legacy["ic_observation"]["storage_integrity"]:
+        fail("live storage integrity differs from reviewed abandonment evidence")
 
     ledger = required_json_artifact(
         artifacts,
         manifest_path,
         LIVE_LEDGER_BALANCE_ARTIFACT_KIND,
-        "upgrade preflight",
+        "replacement preflight",
     )
     exact_keys(ledger, {"balance_raw"}, "live ledger balance")
     require_nat(ledger, "balance_raw", "live ledger balance")
@@ -481,7 +535,16 @@ def validate_preflight(
     require_nat(details, "ledger_fee", context)
     require_nat(details, "cycles_balance", context)
     for field in ("base_deposits_paused", "base_withdrawals_paused", "canister_deposits_paused"):
-        require_bool(details, field, True, context)
+        if not isinstance(details[field], bool):
+            fail(f"{context}.{field} must be a boolean")
+    legacy, _ = reviewed_replacement()
+    reviewed_pause = {
+        "base_deposits_paused": True,
+        "base_withdrawals_paused": True,
+        "canister_deposits_paused": legacy["ic_observation"]["deposits_paused"],
+    }
+    if any(details[field] != expected for field, expected in reviewed_pause.items()):
+        fail("preflight pause observations differ from the fresh Base and reviewed Canister state")
     controllers = details["controller_principals"]
     if not isinstance(controllers, list) or not controllers or any(not isinstance(item, str) or not PRINCIPAL.fullmatch(item) for item in controllers):
         fail("preflight controller_principals must contain explicit principals")
@@ -497,7 +560,7 @@ def validate_preflight(
     recorded_check = required_json_artifact(
         artifacts,
         manifest_path,
-        UPGRADE_INSTANCE_CHECK_ARTIFACT_KIND,
+        REPLACEMENT_INSTANCE_CHECK_ARTIFACT_KIND,
         "preflight",
     )
     live_canister_status = required_json_artifact(
@@ -506,29 +569,38 @@ def validate_preflight(
         LIVE_CANISTER_STATUS_ARTIFACT_KIND,
         "preflight",
     )
-    boundary = required_json_artifact(
+    withdrawal_boundary = required_json_artifact(
         artifacts,
         manifest_path,
         WITHDRAWAL_BOUNDARY_ARTIFACT_KIND,
         "preflight",
     )
-    minimum_withdrawal_id = validate_withdrawal_boundary(
-        boundary,
+    boundary_minimum = validate_withdrawal_boundary(
+        withdrawal_boundary,
         binding,
         preflight_observed_at,
         urls,
     )
-    if deployment_instance_hex(details["minimum_withdrawal_id"], f"{context}.minimum_withdrawal_id") != minimum_withdrawal_id:
+    if (
+        deployment_instance_hex(
+            details["minimum_withdrawal_id"], f"{context}.minimum_withdrawal_id"
+        )
+        != binding["minimum_withdrawal_id"]
+    ):
+        fail("preflight minimum withdrawal ID differs from the fresh stack binding")
+    if boundary_minimum != deployment_instance_hex(
+        details["minimum_withdrawal_id"], f"{context}.minimum_withdrawal_id"
+    ):
         fail("preflight summary differs from the withdrawal admission boundary")
-    expected_check = upgrade_instance_check(
+    expected_check = replacement_instance_check(
         binding["deployment_instance_id"],
         live_public_config,
         live_canister_status,
         binding["bridge_canister_id"],
     )
-    if normalized_upgrade_check(recorded_check) != expected_check:
-        fail("upgrade instance check does not match the live RuntimeBinding and reviewed binding")
-    summary_check = normalized_upgrade_check(
+    if normalized_replacement_check(recorded_check) != expected_check:
+        fail("replacement instance check does not match the reviewed abandonment evidence")
+    summary_check = normalized_replacement_check(
         {
             "replacement_mode": details["replacement_mode"],
             "live_schema_version": details["live_schema_version"],
@@ -540,8 +612,8 @@ def validate_preflight(
         }
     )
     if summary_check != expected_check:
-        fail("preflight summary does not match the verified upgrade instance check")
-    validate_upgrade_snapshots(artifacts, manifest_path)
+        fail("preflight summary does not match the verified replacement instance check")
+    validate_abandonment_snapshots(artifacts, manifest_path)
     if (
         live_canister_status["controller_principals"]
         != details["controller_principals"]
@@ -554,18 +626,18 @@ def validate_preflight(
 def validate_install(details: dict[str, Any], binding: dict[str, Any]) -> None:
     context = "install.details"
     base_fields = {"install_mode", "module_sha256", "cycles_balance", "controller_principals"}
-    upgrade_fields = {
-        "state_counts_before",
-        "state_counts_after",
+    replacement_fields = {
+        "discarded_state_counts",
+        "post_install_state_counts",
         "schema_version_after",
         "deployment_instance_id_after",
         "minimum_withdrawal_id_after",
         "storage_integrity_after",
     }
     install_mode = require_string(details, "install_mode", context)
-    if install_mode != "upgrade":
-        fail("Plan 007 permits only a current-schema same-instance upgrade")
-    exact_keys(details, base_fields | upgrade_fields, context)
+    if install_mode != "reinstall":
+        fail("Plan 007 replacement requires an explicit destructive reinstall")
+    exact_keys(details, base_fields | replacement_fields, context)
     if details["module_sha256"] != binding["bridge_wasm_sha256"]:
         fail("installed Bridge module does not match local promotion evidence")
     if require_nat(details, "cycles_balance", context) <= 0:
@@ -573,36 +645,44 @@ def validate_install(details: dict[str, Any], binding: dict[str, Any]) -> None:
     controllers = details["controller_principals"]
     if not isinstance(controllers, list) or not controllers:
         fail("install must retain an explicit controller set")
-    if install_mode == "upgrade":
-        before = details["state_counts_before"]
-        after = details["state_counts_after"]
-        if not isinstance(before, dict) or not isinstance(after, dict):
-            fail("upgrade state counts must be objects")
-        exact_keys(before, UPGRADE_STATE_COUNT_FIELDS, "install state_counts_before")
-        exact_keys(after, UPGRADE_STATE_COUNT_FIELDS, "install state_counts_after")
-        for field in UPGRADE_STATE_COUNT_FIELDS:
-            require_nat(before, field, "install state_counts_before")
-            require_nat(after, field, "install state_counts_after")
-        if before != after:
-            fail("upgrade changed persisted Bridge state counts")
-        if require_nat(details, "schema_version_after", context) != CURRENT_STABLE_SCHEMA:
-            fail("upgrade did not reach the current stable schema")
-        if (
-            deployment_instance_hex(
-                details["deployment_instance_id_after"],
-                "install deployment_instance_id_after",
-            )
-            != binding["deployment_instance_id"]
-        ):
-            fail("upgrade changed the deployment instance ID")
-        if require_deployment_instance_id(
-            details,
-            "minimum_withdrawal_id_after",
-            context,
-        ) != binding["minimum_withdrawal_id"]:
-            fail("upgrade installed the wrong minimum withdrawal ID")
-        if details["storage_integrity_after"] != "ok":
-            fail("upgrade storage integrity check did not return ok")
+    discarded = details["discarded_state_counts"]
+    after = details["post_install_state_counts"]
+    if not isinstance(discarded, dict) or not isinstance(after, dict):
+        fail("replacement state counts must be objects")
+    exact_keys(discarded, LEGACY_STATE_COUNT_FIELDS, "install discarded_state_counts")
+    exact_keys(after, LEGACY_STATE_COUNT_FIELDS, "install post_install_state_counts")
+    for field in LEGACY_STATE_COUNT_FIELDS:
+        require_nat(discarded, field, "install discarded_state_counts")
+        require_nat(after, field, "install post_install_state_counts")
+    _, decision = reviewed_replacement()
+    for field in (
+        "deposits",
+        "withdrawals",
+        "reserved_deposit_mint_operations",
+        "reserved_deposit_mint_amount",
+    ):
+        if discarded[field] != decision["discarded_test_state"][field]:
+            fail(f"discarded {field} differs from the reviewed reinstall decision")
+    if any(after.values()):
+        fail("destructive reinstall did not produce empty Bridge state")
+    if require_nat(details, "schema_version_after", context) != CURRENT_STABLE_SCHEMA:
+        fail("reinstall did not reach the current stable schema")
+    if (
+        deployment_instance_hex(
+            details["deployment_instance_id_after"],
+            "install deployment_instance_id_after",
+        )
+        != binding["deployment_instance_id"]
+    ):
+        fail("reinstall did not install the fresh deployment instance ID")
+    if require_deployment_instance_id(
+        details,
+        "minimum_withdrawal_id_after",
+        context,
+    ) != binding["minimum_withdrawal_id"]:
+        fail("reinstall installed the wrong minimum withdrawal ID")
+    if details["storage_integrity_after"] != "ok":
+        fail("reinstall storage integrity check did not return ok")
 
 
 def validate_initialize(details: dict[str, Any], binding: dict[str, Any]) -> None:
@@ -1026,7 +1106,9 @@ def validate_manifest(manifest: dict[str, Any], path: Path, *, require_complete:
     install = stages["install"]
     if preflight is not None and install is not None:
         replacement_mode = preflight["details"]["replacement_mode"]
-        expected_install_mode = "upgrade"
+        if replacement_mode != DESTRUCTIVE_REINSTALL:
+            fail("preflight does not authorize the reviewed destructive replacement")
+        expected_install_mode = "reinstall"
         if install["details"]["install_mode"] != expected_install_mode:
             fail("install mode does not match the preflight replacement mode")
     expected_state = manifest_state(completed)
@@ -1157,7 +1239,9 @@ def record(manifest_path: Path, evidence_path: Path) -> None:
     validate_stage(stage, evidence, manifest_path, validate_binding(manifest["binding"]), verify_files=True)
     if stage == "install":
         replacement_mode = manifest["stages"]["preflight"]["details"]["replacement_mode"]
-        expected_install_mode = "upgrade"
+        if replacement_mode != DESTRUCTIVE_REINSTALL:
+            fail("preflight does not authorize the reviewed destructive replacement")
+        expected_install_mode = "reinstall"
         if evidence["details"]["install_mode"] != expected_install_mode:
             fail("install mode does not match the preflight replacement mode")
     manifest["stages"][stage] = evidence

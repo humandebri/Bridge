@@ -2533,6 +2533,9 @@ fn validate_staging_canister_plan(plan: &ProductionCanisterPlan) -> Result<Vec<u
         || plan.bridge_canister_id != STAGING_BRIDGE_CANISTER
         || !valid_sha256(&plan.bridge_canister_wasm_sha256)
         || plan.init.fee_recipient.owner != plan.bridge_canister_id
+        || plan.init.ecdsa_derivation_path_utf8 != vec!["KINIC-BASE-SEPOLIA-BRIDGE-V35".to_owned()]
+        || plan.init.governance_ecdsa_derivation_path_utf8
+            != vec!["KINIC-BASE-SEPOLIA-GOVERNANCE-V35".to_owned()]
     {
         return Err("invalid staging Canister install plan identity".into());
     }
@@ -5769,6 +5772,9 @@ mod tests {
         plan.init.base_chain_id = 84532;
         plan.init.expected_timelock_minimum_delay_seconds = 300;
         plan.init.expected_minimum_service_fee = 10_000;
+        plan.init.ecdsa_derivation_path_utf8 = vec!["KINIC-BASE-SEPOLIA-BRIDGE-V35".into()];
+        plan.init.governance_ecdsa_derivation_path_utf8 =
+            vec!["KINIC-BASE-SEPOLIA-GOVERNANCE-V35".into()];
         plan
     }
 
@@ -5821,6 +5827,16 @@ mod tests {
         wrong_canister.bridge_canister_id = test_principal(30);
         wrong_canister.init.fee_recipient.owner = wrong_canister.bridge_canister_id.clone();
         assert!(validate_staging_canister_plan(&wrong_canister).is_err());
+
+        let mut old_mint_path = staging_canister_plan();
+        old_mint_path.init.ecdsa_derivation_path_utf8 = vec!["legacy-mint".into()];
+        assert!(validate_staging_canister_plan(&old_mint_path).is_err());
+
+        let mut old_governance_path = staging_canister_plan();
+        old_governance_path
+            .init
+            .governance_ecdsa_derivation_path_utf8 = vec!["legacy-governance".into()];
+        assert!(validate_staging_canister_plan(&old_governance_path).is_err());
     }
 
     #[test]

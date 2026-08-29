@@ -161,7 +161,7 @@
                       {
                         "contains": {
                           "type": "object",
-                          "properties": { "kind": { "const": "upgrade-instance-check" } },
+                          "properties": { "kind": { "const": "replacement-instance-check" } },
                           "required": ["kind"]
                         },
                         "minContains": 1,
@@ -189,7 +189,7 @@
                     "type": "object",
                     "properties": {
                       "replacement_mode": {
-                        "const": "current-schema-upgrade"
+                        "const": "destructive-reinstall"
                       }
                     },
                     "required": ["replacement_mode"]

@@ -46,15 +46,15 @@ case "$MODE" in
     export PATH="$ROOT/scripts/plan007:$PATH"
     python3 "$RPC_RECORDER" capture-fault "$2" "$3" "$4" "$5" "$6" -- evm-rpc-fault-injector
     ;;
-  check-upgrade-instance)
+  check-replacement-instance)
     [[ "$#" -eq 3 ]] || {
-      echo "usage: $0 check-upgrade-instance <live-public-config.json> <live-canister-status.json>" >&2
+      echo "usage: $0 check-replacement-instance <live-public-config.json> <live-canister-status.json>" >&2
       exit 2
     }
-    node "$ROOT/scripts/plan007/check-upgrade-instance.mjs" "$PROFILE" "$2" "$3"
+    node "$ROOT/scripts/plan007/check-replacement-instance.mjs" "$PROFILE" "$2" "$3"
     ;;
   *)
-    echo "usage: $0 {init|status|record|verify|rpc-verify|rpc-capture-fault|check-upgrade-instance}" >&2
+    echo "usage: $0 {init|status|record|verify|rpc-verify|rpc-capture-fault|check-replacement-instance}" >&2
     exit 2
     ;;
 esac
