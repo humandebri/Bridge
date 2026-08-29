@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 from source_resolution import CANDIDATE_SCRIPTS, source_path
+from trusted_staging_layout import classify_layout
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
@@ -34,9 +35,13 @@ class TrustedPrGateTests(unittest.TestCase):
         canonical_name = "staging-bridge-upgrade-policy.json"
         obsolete_name = "v33-to-v34-upgrade-policy.json"
         policy_dir = ROOT / "deployments" / "sepolia-staging"
+        candidate_scripts = (
+            Path(CANDIDATE_SCRIPTS) if CANDIDATE_SCRIPTS is not None else None
+        )
+        staging_layout = classify_layout(ROOT, candidate_scripts)
 
         self.assertFalse((policy_dir / obsolete_name).exists())
-        if CANDIDATE_SCRIPTS is None:
+        if staging_layout == "upgrade":
             self.assertTrue((policy_dir / canonical_name).is_file())
             for relative in (
                 "scripts/plan007/staging_canister_upgrade.py",
@@ -49,12 +54,27 @@ class TrustedPrGateTests(unittest.TestCase):
                     self.assertIn(canonical_name, source)
                     self.assertNotIn(obsolete_name, source)
         else:
+            self.assertEqual(staging_layout, "replacement")
             self.assertFalse((policy_dir / canonical_name).exists())
             self.assertTrue((policy_dir / "legacy-stack-binding.json").is_file())
             self.assertTrue((policy_dir / "fresh-stack.template.json").is_file())
             self.assertFalse(source_path("scripts/plan007/staging_canister_upgrade.py").exists())
             self.assertFalse(source_path("scripts/plan007/staging-canister-upgrade.sh").exists())
             self.assertFalse(source_path("scripts/plan007/test_staging_canister_upgrade.py").exists())
+
+    def test_versions_gate_classifies_layout_before_selecting_lifecycle_tests(self) -> None:
+        gate = (ROOT / "scripts" / "ci-local.sh").read_text(encoding="utf-8")
+        layout_validation = 'python3 "$ROOT/scripts/test_trusted_pr_gate.py"'
+        classification = 'staging_layout="$(python3 "$ROOT/scripts/trusted_staging_layout.py")"'
+        upgrade_test = (
+            'upgrade) python3 "$ROOT/scripts/plan007/'
+            'test_staging_canister_upgrade.py" ;;'
+        )
+
+        self.assertIn(classification, gate)
+        self.assertIn(upgrade_test, gate)
+        self.assertIn("replacement) ;;", gate)
+        self.assertLess(gate.index(layout_validation), gate.index(classification))
 
     def test_trusted_bootstrap_files_are_present_and_pinned(self) -> None:
         dockerfile = ROOT / ".github" / "trusted-pr" / "Dockerfile"
