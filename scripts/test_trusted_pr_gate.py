@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 from source_resolution import CANDIDATE_SCRIPTS, source_path
+from trusted_staging_layout import classify_layout
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
@@ -34,9 +35,13 @@ class TrustedPrGateTests(unittest.TestCase):
         canonical_name = "staging-bridge-upgrade-policy.json"
         obsolete_name = "v33-to-v34-upgrade-policy.json"
         policy_dir = ROOT / "deployments" / "sepolia-staging"
+        candidate_scripts = (
+            Path(CANDIDATE_SCRIPTS) if CANDIDATE_SCRIPTS is not None else None
+        )
+        staging_layout = classify_layout(ROOT, candidate_scripts)
 
         self.assertFalse((policy_dir / obsolete_name).exists())
-        if CANDIDATE_SCRIPTS is None:
+        if staging_layout == "upgrade":
             self.assertTrue((policy_dir / canonical_name).is_file())
             for relative in (
                 "scripts/plan007/staging_canister_upgrade.py",
@@ -49,6 +54,7 @@ class TrustedPrGateTests(unittest.TestCase):
                     self.assertIn(canonical_name, source)
                     self.assertNotIn(obsolete_name, source)
         else:
+            self.assertEqual(staging_layout, "replacement")
             self.assertFalse((policy_dir / canonical_name).exists())
             self.assertTrue((policy_dir / "legacy-stack-binding.json").is_file())
             self.assertTrue((policy_dir / "fresh-stack.template.json").is_file())
