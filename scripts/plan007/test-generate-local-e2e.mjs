@@ -6,9 +6,11 @@ import {
   CURRENT_STABLE_SCHEMA_VERSION,
   LOCAL_E2E_SCHEMA_VERSION,
   STAGING_ACTIVATION_DELAY_SECONDS,
+  validateDeploymentInstanceBinding,
   validateUpgradeEvidence,
 } from "./generate-local-e2e.mjs"
 import { runtimeTemplateSha256 } from "./runtime-template-hash.mjs"
+import { createExclusiveProgressPause } from "../../ui/e2e-real/progress-pause.mjs"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const schema = JSON.parse(await readFile(path.join(root, "deployments/sepolia-staging/local-e2e.schema.json"), "utf8"))
@@ -80,6 +82,49 @@ const state = {
 const complete = { verified: true, before: structuredClone(state), after: structuredClone(state) }
 
 assert.equal(validateUpgradeEvidence(structuredClone(complete)).verified, true)
+const deploymentInstanceId = `0x${"09".repeat(32)}`
+assert.equal(validateDeploymentInstanceBinding(complete, deploymentInstanceId), deploymentInstanceId)
+assert.throws(
+  () => validateDeploymentInstanceBinding(complete, `0x${"08".repeat(32)}`),
+  /does not match/,
+)
+assert.throws(() => validateDeploymentInstanceBinding(complete, "0x09"), /invalid/)
+
+const progressEvents = []
+let releaseFirstOperation
+let firstOperationEntered
+const firstOperationReady = new Promise((resolve) => { firstOperationEntered = resolve })
+const firstOperationHold = new Promise((resolve) => { releaseFirstOperation = resolve })
+const withPausedProgress = createExclusiveProgressPause(
+  async () => { progressEvents.push("stop") },
+  async () => { progressEvents.push("start") },
+)
+let activeOperations = 0
+let maximumActiveOperations = 0
+const firstOperation = withPausedProgress(async () => {
+  activeOperations += 1
+  maximumActiveOperations = Math.max(maximumActiveOperations, activeOperations)
+  progressEvents.push("first")
+  firstOperationEntered()
+  await firstOperationHold
+  activeOperations -= 1
+})
+await firstOperationReady
+const secondOperation = withPausedProgress(async () => {
+  activeOperations += 1
+  maximumActiveOperations = Math.max(maximumActiveOperations, activeOperations)
+  progressEvents.push("second")
+  activeOperations -= 1
+})
+await Promise.resolve()
+assert.equal(maximumActiveOperations, 1)
+releaseFirstOperation()
+await Promise.all([firstOperation, secondOperation])
+assert.equal(maximumActiveOperations, 1)
+assert.deepEqual(progressEvents, ["stop", "first", "start", "stop", "second", "start"])
+
+await assert.rejects(withPausedProgress(async () => { throw new Error("expected operation failure") }))
+assert.equal(await withPausedProgress(async () => "released"), "released")
 
 for (const mutate of [
   (value) => { value.verified = false },

@@ -10,6 +10,17 @@ export const LOCAL_E2E_SCHEMA_VERSION = 8
 export const STAGING_ACTIVATION_DELAY_SECONDS = 300
 export const CURRENT_STABLE_SCHEMA_VERSION = 35
 
+export function validateDeploymentInstanceBinding(upgrade, expectedDeploymentInstanceId) {
+  if (!/^0x[0-9a-f]{64}$/.test(expectedDeploymentInstanceId)) {
+    throw new Error("staging upgrade policy has an invalid deployment instance ID")
+  }
+  const actualDeploymentInstanceId = bytesHex(upgrade?.after?.runtime_binding?.deployment_instance_id)
+  if (actualDeploymentInstanceId !== expectedDeploymentInstanceId) {
+    throw new Error("real E2E deployment instance does not match the staging upgrade policy")
+  }
+  return actualDeploymentInstanceId
+}
+
 export function validateUpgradeEvidence(upgrade) {
   if (!upgrade || upgrade.verified !== true) throw new Error("real E2E did not prove same-Wasm state preservation")
   if (!upgrade.before || !upgrade.after || JSON.stringify(upgrade.before) !== JSON.stringify(upgrade.after)) {
@@ -65,6 +76,11 @@ export async function generateLocalEvidence(root = defaultRoot, requestedOutputP
   if (status.trim()) throw new Error("promotion evidence requires a clean working tree")
   const facts = JSON.parse(await readFile(factsPath, "utf8"))
   const upgrade = validateUpgradeEvidence(facts.state_upgrade)
+  const policy = JSON.parse(await readFile(
+    path.join(root, "deployments/sepolia-staging/staging-bridge-upgrade-policy.json"),
+    "utf8",
+  ))
+  const deploymentInstanceId = validateDeploymentInstanceBinding(upgrade, policy.deployment_instance_id)
   if (facts.activation?.delay_seconds !== STAGING_ACTIVATION_DELAY_SECONDS || facts.activation?.early_execute_reverted !== true) {
     throw new Error("real E2E did not prove the five-minute staging activation delay")
   }
@@ -72,7 +88,7 @@ export async function generateLocalEvidence(root = defaultRoot, requestedOutputP
     schema_version: LOCAL_E2E_SCHEMA_VERSION,
     environment_mode: "short-delay-test-only",
     activation_timelock_delay_seconds: STAGING_ACTIVATION_DELAY_SECONDS,
-    deployment_instance_id: bytesHex(upgrade.after.runtime_binding.deployment_instance_id),
+    deployment_instance_id: deploymentInstanceId,
     created_at: new Date().toISOString(),
     source_commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
     bridge_wasm_sha256: await digest(root, "target/test-deployment/staging/bridge_canister.wasm"),
