@@ -2169,6 +2169,26 @@ describe("Phase 3 PocketIC saga", () => {
     )).toBe(true);
   });
 
+  async function deposit_refund_rejects_the_withdrawal_checkpoint_exception() {
+    const { evm, bridge } = await setup();
+    const result: any = await requestDefaultDeposit(bridge);
+    const authorization = await awaitMintAuthorization(bridge, result.Ok.deposit_id);
+    await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
+    await evm.actor.set_finalized_block_sequence([100n, 101n, 102n]);
+    await evm.actor.set_block_mode({ FinalizedInconsistent: null });
+
+    expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id))
+      .toEqual({ Err: { RpcInconsistent: null } });
+    const stored: any = await bridge.actor.get_deposit(result.Ok.deposit_id);
+    expect(phaseName(stored[0].state)).toBe("AuthorizationAvailable");
+    expect(stored[0].refund).toEqual([]);
+  }
+
+  it(
+    "does not apply the withdrawal checkpoint exception to Deposit refunds",
+    deposit_refund_rejects_the_withdrawal_checkpoint_exception,
+  );
+
   it("persists the public notification budget across upgrade and protects six recovery slots", async () => {
     const { evm, bridge } = await setup();
     const callsBefore = await (evm.actor as any).receipt_call_count();

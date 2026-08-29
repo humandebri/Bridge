@@ -1321,32 +1321,16 @@ pub async fn finalized_observation(
 }
 
 async fn finalized_block(args: &BridgeInitArgs) -> Result<Block, ObservationError> {
-    let result = client(args)
+    match client(args)
         .get_block_by_number(BlockTag::Finalized)
         .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
         .try_send()
         .await
-        .map_err(|_| ObservationError::Rpc)?;
-    match result {
+        .map_err(|_| ObservationError::Rpc)?
+    {
         MultiRpcResult::Consistent(Ok(block)) => Ok(block),
         MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(results) => {
-            let finalized_heads = provider_finalized_heads(results)?;
-            let identities = finalized_heads
-                .iter()
-                .map(|(_, identity)| *identity)
-                .collect::<Vec<_>>();
-            let checkpoint =
-                withdrawal_common_checkpoint(identities[0], identities[1], identities[2])
-                    .ok_or(ObservationError::Inconsistent)?;
-            let checkpoint_result = client(args)
-                .get_block_by_number(BlockTag::Number(Nat256::from(checkpoint)))
-                .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
-                .try_send()
-                .await
-                .map_err(|_| ObservationError::Rpc)?;
-            exact_finalized_block(&finalized_heads, checkpoint, checkpoint_result)
-        }
+        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
     }
 }
 
@@ -1412,10 +1396,42 @@ async fn canonical_semantically_finalized_withdrawal_receipt(
 async fn withdrawal_finalized_observation(
     args: &BridgeInitArgs,
 ) -> Result<FinalizedObservation, ObservationError> {
-    finalized_observation(args).await
+    let result = client(args)
+        .get_block_by_number(BlockTag::Finalized)
+        .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
+        .try_send()
+        .await
+        .map_err(|_| ObservationError::Rpc)?;
+    let block = match result {
+        MultiRpcResult::Consistent(Ok(block)) => block,
+        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(results) => {
+            let finalized_heads = provider_finalized_heads(results)?;
+            let identities = finalized_heads
+                .iter()
+                .map(|(_, identity)| *identity)
+                .collect::<Vec<_>>();
+            let checkpoint =
+                withdrawal_common_checkpoint(identities[0], identities[1], identities[2])
+                    .ok_or(ObservationError::Inconsistent)?;
+            let checkpoint_result = client(args)
+                .get_block_by_number(BlockTag::Number(Nat256::from(checkpoint)))
+                .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
+                .try_send()
+                .await
+                .map_err(|_| ObservationError::Rpc)?;
+            exact_withdrawal_finalized_block(&finalized_heads, checkpoint, checkpoint_result)?
+        }
+    };
+    let block_number = u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?;
+    Ok(FinalizedObservation {
+        block_number,
+        block_hash: *block.hash.as_array(),
+        observed_at_ns: ic_cdk::api::time(),
+    })
 }
 
-fn exact_finalized_block(
+fn exact_withdrawal_finalized_block(
     finalized_heads: &[(RpcService, Option<WithdrawalFinalizedIdentity>)],
     checkpoint: u64,
     result: MultiRpcResult<Block>,

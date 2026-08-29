@@ -41,6 +41,13 @@ require_external_control_plane() {
     || die "external control plane requires signer, governance operator, runtime administrator, and independent canceller"
 }
 
+require_local_control_plane_stage() {
+  local stage="$1"
+  if external_control_plane; then
+    die "external control plane is deploy-only; run $stage through the Bridge Canister governance flow"
+  fi
+}
+
 die() {
   echo "error: $*" >&2
   exit 1
@@ -572,6 +579,7 @@ verify_deployment() {
 }
 
 flow() {
+  require_local_control_plane_stage flow
   check_chain
   require_manifest_chain
   require_state ACTIVE
@@ -674,6 +682,7 @@ flow() {
 }
 
 schedule() {
+  require_local_control_plane_stage schedule
   check_chain
   require_manifest_chain
   require_state DEPLOYED
@@ -709,6 +718,7 @@ schedule() {
 }
 
 resume() {
+  require_local_control_plane_stage resume
   check_chain
   require_manifest_chain
   require_state WAITING_TIMELOCK
