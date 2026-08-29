@@ -56,6 +56,33 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
         )
         self.assertIn("missing helper", "\n".join(guard.violations(root)))
 
+    def test_replaced_upgrade_helper_is_not_required(self) -> None:
+        temporary, root = self.root()
+        self.addCleanup(temporary.cleanup)
+        policy_dir = root / "deployments/sepolia-staging"
+        policy_dir.mkdir(parents=True)
+        (policy_dir / "legacy-stack-binding.json").write_text("{}\n", encoding="utf-8")
+        (policy_dir / "fresh-stack.template.json").write_text("{}\n", encoding="utf-8")
+        (root / "scripts/ci-local.sh").write_text(
+            'python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"\n',
+            encoding="utf-8",
+        )
+
+        self.assertEqual(guard.violations(root), [])
+
+    def test_incomplete_replacement_still_requires_upgrade_helper(self) -> None:
+        temporary, root = self.root()
+        self.addCleanup(temporary.cleanup)
+        policy_dir = root / "deployments/sepolia-staging"
+        policy_dir.mkdir(parents=True)
+        (policy_dir / "legacy-stack-binding.json").write_text("{}\n", encoding="utf-8")
+        (root / "scripts/ci-local.sh").write_text(
+            'python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"\n',
+            encoding="utf-8",
+        )
+
+        self.assertIn("missing helper", "\n".join(guard.violations(root)))
+
     def test_unreachable_historical_asset_is_allowed(self) -> None:
         temporary, root = self.root()
         self.addCleanup(temporary.cleanup)
