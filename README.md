@@ -15,8 +15,8 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 | Production | 未デプロイ | 最小Gate A/Bと本番activation完了まで資産受付禁止 |
 
 `bridge-core`はDeposit、Withdrawal、Mint Authorization、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v34・record wire v29の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
-ICP→BaseではCanisterはFinalized Base timestampから固定期限のEIP-712 Mint Authorizationへ署名するだけで、Base transactionを生成・送信しない。任意のBase walletが`mintDepositWithAuthorization`を送り、そのwalletがgasを支払う。
+`bridge-canister`はstable schema v35・record wire v30の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
+ICP→BaseではCanisterはFinalized Base snapshotで状態・fee・pauseを確認し、IC合意時刻の発行時点から10分を期限とするEIP-712 Mint Authorizationへ署名する。署名install時に5分以上残っていなければservice feeを計上せず停止し、Base transactionは生成・送信しない。任意のBase walletが残り5分以上で`mintDepositWithAuthorization`を送り、そのwalletがgasを支払う。Solidityは別途、現在のBase時刻から最大15分のdeadline上限を強制する。
 期限後、既存のBase Finalized snapshotを使うdeadline順の上限付きローカル走査でmint予約だけを解放する。Depositごとのtimerや個別Base照合、自動返金は行わない。任意の非anonymous Principalが`request_deposit_refund`を明示実行すると、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を照合し、未処理ならrecordに固定された元account・金額・transfer identityでLedger refund、処理済みならexact `DepositMinted` eventとcanonical receiptを保存して`Minted`へ進む。RPC不一致、event欠落、digest不一致では資金を動かさない。
 Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacementは存在しない。Base governanceではCanisterがGovernance Operatorのtransactionをthreshold署名し、外部`governance-relayer` CLIだけがbroadcast、Finalized待機、確定通知を行う。自動replacementはなく、Governanceの明示要求時だけ同一nonceを最大3回、12.5%以上fee bumpして再署名する。
 Base側はKINICを表すERC-20（`name = "KINIC"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、固定limit、上限内Service Fee変更、role rotationを実装し、危険方向の操作をOpenZeppelinの24時間Timelockへ接続している。
@@ -147,7 +147,7 @@ python3 scripts/protocol_vectors.py --check
 
 1. 新規networkの起動時だけ、port 8000が使用中なら`gateway.port`を一時的に空きportへ変更する。
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
-3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 34、全count 0を確認する。
+3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 35、全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
 5. 24時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
@@ -171,4 +171,4 @@ icp network stop --project-root-override .
 
 手動実行の`prepare_local_network.py --write`は`icp.yaml`を永続的に変更する。必要なら停止後に利用者が元のportへ戻す。
 
-本番初回deployまではstable schemaを直接置換し、旧schema migration、dual-read、fallbackを追加しない。現行v34／wire v29以外はfail closedとする。ただし、既にdeploy済みのstaging v33／wire v28だけは、review済みID `bridge-staging-v33-to-v34` を束縛した一度限りのmigrationを許可する。`reinstall`はstate破棄を明示承認した使い捨て環境に限定する。
+本番初回deployまではstable schemaを直接置換し、旧schema migration、dual-read、fallbackを追加しない。現行v35／wire v30以外はfail closedとする。Base Sepolia stagingも、review済みv35／wire v30と同一deployment instanceを保つupgradeだけを許可し、reinstallやlegacy migrationは許可しない。

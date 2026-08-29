@@ -1,27 +1,21 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "kind": "staging-bridge-upgrade",
   "environment": "sepolia-staging",
   "canister_name": "bridge-sepolia",
   "canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
-  "stable_schema_version": 34,
-  "source_schema_version": 33,
-  "source_wire_version": 28,
-  "migration_id": "bridge-staging-v33-to-v34",
-  "migration_config": {
-    "expected_timelock_minimum_delay_seconds": 300,
-    "expected_bsns_runtime_sha256": "f3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b",
-    "expected_bsns_decimals": 8,
-    "expected_minimum_service_fee": 10000
-  },
-  "deployment_instance_id": "0x2c344ca868267bc19791a2e1a966c210eef545945b3879223d3cb6c1255d789b",
+  "stable_schema_version": 35,
+  "record_wire_version": 30,
+  "deployment_instance_id": "0x067b39c87fb0fae8fa5c161fc5e04641adbea230b571e11496e323e30b5bcda1",
   "base_chain_id": 84532,
   "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
   "governance_principal": "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae",
-  "source_module_sha256": "61f7b019154aed70917db5a43ea2c5de80dc882d62476446ae89ae2e930c2199",
-  "source_candid_sha256": "e074f6dd9be750ec7321adc81697ee2af33019ee264d61307c5bdd613eda3b28",
-  "current_schema_source_module_sha256": "222053032045e1c661e24ee9de9f5074e3bed6c1cefdfc78168630cd719e7636",
-  "current_schema_source_candid_sha256": "16b544fdae487f72241ca211b93f89d25984c641a75e3baab2bb319c1c0a0f7c",
-  "source_api": "get_public_config",
+  "expected_controllers": [
+    "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
+    "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"
+  ],
+  "source_module_sha256": "75b372b94e6daa913eac5e32618d5282a13895484ab7b3a485e78245c61db6d1",
+  "source_candid_sha256": "309069ce5444b7e6ff2745cc2bc8af4e00e244da890a7d355513371fa29b57bc",
+  "source_api": "get_runtime_binding",
   "target_api": "get_runtime_binding"
 }

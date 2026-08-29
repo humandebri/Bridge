@@ -439,7 +439,7 @@ def AuthorizationBinding : Prop :=
       {origin : AuthorizationOrigin},
       commitAuthorization state authorization origin = some next →
         next.authorization = some authorization ∧
-        authorization.deadline = origin.finalizedTimestamp + authorizationTtl ∧
+        authorization.deadline = origin.issuedAtTimestamp + authorizationTtl ∧
         authorization.chainId = origin.expectedChainId ∧
         authorization.verifyingContract = origin.expectedVerifyingContract ∧
         authorization.epoch = origin.expectedEpoch) ∧ DepositTransitionSafety

@@ -619,7 +619,7 @@ impl DepositRecord {
                     && record.domain.version == crate::MINT_AUTHORIZATION_DOMAIN_VERSION;
                 let deadline_valid = record
                     .origin
-                    .finalized_block_timestamp
+                    .issued_at_timestamp
                     .checked_add(crate::MINT_AUTHORIZATION_TTL_SECONDS)
                     == Some(authorization.deadline);
                 let pristine = record.signature.is_none()
@@ -639,7 +639,7 @@ impl DepositRecord {
                     } else if !deadline_valid
                         && record
                             .origin
-                            .finalized_block_timestamp
+                            .issued_at_timestamp
                             .checked_add(crate::MINT_AUTHORIZATION_TTL_SECONDS)
                             .is_none()
                     {
@@ -659,8 +659,11 @@ impl DepositRecord {
                     signature_absent: authorization
                         .is_some_and(|record| record.signature.is_none()),
                     signature_length_valid: signature.len() == 65,
-                    deadline_open: authorization
-                        .is_some_and(|record| *observed_timestamp <= record.authorization.deadline),
+                    minimum_remaining: authorization.is_some_and(|record| {
+                        record
+                            .authorization
+                            .has_minimum_remaining_time(*observed_timestamp)
+                    }),
                 };
                 (
                     guard,

@@ -12,4 +12,4 @@ retryable failureは同じidentityを120秒だけ保持する。retry期限前�
 
 Deposit pauseは新しいfunding reservationの作成を拒否する。reservation作成後にpauseへ遷移しても、不可逆なLedger pullの成功または結果不明は正式Depositへ昇格し、ユーザー資金を公開recordなしで滞留させない。
 
-公開状態に`FundingPending`は存在しない。確定失敗は`FundingRejected`、一時失敗は`FundingUnavailable`として返す。本番未投入のため現行schema v34／wire v29へ直接置換し、既にdeploy済みのstaging v33を除いて旧schema migrationを提供せず、未知versionをfail closedにする。
+公開状態に`FundingPending`は存在しない。確定失敗は`FundingRejected`、一時失敗は`FundingUnavailable`として返す。本番未投入のため現行schema v35／wire v30へ直接置換し、旧schema migrationを提供せず、未知versionをfail closedにする。既存stagingはCanister ID、stable state、Base stack、deployment instanceを保持したまま、同一現行形式へupgradeする。

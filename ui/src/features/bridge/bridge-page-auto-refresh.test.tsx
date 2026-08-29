@@ -913,7 +913,7 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(screen.getByText(/Complete the current deposit above/)).toBeVisible()
   })
 
-  it("rejects review when finalized Base time leaves less than five minutes for authorization", async () => {
+  it("allows_review_when_the_finalized_Base_snapshot_is_thirty_minutes_old", async () => {
     const account = { owner: "aaaaa-aa" }
     const adapter = {
       prepare: vi.fn(),
@@ -934,22 +934,22 @@ describe("BridgePage automatic wallet refresh", () => {
       disconnect: vi.fn(),
     })
     const now = BigInt(Math.floor(Date.now() / 1_000))
-    mocks.baseRefetch.mockResolvedValue(runtimeObservationAt(now - 601n))
+    mocks.baseRefetch.mockResolvedValue(runtimeObservationAt(now - 1_800n))
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
     await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalled())
     fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
     fireEvent.click(screen.getByRole("button", { name: "Bridge to Base" }))
 
-    expect((await screen.findAllByText(/Base finality is too far behind to provide at least 5 minutes/)).length).toBeGreaterThan(0)
-    expect(screen.queryByRole("button", { name: "Continue to IC wallet" })).not.toBeInTheDocument()
+    expect(await screen.findByRole("button", { name: "Continue to IC wallet" })).toBeEnabled()
+    expect(screen.queryByText(/Base finality is too far behind/)).not.toBeInTheDocument()
     expect(adapter.prepare).not.toHaveBeenCalled()
     expect(adapter.approve).not.toHaveBeenCalled()
     expect(adapter.requestDeposit).not.toHaveBeenCalled()
     expect(mocks.saveDepositIntent).not.toHaveBeenCalled()
   })
 
-  it("stops after approval when the final refresh drops below the five-minute window", async () => {
+  it("continues_after_approval_when_the_refreshed_finalized_snapshot_is_twenty_minutes_old", async () => {
     const account = { owner: "aaaaa-aa" }
     const adapter = {
       prepare: vi.fn().mockResolvedValue(vi.fn().mockResolvedValue(undefined)),
@@ -974,7 +974,7 @@ describe("BridgePage automatic wallet refresh", () => {
     mocks.baseRefetch
       .mockResolvedValueOnce(runtimeObservationAt(now))
       .mockResolvedValueOnce(runtimeObservationAt(now))
-      .mockResolvedValueOnce(runtimeObservationAt(now - 601n))
+      .mockResolvedValueOnce(runtimeObservationAt(now - 1_200n))
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
     await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalled())
@@ -984,9 +984,9 @@ describe("BridgePage automatic wallet refresh", () => {
 
     await waitFor(() => expect(adapter.approve).toHaveBeenCalledOnce())
     await waitFor(() => expect(mocks.baseRefetch).toHaveBeenCalledTimes(3))
-    expect(adapter.requestDeposit).not.toHaveBeenCalled()
-    expect(mocks.saveDepositIntent).not.toHaveBeenCalled()
-    expect(await screen.findByText(/Base finality is too far behind to provide at least 5 minutes/)).toBeVisible()
+    await waitFor(() => expect(adapter.requestDeposit).toHaveBeenCalledOnce())
+    expect(mocks.saveDepositIntent).toHaveBeenCalled()
+    expect(screen.queryByText(/Base finality is too far behind/)).not.toBeInTheDocument()
   })
 
   it("fails closed before saving or requesting a Deposit when the post-approval heartbeat fails", async () => {

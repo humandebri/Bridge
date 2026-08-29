@@ -32,12 +32,25 @@
         "source_commit",
         "local_e2e_sha256",
         "bridge_wasm_sha256",
+        "target_candid_sha256",
+        "staging_upgrade_policy_sha256",
+        "source_module_sha256",
+        "source_candid_sha256",
+        "stable_schema_version",
+        "record_wire_version",
         "bridge_runtime_template_sha256",
         "bsns_runtime_template_sha256",
         "frontend_profile_sha256",
         "bridge_canister_id",
         "ledger_canister_id",
-        "index_canister_id"
+        "index_canister_id",
+        "chain_id",
+        "bridge_address",
+        "bsns_address",
+        "timelock_address",
+        "bridge_runtime_sha256",
+        "bsns_runtime_sha256",
+        "expected_bridge_signer"
         ,"environment_mode"
         ,"activation_timelock_delay_seconds"
         ,"deployment_instance_id"
@@ -47,12 +60,25 @@
         "source_commit": { "$ref": "#/$defs/gitCommit" },
         "local_e2e_sha256": { "$ref": "#/$defs/sha256" },
         "bridge_wasm_sha256": { "$ref": "#/$defs/sha256" },
+        "target_candid_sha256": { "$ref": "#/$defs/sha256" },
+        "staging_upgrade_policy_sha256": { "$ref": "#/$defs/sha256" },
+        "source_module_sha256": { "$ref": "#/$defs/sha256" },
+        "source_candid_sha256": { "$ref": "#/$defs/sha256" },
+        "stable_schema_version": { "const": 35 },
+        "record_wire_version": { "const": 30 },
         "bridge_runtime_template_sha256": { "$ref": "#/$defs/evmHash" },
         "bsns_runtime_template_sha256": { "$ref": "#/$defs/evmHash" },
         "frontend_profile_sha256": { "$ref": "#/$defs/sha256" },
         "bridge_canister_id": { "$ref": "#/$defs/principal" },
         "ledger_canister_id": { "$ref": "#/$defs/principal" },
-        "index_canister_id": { "$ref": "#/$defs/principal" }
+        "index_canister_id": { "$ref": "#/$defs/principal" },
+        "chain_id": { "const": 84532 },
+        "bridge_address": { "$ref": "#/$defs/evmAddress" },
+        "bsns_address": { "$ref": "#/$defs/evmAddress" },
+        "timelock_address": { "$ref": "#/$defs/evmAddress" },
+        "bridge_runtime_sha256": { "$ref": "#/$defs/evmHash" },
+        "bsns_runtime_sha256": { "$ref": "#/$defs/evmHash" },
+        "expected_bridge_signer": { "$ref": "#/$defs/evmAddress" }
         ,"environment_mode": { "const": "short-delay-test-only" }
         ,"activation_timelock_delay_seconds": { "const": 300 }
         ,"deployment_instance_id": { "$ref": "#/$defs/evmHash" }
@@ -95,6 +121,7 @@
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "gitCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "evmHash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+    "evmAddress": { "type": "string", "pattern": "^0x[0-9a-f]{40}$" },
     "principal": { "type": "string", "pattern": "^[a-z0-9-]{5,63}$" },
     "artifact": {
       "type": "object",

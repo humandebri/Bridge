@@ -130,6 +130,7 @@ export const idlFactory = ({ IDL }) => {
     'AuthorizationExpired' : IDL.Null,
     'BaseStateMismatch' : IDL.Null,
     'BridgeSignerMismatch' : IDL.Null,
+    'AuthorizationWindowTooShort' : IDL.Null,
     'SigningUnavailable' : IDL.Null,
     'InvalidBaseResponse' : IDL.Null,
   });
@@ -306,40 +307,8 @@ export const idlFactory = ({ IDL }) => {
     'Ok' : ActivationStatus,
     'Err' : BaseGovernanceError,
   });
-  const AuditedEvmOperationKind = IDL.Variant({ 'MintDeposit' : IDL.Null });
   const AuditEventKind = IDL.Variant({
-    'DepositRefundRetried' : IDL.Record({
-      'next_fee' : IDL.Nat,
-      'deposit_id' : IDL.Vec(IDL.Nat8),
-      'next_attempt_no' : IDL.Opt(IDL.Nat64),
-      'previous_attempt_no' : IDL.Nat64,
-      'compensated' : IDL.Bool,
-      'previous_fee' : IDL.Nat,
-    }),
-    'MintRevertRecoveryStarted' : IDL.Record({
-      'result' : IDL.Text,
-      'finalized_block_number' : IDL.Nat64,
-      'kind' : AuditedEvmOperationKind,
-      'target_id' : IDL.Vec(IDL.Nat8),
-      'finalized_block_hash' : IDL.Vec(IDL.Nat8),
-      'reverted_operation_id' : IDL.Nat64,
-      'replacement_operation_id' : IDL.Nat64,
-    }),
     'PausePrincipalRotated' : IDL.Null,
-    'EvmTransactionReplaced' : IDL.Record({
-      'transaction_hash' : IDL.Vec(IDL.Nat8),
-      'max_priority_fee_per_gas' : IDL.Nat,
-      'generation' : IDL.Nat8,
-      'operation_id' : IDL.Nat64,
-      'max_fee_per_gas' : IDL.Nat,
-      'previous_transaction_hash' : IDL.Vec(IDL.Nat8),
-    }),
-    'EvmOperationReverted' : IDL.Record({
-      'transaction_hash' : IDL.Vec(IDL.Nat8),
-      'finalized_head_block_number' : IDL.Nat64,
-      'kind' : AuditedEvmOperationKind,
-      'operation_id' : IDL.Nat64,
-    }),
     'DepositsPauseRepeated' : IDL.Null,
     'EvmRpcObservation' : IDL.Record({
       'finalized_block_number' : IDL.Nat64,
@@ -349,10 +318,6 @@ export const idlFactory = ({ IDL }) => {
       'finalized_block_hash' : IDL.Vec(IDL.Nat8),
       'quorum_response_digest' : IDL.Vec(IDL.Nat8),
       'request_digest' : IDL.Vec(IDL.Nat8),
-    }),
-    'FeeRecipientChanged' : IDL.Record({
-      'previous' : FeeRecipientConfig,
-      'current' : FeeRecipientConfig,
     }),
     'WithdrawalFeeGuardCleared' : IDL.Null,
     'DepositsPaused' : IDL.Null,
@@ -372,38 +337,11 @@ export const idlFactory = ({ IDL }) => {
       'previous_sha256' : IDL.Vec(IDL.Nat8),
       'current_sha256' : IDL.Vec(IDL.Nat8),
     }),
-    'EvmTransactionRebroadcasted' : IDL.Record({
-      'transaction_hash' : IDL.Vec(IDL.Nat8),
-      'attempt' : IDL.Nat8,
-      'operation_id' : IDL.Nat64,
-    }),
     'DepositsResumed' : IDL.Null,
     'FeePayoutRequested' : IDL.Record({ 'amount' : IDL.Nat }),
-    'MintRevertRecoveryCompleted' : IDL.Record({
-      'result' : IDL.Text,
-      'finalized_block_number' : IDL.Nat64,
-      'kind' : AuditedEvmOperationKind,
-      'target_id' : IDL.Vec(IDL.Nat8),
-      'finalized_block_hash' : IDL.Vec(IDL.Nat8),
-      'reverted_operation_id' : IDL.Nat64,
-      'replacement_operation_id' : IDL.Nat64,
-    }),
-    'ReserveGateChanged' : IDL.Record({ 'sufficient' : IDL.Bool }),
     'WithdrawalFeeGuardTripped' : IDL.Record({
       'charged_service_fee' : IDL.Nat,
       'ledger_fee' : IDL.Nat,
-    }),
-    'EvmFeeQuoteObserved' : IDL.Record({
-      'base_fee_per_gas' : IDL.Nat,
-      'max_priority_fee_per_gas' : IDL.Nat,
-      'observed_at_ns' : IDL.Nat64,
-      'gas_estimate' : IDL.Nat,
-      'initial_max_fee_per_gas' : IDL.Nat,
-      'safe_block_hash' : IDL.Vec(IDL.Nat8),
-      'reserved_eth_wei' : IDL.Nat,
-      'reachable_max_fee_per_gas' : IDL.Nat,
-      'gas_limit' : IDL.Nat,
-      'safe_block_number' : IDL.Nat64,
     }),
   });
   const AuditEvent = IDL.Record({
@@ -491,6 +429,7 @@ export const idlFactory = ({ IDL }) => {
     'finalized_block_number' : IDL.Nat64,
     'signature' : IDL.Opt(IDL.Vec(IDL.Nat8)),
     'deposit_id' : IDL.Vec(IDL.Nat8),
+    'issued_at_timestamp' : IDL.Nat64,
     'domain_name' : IDL.Text,
     'charged_service_fee' : IDL.Nat,
     'recipient' : IDL.Vec(IDL.Nat8),

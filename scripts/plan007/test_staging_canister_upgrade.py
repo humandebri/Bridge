@@ -31,29 +31,54 @@ class StagingSchemaUpgradeTests(unittest.TestCase):
             shutil.copy2(source_path(relative) if relative in SCRIPT_FILES else ROOT / relative, target)
         self.did = self.repo / "canister/bridge-canister/bridge.did"; self.did.parent.mkdir(parents=True)
         self.did.write_text("service : { get_runtime_binding : () -> (); get_operational_config : () -> () }")
-        source_did = "service : { get_public_config : () -> ()"
-        source_did += "; legacy_marker : () -> ()"
+        source_did = "service : { get_runtime_binding : () -> (); get_operational_config : () -> ()"
+        source_did += "; current_marker : () -> ()"
         self.source_did = self.base / "source.did"; self.source_did.write_text(source_did + " }")
         current_did = "service : { get_runtime_binding : () -> (); get_operational_config : () -> ()"
         current_did += "; current_marker : () -> ()"
         self.current_did = self.base / "current.did"; self.current_did.write_text(current_did + " }")
         self.wasm = self.base / "candidate.wasm"; self.wasm.write_bytes(b"same schema candidate")
-        self.source_module = "11" * 32; self.current_module = "22" * 32; self.target_module = self.sha(self.wasm)
+        self.source_module = "22" * 32; self.current_module = self.source_module; self.target_module = self.sha(self.wasm)
         policy_path = self.repo / POLICY; policy = json.loads(policy_path.read_text())
         policy["source_module_sha256"] = self.source_module; policy["source_candid_sha256"] = self.sha(self.source_did)
-        policy["current_schema_source_module_sha256"] = self.current_module
-        policy["current_schema_source_candid_sha256"] = self.sha(self.current_did)
+        policy["expected_controllers"] = ["aaaaa-aa"]
         policy_path.write_text(json.dumps(policy))
         self.profile = json.loads((self.repo / PROFILE).read_text())
         self.make_tools()
         self.git("init", "-q"); self.git("config", "user.email", "test@example.invalid"); self.git("config", "user.name", "Test")
         self.git("add", "."); self.git("commit", "-qm", "fixture")
         self.local = self.base / "local.json"
-        self.local.write_text(json.dumps({"schema_version": 8,
-                                          "source_commit": self.git("rev-parse", "HEAD").stdout.strip(),
-                                          "bridge_wasm_sha256": self.target_module, "candid_sha256": self.sha(self.did),
-                                          "state_upgrade": {"verified": True},
-                                          "tests": {"full_local_ci": "passed"}}))
+        instance = list(bytes.fromhex(self.profile["deploymentInstanceId"][2:]))
+        runtime = {field: 1 for field in (
+            "minimum_withdrawal_id", "base_chain_id", "bridge_contract", "expected_bridge_runtime_sha256",
+            "timelock_contract", "expected_bridge_signer", "ledger_canister_id", "index_canister_id",
+            "evm_rpc_canister_id", "rpc_provider_urls_sha256", "operational_config_sha256")}
+        runtime.update({"deployment_instance_id": instance, "schema_version": 35})
+        operational = {field: 1 for field in (
+            "deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal",
+            "notification_rate_limit_window_seconds", "notification_rate_limit_global",
+            "notification_ingestion_rate_limit_global", "settlement_rate_limit_window_seconds",
+            "settlement_rate_limit_global", "settlement_rate_limit_per_principal",
+            "settlement_rate_limit_per_record", "settlement_retry_interval_seconds")}
+        state = {"owner_sequence": "1", "status": {"schema_version": 35,
+                 "counts": {"pending_ledger_operations": "0", "reserved_deposit_mint_operations": "1"},
+                 "settlement_scheduler": {}}, "runtime_binding": runtime, "operational_config": operational,
+                 "deposits": [{"deposit_id": "01", "owner_sequence": "0", "mint_authorization": [{}]}],
+                 "withdrawals": [], "audit_events": {},
+                 "activation_status": {"pending_timelock_operation": None, "deposits_paused": True},
+                 "storage_integrity": "ok"}
+        self.local.write_text(json.dumps({"schema_version": 8, "environment_mode": "short-delay-test-only",
+            "activation_timelock_delay_seconds": 300, "deployment_instance_id": self.profile["deploymentInstanceId"],
+            "created_at": "2026-08-29T00:00:00Z", "source_commit": self.git("rev-parse", "HEAD").stdout.strip(),
+            "bridge_wasm_sha256": self.target_module, "bridge_runtime_template_sha256": "0x" + "11" * 32,
+            "bsns_runtime_template_sha256": "0x" + "22" * 32, "candid_sha256": self.sha(self.did),
+            "bridge_abi_sha256": "33" * 32, "bsns_abi_sha256": "44" * 32,
+            "ledger_release": "ledger-suite-icrc-2026-03-09",
+            "ledger_wasm_sha256": "354dd6ecfdc72b5409805b31dea22c9db11df6e14095a5a68924eb63535e6d8a",
+            "index_wasm_sha256": "dab6808d0dfc06e5e88336d0c3d3e45e5448c6e36c2a781f3e9e09bd450f528c",
+            "state_upgrade": {"verified": True, "before": state, "after": state},
+            "tests": {name: "passed" for name in ("full_local_ci", "real_frontend_e2e", "canister_activation",
+                                                     "timelock_delay_enforced", "state_upgrade")}}))
         self.preflight, self.result = self.base / "preflight.json", self.base / "result.json"
 
     def tearDown(self) -> None: self.temp.cleanup()
@@ -97,10 +122,11 @@ if a[:2]==["canister","metadata"]: print(json.dumps({"value":"test-deployment"})
 if a[:2]==["canister","status"]:
  if "--id-only" in a: print("rlhjx-iyaaa-aaaaf-qcnyq-cai"); raise SystemExit(0)
  module=os.environ["MOCK_TARGET"] if applied else os.environ.get("MOCK_MODULE",os.environ["MOCK_CURRENT"] if current else os.environ["MOCK_SOURCE"])
- print(json.dumps({"module_hash":module,"settings":{"controllers":["aaaaa-aa"]},"cycles":"1000000000000"})); raise SystemExit(0)
+ controllers=json.loads(os.environ.get("MOCK_CONTROLLERS",'["aaaaa-aa"]'))
+ print(json.dumps({"module_hash":module,"settings":{"controllers":controllers},"cycles":"1000000000000"})); raise SystemExit(0)
 if a[:2] != ["canister","call"]: raise SystemExit(2)
 method=a[3]; identity=a[a.index("--identity")+1]
-schema=int(os.environ["MOCK_TARGET_SCHEMA"]) if applied or current else 33
+schema=int(os.environ["MOCK_TARGET_SCHEMA"])
 marker=1 if applied and os.environ.get("MOCK_BINDING_DRIFT")=="1" else 0
 fields=f"""schema_version = {schema} : nat16; deployment_instance_id = blob "{esc(profile['deploymentInstanceId'][2:])}"; minimum_withdrawal_id = blob "{esc(profile['minimumWithdrawalId'][2:])}"; base_chain_id = 84532 : nat64; bridge_contract = blob "{esc(profile['bridgeAddress'][2:])}"; expected_bridge_runtime_sha256 = blob "{esc(profile['bridgeRuntimeHash'][2:])}"; timelock_contract = blob "{esc(profile['timelockAddress'][2:])}"; expected_bridge_signer = blob "{esc(profile['expected_bridge_signer'][2:])}"; ledger_canister_id = principal "{profile['ledgerCanisterId']}"; index_canister_id = principal "{profile['indexCanisterId']}"; evm_rpc_canister_id = principal "{profile['evmRpcCanisterId']}"; rpc_provider_urls_sha256 = blob "{esc(profile['rpcProviderUrlsSha256'][2:])}"; marker = {marker} : nat8"""
 if method in ("get_public_config","get_runtime_binding"): candid=f'record {{ {fields}; governance_principal = principal "o3hrk-6xq6w-awts7-vhymn-cs2r2-czkhw-n3zab-6zpvp-5qcz6-hvalv-rae"; cycles_floor = 1000 : nat }}'
@@ -135,11 +161,11 @@ print(json.dumps({"response_candid":candid}))
             "MOCK_SOURCE_DID": str(self.source_did), "MOCK_CURRENT_DID": str(self.current_did),
             "MOCK_PROFILE": str(self.repo / PROFILE), "MOCK_SOURCE": self.source_module,
             "MOCK_CURRENT": self.current_module, "MOCK_TARGET": self.target_module, "MOCK_COUNTS": json.dumps(COUNTS),
-            "MOCK_TARGET_SCHEMA": "34", "MOCK_HARDENING_PROFILE": "1"})
+            "MOCK_TARGET_SCHEMA": "35", "MOCK_HARDENING_PROFILE": "1"})
         value.update(changes); return value
 
-    def run_driver(self, execute: bool = False, **changes: str):
-        argv = ["bash", str(self.repo / SCRIPT_FILES[0]), "--wasm", str(self.wasm), "--local-evidence", str(self.local),
+    def run_driver(self, execute: bool = False, local_evidence: Path | None = None, **changes: str):
+        argv = ["bash", str(self.repo / SCRIPT_FILES[0]), "--wasm", str(self.wasm), "--local-evidence", str(local_evidence or self.local),
                 "--evidence", str(self.result if execute else self.preflight)]
         if execute: argv += ["--execute", "--preflight-evidence", str(self.preflight)]
         return subprocess.run(argv, cwd=self.repo, env=self.env(**changes), text=True, capture_output=True)
@@ -157,11 +183,7 @@ print(json.dumps({"response_candid":candid}))
         evidence = json.loads(self.preflight.read_text())
         self.assertEqual(evidence["result"], "preflight-passed")
         self.assertIn("expected_status_counts = opt record", evidence["upgrade_arguments"])
-        migration = "bridge-staging-v33-to-v34"
-        self.assertIn(f'migration_id = opt "{migration}"', evidence["upgrade_arguments"])
-        self.assertIn("expected_timelock_minimum_delay_seconds = 300", evidence["upgrade_arguments"])
-        self.assertIn("expected_minimum_service_fee = 10000", evidence["upgrade_arguments"])
-        self.assertIn('confirmation_relayer_principal = opt principal', evidence["upgrade_arguments"])
+        self.assertIn("confirmation_relayer_principal = null", evidence["upgrade_arguments"])
         self.assertIn("rpc_provider_update = null", evidence["upgrade_arguments"])
         self.assertEqual(evidence["upgrade_arguments"].count("{"), evidence["upgrade_arguments"].count("}"))
 
@@ -171,12 +193,20 @@ print(json.dumps({"response_candid":candid}))
         self.assertIn("RPC provider 0 returned an unexpected chain ID", result.stderr)
         self.assertFalse(self.preflight.exists())
 
+    def test_controller_set_drift_is_rejected_before_upgrade(self) -> None:
+        for controllers in (["2vxsx-fae"], ["aaaaa-aa", "2vxsx-fae"], ["aaaaa-aa", "aaaaa-aa"]):
+            with self.subTest(controllers=controllers):
+                result = self.run_driver(MOCK_CONTROLLERS=json.dumps(controllers))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("controllers does not match", result.stderr)
+                self.assertFalse(self.preflight.exists())
+
     def test_execute_requires_unchanged_preflight_and_upgrades(self) -> None:
         self.assertEqual(self.run_driver().returncode, 0)
         result = self.run_driver(execute=True); self.assertEqual(result.returncode, 0, result.stderr)
         install = json.loads((self.state / "install.json").read_text())
         self.assertEqual(install[install.index("--wasm") + 1], str(self.wasm))
-        self.assertTrue((self.state / "initialized").exists())
+        self.assertFalse((self.state / "initialized").exists())
         self.assertEqual(json.loads(self.result.read_text())["result"], "upgraded")
 
     def test_current_schema_preflight_uses_non_migrating_guarded_arguments(self) -> None:
@@ -184,8 +214,6 @@ print(json.dumps({"response_candid":candid}))
         evidence = json.loads(self.preflight.read_text())
         self.assertEqual(evidence["source_kind"], "current-source")
         self.assertEqual(evidence["observed_source_module_sha256"], self.current_module)
-        self.assertIn("migration_id = null", evidence["upgrade_arguments"])
-        self.assertIn("migration_config = null", evidence["upgrade_arguments"])
         self.assertIn("confirmation_relayer_principal = null", evidence["upgrade_arguments"])
         self.assertIn("expected_status_counts = opt record", evidence["upgrade_arguments"])
         self.assertEqual(evidence["upgrade_arguments"].count("{"), evidence["upgrade_arguments"].count("}"))
@@ -219,7 +247,7 @@ print(json.dumps({"response_candid":candid}))
     def test_same_candid_with_reviewed_source_module_is_not_misclassified_as_target(self) -> None:
         self.current_did.write_bytes(self.did.read_bytes())
         policy_path = self.repo / POLICY; policy = json.loads(policy_path.read_text())
-        policy["current_schema_source_candid_sha256"] = self.sha(self.did)
+        policy["source_candid_sha256"] = self.sha(self.did)
         policy_path.write_text(json.dumps(policy))
         self.git("add", POLICY); self.git("commit", "-qm", "same candid fixture")
         local = json.loads(self.local.read_text())
@@ -293,6 +321,43 @@ print(json.dumps({"response_candid":candid}))
         self.local.write_text(json.dumps(value))
         result = self.run_driver(); self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsupported or incomplete shape", result.stderr)
+
+    def test_repo_internal_local_evidence_aliases_are_rejected(self) -> None:
+        internal = self.repo / "ignored" / "local.json"
+        internal.parent.mkdir()
+        internal.write_bytes(self.local.read_bytes())
+        alias = self.base / "external-alias.json"
+        alias.symlink_to(internal)
+        internal.parent.joinpath("nested").mkdir()
+        paths = (
+            internal,
+            self.repo / "ignored" / "nested" / ".." / "local.json",
+            alias,
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                result = self.run_driver(local_evidence=path)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("outside the repository", result.stderr)
+                self.assertFalse(self.preflight.exists())
+
+    def test_incomplete_or_non_v35_local_state_evidence_is_rejected(self) -> None:
+        original = self.local.read_text()
+        for mutation in ("missing", "schema", "state-drift"):
+            with self.subTest(mutation=mutation):
+                value = json.loads(original)
+                if mutation == "missing":
+                    value["state_upgrade"] = {"verified": True}
+                elif mutation == "schema":
+                    value["state_upgrade"]["before"]["status"]["schema_version"] = 34
+                    value["state_upgrade"]["after"]["status"]["schema_version"] = 34
+                else:
+                    value["state_upgrade"]["after"]["owner_sequence"] = "2"
+                self.local.write_text(json.dumps(value))
+                result = self.run_driver()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.preflight.exists())
+                self.local.write_text(original)
 
 
 if __name__ == "__main__": unittest.main()

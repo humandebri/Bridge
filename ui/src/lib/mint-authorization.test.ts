@@ -1,7 +1,22 @@
 import { describe, expect, it } from "vitest"
 import { hashTypedData, recoverAddress } from "viem"
 import vector from "../../../verification/generated/mint-authorization-vector.json"
-import { mintAuthorizationTypes } from "./mint-authorization"
+import {
+  assertMintAuthorizationContractHorizon,
+  mintAuthorizationTypes,
+} from "./mint-authorization"
+
+describe("mint authorization deadline horizon", () => {
+  it("rejects_an_authorization_beyond_the_Base_contract_deadline_horizon", () => {
+    expect(() => assertMintAuthorizationContractHorizon(1_901n, 1_000n)).toThrow(
+      "Mint authorization exceeds the Base contract deadline horizon",
+    )
+  })
+
+  it("accepts an authorization at the Base contract deadline horizon", () => {
+    expect(() => assertMintAuthorizationContractHorizon(1_900n, 1_000n)).not.toThrow()
+  })
+})
 
 describe("mint authorization protocol vector", () => {
   it("matches the shared digest and recovered signer", async () => {

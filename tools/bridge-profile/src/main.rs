@@ -24,7 +24,7 @@ const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
 const MAX_ACTIVATION_ATTESTATION_AGE_SECS: u64 = 5 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 34;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 35;
 const GATE_A_ARTIFACTS: [&str; 6] = [
     "profile.json",
     "bridge-canister.wasm",

@@ -270,6 +270,7 @@ dependencies = [
  "candid",
  "ciborium",
  "ic-agent",
+ "k256",
  "serde",
  "serde_json",
  "sha2 0.10.9",

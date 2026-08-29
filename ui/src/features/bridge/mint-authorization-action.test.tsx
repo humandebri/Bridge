@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   runtimeRefetch: vi.fn(),
   refetchRuntimeWriteReady: vi.fn(),
   runtimeWriteBlocker: vi.fn(),
+  withBrowserLock: vi.fn(),
   writeContractAsync: vi.fn(),
   savePendingMint: vi.fn(),
   useAccount: vi.fn(),
@@ -23,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   toastError: vi.fn(),
   heartbeatAgeMs: { value: 0 },
   heartbeatTimestamp: { value: 1_000n },
+  latestTimestamp: { value: 1_000n },
+  latestUnavailable: { value: false },
   authorizationDeadline: { value: 2_000n },
 }))
 
@@ -54,6 +57,12 @@ vi.mock("@/features/status/use-status", () => ({
     data: { timestamp: mocks.heartbeatTimestamp.value },
     dataUpdatedAt: Date.now() - mocks.heartbeatAgeMs.value,
     isError: false,
+    isStale: false,
+  }),
+  useLatestBaseClock: () => ({
+    data: mocks.latestUnavailable.value ? undefined : { timestamp: mocks.latestTimestamp.value },
+    dataUpdatedAt: Date.now() - mocks.heartbeatAgeMs.value,
+    isError: mocks.latestUnavailable.value,
     isStale: false,
   }),
 }))
@@ -95,7 +104,7 @@ vi.mock("@/lib/pending-confirmations", () => ({
 }))
 
 vi.mock("@/lib/browser-lock", () => ({
-  withBrowserLock: (_name: string, action: () => unknown) => action(),
+  withBrowserLock: mocks.withBrowserLock,
 }))
 
 vi.mock("sonner", () => ({ toast: { error: mocks.toastError, success: mocks.toastSuccess } }))
@@ -151,6 +160,7 @@ describe("MintAuthorizationAction pending retry", () => {
     })
     mocks.runtimeRefetch.mockReset()
     mocks.runtimeWriteBlocker.mockReset().mockReturnValue(undefined)
+    mocks.withBrowserLock.mockReset().mockImplementation((_name: string, action: () => unknown) => action())
     mocks.refetchRuntimeWriteReady.mockReset().mockResolvedValue({
       ready: true,
       blockers: [],
@@ -169,6 +179,8 @@ describe("MintAuthorizationAction pending retry", () => {
     mocks.toastError.mockReset()
     mocks.heartbeatAgeMs.value = 0
     mocks.heartbeatTimestamp.value = 1_000n
+    mocks.latestTimestamp.value = 1_000n
+    mocks.latestUnavailable.value = false
     mocks.authorizationDeadline.value = 2_000n
     mocks.useAccount.mockReset().mockReturnValue({
       address: "0x0000000000000000000000000000000000000001",
@@ -422,6 +434,28 @@ describe("MintAuthorizationAction pending retry", () => {
     await waitFor(() => expect(mocks.writeContractAsync).toHaveBeenCalledOnce())
   })
 
+  it("revalidates_the_authorization_only_after_acquiring_the_wallet_prompt_lock", async () => {
+    mocks.readPendingMint.mockReturnValue(undefined)
+    let releaseLock!: () => void
+    const lockGate = new Promise<void>((resolve) => { releaseLock = resolve })
+    mocks.withBrowserLock.mockImplementation(async (_name: string, action: () => unknown) => {
+      await lockGate
+      return action()
+    })
+    render(<MintAuthorizationAction record={record} />, { wrapper: Wrapper })
+
+    fireEvent.click(await screen.findByRole("button", { name: "Mint on Base" }))
+
+    await waitFor(() => expect(mocks.withBrowserLock).toHaveBeenCalledOnce())
+    expect(mocks.refetchRuntimeWriteReady).not.toHaveBeenCalled()
+    expect(mocks.validateMintAuthorization).not.toHaveBeenCalled()
+    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
+
+    releaseLock()
+    await waitFor(() => expect(mocks.validateMintAuthorization).toHaveBeenCalledOnce())
+    await waitFor(() => expect(mocks.writeContractAsync).toHaveBeenCalledOnce())
+  })
+
   it("reports a directly submitted mint without also showing a success toast", async () => {
     const onMintConfirmed = vi.fn()
     mocks.readPendingMint.mockReturnValue(undefined)
@@ -466,14 +500,15 @@ describe("MintAuthorizationAction pending retry", () => {
 
     render(<MintAuthorizationAction record={record} onRequestRefund={onRequestRefund} />, { wrapper: Wrapper })
 
-    expect(await screen.findByText("Estimated Base time has passed the deadline. A fresh finalized check will decide whether mint or refund is available.")).toBeInTheDocument()
+    expect(await screen.findByText(/Less than five minutes remain, so no Base transaction will be sent/)).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Claim refund" })).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Mint on Base" })).toBeEnabled()
+    expect(screen.queryByRole("button", { name: "Mint on Base" })).not.toBeInTheDocument()
   })
 
-  it("keeps mint available when finalized time is exactly the deadline", async () => {
+  it("keeps_mint_available_with_exactly_300_seconds_on_the_latest_Base_clock", async () => {
     mocks.readPendingMint.mockReturnValue(undefined)
     mocks.heartbeatTimestamp.value = 2_000n
+    mocks.latestTimestamp.value = 1_700n
 
     render(<MintAuthorizationAction record={record} onRequestRefund={vi.fn()} />, { wrapper: Wrapper })
 
@@ -481,14 +516,40 @@ describe("MintAuthorizationAction pending retry", () => {
     expect(await screen.findByRole("button", { name: "Mint on Base" })).toBeEnabled()
   })
 
-  it("enables refund only after the finalized timestamp passes the deadline", async () => {
+  it("does_not_send_a_Base_transaction_with_only_299_seconds_remaining", async () => {
+    mocks.readPendingMint.mockReturnValue(undefined)
+    mocks.latestTimestamp.value = 1_701n
+
+    render(<MintAuthorizationAction record={record} onRequestRefund={vi.fn()} />, { wrapper: Wrapper })
+
+    expect(await screen.findByText(/Less than five minutes remain, so no Base transaction will be sent/)).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Mint on Base" })).not.toBeInTheDocument()
+    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
+  })
+
+  it("enables_refund_only_after_the_finalized_timestamp_passes_the_deadline", async () => {
     mocks.readPendingMint.mockReturnValue(undefined)
     mocks.heartbeatTimestamp.value = 2_001n
+    mocks.latestTimestamp.value = 2_001n
     const onRequestRefund = vi.fn()
 
     render(<MintAuthorizationAction record={record} onRequestRefund={onRequestRefund} />, { wrapper: Wrapper })
 
     const button = await screen.findByRole("button", { name: "Claim refund" })
+    fireEvent.click(button)
+    expect(onRequestRefund).toHaveBeenCalledOnce()
+  })
+
+  it("keeps_the_finalized_refund_path_available_when_the_latest_Base_clock_fails", async () => {
+    mocks.readPendingMint.mockReturnValue(undefined)
+    mocks.heartbeatTimestamp.value = 2_001n
+    mocks.latestUnavailable.value = true
+    const onRequestRefund = vi.fn()
+
+    render(<MintAuthorizationAction record={record} onRequestRefund={onRequestRefund} />, { wrapper: Wrapper })
+
+    expect(await screen.findByText(/Latest Base time is unavailable, but it is not required/)).toBeInTheDocument()
+    const button = screen.getByRole("button", { name: "Claim refund" })
     fireEvent.click(button)
     expect(onRequestRefund).toHaveBeenCalledOnce()
   })

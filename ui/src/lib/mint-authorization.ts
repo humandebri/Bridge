@@ -10,6 +10,7 @@ import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { deploymentProfile } from "@/config/profile"
 import { basePublicClient } from "@/lib/evm/client"
 import type { FinalizedRuntimeObservation } from "@/lib/runtime-validation"
+import { hasCanonicalMintAuthorizationDeadline, mintAuthorizationWindow } from "@/lib/mint-authorization-window"
 
 export const mintAuthorizationTypes = {
   MintAuthorization: [
@@ -40,6 +41,15 @@ export interface ValidatedMintAuthorization {
   recipient: Address
   signer: Address
   latestBlockTimestamp: bigint
+}
+
+export function assertMintAuthorizationContractHorizon(
+  deadline: bigint,
+  latestBaseTimestamp: bigint,
+): void {
+  if (deadline > latestBaseTimestamp + 900n) {
+    throw new Error("Mint authorization exceeds the Base contract deadline horizon. No Base transaction was sent.")
+  }
 }
 
 function fixedHex(bytes: Uint8Array | number[], length: number, label: string): Hex {
@@ -85,6 +95,9 @@ export async function validateMintAuthorization(
     throw new Error("Mint authorization is not available")
   }
   assertCanonicalDeposit(record, view)
+  if (!hasCanonicalMintAuthorizationDeadline(view.issued_at_timestamp, view.deadline)) {
+    throw new Error("Mint authorization issue time and deadline are inconsistent")
+  }
 
   const configuredContract = deploymentProfile.bridgeAddress as Address
   const domainContract = address(view.verifying_contract, "Authorization contract")
@@ -118,23 +131,32 @@ export async function validateMintAuthorization(
   if (!runtimeObservation.ready || !snapshot) {
     throw new Error("Finalized Base runtime observation is unavailable")
   }
-  const [processed, latestBlock] = await Promise.all([
-    basePublicClient.readContract({
-      address: configuredContract,
-      abi: bridgeAbi,
-      functionName: "isDepositProcessed",
-      args: [authorization.depositId],
-    }),
-    basePublicClient.getBlock({ blockTag: "latest" }),
-  ])
+  let processed: boolean
+  let latestBlock: Awaited<ReturnType<typeof basePublicClient.getBlock>>
+  try {
+    [processed, latestBlock] = await Promise.all([
+      basePublicClient.readContract({
+        address: configuredContract,
+        abi: bridgeAbi,
+        functionName: "isDepositProcessed",
+        args: [authorization.depositId],
+      }),
+      basePublicClient.getBlock({ blockTag: "latest" }),
+    ])
+  } catch {
+    throw new Error("Latest Base time or processed state could not be refreshed. No Base transaction was sent.")
+  }
 
   if (processed) {
     throw new Error("This Deposit ID is already processed on Base. Do not submit another mint; refresh History for finalized status.")
   }
+  assertMintAuthorizationContractHorizon(authorization.deadline, latestBlock.timestamp)
+  if (!mintAuthorizationWindow(authorization.deadline, latestBlock.timestamp).hasMinimumRemainingTime) {
+    throw new Error("Mint authorization has less than five minutes remaining. No Base transaction was sent.")
+  }
   if (snapshot.depositsPaused
     || snapshot.mintAuthorizationEpoch !== authorization.authorizationEpoch
-    || recovered.toLowerCase() !== snapshot.bridgeSigner.toLowerCase()
-    || latestBlock.timestamp > authorization.deadline) {
+    || recovered.toLowerCase() !== snapshot.bridgeSigner.toLowerCase()) {
     throw new Error("Mint authorization is no longer valid on Base")
   }
 

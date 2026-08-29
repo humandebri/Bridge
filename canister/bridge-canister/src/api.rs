@@ -144,6 +144,7 @@ pub struct MintAuthorizationView {
     pub finalized_block_number: u64,
     pub finalized_block_hash: Vec<u8>,
     pub finalized_block_timestamp: u64,
+    pub issued_at_timestamp: u64,
     pub signature_dispatch_attempt: u32,
     pub signature: Option<Vec<u8>>,
 }
@@ -1880,6 +1881,7 @@ fn mint_authorization_view(record: &bridge_core::MintAuthorizationRecord) -> Min
         finalized_block_number: record.origin.finalized_block_number,
         finalized_block_hash: record.origin.finalized_block_hash.to_vec(),
         finalized_block_timestamp: record.origin.finalized_block_timestamp,
+        issued_at_timestamp: record.origin.issued_at_timestamp,
         signature_dispatch_attempt: record.signature_dispatch_attempt,
         signature: record.signature.clone(),
     }

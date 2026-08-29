@@ -15,7 +15,7 @@
 
 Plan 007のローカルE2EはPocketIC上にBridge、Ledger、Indexを動的作成する。Bridgeは`test-deployment` featureでbuildし、LedgerとIndexには`ledger-suite-icrc-2026-03-09`のchecksum固定Wasmを直接installする。ローカルCanister IDは実行ごとに生成し、`icp.yaml`のenvironmentやmainnet mappingへ保存しない。
 
-IC mainnet上の`sepolia-staging`で新規作成またはinstallするのは`bridge-sepolia`だけとする。test tokenには既存の共有`testicrc` Canisterを再利用し、staging専用LedgerまたはIndex Canisterは新規作成しない。既存`testicrc`の実Canister IDとmetadataは外部stage開始前にlive状態から確認する。
+IC mainnet上の`sepolia-staging`では既存`bridge-sepolia` Canisterのstable stateとdeployment instanceを保持し、review済みv35／wire v30から同一現行形式へupgradeする。reinstall、legacy migration、別instanceへの切替は行わない。test tokenには既存の共有`testicrc` Canisterを再利用し、staging専用LedgerまたはIndex Canisterは新規作成しない。既存`testicrc`の実Canister IDとmetadataは外部stage開始前にlive状態から確認する。
 
 test frontendはIC Asset Canisterへ配置しない。完成した`frontend-profile.json`を埋め込んで静的assetをbuildし、Wranglerのtest専用コマンドでCloudflare Worker `kinic-bridge-ui-test`へ公開する。Workerは静的assetだけを配信し、server-side state、database、KV、secretを持たない。
 

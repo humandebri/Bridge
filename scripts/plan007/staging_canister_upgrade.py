@@ -2,7 +2,8 @@
 """Gate and execute a reviewed staging Bridge schema upgrade."""
 from __future__ import annotations
 
-import argparse, hashlib, json, os, re, shutil, subprocess, tempfile
+import argparse, hashlib, json, os, re, shutil, subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from candid_values import blob, integrity_ok, nat, principal
@@ -14,6 +15,24 @@ DID = ROOT / "canister/bridge-canister/bridge.did"
 METADATA_READER = ROOT / "scripts/plan007/read-public-canister-metadata.mjs"
 IC_HOST = "https://icp-api.io"
 LOCAL_E2E_SCHEMA_VERSION = 8
+LOCAL_E2E_TESTS = {"full_local_ci", "real_frontend_e2e", "canister_activation",
+                   "timelock_delay_enforced", "state_upgrade"}
+LOCAL_E2E_FIELDS = {"schema_version", "environment_mode", "activation_timelock_delay_seconds",
+                    "deployment_instance_id", "created_at", "source_commit", "bridge_wasm_sha256",
+                    "bridge_runtime_template_sha256", "bsns_runtime_template_sha256", "candid_sha256",
+                    "bridge_abi_sha256", "bsns_abi_sha256", "ledger_release", "ledger_wasm_sha256",
+                    "index_wasm_sha256", "state_upgrade", "tests"}
+RUNTIME_BINDING_FIELDS = {"deployment_instance_id", "minimum_withdrawal_id", "base_chain_id",
+                          "bridge_contract", "expected_bridge_runtime_sha256", "timelock_contract",
+                          "expected_bridge_signer", "ledger_canister_id", "index_canister_id",
+                          "evm_rpc_canister_id", "rpc_provider_urls_sha256", "schema_version",
+                          "operational_config_sha256"}
+OPERATIONAL_CONFIG_FIELDS = {"deposit_rate_limit_window_seconds", "deposit_rate_limit_global",
+                             "deposit_rate_limit_per_principal", "notification_rate_limit_window_seconds",
+                             "notification_rate_limit_global", "notification_ingestion_rate_limit_global",
+                             "settlement_rate_limit_window_seconds", "settlement_rate_limit_global",
+                             "settlement_rate_limit_per_principal", "settlement_rate_limit_per_record",
+                             "settlement_retry_interval_seconds"}
 COUNTS = ("retained_audit_events", "reconciliation_holds", "retained_deposit_index_entries",
           "pending_ledger_operations", "withdrawals", "deposits",
           "reserved_deposit_mint_operations", "reserved_deposit_mint_amount", "pruned_audit_events")
@@ -43,6 +62,19 @@ def digest(path: Path) -> str:
     return value.hexdigest()
 
 
+def require_repo_external_file(path: Path, context: str) -> Path:
+    try:
+        resolved_path = path.resolve(strict=True)
+        resolved_root = ROOT.resolve(strict=True)
+    except OSError as error:
+        fail(f"cannot resolve {context}: {error}")
+    if not resolved_path.is_file():
+        fail(f"{context} must be an existing regular file")
+    if resolved_path == resolved_root or resolved_path.is_relative_to(resolved_root):
+        fail(f"{context} must stay outside the repository")
+    return resolved_path
+
+
 def load(path: Path, context: str) -> dict[str, Any]:
     try: value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error: fail(f"invalid {context}: {error}")
@@ -52,35 +84,105 @@ def load(path: Path, context: str) -> dict[str, Any]:
 
 def validate_policy(value: dict[str, Any]) -> None:
     fields = {"schema_version", "kind", "environment", "canister_name", "canister_id",
-              "stable_schema_version", "source_schema_version", "source_wire_version",
-              "migration_id", "migration_config", "deployment_instance_id", "base_chain_id", "evm_rpc_canister_id",
-              "governance_principal", "source_module_sha256", "source_candid_sha256",
-              "current_schema_source_module_sha256", "current_schema_source_candid_sha256",
-              "source_api", "target_api"}
-    if set(value) != fields or value["schema_version"] != 1 or value["kind"] != "staging-bridge-upgrade":
+              "stable_schema_version", "record_wire_version", "deployment_instance_id",
+              "base_chain_id", "evm_rpc_canister_id", "governance_principal", "expected_controllers",
+              "source_module_sha256", "source_candid_sha256", "source_api", "target_api"}
+    if set(value) != fields or value["schema_version"] != 2 or value["kind"] != "staging-bridge-upgrade":
         fail("staging upgrade policy has an unsupported shape")
-    if value["stable_schema_version"] != 34 or value["source_schema_version"] != 33 \
-            or value["source_wire_version"] != 28 or value["source_api"] != "get_public_config" \
+    if value["stable_schema_version"] != 35 or value["record_wire_version"] != 30 \
+            or value["source_api"] != "get_runtime_binding" \
             or value["target_api"] != "get_runtime_binding":
-        fail("policy does not bind the reviewed v33/wire28 to v34/wire29 transition")
-    migration = value["migration_config"]
-    if value["migration_id"] != "bridge-staging-v33-to-v34" or not isinstance(migration, dict) \
-            or migration != {
-                "expected_timelock_minimum_delay_seconds": 300,
-                "expected_bsns_runtime_sha256": "f3c673c3e3d7b97e96760964c35aed874b69c414df14173887a7ebbd38a2fd9b",
-                "expected_bsns_decimals": 8,
-                "expected_minimum_service_fee": 10_000,
-            }:
-        fail("policy migration arguments are not the reviewed staging values")
+        fail("policy does not bind the reviewed schema v35/wire v30 same-schema upgrade")
     if any(not isinstance(value[f], str) or not SHA.fullmatch(value[f])
-           for f in ("source_module_sha256", "source_candid_sha256",
-                     "current_schema_source_module_sha256", "current_schema_source_candid_sha256")):
+           for f in ("source_module_sha256", "source_candid_sha256")):
         fail("policy source hashes must be lowercase SHA-256 digests")
     if not re.fullmatch(r"0x[0-9a-f]{64}", str(value["deployment_instance_id"])):
         fail("policy deployment instance ID is invalid")
     if any(not isinstance(value[f], str) or not PRINCIPAL.fullmatch(value[f])
            for f in ("canister_id", "evm_rpc_canister_id", "governance_principal")):
         fail("policy contains an invalid principal")
+    controllers = value["expected_controllers"]
+    if not isinstance(controllers, list) or controllers != sorted(set(controllers)) \
+            or not controllers or any(not isinstance(item, str) or not PRINCIPAL.fullmatch(item)
+                                       for item in controllers):
+        fail("policy expected controllers must be a sorted unique principal set")
+
+
+def bytes32_hex(value: Any, context: str) -> str:
+    if not isinstance(value, list) or len(value) != 32 \
+            or any(not isinstance(byte, int) or isinstance(byte, bool) or byte < 0 or byte > 255 for byte in value):
+        fail(f"{context} must be a 32-byte array")
+    return "0x" + bytes(value).hex()
+
+
+def validate_local_evidence(local: dict[str, Any], policy: dict[str, Any], head: str,
+                            wasm: Path) -> None:
+    if set(local) != LOCAL_E2E_FIELDS or local.get("schema_version") != LOCAL_E2E_SCHEMA_VERSION:
+        fail("local E2E evidence has an unsupported or incomplete shape")
+    if local.get("environment_mode") != "short-delay-test-only" \
+            or local.get("activation_timelock_delay_seconds") != 300:
+        fail("local E2E evidence is not bound to the staging timing policy")
+    if local.get("deployment_instance_id") != policy["deployment_instance_id"]:
+        fail("local E2E evidence deployment instance does not match policy")
+    try:
+        created_at = datetime.fromisoformat(str(local.get("created_at", "")).replace("Z", "+00:00"))
+    except ValueError:
+        fail("local E2E evidence has an invalid creation timestamp")
+    if created_at.tzinfo is None:
+        fail("local E2E evidence creation timestamp must include a timezone")
+    if local.get("source_commit") != head:
+        fail("local E2E evidence source commit must equal clean HEAD")
+    for field in ("bridge_wasm_sha256", "candid_sha256", "bridge_abi_sha256", "bsns_abi_sha256",
+                  "ledger_wasm_sha256", "index_wasm_sha256"):
+        if not isinstance(local.get(field), str) or not SHA.fullmatch(local[field]):
+            fail(f"local E2E evidence {field} is invalid")
+    for field in ("bridge_runtime_template_sha256", "bsns_runtime_template_sha256"):
+        if not isinstance(local.get(field), str) or not re.fullmatch(r"0x[0-9a-f]{64}", local[field]):
+            fail(f"local E2E evidence {field} is invalid")
+    if local.get("bridge_wasm_sha256") != digest(wasm) or local.get("candid_sha256") != digest(DID):
+        fail("local E2E evidence does not bind the explicit Wasm and Candid")
+    if local.get("ledger_release") != "ledger-suite-icrc-2026-03-09" \
+            or local.get("ledger_wasm_sha256") != "354dd6ecfdc72b5409805b31dea22c9db11df6e14095a5a68924eb63535e6d8a" \
+            or local.get("index_wasm_sha256") != "dab6808d0dfc06e5e88336d0c3d3e45e5448c6e36c2a781f3e9e09bd450f528c":
+        fail("local E2E evidence does not bind the reviewed ledger suite")
+    tests = local.get("tests")
+    if not isinstance(tests, dict) or set(tests) != LOCAL_E2E_TESTS \
+            or any(tests[name] != "passed" for name in LOCAL_E2E_TESTS):
+        fail("local E2E evidence does not contain the complete required test set")
+    upgrade = local.get("state_upgrade")
+    if not isinstance(upgrade, dict) or set(upgrade) != {"verified", "before", "after"} \
+            or upgrade.get("verified") is not True or upgrade.get("before") != upgrade.get("after"):
+        fail("local E2E evidence did not prove identical same-Wasm state")
+    state = upgrade.get("after")
+    required_state = {"owner_sequence", "status", "runtime_binding", "operational_config", "deposits",
+                      "withdrawals", "audit_events", "activation_status", "storage_integrity"}
+    if not isinstance(state, dict) or not required_state.issubset(state):
+        fail("local E2E state evidence is incomplete")
+    status_value, runtime, operational = state.get("status"), state.get("runtime_binding"), state.get("operational_config")
+    if not isinstance(status_value, dict) or status_value.get("schema_version") not in (policy["stable_schema_version"], str(policy["stable_schema_version"])) \
+            or not isinstance(status_value.get("counts"), dict) or not isinstance(status_value.get("settlement_scheduler"), dict):
+        fail("local E2E state evidence is not a complete schema v35 snapshot")
+    for field in ("pending_ledger_operations", "reserved_deposit_mint_operations"):
+        if not isinstance(status_value["counts"].get(field), str):
+            fail("local E2E state evidence omitted a liability identity")
+    if not isinstance(runtime, dict) or not RUNTIME_BINDING_FIELDS.issubset(runtime) \
+            or bytes32_hex(runtime.get("deployment_instance_id"), "local runtime deployment instance") != policy["deployment_instance_id"] \
+            or runtime.get("schema_version") not in (policy["stable_schema_version"], str(policy["stable_schema_version"])):
+        fail("local E2E runtime binding does not match the reviewed v35 instance")
+    if not isinstance(operational, dict) or not OPERATIONAL_CONFIG_FIELDS.issubset(operational):
+        fail("local E2E operational configuration is incomplete")
+    if not isinstance(state.get("owner_sequence"), str) or not re.fullmatch(r"[0-9]+", state["owner_sequence"]):
+        fail("local E2E state evidence has no owner sequence")
+    if not isinstance(state.get("withdrawals"), list) or not isinstance(state.get("audit_events"), dict) \
+            or not isinstance(state.get("activation_status"), dict) \
+            or "pending_timelock_operation" not in state["activation_status"] \
+            or state.get("storage_integrity") != "ok":
+        fail("local E2E state evidence omitted preserved state or integrity")
+    deposits = state.get("deposits")
+    if not isinstance(deposits, list) or not any(isinstance(record, dict) and record.get("deposit_id")
+            and "owner_sequence" in record and isinstance(record.get("mint_authorization"), list)
+            and len(record["mint_authorization"]) == 1 for record in deposits):
+        fail("local E2E state evidence did not preserve a Deposit authorization identity")
 
 
 def base(policy: dict[str, Any], identity: str) -> list[str]:
@@ -261,7 +363,8 @@ def verify_binding(observed: dict[str, Any], policy: dict[str, Any], profile: di
                 "ledger_canister_id": profile["ledgerCanisterId"], "index_canister_id": profile["indexCanisterId"],
                 "evm_rpc_canister_id": policy["evm_rpc_canister_id"],
                 "rpc_provider_urls_sha256": profile["rpcProviderUrlsSha256"],
-                "governance_principal": policy["governance_principal"], "storage_integrity": "ok"}
+                "governance_principal": policy["governance_principal"],
+                "controllers": policy["expected_controllers"], "storage_integrity": "ok"}
     for field, value in expected.items():
         if observed.get(field) != value: fail(f"live snapshot {field} does not match the reviewed staging binding")
     if observed["cycles_balance"] < observed["cycles_floor"]:
@@ -294,9 +397,7 @@ def classify(candid: str, module_hash: str, policy: dict[str, Any], target_modul
     observed_candid = hashlib.sha256(candid.encode()).hexdigest()
     pair = (module_hash, observed_candid)
     if pair == (target_module, target_candid): return "target"
-    if pair == (policy["current_schema_source_module_sha256"], policy["current_schema_source_candid_sha256"]):
-        return "current-source"
-    if pair == (policy["source_module_sha256"], policy["source_candid_sha256"]): return "migration-source"
+    if pair == (policy["source_module_sha256"], policy["source_candid_sha256"]): return "current-source"
     fail("live module and Candid are not a reviewed source or the target")
 
 
@@ -338,31 +439,11 @@ def verify_auth(policy: dict[str, Any], identity: str) -> None:
         fail("controller or governance get_operational_config did not return the reviewed config")
 
 
-def upgrade_args(counts: dict[str, Any], policy: dict[str, Any], source_kind: str) -> str:
+def upgrade_args(counts: dict[str, Any]) -> str:
     fields = "; ".join(f"{field} = {counts[field]} : {'nat' if field == 'reserved_deposit_mint_amount' else 'nat64'}" for field in COUNTS)
-    if source_kind == "migration-source":
-        migration = policy["migration_config"]
-        runtime_hash = "; ".join(f"{byte} : nat8" for byte in bytes.fromhex(migration["expected_bsns_runtime_sha256"]))
-        migration_fields = (f'migration_id = opt "{policy["migration_id"]}"; migration_config = opt record {{ '
-                            f'expected_timelock_minimum_delay_seconds = {migration["expected_timelock_minimum_delay_seconds"]} : nat64; '
-                            f'expected_bsns_runtime_sha256 = vec {{ {runtime_hash} }}; '
-                            f'expected_bsns_decimals = {migration["expected_bsns_decimals"]} : nat8; '
-                            f'expected_minimum_service_fee = {migration["expected_minimum_service_fee"]} : nat; }}; '
-                            f'confirmation_relayer_principal = opt principal "{policy["governance_principal"]}"; ')
-    else:
-        migration_fields = "migration_id = null; migration_config = null; confirmation_relayer_principal = null; "
-    return (f'(record {{ {migration_fields}status_counts_guard_version = 1 : nat8; '
+    return ('(record { confirmation_relayer_principal = null; status_counts_guard_version = 1 : nat8; '
             'expected_status_counts = opt record { ' + f"{fields}" + " }; rpc_provider_update = null; "
             "minimum_withdrawal_id = null })")
-
-
-def initialize_public_config(policy: dict[str, Any], identity: str) -> None:
-    output = run(["icp", "canister", "call", policy["canister_name"], "initialize_public_config", "()",
-                  "--candid", str(DID), "--json", *base(policy, identity)])
-    try: candid = json.loads(output).get("response_candid")
-    except json.JSONDecodeError: fail("initialize_public_config returned invalid JSON")
-    if not isinstance(candid, str) or not re.search(r"\bOk\b", candid):
-        fail("controller initialize_public_config did not succeed")
 
 
 def write(path: Path, value: dict[str, Any]) -> None:
@@ -399,7 +480,8 @@ def main() -> None:
     parser.add_argument("--evidence", type=Path, required=True)
     args = parser.parse_args()
     if not args.wasm.is_absolute() or not args.wasm.is_file(): fail("--wasm must name an existing absolute file")
-    if not args.local_evidence.is_absolute() or not args.local_evidence.is_file(): fail("--local-evidence must name an existing absolute file")
+    if not args.local_evidence.is_absolute(): fail("--local-evidence must name an existing absolute file")
+    args.local_evidence = require_repo_external_file(args.local_evidence, "--local-evidence")
     if not args.evidence.is_absolute(): fail("--evidence must be an absolute path")
     if args.execute != (args.preflight_evidence is not None):
         fail("--execute requires --preflight-evidence, which is invalid during preflight")
@@ -419,32 +501,20 @@ def main() -> None:
         if profile.get(field) != expected: fail(f"frontend profile {field} does not match policy")
     verify_provider_chains(profile, policy["base_chain_id"])
     local = load(args.local_evidence, "local E2E evidence")
-    if local.get("schema_version") != LOCAL_E2E_SCHEMA_VERSION \
-            or local.get("state_upgrade", {}).get("verified") is not True \
-            or set(local.get("tests", {}).values()) != {"passed"}:
-        fail("local E2E evidence has an unsupported or incomplete shape")
-    if local.get("source_commit") != head: fail("local E2E evidence source commit must equal clean HEAD")
-    if local.get("bridge_wasm_sha256") != digest(args.wasm) or local.get("candid_sha256") != digest(DID):
-        fail("local E2E evidence does not bind the explicit Wasm and Candid")
+    validate_local_evidence(local, policy, head, args.wasm)
     candidate(args.wasm); private_metadata(policy, identity)
     target_module, target_candid = digest(args.wasm), digest(DID)
     live = live_candid(policy); live_hash = hashlib.sha256(live.encode()).hexdigest()
     observed_status = status(policy, identity)
     kind = classify(live, observed_status["module_sha256"], policy, target_module, target_candid)
-    api = policy["source_api"] if kind == "migration-source" else policy["target_api"]
-    with tempfile.NamedTemporaryFile("w", suffix=".did", encoding="utf-8") as live_did:
-        live_did.write(live); live_did.flush()
-        snapshot_did = Path(live_did.name) if kind == "migration-source" else DID
-        before = snapshot(policy, identity, snapshot_did, api, live_hash)
+    before = snapshot(policy, identity, DID, policy["source_api"], live_hash)
     if before["module_sha256"] != observed_status["module_sha256"]:
         fail("live module changed during preflight")
-    verify_binding(before, policy, profile,
-                   policy["source_schema_version"] if kind == "migration-source" else policy["stable_schema_version"])
-    if kind == "migration-source" and before["module_sha256"] != policy["source_module_sha256"]: fail("live migration source module hash is unknown")
-    if kind == "current-source" and before["module_sha256"] != policy["current_schema_source_module_sha256"]: fail("live current-schema source module hash is unknown")
+    verify_binding(before, policy, profile, policy["stable_schema_version"])
+    if kind == "current-source" and before["module_sha256"] != policy["source_module_sha256"]: fail("live current-schema source module hash is unknown")
     if kind == "target" and before["module_sha256"] != target_module: fail("live target module hash is unknown")
-    if kind != "migration-source": verify_auth(policy, identity)
-    arguments = upgrade_args(before["status_counts"], policy, kind)
+    verify_auth(policy, identity)
+    arguments = upgrade_args(before["status_counts"])
     preflight = {"schema_version": 1, "kind": "staging-bridge-upgrade-preflight",
                  "result": "already-applied-preflight" if kind == "target" else "preflight-passed",
                  "source_commit": head, "local_e2e_sha256": digest(args.local_evidence),
@@ -462,7 +532,6 @@ def main() -> None:
     if kind != "target":
         run(["icp", "canister", "install", policy["canister_name"], "--mode", "upgrade", "--wasm", str(args.wasm),
              "--args", arguments, "--yes", *base(policy, identity)], capture=False)
-        if kind == "migration-source": initialize_public_config(policy, identity)
         result = "upgraded"
     else: result = "already-applied"
     after_live = live_candid(policy)
@@ -472,7 +541,7 @@ def main() -> None:
     verify_binding(after, policy, profile, policy["stable_schema_version"])
     for field in PRESERVED:
         if after[field] != before[field]: fail(f"post-upgrade {field} was not preserved")
-    if kind != "migration-source" and after["runtime_binding_sha256"] != before["runtime_binding_sha256"]:
+    if after["runtime_binding_sha256"] != before["runtime_binding_sha256"]:
         fail("post-upgrade runtime binding was not preserved")
     if after["audit_history"] != before["audit_history"]:
         fail("post-upgrade audit history was not preserved")

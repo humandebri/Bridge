@@ -8,7 +8,7 @@
 |---|---|
 | IC wallet | ICRC-2 approve、`request_deposit`、`request_deposit_refund` |
 | Base wallet | Mint Authorization送信時のgas支払い、Withdrawalのapprove・burn transaction |
-| Bridge Canister | SQLite schema v34、Ledger操作、EIP-712署名、Finalized照合、Governance transaction署名 |
+| Bridge Canister | SQLite schema v35、Ledger操作、EIP-712署名、Finalized照合、Governance transaction署名 |
 | Ledger / Index | Deposit pull、refund、Withdrawal release、履歴照合 |
 | EVM RPC Canister | provider quorumによるcanonical Finalized観測 |
 | Base Bridge / bSNS | 署名検証付きDeposit mint、atomic Withdrawal burn |
@@ -50,12 +50,12 @@ flowchart TB
 
 1. UIはIC wallet、Base recipient、Bridge runtime、Finalized Base snapshot、Service Fee、Ledger残高・allowanceを再検証する。
 2. IC walletが`request_deposit`を呼ぶ。Canisterは有料Base preflightより前に固定funding identityを`Prepared`で保存し、deposit quotaを消費してactive reservationとcycle reserveを確認する。admission成功後だけBase preflightとICRC-2 pullを行う。確定失敗ではattemptとactive reservationを削除するがquotaは戻さず、正式Depositは作らない。結果不明はReconciliation Holdへ入れる。
-3. pull確定後、CanisterはFinalized Base snapshotからquote、2時間の固定TTL（変更時は公開設定と文書を同期）、Authorization epoch、EIP-712 domainとdigestを一度だけ決定する。
-4. Canisterは同じdigestへthreshold ECDSA署名する。署名の保存と同じtransactionでBridge service feeを一度だけ確定し、fee reserveへ計上する。署名再試行でpayloadやdeadlineを変更せず、認可発行前の確定失敗ではservice feeを計上しない。
+3. pull確定後、CanisterはFinalized Base snapshotからquoteとAuthorization epochを固定し、IC合意時刻の`issued_at_timestamp`から600秒後をdeadlineとするEIP-712 domainとdigestを一度だけ決定する。
+4. Canisterは同じdigestへthreshold ECDSA署名する。署名install時にdeadlineまで300秒以上残る場合だけ、署名保存と同じtransactionでBridge service feeを一度だけ確定し、fee reserveへ計上する。署名再試行でpayloadやdeadlineを変更せず、認可発行前または残り時間不足の確定失敗ではservice feeを計上しない。
 5. UIは`AuthorizationAvailable`をpollし、chain ID、runtime hash、contract、pause、epoch、未処理Deposit、EIP-712 domain、全field、digest、復元signer、最新Base timestampを検証する。
 6. この画面で開始したDepositでは、`AuthorizationAvailable`の検証完了後、接続Base walletが元のrecipientと一致すれば`mintDepositWithAuthorization`の承認画面を一度だけ自動表示する。自動表示を拒否または失敗した場合は`Mint on Base`から再試行できる。手動操作ではgas支払walletとrecipientは同一でなくてよい。transaction hashはdeployment-scoped localStorageへ保存する。
 7. Base transaction送信後、UIはreceiptと`DepositMinted` eventを`Submitted`、`Confirmed`、`Finalized`まで追跡する。成功receiptを確認した時点でBridge to Baseモーダルは完了し、ユーザーは閉じてよい。Finalized確認はHistoryで継続し、finality前は`Mint submitted`、exact digest、recipient、gross amount、service fee、mint amountが一致するcanonical成功だけを`Minted on Base (finalized)`として表示する。成功時のIC wallet署名は要求しない。reload後もCanisterのDepositとFinalized Base logをDeposit IDで統合して復元する。
-8. deadlineまでは同じAuthorizationで再試行できる。Base receiptがrevertした場合はpending hashを削除し、deadline内かつ未処理なら再送できる。
+8. Base latest timestampでdeadlineまで300秒以上残る間は同じAuthorizationで再試行できる。Base receiptがrevertした場合はpending hashを削除し、この送信境界内かつ未処理なら再送できる。
 9. 新規Depositなどが取得したBase Finalized snapshotのtimestampがdeadlineを超えたとき、Canisterはdeadline順indexを上限付きで走査し、個別Base照合なしでmint予約を解放する。`timestamp == deadline`ではContractがMintを受理できるため解放しない。backlogが残る間は予約を過大計上し、新規受付の正確な判定ができなければretry可能エラーにする。Depositごとのtimerは持たない。
 10. Refundは任意の非anonymous Principalが`request_deposit_refund(deposit_id)`を明示実行したときに進む。callerは宛先・金額・transfer identityを指定できず、すべて既存recordから取得する。認可発行前の`RefundAvailable`はBase outcallなしで返金する。認可発行後は、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を検証し、未処理なら返金、処理済みならexact event/receiptを保存して`Minted`にする。RPC不一致、event欠落・複数・digest不一致では資金を動かさない。
 11. Refund額は認可発行前なら`gross - refund ledger fee`、発行後なら`gross - charged service fee - refund ledger fee`である。最初のICRC-2 pull fee、確定済みservice fee、refund transfer feeは返さない。曖昧なLedger結果は同じtransfer identityの`RefundReconciliationHold`に保存し、任意の非anonymous callerによる再請求で照合を再開する。

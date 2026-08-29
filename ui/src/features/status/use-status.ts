@@ -142,6 +142,24 @@ export function useFinalizedBaseClock(options: AutomaticQueryOptions = {}) {
   })
 }
 
+export function useLatestBaseClock(options: AutomaticQueryOptions = {}) {
+  const { enabled = false, refetchInterval, staleTime } = options
+  return useQuery({
+    queryKey: ["latest-base-clock", deploymentProfile.bridgeAddress],
+    enabled,
+    staleTime,
+    refetchInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: refetchInterval !== undefined,
+    refetchOnReconnect: refetchInterval !== undefined,
+    queryFn: async () => {
+      const block = await basePublicClient.getBlock({ blockTag: "latest" })
+      if (block.timestamp === undefined) throw new Error("Latest Base time is unavailable")
+      return { timestamp: block.timestamp }
+    },
+  })
+}
+
 function bridgeSnapshotView(snapshot: {
   serviceFee: bigint
   maxServiceFee: bigint

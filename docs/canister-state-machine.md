@@ -4,8 +4,8 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、storageに依存しない決定的な状態遷移を定義する。`bridge-canister`は単一SQLite DBへ状態を保存し、Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-通常の再オープンとProduction `post_upgrade`はstable schema v34、record wire version v29だけを受理する。staging `post_upgrade`はこれに加え、既にdeploy済みのv33／wire v28をreview済みID `bridge-staging-v33-to-v34` と固定設定でv34へ一度だけ移行できる。その他の旧schema、未知schema、未知wire、decode不能なDBはfail closedで起動を拒否し、汎用migrationや互換fallbackは持たない。
-upgrade検証はcurrent schema v34のrecord・config・quota・auditを保持するsame-Wasm再オープン、staging v33 fixtureの原子的migration、およびその他の旧schema・wireの拒否を検証する。
+通常の再オープン、Production `post_upgrade`、test-deployment `post_upgrade`はstable schema v35、record wire version v30だけを受理する。旧schema、未知schema、未知wire、decode不能なDBはfail closedで起動を拒否し、migration、dual-read、互換fallbackは持たない。Base Sepolia stagingも、review済みv35／wire v30と同一deployment instanceを保つcurrent-schema upgradeだけを許可し、reinstallは許可しない。
+upgrade検証はcurrent schema v35のrecord・config・quota・auditを保持するsame-Wasm再オープンと、すべての旧schema・wireの拒否を検証する。
 
 `settlement_jobs`が実行中・停止中Settlementの正本である。Depositとfee payoutはtimerが自動claimし、Withdrawalは明示的な`continue_withdrawal`だけがmanual claimする。Withdrawal通知時はrecordと固定transfer identityだけをatomic保存し、jobを作らない。外部`await`前に署名dispatchやLedger transfer identityを永続化し、lease generationとDB上の状態だけが実行権を決める。
 
@@ -51,10 +51,10 @@ RefundPending
 ```
 
 1. `EscrowedUnquoted → AuthorizationPending`では、Finalized Base snapshot、quote、全Authorization field、EIP-712 domain、digest、作成元Finalized block number/hash/timestamp、mint capacity予約、jobを一つのSQLite transactionで保存する。
-2. deadlineは作成元Finalized Base timestampへ固定TTL 2時間（7,200秒）をchecked-addして一度だけ決める。IC時刻、ブラウザ時刻、再試行時刻から作らない。
+2. Finalized Base snapshotは状態・fee・pause・返金証拠だけに使う。deadlineはIC合意時刻の`issued_at_timestamp`へ固定TTL 10分（600秒）をchecked-addして一度だけ決め、Finalized timestampとの加算関係を持たない。
 3. threshold ECDSAの`await`前にdispatch済みフラグとattempt番号を保存する。timeout、callback消失、upgrade後も同一digestだけを再署名し、deadlineやpayloadを変更しない。65-byte署名はlow-s `r || s || v`へ正規化し、復元addressが期待するMint Signerと一致した場合だけ、同じtransactionでservice feeを一度だけfee reserveへ計上して公開する。
 4. `AuthorizationAvailable`では任意Base walletが署名済みpayloadをcontractへ送り、そのwalletがgasを支払う。Canisterは期間中のtransactionやreceiptを追跡しない。
-5. 新規Depositなどで既に取得したBase Finalized snapshotを使い、deadline順indexをcall単位の上限までローカル走査する。`finalized_timestamp > deadline`だけを期限切れとし、等値では予約を保持する。`AuthorizationPending`は`RefundAvailable`、`AuthorizationAvailable`は`RefundAvailable`へ進め、個別`isDepositProcessed`照合は行わない。
+5. 署名installはIC合意時刻で残り300秒以上の場合だけ許可する。300秒ちょうどを受理し、299秒以下では署名とservice fee計上を行わず、Finalized未処理証拠を待つ。新規Depositなどで取得したBase Finalized snapshotを使うdeadline順indexは、`finalized_timestamp > deadline`だけを期限切れとし、等値では予約を保持する。
 6. backlogが残る場合は未処理予約を保守的に過大計上する。新規受付上限を正確に判定できなければretry可能エラーにし、過少計上しない。新規Depositがなければ予約枠も消費されないため、期限処理timerは設けない。
 7. 任意の非anonymous Principalが`request_deposit_refund`を呼ぶとRefundを進める。宛先、金額、transfer identityは既存recordに固定され、caller入力を受けない。認可発行前の`RefundAvailable`はBase outcallなしで`gross - refund ledger fee`を送る。最初のICRC-2 pull feeはWallet負担のまま戻さない。
 8. 認可発行済みの`RefundAvailable`では、同じcanonical Finalized block hashへruntime identity、signer、epoch、strict deadline、`isDepositProcessed(depositId)`をEIP-1898で束縛する。`processed == false`だけを`gross - charged service fee - refund ledger fee`で返金する。service fee、初回pull fee、refund feeは返さない。

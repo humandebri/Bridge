@@ -918,11 +918,11 @@ proof fn mint_finalization_requires_exact_finalized_success(
         <==> binding && succeeded && receipt_block <= finalized_block
 {}
 
-proof fn signature_install_requires_dispatch_absence_exact_length_and_open_deadline(
-    dispatched: bool, absent: bool, length: bool, deadline_open: bool,
+proof fn signature_install_requires_dispatch_absence_exact_length_and_minimum_remaining_time(
+    dispatched: bool, absent: bool, length: bool, minimum_remaining: bool,
 )
-    ensures kernel::signature_install_allowed_spec(dispatched, absent, length, deadline_open)
-        <==> dispatched && absent && length && deadline_open
+    ensures kernel::signature_install_allowed_spec(dispatched, absent, length, minimum_remaining)
+        <==> dispatched && absent && length && minimum_remaining
 {}
 
 proof fn refund_start_requires_attempt_and_policy(attempt: bool, policy: bool)
