@@ -29,6 +29,7 @@ const ACTIVATION_DELAY_SECONDS = 5 * 60
 // post-emergency recovery each advance the Base clock by one activation delay.
 const ACTIVATION_TIME_ADVANCES = 5
 const MAX_FIXTURE_CLOCK_SKEW_SECONDS = 15n
+const MAX_FIXTURE_CLOCK_SYNC_ATTEMPTS = 4
 const CONTROL_PLANE_QUOTA_WINDOW_SECONDS = 60
 const stagingForgeEnv = { ...process.env, FOUNDRY_PROFILE: "staging" }
 const deployer = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
@@ -399,18 +400,26 @@ async function setup() {
   const depositSequences = []
   const knownWithdrawals = []
   const alignFixtureClocks = async () => {
-    const [latestBeforeClockSync, icTimeBeforeClockSync] = await Promise.all([
-      publicClient.getBlock({ blockTag: "latest" }),
-      pic.getTime(),
-    ])
-    const icTimestampBeforeClockSync = BigInt(Math.floor(icTimeBeforeClockSync / 1_000))
     // Confirmation mining and PocketIC settlement ticks advance independently.
-    // Move only the lagging deterministic clock forward before mint admission.
-    if (latestBeforeClockSync.timestamp > icTimestampBeforeClockSync) {
-      await pic.advanceCertifiedTime(Number((latestBeforeClockSync.timestamp - icTimestampBeforeClockSync) * 1_000n))
-    } else if (icTimestampBeforeClockSync > latestBeforeClockSync.timestamp) {
-      await rpc("evm_increaseTime", [Number(icTimestampBeforeClockSync - latestBeforeClockSync.timestamp)])
-      await rpc("evm_mine", [])
+    // PocketIC can reflect a time advance across more than one tick, so reread
+    // both clocks and move only the lagging deterministic clock with a bound.
+    for (let attempt = 0; attempt < MAX_FIXTURE_CLOCK_SYNC_ATTEMPTS; attempt += 1) {
+      const [latest, icTime] = await Promise.all([
+        publicClient.getBlock({ blockTag: "latest" }),
+        pic.getTime(),
+      ])
+      const icTimestamp = BigInt(Math.floor(icTime / 1_000))
+      const clockSkew = latest.timestamp >= icTimestamp
+        ? latest.timestamp - icTimestamp
+        : icTimestamp - latest.timestamp
+      if (clockSkew <= MAX_FIXTURE_CLOCK_SKEW_SECONDS) return
+      if (latest.timestamp > icTimestamp) {
+        await pic.advanceTime(Number((latest.timestamp - icTimestamp) * 1_000n))
+        await pic.tick()
+      } else {
+        await rpc("evm_increaseTime", [Number(icTimestamp - latest.timestamp)])
+        await rpc("evm_mine", [])
+      }
     }
     const [latestAfterClockSync, icTimeAfterClockSync] = await Promise.all([
       publicClient.getBlock({ blockTag: "latest" }),
