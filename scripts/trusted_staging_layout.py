@@ -16,17 +16,47 @@ UPGRADE_SCRIPTS = (
 )
 
 
-def classify_layout(root: Path, candidate_scripts: Path | None) -> str:
-    policy_dir = root / "deployments" / "sepolia-staging"
-    script_root = candidate_scripts if candidate_scripts is not None else root / "scripts"
-    canonical = (policy_dir / "staging-bridge-upgrade-policy.json").is_file()
-    replacement = (
-        (policy_dir / "legacy-stack-binding.json").is_file(),
-        (policy_dir / "fresh-stack.template.json").is_file(),
-    )
-    upgrade_scripts = tuple((script_root / relative).is_file() for relative in UPGRADE_SCRIPTS)
+def _require_directory(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise ValueError(f"staging lifecycle {label} must not be symlinked")
+    if not path.is_dir():
+        raise ValueError(f"staging lifecycle {label} must be an existing directory")
 
-    if (policy_dir / "v33-to-v34-upgrade-policy.json").exists():
+
+def _regular_file_presence(root: Path, relative: str) -> bool:
+    path = root / relative
+    parents = path.relative_to(root).parents
+    if path.is_symlink() or any(
+        (root / parent).is_symlink() for parent in parents if parent != Path(".")
+    ):
+        raise ValueError(f"staging lifecycle path must not be symlinked: {relative}")
+    if path.exists() and not path.is_file():
+        raise ValueError(
+            f"staging lifecycle path must be a regular file or absent: {relative}"
+        )
+    return path.is_file()
+
+
+def classify_layout(root: Path, candidate_scripts: Path | None) -> str:
+    _require_directory(root, "repository root")
+    script_root = candidate_scripts if candidate_scripts is not None else root / "scripts"
+    _require_directory(script_root, "script root")
+    policy_prefix = "deployments/sepolia-staging"
+    canonical = _regular_file_presence(
+        root, f"{policy_prefix}/staging-bridge-upgrade-policy.json"
+    )
+    replacement = (
+        _regular_file_presence(root, f"{policy_prefix}/legacy-stack-binding.json"),
+        _regular_file_presence(root, f"{policy_prefix}/fresh-stack.template.json"),
+    )
+    obsolete = _regular_file_presence(
+        root, f"{policy_prefix}/v33-to-v34-upgrade-policy.json"
+    )
+    upgrade_scripts = tuple(
+        _regular_file_presence(script_root, relative) for relative in UPGRADE_SCRIPTS
+    )
+
+    if obsolete:
         raise ValueError("obsolete staging upgrade policy must be absent")
     if canonical and all(upgrade_scripts) and not any(replacement):
         return "upgrade"
