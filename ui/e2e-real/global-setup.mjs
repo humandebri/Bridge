@@ -14,6 +14,7 @@ import { createPublicClient, hexToBytes, http, keccak256, numberToHex, recoverTr
 import { publicKeyToAddress } from "viem/accounts"
 import { idlFactory as bridgeIdl, init as bridgeInitFactory } from "./generated/bridge.idl.mjs"
 import { idlFactory as mockIdl, init as mockInitFactory } from "./generated/mock-external.idl.mjs"
+import { createExclusiveProgressPause } from "./progress-pause.mjs"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const uiRoot = path.resolve(here, "..")
@@ -40,6 +41,14 @@ const feeRecipient = Principal.selfAuthenticating(new Uint8Array(32).fill(10))
 const confirmationRelayerPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(11))
 const bridgeAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/Bridge.json"), "utf8"))
 const bsnsAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/BSNS.json"), "utf8"))
+const stagingUpgradePolicy = JSON.parse(await readFile(
+  path.join(root, "deployments/sepolia-staging/staging-bridge-upgrade-policy.json"),
+  "utf8",
+))
+const stagingDeploymentInstanceId = stagingUpgradePolicy.deployment_instance_id
+if (!/^0x[0-9a-f]{64}$/.test(stagingDeploymentInstanceId)) {
+  throw new Error("Staging upgrade policy has an invalid deployment instance ID")
+}
 const resources = {}
 const bridgeInitType = bridgeInitFactory({ IDL })[0]
 const mockInitType = mockInitFactory({ IDL })[0]
@@ -88,6 +97,10 @@ async function setup() {
   })
   await pic.resetTime()
   resources.pic = pic
+  const withPausedProgress = createExclusiveProgressPause(
+    stopProgressLoop,
+    () => startProgressLoop(pic),
+  )
   const subnet = await pic.getFiduciarySubnet()
   if (!subnet) throw new Error("PocketIC fiduciary subnet is unavailable")
 
@@ -275,7 +288,7 @@ async function setup() {
       expected_bsns_runtime_sha256: hexToBytes(sha256(bsnsCode)),
       expected_bsns_decimals: 8,
       expected_minimum_service_fee: 10_000n,
-      deployment_instance_id: new Uint8Array(32).fill(3),
+      deployment_instance_id: hexToBytes(stagingDeploymentInstanceId),
       minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]),
       ecdsa_key_name: "key_1",
       ecdsa_derivation_path: [],
@@ -779,14 +792,16 @@ async function setup() {
       if (request.url === "/ic/deposit") {
         if (connectedAccount !== testOwner.toText()) throw new Error("test IC account changed")
         depositSequences.push(String(body.ownerSequence))
-        await alignFixtureClocks()
-        await syncObservedHeads()
-        const result = await bridge.actor.request_deposit({
-          owner_sequence: BigInt(body.ownerSequence),
-          base_recipient: hexToBytes(body.baseRecipient),
-          from_subaccount: [],
-          gross_amount: BigInt(body.grossAmount),
-          max_service_fee: BigInt(body.maxServiceFee),
+        const result = await withPausedProgress(async () => {
+          await alignFixtureClocks()
+          await syncObservedHeads()
+          return bridge.actor.request_deposit({
+            owner_sequence: BigInt(body.ownerSequence),
+            base_recipient: hexToBytes(body.baseRecipient),
+            from_subaccount: [],
+            gross_amount: BigInt(body.grossAmount),
+            max_service_fee: BigInt(body.maxServiceFee),
+          })
         })
         if ("Err" in result) throw new Error(`deposit rejected: ${json(result.Err)}`)
         if (!knownDeposits.some((id) => bytesHex(id) === bytesHex(result.Ok.deposit_id))) knownDeposits.push(result.Ok.deposit_id)
@@ -837,21 +852,17 @@ async function setup() {
         return send(response, 200, null)
       }
       if (request.url === "/test/relay") {
-        await syncObservedHeads()
-        await stopProgressLoop()
-        try {
+        await withPausedProgress(async () => {
+          await syncObservedHeads()
           await pic.advanceTime(2_000)
           await pic.tick(30)
-        } finally {
-          await startProgressLoop(pic)
-        }
+        })
         return send(response, 200, null)
       }
       if (request.url === "/test/upgrade") {
-        await stopProgressLoop()
         let before
         let after
-        try {
+        await withPausedProgress(async () => {
           await waitForNoLeasedJobs(bridge.actor)
           before = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
           await pic.upgradeCanister({
@@ -861,9 +872,7 @@ async function setup() {
             sender: testOwner,
           })
           after = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
-        } finally {
-          await startProgressLoop(pic)
-        }
+        })
         if (json(before) !== json(after)) throw new Error("same-Wasm upgrade changed durable bridge state")
         if (before.deposits.length === 0) throw new Error("same-Wasm upgrade did not exercise an individual Deposit record")
         const facts = JSON.parse(await readFile(path.join(runtimeDir, "local-e2e-facts.json"), "utf8"))
