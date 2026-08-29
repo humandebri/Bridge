@@ -24,7 +24,10 @@ const rpcUrl = "http://127.0.0.1:8545"
 const controlPort = 43119
 const uiPort = 4174
 const ACTIVATION_DELAY_SECONDS = 5 * 60
-const ACTIVATION_TIME_ADVANCES = 3
+// Canonical activation, two control-plane rotations, repeated activation, and
+// post-emergency recovery each advance the Base clock by one activation delay.
+const ACTIVATION_TIME_ADVANCES = 5
+const MAX_FIXTURE_CLOCK_SKEW_SECONDS = 15n
 const CONTROL_PLANE_QUOTA_WINDOW_SECONDS = 60
 const stagingForgeEnv = { ...process.env, FOUNDRY_PROFILE: "staging" }
 const deployer = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
@@ -382,6 +385,32 @@ async function setup() {
   const knownDeposits = []
   const depositSequences = []
   const knownWithdrawals = []
+  const alignFixtureClocks = async () => {
+    const [latestBeforeClockSync, icTimeBeforeClockSync] = await Promise.all([
+      publicClient.getBlock({ blockTag: "latest" }),
+      pic.getTime(),
+    ])
+    const icTimestampBeforeClockSync = BigInt(Math.floor(icTimeBeforeClockSync / 1_000))
+    // Confirmation mining and PocketIC settlement ticks advance independently.
+    // Move only the lagging deterministic clock forward before mint admission.
+    if (latestBeforeClockSync.timestamp > icTimestampBeforeClockSync) {
+      await pic.advanceCertifiedTime(Number((latestBeforeClockSync.timestamp - icTimestampBeforeClockSync) * 1_000n))
+    } else if (icTimestampBeforeClockSync > latestBeforeClockSync.timestamp) {
+      await rpc("evm_increaseTime", [Number(icTimestampBeforeClockSync - latestBeforeClockSync.timestamp)])
+      await rpc("evm_mine", [])
+    }
+    const [latestAfterClockSync, icTimeAfterClockSync] = await Promise.all([
+      publicClient.getBlock({ blockTag: "latest" }),
+      pic.getTime(),
+    ])
+    const icTimestampAfterClockSync = BigInt(Math.floor(icTimeAfterClockSync / 1_000))
+    const clockSkew = latestAfterClockSync.timestamp >= icTimestampAfterClockSync
+      ? latestAfterClockSync.timestamp - icTimestampAfterClockSync
+      : icTimestampAfterClockSync - latestAfterClockSync.timestamp
+    if (clockSkew > MAX_FIXTURE_CLOCK_SKEW_SECONDS) {
+      throw new Error(`E2E clock skew exceeds ${MAX_FIXTURE_CLOCK_SKEW_SECONDS}s: Base=${latestAfterClockSync.timestamp} IC=${icTimestampAfterClockSync}`)
+    }
+  }
   const syncObservedHeads = async () => {
     const [safe, finalized] = await Promise.all([
       publicClient.getBlock({ blockTag: "safe" }),
@@ -699,6 +728,7 @@ async function setup() {
   if (!("Ok" in recoveryExecuteConfirmed)) throw new Error(`Post-emergency activation execute confirmation failed: ${json(recoveryExecuteConfirmed.Err)}`)
   const reactivatedStatus = await bridge.actor.get_bridge_status()
   if (reactivatedStatus.deposits_paused) throw new Error("IC deposits remained paused after post-emergency activation")
+  await alignFixtureClocks()
   // The mock RPC exposes one nonce response at a time. Switch its observation
   // from the governance operator lane to the independently derived mint lane.
   await mock.actor.set_next_evm_nonce(0n)
@@ -749,6 +779,7 @@ async function setup() {
       if (request.url === "/ic/deposit") {
         if (connectedAccount !== testOwner.toText()) throw new Error("test IC account changed")
         depositSequences.push(String(body.ownerSequence))
+        await alignFixtureClocks()
         await syncObservedHeads()
         const result = await bridge.actor.request_deposit({
           owner_sequence: BigInt(body.ownerSequence),
