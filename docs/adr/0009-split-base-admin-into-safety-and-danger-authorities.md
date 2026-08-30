@@ -4,7 +4,7 @@ status: superseded
 
 # Base adminを即時停止と遅延回復の権限に分割する
 
-このADRはPlan 006のSNS中心・Canister操作型権限モデルで置換された。現行構成は単一のCanister由来Governance Operatorを使用し、人間のBase Admin walletと独立cancellerを置かない。
+このADRの人間wallet構成はPlan 006のSNS中心・Canister操作型権限モデルで置換された。現行構成は人間のBase Admin/Canceller walletを置かず、Bridge Canisterが別derivationからGovernance Operator、Runtime Administrator、Independent Cancellerを生成する。
 
 Base contractのMint limitとwindow長はdeploy時に固定する。Runtime Administratorはpauseと上限内Service Fee変更を即時実行できる。unpauseとrole rotationはtimelockを経由するBase Admin hardware walletだけが実行でき、cancellerは独立hardware walletへ分離する。本決定はADR 0007をsupersedeし、Governance Executorを導入しない。
 

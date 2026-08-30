@@ -117,6 +117,20 @@ pub struct RuntimeBinding {
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ControlPlaneAddressesView {
+    pub bridge_signer: Vec<u8>,
+    pub governance_operator: Vec<u8>,
+    pub runtime_administrator: Vec<u8>,
+    pub independent_canceller: Vec<u8>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlPlaneAddressesError {
+    Uninitialized,
+    StorageFailure,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct OperationalConfig {
     pub mint_authorization_ttl_seconds: u64,
     pub mint_authorization_epoch: u64,
@@ -1833,6 +1847,35 @@ fn get_runtime_binding() -> RuntimeBinding {
     })
 }
 
+#[ic_cdk::query]
+fn get_control_plane_addresses() -> Result<ControlPlaneAddressesView, ControlPlaneAddressesError> {
+    STORE.with(|store| {
+        let store = store.borrow();
+        let bridge_signer = store
+            .signer_address()
+            .map_err(|_| ControlPlaneAddressesError::StorageFailure)?
+            .ok_or(ControlPlaneAddressesError::Uninitialized)?;
+        let governance_operator = store
+            .governance_operator_address()
+            .map_err(|_| ControlPlaneAddressesError::StorageFailure)?
+            .ok_or(ControlPlaneAddressesError::Uninitialized)?;
+        let runtime_administrator = store
+            .runtime_administrator_address()
+            .map_err(|_| ControlPlaneAddressesError::StorageFailure)?
+            .ok_or(ControlPlaneAddressesError::Uninitialized)?;
+        let independent_canceller = store
+            .independent_canceller_address()
+            .map_err(|_| ControlPlaneAddressesError::StorageFailure)?
+            .ok_or(ControlPlaneAddressesError::Uninitialized)?;
+        Ok(ControlPlaneAddressesView {
+            bridge_signer: bridge_signer.to_vec(),
+            governance_operator: governance_operator.to_vec(),
+            runtime_administrator: runtime_administrator.to_vec(),
+            independent_canceller: independent_canceller.to_vec(),
+        })
+    })
+}
+
 fn current_operational_config() -> OperationalConfig {
     let (config, admin) = STORE.with(|store| {
         let store = store.borrow();
@@ -2377,6 +2420,7 @@ mod candid_tests {
         assert!(!generated.contains("resume_new_deposits"));
         let normalized = normalize(&generated);
         assert!(normalized.contains("get_runtime_binding:()->(RuntimeBinding)query;"));
+        assert!(normalized.contains("get_control_plane_addresses:()->("));
         assert!(normalized.contains("get_operational_config:()->("));
         assert!(!normalized.contains("get_public_config"));
         assert!(normalized.contains("initialize_public_config:()->("));

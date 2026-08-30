@@ -143,7 +143,7 @@ expect_no_match \
   "$ICP_VERSION_PATTERN"
 expect_match \
   "Z3 release with platform metadata" \
-  "Z3 version 4.16.0 - 64 bit" \
+  "Z3 version 5.0.0 - 64 bit" \
   "$Z3_VERSION_PATTERN"
 expect_match \
   "exact Verus release" \

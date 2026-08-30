@@ -503,11 +503,11 @@ type Result_18 = variant {
   Ok : ChecksumRefreshStatus;
   Err : StorageMaintenanceError;
 };
-type Result_19 = variant { Ok : DepositReceipt; Err : DepositError };
 type Result_2 = variant {
   Ok : FeePayoutActionResult;
   Err : SettlementActionError;
 };
+type Result_19 = variant { Ok : DepositReceipt; Err : DepositError };
 type Result_20 = variant { Ok : DepositView; Err : RequestDepositRefundError };
 type Result_21 = variant { Ok : FeePayoutReceipt; Err : AdminError };
 type Result_22 = variant {

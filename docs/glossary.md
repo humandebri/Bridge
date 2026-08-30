@@ -100,13 +100,21 @@ IC/Base双方のpause、記録済みpending Timelock operationのcancel、許可
 _Avoid_: Governance Principal, canister controller
 
 **Governance Operator**:
-Bridge CanisterがMint Signerとは別pathから導出し、Base pause、Service Fee、Timelock propose/cancel/executeだけを送信するthreshold address。
+Bridge CanisterがMint Signerとは別pathから導出し、Timelockのpropose/executeによる遅延unpauseとrole rotationだけを送信するthreshold address。
 _Avoid_: human wallet, Mint Signer, canister controller
+
+**Runtime Administrator**:
+Bridge CanisterがGovernance Operatorとは別pathから導出し、Baseの即時pauseと上限内Service Fee変更だけを送信するthreshold address。
+_Avoid_: Governance Operator, Independent Canceller, human wallet
+
+**Independent Canceller**:
+Bridge CanisterがGovernance Operatorとは別pathから導出し、記録済みpending Timelock operationのcancelだけを送信するthreshold address。
+_Avoid_: Governance Operator, Runtime Administrator, human wallet
 
 **Bridge Signer**:
 Bridge canisterのthreshold ECDSAで管理され、BaseのDeposit mintだけを実行する単一address。Withdrawalのburnは利用者が実行する。
 _Avoid_: Base Admin, Runtime Administrator, owner
 
 **Base Admin Timelock**:
-Governance Operatorだけをproposer/executor/cancellerに持ち、自己adminと24時間minimum delayを維持するOpenZeppelin Timelock。人間walletへroleを付与しない。
+Governance Operatorだけをproposer/executor、別derivationのIndependent Cancellerだけをcancellerに持ち、自己adminと24時間minimum delayを維持するOpenZeppelin Timelock。人間walletへroleを付与しない。
 _Avoid_: human wallet, external DEFAULT_ADMIN_ROLE holder

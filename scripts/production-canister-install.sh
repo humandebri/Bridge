@@ -182,6 +182,7 @@ done
 
 RUNTIME_RESPONSE="$(call_hex get_runtime_binding '()' true)"
 OPERATIONAL_RESPONSE="$(call_hex get_operational_config '()' true)"
+CONTROL_PLANE_RESPONSE="$(call_hex get_control_plane_addresses '()' true)"
 STATUS_RESPONSE="$(call_hex get_bridge_status '()' true)"
 LIFECYCLE_RESPONSE="$(call_hex get_production_lifecycle '()' true)"
 INTEGRITY_RESPONSE="$(call_hex storage_integrity_check '()' true)"
@@ -194,7 +195,8 @@ read -r POST_CONTROLLERS POST_MODULE < <(status_fields "$POST_STATUS")
 
 "$PROFILE_BIN" write-production-canister-receipt "$PLAN" "$INSTALLER" "$POST_MODULE" \
   "$INIT_RESPONSE" "$VALIDATION_RESPONSE" "$CHECKSUM_RESPONSE" "$RUNTIME_RESPONSE" \
-  "$OPERATIONAL_RESPONSE" "$STATUS_RESPONSE" "$LIFECYCLE_RESPONSE" "$INTEGRITY_RESPONSE" \
+  "$OPERATIONAL_RESPONSE" "$CONTROL_PLANE_RESPONSE" "$STATUS_RESPONSE" \
+  "$LIFECYCLE_RESPONSE" "$INTEGRITY_RESPONSE" \
   "$RECEIPT_TMP"
 production_atomic_replace "$RECEIPT_TMP" "$RECEIPT"
 rm "$RESERVATION"

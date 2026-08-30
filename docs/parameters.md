@@ -66,7 +66,7 @@ production installとGate Aでは、上記3値が未確定のためschema 2 temp
 - `settlement cycle ceiling = ceil(max(settlement cycles) × 1.5)`
 - N: 30日
 
-未確定値をzeroや任意の仮値でmainnet plan/profileへ入れてはならない。install時だけはprotocol定義済みの固定Bootstrap sentinelを使用する。production Canister install plan/receiptは`schema_version: 2`、release profileは`schema_version: 4`、Gate A/B release manifestは`schema_version: 3`、Gate A receiptは`schema_version: 2`、Activation Receiptは`schema_version: 4`だけを受理し、旧versionや未知versionをmigrationせずfail closedにする。`bridge-profile validate-bundle --offline`、`validate-bundle --offline --gate-b`、`verify-live`は、実artifact、署名、zero reserve、証跡欠落をfail closedで拒否する。Gate Bのoffline検証結果は`authorizing=false`であり、proofと再build後の`verify-live`だけがactivation proposalを認可する。
+未確定値をzeroや任意の仮値でmainnet plan/profileへ入れてはならない。install時だけはprotocol定義済みの固定Bootstrap sentinelを使用する。production Canister install planは`schema_version: 2`、install receiptは`schema_version: 3`、release profileは`schema_version: 5`、Gate A/B release manifestは`schema_version: 3`、Gate A receiptは`schema_version: 2`、Activation Receiptは`schema_version: 4`だけを受理し、旧versionや未知versionをmigrationせずfail closedにする。`bridge-profile validate-bundle --offline`、`validate-bundle --offline --gate-b`、`verify-live`は、実artifact、署名、zero reserve、証跡欠落をfail closedで拒否する。Gate Bのoffline検証結果は`authorizing=false`であり、proofと再build後の`verify-live`だけがactivation proposalを認可する。
 
 ## timelock 遅延（Base Admin）
 
