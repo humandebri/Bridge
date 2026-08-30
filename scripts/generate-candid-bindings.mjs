@@ -56,18 +56,38 @@ async function emit(path, contents) {
   await writeFile(destination, contents)
 }
 
+function removeQueryResults(source, methods) {
+  let projected = source
+  const removedIndexes = []
+  for (const method of methods) {
+    const methodPattern = new RegExp(`  ${method} : \\(\\) -> \\((Result_(\\d+))\\) query;\\n`)
+    const match = projected.match(methodPattern)
+    if (!match) continue
+    const [resultName, resultIndex] = match.slice(1)
+    const resultPattern = new RegExp(`type ${resultName} = variant \\{[\\s\\S]*?\\n\\};\\n`)
+    if (!resultPattern.test(projected)) throw new Error(`${method} result type is missing`)
+    projected = projected.replace(resultPattern, "").replace(methodPattern, "")
+    removedIndexes.push(Number(resultIndex))
+  }
+  removedIndexes.sort((left, right) => left - right)
+  return projected.replace(/\bResult_(\d+)\b/g, (name, index) => {
+    const numericIndex = Number(index)
+    // Keep the first omitted Result slot so existing browser bindings remain byte-for-byte stable.
+    const shift = Math.max(
+      0,
+      removedIndexes.filter((removed) => removed < numericIndex).length - 1,
+    )
+    return shift === 0 ? name : `Result_${numericIndex - shift}`
+  })
+}
+
 function browserBridgeInterface(source) {
-  const projected = source
+  const projected = removeQueryResults(source, ["get_control_plane_addresses", "get_operational_config"])
     .replace(/type BridgeInitArgs = record \{[\s\S]*?\n\};\n/, "")
     .replace(/type ControlPlaneAddressesError = variant \{[\s\S]*?\n\};\n/, "")
     .replace(/type ControlPlaneAddressesView = record \{[\s\S]*?\n\};\n/, "")
     .replace(/type OperationalConfig = record \{[\s\S]*?\n\};\n/, "")
     .replace(/type OperationalConfigError = variant \{ Unauthorized \};\n/, "")
-    .replace(/type Result_9 = variant \{\n  Ok : ControlPlaneAddressesView;\n  Err : ControlPlaneAddressesError;\n\};\n/, "")
-    .replace(/type Result_10 = variant \{\n  Ok : OperationalConfig;\n  Err : OperationalConfigError;\n\};\n/, "")
-    .replace(/  get_control_plane_addresses : \(\) -> \(Result_9\) query;\n/, "")
-    .replace(/  get_operational_config : \(\) -> \(Result_10\) query;\n/, "")
-    .replace(/\bResult_(\d+)\b/g, (name, index) => Number(index) >= 10 ? `Result_${Number(index) - 1}` : name)
     .replace("service : (BridgeInitArgs) -> {", "service : {")
   if (projected.includes("type OperationalConfig =")
     || projected.includes("type OperationalConfigError =")
