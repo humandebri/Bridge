@@ -75,7 +75,7 @@ WithdrawalにCanister発Base transaction、Base refund、release acknowledgement
 ## 費用と運用レーン
 
 - Deposit Mint gas: transactionを送るBase walletが支払う。CanisterやMint SignerのETH reserveは不要。
-- Governance gas: CanisterのGovernance Operatorが支払う。Canisterは署名だけを行い、外部CLIがbroadcastと確定通知を担う。専用ETH floorとnonceを維持し、明示的replacementだけを上限付きで再署名する。
+- Base管理gas: transactionの種類に応じてCanisterのGovernance Operator、Runtime Administrator、Independent Cancellerがそれぞれ支払う。Canisterは署名だけを行い、外部CLIがbroadcastと確定通知を担う。roleごとに独立したETH残高とnonce laneを維持し、明示的replacementだけを上限付きで再署名する。
 - IC処理: threshold署名、RPC、Ledger、job実行にcyclesが必要なためcycles floorを維持する。
 
 ## 公開フロー

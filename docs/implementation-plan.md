@@ -165,12 +165,12 @@ PicJSでDeposit、Withdrawal、Holdのupgrade保持、stuck receiptを検証す�
 ### 3-1. EVM 連携（ADR 0005、0011）
 
 - Deposit Mintはthreshold ECDSAでEIP-712 Authorizationへ署名し、Base walletがtransactionを送信する。Mint用nonce、raw transaction、gas reserveは持たない。
-- 初期contract配置は外部EOAがTimelock、Bridgeの順に実行し、配置後にroleを残さない。Governance Operator laneではCanisterがnonceと署名済みgenerationを保持し、権限なしrelayerがbroadcast、Finalized待機、確定通知を行う。Canisterのrebroadcast、receipt timer、自動replacementは持たず、明示要求されたreplacementだけを同一nonceで最大3回再署名する。
+- 初期contract配置は外部EOAがTimelock、Bridgeの順に実行し、配置後にroleを残さない。Governance Operator、Runtime Administrator、Independent Cancellerの各laneではCanisterが独立したnonceと署名済みgenerationを保持し、権限なしrelayerがbroadcast、Finalized待機、確定通知を行う。Canisterのrebroadcast、receipt timer、自動replacementは持たず、明示要求されたreplacementだけを該当laneの同一nonceで最大3回再署名する。
 - Withdrawalの受付観測は`eth_getLogs`で発見し、Finalized headの状態読みで確定する。読み取りは3 provider中2の合意を要求する。
 
 ### 3-2. Settlement Reserve と stable executor（ADR 0005、0019）
 
-- cycles floorとsettlement cycle ceilingを署名、RPC、Ledger処理のために維持し、ETH floorはGovernance Operator専用とする。
+- cycles floorとsettlement cycle ceilingを署名、RPC、Ledger処理のために維持する。ETHはBase transactionを送信するGovernance Operator、Runtime Administrator、Independent Cancellerへroleごとに必要な上限まで個別に補充する。
 - 未処理Authorizationの論理Mint capacityをterminal状態まで予約するが、Deposit admissionへMint gasやETH reserveを含めない。
 - stable executorのjobは型付きkindごとのclaim policyとrecord単位leaseを持ち、Deposit、Withdrawal、fee payoutを混同しない。
 - lease generationは単調増加とし、stale callback、同一recordの重複claim、進行中scheduled jobのgeneric manual claimを拒否する。automatic、public manual、Governance recovery laneは独立した上限を持つ。
@@ -196,7 +196,7 @@ Plan 003で管理権限と監査ログを実装済みである。
 
 - 単一pause principalはIC/Base双方のpause、記録済みpending Timelock cancel、許可済みSettlementの進行だけを実行できる。
 - SNS Governanceだけが再開、pause principal rotation、Fee Recipient、fee payout、Service Fee、Timelock schedule/executeを実行できる。
-- Base操作はMint Signer laneとGovernance Operator laneを分離し、任意target/calldata/raw transaction/nonce APIを公開しない。
+- Base操作はMint Signerと、Governance Operator、Runtime Administrator、Independent Cancellerの各管理laneを分離し、任意target/calldata/raw transaction/nonce APIを公開しない。
 - 人間のEVM address、controller identity、初回deployerへ永続roleを与えない。
 - SNS-token feeからBase gas用ETHへの自動変換は行わず、運用者がrunbookに従って補充する。
 
