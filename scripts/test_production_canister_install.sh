@@ -36,7 +36,7 @@ case "$1" in
     mkdir -p "$3"; printf bin >"$3/canister-init.bin"; printf '{}\n' >"$3/production-canister-install-inputs.json" ;;
   storage-validation-complete|storage-checksum-complete) printf 'true\n' ;;
   write-production-canister-receipt)
-    printf '{"schema_version":2}\n' >"${13}" ;;
+    printf '{"schema_version":3,"runtime_binding":{"expected_bridge_signer":"0x1111111111111111111111111111111111111111"},"governance_operator":"0x2222222222222222222222222222222222222222","runtime_administrator":"0x3333333333333333333333333333333333333333","independent_canceller":"0x4444444444444444444444444444444444444444"}\n' >"${14}" ;;
   *) echo "unexpected bridge-profile command: $*" >&2; exit 90 ;;
 esac
 SH
@@ -81,6 +81,19 @@ PATH="$T/bin:$PATH" BRIDGE_ICP_IDENTITY=production \
   "$T/source/scripts/production-canister-install.sh" --plan "$T/plan.json" \
   --wasm "$T/bridge-canister.wasm" --receipt "$T/out/receipt.json" >/dev/null
 [[ -s "$T/out/receipt.json" ]]
+python3 - "$T/out/receipt.json" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert value["schema_version"] == 3
+roles = [
+    value["runtime_binding"]["expected_bridge_signer"],
+    value["governance_operator"],
+    value["runtime_administrator"],
+    value["independent_canceller"],
+]
+assert len(set(roles)) == 4
+assert all(len(role) == 42 and role.startswith("0x") for role in roles)
+PY
 grep -q 'canister install aaaaa-aa -n ic --mode install' "$TRACE"
 ! grep -Eq 'reinstall|--mode auto' "$TRACE"
 

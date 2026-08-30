@@ -16,6 +16,8 @@ value={
  "chain_id":8453,"bridge_contract":bridge,"bsns_contract":bsns,
  "expected_bridge_signer":"0x0000000000000000000000000000000000000002",
  "governance_operator":"0x0000000000000000000000000000000000000003",
+ "runtime_administrator":"0x0000000000000000000000000000000000000005",
+ "independent_canceller":"0x0000000000000000000000000000000000000004",
  "initial_base_deployment":{"deployer_address":deployer,"starting_nonce":0},
  "timelock":{"address":timelock,"runtime_code_hash":timelock_hash,"minimum_delay_seconds":86400,
              "proposer":"0x0000000000000000000000000000000000000003",

@@ -1028,6 +1028,7 @@ run_smoke() {
   local bridge_signer="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
   local -r rotated_bridge_signer="0x976EA74026E726554dB657fA54763abd0C3a0aa9"
   local -r second_rotated_bridge_signer="0x14dC79964da2C08b23698B3D3cc7Ca32193d9955"
+  local -r governance_operator="0xa0Ee7A142d267C1f36714E4a8F75612F20a79720"
   local -r runtime_administrator="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
   local -r unauthorized_wallet="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
   local -r independent_canceller="0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"
@@ -1214,9 +1215,9 @@ for field, (value, candid_type) in stable_fields.items():
   base_admin_timelock="$(deploy_contract \
     "src/BridgeTimelockController.sol:BridgeTimelockController" \
     "$timelock_delay_seconds" \
-    "[$runtime_administrator]" \
+    "[$governance_operator]" \
     "[$independent_canceller]" \
-    "[$runtime_administrator]")"
+    "[$governance_operator]")"
   read -r timelock_delay _ <<<"$(
     cast call "$base_admin_timelock" "getMinDelay()(uint256)" --rpc-url http://127.0.0.1:8545
   )"
@@ -1235,12 +1236,12 @@ for field, (value, candid_type) in stable_fields.items():
   )"
   require_equal \
     "Governance Operator proposer role" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$runtime_administrator" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$governance_operator" \
       --rpc-url http://127.0.0.1:8545)" \
     "true"
   require_equal \
     "Governance Operator has no canceller role" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$runtime_administrator" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$canceller_role" "$governance_operator" \
       --rpc-url http://127.0.0.1:8545)" \
     "false"
   require_equal \
@@ -1260,9 +1261,19 @@ for field, (value, candid_type) in stable_fields.items():
     "false"
   require_equal \
     "Governance Operator executor role" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$runtime_administrator" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$governance_operator" \
       --rpc-url http://127.0.0.1:8545)" \
     "true"
+  require_equal \
+    "Runtime Administrator has no proposer role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$proposer_role" "$runtime_administrator" \
+      --rpc-url http://127.0.0.1:8545)" \
+    "false"
+  require_equal \
+    "Runtime Administrator has no executor role" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$runtime_administrator" \
+      --rpc-url http://127.0.0.1:8545)" \
+    "false"
   require_equal \
     "permissionless executor disabled" \
     "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$executor_role" "$zero_address" \
@@ -1275,7 +1286,7 @@ for field, (value, candid_type) in stable_fields.items():
     "true"
   require_equal \
     "Governance Operator has no direct timelock administration" \
-    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$default_admin_role" "$runtime_administrator" \
+    "$(cast call "$base_admin_timelock" "hasRole(bytes32,address)(bool)" "$default_admin_role" "$governance_operator" \
       --rpc-url http://127.0.0.1:8545)" \
     "false"
 
@@ -1524,7 +1535,7 @@ for field, (value, candid_type) in stable_fields.items():
     "$management_salt" \
     "$timelock_delay_seconds" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$runtime_administrator" \
+    --from "$governance_operator" \
     --unlocked >/dev/null
   if cast send \
     "$base_admin_timelock" \
@@ -1535,7 +1546,7 @@ for field, (value, candid_type) in stable_fields.items():
     "$zero_bytes32" \
     "$management_salt" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$runtime_administrator" \
+    --from "$governance_operator" \
     --unlocked >/dev/null 2>&1; then
     echo "Base Admin operation executed before the 24-hour delay" >&2
     return 1
@@ -1551,7 +1562,7 @@ for field, (value, candid_type) in stable_fields.items():
     "$zero_bytes32" \
     "$management_salt" \
     --rpc-url http://127.0.0.1:8545 \
-    --from "$runtime_administrator" \
+    --from "$governance_operator" \
     --unlocked >/dev/null
   require_equal \
     "Timelocked Deposit mint unpause" \

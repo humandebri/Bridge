@@ -25,6 +25,8 @@ const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
 const MAX_ACTIVATION_ATTESTATION_AGE_SECS: u64 = 5 * 60;
 const CURRENT_STABLE_SCHEMA_VERSION: u16 = 35;
+const RELEASE_PROFILE_SCHEMA_VERSION: u8 = 5;
+const PRODUCTION_CANISTER_INSTALL_RECEIPT_SCHEMA_VERSION: u8 = 3;
 const GATE_A_ARTIFACTS: [&str; 6] = [
     "profile.json",
     "bridge-canister.wasm",
@@ -85,6 +87,8 @@ struct Profile {
     ecdsa_derivation_path: Vec<String>,
     governance_ecdsa_derivation_path: Vec<String>,
     governance_operator: String,
+    runtime_administrator: String,
+    independent_canceller: String,
     initial_base_deployment: InitialBaseDeployment,
     timelock: Timelock,
     pause_principal: String,
@@ -566,6 +570,8 @@ struct ProductionCanisterInstallReceipt {
     init_candid_sha256: String,
     runtime_binding: LiveRuntimeBinding,
     governance_operator: String,
+    runtime_administrator: String,
+    independent_canceller: String,
     mint_authorization_ttl_seconds: u64,
     mint_authorization_epoch: u64,
     storage_validation_complete: bool,
@@ -1118,6 +1124,20 @@ enum PublicConfigInitializationResultView {
 enum OperationalConfigResultView {
     Ok(Box<OperationalConfigCallView>),
     Err(Reserved),
+}
+
+#[derive(CandidType, Deserialize)]
+enum ControlPlaneAddressesResultView {
+    Ok(ControlPlaneAddressesCallView),
+    Err(Reserved),
+}
+
+#[derive(CandidType, Deserialize, Clone)]
+struct ControlPlaneAddressesCallView {
+    bridge_signer: Vec<u8>,
+    governance_operator: Vec<u8>,
+    runtime_administrator: Vec<u8>,
+    independent_canceller: Vec<u8>,
 }
 
 #[derive(CandidType, Deserialize)]
@@ -1865,7 +1885,7 @@ fn credential_free_https(url: &str) -> bool {
 }
 
 fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
-    if profile.schema_version != 4 {
+    if profile.schema_version != RELEASE_PROFILE_SCHEMA_VERSION {
         return Err("obsolete or unknown release profile schema".into());
     }
     if production && profile.test_assets_only {
@@ -1960,6 +1980,8 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         &profile.bsns_contract,
         &profile.expected_bridge_signer,
         &profile.governance_operator,
+        &profile.runtime_administrator,
+        &profile.independent_canceller,
         &profile.timelock.address,
     ];
     if addresses.iter().any(|value| !evm_address(value)) {
@@ -1989,7 +2011,7 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         || !profile
             .timelock
             .canceller
-            .eq_ignore_ascii_case(&profile.governance_operator)
+            .eq_ignore_ascii_case(&profile.independent_canceller)
     {
         return Err("unsafe Timelock configuration".into());
     }
@@ -2008,6 +2030,15 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
     if deployment
         .deployer_address
         .eq_ignore_ascii_case(&profile.governance_operator)
+        || deployment
+            .deployer_address
+            .eq_ignore_ascii_case(&profile.runtime_administrator)
+        || deployment
+            .deployer_address
+            .eq_ignore_ascii_case(&profile.independent_canceller)
+        || deployment
+            .deployer_address
+            .eq_ignore_ascii_case(&profile.expected_bridge_signer)
         || deployment.gas_limit == 0
         || deployment.max_fee_per_gas == 0
         || deployment.max_priority_fee_per_gas > deployment.max_fee_per_gas
@@ -2491,7 +2522,7 @@ fn validate_production_canister_receipt(
         &rpc_url_hash,
         &operational,
     )?;
-    if receipt.schema_version != 2
+    if receipt.schema_version != PRODUCTION_CANISTER_INSTALL_RECEIPT_SCHEMA_VERSION
         || !receipt.plan_sha256.eq_ignore_ascii_case(&plan_sha256)
         || receipt.source_revision != receipt.plan.source_revision
         || !receipt
@@ -2515,6 +2546,12 @@ fn validate_production_canister_receipt(
         || !receipt
             .governance_operator
             .eq_ignore_ascii_case(&profile.governance_operator)
+        || !receipt
+            .runtime_administrator
+            .eq_ignore_ascii_case(&profile.runtime_administrator)
+        || !receipt
+            .independent_canceller
+            .eq_ignore_ascii_case(&profile.independent_canceller)
         || !receipt.storage_validation_complete
         || !receipt.storage_checksum_complete
         || !receipt.deposits_paused
@@ -2749,6 +2786,7 @@ fn write_production_canister_install_receipt(
     checksum_response: &str,
     runtime_response: &str,
     operational_response: &str,
+    control_plane_response: &str,
     status_response: &str,
     lifecycle_response: &str,
     integrity_response: &str,
@@ -2783,6 +2821,13 @@ fn write_production_canister_install_receipt(
     };
     let observed_governance_operator = operational.governance_operator.clone();
     let observed_operational: OperationalConfigView = (*operational).into();
+    let control_plane =
+        match decode_candid_hex::<ControlPlaneAddressesResultView>(control_plane_response)? {
+            ControlPlaneAddressesResultView::Ok(value) => value,
+            ControlPlaneAddressesResultView::Err(_) => {
+                return Err("control-plane address query failed".into())
+            }
+        };
     let status = decode_candid_hex::<BridgeStatusLiveView>(status_response)?;
     if !matches!(
         decode_candid_hex::<ProductionLifecycleResultView>(lifecycle_response)?,
@@ -2862,6 +2907,8 @@ fn write_production_canister_install_receipt(
         || runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
         || runtime.expected_bridge_signer.len() != 20
         || runtime.expected_bridge_signer.iter().all(|byte| *byte == 0)
+        || runtime.expected_bridge_signer != control_plane.bridge_signer
+        || observed_governance_operator != control_plane.governance_operator
         || runtime.evm_rpc_canister_id.to_text() != init.evm_rpc_canister_id
         || runtime.rpc_provider_urls_sha256 != expected_rpc_digest
         || runtime.operational_config_sha256 != expected_digest
@@ -2874,7 +2921,7 @@ fn write_production_canister_install_receipt(
     }
     let candid = validate_production_canister_plan(&plan)?;
     let receipt = ProductionCanisterInstallReceipt {
-        schema_version: 2,
+        schema_version: PRODUCTION_CANISTER_INSTALL_RECEIPT_SCHEMA_VERSION,
         plan_sha256: hex(&canonical_sha256(&plan)?),
         plan: plan.clone(),
         source_revision: plan.source_revision.clone(),
@@ -2898,6 +2945,8 @@ fn write_production_canister_install_receipt(
             operational_config_sha256: hex(&runtime.operational_config_sha256),
         },
         governance_operator: format!("0x{}", hex(&observed_governance_operator)),
+        runtime_administrator: format!("0x{}", hex(&control_plane.runtime_administrator)),
+        independent_canceller: format!("0x{}", hex(&control_plane.independent_canceller)),
         mint_authorization_ttl_seconds: status.mint_authorization_ttl_seconds,
         mint_authorization_epoch: status.mint_authorization_epoch,
         storage_validation_complete: true,
@@ -2906,10 +2955,18 @@ fn write_production_canister_install_receipt(
         state_is_empty: true,
         cycles_reserve_sufficient: true,
     };
-    if observed_governance_operator.len() != 20
-        || observed_governance_operator.iter().all(|byte| *byte == 0)
+    let control_plane_roles = [
+        control_plane.bridge_signer,
+        control_plane.governance_operator,
+        control_plane.runtime_administrator,
+        control_plane.independent_canceller,
+    ];
+    if control_plane_roles
+        .iter()
+        .any(|role| role.len() != 20 || role.iter().all(|byte| *byte == 0))
+        || control_plane_roles.iter().collect::<BTreeSet<_>>().len() != control_plane_roles.len()
     {
-        return Err("governance operator is not a nonzero EVM address".into());
+        return Err("control-plane EVM roles are not nonzero and distinct".into());
     }
     if output.exists() {
         return Err(format!("{} already exists", output.display()));
@@ -3015,7 +3072,7 @@ fn render_release_inputs(
     });
     let constructors = serde_json::json!({
         "bridge": [
-            profile.expected_bridge_signer, profile.governance_operator, profile.timelock.address,
+            profile.expected_bridge_signer, profile.runtime_administrator, profile.timelock.address,
             profile.timelock.runtime_code_hash,
             profile.parameters.per_deposit_limit.to_string(),
             profile.parameters.mint_throughput_limit.to_string(),
@@ -3980,6 +4037,47 @@ fn validate_production_canister_management_state(
     Ok(())
 }
 
+fn validate_control_plane_addresses(
+    profile: &Profile,
+    receipt: &ProductionCanisterInstallReceipt,
+    observed: &ControlPlaneAddressesCallView,
+) -> Result<(), String> {
+    let expected = [
+        &profile.expected_bridge_signer,
+        &profile.governance_operator,
+        &profile.runtime_administrator,
+        &profile.independent_canceller,
+    ];
+    let receipt_values = [
+        &receipt.runtime_binding.expected_bridge_signer,
+        &receipt.governance_operator,
+        &receipt.runtime_administrator,
+        &receipt.independent_canceller,
+    ];
+    let observed_values = [
+        &observed.bridge_signer,
+        &observed.governance_operator,
+        &observed.runtime_administrator,
+        &observed.independent_canceller,
+    ];
+    for ((profile_value, receipt_value), observed_value) in expected
+        .iter()
+        .zip(receipt_values.iter())
+        .zip(observed_values.iter())
+    {
+        if !profile_value.eq_ignore_ascii_case(receipt_value)
+            || !profile_value
+                .trim_start_matches("0x")
+                .eq_ignore_ascii_case(&hex(observed_value))
+        {
+            return Err(
+                "live control-plane addresses differ from the profile or install receipt".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn verify_production_canister_predeploy(
     profile_path: &Path,
     receipt_path: &Path,
@@ -3991,8 +4089,8 @@ fn verify_production_canister_predeploy(
     let bridge =
         Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
     let agent = mainnet_agent(&profile.ic_host, false)?;
-    let (runtime_raw, status_raw, lifecycle_raw, controllers, module_hash) = async_runtime()?
-        .block_on(async {
+    let (runtime_raw, control_plane_raw, status_raw, lifecycle_raw, controllers, module_hash) =
+        async_runtime()?.block_on(async {
             let empty = Encode!().map_err(|error| error.to_string())?;
             let runtime = agent
                 .query(&bridge, "get_runtime_binding")
@@ -4002,6 +4100,12 @@ fn verify_production_canister_predeploy(
                 .map_err(|error| error.to_string())?;
             let status = agent
                 .query(&bridge, "get_bridge_status")
+                .with_arg(empty.clone())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let control_plane = agent
+                .query(&bridge, "get_control_plane_addresses")
                 .with_arg(empty.clone())
                 .call_with_verification()
                 .await
@@ -4020,10 +4124,26 @@ fn verify_production_canister_predeploy(
                 .read_state_canister_module_hash(bridge)
                 .await
                 .map_err(|error| error.to_string())?;
-            Ok::<_, String>((runtime, status, lifecycle, controllers, module_hash))
+            Ok::<_, String>((
+                runtime,
+                control_plane,
+                status,
+                lifecycle,
+                controllers,
+                module_hash,
+            ))
         })?;
     validate_production_canister_management_state(&profile, &receipt, &controllers, &module_hash)?;
     let runtime = Decode!(&runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
+    let control_plane = match Decode!(&control_plane_raw, ControlPlaneAddressesResultView)
+        .map_err(|error| error.to_string())?
+    {
+        ControlPlaneAddressesResultView::Ok(value) => value,
+        ControlPlaneAddressesResultView::Err(_) => {
+            return Err("live control-plane address query failed".into())
+        }
+    };
+    validate_control_plane_addresses(&profile, &receipt, &control_plane)?;
     let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
     if !matches!(
         Decode!(&lifecycle_raw, ProductionLifecycleResultView).map_err(|error| error.to_string())?,
@@ -4353,6 +4473,8 @@ fn validate_activation_attestation(
     let expected_runtime = decode_hex(&profile.bridge_runtime_bytecode_sha256)?;
     let expected_timelock = decode_address(&profile.timelock.address)?;
     let expected_operator = decode_address(&profile.governance_operator)?;
+    let expected_runtime_administrator = decode_address(&profile.runtime_administrator)?;
+    let expected_independent_canceller = decode_address(&profile.independent_canceller)?;
     if attestation.chain_id != profile.chain_id
         || attestation.finalized_block_number < minimum_finalized_block
         || attestation.finalized_block_hash.len() != 32
@@ -4361,10 +4483,10 @@ fn validate_activation_attestation(
         || !attestation.deposits_paused
         || !attestation.withdrawals_paused
         || attestation.bridge_timelock != expected_timelock
-        || attestation.runtime_administrator != expected_operator
+        || attestation.runtime_administrator != expected_runtime_administrator
         || attestation.timelock_admin != expected_timelock
         || attestation.timelock_proposer != expected_operator
-        || attestation.timelock_canceller != expected_operator
+        || attestation.timelock_canceller != expected_independent_canceller
         || attestation.timelock_executor != expected_operator
         || attestation.timelock_runtime_code_hash
             != decode_hex(&profile.timelock.runtime_code_hash)?
@@ -5107,7 +5229,7 @@ fn run() -> Result<(), String> {
         Some("storage-checksum-complete") if args.len() == 3 => {
             println!("{}", storage_checksum_complete(&args[2])?);
         }
-        Some("write-production-canister-receipt") if args.len() == 14 => {
+        Some("write-production-canister-receipt") if args.len() == 15 => {
             write_production_canister_install_receipt(
                 Path::new(&args[2]),
                 &args[3],
@@ -5120,7 +5242,8 @@ fn run() -> Result<(), String> {
                 &args[10],
                 &args[11],
                 &args[12],
-                Path::new(&args[13]),
+                &args[13],
+                Path::new(&args[14]),
             )?;
         }
         Some("validate-bundle") if args.len() == 4 && args[2] == "--offline" => {
@@ -5314,7 +5437,7 @@ mod tests {
     fn valid_profile() -> Profile {
         let bridge_contract = create_address(address_bytes(7), 1);
         Profile {
-            schema_version: 4,
+            schema_version: RELEASE_PROFILE_SCHEMA_VERSION,
             environment: "mainnet-candidate".into(),
             test_assets_only: false,
             chain_id: 8453,
@@ -5343,6 +5466,8 @@ mod tests {
             ecdsa_derivation_path: vec!["KINIC-BASE-BRIDGE".into()],
             governance_ecdsa_derivation_path: vec!["KINIC-BASE-GOVERNANCE".into()],
             governance_operator: address(3),
+            runtime_administrator: address(4),
+            independent_canceller: address(5),
             initial_base_deployment: InitialBaseDeployment {
                 deployer_address: address(7),
                 starting_nonce: 0,
@@ -5355,7 +5480,7 @@ mod tests {
                 runtime_code_hash: format!("0x{}", "ab".repeat(32)),
                 minimum_delay_seconds: 86_400,
                 proposer: address(3),
-                canceller: address(3),
+                canceller: address(5),
                 executor: address(3),
                 external_admins: 0,
             },
@@ -5515,7 +5640,7 @@ mod tests {
             )
             .unwrap());
         ProductionCanisterInstallReceipt {
-            schema_version: 2,
+            schema_version: PRODUCTION_CANISTER_INSTALL_RECEIPT_SCHEMA_VERSION,
             plan_sha256: hex(&canonical_sha256(&plan).unwrap()),
             plan: plan.clone(),
             source_revision: plan.source_revision.clone(),
@@ -5526,6 +5651,8 @@ mod tests {
             init_candid_sha256,
             runtime_binding,
             governance_operator: profile.governance_operator.clone(),
+            runtime_administrator: profile.runtime_administrator.clone(),
+            independent_canceller: profile.independent_canceller.clone(),
             mint_authorization_ttl_seconds: 900,
             mint_authorization_epoch: 7,
             storage_validation_complete: true,
@@ -5570,7 +5697,7 @@ mod tests {
         let mut receipt = production_canister_receipt(&profile);
         assert!(validate_production_canister_receipt(&profile, &receipt).is_ok());
         let mut obsolete_receipt = receipt.clone();
-        obsolete_receipt.schema_version = 1;
+        obsolete_receipt.schema_version = 2;
         assert!(validate_production_canister_receipt(&profile, &obsolete_receipt).is_err());
         receipt.deposits_paused = false;
         assert!(validate_production_canister_receipt(&profile, &receipt).is_err());
@@ -5578,6 +5705,50 @@ mod tests {
         receipt.plan.init.cycles_floor += 1;
         receipt.plan_sha256 = hex(&canonical_sha256(&receipt.plan).unwrap());
         assert!(validate_production_canister_receipt(&profile, &receipt).is_err());
+    }
+
+    #[test]
+    fn production_canister_predeploy_rejects_every_control_plane_role_drift() {
+        let profile = valid_profile();
+        let receipt = production_canister_receipt(&profile);
+        let observed = ControlPlaneAddressesCallView {
+            bridge_signer: decode_hex(&profile.expected_bridge_signer).unwrap(),
+            governance_operator: decode_hex(&profile.governance_operator).unwrap(),
+            runtime_administrator: decode_hex(&profile.runtime_administrator).unwrap(),
+            independent_canceller: decode_hex(&profile.independent_canceller).unwrap(),
+        };
+        assert!(validate_control_plane_addresses(&profile, &receipt, &observed).is_ok());
+
+        for index in 0..4 {
+            let mut drifted = observed.clone();
+            match index {
+                0 => drifted.bridge_signer[0] ^= 1,
+                1 => drifted.governance_operator[0] ^= 1,
+                2 => drifted.runtime_administrator[0] ^= 1,
+                _ => drifted.independent_canceller[0] ^= 1,
+            }
+            assert!(validate_control_plane_addresses(&profile, &receipt, &drifted).is_err());
+        }
+
+        let mut reordered = observed.clone();
+        std::mem::swap(
+            &mut reordered.runtime_administrator,
+            &mut reordered.independent_canceller,
+        );
+        assert!(validate_control_plane_addresses(&profile, &receipt, &reordered).is_err());
+
+        for index in 0..4 {
+            let mut drifted_receipt = receipt.clone();
+            match index {
+                0 => drifted_receipt.runtime_binding.expected_bridge_signer = address(9),
+                1 => drifted_receipt.governance_operator = address(9),
+                2 => drifted_receipt.runtime_administrator = address(9),
+                _ => drifted_receipt.independent_canceller = address(9),
+            }
+            assert!(
+                validate_control_plane_addresses(&profile, &drifted_receipt, &observed).is_err()
+            );
+        }
     }
 
     #[test]
@@ -5627,6 +5798,8 @@ mod tests {
         finalized_block_number: u64,
     ) -> ActivationAttestationView {
         let operator = decode_address(&profile.governance_operator).unwrap();
+        let runtime_administrator = decode_address(&profile.runtime_administrator).unwrap();
+        let independent_canceller = decode_address(&profile.independent_canceller).unwrap();
         let timelock = decode_address(&profile.timelock.address).unwrap();
         ActivationAttestationView {
             chain_id: profile.chain_id,
@@ -5640,10 +5813,10 @@ mod tests {
             deposits_paused: true,
             withdrawals_paused: true,
             bridge_timelock: timelock.to_vec(),
-            runtime_administrator: operator.to_vec(),
+            runtime_administrator: runtime_administrator.to_vec(),
             timelock_admin: timelock.to_vec(),
             timelock_proposer: operator.to_vec(),
-            timelock_canceller: operator.to_vec(),
+            timelock_canceller: independent_canceller.to_vec(),
             timelock_executor: operator.to_vec(),
             timelock_runtime_code_hash: decode_hex(&profile.timelock.runtime_code_hash).unwrap(),
             bridge_approved_timelock_runtime_code_hash: decode_hex(
@@ -6080,7 +6253,7 @@ mod tests {
     #[test]
     fn profile_has_no_self_asserted_status_and_requires_provider_independence() {
         let mut profile = valid_profile();
-        profile.schema_version = 3;
+        profile.schema_version = 4;
         assert!(validate_profile(&profile, true).is_err());
         profile = valid_profile();
         profile.base_rpc_url = Some("https://rpc.example".into());
@@ -6106,6 +6279,9 @@ mod tests {
         assert!(validate_profile(&profile, true).is_err());
         let mut profile = valid_profile();
         profile.governance_operator = profile.expected_bridge_signer.clone();
+        assert!(validate_profile(&profile, true).is_err());
+        let mut profile = valid_profile();
+        profile.independent_canceller = profile.runtime_administrator.clone();
         assert!(validate_profile(&profile, true).is_err());
         let mut profile = valid_profile();
         profile.timelock.runtime_code_hash = format!("0x{}", "00".repeat(32));
@@ -6277,7 +6453,7 @@ mod tests {
         let mut profile = valid_profile();
         profile.timelock.proposer = profile.governance_operator.clone();
         profile.timelock.executor = profile.governance_operator.clone();
-        profile.timelock.canceller = profile.governance_operator.clone();
+        profile.timelock.canceller = profile.independent_canceller.clone();
         profile.bridge_canister_wasm_sha256 = hex(&Sha256::digest(b"wasm"));
         profile.bridge_runtime_bytecode_sha256 = hex(&Sha256::digest(b"runtime"));
         profile.deployment_block = 0;
@@ -6703,7 +6879,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             timelock_deployment_block_number,
             timelock_deployment_block_hash,
             canister_install: ProductionCanisterInstallReceipt {
-                schema_version: 2,
+                schema_version: PRODUCTION_CANISTER_INSTALL_RECEIPT_SCHEMA_VERSION,
                 plan_sha256: canister_plan_sha256,
                 plan: canister_plan,
                 source_revision: "a".repeat(40),
@@ -6714,6 +6890,8 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 init_candid_sha256: canister_init_candid_sha256,
                 runtime_binding: canister_runtime_binding,
                 governance_operator: profile.governance_operator.clone(),
+                runtime_administrator: profile.runtime_administrator.clone(),
+                independent_canceller: profile.independent_canceller.clone(),
                 mint_authorization_ttl_seconds: 900,
                 mint_authorization_epoch: 7,
                 storage_validation_complete: true,

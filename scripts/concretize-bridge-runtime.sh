@@ -10,7 +10,7 @@ for tool in anvil cast forge python3; do command -v "$tool" >/dev/null || { echo
 read -r CHAIN DEPLOYER NONCE TIMELOCK BRIDGE BSNS DELAY PROPOSER CANCELLER EXECUTOR SIGNER ADMIN TL_HASH PER_DEPOSIT MINT_LIMIT MINT_WINDOW MIN_FEE MAX_FEE SERVICE_FEE < <(python3 - "$PROFILE" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1],encoding='utf-8')); d=p['initial_base_deployment']; t=p['timelock']; v=p['parameters']
-print(p['chain_id'],d['deployer_address'],d['starting_nonce'],t['address'],p['bridge_contract'],p['bsns_contract'],t['minimum_delay_seconds'],t['proposer'],t['canceller'],t['executor'],p['expected_bridge_signer'],p['governance_operator'],t['runtime_code_hash'],v['per_deposit_limit'],v['mint_throughput_limit'],v['mint_window_duration_seconds'],v['min_service_fee'],v['max_service_fee'],v['service_fee'])
+print(p['chain_id'],d['deployer_address'],d['starting_nonce'],t['address'],p['bridge_contract'],p['bsns_contract'],t['minimum_delay_seconds'],t['proposer'],t['canceller'],t['executor'],p['expected_bridge_signer'],p['runtime_administrator'],t['runtime_code_hash'],v['per_deposit_limit'],v['mint_throughput_limit'],v['mint_window_duration_seconds'],v['min_service_fee'],v['max_service_fee'],v['service_fee'])
 PY
 )
 PORT="$(python3 - <<'PY'

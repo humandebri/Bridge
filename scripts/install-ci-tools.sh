@@ -98,6 +98,9 @@ install_ci_tools() {
 
 install_proof_tools() {
   local z3_archive="/tmp/z3.zip"
+  local z3_root="$HOME/.local/z3-5.0.0"
+  local z3_binary="$z3_root/z3-5.0.0-x64-glibc-2.39/bin/z3"
+  local z3_version=""
   local verus_archive="/tmp/verus.zip"
   local elan_installer="/tmp/elan-init.sh"
 
@@ -115,16 +118,21 @@ install_proof_tools() {
     echo "ripgrep already installed; skipping apt refresh" >&2
   fi
 
-  if [[ ! -x "$BIN_DIR/z3" ]]; then
+  if [[ -x "$BIN_DIR/z3" ]]; then
+    z3_version="$("$BIN_DIR/z3" --version 2>&1 || true)"
+  fi
+  if [[ ! "$z3_version" =~ ^Z3\ version\ 5\.0\.0([[:space:]]|$) ]]; then
     curl --proto '=https' --tlsv1.2 -LsSf \
       -o "$z3_archive" \
-      https://github.com/Z3Prover/z3/releases/download/z3-4.16.0/z3-4.16.0-x64-glibc-2.39.zip
-    echo "7288c49a5bd6dbafd7b0b0d1f65956b91672da24b08f09242919af159be3418e  $z3_archive" \
+      https://github.com/Z3Prover/z3/releases/download/z3-5.0.0/z3-5.0.0-x64-glibc-2.39.zip
+    echo "d4922cebc9f0a55629231ec0c62f0bbedf8006eddaed4e68199ad19626b697f6  $z3_archive" \
       | sha256sum --check
-    unzip -q "$z3_archive" -d "$HOME/.local/z3"
-    ln -sf "$(find "$HOME/.local/z3" -type f -path '*/bin/z3' -print -quit)" "$BIN_DIR/z3"
+    mkdir -p "$z3_root"
+    unzip -qo "$z3_archive" -d "$z3_root"
+    [[ -x "$z3_binary" ]] || { echo "Z3 archive did not contain the pinned binary" >&2; return 1; }
+    ln -sfn "$z3_binary" "$BIN_DIR/z3"
   else
-    echo "z3 already installed; skipping download" >&2
+    echo "Z3 5.0.0 already installed; skipping download" >&2
   fi
 
   if ! rustup toolchain list | rg -q '^1\.96\.0'; then

@@ -59,13 +59,21 @@ async function emit(path, contents) {
 function browserBridgeInterface(source) {
   const projected = source
     .replace(/type BridgeInitArgs = record \{[\s\S]*?\n\};\n/, "")
+    .replace(/type ControlPlaneAddressesError = variant \{[\s\S]*?\n\};\n/, "")
+    .replace(/type ControlPlaneAddressesView = record \{[\s\S]*?\n\};\n/, "")
     .replace(/type OperationalConfig = record \{[\s\S]*?\n\};\n/, "")
     .replace(/type OperationalConfigError = variant \{ Unauthorized \};\n/, "")
-    .replace(/type Result_9 = variant \{\n  Ok : OperationalConfig;\n  Err : OperationalConfigError;\n\};\n/, "")
-    .replace(/  get_operational_config : \(\) -> \(Result_9\) query;\n/, "")
+    .replace(/type Result_9 = variant \{\n  Ok : ControlPlaneAddressesView;\n  Err : ControlPlaneAddressesError;\n\};\n/, "")
+    .replace(/type Result_10 = variant \{\n  Ok : OperationalConfig;\n  Err : OperationalConfigError;\n\};\n/, "")
+    .replace(/  get_control_plane_addresses : \(\) -> \(Result_9\) query;\n/, "")
+    .replace(/  get_operational_config : \(\) -> \(Result_10\) query;\n/, "")
+    .replace(/\bResult_(\d+)\b/g, (name, index) => Number(index) >= 10 ? `Result_${Number(index) - 1}` : name)
     .replace("service : (BridgeInitArgs) -> {", "service : {")
   if (projected.includes("type OperationalConfig =")
     || projected.includes("type OperationalConfigError =")
+    || projected.includes("type ControlPlaneAddressesView =")
+    || projected.includes("type ControlPlaneAddressesError =")
+    || projected.includes("get_control_plane_addresses")
     || projected.includes("get_operational_config")
     || projected.includes("confirmation_relayer_principal")) {
     throw new Error("UI Bridge projection still exposes operational configuration")

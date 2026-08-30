@@ -18,7 +18,7 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 `bridge-canister`はstable schema v35・record wire v30の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
 ICP→BaseではCanisterはFinalized Base snapshotで状態・fee・pauseを確認し、IC合意時刻の発行時点から10分を期限とするEIP-712 Mint Authorizationへ署名する。署名install時に5分以上残っていなければservice feeを計上せず停止し、Base transactionは生成・送信しない。任意のBase walletが残り5分以上で`mintDepositWithAuthorization`を送り、そのwalletがgasを支払う。Solidityは別途、現在のBase時刻から最大15分のdeadline上限を強制する。
 期限後、既存のBase Finalized snapshotを使うdeadline順の上限付きローカル走査でmint予約だけを解放する。Depositごとのtimerや個別Base照合、自動返金は行わない。任意の非anonymous Principalが`request_deposit_refund`を明示実行すると、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を照合し、未処理ならrecordに固定された元account・金額・transfer identityでLedger refund、処理済みならexact `DepositMinted` eventとcanonical receiptを保存して`Minted`へ進む。RPC不一致、event欠落、digest不一致では資金を動かさない。
-Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacementは存在しない。Base governanceではCanisterがGovernance Operatorのtransactionをthreshold署名し、外部`governance-relayer` CLIだけがbroadcast、Finalized待機、確定通知を行う。自動replacementはなく、Governanceの明示要求時だけ同一nonceを最大3回、12.5%以上fee bumpして再署名する。
+Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacementは存在しない。Base governanceではCanisterが用途別にGovernance Operator、Runtime Administrator、Independent Cancellerのtransactionを独立nonce laneでthreshold署名し、外部`governance-relayer` CLIだけがbroadcast、Finalized待機、確定通知を行う。自動replacementはなく、Governanceの明示要求時だけ同一nonceを最大3回、12.5%以上fee bumpして再署名する。
 Base側はKINICを表すERC-20（`name = "KINIC"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、固定limit、上限内Service Fee変更、role rotationを実装し、危険方向の操作をOpenZeppelinの24時間Timelockへ接続している。
 
 Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その同一transactionでbSNSの`transferFrom`、burn、固定受取額を持つ`Committed`化を原子的に実行する。Canisterは同じcanonical Finalized block hashへ束縛したreceipt、event、Withdrawal state、Bridge snapshotをquorumで検証し、固定IC Accountへの債務とtransfer identityを保存する。通知成功後にUIがbrowser identityで`continue_withdrawal`を1回実行し、未完了ならHistoryの明示操作ごとにLedger送金または照合を最大1 external step進める。Canister timerによるWithdrawal再試行、Base refund、release acknowledgementはない。Finalized headまたはcanonical hashが2-of-3で収束しない場合はfail closedとし、Safeへfallbackしない。
@@ -49,7 +49,7 @@ Bridge canisterはこのLedgerとIndexだけを対象とする。Ledger metadata
 | Foundry / Anvil | 1.7.1 |
 | Solidity | 0.8.36 |
 | OpenZeppelin Contracts | 5.6.1 (`5fd1781b1454fd1ef8e722282f86f9293cacf256`) |
-| Z3 | 4.16.0 |
+| Z3 | 5.0.0 |
 | Verus | 0.2026.07.05.49b8806 |
 | Lean | 4.30.0 |
 | Node.js | 24.14.0 |
@@ -149,10 +149,10 @@ python3 scripts/protocol_vectors.py --check
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
 3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 35、全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
-5. 24時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
+5. 24時間delay、Canister由来Governance Operator限定のproposer/executor、別derivationのIndependent Canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
 7. Bridge Signerからsmoke用Depositをmintし、ユーザーの`createWithdrawal`によるatomic burnと`Committed`固定quoteを確認する。Withdrawal用の追加Base transactionと再mint selectorが存在しないことも確認する。
-8. Canister由来Governance OperatorのService Fee変更とpause、外部EOAからの直接unpause拒否、24時間前のTimelock execute拒否、経過後のCanister実行によるunpauseを確認する。
+8. Canister由来Runtime AdministratorのService Fee変更とpause、外部EOAからの直接unpause拒否、Governance Operatorによる24時間前のTimelock execute拒否、経過後のCanister実行によるunpauseを確認する。
 9. Withdrawalのburn後の残高・supply、mint window、Withdrawal連番を確認する。
 10. 本スクリプトが起動したprocessだけを終了し、一時変更した`icp.yaml`を復元する。
 
