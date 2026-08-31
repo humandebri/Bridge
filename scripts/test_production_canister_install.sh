@@ -444,9 +444,9 @@ fi
   echo "failed to establish the fsmonitor-valid test precondition" >&2
   exit 1
 }
+git -C "$T/source" config --unset core.fsmonitor
 git -C "$T/source" update-index --no-fsmonitor-valid Cargo.lock
 git -C "$T/source" update-index --no-fsmonitor
-git -C "$T/source" config --unset core.fsmonitor
 
 if PATH="$T/bin:$PATH" INSTALL_FAIL=true BRIDGE_ICP_IDENTITY=production \
   "$T/source/scripts/production-canister-install.sh" --plan "$T/plan.json" \

@@ -48,6 +48,35 @@ BRIDGE_NONCE="$((START_NONCE + 1))"
 BALANCE="$(cast balance "$DEPLOYER" --rpc-url "$BASE_RPC_URL")"
 LIABILITY="$(python3 -c 'import sys;print(int(sys.argv[1])*int(sys.argv[2])*2)' "$GAS_LIMIT" "$MAX_FEE")"
 python3 -c 'import sys;sys.exit("insufficient deployer balance") if int(sys.argv[1]) <= int(sys.argv[2]) else None' "$BALANCE" "$LIABILITY"
+PENDING_BLOCK="$(cast block pending --rpc-url "$BASE_RPC_URL" --json)" || { echo "current Base fee unavailable" >&2; exit 1; }
+SUGGESTED_PRIORITY_FEE="$(cast rpc --rpc-url "$BASE_RPC_URL" eth_maxPriorityFeePerGas)" || { echo "current Base priority fee unavailable" >&2; exit 1; }
+python3 - "$PENDING_BLOCK" "$SUGGESTED_PRIORITY_FEE" "$MAX_FEE" "$PRIORITY_FEE" <<'PY'
+import json,re,sys
+
+def rpc_quantity(value, name):
+    if not isinstance(value, str) or not re.fullmatch(r'0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)', value):
+        raise SystemExit(f'{name} is malformed')
+    return int(value, 16)
+
+def profile_quantity(value, name):
+    if not isinstance(value, str) or not re.fullmatch(r'(?:0|[1-9][0-9]*)', value):
+        raise SystemExit(f'{name} is malformed')
+    return int(value)
+
+try:
+    pending = json.loads(sys.argv[1])
+    suggested = json.loads(sys.argv[2])
+except json.JSONDecodeError:
+    raise SystemExit('current Base fee response is malformed')
+base_fee = rpc_quantity(pending.get('baseFeePerGas'), 'current Base fee') if isinstance(pending, dict) else rpc_quantity(None, 'current Base fee')
+suggested_priority = rpc_quantity(suggested, 'current Base priority fee')
+max_fee = profile_quantity(sys.argv[3], 'profile max fee')
+priority_fee = profile_quantity(sys.argv[4], 'profile priority fee')
+if suggested_priority > priority_fee:
+    raise SystemExit('current Base priority fee exceeds the approved profile ceiling; no transaction submitted')
+if base_fee + priority_fee > max_fee:
+    raise SystemExit('current Base fee exceeds the approved profile ceiling; no transaction submitted')
+PY
 
 checkpoint() {
   python3 - "$BRIDGE_DEPLOYMENT_BINDING_FILE.checkpoint" "$1" "$2" "$3" "${4:-}" <<'PY'

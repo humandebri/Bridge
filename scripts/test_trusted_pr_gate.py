@@ -290,6 +290,11 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertNotIn("/home/runner/.local/share/icp-cli/identity", wrapper)
         self.assertIn("ICP_CLI_DISABLE_UPDATE=1", wrapper)
         self.assertIn("ICP_TELEMETRY_DISABLED=1", wrapper)
+        self.assertLess(
+            wrapper.index('chmod -R 0777 "$SCRATCH"'),
+            wrapper.index('chmod 0700 "$SCRATCH/tmp"'),
+        )
+        self.assertIn("TMPDIR=/scratch/tmp", wrapper)
         self.assertNotIn("GITHUB_TOKEN", wrapper)
         self.assertNotIn("GH_TOKEN", wrapper)
 

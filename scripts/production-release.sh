@@ -208,12 +208,31 @@ PY
   CANISTER_INSTALL_RECEIPT="$FROZEN_CANISTER_INSTALL_RECEIPT"
   run_profile_gate validate-production-canister-receipt \
     "$BUNDLE/profile.json" "$CANISTER_INSTALL_RECEIPT" >/dev/null
-  python3 - "$CANISTER_INSTALL_RECEIPT" "$CURRENT_SOURCE_REVISION" "$CURRENT_SOURCE_TREE_SHA256" <<'PY'
+  read -r INSTALLED_SOURCE_REVISION INSTALLED_SOURCE_TREE_SHA256 < <(
+    python3 - "$CANISTER_INSTALL_RECEIPT" <<'PY'
 import json, sys
 receipt = json.load(open(sys.argv[1], encoding="utf-8"))
-if receipt.get("source_revision") != sys.argv[2] or str(receipt.get("source_tree_sha256", "")).lower() != sys.argv[3].lower():
-    raise SystemExit("production Canister install receipt is not bound to the current clean source")
+print(receipt.get("source_revision", ""), str(receipt.get("source_tree_sha256", "")).lower())
 PY
+  )
+  [[ "$INSTALLED_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ \
+    && "$INSTALLED_SOURCE_TREE_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "production Canister install receipt source identity is malformed" >&2
+    exit 1
+  }
+  git -C "$SOURCE_ROOT" cat-file -e "${INSTALLED_SOURCE_REVISION}^{commit}" 2>/dev/null \
+    && git -C "$SOURCE_ROOT" merge-base --is-ancestor \
+      "$INSTALLED_SOURCE_REVISION" "$CURRENT_SOURCE_REVISION" \
+    || { echo "production Canister install receipt source is not an ancestor of the current clean source" >&2; exit 1; }
+  INSTALLED_SOURCE_TREE_ACTUAL="$(
+    git -C "$SOURCE_ROOT" --attr-source="$INSTALLED_SOURCE_REVISION" \
+      archive --format=tar "$INSTALLED_SOURCE_REVISION" \
+      | shasum -a 256 | awk '{print tolower($1)}'
+  )"
+  [[ "$INSTALLED_SOURCE_TREE_ACTUAL" == "$INSTALLED_SOURCE_TREE_SHA256" ]] || {
+    echo "production Canister install receipt source tree is not available from the current repository" >&2
+    exit 1
+  }
   STRUCTURAL_GATE_OUTPUT="$(run_profile_gate validate-bundle --offline "$BUNDLE")"
   printf '%s\n' "$STRUCTURAL_GATE_OUTPUT"
   [[ "$STRUCTURAL_GATE_OUTPUT" =~ ^gate_a=pass[[:space:]]authorizing=true[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || {

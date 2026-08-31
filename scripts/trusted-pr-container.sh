@@ -41,6 +41,7 @@ mkdir -p "$SCRATCH/home" "$SCRATCH/tmp" "$SCRATCH/target" "$SCRATCH/contracts-ou
   "$SCRATCH/home/.svm" "$SCRATCH/home/.elan/toolchains" \
   "$SCRATCH/home/.local/share/icp-cli/pkg" "$SCRATCH/home/.config"
 chmod -R 0777 "$SCRATCH"
+chmod 0700 "$SCRATCH/tmp"
 chmod 0555 "$SCRATCH/empty-tools"
 
 bridge_prepare_mountpoint "$SOURCE_ROOT" scripts
