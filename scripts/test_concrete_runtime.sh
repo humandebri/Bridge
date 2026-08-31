@@ -24,7 +24,7 @@ value={
              "canceller":"0x0000000000000000000000000000000000000004",
              "executor":"0x0000000000000000000000000000000000000003"},
  "parameters":{"per_deposit_limit":"1","mint_throughput_limit":"1","mint_window_duration_seconds":"3600",
-               "min_service_fee":"1","max_service_fee":"1000000000","service_fee":"50000000"}}
+               "ledger_fee":"1","max_service_fee":"1000000000","service_fee":"50000000"}}
 with open(target,'w',encoding='utf-8') as out: json.dump(value,out)
 PY
 bash "$ROOT/scripts/concretize-bridge-runtime.sh" "$ROOT" "$T/profile.json" "$T/first.bin"
