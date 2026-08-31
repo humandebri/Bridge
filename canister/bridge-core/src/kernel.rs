@@ -1,7 +1,5 @@
 // These expression macros are the single source for the Cargo executable functions and their
 // Verus spec views. Keep them free of allocation, traits, I/O, and canister APIs.
-pub const MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS: u64 = 300;
-
 #[cfg(not(verus_keep_ghost))]
 macro_rules! verus {
     (
@@ -53,6 +51,10 @@ macro_rules! verus {
     ($($tokens:tt)*) => {
         $($tokens)*
     };
+}
+
+verus! {
+pub const MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS: u64 = 300;
 }
 
 macro_rules! scan_complete_body {
