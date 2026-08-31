@@ -148,7 +148,12 @@ function Wrapper({ children }: { children: ReactNode }) {
   return <StrictMode><QueryClientProvider client={client}><BridgeProgressProvider>{children}</BridgeProgressProvider></QueryClientProvider></StrictMode>
 }
 
-function runtimeObservationAt(blockTimestamp: bigint) {
+function runtimeObservationAt(blockTimestamp: bigint, window: {
+  minted?: bigint
+  limit?: bigint
+  startedAt?: bigint
+  duration?: bigint
+} = {}) {
   return {
     data: {
       ready: true,
@@ -167,6 +172,7 @@ function runtimeObservationAt(blockTimestamp: bigint) {
         bridgeSigner: "0x0000000000000000000000000000000000000001",
         mintAuthorizationEpoch: 1n,
         blockTimestamp,
+        ...window,
       },
     },
     isError: false,
@@ -943,6 +949,87 @@ describe("BridgePage automatic wallet refresh", () => {
 
     expect(await screen.findByRole("button", { name: "Continue to IC wallet" })).toBeEnabled()
     expect(screen.queryByText(/Base finality is too far behind/)).not.toBeInTheDocument()
+    expect(adapter.prepare).not.toHaveBeenCalled()
+    expect(adapter.approve).not.toHaveBeenCalled()
+    expect(adapter.requestDeposit).not.toHaveBeenCalled()
+    expect(mocks.saveDepositIntent).not.toHaveBeenCalled()
+  })
+
+  it("rejects_a_full_mint_window_using_the_finalized_snapshot_timestamp", async () => {
+    const account = { owner: "aaaaa-aa" }
+    const adapter = {
+      prepare: vi.fn(),
+      getAccount: vi.fn().mockResolvedValue(account),
+      approve: vi.fn(),
+      requestDeposit: vi.fn(),
+    }
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter,
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    const now = BigInt(Math.floor(Date.now() / 1_000))
+    const blockTimestamp = now - 1_200n
+    const limit = 15_000_000_000_000n
+    mocks.baseRefetch.mockResolvedValue(runtimeObservationAt(blockTimestamp, {
+      minted: limit,
+      limit,
+      startedAt: blockTimestamp - 3_599n,
+      duration: 3_600n,
+    }))
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to Base" }))
+
+    expect(await screen.findByText("Amount exceeds the remaining mint window limit")).toBeVisible()
+    expect(adapter.prepare).not.toHaveBeenCalled()
+    expect(adapter.approve).not.toHaveBeenCalled()
+    expect(adapter.requestDeposit).not.toHaveBeenCalled()
+    expect(mocks.saveDepositIntent).not.toHaveBeenCalled()
+  })
+
+  it("does_not_start_wallet_or_Ledger_work_at_the_exact_mint_window_boundary", async () => {
+    const account = { owner: "aaaaa-aa" }
+    const adapter = {
+      prepare: vi.fn(),
+      getAccount: vi.fn().mockResolvedValue(account),
+      approve: vi.fn(),
+      requestDeposit: vi.fn(),
+    }
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter,
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    const blockTimestamp = BigInt(Math.floor(Date.now() / 1_000)) - 1_200n
+    mocks.baseRefetch.mockResolvedValue(runtimeObservationAt(blockTimestamp, {
+      minted: 0n,
+      startedAt: blockTimestamp - 3_600n,
+      duration: 3_600n,
+    }))
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to Base" }))
+
+    expect(await screen.findByText("The finalized mint window snapshot is at its rollover boundary; refresh and review again")).toBeVisible()
     expect(adapter.prepare).not.toHaveBeenCalled()
     expect(adapter.approve).not.toHaveBeenCalled()
     expect(adapter.requestDeposit).not.toHaveBeenCalled()

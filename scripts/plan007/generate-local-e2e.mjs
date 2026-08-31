@@ -9,6 +9,7 @@ const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const LOCAL_E2E_SCHEMA_VERSION = 8
 export const STAGING_ACTIVATION_DELAY_SECONDS = 300
 export const CURRENT_STABLE_SCHEMA_VERSION = 35
+export const CURRENT_RECORD_WIRE_VERSION = 30
 
 export function validateUpgradeEvidence(upgrade) {
   if (!upgrade || upgrade.verified !== true) throw new Error("real E2E did not prove same-Wasm state preservation")
@@ -72,6 +73,8 @@ export async function generateLocalEvidence(root = defaultRoot, requestedOutputP
     schema_version: LOCAL_E2E_SCHEMA_VERSION,
     environment_mode: "short-delay-test-only",
     activation_timelock_delay_seconds: STAGING_ACTIVATION_DELAY_SECONDS,
+    stable_schema_version: CURRENT_STABLE_SCHEMA_VERSION,
+    record_wire_version: CURRENT_RECORD_WIRE_VERSION,
     deployment_instance_id: bytesHex(upgrade.after.runtime_binding.deployment_instance_id),
     created_at: new Date().toISOString(),
     source_commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),

@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MANIFEST="${BRIDGE_STAGING_E2E_MANIFEST:-$ROOT/deployments/sepolia-staging/evidence/sepolia-e2e.json}"
-LOCAL_EVIDENCE="$ROOT/deployments/sepolia-staging/evidence/local-e2e.json"
+LOCAL_EVIDENCE="${BRIDGE_STAGING_LOCAL_EVIDENCE:-}"
 PROFILE="$ROOT/deployments/sepolia-staging/frontend-profile.json"
 RECORDER="$ROOT/scripts/plan007/sepolia_e2e.py"
 RPC_RECORDER="$ROOT/scripts/evm-rpc-rehearsal/rehearsal.py"
@@ -12,6 +12,17 @@ MODE="${1:-status}"
 
 case "$MODE" in
   init)
+    [[ -n "$LOCAL_EVIDENCE" && "$LOCAL_EVIDENCE" = /* && -f "$LOCAL_EVIDENCE" ]] || {
+      echo "BRIDGE_STAGING_LOCAL_EVIDENCE must name an existing absolute schema v8 evidence file outside the repository" >&2
+      exit 2
+    }
+    LOCAL_EVIDENCE="$(realpath "$LOCAL_EVIDENCE")"
+    case "$LOCAL_EVIDENCE" in
+      "$ROOT"|"$ROOT"/*)
+        echo "BRIDGE_STAGING_LOCAL_EVIDENCE must be outside the repository; checked-in v7 evidence is history-only" >&2
+        exit 2
+        ;;
+    esac
     python3 "$RECORDER" init "$MANIFEST" "$LOCAL_EVIDENCE" "$PROFILE" --repo-root "$ROOT"
     ;;
   status)

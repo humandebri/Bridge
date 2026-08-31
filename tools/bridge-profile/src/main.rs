@@ -25,14 +25,6 @@ const KINIC_INDEX: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
 const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
-const STAGING_LEDGER: &str = "3jkp5-oyaaa-aaaaj-azwqa-cai";
-const STAGING_INDEX: &str = "qzre3-3iaaa-aaaai-aqmsa-cai";
-const STAGING_BRIDGE_CANISTER: &str = "rlhjx-iyaaa-aaaaf-qcnyq-cai";
-const STAGING_RPC_URLS: [&str; 3] = [
-    "https://base-sepolia-rpc.publicnode.com",
-    "https://sepolia.base.org",
-    "https://base-sepolia.drpc.org",
-];
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
 const MAX_ACTIVATION_ATTESTATION_AGE_SECS: u64 = 5 * 60;
 const CURRENT_STABLE_SCHEMA_VERSION: u16 = 35;
@@ -2084,9 +2076,8 @@ fn write_generated<T: Serialize>(root: &Path, name: &str, value: &T) -> Result<S
     Ok(hex(&Sha256::digest(bytes)))
 }
 
-fn canister_init_args(
+fn production_init_args(
     input: &ProductionCanisterInitInput,
-    staging: bool,
 ) -> Result<ProductionCanisterInitArgs, String> {
     let bytes = |name: &str, value: &str, expected: usize| -> Result<Vec<u8>, String> {
         let decoded = decode_hex(value)?;
@@ -2102,21 +2093,12 @@ fn canister_init_args(
         }
         Ok(parsed)
     };
-    let environment_binding_valid = if staging {
-        input.base_chain_id == 84532
-            && input.ledger_canister_id == STAGING_LEDGER
-            && input.index_canister_id == STAGING_INDEX
-            && input.custom_evm_rpc_urls == STAGING_RPC_URLS
-            && input.expected_timelock_minimum_delay_seconds == 300
-            && input.expected_minimum_service_fee == 10_000
-    } else {
-        input.base_chain_id == 8453
-            && input.ledger_canister_id == KINIC_LEDGER
-            && input.index_canister_id == KINIC_INDEX
-            && input.custom_evm_rpc_urls.is_empty()
-            && input.expected_timelock_minimum_delay_seconds >= 86_400
-            && input.expected_minimum_service_fee == 100_000
-    };
+    let environment_binding_valid = input.base_chain_id == 8453
+        && input.ledger_canister_id == KINIC_LEDGER
+        && input.index_canister_id == KINIC_INDEX
+        && input.custom_evm_rpc_urls.is_empty()
+        && input.expected_timelock_minimum_delay_seconds >= 86_400
+        && input.expected_minimum_service_fee == 100_000;
     if !environment_binding_valid
         || input.evm_rpc_canister_id != OFFICIAL_EVM_RPC_CANISTER
         || input.ecdsa_key_name != "key_1"
@@ -2224,18 +2206,6 @@ fn canister_init_args(
     })
 }
 
-fn production_init_args(
-    input: &ProductionCanisterInitInput,
-) -> Result<ProductionCanisterInitArgs, String> {
-    canister_init_args(input, false)
-}
-
-fn staging_init_args(
-    input: &ProductionCanisterInitInput,
-) -> Result<ProductionCanisterInitArgs, String> {
-    canister_init_args(input, true)
-}
-
 fn validate_production_canister_plan(plan: &ProductionCanisterPlan) -> Result<Vec<u8>, String> {
     if plan.schema_version != 1
         || plan.environment != "production"
@@ -2247,21 +2217,6 @@ fn validate_production_canister_plan(plan: &ProductionCanisterPlan) -> Result<Ve
         return Err("invalid production Canister install plan identity".into());
     }
     Encode!(&production_init_args(&plan.init)?).map_err(|error| error.to_string())
-}
-
-fn validate_staging_canister_plan(plan: &ProductionCanisterPlan) -> Result<Vec<u8>, String> {
-    if plan.schema_version != 1
-        || plan.environment != "sepolia-staging"
-        || plan.source_revision.trim().is_empty()
-        || !valid_sha256(&plan.source_tree_sha256)
-        || !principal(&plan.bridge_canister_id)
-        || plan.bridge_canister_id != STAGING_BRIDGE_CANISTER
-        || !valid_sha256(&plan.bridge_canister_wasm_sha256)
-        || plan.init.fee_recipient.owner != plan.bridge_canister_id
-    {
-        return Err("invalid staging Canister install plan identity".into());
-    }
-    Encode!(&staging_init_args(&plan.init)?).map_err(|error| error.to_string())
 }
 
 fn validate_production_canister_plan_against_profile(
@@ -2349,32 +2304,6 @@ fn render_production_canister_inputs(plan_path: &Path, output: &Path) -> Result<
     });
     write_generated(output, "production-canister-install-inputs.json", &manifest)?;
     println!("rendered production Canister install inputs plan_sha256={plan_sha256}");
-    Ok(())
-}
-
-fn render_staging_canister_inputs(plan_path: &Path, output: &Path) -> Result<(), String> {
-    let plan: ProductionCanisterPlan = read_json(plan_path)?;
-    let candid = validate_staging_canister_plan(&plan)?;
-    let plan_sha256 = hex(&canonical_sha256(&plan)?);
-    let init_sha256 = write_generated(output, "canister-init.json", &plan.init)?;
-    fs::create_dir_all(output).map_err(|error| error.to_string())?;
-    let temporary = output.join(format!(".canister-init.bin.tmp-{}", process::id()));
-    fs::write(&temporary, &candid).map_err(|error| error.to_string())?;
-    let candid_path = output.join("canister-init.bin");
-    fs::rename(&temporary, &candid_path).map_err(|error| error.to_string())?;
-    let manifest = serde_json::json!({
-        "schema_version": 1,
-        "plan_sha256": plan_sha256,
-        "source_revision": plan.source_revision,
-        "source_tree_sha256": plan.source_tree_sha256,
-        "canister_id": plan.bridge_canister_id,
-        "module_sha256": plan.bridge_canister_wasm_sha256,
-        "canister_init_sha256": init_sha256,
-        "init_candid_sha256": hex(&Sha256::digest(&candid)),
-        "test_only": true,
-    });
-    write_generated(output, "staging-canister-install-inputs.json", &manifest)?;
-    println!("rendered staging Canister install inputs plan_sha256={plan_sha256}");
     Ok(())
 }
 
@@ -4862,14 +4791,6 @@ fn run() -> Result<(), String> {
         Some("render-production-canister-inputs") if args.len() == 4 => {
             render_production_canister_inputs(Path::new(&args[2]), Path::new(&args[3]))?;
         }
-        Some("validate-staging-canister-plan") if args.len() == 3 => {
-            let plan: ProductionCanisterPlan = read_json(Path::new(&args[2]))?;
-            validate_staging_canister_plan(&plan)?;
-            println!("{}", hex(&canonical_sha256(&plan)?));
-        }
-        Some("render-staging-canister-inputs") if args.len() == 4 => {
-            render_staging_canister_inputs(Path::new(&args[2]), Path::new(&args[3]))?;
-        }
         Some("validate-production-canister-receipt") if args.len() == 4 => {
             println!(
                 "{}",
@@ -4981,7 +4902,7 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[3]
             );
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | derive-mainnet-ecdsa-address <canister-id> [path-part ...] | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-staging-canister-plan <plan.json> | render-staging-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | derive-mainnet-ecdsa-address <canister-id> [path-part ...] | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <bundle-dir> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
     }
     Ok(())
 }
@@ -5299,21 +5220,6 @@ mod tests {
         }
     }
 
-    fn staging_canister_plan() -> ProductionCanisterPlan {
-        let profile = valid_profile();
-        let mut plan = production_canister_plan(&profile);
-        plan.environment = "sepolia-staging".into();
-        plan.bridge_canister_id = STAGING_BRIDGE_CANISTER.into();
-        plan.init.fee_recipient.owner = STAGING_BRIDGE_CANISTER.into();
-        plan.init.ledger_canister_id = STAGING_LEDGER.into();
-        plan.init.index_canister_id = STAGING_INDEX.into();
-        plan.init.custom_evm_rpc_urls = STAGING_RPC_URLS.map(str::to_owned).to_vec();
-        plan.init.base_chain_id = 84532;
-        plan.init.expected_timelock_minimum_delay_seconds = 300;
-        plan.init.expected_minimum_service_fee = 10_000;
-        plan
-    }
-
     #[test]
     fn production_canister_plan_generates_the_typed_candid_init_argument() {
         let profile = valid_profile();
@@ -5329,29 +5235,6 @@ mod tests {
         let mut unsafe_plan = plan;
         unsafe_plan.init.custom_evm_rpc_urls = vec!["https://unreviewed.example".into()];
         assert!(validate_production_canister_plan(&unsafe_plan).is_err());
-    }
-
-    #[test]
-    fn staging_canister_plan_is_typed_and_fixed_to_reviewed_test_bindings() {
-        let plan = staging_canister_plan();
-        let encoded = validate_staging_canister_plan(&plan).unwrap();
-        let decoded = Decode!(&encoded, ProductionCanisterInitArgsCallView).unwrap();
-        assert_eq!(decoded.base_chain_id, 84532);
-        assert_eq!(decoded.custom_evm_rpc_urls, STAGING_RPC_URLS);
-        assert_eq!(decoded.expected_timelock_minimum_delay_seconds, 300);
-        assert_eq!(decoded.expected_minimum_service_fee, 10_000);
-
-        let mut drift = plan.clone();
-        drift.init.custom_evm_rpc_urls.swap(0, 1);
-        assert!(validate_staging_canister_plan(&drift).is_err());
-        let mut production = plan;
-        production.environment = "production".into();
-        assert!(validate_staging_canister_plan(&production).is_err());
-
-        let mut wrong_canister = staging_canister_plan();
-        wrong_canister.bridge_canister_id = test_principal(30);
-        wrong_canister.init.fee_recipient.owner = wrong_canister.bridge_canister_id.clone();
-        assert!(validate_staging_canister_plan(&wrong_canister).is_err());
     }
 
     #[test]

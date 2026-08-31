@@ -1172,6 +1172,66 @@ describe("Phase 3 PocketIC saga", () => {
     stops_a_less_than_300_second_pending_authorization_before_installing_a_signature,
   );
 
+  async function resamples_time_after_Base_revalidation_before_dispatching_a_signature() {
+    const { evm, bridge } = await setup();
+    const result: any = await (bridge.actor as any).request_deposit({
+      owner_sequence: 0n,
+      base_recipient: new Uint8Array(20).fill(4),
+      from_subaccount: [],
+      gross_amount: 200_000n,
+      max_service_fee: 10n,
+    });
+    await (evm.actor as any).set_block_mode({ FinalizedUnavailable: null });
+    await advanceClock(3);
+
+    const pending: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
+    const authorization = pending[0].mint_authorization[0];
+    expect(phaseName(pending[0].state)).toBe("AuthorizationPending");
+    expect(authorization.signature).toEqual([]);
+    expect(authorization.signature_dispatch_attempt).toBe(0);
+    expect(pending[0].last_settlement_stop_reason).toEqual([{ RpcUnavailable: null }]);
+
+    await (evm.actor as any).set_block_mode({ FinalizedDelayed: null });
+    const nextRunAtNs = BigInt(pending[0].automatic_progress[0].state.Scheduled.next_run_at_ns);
+    const nowNs = BigInt(await pic!.getTime()) * 1_000_000n;
+    if (nextRunAtNs >= nowNs) {
+      const untilDueMs = Number((nextRunAtNs - nowNs + 999_999n) / 1_000_000n);
+      await pic!.advanceTime(untilDueMs + 1);
+    }
+    let finalizedBarrier: Awaited<ReturnType<NonNullable<typeof pic>["getPendingHttpsOutcalls"]>>[number] | undefined;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await pic!.tick(1);
+      finalizedBarrier = (await pic!.getPendingHttpsOutcalls())
+        .find((outcall) => outcall.url === "https://finalized-delay.invalid/");
+      if (finalizedBarrier) break;
+    }
+    expect(finalizedBarrier).toBeDefined();
+
+    const deadline = BigInt(authorization.deadline);
+    const boundaryTimeMs = (deadline - 299n) * 1_000n;
+    const currentTimeMs = BigInt(await pic!.getTime());
+    expect(boundaryTimeMs).toBeGreaterThan(currentTimeMs);
+    await pic!.advanceTime(Number(boundaryTimeMs - currentTimeMs));
+    await pic!.mockPendingHttpsOutcall({
+      requestId: finalizedBarrier!.requestId,
+      subnetId: finalizedBarrier!.subnetId,
+      response: { type: "success", statusCode: 200, headers: [], body: new Uint8Array() },
+    });
+    await pic!.tick(30);
+
+    const stopped: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
+    expect(phaseName(stopped[0].state)).toBe("AuthorizationPending");
+    expect(stopped[0].mint_authorization[0].signature).toEqual([]);
+    expect(stopped[0].mint_authorization[0].signature_dispatch_attempt).toBe(0);
+    expect(stopped[0].last_settlement_stop_reason)
+      .toEqual([{ AuthorizationWindowTooShort: null }]);
+  }
+
+  it(
+    "resamples_time_after_Base_revalidation_before_dispatching_a_signature",
+    resamples_time_after_Base_revalidation_before_dispatching_a_signature,
+  );
+
   async function continues_only_a_retryable_stopped_deposit_authorization() {
     const { evm, bridge, runtimePrincipal } = await setup();
     const result: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n });
@@ -1713,6 +1773,39 @@ describe("Phase 3 PocketIC saga", () => {
   it(
     "rejects a checkpoint hash quorum that depends on a provider below the checkpoint",
     rejects_a_checkpoint_hash_quorum_that_depends_on_a_provider_below_the_checkpoint,
+  );
+
+  async function rejects_a_checkpoint_hash_quorum_that_depends_on_a_provider_without_a_finalized_head() {
+    const { ledger, evm, bridge, runtimePrincipal } = await setup();
+    const id = new Uint8Array(32).fill(0xaf);
+    await (evm.actor as any).set_withdrawal([{
+      id,
+      owner: runtimePrincipal.toUint8Array(),
+      subaccount: new Uint8Array(32),
+      amount: 1_000_000n,
+      max_service_fee: 100_000n,
+      charged_service_fee: 100_000n,
+      amount_out: 900_000n,
+    }]);
+    await (evm.actor as any).set_observed_transaction(
+      new Uint8Array(32).fill(9),
+      new Uint8Array(20).fill(1),
+      new Uint8Array(20).fill(0x22),
+      90n,
+    );
+    await (evm.actor as any).set_finalized_block_sequence([100n, 90n]);
+    await (evm.actor as any).set_block_mode({ FinalizedCheckpointHeadError: null });
+
+    expect(await (bridge.actor as any).notify_withdrawal({
+      transaction_hash: new Uint8Array(32).fill(9),
+    })).toHaveProperty("Err.RpcInconsistent");
+    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
+    expect(await (bridge.actor as any).get_withdrawal(id)).toEqual([]);
+  }
+
+  it(
+    "rejects a checkpoint hash quorum that depends on a provider without a finalized head",
+    rejects_a_checkpoint_hash_quorum_that_depends_on_a_provider_without_a_finalized_head,
   );
 
   async function rejects_a_receipt_above_the_two_provider_finalized_checkpoint() {

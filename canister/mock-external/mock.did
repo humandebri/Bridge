@@ -72,7 +72,9 @@ type BlockMode = variant {
   CanonicalInconsistent;
   FinalizedInconsistent;
   FinalizedUnavailable;
+  FinalizedDelayed;
   FinalizedCheckpointFork;
+  FinalizedCheckpointHeadError;
   Canonical;
   SameHeightDifferentHash;
 };

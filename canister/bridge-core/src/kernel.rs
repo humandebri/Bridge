@@ -1,5 +1,7 @@
 // These expression macros are the single source for the Cargo executable functions and their
 // Verus spec views. Keep them free of allocation, traits, I/O, and canister APIs.
+pub const MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS: u64 = 300;
+
 #[cfg(not(verus_keep_ghost))]
 macro_rules! verus {
     (
@@ -722,9 +724,27 @@ macro_rules! mint_finalization_allowed_body {
     };
 }
 
+macro_rules! mint_authorization_has_minimum_remaining_time_body {
+    ($observed_timestamp:expr, $deadline:expr, $minimum_remaining:expr, $maximum:expr) => {{
+        $observed_timestamp <= $maximum - $minimum_remaining
+            && $observed_timestamp + $minimum_remaining <= $deadline
+    }};
+}
+
 macro_rules! signature_install_allowed_body {
-    ($dispatched:expr, $absent:expr, $length:expr, $minimum_remaining:expr) => {
-        $dispatched && $absent && $length && $minimum_remaining
+    (
+        $dispatched:expr, $absent:expr, $length:expr, $observed_timestamp:expr,
+        $deadline:expr, $minimum_remaining:expr, $maximum:expr
+    ) => {
+        $dispatched
+            && $absent
+            && $length
+            && mint_authorization_has_minimum_remaining_time_body!(
+                $observed_timestamp,
+                $deadline,
+                $minimum_remaining,
+                $maximum
+            )
     };
 }
 
@@ -1741,17 +1761,33 @@ pub const fn mint_finalization_allowed(
     )
 }
 
+pub const fn mint_authorization_has_minimum_remaining_time(
+    observed_timestamp: u64,
+    deadline: u64,
+) -> bool {
+    mint_authorization_has_minimum_remaining_time_body!(
+        observed_timestamp,
+        deadline,
+        MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS,
+        u64::MAX
+    )
+}
+
 pub const fn signature_install_allowed(
     signature_dispatched: bool,
     signature_absent: bool,
     signature_length_valid: bool,
-    minimum_remaining: bool,
+    observed_timestamp: u64,
+    deadline: u64,
 ) -> bool {
     signature_install_allowed_body!(
         signature_dispatched,
         signature_absent,
         signature_length_valid,
-        minimum_remaining
+        observed_timestamp,
+        deadline,
+        MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS,
+        u64::MAX
     )
 }
 
@@ -1859,7 +1895,8 @@ pub enum DepositEventGuard {
         dispatched: bool,
         signature_absent: bool,
         signature_length_valid: bool,
-        minimum_remaining: bool,
+        observed_timestamp: u64,
+        deadline: u64,
     },
     MarkRefundAvailable {
         policy_allowed: bool,
@@ -1913,9 +1950,17 @@ impl DepositEventGuard {
                 dispatched,
                 signature_absent,
                 signature_length_valid,
-                minimum_remaining,
+                observed_timestamp,
+                deadline,
             } => signature_install_allowed_body!(
-                dispatched, signature_absent, signature_length_valid, minimum_remaining),
+                dispatched,
+                signature_absent,
+                signature_length_valid,
+                observed_timestamp,
+                deadline,
+                MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS,
+                u64::MAX
+            ),
             Self::MintFinalization {
                 fixed_fields_match,
                 receipt_succeeded,
@@ -2452,10 +2497,29 @@ verus! {
             binding, receipt_succeeded, receipt_block, finalized_block)
     }
 
-    pub open spec fn signature_install_allowed_spec(
-        dispatched: bool, absent: bool, length: bool, minimum_remaining: bool,
+    pub open spec fn mint_authorization_has_minimum_remaining_time_spec(
+        observed_timestamp: int, deadline: int,
     ) -> bool {
-        signature_install_allowed_body!(dispatched, absent, length, minimum_remaining)
+        let minimum: int = 300;
+        let maximum: int = 18446744073709551615;
+        mint_authorization_has_minimum_remaining_time_body!(
+            observed_timestamp, deadline, minimum, maximum)
+    }
+
+    pub open spec fn signature_install_allowed_spec(
+        dispatched: bool, absent: bool, length: bool, observed_timestamp: int, deadline: int,
+    ) -> bool {
+        let minimum: int = 300;
+        let maximum: int = 18446744073709551615;
+        signature_install_allowed_body!(
+            dispatched,
+            absent,
+            length,
+            observed_timestamp,
+            deadline,
+            minimum,
+            maximum
+        )
     }
 
     pub open spec fn notification_failure_cooldown_active_spec(

@@ -146,6 +146,8 @@ run_versions() {
     "$ROOT/scripts/production-activation-proposal.sh" \
     "$ROOT/scripts/production-activate-driver.sh" \
     "$ROOT/scripts/production-handover-driver.sh" \
+    "$ROOT/scripts/base-sepolia-experiment/experiment.sh" \
+    "$ROOT/scripts/test_base_sepolia_experiment.sh" \
     "$ROOT/scripts/install-certora-solc.sh" \
     "$ROOT/scripts/trusted-pr-container.sh"
   "$ROOT/scripts/check_tool_versions.sh"
@@ -173,8 +175,10 @@ run_versions() {
   "$ROOT/scripts/test_production_drivers.sh"
   "$ROOT/scripts/test_production_activation.sh"
   "$ROOT/scripts/test_production_handover.sh"
+  bash "$ROOT/scripts/test_base_sepolia_experiment.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
+  bash "$ROOT/scripts/plan007/test_staging_e2e_driver.sh"
   node "$ROOT/scripts/plan007/test-check-upgrade-instance.mjs"
   node "$ROOT/scripts/plan007/test-read-public-canister-metadata.mjs"
   python3 "$ROOT/scripts/plan007/test_candid_values.py"

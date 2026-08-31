@@ -10,11 +10,11 @@ use crate::{
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 
-// A settlement observation may perform the finalized-head call and then one
-// state-observation round, each of which may consume the full RPC timeout.
-// The lease must cover both sequential rounds plus callback/commit margin.
+// A settlement observation may perform the finalized-head call, an optional
+// checkpoint call, and then one state-observation round. Each may consume the
+// full RPC timeout, so the lease also includes callback/commit margin.
 const MAX_EVM_RPC_CALL_NS: u64 = 300 * 1_000_000_000;
-const MAX_SEQUENTIAL_EVM_RPC_ROUNDS: u64 = 2;
+const MAX_SEQUENTIAL_EVM_RPC_ROUNDS: u64 = 3;
 const LEASE_CALLBACK_MARGIN_NS: u64 = 120 * 1_000_000_000;
 const LEASE_NS: u64 =
     MAX_EVM_RPC_CALL_NS * MAX_SEQUENTIAL_EVM_RPC_ROUNDS + LEASE_CALLBACK_MARGIN_NS;
@@ -788,9 +788,10 @@ mod tests {
 
     #[test]
     fn lease_strictly_exceeds_the_longest_sequential_rpc_step() {
-        let worst_case = MAX_EVM_RPC_CALL_NS * MAX_SEQUENTIAL_EVM_RPC_ROUNDS;
+        assert_eq!(MAX_SEQUENTIAL_EVM_RPC_ROUNDS, 3);
+        let worst_case = MAX_EVM_RPC_CALL_NS * 3;
         assert!(LEASE_NS > worst_case);
-        assert_eq!(LEASE_NS - worst_case, LEASE_CALLBACK_MARGIN_NS);
+        assert_eq!(LEASE_NS, worst_case + LEASE_CALLBACK_MARGIN_NS);
     }
 
     #[test]

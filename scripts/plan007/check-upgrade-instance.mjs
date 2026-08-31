@@ -23,11 +23,22 @@ function moduleHash(value, context) {
   return value.toLowerCase()
 }
 
+function digestHex(value, context) {
+  if (typeof value === "string" && /^(?:0x)?[0-9a-fA-F]{64}$/.test(value)) {
+    return `0x${value.replace(/^0x/i, "").toLowerCase()}`
+  }
+  if (Array.isArray(value) && value.length === 32
+    && value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+    return `0x${value.map((byte) => byte.toString(16).padStart(2, "0")).join("")}`
+  }
+  throw new Error(`${context} must be a 32-byte SHA-256 digest`)
+}
+
 export function verifyUpgradeInstance(profile, liveRuntimeBinding, liveCanisterStatus) {
   const next = deploymentInstanceHex(profile?.deploymentInstanceId, "frontend profile deploymentInstanceId")
   const schemaVersion = Number(liveRuntimeBinding?.schema_version)
   if (schemaVersion !== 35) {
-    throw new Error("staging upgrade requires current schema v35; legacy staging must be replaced, not migrated")
+    throw new Error("staging upgrade requires current schema v35; old and unknown schemas are unsupported")
   }
   const previous = deploymentInstanceHex(
     liveRuntimeBinding?.deployment_instance_id,
@@ -35,6 +46,10 @@ export function verifyUpgradeInstance(profile, liveRuntimeBinding, liveCanisterS
   )
   if (next !== previous) {
     throw new Error("reinstall is prohibited: staging upgrade must preserve the deployment instance ID")
+  }
+  if (digestHex(liveRuntimeBinding?.rpc_provider_urls_sha256, "live RuntimeBinding rpc_provider_urls_sha256")
+    !== digestHex(profile?.rpcProviderUrlsSha256, "frontend profile rpcProviderUrlsSha256")) {
+    throw new Error("live RuntimeBinding RPC provider digest differs from the reviewed profile")
   }
   return {
     replacement_mode: "current-schema-upgrade",

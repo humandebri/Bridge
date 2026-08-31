@@ -59,19 +59,17 @@ credential、seed、private key、hardware wallet backup、credential入りRPC U
 
 ## IC mainnet × Base Sepolia test staging
 
-Plan 007のIC stagingでは`sepolia-staging`環境の既存`bridge-sepolia`（`rlhjx-iyaaa-aaaaf-qcnyq-cai`）をv35で`reinstall`する。旧stable stateはtest stateとして意図的に破棄し、migrationまたはupgradeは行わない。test tokenには既存の共有`testicrc` Canisterを再利用し、staging専用LedgerまたはIndex Canisterを新規作成しない。`testicrc`の実Canister IDとmetadataは外部配置前にlive状態から確認し、Bridge初期化値と`frontend-profile.json`へ固定する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。KINIC Ledger、Base Mainnet、SNSには触れない。
+Plan 007のIC stagingは、現在の`sepolia-staging` bindingに固定された`bridge-sepolia`（`rlhjx-iyaaa-aaaaf-qcnyq-cai`）、deployment instance、Base contracts、signer、共有`testicrc` Ledger/Indexを維持する。2026-08-27/28のreinstallとfresh-stack作成は一度限りの履歴であり、再実行またはresumeしない。今後のCanister更新はschema v35／wire v30を保つsame-instance `upgrade`だけを許可する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。KINIC Ledger、Base Mainnet、SNSには触れない。
 
 外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh /secure/work/local-e2e.json`をclean commitで実行し、repo外へ証跡を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、Cloudflare Worker公開はそれぞれ別の明示承認後に行う。
 
-外部stageのschema v7証跡は`scripts/plan007/staging-e2e-driver.sh`で初期化し、固定順序で記録する。`sepolia-e2e.json`は全stageと参照artifactのhashを検証する。Gate B用のpause rehearsalはlive staging promotionと分離し、production activationをblockしない。旧Canister stateと旧Base stackのexact identityを記録したうえで、Canisterだけを明示的な`reinstall`で再利用する。fresh Timelock、Bridge、bSNS、signer、derivation path、deployment instanceを配置し、旧recordやassetを移送しない。初回reinstall後のmigration、異なるcurrent-upgrade instance、旧・未知schema、未登録module／Candidの組はfail closedにする。
+外部stageはschema v8だけを`scripts/plan007/staging-e2e-driver.sh`で新規初期化し、`bootstrap_attestation → preflight → current_schema_upgrade → post_upgrade_binding → frontend_publish → smoke_e2e → wallet_e2e → refund_rehearsal → rpc_rehearsal → live_acceptance`の順で記録する。v7証跡は読取専用履歴であり、resume、migration、dual-read、現行合格判定に使わない。RPC rehearsalのpause後は`live_acceptance`が別operationのreactivationとunpaused postconditionを検証し、全条件を満たしたv8だけを`SHORT_DELAY_LIVE`とする。異なるinstance、reinstall、旧・未知schema、未登録module／Candidの組はfail closedにする。
 
 既存staging Bridge Canister IDは`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`を正本とし、新しいmappingを作らない。既存`testicrc`を新規作成対象としてmappingへ追加しない。frontendは`deployments/sepolia-staging/frontend-profile.json`が完成するまでbuildまたは公開せず、完成後に`ui`のstaging artifact driverでCloudflare Worker `kinic-bridge-ui-test`へ公開する。test frontendはBase Mainnet、production Canister ID、非公式EVM RPC Canister IDを拒否し、TEST bannerを常時表示する。
 
 ## ICP mainnet上のBase Sepolia staging Bridge deploy先
 
-deploy先は既存`rlhjx-iyaaa-aaaaf-qcnyq-cai`とし、`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`をそのまま使う。schema v34のtest stateを捨てる1回の`reinstall`だけを許可し、`auto`または`upgrade`を使わない。
-
-reinstall用の初期化planは`staging-canister-plan.template.json`から生成し、`bridge-profile validate-staging-canister-plan`と`render-staging-canister-inputs`を通す。これは既存Canister principal、Base Sepolia、共有TICRC1 Ledger/Index、固定Custom RPC 3本、5分Timelock、test-only Wasmだけを許可し、本番planとして再利用しない。
+deploy先は既存`rlhjx-iyaaa-aaaaf-qcnyq-cai`とし、`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`をそのまま使う。既存deployment instance、minimum Withdrawal ID、Base contract binding、schema v35／wire v30を保つ`upgrade`だけを許可し、`install`、`reinstall`、`auto`を拒否する。将来reinstall用のinit templateやrender/validate commandは提供しない。
 
 deploy前に対象IDとcontrollerを再確認し、必要なcyclesを補充する。test-only stagingであり、本番資産、production controller handover、SNS操作には使用しない。
 

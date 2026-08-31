@@ -28,15 +28,24 @@ class TrustedPrGateTests(unittest.TestCase):
         repository_gate = workflow.index("run: scripts/ci-local.sh all")
         self.assertLess(root_install, repository_gate)
 
-    def test_obsolete_staging_upgrade_path_is_removed(self) -> None:
+    def test_staging_keeps_only_current_schema_upgrade_and_historical_reinstall_evidence(self) -> None:
         policy_dir = ROOT / "deployments" / "sepolia-staging"
+        evidence_dir = policy_dir / "evidence"
 
-        self.assertTrue((policy_dir / "legacy-stack-binding.json").is_file())
-        self.assertTrue((policy_dir / "fresh-stack.template.json").is_file())
+        self.assertFalse((ROOT / "deployments" / "staging-canister-plan.template.json").exists())
+        self.assertFalse((policy_dir / "legacy-stack-binding.json").exists())
+        self.assertFalse((policy_dir / "fresh-stack.template.json").exists())
         self.assertFalse((policy_dir / "staging-bridge-upgrade-policy.json").exists())
         self.assertFalse((ROOT / "scripts/plan007/staging_canister_upgrade.py").exists())
         self.assertFalse((ROOT / "scripts/plan007/staging-canister-upgrade.sh").exists())
         self.assertFalse((ROOT / "scripts/plan007/test_staging_canister_upgrade.py").exists())
+        self.assertTrue((evidence_dir / "reinstall-decision-2026-08-27.json").is_file())
+        self.assertTrue((evidence_dir / "fresh-stack-2026-08-28.json").is_file())
+        self.assertTrue((ROOT / "scripts/plan007/check-upgrade-instance.mjs").is_file())
+        self.assertTrue((ROOT / "scripts/plan007/sepolia_e2e.py").is_file())
+        profile_source = (ROOT / "tools/bridge-profile/src/main.rs").read_text(encoding="utf-8")
+        self.assertNotIn("validate-staging-canister-plan", profile_source)
+        self.assertNotIn("render-staging-canister-inputs", profile_source)
 
     def test_trusted_bootstrap_files_are_present_and_pinned(self) -> None:
         dockerfile = ROOT / ".github" / "trusted-pr" / "Dockerfile"

@@ -1,8 +1,8 @@
 use candid::{CandidType, Deserialize, Nat, Principal};
 use evm_rpc_types::{
-    Block, BlockTag, GetLogsArgs, GetTransactionCountArgs, Hex, Hex32, JsonRpcError,
-    MultiRpcResult, Nat256, ProviderError, RpcConfig, RpcError, RpcService, RpcServices,
-    SendRawTransactionStatus, TransactionReceipt,
+    Block, BlockTag, ConsensusStrategy, GetLogsArgs, GetTransactionCountArgs, Hex, Hex32,
+    JsonRpcError, MultiRpcResult, Nat256, ProviderError, RpcConfig, RpcError, RpcService,
+    RpcServices, SendRawTransactionStatus, TransactionReceipt,
 };
 use ic_cdk_management_canister::{
     ecdsa_public_key, http_request, sign_with_ecdsa, EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs,
@@ -78,8 +78,10 @@ pub enum ReceiptMode {
 pub enum BlockMode {
     Canonical,
     FinalizedUnavailable,
+    FinalizedDelayed,
     FinalizedInconsistent,
     FinalizedCheckpointFork,
+    FinalizedCheckpointHeadError,
     CanonicalInconsistent,
     SameHeightDifferentHash,
 }
@@ -1299,11 +1301,26 @@ fn eth_send_raw_transaction(
 }
 
 #[ic_cdk::update(name = "eth_getBlockByNumber")]
-fn eth_get_block_by_number(
+async fn eth_get_block_by_number(
     _services: RpcServices,
-    _config: Option<RpcConfig>,
+    config: Option<RpcConfig>,
     tag: BlockTag,
 ) -> MultiRpcResult<Block> {
+    if BLOCK_MODE.with(|mode| *mode.borrow()) == BlockMode::FinalizedDelayed
+        && matches!(&tag, BlockTag::Finalized)
+    {
+        http_request(&HttpRequestArgs {
+            url: "https://finalized-delay.invalid/".into(),
+            max_response_bytes: Some(1),
+            method: HttpMethod::GET,
+            headers: vec![],
+            body: None,
+            transform: None,
+            is_replicated: Some(false),
+        })
+        .await
+        .unwrap_or_else(|error| ic_cdk::trap(format!("finalized delay outcall failed: {error:?}")));
+    }
     match (BLOCK_MODE.with(|mode| *mode.borrow()), &tag) {
         (BlockMode::FinalizedUnavailable, BlockTag::Finalized) => MultiRpcResult::Consistent(Err(
             RpcError::ProviderError(ProviderError::ProviderNotFound),
@@ -1329,14 +1346,35 @@ fn eth_get_block_by_number(
                 (RpcService::Provider(3), Ok(third)),
             ])
         }
-        (BlockMode::FinalizedCheckpointFork, BlockTag::Number(_)) => {
+        (BlockMode::FinalizedCheckpointHeadError, BlockTag::Finalized) => {
+            let first = mock_block(tag.clone(), false);
+            let third = mock_block(tag, false);
+            MultiRpcResult::Inconsistent(vec![
+                (RpcService::Provider(1), Ok(first)),
+                (
+                    RpcService::Provider(2),
+                    Err(RpcError::ProviderError(ProviderError::ProviderNotFound)),
+                ),
+                (RpcService::Provider(3), Ok(third)),
+            ])
+        }
+        (
+            BlockMode::FinalizedCheckpointFork | BlockMode::FinalizedCheckpointHeadError,
+            BlockTag::Number(_),
+        ) => {
             let first = mock_block(tag.clone(), false);
             let second = mock_block(tag.clone(), false);
             let third = mock_block(tag, true);
+            if matches!(
+                config.as_ref().and_then(|config| config.response_consensus.as_ref()),
+                Some(ConsensusStrategy::Threshold { min, .. }) if *min <= 2
+            ) {
+                return MultiRpcResult::Consistent(Ok(first));
+            }
             MultiRpcResult::Inconsistent(vec![
+                (RpcService::Provider(3), Ok(third)),
                 (RpcService::Provider(1), Ok(first)),
                 (RpcService::Provider(2), Ok(second)),
-                (RpcService::Provider(3), Ok(third)),
             ])
         }
         (BlockMode::SameHeightDifferentHash, BlockTag::Number(_)) => {

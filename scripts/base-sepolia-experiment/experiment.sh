@@ -17,13 +17,15 @@ EXTERNAL_BRIDGE_SIGNER="${BASE_SEPOLIA_EXTERNAL_BRIDGE_SIGNER:-}"
 EXTERNAL_GOVERNANCE_OPERATOR="${BASE_SEPOLIA_EXTERNAL_GOVERNANCE_OPERATOR:-}"
 EXTERNAL_RUNTIME_ADMINISTRATOR="${BASE_SEPOLIA_EXTERNAL_RUNTIME_ADMINISTRATOR:-}"
 EXTERNAL_INDEPENDENT_CANCELLER="${BASE_SEPOLIA_EXTERNAL_INDEPENDENT_CANCELLER:-}"
-TIMELOCK_DELAY="${BASE_SEPOLIA_TIMELOCK_DELAY_SECONDS:-259200}"
+REQUESTED_TIMELOCK_DELAY="${BASE_SEPOLIA_TIMELOCK_DELAY_SECONDS:-}"
+TIMELOCK_DELAY="${REQUESTED_TIMELOCK_DELAY:-259200}"
 ZERO_ADDRESS="0x0000000000000000000000000000000000000000"
 ZERO_BYTES32="0x0000000000000000000000000000000000000000000000000000000000000000"
 MAX_EXPERIMENT_COST_WEI=20000000000000000
 SIGNER_FUNDING_WEI=5000000000000000
 CALL_GAS_BUDGET=5000000
 BRIDGE_DEPLOY_GAS_BUDGET=5000000
+CONTROL_PLANE_MODE=""
 DEFAULT_PER_DEPOSIT_LIMIT=15000000000000
 DEFAULT_MINT_WINDOW_LIMIT=15000000000000
 DEFAULT_MIN_SERVICE_FEE=10000
@@ -41,15 +43,23 @@ require_external_control_plane() {
     || die "external control plane requires signer, governance operator, runtime administrator, and independent canceller"
 }
 
+manifest_uses_external_control_plane() {
+  [[ "$CONTROL_PLANE_MODE" == external ]]
+}
+
 die() {
   echo "error: $*" >&2
   exit 1
 }
 
-if [[ "$TIMELOCK_DELAY" != 259200 && "$TIMELOCK_DELAY" != 300 ]]; then
-  die "Base Sepolia Timelock delay must be 259200 or the test-only staging value 300"
-fi
-if [[ "$TIMELOCK_DELAY" == 300 && "${BASE_SEPOLIA_SHORT_DELAY_TEST_ONLY:-}" != true ]]; then
+validate_timelock_delay() {
+  local delay="$1"
+  [[ "$delay" == 259200 || "$delay" == 300 ]] \
+    || die "Base Sepolia Timelock delay must be 259200 or the test-only staging value 300"
+}
+
+validate_timelock_delay "$TIMELOCK_DELAY"
+if [[ "$REQUESTED_TIMELOCK_DELAY" == 300 && "${BASE_SEPOLIA_SHORT_DELAY_TEST_ONLY:-}" != true ]]; then
   die "the 300-second Timelock requires BASE_SEPOLIA_SHORT_DELAY_TEST_ONLY=true"
 fi
 
@@ -222,6 +232,26 @@ reuse_transaction() {
   echo "$existing"
 }
 
+assert_transaction_call() {
+  local tx_hash="$1"
+  local expected_sender="$2"
+  local expected_target="$3"
+  local expected_input="$4"
+  local transaction actual_sender actual_target actual_input normalized_actual normalized_expected
+  transaction="$(cast tx "$tx_hash" --rpc-url "$RPC_URL" --json)"
+  actual_sender="$(jq -r '.from // empty' <<<"$transaction")"
+  actual_target="$(jq -r '.to // empty' <<<"$transaction")"
+  actual_input="$(jq -r '.input // .data // empty' <<<"$transaction")"
+  address_eq "$actual_sender" "$expected_sender" \
+    || die "transaction $tx_hash sender does not match the manifest"
+  address_eq "$actual_target" "$expected_target" \
+    || die "transaction $tx_hash target does not match the manifest"
+  normalized_actual="$(printf '%s' "$actual_input" | tr '[:upper:]' '[:lower:]')"
+  normalized_expected="$(printf '%s' "$expected_input" | tr '[:upper:]' '[:lower:]')"
+  [[ -n "$normalized_actual" && "$normalized_actual" == "$normalized_expected" ]] \
+    || die "transaction $tx_hash calldata does not match the manifest"
+}
+
 send_success() {
   local name="$1"
   local sender="$2"
@@ -297,13 +327,18 @@ assert_reverts_call() {
 init_manifest() {
   [[ ! -e "$MANIFEST" ]] || return 0
   mkdir -p "$(dirname "$MANIFEST")"
-  local revision dirty tree created
+  local revision dirty tree created control_plane_mode
   revision="$(git -C "$ROOT" rev-parse HEAD)"
   dirty="$(dirty_diff_hash)"
   tree="$(source_tree_hash)"
   created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  control_plane_mode=local-keystore
+  if external_control_plane; then
+    control_plane_mode=external
+  fi
   jq -n \
     --arg created "$created" --arg rpc "$RPC_URL" --arg deployer "$DEPLOYER" \
+    --arg control_plane_mode "$control_plane_mode" \
     --arg revision "$revision" --arg dirty "$dirty" --arg tree "$tree" \
     --argjson chain "$CHAIN_ID" --argjson delay "$TIMELOCK_DELAY" \
     --argjson per_deposit_limit "$DEFAULT_PER_DEPOSIT_LIMIT" \
@@ -311,7 +346,7 @@ init_manifest() {
     --argjson min_service_fee "$DEFAULT_MIN_SERVICE_FEE" \
     --argjson max_service_fee "$DEFAULT_MAX_SERVICE_FEE" \
     --argjson initial_service_fee "$DEFAULT_INITIAL_SERVICE_FEE" \
-    '{schema_version:1,experiment:"base-sepolia-contract-only",test_only:true,state:"PREFLIGHT",created_at:$created,chain_id:$chain,rpc_url:$rpc,wallets:{deployer_base_admin_runtime:$deployer},source:{revision:$revision,dirty_diff_sha256:$dirty,source_tree_sha256:$tree},parameters:{token_name:"KINIC",token_symbol:"KINIC",token_decimals:8,timelock_delay_seconds:$delay,per_deposit_limit:$per_deposit_limit,mint_window_limit:$mint_window_limit,mint_window_duration_seconds:3600,min_service_fee:$min_service_fee,max_service_fee:$max_service_fee,initial_service_fee:$initial_service_fee},contracts:{},transactions:{},checks:{}}' \
+    '{schema_version:1,experiment:"base-sepolia-contract-only",test_only:true,control_plane_mode:$control_plane_mode,state:"PREFLIGHT",created_at:$created,chain_id:$chain,rpc_url:$rpc,wallets:{deployer_base_admin_runtime:$deployer},source:{revision:$revision,dirty_diff_sha256:$dirty,source_tree_sha256:$tree},parameters:{token_name:"KINIC",token_symbol:"KINIC",token_decimals:8,timelock_delay_seconds:$delay,per_deposit_limit:$per_deposit_limit,mint_window_limit:$mint_window_limit,mint_window_duration_seconds:3600,min_service_fee:$min_service_fee,max_service_fee:$max_service_fee,initial_service_fee:$initial_service_fee},contracts:{},transactions:{},checks:{}}' \
     >"$MANIFEST"
 }
 
@@ -319,6 +354,44 @@ require_manifest_chain() {
   require_file "$MANIFEST"
   [[ "$(manifest_get '.chain_id')" == "$CHAIN_ID" ]] || die "manifest chain mismatch"
   address_eq "$(manifest_get '.wallets.deployer_base_admin_runtime')" "$DEPLOYER" || die "manifest deployer mismatch"
+  CONTROL_PLANE_MODE="$(manifest_get '.control_plane_mode')"
+  [[ "$CONTROL_PLANE_MODE" == local-keystore || "$CONTROL_PLANE_MODE" == external ]] \
+    || die "manifest control plane mode must be local-keystore or external"
+  if external_control_plane; then
+    require_external_control_plane
+    [[ "$CONTROL_PLANE_MODE" == external ]] \
+      || die "external control-plane invocation does not match the manifest"
+    if [[ -n "$(manifest_get '.wallets.bridge_signer // empty')" ]]; then
+      address_eq "$(manifest_get '.wallets.bridge_signer')" "$EXTERNAL_BRIDGE_SIGNER" \
+        || die "manifest external Bridge signer mismatch"
+      address_eq "$(manifest_get '.wallets.governance_operator')" "$EXTERNAL_GOVERNANCE_OPERATOR" \
+        || die "manifest external governance operator mismatch"
+      address_eq "$(manifest_get '.wallets.runtime_administrator')" "$EXTERNAL_RUNTIME_ADMINISTRATOR" \
+        || die "manifest external runtime administrator mismatch"
+      address_eq "$(manifest_get '.wallets.independent_canceller')" "$EXTERNAL_INDEPENDENT_CANCELLER" \
+        || die "manifest external independent canceller mismatch"
+    fi
+  fi
+  local manifest_delay
+  manifest_delay="$(manifest_get '.parameters.timelock_delay_seconds')" \
+    || die "manifest Timelock delay is missing"
+  validate_timelock_delay "$manifest_delay"
+  if [[ -n "$REQUESTED_TIMELOCK_DELAY" && "$REQUESTED_TIMELOCK_DELAY" != "$manifest_delay" ]]; then
+    die "manifest Timelock delay $manifest_delay does not match invocation delay $REQUESTED_TIMELOCK_DELAY"
+  fi
+  TIMELOCK_DELAY="$manifest_delay"
+}
+
+require_short_delay_state_change_acknowledgement() {
+  if [[ "$TIMELOCK_DELAY" == 300 && "${BASE_SEPOLIA_SHORT_DELAY_TEST_ONLY:-}" != true ]]; then
+    die "the manifest's 300-second Timelock requires BASE_SEPOLIA_SHORT_DELAY_TEST_ONLY=true for state-changing stages"
+  fi
+}
+
+require_internal_control_plane_stage() {
+  if manifest_uses_external_control_plane; then
+    die "external-control-plane staging must use Plan 007 governance/wallet stages for schedule, resume, and flow"
+  fi
 }
 
 require_state() {
@@ -355,28 +428,50 @@ preflight() {
   require_file "$DEPLOYER_PASSWORD_FILE"
   check_wallet "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$DEPLOYER"
   local signer governance_operator runtime_administrator canceller
-  if external_control_plane; then
-    require_external_control_plane
-    signer="$EXTERNAL_BRIDGE_SIGNER"
-    governance_operator="$EXTERNAL_GOVERNANCE_OPERATOR"
-    runtime_administrator="$EXTERNAL_RUNTIME_ADMINISTRATOR"
-    canceller="$EXTERNAL_INDEPENDENT_CANCELLER"
+  if [[ -e "$MANIFEST" ]]; then
+    require_manifest_chain
+    if manifest_uses_external_control_plane; then
+      signer="$(manifest_get '.wallets.bridge_signer')"
+      governance_operator="$(manifest_get '.wallets.governance_operator')"
+      runtime_administrator="$(manifest_get '.wallets.runtime_administrator')"
+      canceller="$(manifest_get '.wallets.independent_canceller')"
+    else
+      require_file "$SIGNER_PASSWORD_FILE"
+      require_file "$CANCELLER_PASSWORD_FILE"
+      signer="$(wallet_address "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE")"
+      governance_operator="$DEPLOYER"
+      runtime_administrator="$DEPLOYER"
+      canceller="$(wallet_address "$CANCELLER_KEYSTORE" "$CANCELLER_PASSWORD_FILE")"
+      address_eq "$signer" "$(manifest_get '.wallets.bridge_signer')" || die "manifest local Bridge signer mismatch"
+      address_eq "$canceller" "$(manifest_get '.wallets.independent_canceller')" || die "manifest local canceller mismatch"
+    fi
   else
-    require_file "$SIGNER_PASSWORD_FILE"
-    require_file "$CANCELLER_PASSWORD_FILE"
-    signer="$(wallet_address "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE")"
-    governance_operator="$DEPLOYER"
-    runtime_administrator="$DEPLOYER"
-    canceller="$(wallet_address "$CANCELLER_KEYSTORE" "$CANCELLER_PASSWORD_FILE")"
+    if external_control_plane; then
+      require_external_control_plane
+      signer="$EXTERNAL_BRIDGE_SIGNER"
+      governance_operator="$EXTERNAL_GOVERNANCE_OPERATOR"
+      runtime_administrator="$EXTERNAL_RUNTIME_ADMINISTRATOR"
+      canceller="$EXTERNAL_INDEPENDENT_CANCELLER"
+    else
+      require_file "$SIGNER_PASSWORD_FILE"
+      require_file "$CANCELLER_PASSWORD_FILE"
+      signer="$(wallet_address "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE")"
+      governance_operator="$DEPLOYER"
+      runtime_administrator="$DEPLOYER"
+      canceller="$(wallet_address "$CANCELLER_KEYSTORE" "$CANCELLER_PASSWORD_FILE")"
+    fi
+    init_manifest
+    require_manifest_chain
   fi
   for role in "$signer" "$governance_operator" "$runtime_administrator" "$canceller"; do
     [[ "$role" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "invalid control-plane address: $role"
+    if manifest_uses_external_control_plane && address_eq "$role" "$DEPLOYER"; then
+      die "external control-plane roles must not grant the deployer Bridge or Timelock authority"
+    fi
   done
   address_eq "$signer" "$runtime_administrator" && die "bridge signer must differ from runtime administrator"
   address_eq "$canceller" "$governance_operator" && die "canceller must differ from governance operator"
   address_eq "$canceller" "$signer" && die "canceller must differ from bridge signer"
-  init_manifest
-  require_manifest_chain
   manifest_update \
     '.wallets.bridge_signer = $signer | .wallets.governance_operator = $governance | .wallets.runtime_administrator = $runtime | .wallets.independent_canceller = $canceller | .source.revision = $revision | .source.dirty_diff_sha256 = $dirty | .source.source_tree_sha256 = $tree' \
     --arg signer "$signer" --arg governance "$governance_operator" --arg runtime "$runtime_administrator" \
@@ -449,6 +544,7 @@ deploy_contract() {
 deploy() {
   check_chain
   require_manifest_chain
+  require_short_delay_state_change_acknowledgement
   require_state READY_TO_DEPLOY
   check_wallet "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$DEPLOYER"
   local signer governance_operator runtime_administrator canceller signer_balance fund_tx timelock bridge bsns
@@ -456,16 +552,16 @@ deploy() {
   governance_operator="$(manifest_get '.wallets.governance_operator')"
   runtime_administrator="$(manifest_get '.wallets.runtime_administrator')"
   canceller="$(manifest_get '.wallets.independent_canceller')"
-  if ! external_control_plane; then
+  if ! manifest_uses_external_control_plane; then
     check_wallet "$SIGNER_KEYSTORE" "$SIGNER_PASSWORD_FILE" "$signer"
     check_wallet "$CANCELLER_KEYSTORE" "$CANCELLER_PASSWORD_FILE" "$canceller"
   fi
   signer_balance="$(cast balance "$signer" --rpc-url "$RPC_URL")"
-  if ! external_control_plane && (( signer_balance < SIGNER_FUNDING_WEI )); then
+  if ! manifest_uses_external_control_plane && (( signer_balance < SIGNER_FUNDING_WEI )); then
     fund_tx="$(send_success fund_bridge_signer "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" \
       "$signer" --value "$SIGNER_FUNDING_WEI")"
     log "funded signer: $fund_tx"
-  elif ! external_control_plane; then
+  elif ! manifest_uses_external_control_plane; then
     if ! jq -e '.transactions.fund_bridge_signer.hash' "$MANIFEST" >/dev/null; then
       local recovered_funding_tx recovered_receipt recovered_tx recovered_from recovered_to recovered_value recovered_nonce
       recovered_funding_tx="${BASE_SEPOLIA_FUNDING_TX:-}"
@@ -497,15 +593,16 @@ deploy() {
     "$(manifest_get '.parameters.initial_service_fee')")"
   bsns="$(cast call "$bridge" 'bsns()(address)' --rpc-url "$RPC_URL")"
   record_contract bsns "$bsns" "$(manifest_get '.contracts.bridge.deployment_transaction')"
-  if external_control_plane; then
+  if manifest_uses_external_control_plane; then
     wait_transactions_confirmed deploy_timelock deploy_bridge
   else
     wait_transactions_confirmed fund_bridge_signer deploy_timelock deploy_bridge
   fi
-  manifest_update '.state = "DEPLOYED" | .balances.deployer_after_deploy = $deployer | .balances.signer_after_deploy = $signer' \
+  manifest_update '.balances.deployer_after_deploy = $deployer | .balances.signer_after_deploy = $signer' \
     --argjson deployer "$(cast balance "$DEPLOYER" --rpc-url "$RPC_URL")" \
     --argjson signer "$(cast balance "$signer" --rpc-url "$RPC_URL")"
   verify_deployment
+  manifest_update '.state = "DEPLOYED"'
 }
 
 verify_deployment() {
@@ -533,7 +630,8 @@ verify_deployment() {
   else
     assert_call_eq "$(manifest_get '.parameters.initial_service_fee')" "$bridge" 'serviceFee()(uint256)'
   fi
-  if [[ "$deployment_state" == DEPLOYED || "$deployment_state" == WAITING_TIMELOCK || "$deployment_state" == COMPLETE ]]; then
+  if [[ "$deployment_state" == READY_TO_DEPLOY || "$deployment_state" == DEPLOYED \
+    || "$deployment_state" == WAITING_TIMELOCK || "$deployment_state" == COMPLETE ]]; then
     assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
     assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
   elif [[ "$deployment_state" == ACTIVE ]]; then
@@ -557,7 +655,7 @@ verify_deployment() {
   assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$executor" "$(manifest_get '.wallets.governance_operator')"
   assert_call_eq true "$timelock" 'hasRole(bytes32,address)(bool)' "$admin" "$timelock"
   assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$admin" "$DEPLOYER"
-  if external_control_plane; then
+  if manifest_uses_external_control_plane; then
     assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$proposer" "$DEPLOYER"
     assert_call_eq false "$timelock" 'hasRole(bytes32,address)(bool)' "$executor" "$DEPLOYER"
   fi
@@ -574,6 +672,8 @@ verify_deployment() {
 flow() {
   check_chain
   require_manifest_chain
+  require_short_delay_state_change_acknowledgement
+  require_internal_control_plane_stage
   require_state ACTIVE
   [[ "$(manifest_get '.parameters.per_deposit_limit')" == "$DEFAULT_PER_DEPOSIT_LIMIT" ]] \
     || die "flow requires per-deposit limit=$DEFAULT_PER_DEPOSIT_LIMIT"
@@ -585,7 +685,7 @@ flow() {
     || die "flow requires MAX_SERVICE_FEE=$DEFAULT_MAX_SERVICE_FEE"
   [[ "$(manifest_get '.parameters.initial_service_fee')" == "$DEFAULT_INITIAL_SERVICE_FEE" ]] \
     || die "flow requires initial service fee=$DEFAULT_INITIAL_SERVICE_FEE"
-  local signer bridge bsns deposit_id owner subaccount tx withdrawal1 status1
+  local signer bridge bsns deposit_id owner subaccount withdrawal1 status1
   local authorization_epoch deadline typed_data signature
   signer="$(manifest_get '.wallets.bridge_signer')"
   bridge="$(manifest_get '.contracts.bridge.address')"
@@ -673,14 +773,76 @@ flow() {
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
+verify_scheduled_operation_binding() {
+  local timelock bridge data1 data2 targets values payloads predecessor salt
+  local operation_id expected_operation_id schedule_tx expected_input receipt receipt_block
+  local receipt_block_hash recorded_block_hash block_json scheduled_at expected_ready ready onchain_ready
+  timelock="$(manifest_get '.contracts.timelock.address')"
+  bridge="$(manifest_get '.contracts.bridge.address')"
+  data1="$(cast calldata 'unpauseDepositMints()')"
+  data2="$(cast calldata 'unpauseWithdrawals()')"
+  targets="[$bridge,$bridge]"
+  values='[0,0]'
+  payloads="[$data1,$data2]"
+  predecessor="$(manifest_get '.timelock_operation.predecessor')"
+  salt="$(manifest_get '.timelock_operation.salt')"
+  [[ "$(manifest_get '.timelock_operation.targets | join(",")')" == "$bridge,$bridge" ]] \
+    || die "manifest Timelock targets differ from the active Bridge"
+  [[ "$(manifest_get '.timelock_operation.values | join(",")')" == "0,0" ]] \
+    || die "manifest Timelock values differ from the unpause operation"
+  [[ "$(manifest_get '.timelock_operation.payloads[0]')" == "$data1" \
+    && "$(manifest_get '.timelock_operation.payloads[1]')" == "$data2" ]] \
+    || die "manifest Timelock payloads differ from the unpause operation"
+  operation_id="$(manifest_get '.timelock_operation.id')"
+  expected_operation_id="$(cast call "$timelock" \
+    'hashOperationBatch(address[],uint256[],bytes[],bytes32,bytes32)(bytes32)' \
+    "$targets" "$values" "$payloads" "$predecessor" "$salt" --rpc-url "$RPC_URL")"
+  [[ "$operation_id" == "$expected_operation_id" ]] \
+    || die "manifest Timelock operation ID does not match its payload"
+  expected_input="$(cast calldata \
+    'scheduleBatch(address[],uint256[],bytes[],bytes32,bytes32,uint256)' \
+    "$targets" "$values" "$payloads" "$predecessor" "$salt" "$TIMELOCK_DELAY")"
+  schedule_tx="$(manifest_get '.transactions.schedule_unpause.hash')"
+  assert_transaction_call "$schedule_tx" "$DEPLOYER" "$timelock" "$expected_input"
+  receipt="$(receipt_json "$schedule_tx")"
+  [[ "$(hex_to_dec "$(jq -r '.status' <<<"$receipt")")" == 1 ]] \
+    || die "Timelock schedule receipt is not successful"
+  receipt_block="$(hex_to_dec "$(jq -r '.blockNumber' <<<"$receipt")")"
+  receipt_block_hash="$(jq -r '.blockHash' <<<"$receipt")"
+  [[ "$receipt_block" == "$(manifest_get '.transactions.schedule_unpause.receipt_block')" ]] \
+    || die "Timelock schedule receipt block differs from the manifest"
+  recorded_block_hash="$(manifest_get '.transactions.schedule_unpause.receipt_block_hash')"
+  [[ "$receipt_block_hash" == "$recorded_block_hash" ]] \
+    || die "Timelock schedule receipt block hash differs from the manifest"
+  block_json="$(cast block "$receipt_block" --rpc-url "$RPC_URL" --json)"
+  scheduled_at="$(hex_to_dec "$(jq -r '.timestamp' <<<"$block_json")")"
+  expected_ready=$((scheduled_at + TIMELOCK_DELAY))
+  ready="$(manifest_get '.timelock_operation.ready_timestamp')"
+  [[ "$ready" == "$expected_ready" ]] \
+    || die "Timelock ready timestamp is not receipt time plus the manifest delay"
+  [[ "$(manifest_get '.timelock_operation.delay_seconds')" == "$TIMELOCK_DELAY" \
+    && "$(manifest_get '.timelock_operation.scheduled_at')" == "$scheduled_at" ]] \
+    || die "manifest Timelock schedule timing differs from the receipt"
+  onchain_ready="$(cast call "$timelock" 'getTimestamp(bytes32)(uint256)' \
+    "$operation_id" --rpc-url "$RPC_URL" --json | jq -r '.[0]')"
+  [[ "$(hex_to_dec "$onchain_ready")" == "$ready" ]] \
+    || die "on-chain Timelock ready timestamp differs from the manifest"
+}
+
 schedule() {
   check_chain
   require_manifest_chain
+  require_short_delay_state_change_acknowledgement
+  require_internal_control_plane_stage
   require_state DEPLOYED
+  [[ "$(manifest_get '.checks.deployment // false')" == true ]] \
+    || die "schedule requires a successfully verified deployment"
   check_wallet "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$DEPLOYER"
   local timelock bridge data1 data2 targets values payloads salt operation_id ready now
+  local expected_input existing_schedule_tx schedule_tx receipt_block block_json scheduled_at expected_ready
   timelock="$(manifest_get '.contracts.timelock.address')"
   bridge="$(manifest_get '.contracts.bridge.address')"
+  assert_call_eq "$TIMELOCK_DELAY" "$timelock" 'getMinDelay()(uint256)'
   data1="$(cast calldata 'unpauseDepositMints()')"
   data2="$(cast calldata 'unpauseWithdrawals()')"
   targets="[$bridge,$bridge]"
@@ -690,16 +852,33 @@ schedule() {
   operation_id="$(cast call "$timelock" \
     'hashOperationBatch(address[],uint256[],bytes[],bytes32,bytes32)(bytes32)' \
     "$targets" "$values" "$payloads" "$ZERO_BYTES32" "$salt" --rpc-url "$RPC_URL")"
-  send_success schedule_unpause "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$timelock" \
+  expected_input="$(cast calldata \
     'scheduleBatch(address[],uint256[],bytes[],bytes32,bytes32,uint256)' \
-    "$targets" "$values" "$payloads" "$ZERO_BYTES32" "$salt" "$TIMELOCK_DELAY" >/dev/null
+    "$targets" "$values" "$payloads" "$ZERO_BYTES32" "$salt" "$TIMELOCK_DELAY")"
+  existing_schedule_tx="$(jq -r '.transactions.schedule_unpause.hash // empty' "$MANIFEST")"
+  if [[ -n "$existing_schedule_tx" ]]; then
+    assert_transaction_call "$existing_schedule_tx" "$DEPLOYER" "$timelock" "$expected_input"
+  fi
+  schedule_tx="$(send_success schedule_unpause "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$timelock" \
+    'scheduleBatch(address[],uint256[],bytes[],bytes32,bytes32,uint256)' \
+    "$targets" "$values" "$payloads" "$ZERO_BYTES32" "$salt" "$TIMELOCK_DELAY")"
+  assert_transaction_call "$schedule_tx" "$DEPLOYER" "$timelock" "$expected_input"
+  receipt_block="$(manifest_get '.transactions.schedule_unpause.receipt_block')"
+  block_json="$(cast block "$receipt_block" --rpc-url "$RPC_URL" --json)"
+  scheduled_at="$(hex_to_dec "$(jq -r '.timestamp' <<<"$block_json")")"
+  expected_ready=$((scheduled_at + TIMELOCK_DELAY))
   ready="$(cast call "$timelock" 'getTimestamp(bytes32)(uint256)' "$operation_id" --rpc-url "$RPC_URL" --json | jq -r '.[0]')"
+  ready="$(hex_to_dec "$ready")"
+  [[ "$ready" == "$expected_ready" ]] \
+    || die "Timelock ready timestamp is not receipt time plus the manifest delay"
   now="$(hex_to_dec "$(jq -r '.timestamp' <<<"$(cast block latest --rpc-url "$RPC_URL" --json)")")"
   (( ready > now )) || die "timelock operation is unexpectedly ready"
   manifest_update \
-    '.timelock_operation = {id:$id,predecessor:$predecessor,salt:$salt,ready_timestamp:$ready,targets:[$bridge,$bridge],values:[0,0],payloads:[$data1,$data2]}' \
+    '.timelock_operation = {id:$id,predecessor:$predecessor,salt:$salt,delay_seconds:$delay,scheduled_at:$scheduled_at,ready_timestamp:$ready,targets:[$bridge,$bridge],values:[0,0],payloads:[$data1,$data2]}' \
     --arg id "$operation_id" --arg predecessor "$ZERO_BYTES32" --arg salt "$salt" --argjson ready "$ready" \
+    --argjson delay "$TIMELOCK_DELAY" --argjson scheduled_at "$scheduled_at" \
     --arg bridge "$bridge" --arg data1 "$data1" --arg data2 "$data2"
+  verify_scheduled_operation_binding
   send_expected_revert early_execute_unpause "$DEPLOYER" "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$timelock" \
     'executeBatch(address[],uint256[],bytes[],bytes32,bytes32)' \
     "$targets" "$values" "$payloads" "$ZERO_BYTES32" "$salt" >/dev/null
@@ -711,8 +890,11 @@ schedule() {
 resume() {
   check_chain
   require_manifest_chain
+  require_short_delay_state_change_acknowledgement
+  require_internal_control_plane_stage
   require_state WAITING_TIMELOCK
   check_wallet "$DEPLOYER_KEYSTORE" "$DEPLOYER_PASSWORD_FILE" "$DEPLOYER"
+  verify_scheduled_operation_binding
   local timelock bridge ready now targets values payloads predecessor salt
   timelock="$(manifest_get '.contracts.timelock.address')"
   bridge="$(manifest_get '.contracts.bridge.address')"
@@ -750,6 +932,7 @@ verify() {
     return
   fi
   if [[ "$state" == WAITING_TIMELOCK ]]; then
+    verify_scheduled_operation_binding
     assert_call_eq true "$bridge" 'depositMintsPaused()(bool)'
     assert_call_eq true "$bridge" 'withdrawalsPaused()(bool)'
     assert_call_eq true "$(manifest_get '.contracts.timelock.address')" 'isOperationPending(bytes32)(bool)' \

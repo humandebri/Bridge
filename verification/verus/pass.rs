@@ -904,11 +904,28 @@ proof fn mint_finalization_requires_exact_finalized_success(
         <==> binding && succeeded && receipt_block <= finalized_block
 {}
 
-proof fn signature_install_requires_dispatch_absence_exact_length_and_minimum_remaining_time(
-    dispatched: bool, absent: bool, length: bool, minimum_remaining: bool,
+proof fn mint_authorization_minimum_remaining_time_accepts_300_rejects_299_and_overflow(
+    observed_timestamp: int, deadline: int,
 )
-    ensures kernel::signature_install_allowed_spec(dispatched, absent, length, minimum_remaining)
-        <==> dispatched && absent && length && minimum_remaining
+    ensures
+        kernel::mint_authorization_has_minimum_remaining_time_spec(
+            observed_timestamp, deadline)
+            <==> observed_timestamp <= 18446744073709551615 - 300
+                && observed_timestamp + 300 <= deadline,
+        kernel::mint_authorization_has_minimum_remaining_time_spec(700, 1000),
+        !kernel::mint_authorization_has_minimum_remaining_time_spec(701, 1000),
+        !kernel::mint_authorization_has_minimum_remaining_time_spec(
+            18446744073709551615, 18446744073709551615),
+{}
+
+proof fn signature_install_requires_dispatch_absence_exact_length_and_minimum_remaining_time(
+    dispatched: bool, absent: bool, length: bool, observed_timestamp: int, deadline: int,
+)
+    ensures kernel::signature_install_allowed_spec(
+        dispatched, absent, length, observed_timestamp, deadline)
+        <==> dispatched && absent && length
+            && kernel::mint_authorization_has_minimum_remaining_time_spec(
+                observed_timestamp, deadline)
 {}
 
 proof fn refund_start_requires_attempt_and_policy(attempt: bool, policy: bool)

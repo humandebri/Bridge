@@ -4,6 +4,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   CURRENT_STABLE_SCHEMA_VERSION,
+  CURRENT_RECORD_WIRE_VERSION,
   LOCAL_E2E_SCHEMA_VERSION,
   STAGING_ACTIVATION_DELAY_SECONDS,
   validateUpgradeEvidence,
@@ -14,6 +15,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const schema = JSON.parse(await readFile(path.join(root, "deployments/sepolia-staging/local-e2e.schema.json"), "utf8"))
 assert.equal(schema.properties.schema_version.const, LOCAL_E2E_SCHEMA_VERSION)
 assert.equal(schema.properties.activation_timelock_delay_seconds.const, STAGING_ACTIVATION_DELAY_SECONDS)
+assert.equal(schema.properties.stable_schema_version.const, CURRENT_STABLE_SCHEMA_VERSION)
+assert.equal(schema.properties.record_wire_version.const, CURRENT_RECORD_WIRE_VERSION)
+assert(schema.required.includes("stable_schema_version"))
+assert(schema.required.includes("record_wire_version"))
 assert(schema.required.includes("state_upgrade"))
 assert.equal(schema.properties.state_upgrade.$ref, "#/$defs/stateUpgrade")
 assert.deepEqual(schema.$defs.stateUpgrade.required, ["verified", "before", "after"])

@@ -115,6 +115,14 @@ export function depositContinuation(record: DepositView): DepositContinuation {
       message: "Mint authorization expired before signing completed. Request the finalized refund from History.",
     }
   }
+  if (authorizationPhase && name === "AuthorizationWindowTooShort") {
+    return {
+      mode: "stopped",
+      action: "request-refund",
+      reason,
+      message: "Less than five minutes remained before signing completed. Wait for finalized Base time to pass the deadline, then request a refund from History.",
+    }
+  }
   if (name === "BridgeSignerMismatch") {
     return { mode: "stopped", reason, message: "Bridge signer verification failed. Bridge configuration review is required before this deposit can continue." }
   }
@@ -125,12 +133,12 @@ export function depositContinuation(record: DepositView): DepositContinuation {
   return { mode: "stopped", reason, message: unknown ? `Processing stopped: ${unknown}` : "Processing stopped. Bridge review is required." }
 }
 
-export type AuthorizationExpiredRefundStatus = "checking-finality" | "waiting-finality" | "ready"
+export type AuthorizationDeadlineRefundStatus = "checking-finality" | "waiting-finality" | "ready"
 
-export function authorizationExpiredRefundStatus(
+export function authorizationDeadlineRefundStatus(
   record: DepositView,
   finalizedBlockTimestamp?: bigint,
-): AuthorizationExpiredRefundStatus {
+): AuthorizationDeadlineRefundStatus {
   const authorization = record.mint_authorization[0]
   if (!authorization || finalizedBlockTimestamp === undefined) return "checking-finality"
   return finalizedBlockTimestamp > authorization.deadline ? "ready" : "waiting-finality"
@@ -145,6 +153,7 @@ export function depositReconciliationMessage(
     const name = settlementStopReasonName(stopReason)
     if (["RpcUnavailable", "RpcInconsistent", "SigningUnavailable"].includes(name)) return "Processing stopped — retry from History"
     if (name === "AuthorizationExpired") return "Authorization expired — request a refund from History"
+    if (name === "AuthorizationWindowTooShort") return "Authorization window closed — wait for finality, then request a refund from History"
     return "Processing stopped — Bridge review required"
   }
   if (!stopReason) return undefined
@@ -191,6 +200,7 @@ function isSettlementStopReason(value: unknown): boolean {
     "LedgerFeeExceedsServiceFee", "RpcUnavailable",
     "RpcInconsistent", "LedgerAmbiguous", "LedgerUnavailable", "BaseStateMismatch",
     "BridgeSignerMismatch", "SigningUnavailable", "InvalidBaseResponse",
+    "AuthorizationExpired", "AuthorizationWindowTooShort",
   ].includes(key) && payload === null
 }
 

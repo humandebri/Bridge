@@ -6,16 +6,36 @@ use bridge_core::{
     fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
     funding_reconciliation_decision, hold_resolution_decision, lease_generation_next,
     lease_outcome_is_current, manual_claim_decision, mint_admission_total,
-    mint_finalization_allowed, next_attempt, notification_failure_cooldown_active,
-    outbound_settlement, payout_allowed, payout_debit, refresh_generation_next,
-    refresh_owner_matches, release_transfer_matches, replay_matches, reservation_decision,
-    reserve_admission_preserves_requirement, scan_complete, service_fee_change_allowed,
-    settlement_decision, signing_cycle_requirement, transaction_liability_wei,
-    withdrawal_phase_allows, withdrawal_phase_step, withdrawal_transition_effects,
-    DepositEventGuard, DepositTransitionDecision, DepositTransitionInput,
-    FeeRecipientRotationDecision, FundingReconciliationDecision, HoldResolutionDecision,
-    ManualClaimDecision,
+    mint_authorization_has_minimum_remaining_time, mint_finalization_allowed, next_attempt,
+    notification_failure_cooldown_active, outbound_settlement, payout_allowed, payout_debit,
+    refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
+    reservation_decision, reserve_admission_preserves_requirement, scan_complete,
+    service_fee_change_allowed, settlement_decision, signature_install_allowed,
+    signing_cycle_requirement, transaction_liability_wei, withdrawal_phase_allows,
+    withdrawal_phase_step, withdrawal_transition_effects, DepositEventGuard,
+    DepositTransitionDecision, DepositTransitionInput, FeeRecipientRotationDecision,
+    FundingReconciliationDecision, HoldResolutionDecision, ManualClaimDecision,
 };
+
+#[test]
+fn mint_authorization_remaining_time_is_checked_at_boundaries() {
+    assert!(mint_authorization_has_minimum_remaining_time(700, 1_000));
+    assert!(!mint_authorization_has_minimum_remaining_time(701, 1_000));
+    assert!(!mint_authorization_has_minimum_remaining_time(
+        u64::MAX,
+        u64::MAX
+    ));
+
+    assert!(signature_install_allowed(true, true, true, 700, 1_000));
+    assert!(!signature_install_allowed(true, true, true, 701, 1_000));
+    assert!(!signature_install_allowed(
+        true,
+        true,
+        true,
+        u64::MAX,
+        u64::MAX
+    ));
+}
 
 #[test]
 fn boolean_decisions_are_exhaustive() {
@@ -436,7 +456,8 @@ fn deposit_transition_decision_effects_cover_every_state_event_and_idempotency()
                 dispatched: true,
                 signature_absent: true,
                 signature_length_valid: true,
-                minimum_remaining: true,
+                observed_timestamp: 700,
+                deadline: 1_000,
             },
             6 => DepositEventGuard::MintFinalization {
                 fixed_fields_match: true,
