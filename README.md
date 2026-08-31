@@ -88,6 +88,31 @@ scripts/ci-local.sh contracts-coverage
 scripts/ci-local.sh ui-e2e
 ```
 
+安全性関連変更では、次の3つを別の終端として扱う。
+
+1. 実装完了: code、test、manifest、documentationの変更が揃っている。
+2. 検証完了: current source fingerprintと一致するcomplete proof receiptがある。
+3. deploy承認: Canister upgrade、frontend publish、Base transactionなどの外部変更が明示承認されている。
+
+proof合格は自動deployを意味しない。高コストproofの前に、登録driftを含む軽量検査を完了させる。
+
+```bash
+git diff --check
+cargo fmt --all -- --check
+python3 scripts/check_schema_consistency.py
+pnpm --dir ui run codegen:abi:check
+pnpm --dir ui run codegen:candid:check
+python3 scripts/check_proof_impact.py
+python3 scripts/check_claim_manifest.py
+python3 scripts/check_claim_test_manifest.py --validate-only
+```
+
+軽量検査と対象testが成功し、重複gateとwriterがないことを確認してから、current fingerprintのproofを一度実行する。長時間実行時は完全ログを保持する。
+
+```bash
+qrun -- scripts/ci-local.sh proofs
+```
+
 PR前はdeployと実Ledger統合を除く全検証を実行する。
 
 ```bash

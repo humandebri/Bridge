@@ -662,6 +662,13 @@ run_policy_vector_consumers() {
   python3 "$ROOT/scripts/protocol_vectors.py" --check
 }
 
+run_proof_preflight() {
+  python3 "$ROOT/scripts/check_schema_consistency.py"
+  python3 "$ROOT/scripts/check_proof_impact.py"
+  python3 "$ROOT/scripts/check_claim_manifest.py"
+  python3 "$ROOT/scripts/check_claim_test_manifest.py" --validate-only
+}
+
 run_refinement_gate() {
   python3 "$TRANSITION_MANIFEST_TEST" || return
   python3 "$TRANSITION_MANIFEST_CHECK" || return
@@ -1579,6 +1586,7 @@ run_smoke_step() {
 
 case "$MODE" in
   all)
+    run_step proof-preflight run_proof_preflight
     run_step versions run_versions
     run_step rust run_rust
     run_step contracts run_contracts
@@ -1589,6 +1597,7 @@ case "$MODE" in
     run_step smoke run_smoke_step
     ;;
   checks)
+    run_step proof-preflight run_proof_preflight
     run_step versions run_versions
     run_step rust run_rust
     run_step contracts run_contracts
@@ -1621,6 +1630,7 @@ case "$MODE" in
     run_step certora run_certora_advisory_checks
     ;;
   proofs)
+    run_step proof-preflight run_proof_preflight
     run_step versions run_versions
     run_step proofs run_proofs
     ;;
