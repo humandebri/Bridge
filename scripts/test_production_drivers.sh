@@ -81,6 +81,7 @@ case "$1 $2" in
   'nonce 0x4444444444444444444444444444444444444444') [[ -e "$TIMELOCK_DEPLOYED_MARKER" ]] && echo 1 || echo 0;;
   'compute-address 0x4444444444444444444444444444444444444444') [[ "$*" == *'--nonce 0'* ]] && echo 'Computed Address: 0x2222222222222222222222222222222222222222' || echo 'Computed Address: 0x3333333333333333333333333333333333333333';;
   'chain-id --rpc-url') if [[ "${PROVIDER_CHAIN_FAILURES:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_CHAIN_FAILURES:-0}" -ge 2 && "$*" == *two.example* ]]; then exit 1; elif [[ "${PROVIDER_MALFORMED_CHAINS:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_MALFORMED_CHAINS:-0}" -ge 2 && "$*" == *two.example* ]]; then echo invalid; elif [[ "${PROVIDER_WRONG_CHAINS:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_WRONG_CHAINS:-0}" -ge 2 && "$*" == *two.example* ]]; then echo 1; else echo 8453; fi;;
+  'block pending') [[ "${DEPLOY_FEE_RPC_FAIL:-}" != true ]] || exit 1; if [[ "${DEPLOY_BASE_FEE_MALFORMED:-}" == true ]]; then echo '{"baseFeePerGas":false}'; else printf '{"baseFeePerGas":"0x%x"}\n' "${DEPLOY_BASE_FEE:-50}"; fi;;
   'block safe'|'block finalized') if [[ "${PROVIDER_SAFE_FAILURES:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_SAFE_FAILURES:-0}" -ge 2 && "$*" == *two.example* ]]; then exit 1; fi; h="${LATEST_HEIGHT:-100}"; if [[ "${LATEST_BLOCK_DRIFT:-}" =~ ^(all|one)$ && "$*" == *one.example* ]]; then x=1; elif [[ "${LATEST_BLOCK_DRIFT:-}" == all && "$*" == *two.example* ]]; then x=2; elif [[ "${LATEST_BLOCK_DRIFT:-}" == all ]]; then x=3; else x=a; fi; printf '{"number":"0x%x","hash":"0x%s"}\n' "$h" "$(printf "$x%.0s" {1..64})";;
   'block 100') if [[ "${MID_READ_REORG:-}" == all ]]; then x=f; elif [[ "${MID_READ_REORG:-}" == one && "$*" == *three.example* ]]; then x=f; elif [[ "${SIGNED_BLOCK_DRIFT:-}" == all && "$*" == *one.example* ]]; then x=1; elif [[ "${SIGNED_BLOCK_DRIFT:-}" == all && "$*" == *two.example* ]]; then x=2; elif [[ "${SIGNED_BLOCK_DRIFT:-}" == all ]]; then x=3; else x=a; fi; printf '{"number":"0x64","hash":"0x%s"}\n' "$(printf "$x%.0s" {1..64})";;
   'block 1') printf '{"number":"0x1","hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})";;
@@ -105,6 +106,11 @@ case "$1 $2" in
   'calldata unpauseWithdrawals()') echo 0x2222;;
   'calldata '*) printf '0x%s\n' "${*:2}";;
   'rpc --rpc-url')
+    if [[ "$*" == *eth_maxPriorityFeePerGas* ]]; then
+      [[ "${DEPLOY_PRIORITY_FEE_RPC_FAIL:-}" != true ]] || exit 1
+      if [[ "${DEPLOY_PRIORITY_FEE_MALFORMED:-}" == true ]]; then echo 'false'; else printf '"0x%x"\n' "${DEPLOY_SUGGESTED_PRIORITY_FEE:-2}"; fi
+      exit 0
+    fi
     if [[ "${PROVIDER_EIP1898_FAILURES:-0}" -ge 1 && "$*" == *one.example* ]] || [[ "${PROVIDER_EIP1898_FAILURES:-0}" -ge 2 && "$*" == *two.example* ]]; then exit 1; fi
     if [[ "$*" == *'"blockHash":"0xffff'* ]] || [[ "${MID_READ_REORG:-}" == all ]] || [[ "${MID_READ_REORG:-}" == one && "$*" == *three.example* ]] || [[ "${SIGNED_BLOCK_DRIFT:-}" == all ]]; then exit 1; fi
     if [[ "$*" == *eth_getCode* ]]; then
@@ -248,6 +254,19 @@ if CANISTER_CONTROLLER_DRIFT=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s
   echo "deploy driver accepted a certified extra Canister controller" >&2; exit 1
 fi
 [[ ! -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" ]]
+for fee_fault in base-ceiling priority-ceiling malformed-base unavailable-priority; do
+  : >"$TRACE"
+  if [[ "$fee_fault" == base-ceiling ]]; then fee_env=(DEPLOY_BASE_FEE=99)
+  elif [[ "$fee_fault" == priority-ceiling ]]; then fee_env=(DEPLOY_SUGGESTED_PRIORITY_FEE=3)
+  elif [[ "$fee_fault" == malformed-base ]]; then fee_env=(DEPLOY_BASE_FEE_MALFORMED=true)
+  else fee_env=(DEPLOY_PRIORITY_FEE_RPC_FAIL=true)
+  fi
+  if env "${fee_env[@]}" BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
+    echo "deploy driver accepted Base fee fault: $fee_fault" >&2; exit 1
+  fi
+  if grep -q '^forge ' "$TRACE"; then echo "deploy driver broadcast after Base fee fault: $fee_fault" >&2; exit 1; fi
+  [[ ! -e "$TIMELOCK_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYED_MARKER" && ! -e "$BRIDGE_DEPLOYMENT_BINDING_FILE.checkpoint" ]]
+done
 if PROOF_GATE_MUTATE_SOURCE=true BRIDGE_GATE_A_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_CANISTER_INIT_FILE="$T/init.json" BRIDGE_CONSTRUCTOR_ARGS_FILE="$T/constructors.json" BRIDGE_DEPLOYER_ADDRESS=0x4444444444444444444444444444444444444444 BRIDGE_ICP_IDENTITY=production "$DRIVER_ROOT/scripts/production-deploy-driver.sh" >/dev/null 2>&1; then
   echo "deploy driver accepted source mutation during proofs" >&2; exit 1
 fi
@@ -281,7 +300,7 @@ assert binding['bridge']['block_hash']=='0x'+'b'*64
 PY
 python3 - "$TRACE" <<'PY'
 import sys
-s=open(sys.argv[1]).read(); required=['proofs proofs','rebuild ','cast chain-id','cast wallet address','cast nonce','BridgeTimelockController','src/Bridge.sol']; pos=-1
+s=open(sys.argv[1]).read(); required=['proofs proofs','rebuild ','cast chain-id','cast wallet address','cast nonce','cast block pending','eth_maxPriorityFeePerGas','BridgeTimelockController','src/Bridge.sol']; pos=-1
 for x in required:
   pos=s.find(x,pos+1); assert pos>=0,(x,s)
 assert '--keystore' in s and '--ledger' not in s and 'unpause' not in s
