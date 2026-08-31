@@ -69,12 +69,12 @@ type Block = record {
   mixHash : text;
 };
 type BlockMode = variant {
+  FinalizedCheckpointHeadError;
+  FinalizedDelayed;
   CanonicalInconsistent;
   FinalizedInconsistent;
   FinalizedUnavailable;
-  FinalizedDelayed;
   FinalizedCheckpointFork;
-  FinalizedCheckpointHeadError;
   Canonical;
   SameHeightDifferentHash;
 };
