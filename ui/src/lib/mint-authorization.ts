@@ -43,7 +43,7 @@ export interface ValidatedMintAuthorization {
   latestBlockTimestamp: bigint
 }
 
-export function assertMintAuthorizationContractHorizon(
+function assertMintAuthorizationContractHorizon(
   deadline: bigint,
   latestBaseTimestamp: bigint,
 ): void {
@@ -150,6 +150,7 @@ export async function validateMintAuthorization(
   if (processed) {
     throw new Error("This Deposit ID is already processed on Base. Do not submit another mint; refresh History for finalized status.")
   }
+  assertMintAuthorizationContractHorizon(authorization.deadline, latestBlock.timestamp)
   if (!mintAuthorizationWindow(authorization.deadline, latestBlock.timestamp).hasMinimumRemainingTime) {
     throw new Error("Mint authorization has less than five minutes remaining. No Base transaction was sent.")
   }

@@ -4,18 +4,9 @@ import type { DepositView, MintAuthorizationView } from "@/generated/bridge.did"
 import type { FinalizedRuntimeObservation } from "@/lib/runtime-validation"
 import vector from "../../../verification/generated/mint-authorization-vector.json"
 import {
-  assertMintAuthorizationContractHorizon,
   mintAuthorizationTypes,
   validateMintAuthorization,
 } from "./mint-authorization"
-
-describe("mint authorization deadline horizon", () => {
-  it("rejects_an_authorization_beyond_the_Base_contract_deadline_horizon", () => {
-    expect(() => assertMintAuthorizationContractHorizon(1_901n, 1_000n)).toThrow(
-      "Mint authorization exceeds the Base contract deadline horizon",
-    )
-  })
-})
 
 const mocks = vi.hoisted(() => ({
   getBlock: vi.fn(),
@@ -123,6 +114,18 @@ describe("mint authorization latest Base admission", () => {
   beforeEach(() => {
     mocks.getBlock.mockReset()
     mocks.readContract.mockReset().mockResolvedValue(false)
+  })
+
+  it("rejects_an_authorization_beyond_the_Base_contract_deadline_horizon", async () => {
+    const deadline = BigInt(vector.authorization.deadline)
+    mocks.getBlock
+      .mockResolvedValueOnce({ timestamp: deadline - 901n })
+      .mockResolvedValueOnce({ timestamp: deadline - 900n })
+
+    await expect(validateMintAuthorization(authorizationRecord(), runtimeObservation()))
+      .rejects.toThrow("Mint authorization exceeds the Base contract deadline horizon")
+    await expect(validateMintAuthorization(authorizationRecord(), runtimeObservation()))
+      .resolves.toMatchObject({ latestBlockTimestamp: deadline - 900n })
   })
 
   it("accepts_exactly_300_seconds_of_remaining_Base_time", async () => {
