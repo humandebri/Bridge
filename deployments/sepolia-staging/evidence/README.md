@@ -4,7 +4,7 @@
 
 checked-in `local-e2e.json`と`archive/<source-prefix>/`以下のschema v7 manifest/artifactは読取専用の監査履歴である。v7はresume、追記、migration、dual-read、現行staging判定に使用しない。新しいschema v8 local evidenceはclean commitから`scripts/plan007-local-gate.sh /secure/work/local-e2e.json`でrepository外へ生成し、driverの`BRIDGE_STAGING_LOCAL_EVIDENCE`へ明示指定する。
 
-`reinstall-decision-2026-08-27.json`と`fresh-stack-2026-08-28.json`は、既存Canister principalを一度だけdestructive reinstallし、現在のdeployment instanceとBase contractsを作成した履歴を固定する。v8の`bootstrap_attestation`はこの2 artifactのhashと現行bindingを照合するだけで、reinstall、contract redeploy、reactivationを実行または許可しない。将来の更新は同じCanister ID、deployment instance、schema v35／wire v30を保つcurrent-schema upgradeだけを受理する。
+`reinstall-decision-2026-08-27.json`と`fresh-stack-2026-08-28.json`は、既存Canister principalを一度だけdestructive reinstallし、現在のdeployment instanceとBase contractsを作成した履歴を固定する。v8の`bootstrap_attestation`はこの2 artifactのhashと現行bindingを照合するだけで、reinstall、contract redeploy、reactivationを実行または許可しない。将来の更新は同じCanister ID、deployment instance、Canister v35 upgrade（schema v35／wire v30を保つcurrent-schema upgrade）だけを受理する。
 
 v8のupgrade、binding、frontend、smoke、wallet、refund各stageはsummaryと一致するhash-bound stage receiptを必須とする。`rpc_rehearsal`は専用verifierを通過した`rpc-rehearsal-manifest`、`live_acceptance`はreactivation schedule/execute receiptと監視receiptを必須とし、自己申告summaryだけでは`SHORT_DELAY_LIVE`へ遷移しない。
 
