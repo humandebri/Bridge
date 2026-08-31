@@ -33,8 +33,8 @@ class TrustedPrGateTests(unittest.TestCase):
         evidence_dir = policy_dir / "evidence"
 
         self.assertFalse((ROOT / "deployments" / "staging-canister-plan.template.json").exists())
-        self.assertFalse((policy_dir / "legacy-stack-binding.json").exists())
-        self.assertFalse((policy_dir / "fresh-stack.template.json").exists())
+        self.assertTrue((policy_dir / "legacy-stack-binding.json").is_file())
+        self.assertTrue((policy_dir / "fresh-stack.template.json").is_file())
         self.assertFalse((policy_dir / "staging-bridge-upgrade-policy.json").exists())
         self.assertFalse((ROOT / "scripts/plan007/staging_canister_upgrade.py").exists())
         self.assertFalse((ROOT / "scripts/plan007/staging-canister-upgrade.sh").exists())

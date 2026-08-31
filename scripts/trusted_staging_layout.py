@@ -49,8 +49,8 @@ def classify_layout(root: Path, candidate_scripts: Path | None) -> str:
         _regular_file_presence(root, f"{policy_prefix}/legacy-stack-binding.json"),
         _regular_file_presence(root, f"{policy_prefix}/fresh-stack.template.json"),
     )
-    # The checked-in staging layout records the replacement history as immutable
-    # evidence artifacts rather than as mutable marker templates.
+    # Marker files keep the replacement classification compatible with the
+    # trusted base policy; immutable evidence remains authoritative.
     replacement_evidence = (
         _regular_file_presence(
             root, f"{policy_prefix}/evidence/reinstall-decision-2026-08-27.json"
