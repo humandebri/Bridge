@@ -49,7 +49,7 @@ Bridge canisterはこのLedgerとIndexだけを対象とする。Ledger metadata
 | Foundry / Anvil | 1.7.1 |
 | Solidity | 0.8.36 |
 | OpenZeppelin Contracts | 5.6.1 (`5fd1781b1454fd1ef8e722282f86f9293cacf256`) |
-| Z3 | 4.16.0 |
+| Z3 | 5.0.0 |
 | Verus | 0.2026.07.05.49b8806 |
 | Lean | 4.30.0 |
 | Node.js | 24.14.0 |
