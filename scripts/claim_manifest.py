@@ -23,6 +23,7 @@ REQUIRED_CLAIM_IDS = frozenset(
     governance_transaction_affordability hold_resolution lease_lane_isolation
     lease_outcome ledger_block_provenance nonterminal_deposit_index_consistency
     notification_quota_isolation payment_identity pending_queue
+    operational_config_seal
     refund_evidence_enforcement refund_request_authorization reservation_commit
     reservation_lifecycle runtime_attestation_reuse service_fee_maximum
     settlement_backing signing_cycle_reserve withdrawal_admission_boundary
@@ -33,7 +34,7 @@ REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS = frozenset(
     fee_recipient_rotation funding_attempt_lifecycle funding_reconciliation_freshness
     governance_confirmation_authorization governance_transaction_affordability
     lease_lane_isolation ledger_block_provenance nonterminal_deposit_index_consistency
-    notification_quota_isolation refund_request_authorization reservation_commit
+    notification_quota_isolation operational_config_seal refund_request_authorization reservation_commit
     runtime_attestation_reuse service_fee_maximum signing_cycle_reserve
     withdrawal_admission_boundary""".split()
 )
@@ -45,15 +46,6 @@ REQUIRED_CLAIM_POLICY = {
         else "production-linked",
     )
     for claim_id in REQUIRED_CLAIM_IDS
-}
-
-# Temporary trust bootstrap for the production operational-config claim. The
-# trusted PR runner evaluates candidate evidence with the base branch scripts,
-# so the claim must be admitted with its exact policy before it can become
-# mandatory in the implementation PR. The implementation PR removes this
-# optional path when it adds the claim to REQUIRED_CLAIM_IDS.
-OPTIONAL_BOOTSTRAP_CLAIM_POLICY = {
-    "operational_config_seal": ("release-safety", "implementation-proved"),
 }
 
 REQUIRED_CONDITIONAL_LIVENESS_POLICY = {

@@ -14,6 +14,7 @@ from functools import lru_cache
 from pathlib import Path
 from pathlib import PurePosixPath
 
+from certora_fingerprint import certora_python_dependency_paths
 from proof_fingerprint import CERTORA_ONLY_RELEASE_EXCLUSIONS
 
 
@@ -196,6 +197,11 @@ def _is_certora_advisory_only(path: str) -> bool:
     )
 
 
+@lru_cache(maxsize=1)
+def _certora_python_dependencies() -> frozenset[str]:
+    return certora_python_dependency_paths(ROOT)
+
+
 def classify(paths: list[str]) -> dict[str, bool]:
     result = {area: False for area in AREAS}
     for raw_path in paths:
@@ -207,6 +213,8 @@ def classify(paths: list[str]) -> dict[str, bool]:
         if _is_certora_advisory_only(path):
             result["certora"] = True
             continue
+        if path in _certora_python_dependencies():
+            result["certora"] = True
 
         infrastructure = _matches(
             path,

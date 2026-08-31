@@ -1593,7 +1593,6 @@ fn exact_quorum_response<T: Clone + PartialEq>(
         MultiRpcResult::Inconsistent(results) => exact_provider_response_quorum(results),
     }
 }
-
 fn withdrawal_finalized_identity(block: &Block) -> Option<WithdrawalFinalizedIdentity> {
     Some(WithdrawalFinalizedIdentity {
         block_number: u64::try_from(block.number.clone()).ok()?,

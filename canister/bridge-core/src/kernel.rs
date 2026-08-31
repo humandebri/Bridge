@@ -184,6 +184,58 @@ macro_rules! transaction_liability_body {
     }};
 }
 
+macro_rules! asset_operations_allowed_body {
+    ($sealed:expr) => {
+        $sealed
+    };
+}
+
+macro_rules! operational_config_seal_allowed_body {
+    ($sealed:expr, $candidate_valid:expr) => {
+        !$sealed && $candidate_valid
+    };
+}
+
+#[cfg(not(verus_keep_ghost))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetOperationLifecycleDecision {
+    Allow,
+    OperationalConfigNotSealed,
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn asset_operation_lifecycle_decision(
+    operational_config_sealed: bool,
+) -> AssetOperationLifecycleDecision {
+    if self::asset_operations_allowed(operational_config_sealed) {
+        AssetOperationLifecycleDecision::Allow
+    } else {
+        AssetOperationLifecycleDecision::OperationalConfigNotSealed
+    }
+}
+
+#[cfg(not(verus_keep_ghost))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationalConfigSealDecision {
+    Seal,
+    AlreadySealed,
+    InvalidCandidate,
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn operational_config_seal_decision(
+    operational_config_sealed: bool,
+    candidate_valid: bool,
+) -> OperationalConfigSealDecision {
+    if !candidate_valid {
+        OperationalConfigSealDecision::InvalidCandidate
+    } else if !self::operational_config_seal_allowed(operational_config_sealed, candidate_valid) {
+        OperationalConfigSealDecision::AlreadySealed
+    } else {
+        OperationalConfigSealDecision::Seal
+    }
+}
+
 macro_rules! release_transfer_matches_body {
     ($transfer_amount:expr, $transfer_fee:expr, $amount_out:expr, $ledger_fee:expr) => {
         $transfer_amount == $amount_out && $transfer_fee == $ledger_fee
@@ -1706,6 +1758,19 @@ pub const fn administrator_authorized(action: u8, is_pause: bool, is_governance:
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn asset_operations_allowed(operational_config_sealed: bool) -> bool {
+    asset_operations_allowed_body!(operational_config_sealed)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn operational_config_seal_allowed(
+    operational_config_sealed: bool,
+    candidate_valid: bool,
+) -> bool {
+    operational_config_seal_allowed_body!(operational_config_sealed, candidate_valid)
+}
+
+#[cfg(not(verus_keep_ghost))]
 pub const fn audit_next(current: u64) -> Option<u64> {
     next_attempt_body!(current, u64::MAX, 1u64)
 }
@@ -2464,6 +2529,16 @@ verus! {
         let payout_action: int = 2;
         let rotate_action: int = 3;
         authorized_body!(action, pause, governance, pause_action, resume_action, payout_action, rotate_action)
+    }
+
+    pub open spec fn asset_operations_allowed_spec(sealed: bool) -> bool {
+        asset_operations_allowed_body!(sealed)
+    }
+
+    pub open spec fn operational_config_seal_allowed_spec(
+        sealed: bool, candidate_valid: bool,
+    ) -> bool {
+        operational_config_seal_allowed_body!(sealed, candidate_valid)
     }
 
     pub open spec fn audit_next_spec(current: int) -> Option<int> {

@@ -102,6 +102,24 @@ theorem activation_preflight_witness : ActivationPreflight := by
   exact ControlPlane.unpaused_activation_is_validated
     (ControlPlane.reachable_is_safe reachable) unpaused activated
 
+def operationalConfigSealAllowed (sealed candidateValid : Bool) : Bool :=
+  !sealed && candidateValid
+
+def assetOperationsAllowed (sealed : Bool) : Bool := sealed
+
+def OperationalConfigSeal : Prop :=
+  (∀ sealed candidateValid : Bool,
+      operationalConfigSealAllowed sealed candidateValid = true ↔
+        sealed = false ∧ candidateValid = true) ∧
+    (∀ sealed : Bool, assetOperationsAllowed sealed = true ↔ sealed = true)
+
+theorem operational_config_seal_witness : OperationalConfigSeal := by
+  constructor
+  · intro sealed candidateValid
+    cases sealed <;> cases candidateValid <;> simp [operationalConfigSealAllowed]
+  · intro sealed
+    cases sealed <;> simp [assetOperationsAllowed]
+
 def IntegratedProtocolReachability : Prop :=
   (∀ {state : Protocol.ProtocolState}, Protocol.Reachable state → Protocol.Safe state) ∧
     (∀ {stored reopened : Protocol.ProtocolState},

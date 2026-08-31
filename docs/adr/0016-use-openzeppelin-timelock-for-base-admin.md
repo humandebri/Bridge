@@ -5,7 +5,7 @@ status: accepted
 # Base Adminの実行境界にOpenZeppelin TimelockControllerを使う
 
 Base Adminの危険方向操作はOpenZeppelin Contracts 5.6.1の`TimelockController`を経由する。
-TimelockをBridgeより先にdeployし、初期minimum delayを24時間、Canister由来Governance Operatorをproposer、executor、canceller、追加adminを`address(0)`として構成する。
+TimelockをBridgeより先にdeployし、初期minimum delayを24時間、Canister由来Governance Operatorをproposer/executor、別derivationのIndependent Cancellerをcanceller、追加adminを`address(0)`として構成する。
 Timelock自身だけが`DEFAULT_ADMIN_ROLE`を持つ。構築後のTimelock role集合は凍結し、自己callを含むgrant、revoke、renounceを拒否する。role変更は、新しい承認済みrole集合のTimelockを配置してBridgeのTimelock rotationを行う。
 
 ## Considered Options
@@ -18,4 +18,4 @@ Timelock自身だけが`DEFAULT_ADMIN_ROLE`を持つ。構築後のTimelock role
 
 - 外部EOAからBridgeのBase Admin関数を直接呼んでも失敗し、CanisterがTimelockへscheduleして24時間後にexecuteする。
 - Bridgeは候補addressのbytecode、`getMinDelay() >= 24 hours`、候補自身の`DEFAULT_ADMIN_ROLE`保持をrotation時に検証する。
-- proposer、executor、cancellerは同一のCanister由来Governance Operatorへ固定し、人間walletへroleを付与しない。role集合は構築後に凍結する。
+- proposer/executorはCanister由来Governance Operator、cancellerは別derivationのIndependent Cancellerへ固定し、人間walletへroleを付与しない。role集合は構築後に凍結する。

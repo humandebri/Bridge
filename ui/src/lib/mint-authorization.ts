@@ -43,6 +43,15 @@ export interface ValidatedMintAuthorization {
   latestBlockTimestamp: bigint
 }
 
+export function assertMintAuthorizationContractHorizon(
+  deadline: bigint,
+  latestBaseTimestamp: bigint,
+): void {
+  if (deadline > latestBaseTimestamp + 900n) {
+    throw new Error("Mint authorization exceeds the Base contract deadline horizon")
+  }
+}
+
 function fixedHex(bytes: Uint8Array | number[], length: number, label: string): Hex {
   if (bytes.length !== length) throw new Error(`${label} has an invalid length`)
   return bytesToHex(Uint8Array.from(bytes))

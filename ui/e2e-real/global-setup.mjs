@@ -14,6 +14,7 @@ import { createPublicClient, hexToBytes, http, keccak256, numberToHex, recoverTr
 import { publicKeyToAddress } from "viem/accounts"
 import { idlFactory as bridgeIdl, init as bridgeInitFactory } from "./generated/bridge.idl.mjs"
 import { idlFactory as mockIdl, init as mockInitFactory } from "./generated/mock-external.idl.mjs"
+import { createExclusiveProgressPause } from "./progress-pause.mjs"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const uiRoot = path.resolve(here, "..")
@@ -24,7 +25,11 @@ const rpcUrl = "http://127.0.0.1:8545"
 const controlPort = 43119
 const uiPort = 4174
 const ACTIVATION_DELAY_SECONDS = 5 * 60
-const ACTIVATION_TIME_ADVANCES = 3
+// Canonical activation, two control-plane rotations, repeated activation, and
+// post-emergency recovery each advance the Base clock by one activation delay.
+const ACTIVATION_TIME_ADVANCES = 5
+const MAX_FIXTURE_CLOCK_SKEW_SECONDS = 15n
+const MAX_FIXTURE_CLOCK_SYNC_ATTEMPTS = 4
 const CONTROL_PLANE_QUOTA_WINDOW_SECONDS = 60
 const stagingForgeEnv = { ...process.env, FOUNDRY_PROFILE: "staging" }
 const deployer = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
@@ -37,6 +42,14 @@ const feeRecipient = Principal.selfAuthenticating(new Uint8Array(32).fill(10))
 const confirmationRelayerPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(11))
 const bridgeAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/Bridge.json"), "utf8"))
 const bsnsAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/BSNS.json"), "utf8"))
+const stagingUpgradePolicy = JSON.parse(await readFile(
+  path.join(root, "deployments/sepolia-staging/staging-bridge-upgrade-policy.json"),
+  "utf8",
+))
+const stagingDeploymentInstanceId = stagingUpgradePolicy.deployment_instance_id
+if (!/^0x[0-9a-f]{64}$/.test(stagingDeploymentInstanceId)) {
+  throw new Error("Staging upgrade policy has an invalid deployment instance ID")
+}
 const resources = {}
 const bridgeInitType = bridgeInitFactory({ IDL })[0]
 const mockInitType = mockInitFactory({ IDL })[0]
@@ -85,6 +98,10 @@ async function setup() {
   })
   await pic.resetTime()
   resources.pic = pic
+  const withPausedProgress = createExclusiveProgressPause(
+    stopProgressLoop,
+    () => startProgressLoop(pic),
+  )
   const subnet = await pic.getFiduciarySubnet()
   if (!subnet) throw new Error("PocketIC fiduciary subnet is unavailable")
 
@@ -272,7 +289,7 @@ async function setup() {
       expected_bsns_runtime_sha256: hexToBytes(sha256(bsnsCode)),
       expected_bsns_decimals: 8,
       expected_minimum_service_fee: 10_000n,
-      deployment_instance_id: new Uint8Array(32).fill(3),
+      deployment_instance_id: hexToBytes(stagingDeploymentInstanceId),
       minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]),
       ecdsa_key_name: "key_1",
       ecdsa_derivation_path: [],
@@ -382,6 +399,40 @@ async function setup() {
   const knownDeposits = []
   const depositSequences = []
   const knownWithdrawals = []
+  const alignFixtureClocks = async () => {
+    // Confirmation mining and PocketIC settlement ticks advance independently.
+    // PocketIC can reflect a time advance across more than one tick, so reread
+    // both clocks and move only the lagging deterministic clock with a bound.
+    for (let attempt = 0; attempt < MAX_FIXTURE_CLOCK_SYNC_ATTEMPTS; attempt += 1) {
+      const [latest, icTime] = await Promise.all([
+        publicClient.getBlock({ blockTag: "latest" }),
+        pic.getTime(),
+      ])
+      const icTimestamp = BigInt(Math.floor(icTime / 1_000))
+      const clockSkew = latest.timestamp >= icTimestamp
+        ? latest.timestamp - icTimestamp
+        : icTimestamp - latest.timestamp
+      if (clockSkew <= MAX_FIXTURE_CLOCK_SKEW_SECONDS) return
+      if (latest.timestamp > icTimestamp) {
+        await pic.advanceTime(Number((latest.timestamp - icTimestamp) * 1_000n))
+        await pic.tick()
+      } else {
+        await rpc("evm_increaseTime", [Number(icTimestamp - latest.timestamp)])
+        await rpc("evm_mine", [])
+      }
+    }
+    const [latestAfterClockSync, icTimeAfterClockSync] = await Promise.all([
+      publicClient.getBlock({ blockTag: "latest" }),
+      pic.getTime(),
+    ])
+    const icTimestampAfterClockSync = BigInt(Math.floor(icTimeAfterClockSync / 1_000))
+    const clockSkew = latestAfterClockSync.timestamp >= icTimestampAfterClockSync
+      ? latestAfterClockSync.timestamp - icTimestampAfterClockSync
+      : icTimestampAfterClockSync - latestAfterClockSync.timestamp
+    if (clockSkew > MAX_FIXTURE_CLOCK_SKEW_SECONDS) {
+      throw new Error(`E2E clock skew exceeds ${MAX_FIXTURE_CLOCK_SKEW_SECONDS}s: Base=${latestAfterClockSync.timestamp} IC=${icTimestampAfterClockSync}`)
+    }
+  }
   const syncObservedHeads = async () => {
     const [safe, finalized] = await Promise.all([
       publicClient.getBlock({ blockTag: "safe" }),
@@ -699,6 +750,7 @@ async function setup() {
   if (!("Ok" in recoveryExecuteConfirmed)) throw new Error(`Post-emergency activation execute confirmation failed: ${json(recoveryExecuteConfirmed.Err)}`)
   const reactivatedStatus = await bridge.actor.get_bridge_status()
   if (reactivatedStatus.deposits_paused) throw new Error("IC deposits remained paused after post-emergency activation")
+  await alignFixtureClocks()
   // The mock RPC exposes one nonce response at a time. Switch its observation
   // from the governance operator lane to the independently derived mint lane.
   await mock.actor.set_next_evm_nonce(0n)
@@ -749,13 +801,16 @@ async function setup() {
       if (request.url === "/ic/deposit") {
         if (connectedAccount !== testOwner.toText()) throw new Error("test IC account changed")
         depositSequences.push(String(body.ownerSequence))
-        await syncObservedHeads()
-        const result = await bridge.actor.request_deposit({
-          owner_sequence: BigInt(body.ownerSequence),
-          base_recipient: hexToBytes(body.baseRecipient),
-          from_subaccount: [],
-          gross_amount: BigInt(body.grossAmount),
-          max_service_fee: BigInt(body.maxServiceFee),
+        const result = await withPausedProgress(async () => {
+          await alignFixtureClocks()
+          await syncObservedHeads()
+          return bridge.actor.request_deposit({
+            owner_sequence: BigInt(body.ownerSequence),
+            base_recipient: hexToBytes(body.baseRecipient),
+            from_subaccount: [],
+            gross_amount: BigInt(body.grossAmount),
+            max_service_fee: BigInt(body.maxServiceFee),
+          })
         })
         if ("Err" in result) throw new Error(`deposit rejected: ${json(result.Err)}`)
         if (!knownDeposits.some((id) => bytesHex(id) === bytesHex(result.Ok.deposit_id))) knownDeposits.push(result.Ok.deposit_id)
@@ -806,21 +861,17 @@ async function setup() {
         return send(response, 200, null)
       }
       if (request.url === "/test/relay") {
-        await syncObservedHeads()
-        await stopProgressLoop()
-        try {
+        await withPausedProgress(async () => {
+          await syncObservedHeads()
           await pic.advanceTime(2_000)
           await pic.tick(30)
-        } finally {
-          await startProgressLoop(pic)
-        }
+        })
         return send(response, 200, null)
       }
       if (request.url === "/test/upgrade") {
-        await stopProgressLoop()
         let before
         let after
-        try {
+        await withPausedProgress(async () => {
           await waitForNoLeasedJobs(bridge.actor)
           before = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
           await pic.upgradeCanister({
@@ -830,9 +881,7 @@ async function setup() {
             sender: testOwner,
           })
           after = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
-        } finally {
-          await startProgressLoop(pic)
-        }
+        })
         if (json(before) !== json(after)) throw new Error("same-Wasm upgrade changed durable bridge state")
         if (before.deposits.length === 0) throw new Error("same-Wasm upgrade did not exercise an individual Deposit record")
         const facts = JSON.parse(await readFile(path.join(runtimeDir, "local-e2e-facts.json"), "utf8"))

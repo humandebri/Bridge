@@ -3,7 +3,19 @@ import { hashTypedData, recoverAddress } from "viem"
 import type { DepositView, MintAuthorizationView } from "@/generated/bridge.did"
 import type { FinalizedRuntimeObservation } from "@/lib/runtime-validation"
 import vector from "../../../verification/generated/mint-authorization-vector.json"
-import { mintAuthorizationTypes, validateMintAuthorization } from "./mint-authorization"
+import {
+  assertMintAuthorizationContractHorizon,
+  mintAuthorizationTypes,
+  validateMintAuthorization,
+} from "./mint-authorization"
+
+describe("mint authorization deadline horizon", () => {
+  it("rejects_an_authorization_beyond_the_Base_contract_deadline_horizon", () => {
+    expect(() => assertMintAuthorizationContractHorizon(1_901n, 1_000n)).toThrow(
+      "Mint authorization exceeds the Base contract deadline horizon",
+    )
+  })
+})
 
 const mocks = vi.hoisted(() => ({
   getBlock: vi.fn(),

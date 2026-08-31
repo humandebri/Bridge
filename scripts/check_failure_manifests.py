@@ -16,7 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_LEAN_FAILURE_SHA256 = {
     "AccountingDeltaViolation.lean": "42c3cd975297018b3f37963910957eae30d8a5910b18aba483ee7e24a27151dd",
     "AnonymousRefundRequest.lean": "beae263600cfc9307feadae225b64983f34e11bfdfa04adae6316ec7a1869552",
-    "AuthorizationReissue.lean": "ee67fee642f47c1d116fc94f8a5f9387e96525dfa5397646063d6fbc6451d508",
+    "AuthorizationReissue.lean": (
+        "ee67fee642f47c1d116fc94f8a5f9387"
+        "e96525dfa5397646063d6fbc6451d508"
+    ),
     "BackingViolation.lean": "0ad4d6a1424518a8b8f9968310d0a88619133f86d4ce877fa7134a0f22b206d2",
     "ConflictingFundingReplay.lean": "fd5f6abf7f8812e64bf2cbf457991ca46fcea6cdcc71acd074a6b162317c7b96",
     "DeadlineOverflow.lean": "864692b1294fc6b36f398fc91ea14695d07fea1c3defc14708eccc329aa74d5c",

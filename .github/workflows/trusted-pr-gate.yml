@@ -139,7 +139,7 @@ jobs:
         with:
           path: |
             /home/runner/.elan
-            /home/runner/.local/z3
+            /home/runner/.local/z3-5.0.0
             /home/runner/.local/verus
             /home/runner/.local/bin
             /home/runner/.rustup/toolchains/1.96.0
@@ -162,7 +162,7 @@ jobs:
         with:
           path: |
             /home/runner/.elan
-            /home/runner/.local/z3
+            /home/runner/.local/z3-5.0.0
             /home/runner/.local/verus
             /home/runner/.local/bin
             /home/runner/.rustup/toolchains/1.96.0

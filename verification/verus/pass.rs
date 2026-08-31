@@ -1070,6 +1070,19 @@ proof fn refund_retry_requires_matching_evidence(request: bool, hold: bool, tran
     ensures !kernel::evidence_matches_spec(request, hold, transfer, open_or_retry, false)
 {}
 
+proof fn asset_operations_require_sealed_operational_config(sealed: bool)
+    ensures kernel::asset_operations_allowed_spec(sealed) <==> sealed,
+{}
+
+proof fn operational_config_seal_allows_only_pending_valid_candidate(
+    sealed: bool,
+    candidate_valid: bool,
+)
+    ensures
+        kernel::operational_config_seal_allowed_spec(sealed, candidate_valid)
+            <==> !sealed && candidate_valid,
+{}
+
 }
 
 fn main() {}

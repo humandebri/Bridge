@@ -72,7 +72,7 @@ check_tool_versions() {
   require_output icp "1.0.2" "$ICP_VERSION_PATTERN"
   require_output forge "1.7.1" "$FOUNDRY_VERSION_PATTERN"
   require_output anvil "1.7.1" "$ANVIL_VERSION_PATTERN"
-  require_output z3 "4.16.0" "$Z3_VERSION_PATTERN"
+  require_output z3 "5.0.0" "$Z3_VERSION_PATTERN"
   require_output verus "0.2026.07.05.49b8806" "$VERUS_VERSION_PATTERN"
   require_output lean "4.30.0" "$LEAN_VERSION_PATTERN" 3
   require_output node "24.14.0" "$NODE_VERSION_PATTERN"

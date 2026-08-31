@@ -1427,28 +1427,6 @@ pub(crate) async fn cached_signer_address(
     })
 }
 
-pub(crate) async fn cached_governance_operator_address(
-    config: &BridgeInitArgs,
-) -> Result<[u8; 20], DepositError> {
-    if let Some(address) = STORE.with(|store| {
-        store
-            .borrow()
-            .governance_operator_address()
-            .map_err(|_| DepositError::StorageFailure)
-    })? {
-        return Ok(address);
-    }
-    let derived = crate::signer::governance_operator_address(config)
-        .await
-        .map_err(|_| DepositError::BaseObservationUnavailable)?;
-    STORE.with(|store| {
-        store
-            .borrow_mut()
-            .set_governance_operator_address_if_absent(derived)
-            .map_err(|_| DepositError::StorageFailure)
-    })
-}
-
 pub(crate) async fn base_mint_snapshot(
     config: &BridgeInitArgs,
     now_ns: u64,

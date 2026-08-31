@@ -97,8 +97,9 @@ enum RpcAtomicFailpoint {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
-enum OperationalConfigSealFailpoint {
-    Singleton,
+enum OperationalConfigFailpoint {
+    SealSingleton,
+    RefreshSingleton,
 }
 
 #[cfg(test)]
@@ -108,21 +109,19 @@ thread_local! {
     static FEE_PAYOUT_BUNDLE_FAILPOINT: std::cell::Cell<Option<FeePayoutBundleFailpoint>> = const { std::cell::Cell::new(None) };
     static RECORD_WRITE_FAILPOINT: std::cell::Cell<Option<RecordWriteFailpoint>> = const { std::cell::Cell::new(None) };
     static RPC_ATOMIC_FAILPOINT: std::cell::Cell<Option<RpcAtomicFailpoint>> = const { std::cell::Cell::new(None) };
-    static OPERATIONAL_CONFIG_SEAL_FAILPOINT: std::cell::Cell<Option<OperationalConfigSealFailpoint>> = const { std::cell::Cell::new(None) };
+    static OPERATIONAL_CONFIG_FAILPOINT: std::cell::Cell<Option<OperationalConfigFailpoint>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
-fn set_operational_config_seal_failpoint(value: Option<OperationalConfigSealFailpoint>) {
-    OPERATIONAL_CONFIG_SEAL_FAILPOINT.with(|slot| slot.set(value));
+fn set_operational_config_failpoint(value: Option<OperationalConfigFailpoint>) {
+    OPERATIONAL_CONFIG_FAILPOINT.with(|slot| slot.set(value));
 }
 
-fn operational_config_seal_db_failpoint(
-    point: OperationalConfigSealFailpoint,
-) -> Result<(), DbError> {
+fn operational_config_db_failpoint(point: OperationalConfigFailpoint) -> Result<(), DbError> {
     #[cfg(test)]
-    if OPERATIONAL_CONFIG_SEAL_FAILPOINT.with(|slot| slot.get()) == Some(point) {
+    if OPERATIONAL_CONFIG_FAILPOINT.with(|slot| slot.get()) == Some(point) {
         return Err(DbError::Constraint(
-            "test operational config seal failpoint".into(),
+            "test operational config failpoint".into(),
         ));
     }
     let _ = point;
@@ -5338,18 +5337,39 @@ impl StableStore {
         &mut self,
         value: &BridgeInitArgs,
         attestation: crate::config::ActivationAttestation,
+        finalized_observation: FinalizedObservationRecord,
     ) -> Result<(), StorageError> {
-        let previous_config = self.config.get()?;
-        let previous_admission = self.deposit_admission.get()?;
-        let mut admission = decode::<DepositAdmissionControl>(&previous_admission)?;
-        if admission.operational_config_sealed {
+        if !activation_attestation_matches_finalized(&attestation, &finalized_observation) {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
+        let previous_config = self.config.get()?;
+        let previous_admission = self.deposit_admission.get()?;
+        let previous_progress = self.external_progress.get()?;
+        let mut admission = decode::<DepositAdmissionControl>(&previous_admission)?;
+        let mut progress = decode::<ExternalProgress>(&previous_progress)?;
+        match ::bridge_core::kernel::operational_config_seal_decision(
+            admission.operational_config_sealed,
+            crate::config::OperationalConfigArgs {
+                governance_evm_fee: value.governance_evm_fee,
+                cycles_floor: value.cycles_floor,
+                settlement_cycle_ceiling: value.settlement_cycle_ceiling,
+            }
+            .validate_seal_candidate()
+            .is_ok(),
+        ) {
+            bridge_core::OperationalConfigSealDecision::Seal => {}
+            bridge_core::OperationalConfigSealDecision::AlreadySealed
+            | bridge_core::OperationalConfigSealDecision::InvalidCandidate => {
+                return Err(StorageError::Core(CoreError::ConflictingReplay));
+            }
+        }
+        progress.observe_finalized(finalized_observation)?;
         admission.operational_config_sealed = true;
         let next_config = encode(&Some(
             ImmutableBridgeConfig::from_init(value).with_activation_attestation(attestation),
         ))?;
         let next_admission = encode(&admission)?;
+        let next_progress = encode(&progress)?;
         self.handle.update(|connection| {
             let persisted_config = connection.query_scalar::<Vec<u8>>(
                 "SELECT config FROM singleton_state WHERE id = 1",
@@ -5359,16 +5379,21 @@ impl StableStore {
                 "SELECT deposit_admission FROM singleton_state WHERE id = 1",
                 params![],
             )?;
+            let persisted_progress = connection.query_scalar::<Vec<u8>>(
+                "SELECT external_progress FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
             if persisted_config != previous_config.to_sql_bytes()
                 || persisted_admission != previous_admission.to_sql_bytes()
+                || persisted_progress != previous_progress.to_sql_bytes()
             {
                 return Err(DbError::Constraint("stale operational config seal".into()));
             }
             connection.execute(
-                "UPDATE singleton_state SET config = ?1, deposit_admission = ?2 WHERE id = 1",
-                params![next_config.to_sql_bytes(), next_admission.to_sql_bytes()],
+                "UPDATE singleton_state SET config = ?1, deposit_admission = ?2, external_progress = ?3 WHERE id = 1",
+                params![next_config.to_sql_bytes(), next_admission.to_sql_bytes(), next_progress.to_sql_bytes()],
             )?;
-            operational_config_seal_db_failpoint(OperationalConfigSealFailpoint::Singleton)
+            operational_config_db_failpoint(OperationalConfigFailpoint::SealSingleton)
         })?;
         Ok(())
     }
@@ -5385,9 +5410,14 @@ impl StableStore {
     pub fn refresh_activation_attestation(
         &mut self,
         attestation: crate::config::ActivationAttestation,
+        finalized_observation: FinalizedObservationRecord,
     ) -> Result<(), StorageError> {
+        if !activation_attestation_matches_finalized(&attestation, &finalized_observation) {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
         let previous_config = self.config.get()?;
         let previous_admission = self.deposit_admission.get()?;
+        let previous_progress = self.external_progress.get()?;
         let admission = decode::<DepositAdmissionControl>(&previous_admission)?;
         if !admission.operational_config_sealed {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
@@ -5398,7 +5428,10 @@ impl StableStore {
         }
         let current = decode::<Option<ImmutableBridgeConfig>>(&previous_config)?
             .ok_or(StorageError::Core(CoreError::ConflictingReplay))?;
+        let mut progress = decode::<ExternalProgress>(&previous_progress)?;
+        progress.observe_finalized(finalized_observation)?;
         let next_config = encode(&Some(current.with_activation_attestation(attestation)))?;
+        let next_progress = encode(&progress)?;
         self.handle.update(|connection| {
             let persisted_config = connection.query_scalar::<Vec<u8>>(
                 "SELECT config FROM singleton_state WHERE id = 1",
@@ -5408,18 +5441,23 @@ impl StableStore {
                 "SELECT deposit_admission FROM singleton_state WHERE id = 1",
                 params![],
             )?;
+            let persisted_progress = connection.query_scalar::<Vec<u8>>(
+                "SELECT external_progress FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
             if persisted_config != previous_config.to_sql_bytes()
                 || persisted_admission != previous_admission.to_sql_bytes()
+                || persisted_progress != previous_progress.to_sql_bytes()
             {
                 return Err(DbError::Constraint(
                     "stale activation attestation refresh".into(),
                 ));
             }
             connection.execute(
-                "UPDATE singleton_state SET config = ?1 WHERE id = 1",
-                params![next_config.to_sql_bytes()],
+                "UPDATE singleton_state SET config = ?1, external_progress = ?2 WHERE id = 1",
+                params![next_config.to_sql_bytes(), next_progress.to_sql_bytes()],
             )?;
-            Ok(())
+            operational_config_db_failpoint(OperationalConfigFailpoint::RefreshSingleton)
         })?;
         Ok(())
     }
@@ -9166,6 +9204,18 @@ impl StableStore {
     }
 }
 
+fn activation_attestation_matches_finalized(
+    attestation: &crate::config::ActivationAttestation,
+    observation: &FinalizedObservationRecord,
+) -> bool {
+    attestation.chain_id == observation.chain_id
+        && attestation.finalized_block_number == observation.block_number
+        && attestation.finalized_block_hash.as_slice() == observation.block_hash
+        && attestation.observed_at_ns == observation.observed_at_ns
+        && attestation.bridge_signer.as_slice() == observation.bridge_signer
+        && attestation.bridge_runtime_sha256.as_slice() == observation.runtime_sha256
+}
+
 fn is_open_hold(value: &ReconciliationHoldRecord) -> bool {
     let state = match value.state {
         ReconciliationHoldState::Open => 0,
@@ -9558,6 +9608,27 @@ mod tests {
         }
     }
 
+    fn activation_finalized_observation() -> FinalizedObservationRecord {
+        let attestation = activation_attestation();
+        FinalizedObservationRecord {
+            chain_id: attestation.chain_id,
+            block_number: attestation.finalized_block_number,
+            block_hash: attestation
+                .finalized_block_hash
+                .try_into()
+                .expect("32-byte finalized block hash"),
+            observed_at_ns: attestation.observed_at_ns,
+            bridge_signer: attestation
+                .bridge_signer
+                .try_into()
+                .expect("20-byte bridge signer"),
+            runtime_sha256: attestation
+                .bridge_runtime_sha256
+                .try_into()
+                .expect("32-byte runtime digest"),
+        }
+    }
+
     fn config() -> BridgeInitArgs {
         let principal = Principal::self_authenticating([7; 32]);
         BridgeInitArgs {
@@ -9844,6 +9915,35 @@ mod tests {
 
     #[test]
     #[serial]
+    fn operational_config_seal_rejects_bootstrap_without_mutation() {
+        let memory = VectorMemory::default();
+        let initial = config();
+        let mut bootstrap = initial.clone();
+        bootstrap.governance_evm_fee = crate::config::PRODUCTION_BOOTSTRAP_EVM_FEE;
+        bootstrap.cycles_floor = crate::config::PRODUCTION_BOOTSTRAP_CYCLES_FLOOR;
+        bootstrap.settlement_cycle_ceiling =
+            crate::config::PRODUCTION_BOOTSTRAP_SETTLEMENT_CYCLE_CEILING;
+        let mut store =
+            StableStore::init_configured(memory, &bootstrap).expect("initialize bootstrap store");
+        let revision_before = storage_revision(&store);
+
+        assert!(matches!(
+            store.seal_operational_config(
+                &bootstrap,
+                activation_attestation(),
+                activation_finalized_observation(),
+            ),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+        assert_eq!(store.config().expect("unchanged config"), Some(bootstrap));
+        assert!(!store
+            .operational_config_sealed()
+            .expect("unsealed lifecycle"));
+        assert_eq!(storage_revision(&store), revision_before);
+    }
+
+    #[test]
+    #[serial]
     fn operational_config_seal_commits_once_and_survives_reopen() {
         let memory = VectorMemory::default();
         let initial = config();
@@ -9855,16 +9955,31 @@ mod tests {
         let revision_before = storage_revision(&store);
 
         store
-            .seal_operational_config(&next, activation_attestation())
+            .seal_operational_config(
+                &next,
+                activation_attestation(),
+                activation_finalized_observation(),
+            )
             .expect("seal operational config");
         assert_eq!(store.config().expect("sealed config"), Some(next.clone()));
         assert!(store.operational_config_sealed().expect("sealed lifecycle"));
+        assert_eq!(
+            store
+                .external_progress()
+                .expect("sealed finalized observation")
+                .finalized_observation,
+            Some(activation_finalized_observation())
+        );
         assert_eq!(storage_revision(&store), revision_before + 1);
 
         let mut conflicting = next.clone();
         conflicting.cycles_floor = 4;
         assert!(matches!(
-            store.seal_operational_config(&conflicting, activation_attestation()),
+            store.seal_operational_config(
+                &conflicting,
+                activation_attestation(),
+                activation_finalized_observation(),
+            ),
             Err(StorageError::Core(CoreError::ConflictingReplay))
         ));
         assert_eq!(
@@ -9889,19 +10004,29 @@ mod tests {
         let mut store = StableStore::init_configured(memory.clone(), &initial)
             .expect("initialize configured store");
         assert!(matches!(
-            store.refresh_activation_attestation(activation_attestation()),
+            store.refresh_activation_attestation(
+                activation_attestation(),
+                activation_finalized_observation(),
+            ),
             Err(StorageError::Core(CoreError::ConflictingReplay))
         ));
 
         let first = activation_attestation();
         store
-            .seal_operational_config(&initial, first.clone())
+            .seal_operational_config(&initial, first.clone(), activation_finalized_observation())
             .expect("seal operational config");
         let mut refreshed = first;
         refreshed.finalized_block_number += 1;
         refreshed.observed_at_ns += 1;
         store
-            .refresh_activation_attestation(refreshed.clone())
+            .refresh_activation_attestation(
+                refreshed.clone(),
+                FinalizedObservationRecord {
+                    block_number: refreshed.finalized_block_number,
+                    observed_at_ns: refreshed.observed_at_ns,
+                    ..activation_finalized_observation()
+                },
+            )
             .expect("refresh activation attestation");
         assert_eq!(
             store.activation_attestation().expect("read attestation"),
@@ -9910,6 +10035,15 @@ mod tests {
         assert_eq!(
             store.config().expect("config remains unchanged"),
             Some(initial)
+        );
+        assert_eq!(
+            store
+                .external_progress()
+                .expect("refreshed finalized observation")
+                .finalized_observation
+                .expect("present finalized observation")
+                .block_number,
+            refreshed.finalized_block_number
         );
 
         drop(store);
@@ -9933,12 +10067,17 @@ mod tests {
         let mut store = StableStore::init_configured(memory.clone(), &initial)
             .expect("initialize configured store");
         let revision_before = storage_revision(&store);
+        let progress_before = store.external_progress().expect("progress before rollback");
 
-        set_operational_config_seal_failpoint(Some(OperationalConfigSealFailpoint::Singleton));
+        set_operational_config_failpoint(Some(OperationalConfigFailpoint::SealSingleton));
         assert!(store
-            .seal_operational_config(&next, activation_attestation())
+            .seal_operational_config(
+                &next,
+                activation_attestation(),
+                activation_finalized_observation(),
+            )
             .is_err());
-        set_operational_config_seal_failpoint(None);
+        set_operational_config_failpoint(None);
         assert_eq!(
             store.config().expect("rolled back config"),
             Some(initial.clone())
@@ -9947,6 +10086,10 @@ mod tests {
             .operational_config_sealed()
             .expect("rolled back lifecycle"));
         assert_eq!(storage_revision(&store), revision_before);
+        assert_eq!(
+            store.external_progress().expect("progress after rollback"),
+            progress_before
+        );
 
         drop(store);
         let reopened = StableStore::reopen(memory).expect("reopen rolled back store");
@@ -9954,6 +10097,138 @@ mod tests {
         assert!(!reopened
             .operational_config_sealed()
             .expect("reopened lifecycle"));
+        assert_eq!(storage_revision(&reopened), revision_before);
+    }
+
+    #[test]
+    #[serial]
+    fn activation_attestation_and_finalized_observation_must_match_without_mutation() {
+        let memory = VectorMemory::default();
+        let initial = config();
+        let mut store =
+            StableStore::init_configured(memory, &initial).expect("initialize configured store");
+        let revision_before = storage_revision(&store);
+        let progress_before = store.external_progress().expect("initial progress");
+        let mut mismatch_cases = Vec::new();
+        let mut value = activation_attestation();
+        value.chain_id += 1;
+        mismatch_cases.push(("chain id", value));
+        let mut value = activation_attestation();
+        value.finalized_block_number += 1;
+        mismatch_cases.push(("block number", value));
+        let mut value = activation_attestation();
+        value.finalized_block_hash[0] ^= 1;
+        mismatch_cases.push(("block hash", value));
+        let mut value = activation_attestation();
+        value.observed_at_ns += 1;
+        mismatch_cases.push(("observation time", value));
+        let mut value = activation_attestation();
+        value.bridge_signer[0] ^= 1;
+        mismatch_cases.push(("bridge signer", value));
+        let mut value = activation_attestation();
+        value.bridge_runtime_sha256[0] ^= 1;
+        mismatch_cases.push(("runtime digest", value));
+        let mut value = activation_attestation();
+        value.finalized_block_hash.pop();
+        mismatch_cases.push(("malformed block hash", value));
+
+        for (field, mismatched) in mismatch_cases {
+            assert!(
+                matches!(
+                    store.seal_operational_config(
+                        &initial,
+                        mismatched,
+                        activation_finalized_observation(),
+                    ),
+                    Err(StorageError::Core(CoreError::ConflictingReplay))
+                ),
+                "accepted mismatched {field}"
+            );
+            assert_eq!(
+                store.config().expect("unchanged config"),
+                Some(initial.clone())
+            );
+            assert_eq!(
+                store.external_progress().expect("unchanged progress"),
+                progress_before
+            );
+            assert_eq!(storage_revision(&store), revision_before);
+        }
+
+        store
+            .seal_operational_config(
+                &initial,
+                activation_attestation(),
+                activation_finalized_observation(),
+            )
+            .expect("seal matching evidence");
+        let sealed_config = store.config().expect("sealed config");
+        let sealed_progress = store.external_progress().expect("sealed progress");
+        let sealed_revision = storage_revision(&store);
+        let mut mismatched = activation_attestation();
+        mismatched.finalized_block_number += 1;
+        assert!(matches!(
+            store.refresh_activation_attestation(mismatched, activation_finalized_observation(),),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+        assert_eq!(
+            store.config().expect("unchanged sealed config"),
+            sealed_config
+        );
+        assert_eq!(
+            store
+                .external_progress()
+                .expect("unchanged sealed progress"),
+            sealed_progress
+        );
+        assert_eq!(storage_revision(&store), sealed_revision);
+    }
+
+    #[test]
+    #[serial]
+    fn activation_attestation_refresh_rolls_back_config_and_progress_together() {
+        let memory = VectorMemory::default();
+        let initial = config();
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize configured store");
+        store
+            .seal_operational_config(
+                &initial,
+                activation_attestation(),
+                activation_finalized_observation(),
+            )
+            .expect("seal operational config");
+        let config_before = store.config().expect("config before refresh");
+        let progress_before = store.external_progress().expect("progress before refresh");
+        let revision_before = storage_revision(&store);
+        let mut refreshed = activation_attestation();
+        refreshed.finalized_block_number += 1;
+        refreshed.observed_at_ns += 1;
+        let refreshed_observation = FinalizedObservationRecord {
+            block_number: refreshed.finalized_block_number,
+            observed_at_ns: refreshed.observed_at_ns,
+            ..activation_finalized_observation()
+        };
+
+        set_operational_config_failpoint(Some(OperationalConfigFailpoint::RefreshSingleton));
+        assert!(store
+            .refresh_activation_attestation(refreshed, refreshed_observation)
+            .is_err());
+        set_operational_config_failpoint(None);
+        assert_eq!(store.config().expect("rolled back config"), config_before);
+        assert_eq!(
+            store.external_progress().expect("rolled back progress"),
+            progress_before
+        );
+        assert_eq!(storage_revision(&store), revision_before);
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen rolled back refresh");
+        assert_eq!(reopened.config().expect("reopened config"), config_before);
+        assert_eq!(
+            reopened.external_progress().expect("reopened progress"),
+            progress_before
+        );
         assert_eq!(storage_revision(&reopened), revision_before);
     }
 
