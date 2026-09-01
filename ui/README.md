@@ -109,6 +109,21 @@ Deployment is manual:
 VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id> pnpm run deploy
 ```
 
+Before Gate B exists, a separately reviewed fail-closed UI may be published with:
+
+```sh
+BRIDGE_UI_PREACTIVATION_RECEIPT=<clean-build-receipt> \
+BRIDGE_UI_RUNTIME_PROFILE_FILE=<pre-activation-profile> \
+pnpm run deploy:preactivation
+```
+
+Use `pnpm run deploy:preactivation:check` with the same variables for the non-mutating Wrangler
+dry run immediately before requesting deployment approval.
+
+This path accepts only a Base Mainnet production profile whose Gate B manifest hash is unset and
+whose deployment block is zero. Runtime validation therefore disables all bridge writes. After
+Gate B passes, replace it with the normal Gate-B-bound deployment above.
+
 The WalletConnect project ID is public client configuration but must be injected through the
 environment rather than committed. The normal deploy command fails unless it is present and the
 checked-in UI profile explicitly sets
