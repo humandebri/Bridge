@@ -3,15 +3,25 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
-import shutil
+from unittest import mock
 
 import check_no_obsolete_release_dependencies as guard
 
 
 class ObsoleteReleaseDependencyTests(unittest.TestCase):
+    def violations(self, root: Path) -> list[str]:
+        # These fixtures model repository-local layouts. The trusted container
+        # sets BRIDGE_CANDIDATE_SCRIPTS for its real checkout, but that path is
+        # intentionally absent from each temporary fixture.
+        with mock.patch.dict(os.environ, clear=False):
+            os.environ.pop("BRIDGE_CANDIDATE_SCRIPTS", None)
+            return guard.violations(root)
+
     def root(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temporary = tempfile.TemporaryDirectory()
         root = Path(temporary.name)
@@ -27,7 +37,7 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
         (root / "scripts/production-release.sh").write_text(
             'scripts/plan007/capture-obsolete-pause-evidence.mjs\n', encoding="utf-8"
         )
-        self.assertTrue(guard.violations(root))
+        self.assertTrue(self.violations(root))
 
     def test_obsolete_reference_through_helper_is_rejected(self) -> None:
         temporary, root = self.root()
@@ -39,7 +49,7 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
             'POLICY = "deployments/sepolia-staging/obsolete-replacement-policy.json"\n',
             encoding="utf-8",
         )
-        self.assertTrue(guard.violations(root))
+        self.assertTrue(self.violations(root))
 
     def test_missing_literal_helper_fails_closed(self) -> None:
         temporary, root = self.root()
@@ -47,7 +57,7 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
         (root / "scripts/production-release.sh").write_text(
             'python3 "$(dirname "$0")/missing.py"\n', encoding="utf-8"
         )
-        self.assertIn("missing helper", "\n".join(guard.violations(root)))
+        self.assertIn("missing helper", "\n".join(self.violations(root)))
 
     def test_missing_test_helper_from_ci_entrypoint_fails_closed(self) -> None:
         temporary, root = self.root()
@@ -55,7 +65,7 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
         (root / "scripts/ci-local.sh").write_text(
             'node "$ROOT/scripts/plan007/test-missing.mjs"\n', encoding="utf-8"
         )
-        self.assertIn("missing helper", "\n".join(guard.violations(root)))
+        self.assertIn("missing helper", "\n".join(self.violations(root)))
 
     def install_replacement_layout(self, root: Path) -> None:
         policy = root / "deployments/sepolia-staging"
@@ -93,7 +103,7 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
             'python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"\n',
             encoding="utf-8",
         )
-        self.assertEqual(guard.violations(root), [])
+        self.assertEqual(self.violations(root), [])
 
     def test_missing_upgrade_test_helper_fails_for_upgrade_layout(self) -> None:
         temporary, root = self.root()
@@ -103,7 +113,7 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
             'python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"\n',
             encoding="utf-8",
         )
-        self.assertIn("missing helper", "\n".join(guard.violations(root)))
+        self.assertIn("missing helper", "\n".join(self.violations(root)))
 
     def test_missing_upgrade_test_helper_fails_for_mixed_layout(self) -> None:
         temporary, root = self.root()
@@ -115,7 +125,7 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
             'python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"\n',
             encoding="utf-8",
         )
-        self.assertIn("missing helper", "\n".join(guard.violations(root)))
+        self.assertIn("missing helper", "\n".join(self.violations(root)))
 
     def test_other_missing_test_helper_still_fails_for_replacement_layout(self) -> None:
         temporary, root = self.root()
@@ -125,7 +135,7 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
             'python3 "$ROOT/scripts/plan007/test-other.mjs"\n',
             encoding="utf-8",
         )
-        self.assertIn("missing helper", "\n".join(guard.violations(root)))
+        self.assertIn("missing helper", "\n".join(self.violations(root)))
 
     def test_unreachable_historical_asset_is_allowed(self) -> None:
         temporary, root = self.root()
@@ -138,7 +148,7 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
         (root / "scripts/production-release.sh").write_text(
             "#!/bin/sh\n", encoding="utf-8"
         )
-        self.assertEqual(guard.violations(root), [])
+        self.assertEqual(self.violations(root), [])
 
 
 if __name__ == "__main__":
