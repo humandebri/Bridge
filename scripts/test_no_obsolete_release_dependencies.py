@@ -6,6 +6,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+import shutil
 
 import check_no_obsolete_release_dependencies as guard
 
@@ -53,6 +54,76 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         (root / "scripts/ci-local.sh").write_text(
             'node "$ROOT/scripts/plan007/test-missing.mjs"\n', encoding="utf-8"
+        )
+        self.assertIn("missing helper", "\n".join(guard.violations(root)))
+
+    def install_replacement_layout(self, root: Path) -> None:
+        policy = root / "deployments/sepolia-staging"
+        policy.mkdir(parents=True)
+        (policy / "legacy-stack-binding.json").write_text("{}\n", encoding="utf-8")
+        (policy / "fresh-stack.template.json").write_text("{}\n", encoding="utf-8")
+        shutil.copy2(
+            Path(__file__).with_name("trusted_staging_layout.py"),
+            root / "scripts/trusted_staging_layout.py",
+        )
+
+    def install_upgrade_layout_without_test_helper(self, root: Path) -> None:
+        policy = root / "deployments/sepolia-staging"
+        policy.mkdir(parents=True)
+        (policy / "staging-bridge-upgrade-policy.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
+        for relative in (
+            "scripts/plan007/staging_canister_upgrade.py",
+            "scripts/plan007/staging-canister-upgrade.sh",
+        ):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture\n", encoding="utf-8")
+        shutil.copy2(
+            Path(__file__).with_name("trusted_staging_layout.py"),
+            root / "scripts/trusted_staging_layout.py",
+        )
+
+    def test_missing_upgrade_test_helper_is_allowed_for_replacement_layout(self) -> None:
+        temporary, root = self.root()
+        self.addCleanup(temporary.cleanup)
+        self.install_replacement_layout(root)
+        (root / "scripts/ci-local.sh").write_text(
+            'python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(guard.violations(root), [])
+
+    def test_missing_upgrade_test_helper_fails_for_upgrade_layout(self) -> None:
+        temporary, root = self.root()
+        self.addCleanup(temporary.cleanup)
+        self.install_upgrade_layout_without_test_helper(root)
+        (root / "scripts/ci-local.sh").write_text(
+            'python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"\n',
+            encoding="utf-8",
+        )
+        self.assertIn("missing helper", "\n".join(guard.violations(root)))
+
+    def test_missing_upgrade_test_helper_fails_for_mixed_layout(self) -> None:
+        temporary, root = self.root()
+        self.addCleanup(temporary.cleanup)
+        self.install_upgrade_layout_without_test_helper(root)
+        policy = root / "deployments/sepolia-staging"
+        (policy / "legacy-stack-binding.json").write_text("{}\n", encoding="utf-8")
+        (root / "scripts/ci-local.sh").write_text(
+            'python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py"\n',
+            encoding="utf-8",
+        )
+        self.assertIn("missing helper", "\n".join(guard.violations(root)))
+
+    def test_other_missing_test_helper_still_fails_for_replacement_layout(self) -> None:
+        temporary, root = self.root()
+        self.addCleanup(temporary.cleanup)
+        self.install_replacement_layout(root)
+        (root / "scripts/ci-local.sh").write_text(
+            'python3 "$ROOT/scripts/plan007/test-other.mjs"\n',
+            encoding="utf-8",
         )
         self.assertIn("missing helper", "\n".join(guard.violations(root)))
 
