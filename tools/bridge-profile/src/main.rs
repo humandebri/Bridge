@@ -1584,6 +1584,7 @@ fn derive_initial_operational_parameters(
     let operation_salt =
         initial_activation_salt(deployment_instance_id, evidence.governance_operation_id);
     if evidence.timelock_delay_seconds != 86_400
+        || evidence.governance_operation_id != 0
         || !evm_address(&evidence.governance_sender)
         || !valid_nonzero_hash32(&evidence.deployment_instance_id)
         || !evidence
@@ -1905,6 +1906,10 @@ fn initial_activation_salt(deployment_instance_id: [u8; 32], operation_id: u64) 
     input.extend_from_slice(&deployment_instance_id);
     input.extend_from_slice(&operation_id.to_be_bytes());
     keccak256(&input)
+}
+
+fn initial_activation_operation_id(bridge: [u8; 20], salt: [u8; 32]) -> [u8; 32] {
+    keccak256(&initial_activation_arguments(bridge, salt, 0, false))
 }
 
 fn evm_word_u128(value: u128) -> [u8; 32] {
@@ -5228,6 +5233,35 @@ fn validate_schedule_receipt_binding(
     let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
     let payload_sha256 = hex(&Sha256::digest(canonical_payload));
     let now = now_unix()?;
+    let initial_path = bundle.root.join("initial-operational-parameters.json");
+    let initial_bytes = fs::read(&initial_path).map_err(|error| error.to_string())?;
+    let expected_initial_sha256 = bundle
+        .manifest
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.path == "initial-operational-parameters.json")
+        .ok_or("Gate B manifest has no initial operational parameter evidence")?
+        .sha256
+        .as_str();
+    if !hex(&Sha256::digest(&initial_bytes)).eq_ignore_ascii_case(expected_initial_sha256) {
+        return Err(
+            "initial operational parameter evidence changed after Gate B validation".into(),
+        );
+    }
+    let initial: InitialOperationalParameters =
+        serde_json::from_slice(&initial_bytes).map_err(|error| error.to_string())?;
+    validate_initial_operational_parameters(
+        &initial,
+        &bundle.profile,
+        bundle.manifest.created_at_unix,
+        now,
+    )?;
+    let deployment_instance_id: [u8; 32] = decode_hex(&initial.deployment_instance_id)?
+        .try_into()
+        .map_err(|_| "invalid initial deployment instance ID")?;
+    let expected_salt = initial_activation_salt(deployment_instance_id, 0);
+    let expected_operation_id =
+        initial_activation_operation_id(decode_address(&initial.bridge_contract)?, expected_salt);
     if receipt.schema_version != 4
         || receipt.phase != "schedule"
         || receipt.release_id != bundle.manifest.release_id
@@ -5262,6 +5296,12 @@ fn validate_schedule_receipt_binding(
         )?
         || !valid_hash32(&receipt.operation_id)
         || !valid_hash32(&receipt.operation_salt)
+        || !receipt
+            .operation_id
+            .eq_ignore_ascii_case(&format!("0x{}", hex(&expected_operation_id)))
+        || !receipt
+            .operation_salt
+            .eq_ignore_ascii_case(&format!("0x{}", hex(&expected_salt)))
         || receipt.prior_schedule_receipt_sha256.is_some()
     {
         return Err("prior schedule receipt is malformed or not bound to this release".into());
@@ -7369,6 +7409,14 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
         wrong_salt.operation_salt = format!("0x{}", "88".repeat(32));
         assert!(derive_initial_operational_parameters(&wrong_salt).is_err());
+        let mut wrong_operation_id: InitialOperationalParameters =
+            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
+        wrong_operation_id.governance_operation_id = 1;
+        wrong_operation_id.operation_salt = format!(
+            "0x{}",
+            hex(&initial_activation_salt(deployment_instance_id, 1))
+        );
+        assert!(derive_initial_operational_parameters(&wrong_operation_id).is_err());
         profile.parameters.gas_limit_ceiling = initial_parameters.derived.gas_limit_ceiling;
         profile.parameters.max_fee_per_gas_ceiling =
             initial_parameters.derived.max_fee_per_gas_ceiling;
@@ -7811,11 +7859,25 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             function_registry_response_sha256: hex(&Sha256::digest(b"registry")),
             activation_status_response_hex: hex(b"activation"),
             activation_status_response_sha256: hex(&Sha256::digest(b"activation")),
-            operation_id: format!("0x{}", "1".repeat(64)),
-            operation_salt: format!("0x{}", "2".repeat(64)),
+            operation_id: format!(
+                "0x{}",
+                hex(&initial_activation_operation_id(
+                    activation_bridge,
+                    operation_salt
+                ))
+            ),
+            operation_salt: format!("0x{}", hex(&operation_salt)),
             prior_schedule_receipt_sha256: None,
         };
         assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_ok());
+        let valid_operation_id = schedule_receipt.operation_id.clone();
+        schedule_receipt.operation_id = format!("0x{}", "1".repeat(64));
+        assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
+        schedule_receipt.operation_id = valid_operation_id;
+        let valid_operation_salt = schedule_receipt.operation_salt.clone();
+        schedule_receipt.operation_salt = format!("0x{}", "2".repeat(64));
+        assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
+        schedule_receipt.operation_salt = valid_operation_salt;
         schedule_receipt.schema_version = 3;
         assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
         schedule_receipt.schema_version = 5;

@@ -8,6 +8,7 @@ const uiRoot = resolve(import.meta.dirname, "..")
 const sourceRoot = resolve(uiRoot, "..")
 const distRoot = resolve(uiRoot, "dist")
 const profileBootstrap = "deployment-profile.js"
+const productionWranglerConfig = resolve(uiRoot, "wrangler.production.jsonc")
 
 if (process.versions.node !== "24.14.0") throw new Error("Production UI artifacts require Node.js 24.14.0")
 if (execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim() !== "11.0.8") {
@@ -156,7 +157,7 @@ function deployFrozenAssets(receipt, profileFile, dryRun = false) {
       if (lstatSync(path).isDirectory()) chmodSync(path, 0o500)
     }
     chmodSync(frozen, 0o500)
-    const deployArgs = ["exec", "wrangler", "deploy", "--config", resolve(uiRoot, "wrangler.jsonc"), "--assets", frozen]
+    const deployArgs = ["exec", "wrangler", "deploy", "--config", productionWranglerConfig, "--assets", frozen]
     if (dryRun) deployArgs.push("--dry-run")
     const deployed = spawnSync("pnpm", deployArgs, {
       cwd: uiRoot,
