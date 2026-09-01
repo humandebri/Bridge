@@ -455,7 +455,11 @@ if PATH="$T/bin:$PATH" INSTALL_FAIL=true BRIDGE_ICP_IDENTITY=production \
   echo "production Canister installer accepted an ambiguous install failure" >&2
   exit 1
 fi
-[[ -f "$T/out/failed.json.reservation" && ! -e "$T/out/failed.json" ]]
+[[ -f "$T/out/failed.json.reservation" && ! -e "$T/out/failed.json" ]] || {
+  cat "$T/install-failure.log" >&2
+  echo "ambiguous install failure did not preserve its reservation" >&2
+  exit 1
+}
 [[ -e "$INSTALLED_MARKER" ]] || {
   cat "$T/install-failure.log" >&2
   echo "ambiguous install failure did not reach the install call" >&2

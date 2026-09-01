@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 from pathlib import Path
+import subprocess
+import sys
 
 
 FORBIDDEN_PATHS = frozenset(
@@ -22,6 +25,9 @@ CANONICAL_REFERENCE = re.compile(
 )
 SAME_DIRECTORY_SCRIPT = re.compile(
     r"(?:\)|SCRIPT_DIR\}?)/(?P<path>[A-Za-z0-9_.-]+\.(?:sh|py|mjs))(?=[\"'\s])"
+)
+REPLACEMENT_OPTIONAL_TEST_HELPER = (
+    "scripts/plan007/test_staging_canister_upgrade.py"
 )
 
 
@@ -61,6 +67,40 @@ def script_references(root: Path, path: Path, source: str) -> set[Path]:
     return references
 
 
+def replacement_layout_is_active(root: Path) -> bool:
+    """Return true only when the trusted classifier accepts replacement layout."""
+
+    classifier = root / "scripts/trusted_staging_layout.py"
+    if not classifier.is_file() or classifier.is_symlink():
+        return False
+    command = [sys.executable, str(classifier), "--root", str(root)]
+    candidate_scripts = os.environ.get("BRIDGE_CANDIDATE_SCRIPTS")
+    if candidate_scripts:
+        command.extend(["--candidate-scripts", candidate_scripts])
+    try:
+        result = subprocess.run(
+            command,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "replacement"
+
+
+def optional_missing_helper(root: Path, reference: Path) -> bool:
+    try:
+        relative = reference.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return False
+    return (
+        relative == REPLACEMENT_OPTIONAL_TEST_HELPER
+        and replacement_layout_is_active(root)
+    )
+
+
 def dependency_closure(root: Path) -> tuple[set[Path], list[str]]:
     pending = dependency_entrypoints(root)
     visited: set[Path] = set()
@@ -81,6 +121,8 @@ def dependency_closure(root: Path) -> tuple[set[Path], list[str]]:
                 missing.append(f"{relative_path(root, path)}: outside-root helper {reference}")
                 continue
             if not reference.is_file():
+                if optional_missing_helper(root, reference):
+                    continue
                 missing.append(
                     f"{relative_path(root, path)}: missing helper "
                     f"{reference.relative_to(root.resolve()).as_posix()}"
