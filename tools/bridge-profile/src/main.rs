@@ -285,6 +285,10 @@ struct Evidence {
 #[serde(deny_unknown_fields)]
 struct InitialGasEstimate {
     action: String,
+    sender: String,
+    target: String,
+    #[serde(with = "u128_string")]
+    value_wei: u128,
     calldata_hex: String,
     #[serde(with = "u128_string")]
     gas: u128,
@@ -318,6 +322,11 @@ struct InitialOperationalParameters {
     bridge_canister_id: String,
     bridge_contract: String,
     timelock_contract: String,
+    governance_sender: String,
+    deployment_instance_id: String,
+    governance_operation_id: u64,
+    operation_salt: String,
+    timelock_delay_seconds: u64,
     profile_sha256: String,
     gas_estimates: Vec<InitialGasEstimate>,
     fee_samples: Vec<InitialFeeSample>,
@@ -1568,6 +1577,21 @@ fn derive_initial_operational_parameters(
     {
         return Err("invalid initial operational parameter evidence".into());
     }
+    let deployment_instance_id: [u8; 32] = decode_hex(&evidence.deployment_instance_id)?
+        .try_into()
+        .map_err(|_| "invalid initial deployment instance ID")?;
+    let bridge = decode_address(&evidence.bridge_contract)?;
+    let operation_salt =
+        initial_activation_salt(deployment_instance_id, evidence.governance_operation_id);
+    if evidence.timelock_delay_seconds != 86_400
+        || !evm_address(&evidence.governance_sender)
+        || !valid_nonzero_hash32(&evidence.deployment_instance_id)
+        || !evidence
+            .operation_salt
+            .eq_ignore_ascii_case(&format!("0x{}", hex(&operation_salt)))
+    {
+        return Err("invalid initial activation operation binding".into());
+    }
     let actions = evidence
         .gas_estimates
         .iter()
@@ -1580,8 +1604,24 @@ fn derive_initial_operational_parameters(
         .collect::<BTreeSet<_>>();
     if actions != BTreeSet::from(["execute_activation", "schedule_activation"])
         || evidence.gas_estimates.iter().any(|sample| {
+            let expected_calldata = initial_activation_calldata(
+                &sample.action,
+                bridge,
+                operation_salt,
+                evidence.timelock_delay_seconds,
+            );
             sample.gas == 0
-                || !sample.calldata_hex.eq_ignore_ascii_case("4449444c0000")
+                || !sample
+                    .sender
+                    .eq_ignore_ascii_case(&evidence.governance_sender)
+                || !sample
+                    .target
+                    .eq_ignore_ascii_case(&evidence.timelock_contract)
+                || sample.value_wei != 0
+                || expected_calldata.is_err()
+                || !expected_calldata
+                    .as_deref()
+                    .is_ok_and(|expected| sample.calldata_hex.eq_ignore_ascii_case(expected))
                 || sample.block_number == 0
                 || !valid_nonzero_hash32(&sample.block_hash)
                 || sample.observed_at_unix == 0
@@ -1701,6 +1741,13 @@ fn validate_initial_operational_parameters(
         || !evidence
             .timelock_contract
             .eq_ignore_ascii_case(&profile.timelock.address)
+        || !evidence
+            .governance_sender
+            .eq_ignore_ascii_case(&profile.governance_operator)
+        || !evidence
+            .deployment_instance_id
+            .eq_ignore_ascii_case(&profile.deployment_instance_id)
+        || evidence.timelock_delay_seconds != profile.timelock.minimum_delay_seconds
         || !evidence
             .profile_sha256
             .eq_ignore_ascii_case(&hex(&canonical_sha256(profile)?))
@@ -1834,11 +1881,134 @@ fn valid_nonempty_hex(value: &str) -> bool {
 }
 
 fn evm_selector(signature: &str) -> String {
+    format!("0x{}", hex(&evm_selector_bytes(signature)))
+}
+
+fn evm_selector_bytes(signature: &str) -> [u8; 4] {
     let mut hash = [0u8; 32];
     let mut keccak = Keccak::v256();
     keccak.update(signature.as_bytes());
     keccak.finalize(&mut hash);
-    format!("0x{}", hex(&hash[..4]))
+    hash[..4].try_into().expect("selector prefix")
+}
+
+fn keccak256(value: &[u8]) -> [u8; 32] {
+    let mut hash = [0u8; 32];
+    let mut keccak = Keccak::v256();
+    keccak.update(value);
+    keccak.finalize(&mut hash);
+    hash
+}
+
+fn initial_activation_salt(deployment_instance_id: [u8; 32], operation_id: u64) -> [u8; 32] {
+    let mut input = b"KINIC_BRIDGE_ACTIVATION_V2".to_vec();
+    input.extend_from_slice(&deployment_instance_id);
+    input.extend_from_slice(&operation_id.to_be_bytes());
+    keccak256(&input)
+}
+
+fn evm_word_u128(value: u128) -> [u8; 32] {
+    let mut word = [0u8; 32];
+    word[16..].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn encode_initial_address_array(values: &[[u8; 20]]) -> Vec<u8> {
+    let mut encoded = evm_word_u128(values.len() as u128).to_vec();
+    for value in values {
+        encoded.extend_from_slice(&[0; 12]);
+        encoded.extend_from_slice(value);
+    }
+    encoded
+}
+
+fn encode_initial_u128_array(values: &[u128]) -> Vec<u8> {
+    let mut encoded = evm_word_u128(values.len() as u128).to_vec();
+    for value in values {
+        encoded.extend_from_slice(&evm_word_u128(*value));
+    }
+    encoded
+}
+
+fn encode_initial_bytes(value: &[u8]) -> Vec<u8> {
+    let mut encoded = evm_word_u128(value.len() as u128).to_vec();
+    encoded.extend_from_slice(value);
+    encoded.resize(encoded.len().next_multiple_of(32), 0);
+    encoded
+}
+
+fn encode_initial_bytes_array(values: &[Vec<u8>]) -> Vec<u8> {
+    let values = values
+        .iter()
+        .map(|value| encode_initial_bytes(value))
+        .collect::<Vec<_>>();
+    let mut encoded = evm_word_u128(values.len() as u128).to_vec();
+    let mut offset = values.len() * 32;
+    for value in &values {
+        encoded.extend_from_slice(&evm_word_u128(offset as u128));
+        offset += value.len();
+    }
+    for value in values {
+        encoded.extend_from_slice(&value);
+    }
+    encoded
+}
+
+fn initial_activation_arguments(
+    bridge: [u8; 20],
+    salt: [u8; 32],
+    delay_seconds: u64,
+    include_delay: bool,
+) -> Vec<u8> {
+    let targets = encode_initial_address_array(&[bridge, bridge]);
+    let values = encode_initial_u128_array(&[0, 0]);
+    let payloads = encode_initial_bytes_array(&[
+        evm_selector_bytes("unpauseDepositMints()").to_vec(),
+        evm_selector_bytes("unpauseWithdrawals()").to_vec(),
+    ]);
+    let head_words = if include_delay { 6u128 } else { 5u128 };
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&evm_word_u128(head_words * 32));
+    encoded.extend_from_slice(&evm_word_u128(head_words * 32 + targets.len() as u128));
+    encoded.extend_from_slice(&evm_word_u128(
+        head_words * 32 + targets.len() as u128 + values.len() as u128,
+    ));
+    encoded.extend_from_slice(&[0; 32]);
+    encoded.extend_from_slice(&salt);
+    if include_delay {
+        encoded.extend_from_slice(&evm_word_u128(delay_seconds.into()));
+    }
+    encoded.extend_from_slice(&targets);
+    encoded.extend_from_slice(&values);
+    encoded.extend_from_slice(&payloads);
+    encoded
+}
+
+fn initial_activation_calldata(
+    action: &str,
+    bridge: [u8; 20],
+    salt: [u8; 32],
+    delay_seconds: u64,
+) -> Result<String, String> {
+    let (signature, include_delay) = match action {
+        "schedule_activation" => (
+            "scheduleBatch(address[],uint256[],bytes[],bytes32,bytes32,uint256)",
+            true,
+        ),
+        "execute_activation" => (
+            "executeBatch(address[],uint256[],bytes[],bytes32,bytes32)",
+            false,
+        ),
+        _ => return Err("unknown initial activation gas action".into()),
+    };
+    let mut calldata = evm_selector_bytes(signature).to_vec();
+    calldata.extend_from_slice(&initial_activation_arguments(
+        bridge,
+        salt,
+        delay_seconds,
+        include_delay,
+    ));
+    Ok(format!("0x{}", hex(&calldata)))
 }
 
 fn evm_topic(signature: &str) -> String {
@@ -5349,7 +5519,6 @@ fn verify_activation(
         .as_ref()
         .ok_or("activation has no Finalized Canister confirmation")?;
     if confirmation.phase != phase
-        || confirmation.governance_operation_id == 0
         || confirmation.receipt_block_number == 0
         || confirmation.transaction_hash.len() != 32
         || format!("0x{}", hex(&confirmation.timelock_operation_id)) != operation_id.to_lowercase()
@@ -5483,7 +5652,6 @@ fn verify_schedule_receipt_live(
         .as_ref()
         .ok_or("schedule receipt has no Finalized Canister confirmation")?;
     if confirmation.phase != "schedule"
-        || confirmation.governance_operation_id == 0
         || confirmation.receipt_block_number == 0
         || confirmation.transaction_hash.len() != 32
         || format!("0x{}", hex(&confirmation.timelock_operation_id))
@@ -5687,6 +5855,24 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_activation_calldata_matches_the_solidity_abi_vectors() {
+        let bridge = [7; 20];
+        let salt = [0x11; 32];
+        let schedule =
+            initial_activation_calldata("schedule_activation", bridge, salt, 86_400).unwrap();
+        let execute =
+            initial_activation_calldata("execute_activation", bridge, salt, 86_400).unwrap();
+        assert_eq!(
+            hex(&Sha256::digest(decode_hex(&schedule).unwrap())),
+            "791b06b957a214ad82713256c3f1031c952c74029e28cb43f71cde76dc26c8c4"
+        );
+        assert_eq!(
+            hex(&Sha256::digest(decode_hex(&execute).unwrap())),
+            "5f84cf3c08bbb0b9fda03854d0cbd697ca22aa5d94e94ad220db58111904fc37"
+        );
+    }
 
     #[test]
     fn activation_timestamps_must_follow_gate_b_and_precede_verification() {
@@ -7077,6 +7263,14 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         measurements.baseline_cycles_sample.value = 1;
         measurements.expected_daily_settlements = 1;
         let initial_observed_at = now - 6_000;
+        let governance_operation_id = 0;
+        let deployment_instance_id: [u8; 32] = decode_hex(&profile.deployment_instance_id)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let activation_bridge = decode_address(&profile.bridge_contract).unwrap();
+        let operation_salt =
+            initial_activation_salt(deployment_instance_id, governance_operation_id);
         let mut initial_parameters = InitialOperationalParameters {
             schema_version: 1,
             environment: "mainnet-candidate".into(),
@@ -7084,11 +7278,25 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             bridge_canister_id: profile.bridge_canister_id.clone(),
             bridge_contract: profile.bridge_contract.clone(),
             timelock_contract: profile.timelock.address.clone(),
+            governance_sender: profile.governance_operator.clone(),
+            deployment_instance_id: profile.deployment_instance_id.clone(),
+            governance_operation_id,
+            operation_salt: format!("0x{}", hex(&operation_salt)),
+            timelock_delay_seconds: profile.timelock.minimum_delay_seconds,
             profile_sha256: String::new(),
             gas_estimates: vec![
                 InitialGasEstimate {
                     action: "schedule_activation".into(),
-                    calldata_hex: "4449444c0000".into(),
+                    sender: profile.governance_operator.clone(),
+                    target: profile.timelock.address.clone(),
+                    value_wei: 0,
+                    calldata_hex: initial_activation_calldata(
+                        "schedule_activation",
+                        activation_bridge,
+                        operation_salt,
+                        profile.timelock.minimum_delay_seconds,
+                    )
+                    .unwrap(),
                     gas: 100_000,
                     block_number: 10,
                     block_hash: format!("0x{}", "31".repeat(32)),
@@ -7097,7 +7305,16 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 },
                 InitialGasEstimate {
                     action: "execute_activation".into(),
-                    calldata_hex: "4449444c0000".into(),
+                    sender: profile.governance_operator.clone(),
+                    target: profile.timelock.address.clone(),
+                    value_wei: 0,
+                    calldata_hex: initial_activation_calldata(
+                        "execute_activation",
+                        activation_bridge,
+                        operation_salt,
+                        profile.timelock.minimum_delay_seconds,
+                    )
+                    .unwrap(),
                     gas: 120_000,
                     block_number: 10,
                     block_hash: format!("0x{}", "31".repeat(32)),
@@ -7136,6 +7353,22 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         };
         initial_parameters.derived =
             derive_initial_operational_parameters(&initial_parameters).unwrap();
+        let mut candid_payload: InitialOperationalParameters =
+            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
+        candid_payload.gas_estimates[0].calldata_hex = "4449444c0000".into();
+        assert!(derive_initial_operational_parameters(&candid_payload).is_err());
+        let mut wrong_sender: InitialOperationalParameters =
+            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
+        wrong_sender.gas_estimates[0].sender = format!("0x{}", "99".repeat(20));
+        assert!(derive_initial_operational_parameters(&wrong_sender).is_err());
+        let mut wrong_target: InitialOperationalParameters =
+            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
+        wrong_target.gas_estimates[0].target = profile.bridge_contract.clone();
+        assert!(derive_initial_operational_parameters(&wrong_target).is_err());
+        let mut wrong_salt: InitialOperationalParameters =
+            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
+        wrong_salt.operation_salt = format!("0x{}", "88".repeat(32));
+        assert!(derive_initial_operational_parameters(&wrong_salt).is_err());
         profile.parameters.gas_limit_ceiling = initial_parameters.derived.gas_limit_ceiling;
         profile.parameters.max_fee_per_gas_ceiling =
             initial_parameters.derived.max_fee_per_gas_ceiling;

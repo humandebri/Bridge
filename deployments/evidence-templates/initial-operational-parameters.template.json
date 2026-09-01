@@ -5,10 +5,15 @@
   "bridge_canister_id": "<production-bridge-canister-id>",
   "bridge_contract": "<base-bridge-address>",
   "timelock_contract": "<base-timelock-address>",
+  "governance_sender": "<governance-operator-address>",
+  "deployment_instance_id": "<nonzero-0x-64-hex>",
+  "governance_operation_id": 0,
+  "operation_salt": "<nonzero-0x-64-hex-derived-from-deployment-instance-and-operation-id>",
+  "timelock_delay_seconds": 86400,
   "profile_sha256": "<canonical-profile-64-hex>",
   "gas_estimates": [
-    { "action": "schedule_activation", "calldata_hex": "4449444c0000", "gas": "1", "block_number": 1, "block_hash": "<nonzero-0x-64-hex>", "observed_at_unix": 0, "source_ref": "replace-with-exact-schedule-estimate-artifact" },
-    { "action": "execute_activation", "calldata_hex": "4449444c0000", "gas": "1", "block_number": 1, "block_hash": "<nonzero-0x-64-hex>", "observed_at_unix": 0, "source_ref": "replace-with-exact-execute-estimate-artifact" }
+    { "action": "schedule_activation", "sender": "<governance-operator-address>", "target": "<base-timelock-address>", "value_wei": "0", "calldata_hex": "<0x-exact-scheduleBatch-calldata>", "gas": "1", "block_number": 1, "block_hash": "<nonzero-0x-64-hex>", "observed_at_unix": 0, "source_ref": "replace-with-exact-schedule-estimate-artifact" },
+    { "action": "execute_activation", "sender": "<governance-operator-address>", "target": "<base-timelock-address>", "value_wei": "0", "calldata_hex": "<0x-exact-executeBatch-calldata>", "gas": "1", "block_number": 1, "block_hash": "<nonzero-0x-64-hex>", "observed_at_unix": 0, "source_ref": "replace-with-exact-execute-estimate-artifact" }
   ],
   "fee_samples": [
     { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "block_number": 1, "block_hash": "<nonzero-0x-64-hex-01>", "observed_at_unix": 0, "source_ref": "replace-with-finalized-fee-sample-01" },
