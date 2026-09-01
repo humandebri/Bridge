@@ -1,195 +1,73 @@
 # IC mainnet × Base Sepolia staging E2E
 
-このrunbookはPlan 007の非blocking外部stageを、schema v7で同一source commitへ束縛された再開可能な証跡として実行する。この外部stage manifest schema v7は、入力にするlocal E2E evidence schema v8とは別の契約である。
-production Canister、KINIC Ledger、Base Mainnet、SNSを対象にしてはならない。
+このrunbookの対象は、現在のstaging Canister、deployment instance、Timelock、Bridge、bSNS、signerで構成される同一のlive stackである。2026-08-27/28に完了したdestructive reinstallとfresh-stack構築は一度限りの履歴としてhash固定し、再実行、resume、別stack構築の入力には使わない。今後のCanister更新はstable schema v35／record wire v30を保つsame-instance `upgrade`だけを許可する。
 
-Base Sepolia stagingだけは`short-delay-test-only` policyによりactivation delayを300秒とする。production artifactの24時間制約は変更せず、短縮版artifactと証跡をproduction rehearsalへ使用しない。
+Base Sepolia stagingは`short-delay-test-only` policyによりTimelock delayを300秒とする。productionの259200秒制約は変更せず、短縮版artifactや証跡をproduction rehearsalへ使用しない。production Canister、KINIC Ledger、Base Mainnet、SNSを対象にしてはならない。
 
 ## Test Ledgerのfee
 
-このstagingはKINICではなく、共有test tokenのTICRC1を使用する。
-TICRC1 Ledgerのfeeは`10000` rawである。
+stagingは現在binding済みの共有TICRC1 Ledger/Indexを維持する。`test-deployment` WasmはTICRC1の`icrc1_fee()`と一致する`KINIC_LEDGER_FEE = 10000`を使い、production Wasmの`100000`とは分離する。staging artifactをproductionへ流用しない。
 
-`test-deployment` featureで作るstaging Wasmは`KINIC_LEDGER_FEE = 10000`を使用し、production Wasmは`100000`を使用する。
-この差は設定driftではなく、stagingとproductionで対象Ledgerが異なるために意図して設けている。staging artifactをproductionへ流用してはならない。
+## 証跡世代と初期化
 
-stagingの検証では、Canister buildの固定feeとTICRC1 Ledgerの`icrc1_fee()`がともに`10000` rawで一致することを確認する。UIはLedgerを直接queryし、Bridge Canisterからfeeを取得しない。
-production artifactではKINIC mainnet Ledgerのlive fee、固定値`100000`、承認済みproduction profileが一致することを別途検証する。
+- 現行state machineはevidence schema v8だけを受理する。v7 manifest、local evidence、artifactは監査用の読取専用履歴であり、resume、migration、dual-read、合格判定を行わない。
+- `scripts/plan007-local-gate.sh /secure/work/local-e2e.json`をclean commitで実行し、schema v8 local evidenceをrepository外へ発行する。既存のchecked-in v7 `local-e2e.json`を更新または再利用しない。
+- `BRIDGE_STAGING_LOCAL_EVIDENCE=/secure/work/local-e2e.json scripts/plan007/staging-e2e-driver.sh init`でv8 manifestを新規作成する。過去の証跡を遡及的に`SHORT_DELAY_LIVE`へ変更しない。
+- `bootstrap_attestation`は`evidence/reinstall-decision-2026-08-27.json`と`evidence/fresh-stack-2026-08-28.json`をhash固定し、現行bindingとの一致と履歴が再開不能であることだけを確認する。reinstall、contract deploy、activationは実行しない。
 
-## 開始条件
-
-- clean commitで`scripts/plan007-local-gate.sh /secure/work/local-e2e.json`を実行し、repo外へ現行commitの証跡を発行する。
-- `frontend-profile.json`の値を予定値として信用せず、共有test Ledger/Index、staging Bridge、Base Sepoliaのlive値を再読する。
-- ICP identity名、wallet secret、RPC fault controller tokenはリポジトリへ保存しない。
-- Canisterの初回installと同一instance upgrade、cycles投入、Base Sepolia transaction、Cloudflare test UI公開は別々に承認を得る。初期化済みCanisterのreinstallは行わない。
-- install前にIC Deposit、Base Deposit Mint、Base Withdrawalをpauseし、Finalized postconditionを記録する。どれか一つでもpauseできない場合は後続を実行しない。
+`staging-e2e-driver.sh`はartifactを検証してmanifestへ記録するread-only recorderであり、Canister、contract、frontendを変更しない。外部upgrade、cycles投入、Base Sepolia transaction、frontend公開は、それぞれ別の明示承認とreview済み専用toolingの後にだけ実行する。生の`icp canister install`をrunbook手順として実行せず、`install`、`reinstall`、`auto`を受け付ける汎用経路を追加しない。秘密鍵、identity名、RPC credentialはrepositoryへ保存しない。
 
 ## 証跡state machine
 
-次でmanifestを初期化する。tracked treeは常にcleanでなければならず、repo外のlocal evidenceが
-現行HEAD、Wasm、Candidと一致しない場合は失敗する。
-
-```sh
-BRIDGE_LOCAL_E2E_EVIDENCE=/secure/work/local-e2e.json \
-  scripts/plan007/staging-e2e-driver.sh init
-scripts/plan007/staging-e2e-driver.sh status
-```
-
-stageは次の順序に固定され、途中を飛ばせない。
-
 ```text
-preflight
-  -> contracts
-  -> install
-  -> initialize
-  -> activation_schedule
-  -> activation_execute
+bootstrap_attestation
+  -> preflight
+  -> current_schema_upgrade
+  -> post_upgrade_binding
   -> frontend_publish
   -> smoke_e2e
   -> wallet_e2e
+  -> refund_rehearsal
   -> rpc_rehearsal
-  -> final_pause
-  -> SHORT_DELAY_COMPLETE
+  -> live_acceptance
+  -> SHORT_DELAY_LIVE
 ```
 
-各stageは、操作後に取得したraw artifact、artifact SHA-256、source commit、観測値だけをstage evidenceへ記録する。
-予定値、手入力した成功要約、失敗commandの出力をPASS証跡にしない。
+各stageはsource commit、artifact SHA-256、実行対象、raw receipt、観測postconditionを保存する。upgrade、binding、frontend、smoke、wallet、refundはstage receiptだけでは受理せず、tool/argv/exit code/raw JSON stdoutとそのdigestを持つstage固有`*-raw-capture`を必須とする。validatorはstdoutを再parseし、stage details、`details_sha256`、`capture_sha256`が一致することを確認する。RPC summaryは`rpc-rehearsal-manifest`のdigestと専用verifier結果へ結合し、`live_acceptance`は`reactivation-schedule-receipt`、`reactivation-execute-receipt`、`staging-monitoring-receipt`の3 artifactへ結合する。失敗commandの出力をPASS証跡にしない。
 
-Canister upgradeの前にはlive runtime bindingをJSONへ保存し、次のgateを必ず通す。
-review済みlive schema v35／wire v30から同一schema・同一instanceへのupgradeだけを受理し、upgrade前後のstate count、source／target schema、instance ID、`storage_integrity_check = ok`を照合する。異なるinstance、reinstall、旧・未知schema、欠落、ゼロ値はfail closedにする。新規Canisterへの初回installだけはこのupgrade gateの対象外である。
-出力の `live_schema_version` と `previous_deployment_instance_id` をpreflight証跡へ転記し、manifest検証でも同じ比較を行う。
+`preflight`はlive queryからCanister ID、deployment instance、module、controller、cycles、schema/wire、minimum Withdrawal ID、storage integrity、state count、固定RPC順序とprovider chain bindingを検査する。`live-canister-status` artifactは`canister_id`、`module_hash`、`controller_principals`、`cycles_balance`を必須とし、`canister_id`をprofileのBridge Canisterへ一致させる。profileの`rpcProviderUrlsSha256`をlive RuntimeBindingの集約digestへ一致させ、3 providerの個別URL digest順序を後続RPC rehearsalの`rpc_endpoints`へ結合する。Base Deposit/WithdrawalとCanister Depositはlive状態でunpausedでなければならない。
 
-```sh
-scripts/plan007/staging-e2e-driver.sh check-upgrade-instance \
-  /secure/work/live-public-config.json \
-  /secure/work/live-canister-status.json \
-  > /secure/work/upgrade-instance-check.json
-```
+`current_schema_upgrade`はcanonical test-deployment Wasm `target/test-deployment/staging/bridge_canister.wasm`を`upgrade` modeで適用した証跡だけを受理する。次をすべて満たさなければならない。
 
-checkerへ渡した `live-public-config.json`、`live-canister-status.json` と、その標準出力
-`upgrade-instance-check.json` を変更せずmanifestディレクトリ配下へコピーする。
-preflight evidenceの`artifacts`では、それぞれ一意なkind `live-public-config`、`live-canister-status` と
-`upgrade-instance-check` を付け、コピー後のSHA-256を記録する。manifest validatorは
-各artifactを再読し、live設定とmodule hashから比較を再計算してchecker出力および`details`と照合する。
-別のlive取得結果、手編集したchecker出力、manifest外のpathは使用しない。
+- Canister ID、deployment instance、stable schema v35、record wire v30、minimum Withdrawal IDが不変。
+- module/Candid hashがreview済みbindingと一致。
+- controller集合と全state countが前後で一致し、storage integrityが`ok`。
+- `reinstall`、`auto`、instance drift、旧・未知schema、未登録wireを拒否。
 
-履歴を失ったstate、v34以下、旧wireのstaging canisterはupgradeしない。現在の固定staging Canister IDはすでにschema v35へ移行済みであり、再installや旧schema migrationを認めない。
+`post_upgrade_binding`は同じidentity、固定RPC provider集約digest、runtime/contract bindingをlive再取得して確認する。`rpc_rehearsal`は独立したRPC rehearsal schemaに従い、最後の`final_pause`まで含める。これはouter staging stateの終端ではない。`live_acceptance`は別operation IDのreactivation schedule/execute Finalized receiptを検証し、IC/Baseの資産フローが再びunpausedであることを確認する。
 
-current-schema upgradeではさらに、同じ観測時点の次のJSON artifactを保存する。
+## Finality遅延、Wallet、Refund E2E
 
-- `live-bridge-status`: Deposit／reservationを含むcountsと、Withdrawal、pending Ledger operation、reconciliation hold、未払額を保持する。
-- `live-activation-status`: pending Timelock operation数を保持する。
-- `live-canister-status`: 対象Canister ID、module hash、certified Candid SHA-256、schema version、record wire version、controller principals、cycles balanceを保持する。対象IDは固定staging Canister、module／Candidはpolicyのreview済みsourceかlocal evidenceのtargetの完全な組、versionはv35／wire v30でなければならない。
-- `live-storage-integrity`: 認可済みcallerによる`storage_integrity_check()`の`ok`結果を保持する。
-- `live-ledger-balance`: Bridge principalのTICRC1 raw balanceを保持する。
-- install stageにはupgrade前後の全count、source／target schema・wire、source module／certified Candid、target module／Candid、upgrade policy SHA-256、同一instance ID、`storage_integrity_check = ok`を記録する。current-schema upgradeではreview済みhashとv35／wire v30の維持を要求し、いずれかが不一致ならUI公開へ進まない。
-
-manifest validatorは全artifactを再hashし、snapshot間のcount、module hash、balance、instance IDを再比較する。pending Timelock operationはupgrade前にゼロでなければならない。Deposit、reservation、Withdrawal、pending Ledger operation、hold、監査履歴は同一schema upgrade後も保持する。
-現行v35／wire v30だけをdecode対象とする。旧wireのaudit variantは現行Candidに残さず、旧wireのstateをmigrationしない。preflightはsourceの全audit pageをtarget Candidでdecodeしてhashを照合し、decodeまたはhash照合に失敗した場合はupgrade前にfail closedに停止する。
-
-`test-deployment` Wasmに限り、IC HTTPS outcallで401を返すOnFinalityをdRPCへ置換する今回専用のupgrade引数を受理する。引数なしの`()`はRPC設定を変更しない。更新指定は次のCandidに固定し、PublicNode、`sepolia.base.org`、dRPCの順序を変えない。
-
-```candid
-(
-  record {
-    status_counts_guard_version = 1 : nat8;
-    rpc_provider_update = opt record {
-      custom_evm_rpc_urls = vec {
-        "https://base-sepolia-rpc.publicnode.com";
-        "https://sepolia.base.org";
-        "https://base-sepolia.drpc.org";
-      };
-      expected_status_counts = record {
-        retained_audit_events = 15 : nat64;
-        reconciliation_holds = 0 : nat64;
-        retained_deposit_index_entries = 1 : nat64;
-        pending_ledger_operations = 0 : nat64;
-        withdrawals = 1 : nat64;
-        deposits = 1 : nat64;
-        reserved_deposit_mint_operations = 1 : nat64;
-        reserved_deposit_mint_amount = 1_050_000_000 : nat;
-        pruned_audit_events = 0 : nat64;
-      };
-    };
-  },
-)
-```
-
-staging upgrade gateはreview済みのlive schema v35 module／certified Candidの組をsourceとして固定し、migration引数を渡さず同一schema・同一instanceのまま更新する。`staging-bridge-upgrade-policy.json`はCanister、deployment、controller認証済みlive source module／certified Candid、schema v35／wire v30を固定し、repo外のlocal E2E evidenceはclean HEADとtarget Wasm／Candidを固定する。moduleとCandidの組がreview済みsourceまたはtargetのどちらでもなければ拒否する。
-preflightはcertified live Candidを読み、`get_runtime_binding`からbindingを取得し、state count、controller、cycles、storage integrity、pending Timelock／governance transaction数、全audit pageのcanonical digestとretention metadataを記録する。executeは同じpreflightを再構築できた場合だけinstallし、全state countを`expected_status_counts`として渡す。`post_upgrade()`はcount drift時にtrapしてmodule更新全体をrollbackする。再初期化は行わず、runtime binding、全audit content、retention metadataを前後比較する。
-
-```sh
-BRIDGE_STAGING_IDENTITY=<identity> \
-  scripts/plan007/staging-canister-upgrade.sh \
-    --wasm "$(pwd)/target/test-deployment/staging/bridge_canister.wasm" \
-    --local-evidence /secure/work/local-e2e.json \
-    --evidence /secure/work/staging-current-preflight.json
-
-# preflight結果とpolicyを別レビューし、Canister upgradeの明示承認後だけ実行する。
-BRIDGE_STAGING_IDENTITY=<identity> \
-  scripts/plan007/staging-canister-upgrade.sh --execute \
-    --wasm "$(pwd)/target/test-deployment/staging/bridge_canister.wasm" \
-    --local-evidence /secure/work/local-e2e.json \
-    --preflight-evidence /secure/work/staging-current-preflight.json \
-    --evidence /secure/work/staging-current-result.json
-```
-
-driverは`icp deploy`や暗黙buildを使用しない。成功または適用済みpostconditionをすべて確認した場合だけ
-evidenceをatomicに確定する。install失敗またはpostcondition不一致では再実行せず、CLI出力と未確定artifactを
-保全して原因をreviewする。過去のarchive evidenceは変更しない。
-
-UIはCanister postcondition前にclean HEADから一度だけbuildし、repo外receiptへsource tree、profile、全asset hashを固定する。
-Canister upgrade成功後は同じreceiptを再検証し、再buildせず`kinic-bridge-ui-test`へ公開する。
-
-```sh
-BRIDGE_STAGING_UI_RECEIPT=/secure/work/staging-ui-assets.json pnpm --dir ui artifact:test
-BRIDGE_STAGING_UI_RECEIPT=/secure/work/staging-ui-assets.json pnpm --dir ui artifact:test:verify
-# Cloudflare公開の明示承認後だけ実行する。
-BRIDGE_STAGING_UI_RECEIPT=/secure/work/staging-ui-assets.json pnpm --dir ui deploy:test:artifact
-```
-
-```sh
-scripts/plan007/staging-e2e-driver.sh record /secure/work/preflight-evidence.json
-scripts/plan007/staging-e2e-driver.sh status
-```
-
-manifestとartifactのfield集合、hash、stage順序、ネットワーク固定、wallet matrix、upgrade、最終pauseは
-`scripts/plan007/sepolia_e2e.py`がfail closedで検査する。
+- Finalized headを意図的に約20分遅らせた状態でDeposit reviewが成功し、authorizationの`issued_at_timestamp`と`deadline = issued_at + 600`を記録する。
+- quote snapshotの`blockTimestamp`を正本として、残り300秒では送信可能、299秒以下とwindow終端ちょうどではwallet呼出し、Ledger pull、intent保存、Base transaction送信を開始しないことを記録する。
+- 実walletでTICRC1 DepositからBase mintまで完了し、Base ETH支払receiptとexact processed Depositを記録する。
+- `AuthorizationExpired`と`AuthorizationWindowTooShort`はいずれも停止理由としてHistoryへ伝播する。Finalized Base timestampがdeadlineを超えるまではrefund不可で、超過後のexact未処理証拠でだけrefundできることを記録する。
+- Solidityは`block.timestamp + 900`を受理し、`+901`を拒否することを対象artifactとtransaction testで固定する。
 
 ## RPC故障演習
 
-通常経路は公式EVM RPC Canisterとcredential-free HTTPS RPC 3件を使う。
-故障演習だけは、復旧制御APIを持つtest-only proxy 3件をsecure configへ設定する。
-control tokenは`BRIDGE_E2E_FAULT_CONTROL_TOKEN`、config pathは`BRIDGE_E2E_FAULT_CONFIG`で渡す。
+RPC順序はPublicNode、`sepolia.base.org`、dRPCに固定し、事前chain bindingとruntime 2-of-3 quorumを確認する。単一provider failureは継続し、quorum loss、chain mismatch、canonical receipt不一致はfail closedにする。runtimeでRPC URLまたはchain IDを可変にせず、runtime `eth_chainId` callは追加しない。
 
-```sh
-export BRIDGE_E2E_FAULT_CONFIG=/secure/work/evm-rpc-fault-config.json
-export BRIDGE_E2E_FAULT_CONTROL_TOKEN='<ephemeral-token>'
-scripts/plan007/staging-e2e-driver.sh rpc-capture-fault \
-  /secure/work/rpc-e2e.json \
-  /secure/work/rehearsal-config.json \
-  single_provider_failure \
-  /secure/work/artifacts/single-provider-failure.json \
-  single-provider-failure-1
-```
+## `SHORT_DELAY_LIVE`受入条件
 
-injectorは1-providerまたは2-providerの固定failure setだけを受理し、Bridge callとaudit取得後に全providerを必ず復旧する。
-部分適用、Bridge call失敗、audit不足、復旧失敗はすべてscenario失敗とする。
+新しいv8 manifestだけが、次をすべて満たした場合に`SHORT_DELAY_LIVE`へ遷移する。
 
-## Wallet E2E
+- Base Deposit/WithdrawalとCanister Depositがunpaused。
+- Canister ID、module、schema v35、wire v30、deployment instance、minimum Withdrawal ID、contract/runtime/profile hashが一致し、storage integrityが`ok`。
+- historical/retired stack identityがactive profile、signer、automationから排除されている。
+- pending governance、Timelock、Deposit、Withdrawal、Ledger operation、reconciliation、mint reservation、unpaid liabilityがすべて0。
+- 固定RPC providerの事前chain bindingとhealthが正常。
+- wallet E2E、refund rehearsal、RPC rehearsalが成功。
+- reactivation schedule/execute receipt、監視receipt、Finalized block/hashが保存されている。
 
-公開test UIと実Chromeを使い、`ui-wallet-compatibility.md`を完了する。
-Plug/OISYのDeposit、MetaMask/RabbyのWithdrawal、WalletConnect、reject、popup close、reload、
-duplicate/conflict/sequence gap、二重tab、account/chain変更、runtime mismatch、通知復旧を記録する。
-同一Wasm upgradeでは、前後のcanonical state SHA-256一致と`storage_integrity_check() = "ok"`を必須とする。
-
-## 終了条件
-
-Base Deposit、Base Withdrawal、IC Depositをpauseし、pending Deposit、Withdrawal、Timelock operationをゼロにする。
-fault proxy 3件の通常応答を再確認してから`final_pause`を記録し、完全検証を実行する。
-
-```sh
-scripts/plan007/staging-e2e-driver.sh verify
-```
-
-`SHORT_DELAY_COMPLETE`はtest-only stagingの追加wallet互換性と全10 RPC scenarioを含む詳細E2Eの完了だけを意味し、本番deploy、SNS操作、資産受付開始を承認しない。この詳細完了はproduction activationをblockしない。
+受入後もstagingをpauseせず、資産フローを有効に保つ。実際のCanister upgrade、frontend publish、Base transaction、受入証跡の確定はこのコード変更には含めず、別途明示承認後に実行する。Production配置もこのrunbookに含めない。

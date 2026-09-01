@@ -55,7 +55,7 @@ def main() -> None:
         ),
         (
             "deployments/sepolia-staging/evidence/README.md",
-            r"Canister v(\d+) (?:upgrade|install)",
+            r"schema v(\d+)／wire v\d+",
             1,
         ),
         ("docs/implementation-plan.md", r"(?:stable schema v|現行stable schemaはv)(\d+)", 2),
@@ -107,6 +107,16 @@ def main() -> None:
             2,
         ),
         ("docs/implementation-plan.md", r"record wire v(\d+)", 1),
+        (
+            "deployments/sepolia-staging/evidence/README.md",
+            r"schema v\d+／wire v(\d+)",
+            1,
+        ),
+        (
+            "scripts/plan007/sepolia_e2e.py",
+            r"CURRENT_RECORD_WIRE_VERSION = (\d+)",
+            1,
+        ),
         (
             "canister/bridge-canister/src/storage/mod.rs",
             r"INSERT INTO bridge_metadata VALUES \(1, \d+, (\d+)\);",

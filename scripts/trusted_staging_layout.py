@@ -45,9 +45,19 @@ def classify_layout(root: Path, candidate_scripts: Path | None) -> str:
     canonical = _regular_file_presence(
         root, f"{policy_prefix}/staging-bridge-upgrade-policy.json"
     )
-    replacement = (
+    replacement_markers = (
         _regular_file_presence(root, f"{policy_prefix}/legacy-stack-binding.json"),
         _regular_file_presence(root, f"{policy_prefix}/fresh-stack.template.json"),
+    )
+    # Marker files keep the replacement classification compatible with the
+    # trusted base policy; immutable evidence remains authoritative.
+    replacement_evidence = (
+        _regular_file_presence(
+            root, f"{policy_prefix}/evidence/reinstall-decision-2026-08-27.json"
+        ),
+        _regular_file_presence(
+            root, f"{policy_prefix}/evidence/fresh-stack-2026-08-28.json"
+        ),
     )
     obsolete = _regular_file_presence(
         root, f"{policy_prefix}/v33-to-v34-upgrade-policy.json"
@@ -58,13 +68,18 @@ def classify_layout(root: Path, candidate_scripts: Path | None) -> str:
 
     if obsolete:
         raise ValueError("obsolete staging upgrade policy must be absent")
-    if canonical and all(upgrade_scripts) and not any(replacement):
+    if canonical and all(upgrade_scripts) and not any(replacement_markers + replacement_evidence):
         return "upgrade"
-    if not canonical and not any(upgrade_scripts) and all(replacement):
+    if (
+        not canonical
+        and not any(upgrade_scripts)
+        and (all(replacement_markers) or all(replacement_evidence))
+    ):
         return "replacement"
     raise ValueError(
         "staging lifecycle layout is incomplete or mixed: "
-        f"canonical={canonical}, upgrade_scripts={upgrade_scripts}, replacement={replacement}"
+        f"canonical={canonical}, upgrade_scripts={upgrade_scripts}, "
+        f"replacement_markers={replacement_markers}, replacement_evidence={replacement_evidence}"
     )
 
 
