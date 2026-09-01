@@ -13,7 +13,7 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
 Bridge canisterはstable schema v35、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
-Plan 005は10回・7日の本番パラメータ外部計測と単一emergency pause経路演習待ちである。Plan 006のSNS handover、Canister操作型Base管理、主要5 scenarioのGate B真正性検証、固定SNS activation proposal提出とpostcondition receipt経路は実装済みで、実mainnet evidenceの取得・承認・実行は未完了である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、追加wallet互換性と追加5 scenarioの外部実行は明示承認待ちだがproduction activationをblockしない。
+Plan 005の7日・各10件の本番計測はunpause後のGate Cへ移動した。Plan 006のBase管理、主要5 scenarioのGate B真正性検証、SNS proposal型activation receiptはhandover後の再activation用として保持する。初回activationはproduction controller専用のseal／schedule／execute、匿名relay、固定confirmation relayerの役割分離経路を使い、Activated後にcontroller経路を永久無効化する。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、追加wallet互換性と追加5 scenarioの外部実行は明示承認待ちだがproduction activationをblockしない。
 
 ## 全体構成
 

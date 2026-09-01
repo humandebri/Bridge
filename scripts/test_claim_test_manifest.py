@@ -210,6 +210,9 @@ class ClaimTestManifestTests(unittest.TestCase):
         )
         self.assertGreater(len(parsed), 0)
 
+    def test_validate_only_checks_registration_without_running_tests(self) -> None:
+        self.assertEqual(claim_tests.main(["--validate-only"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

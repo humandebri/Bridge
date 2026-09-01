@@ -881,6 +881,33 @@ proof fn unprivileged_caller_has_no_action(action: int)
     ensures !kernel::administrator_authorized_spec(action, false, false)
 {}
 
+proof fn operational_config_seal_requires_the_current_bootstrap_controller(
+    controller: bool,
+    bootstrap: bool,
+)
+    ensures kernel::operational_config_seal_caller_authorized_spec(controller, bootstrap)
+        <==> controller && bootstrap
+{}
+
+proof fn initial_activation_controller_is_exclusive_and_one_shot(
+    controller: bool,
+    governance: bool,
+    sealed_paused: bool,
+    phase: int,
+    operation_id: int,
+)
+    requires phase == 0 || phase == 1
+    ensures
+        ((phase == 0 && operation_id == 0) || (phase == 1 && operation_id == 1))
+            ==> (kernel::activation_prepare_authorized_spec(
+                    controller, governance, sealed_paused, phase, operation_id)
+                <==> controller && sealed_paused),
+        !((phase == 0 && operation_id == 0) || (phase == 1 && operation_id == 1))
+            ==> (kernel::activation_prepare_authorized_spec(
+                    controller, governance, sealed_paused, phase, operation_id)
+                <==> governance),
+{}
+
 proof fn audit_sequence_is_strictly_monotone(current: int)
     requires 0 <= current < 0xffff_ffff_ffff_ffffint
     ensures kernel::audit_next_spec(current) == Some(current + 1), current + 1 > current

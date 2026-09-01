@@ -16,6 +16,23 @@ production_require_clean_source() {
   fi
 }
 
+production_require_bundle_source_binding() {
+  local source_root="$1" bundle="$2" revision tree manifest_revision manifest_tree
+  production_require_clean_source "$source_root" || return 1
+  [[ -f "$bundle/release-manifest.json" && ! -L "$bundle/release-manifest.json" ]] || {
+    echo "release manifest is missing or unsafe" >&2; return 1;
+  }
+  revision="$(git -C "$source_root" rev-parse HEAD)" || return 1
+  tree="$(git -C "$source_root" archive HEAD | shasum -a 256 | awk '{print $1}')" || return 1
+  read -r manifest_revision manifest_tree < <(
+    python3 -c 'import json,sys;m=json.load(open(sys.argv[1]));print(m.get("source_revision",""),m.get("source_tree_sha256",""))' "$bundle/release-manifest.json"
+  )
+  [[ "$revision" == "$manifest_revision" \
+    && "$tree" == "$(printf '%s' "$manifest_tree" | tr '[:upper:]' '[:lower:]')" ]] || {
+    echo "release bundle is not bound to the fixed clean source" >&2; return 1;
+  }
+}
+
 production_run_proof_gate() {
   local source_root="$1" expected_revision="$2" expected_tree="$3"
   local proof_script before_revision before_tree after_revision after_tree
@@ -178,20 +195,24 @@ production_validate_gate() {
   CARGO_TARGET_DIR="$target" cargo build --locked --quiet --release --manifest-path "$source_root/Cargo.toml" -p bridge-profile || { rm -rf "$target"; return 1; }
   profile_bin="$target/release/bridge-profile"
   if [[ "$mode" == gate-a ]]; then output="$("$profile_bin" validate-bundle --offline "$bundle")" || { rm -rf "$target"; return 1; }
-  elif [[ "$mode" == gate-b ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }
+  elif [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }
   else rm -rf "$target"; echo "invalid production gate mode" >&2; return 1
   fi
   if [[ "$mode" == gate-a ]]; then
     [[ "$output" =~ ^gate_a=pass[[:space:]]authorizing=true[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver Gate A result is not authorizing" >&2; return 1; }
     actual_hash="${BASH_REMATCH[1]}"
   else
-    [[ "$output" =~ ^gate_b=structural-pass[[:space:]]authorizing=false[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver Gate B structural result is malformed" >&2; return 1; }
+    [[ "$output" =~ ^gate_b=pre_seal-pass[[:space:]]authorizing=seal[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver pre-seal Gate B result is malformed" >&2; return 1; }
     actual_hash="${BASH_REMATCH[1]}"
   fi
   [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "driver Gate manifest hash mismatch" >&2; return 1; }
   production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
   "$source_root/scripts/rebuild-release-artifacts.sh" \
     "$bundle" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
+  if [[ "$mode" == gate-b-pre-seal ]]; then
+    rm -rf "$target"
+    return 0
+  fi
   if [[ "$mode" == gate-a ]]; then
     [[ -f "$canister_install_receipt" && ! -L "$canister_install_receipt" ]] || {
       rm -rf "$target"
@@ -264,13 +285,13 @@ production_validate_gate() {
     echo "activation attestation refresh returned an ambiguous failure; checking the authenticated live postcondition" >&2
   fi
   rm -f "$refresh_output"
-  final_output="$("$profile_bin" verify-live "$bundle")" || { rm -rf "$target"; return 1; }
-  [[ "$final_output" =~ ^gate_b=pass[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "final Gate B live result is malformed" >&2; return 1; }
+  final_output="$("$profile_bin" verify-live "$BRIDGE_ACTIVATION_PHASE" "$bundle")" || { rm -rf "$target"; return 1; }
+  [[ "$final_output" =~ ^gate_b=live-pass[[:space:]]authorizing=${BRIDGE_ACTIVATION_PHASE}[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "final live Gate B result is malformed" >&2; return 1; }
   actual_hash="${BASH_REMATCH[1]}"
   [[ "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "final Gate B manifest hash mismatch" >&2; return 1; }
   if [[ "$BRIDGE_ACTIVATION_PHASE" == execute ]]; then
     : "${BRIDGE_PRIOR_SCHEDULE_RECEIPT:?missing prior schedule receipt}"
-    "$profile_bin" verify-schedule-receipt-live "$bundle" "$BRIDGE_PRIOR_SCHEDULE_RECEIPT" >/dev/null || { rm -rf "$target"; return 1; }
+    "$profile_bin" verify-controller-schedule-receipt-live "$bundle" "$BRIDGE_PRIOR_SCHEDULE_RECEIPT" >/dev/null || { rm -rf "$target"; return 1; }
   elif [[ "$BRIDGE_ACTIVATION_PHASE" != schedule ]]; then
     rm -rf "$target"
     echo "invalid activation phase" >&2

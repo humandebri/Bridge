@@ -15,11 +15,13 @@ RECEIPT=""
 RELEASE_INPUTS=""
 CANISTER_INSTALL_RECEIPT=""
 ACTIVATION_PHASE=""
-ACTIVATION_SUBMISSION=""
-SNS_IDENTITY=""
+ACTIVATION_STEP=""
+ACTIVATION_ARTIFACT=""
+ACTIVATION_CONFIRMATION_RECEIPT=""
+CONTROLLER_ACTIVATION_RECEIPT=""
+PRODUCTION_CONTROLLER_PEM=""
+CONFIRMATION_RELAYER_PEM=""
 CONFIRMATION_RELAYER_IDENTITY=""
-SNS_NEURON_SUBACCOUNT=""
-SNS_PROPOSER_PRINCIPAL=""
 PRIOR_SCHEDULE_RECEIPT=""
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -53,14 +55,14 @@ while [[ "$#" -gt 0 ]]; do
       ACTIVATION_PHASE="$2"
       shift 2
       ;;
-    --submission)
-      [[ "$#" -ge 2 ]] || { echo "--submission requires a path" >&2; exit 2; }
-      ACTIVATION_SUBMISSION="$2"
+    --step)
+      [[ "$#" -ge 2 ]] || { echo "--step requires prepare, relay, or confirm" >&2; exit 2; }
+      ACTIVATION_STEP="$2"
       shift 2
       ;;
-    --sns-identity)
-      [[ "$#" -ge 2 ]] || { echo "--sns-identity requires a name" >&2; exit 2; }
-      SNS_IDENTITY="$2"
+    --artifact)
+      [[ "$#" -ge 2 ]] || { echo "--artifact requires a path" >&2; exit 2; }
+      ACTIVATION_ARTIFACT="$2"
       shift 2
       ;;
     --confirmation-relayer-identity)
@@ -68,14 +70,24 @@ while [[ "$#" -gt 0 ]]; do
       CONFIRMATION_RELAYER_IDENTITY="$2"
       shift 2
       ;;
-    --sns-neuron-subaccount)
-      [[ "$#" -ge 2 ]] || { echo "--sns-neuron-subaccount requires 32-byte hex" >&2; exit 2; }
-      SNS_NEURON_SUBACCOUNT="$2"
+    --controller-pem)
+      [[ "$#" -ge 2 ]] || { echo "--controller-pem requires a path" >&2; exit 2; }
+      PRODUCTION_CONTROLLER_PEM="$2"
       shift 2
       ;;
-    --sns-proposer-principal)
-      [[ "$#" -ge 2 ]] || { echo "--sns-proposer-principal requires a principal" >&2; exit 2; }
-      SNS_PROPOSER_PRINCIPAL="$2"
+    --confirmation-relayer-pem)
+      [[ "$#" -ge 2 ]] || { echo "--confirmation-relayer-pem requires a path" >&2; exit 2; }
+      CONFIRMATION_RELAYER_PEM="$2"
+      shift 2
+      ;;
+    --confirmation-receipt)
+      [[ "$#" -ge 2 ]] || { echo "--confirmation-receipt requires a path" >&2; exit 2; }
+      ACTIVATION_CONFIRMATION_RECEIPT="$2"
+      shift 2
+      ;;
+    --activation-receipt)
+      [[ "$#" -ge 2 ]] || { echo "--activation-receipt requires a path" >&2; exit 2; }
+      CONTROLLER_ACTIVATION_RECEIPT="$2"
       shift 2
       ;;
     --prior-schedule-receipt)
@@ -96,8 +108,7 @@ done
 
 usage() {
   echo "usage: $0 deploy --bundle DIR --release-inputs DIR --canister-install-receipt FILE --receipt FILE -- DEPLOY_DRIVER" >&2
-  echo "       $0 activate --phase schedule --bundle DIR --release-inputs DIR --receipt FILE --submission FILE --sns-identity NAME --confirmation-relayer-identity NAME --sns-neuron-subaccount HEX --sns-proposer-principal PRINCIPAL --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION -- scripts/production-activate-driver.sh" >&2
-  echo "       $0 activate --phase execute [same options] --prior-schedule-receipt FILE --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- scripts/production-activate-driver.sh" >&2
+  echo "       $0 activate --phase schedule|execute --step prepare|relay|confirm --artifact FILE --bundle DIR --release-inputs DIR --receipt FILE --confirmation-relayer-identity NAME [--controller-pem FILE] [--confirmation-relayer-pem FILE --confirmation-receipt NEW_FILE --activation-receipt NEW_FILE] --confirm-asset-acceptance TOKEN -- scripts/production-activate-driver.sh" >&2
   exit 2
 }
 
@@ -253,10 +264,22 @@ else
     echo "activation phase requires its exact explicit confirmation" >&2
     exit 1
   }
-  [[ -n "$ACTIVATION_SUBMISSION" && -n "$SNS_IDENTITY" && -n "$CONFIRMATION_RELAYER_IDENTITY" && -n "$SNS_NEURON_SUBACCOUNT" && -n "$SNS_PROPOSER_PRINCIPAL" ]] || {
-    echo "activation requires submission output, fixed SNS proposer inputs, and a confirmation relayer ICP identity" >&2
+  [[ "$ACTIVATION_STEP" == prepare || "$ACTIVATION_STEP" == relay || "$ACTIVATION_STEP" == confirm ]] || {
+    echo "activation requires --step prepare, relay, or confirm" >&2
     exit 1
   }
+  [[ -n "$ACTIVATION_ARTIFACT" ]] || {
+    echo "activation requires a fixed artifact path" >&2
+    exit 1
+  }
+  if [[ "$ACTIVATION_STEP" == prepare ]]; then
+    [[ -n "$PRODUCTION_CONTROLLER_PEM" && -n "$CONFIRMATION_RELAYER_IDENTITY" ]] || { echo "activation prepare requires controller PEM and confirmation relayer identity" >&2; exit 1; }
+  else
+    [[ -f "$ACTIVATION_ARTIFACT" && ! -L "$ACTIVATION_ARTIFACT" ]] || { echo "relay/confirm require the fixed activation artifact" >&2; exit 1; }
+  fi
+  if [[ "$ACTIVATION_STEP" == confirm ]]; then
+    [[ -n "$CONFIRMATION_RELAYER_PEM" && -n "$ACTIVATION_CONFIRMATION_RECEIPT" && -n "$CONTROLLER_ACTIVATION_RECEIPT" ]] || { echo "activation confirm requires relayer PEM, raw confirmation output, and a verified receipt path" >&2; exit 1; }
+  fi
   if [[ "$ACTIVATION_PHASE" == schedule ]]; then
     [[ -z "$PRIOR_SCHEDULE_RECEIPT" ]] || { echo "schedule forbids a prior schedule receipt" >&2; exit 1; }
   else
@@ -384,11 +407,13 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
 else
   export BRIDGE_GATE_B_MANIFEST_SHA256="$GATE_MANIFEST_SHA256"
   export BRIDGE_ACTIVATION_PHASE="$ACTIVATION_PHASE"
-  export BRIDGE_ACTIVATION_SUBMISSION_OUT="$ACTIVATION_SUBMISSION"
-  export BRIDGE_SNS_IDENTITY="$SNS_IDENTITY"
+  export BRIDGE_ACTIVATION_STEP="$ACTIVATION_STEP"
+  export BRIDGE_ACTIVATION_ARTIFACT="$ACTIVATION_ARTIFACT"
+  export BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$ACTIVATION_CONFIRMATION_RECEIPT"
+  export BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$CONTROLLER_ACTIVATION_RECEIPT"
+  export BRIDGE_PRODUCTION_CONTROLLER_PEM="$PRODUCTION_CONTROLLER_PEM"
+  export BRIDGE_CONFIRMATION_RELAYER_PEM="$CONFIRMATION_RELAYER_PEM"
   export BRIDGE_CONFIRMATION_RELAYER_IDENTITY="$CONFIRMATION_RELAYER_IDENTITY"
-  export BRIDGE_SNS_NEURON_SUBACCOUNT="$SNS_NEURON_SUBACCOUNT"
-  export BRIDGE_SNS_PROPOSER_PRINCIPAL="$SNS_PROPOSER_PRINCIPAL"
   export BRIDGE_PRIOR_SCHEDULE_RECEIPT="$PRIOR_SCHEDULE_RECEIPT"
   "$DRIVER_PATH"
 fi

@@ -120,6 +120,21 @@ theorem operational_config_seal_witness : OperationalConfigSeal := by
   · intro sealed
     cases sealed <;> simp [assetOperationsAllowed]
 
+def initialActivationAuthorized
+    (controller governance sealed initialSlot validPhase : Bool) : Bool :=
+  validPhase && if initialSlot then controller && sealed else governance
+
+def InitialActivationAuthorization : Prop :=
+  ∀ controller governance sealed initialSlot validPhase : Bool,
+    initialActivationAuthorized controller governance sealed initialSlot validPhase = true ↔
+      validPhase = true ∧
+        (if initialSlot then controller = true ∧ sealed = true else governance = true)
+
+theorem initial_activation_authorization_witness : InitialActivationAuthorization := by
+  intro controller governance sealed initialSlot validPhase
+  cases controller <;> cases governance <;> cases sealed <;> cases initialSlot <;>
+    cases validPhase <;> simp [initialActivationAuthorized]
+
 def IntegratedProtocolReachability : Prop :=
   (∀ {state : Protocol.ProtocolState}, Protocol.Reachable state → Protocol.Safe state) ∧
     (∀ {stored reopened : Protocol.ProtocolState},

@@ -4,13 +4,18 @@ import test from "node:test"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Secp256k1KeyIdentity } from "@icp-sdk/core/identity/secp256k1"
 import {
+  activationBindingMatches,
+  activationReplacementMatches,
   canisterErrorMessage,
   commandRequiresIdentity,
   confirmationHash,
   identityFromPem,
+  isActivationArtifact,
   isNonceTooLow,
   parseOptions,
   selectPendingArtifact,
+  storedArtifactMatches,
+  storedActivationConfirmationIdentity,
   unwrap,
   validateCommandOptions,
   waitForFinalized,
@@ -20,7 +25,7 @@ test("uses an anonymous IC actor only for status and raw relay commands", () => 
   for (const command of ["status", "relay"]) {
     assert.equal(commandRequiresIdentity(command), false)
   }
-  for (const command of ["confirm", "run", "prepare", "replace", "schedule-activation", "execute-activation", "refresh-attestation", "drain-emergency"]) {
+  for (const command of ["confirm", "run", "prepare", "replace", "seal-operational-config", "prepare-schedule-activation", "prepare-execute-activation", "refresh-attestation", "drain-emergency"]) {
     assert.equal(commandRequiresIdentity(command), true)
   }
 })
@@ -99,6 +104,10 @@ test("rejects duplicate, unknown, and conflicting command options", () => {
     }),
     /cannot be used together/,
   )
+  assert.throws(
+    () => validateCommandOptions("schedule-activation", {}),
+    /Unknown command: schedule-activation/,
+  )
 })
 
 test("uses the documented transaction-hash option without discarding it", () => {
@@ -124,5 +133,92 @@ test("preserves implicit selection for one pending governance transaction", () =
   assert.throws(
     () => selectPendingArtifact(pending, true),
     /--operation-id must be a non-negative integer/,
+  )
+})
+
+test("binds relay and confirmation to the exact persisted pending artifact", () => {
+  const live = {
+    operation_id: 1n,
+    transaction_hash: new Uint8Array(32).fill(0x12),
+    generation: 0,
+  }
+  const stored = {
+    operation_id: "1",
+    transaction_hash: `0x${"12".repeat(32)}`,
+    generation: 0,
+  }
+  assert.equal(storedArtifactMatches(stored, live), true)
+  assert.equal(storedArtifactMatches({ ...stored, generation: 1 }, live), false)
+})
+
+test("binds an activation artifact to the exact Gate B authorization receipt", () => {
+  const artifact = "12".repeat(32)
+  const gate = "34".repeat(32)
+  const binding = {
+    schema_version: 1,
+    phase: "schedule",
+    gate_b_manifest_sha256: gate,
+    artifact_sha256: artifact,
+    authorization_receipt_sha256: "56".repeat(32),
+    bound_at_unix: 1,
+  }
+  assert.equal(activationBindingMatches(binding, artifact, gate), true)
+  for (const drift of [
+    { ...binding, artifact_sha256: "78".repeat(32) },
+    { ...binding, gate_b_manifest_sha256: "9a".repeat(32) },
+    { ...binding, authorization_receipt_sha256: "bad" },
+    { ...binding, extra: true },
+  ]) {
+    assert.equal(activationBindingMatches(drift, artifact, gate), false)
+  }
+})
+
+test("recognizes activation transactions that must not use generic run or unbound relay", () => {
+  assert.equal(isActivationArtifact({ kind: { ScheduleActivation: {} } }), true)
+  assert.equal(isActivationArtifact({ kind: { ExecuteActivation: {} } }), true)
+  assert.equal(isActivationArtifact({ kind: { PauseDepositMints: null } }), false)
+  assert.equal(isActivationArtifact({ kind: null }), false)
+})
+
+test("recovers only the exact next activation replacement generation", () => {
+  const stored = {
+    operation_id: "0",
+    kind: { ScheduleActivation: { salt: "0x12" } },
+    chain_id: "8453",
+    nonce: "7",
+    sender: "0x11",
+    target: "0x22",
+    calldata: "0x33",
+    gas_limit: "100",
+    generation: 0,
+  }
+  const live = {
+    operation_id: 0n,
+    kind: { ScheduleActivation: { salt: new Uint8Array([0x12]) } },
+    chain_id: 8453n,
+    nonce: 7n,
+    sender: new Uint8Array([0x11]),
+    target: new Uint8Array([0x22]),
+    calldata: new Uint8Array([0x33]),
+    gas_limit: 100n,
+    generation: 1,
+    max_fee_per_gas: 200n,
+    max_priority_fee_per_gas: 3n,
+  } as never
+  assert.equal(activationReplacementMatches(stored, live, 200n, 3n), true)
+  assert.equal(activationReplacementMatches(stored, { ...live, generation: 2 }, 200n, 3n), false)
+  assert.equal(activationReplacementMatches(stored, live, 201n, 3n), false)
+})
+
+test("recovers an idempotent activation confirmation from the fixed artifact", () => {
+  const identity = storedActivationConfirmationIdentity({
+    operation_id: "1",
+    transaction_hash: `0x${"12".repeat(32)}`,
+  })
+  assert.equal(identity.operationId, 1n)
+  assert.equal(identity.transactionHash, `0x${"12".repeat(32)}`)
+  assert.throws(
+    () => storedActivationConfirmationIdentity({ operation_id: "01", transaction_hash: "0x12" }),
+    /invalid operation ID or transaction hash/,
   )
 })

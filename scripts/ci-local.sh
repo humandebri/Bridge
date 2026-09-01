@@ -145,6 +145,7 @@ run_versions() {
     "$ROOT/scripts/production-deploy-driver.sh" \
     "$ROOT/scripts/production-activation-proposal.sh" \
     "$ROOT/scripts/production-activate-driver.sh" \
+    "$ROOT/scripts/production-seal-driver.sh" \
     "$ROOT/scripts/production-handover-driver.sh" \
     "$ROOT/scripts/install-certora-solc.sh" \
     "$ROOT/scripts/trusted-pr-container.sh"

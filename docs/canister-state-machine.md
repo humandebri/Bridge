@@ -95,4 +95,4 @@ UIはtransaction hashと通知attempt状態をv7形式でlocalStorageへ保存�
 | `get_deposit` / `get_deposit_by_owner_sequence` | 公開query | Authorization、deadline、signature、状態を照会 |
 | `get_bridge_status` | 公開query | Finalized観測、epoch、Governance reserve、schedulerを照会 |
 
-SNS Governance principalはresume、principal rotation、Fee Recipient、fee payout、Service Fee、Timelock操作を行う。pause principalは緊急pauseと許可された進行だけを行う。Mint SignerはEIP-712 Authorization専用、Governance OperatorはCanister発Base governance transaction専用で、derivation pathとETH管理を分離する。
+SNS Governance principalは通常時のresume、principal rotation、Fee Recipient、fee payout、Service Fee、Timelock操作を行う。初回production activationだけは、Bootstrap中のsealと、operation ID 0のschedule／ID 1のexecuteおよびそのpending resume/replacementをcurrent controllerへ限定して許可する。Activated後はこのcontroller経路を永久に無効化し、通常のGovernance principal認可へ戻す。pause principalは緊急pauseと許可された進行だけを行う。Mint SignerはEIP-712 Authorization専用、Governance OperatorはCanister発Base governance transaction専用で、derivation pathとETH管理を分離する。

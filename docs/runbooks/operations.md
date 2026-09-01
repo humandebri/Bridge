@@ -93,7 +93,7 @@ npm run governance-relayer -- refresh-attestation
 npm run governance-relayer -- run
 ```
 
-`run`はpending署名成果物の取得、raw transactionのhash・chain・sender・nonce・target・calldata・gas・fee検証、broadcast、Finalized待機、Canister確定通知を行う。reverted receiptを検出した場合はFinalized待機を直ちに止め、確定後に`confirm --operation-id <id> --transaction-hash <hash>`でCanisterを終端化する。broadcast直後に停止した場合は`status`で同じoperationを確認して`run --operation-id <id>`を再実行する。同じraw transactionの再送とRPCの`already known`は冪等成功であり、`nonce too low`はexpected hashのreceiptが存在する場合だけ既送信として扱う。
+`run`はpending署名成果物の取得、raw transactionのhash・chain・sender・nonce・target・calldata・gas・fee検証、broadcast、Finalized待機、Canister確定通知を行う。reverted receiptを検出した場合はFinalized待機を直ちに止め、確定後に`confirm --artifact-file <artifact.json> --receipt-file <confirmation.json> --transaction-hash <hash>`でCanisterを終端化する。broadcast直後に停止した場合は`status`で同じoperationを確認して`run --operation-id <id>`を再実行する。同じraw transactionの再送とRPCの`already known`は冪等成功であり、`nonce too low`はexpected hashのreceiptが存在する場合だけ既送信として扱う。
 
 threshold signingの一時障害でoperationが`Prepared`に残ると、`status`は`SigningUnavailable`を返す。通常操作は同じ`prepare --action ...`、activationは同じCanister API、緊急操作は`drain-emergency`を再実行する。再試行は保存済みnonce、target、calldata、feeを変更せず、署名済み成果物がある場合は再署名しない。
 
@@ -102,18 +102,22 @@ threshold signingの一時障害でoperationが`Prepared`に残ると、`status`
 ```bash
 npm run governance-relayer -- replace \
   --operation-id <id> \
+  --artifact-file <current-artifact.json> \
+  --output-artifact-file <replacement-artifact.json> \
   --max-fee <wei> \
   --priority-fee <wei>
 npm run governance-relayer -- run --operation-id <id>
 ```
 
-配置後のGovernance relayerは`status`と`relay`を匿名で実行できる。`confirm`とconfirmationを含む`run`は専用confirmation relayer identityを必須とし、障害復旧時だけGovernance/Pause principalを使う。`prepare`、`replace`、activation、緊急操作の明示要求には対応するGovernance/Pause identityを使う。初回配置だけは暗号化Foundry keystoreと別password fileを入力とする`production-deploy-driver.sh`で行う。秘密、実path、RPC URLをrelease artifactやevidenceへ記録しない。
+初回activationのreplacementだけはgeneric `replace`/`run`を使わない。`production-activate-driver.sh`の`BRIDGE_ACTIVATION_STEP=replace`を使い、現artifact・authorization・prepare receiptをprivate freezeしたうえで、同じauthorization hashへ次generationのartifactとprepare receiptを耐久化する。Canister call後に停止しても、同一fee・直後generationのlive pendingだけを回収し、それ以外のgeneration driftは拒否する。
+
+配置後のGovernance relayerは`status`を匿名で実行できる。初回activationはproduction controllerによる`prepare-schedule-activation`／`prepare-execute-activation`、匿名`relay`、固定confirmation relayerによる`confirm`を別processで実行する。driverはlive Gate B合格直後かつCanister call前にauthorization receiptを耐久化するため、停止後はpendingを保ったまま同じprepareを冪等再開できる。署名artifact生成後はGate B・authorization・artifact hashをprepare receiptへ結合し、relay/confirmはcertified controller/moduleを再確認してから検証済みprivate freezeだけを使用する。初回以外の`prepare`と`replace`はGovernance/Pause policyに従い、controller権限をService Fee、pause principal rotation、通常governance actionへ広げない。初回配置だけは暗号化Foundry keystoreと別password fileを入力とする`production-deploy-driver.sh`で行う。秘密、実path、RPC URLをrelease artifactやevidenceへ記録しない。
 
 staging upgrade前にpending Deposit/Withdrawal、reserve、pending governance transaction、Timelock queueを記録する。既存Base stack、signer、deployment instance、Canister principalを変更せず、upgrade前後のstate count、module、Candid、storage integrityを照合する。不一致時はactivationせず、reinstallや別instanceへの切替は行わない。
 
 初回production Canister作成は`icp.yaml`へsubnetを設定せず、review済みidentityで`BRIDGE_ICP_IDENTITY=<identity> scripts/production-canister-bootstrap.sh`を実行する。このscriptは`pzp6e-ekpqk-3c5x7-2h6so-njoeq-mt45d-h3h6c-q3mxf-vpeq5-fk5o7-yae`を`icp canister create --subnet`へ固定し、作成後または既存mapping再利用時にNNS Registryが返す実subnetとの一致を必須にする。`.icp/data/mappings/production.ids.json`に既存IDがある場合は新規作成しない。
 
-production install planはschema 2を使い、governance EVM fee、cycles floor、settlement cycle ceilingをtemplate固定のBootstrap値にする。Gate A profileも同じ3値を使い、Canister導入とBaseのpause配置を先に完了してよい。Bootstrap中はasset update、scheduler、Base governance transactionを拒否する。配置後はexact activation calldataのgas estimate、10件以上のFinalized fee block、idle cycles burnから`initial-operational-parameters.json`を作り、Gate B profileでgovernance EVM fee 8項目、`cycles_floor`、`settlement_cycle_ceiling`だけを導出値へ置換してから`seal_operational_config`を一度だけ実行する。7日計測はunpause後のGate Cで行い、それ以外のprofile driftは拒否する。
+production install planはschema 2を使い、governance EVM fee、cycles floor、settlement cycle ceilingをtemplate固定のBootstrap値にする。Gate A profileも同じ3値を使い、Canister導入とBaseのpause配置を先に完了してよい。配置後はexact activation calldataのgas estimate、Finalized fee block、idle cycles burnから`initial-operational-parameters.json`を作る。pre-seal Gate Bは13 artifact、proof、review、exact calldataと導出値を検証してsealだけを認可する。production controllerが`scripts/production-seal-driver.sh`で一度だけsealした後、fresh live Gate Bがcertified config digest、attestation、sole controller、module hash、pause、reserve、cycles、pendingなしを再検証してscheduleだけを認可する。7日計測はunpause後のGate Cで行い、計測結果を自動的に運用値へ反映しない。
 
 mappingをcommitしたclean sourceで`production-canister-plan.template.json`からrepo外のschema 2 planを作り、同じsourceから再buildしたWasmだけを`scripts/production-canister-install.sh --plan ... --wasm ... --receipt ...`へ渡す。receiptはsource checkout外にある、ownershipを実際に強制するfilesystem上の既存directoryへ出力する。directoryは実行者所有かつgroup/other非writableで、mountpointまでの祖先もgroup/otherによるpath置換を許してはならない。scriptはinstall専用modeとraw Candid binaryを固定し、初期化後のmodule/controller、Bootstrap lifecycle、空state、pause、storage validation/checksum、cycles reserve、RuntimeBinding、4 role addressをtyped receiptへ記録する。途中失敗後は通常installを再実行せずlive statusを調査する。receiptから確定した4 role addressをrelease profileへ反映し、Gate A wrapperへ`--canister-install-receipt`として渡す。wrapperは同じ凍結receiptをdeploy driverへ渡し、Base送信直前にcertified `read_state`のmodule hashとinstaller単独controllerを再検証する。Base配置後、exact schedule/execute calldataのgas estimate、10件以上のFinalized fee block、idle cycles burnを`initial-operational-parameters.json`へ記録し、固定式から導出したGate B profileと完全一致する運用設定を一度だけsealする。この更新は公式EVM RPC Canisterの`BaseMainnet`観測がruntime、role、pause条件を満たす場合だけ設定とactivation attestationを原子的に保存する。Gate BはGate A receiptと`post-gate-a-policy-transition.json`を通じてsource、deployed identity、Wasm/runtime hashを固定し、認証済みqueryとcertified `read_state`で`OperationalConfigSealed`、freshかつ両deployment block以後のattestation、production installer単独controller、reserveを再検証する。Bootstrap、欠落・古いattestation、profile drift、module/controller driftではschedule/executeを送信しない。unpause後の7日計測、keeper drill、monitoring receipt、controller handover、SNS同一Wasm upgradeはGate Cへ分離する。production profileの`base_rpc_url`は`null`、`rpc_providers`は空配列のままにし、直接Custom RPCをhandoverへ注入しない。
 
@@ -135,7 +139,7 @@ artifact公開前とreservation cleanup直前にmanagement statusを再取得し
 
 復旧commitからそのままGate Aを実行してはならない。復旧完了後は`<receipt>.recovery.json`を監査sidecarとして保持したまま、install receiptのsourceと一致するcleanな`d85b7ce8c71e2f85faee0e97cc3cdd7c0eff7dcc` checkoutへ戻り、同じsourceへ束縛した未期限切れGate A bundle、そのbundleからrenderしてreviewしたrelease inputs、同じschema 3 receiptを指定してGate Aを再開する。`production-release.sh`はrelease bundle、current checkout、install receiptのsourceが一致しない限り拒否する。
 
-本番資産受付は、Gate Aでoffline artifactとconstructor条件を承認し、Timelock／Bridgeを専用EOAからpause配置する。production installer単独controllerのまま、`initial-operational-parameters.json`と完全一致する初期運用値を一度だけsealし、公式EVM RPC Canisterの`BaseMainnet`観測でruntime、role、EOA権限ゼロ、pauseを確認してactivation attestationを保存する。Gate Bは13 artifact、seal、fresh attestation、monitor drill、主要5 RPC scenario、reserve、installer単独controllerを検証する。Gate B承認後だけ`production-release.sh activate --phase schedule --confirmation-relayer-identity <name>`で既存SNS Governance principalから固定proposalを提出する。driverはproofとartifact再build後に`refresh_activation_attestation`、署名付き`verify-live`、source再照合を連続実行する。提出応答だけでは完了扱いにせず、`bridge-profile verify-activation schedule`がSNS実行状態、Canisterのpending operation、Canisterが独立確認したFinalized Base transactionを束縛したschema v4 schedule receiptを発行するまでpauseを維持する。24時間後は古いGate Bを再利用せず、新しいGate Bとschema v4 schedule receipt、明示承認を指定して`--phase execute --confirmation-relayer-identity <name>`を実行する。executeのFinalized成功後にBase Deposit/WithdrawalとIC Deposit受付を再開する。
+本番資産受付は、Gate Aでoffline artifactとconstructor条件を承認し、Timelock／Bridgeを専用EOAからpause配置する。production installer単独controllerのままpre-seal Gate Bを通し、`initial-operational-parameters.json`と完全一致する初期運用値を一度だけsealする。post-seal fresh live Gate B合格後、`production-release.sh activate --phase schedule --step prepare`をproduction controller PEMで実行し、固定artifactを匿名relay、固定confirmation relayer confirmへ順に渡す。SNS custom functionは初回activationに使用しない。controller activation receiptはsource revision、Wasm、Gate B hash、certified controller set、governance operation ID、Timelock operation ID/salt、transaction hash、Finalized block、live activation statusを束縛する。24時間後はfresh live Gate Bとcontroller schedule receiptを再検証し、同じ三段階でexecuteする。executeのFinalized成功後にBase Deposit/WithdrawalとIC Deposit受付を再開する。Activated後はcontroller経路が永久に無効となり、以後のactivationと通常governance actionは既存Governance principalだけがprepareできる。
 
 unpause後は7日以上かつ各10件以上の本番計測、keeper drill、monitoring receipt、稼働状態snapshot、全upgrade履歴をGate Cへ記録する。修正不要と判断した場合だけ、active状態を維持したままcontrollerをproduction installerからSNS Root一件へ変更し、続けてSNS proposalで同一Wasm upgradeを行う。Gate C前にhandover driverを実行せず、Gate B、schedule、executeのcontroller条件はinstaller単独のままにする。
 
@@ -146,7 +150,7 @@ BaseScanのsource verification、contract-created BSNSのownership確認、Token
 deployとactivation schedule/executeの固定driverは各操作の直前に、Gate C後のcontroller handover driverはhandover直前に、clean sourceから`scripts/ci-local.sh proofs`を再実行する。
 proof失敗、実行前後のsource/tree/submodule drift、またはobsoleteな`proof-attestation.json`を含むbundleはfail closedとする。
 
-`execute`提出前はproofと再build後のattestation更新・`verify-live`に続けて`verify-schedule-receipt-live`を実行し、schedule receipt内部のdigest、認証済みSNS proposal/function registry、Canisterのpending operationを再照合する。その後、Base両flowのunpause確定後にCanisterがICをresumeする。ProductionのBase状態は公式EVM RPC Canisterの`BaseMainnet`観測を保存したactivation attestationと認証済みCanister queryで確認し、直接Custom RPC URLは使用しない。3-provider直接照合はstaging monitor drillだけに限定する。
+`execute` prepare前はproofと再build後のattestation更新・`verify-live`に続けて`verify-controller-schedule-receipt-live`を実行し、schedule receipt内部のdigest、sole production controller、module hash、Canisterのpending Timelock operationを再照合する。その後、Base両flowのunpause確定後にCanisterがICをresumeする。ProductionのBase状態は公式EVM RPC Canisterの`BaseMainnet`観測を保存したactivation attestationと認証済みCanister queryで確認し、直接Custom RPC URLは使用しない。3-provider直接照合はstaging monitor drillだけに限定する。
 - Holdの強制解除、nonce操作、任意transaction送信は行わない。
 ## Mint証拠不一致
 

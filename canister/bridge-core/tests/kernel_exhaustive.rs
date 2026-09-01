@@ -1,6 +1,6 @@
 use bridge_core::{
-    administrator_authorized, asset_operation_lifecycle_decision, audit_next,
-    authorization_commit_allowed, checked_counter_transition, checked_requirement,
+    activation_prepare_authorized, administrator_authorized, asset_operation_lifecycle_decision,
+    audit_next, authorization_commit_allowed, checked_counter_transition, checked_requirement,
     confirmation_caller_authorized, confirmation_roles_distinct, counter_delta,
     deposit_admission_decision, deposit_reservation_active, deposit_transition,
     deposit_transition_decision, evidence_matches, expiry_refund_allowed,
@@ -8,15 +8,15 @@ use bridge_core::{
     funding_reconciliation_decision, hold_resolution_decision, lease_generation_next,
     lease_outcome_is_current, manual_claim_decision, mint_admission_total,
     mint_finalization_allowed, next_attempt, notification_failure_cooldown_active,
-    operational_config_seal_decision, outbound_settlement, payout_allowed, payout_debit,
-    refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
-    reservation_decision, reserve_admission_preserves_requirement, scan_complete,
-    service_fee_change_allowed, settlement_decision, signing_cycle_requirement,
-    transaction_liability_wei, withdrawal_phase_allows, withdrawal_phase_step,
-    withdrawal_transition_effects, AssetOperationLifecycleDecision, DepositEventGuard,
-    DepositTransitionDecision, DepositTransitionInput, FeeRecipientRotationDecision,
-    FundingReconciliationDecision, HoldResolutionDecision, ManualClaimDecision,
-    OperationalConfigSealDecision,
+    operational_config_seal_caller_authorized, operational_config_seal_decision,
+    outbound_settlement, payout_allowed, payout_debit, refresh_generation_next,
+    refresh_owner_matches, release_transfer_matches, replay_matches, reservation_decision,
+    reserve_admission_preserves_requirement, scan_complete, service_fee_change_allowed,
+    settlement_decision, signing_cycle_requirement, transaction_liability_wei,
+    withdrawal_phase_allows, withdrawal_phase_step, withdrawal_transition_effects,
+    AssetOperationLifecycleDecision, DepositEventGuard, DepositTransitionDecision,
+    DepositTransitionInput, FeeRecipientRotationDecision, FundingReconciliationDecision,
+    HoldResolutionDecision, ManualClaimDecision, OperationalConfigSealDecision,
 };
 
 #[test]
@@ -82,6 +82,48 @@ fn boolean_decisions_are_exhaustive() {
     assert!(!notification_failure_cooldown_active(false, 9, 10));
     assert!(!notification_failure_cooldown_active(true, 10, 10));
     assert!(!notification_failure_cooldown_active(true, 11, 10));
+}
+
+#[test]
+fn initial_activation_authorization_is_controller_only_and_one_shot() {
+    for controller in [false, true] {
+        for bootstrap in [false, true] {
+            assert_eq!(
+                operational_config_seal_caller_authorized(controller, bootstrap),
+                controller && bootstrap
+            );
+        }
+    }
+    for controller in [false, true] {
+        for governance in [false, true] {
+            for sealed_paused in [false, true] {
+                for phase in 0..=2 {
+                    for operation_id in 0..=3 {
+                        let initial_slot =
+                            (phase == 0 && operation_id == 0) || (phase == 1 && operation_id == 1);
+                        let expected = if phase > 1 {
+                            false
+                        } else if initial_slot {
+                            controller && sealed_paused
+                        } else {
+                            governance
+                        };
+                        assert_eq!(
+                            activation_prepare_authorized(
+                                controller,
+                                governance,
+                                sealed_paused,
+                                phase,
+                                operation_id,
+                            ),
+                            expected,
+                            "controller={controller} governance={governance} sealed_paused={sealed_paused} phase={phase} operation_id={operation_id}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]

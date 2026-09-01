@@ -192,6 +192,26 @@ macro_rules! operational_config_seal_allowed_body {
     };
 }
 
+macro_rules! operational_config_seal_caller_authorized_body {
+    ($controller:expr, $bootstrap:expr) => {
+        $controller && $bootstrap
+    };
+}
+
+macro_rules! activation_prepare_authorized_body {
+    ($controller:expr, $governance:expr, $sealed_paused:expr, $phase:expr, $operation_id:expr, $schedule:expr, $execute:expr, $zero:expr, $one:expr) => {{
+        let initial_slot = ($phase == $schedule && $operation_id == $zero)
+            || ($phase == $execute && $operation_id == $one);
+        if $phase != $schedule && $phase != $execute {
+            false
+        } else if initial_slot {
+            $controller && $sealed_paused
+        } else {
+            $governance
+        }
+    }};
+}
+
 #[cfg(not(verus_keep_ghost))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetOperationLifecycleDecision {
@@ -1749,6 +1769,35 @@ pub const fn operational_config_seal_allowed(
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn operational_config_seal_caller_authorized(
+    is_controller: bool,
+    lifecycle_is_bootstrap: bool,
+) -> bool {
+    operational_config_seal_caller_authorized_body!(is_controller, lifecycle_is_bootstrap)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn activation_prepare_authorized(
+    is_controller: bool,
+    is_governance: bool,
+    lifecycle_is_operational_config_sealed: bool,
+    phase: u8,
+    operation_id: u64,
+) -> bool {
+    activation_prepare_authorized_body!(
+        is_controller,
+        is_governance,
+        lifecycle_is_operational_config_sealed,
+        phase,
+        operation_id,
+        0u8,
+        1u8,
+        0u64,
+        1u64
+    )
+}
+
+#[cfg(not(verus_keep_ghost))]
 pub const fn audit_next(current: u64) -> Option<u64> {
     next_attempt_body!(current, u64::MAX, 1u64)
 }
@@ -2492,6 +2541,36 @@ verus! {
         sealed: bool, candidate_valid: bool,
     ) -> bool {
         operational_config_seal_allowed_body!(sealed, candidate_valid)
+    }
+
+    pub open spec fn operational_config_seal_caller_authorized_spec(
+        controller: bool, bootstrap: bool,
+    ) -> bool {
+        operational_config_seal_caller_authorized_body!(controller, bootstrap)
+    }
+
+    pub open spec fn activation_prepare_authorized_spec(
+        controller: bool,
+        governance: bool,
+        sealed_paused: bool,
+        phase: int,
+        operation_id: int,
+    ) -> bool {
+        let schedule: int = 0;
+        let execute: int = 1;
+        let zero: int = 0;
+        let one: int = 1;
+        activation_prepare_authorized_body!(
+            controller,
+            governance,
+            sealed_paused,
+            phase,
+            operation_id,
+            schedule,
+            execute,
+            zero,
+            one
+        )
     }
 
     pub open spec fn audit_next_spec(current: int) -> Option<int> {

@@ -230,10 +230,7 @@ pub async fn seal_operational_config(
     caller: Principal,
     value: crate::config::OperationalConfigArgs,
 ) -> Result<OperationalConfigSealReceipt, BaseGovernanceError> {
-    let (governance, _) = caller_roles(caller)?;
-    if !governance {
-        return Err(BaseGovernanceError::Unauthorized);
-    }
+    require_operational_config_seal_caller(caller)?;
     require_operational_config_unsealed()?;
     value
         .validate_seal_candidate()
@@ -243,10 +240,7 @@ pub async fn seal_operational_config(
     next.validate()
         .map_err(|_| BaseGovernanceError::InvalidArgument)?;
     let evidence = activation_preflight(&next).await?;
-    let (governance, _) = caller_roles(caller)?;
-    if !governance {
-        return Err(BaseGovernanceError::Unauthorized);
-    }
+    require_operational_config_seal_caller(caller)?;
     require_operational_config_unsealed()?;
     STORE.with(|store| {
         store
@@ -399,7 +393,7 @@ pub async fn prepare(
     let lane = action_nonce_lane(&action);
     let (initialized, _, _, pending) = governance_lane(lane)?;
     if let Some(pending) = pending {
-        require_transaction_authorization(caller, &pending.kind)?;
+        require_transaction_authorization(caller, &pending)?;
         if !action_matches_pending(&action, &pending.kind) {
             return Err(BaseGovernanceError::Busy {
                 operation_id: pending.id,
@@ -419,7 +413,7 @@ pub async fn prepare(
     require_action_authorization(caller, &action)?;
     let (initialized, stored_nonce, id, pending) = governance_lane(lane)?;
     if let Some(pending) = pending {
-        require_transaction_authorization(caller, &pending.kind)?;
+        require_transaction_authorization(caller, &pending)?;
         return Err(BaseGovernanceError::Busy {
             operation_id: pending.id,
         });
@@ -474,7 +468,7 @@ pub async fn prepare(
         state: storage::GovernanceTransactionState::Prepared,
     };
     require_affordable(&config, operator, &transaction.envelope).await?;
-    require_transaction_authorization(caller, &transaction.kind)?;
+    require_transaction_authorization(caller, &transaction)?;
     if !initialized {
         STORE.with(|store| {
             store
@@ -512,7 +506,6 @@ pub async fn prepare_replacement(
     args: PrepareBaseGovernanceReplacementArgs,
 ) -> Result<SignedBaseGovernanceTransaction, BaseGovernanceError> {
     require_operational_config_sealed()?;
-    require_governance_or_pause(caller)?;
     let expected_hash = hash32(&args.expected_transaction_hash)?;
     let max_fee_per_gas =
         nat_u128(&args.max_fee_per_gas).ok_or(BaseGovernanceError::InvalidArgument)?;
@@ -521,7 +514,7 @@ pub async fn prepare_replacement(
     let config = config()?;
     let mut transaction = pending_transaction(args.operation_id)?;
     let operator = transaction_operator(&transaction)?;
-    require_transaction_authorization(caller, &transaction.kind)?;
+    require_transaction_authorization(caller, &transaction)?;
     let current = transaction
         .envelope
         .signed_transactions
@@ -559,7 +552,7 @@ pub async fn prepare_replacement(
     transaction.envelope.max_fee_per_gas = max_fee_per_gas;
     transaction.envelope.max_priority_fee_per_gas = max_priority_fee_per_gas;
     require_affordable(&config, operator, &transaction.envelope).await?;
-    require_transaction_authorization(caller, &transaction.kind)?;
+    require_transaction_authorization(caller, &transaction)?;
     let raw = signer::sign_governance_for_role(
         &transaction.envelope,
         &config,
@@ -567,7 +560,7 @@ pub async fn prepare_replacement(
     )
     .await
     .map_err(signing_failure)?;
-    require_transaction_authorization(caller, &transaction.kind)?;
+    require_transaction_authorization(caller, &transaction)?;
     let current_pending = pending_transaction(args.operation_id)?;
     if current_pending.envelope.signed_transactions.last() != Some(current)
         || !matches!(
@@ -897,7 +890,7 @@ pub async fn prepare_next_emergency(
                 });
             }
         } else {
-            require_transaction_authorization(caller, &pending.kind)?;
+            require_transaction_authorization(caller, &pending)?;
             let config = config()?;
             let operator = transaction_operator(&pending)?;
             return resume_pending(caller, &config, pending, operator).await;
@@ -965,11 +958,11 @@ async fn resume_pending(
     transaction: storage::GovernanceTransaction,
     operator: [u8; 20],
 ) -> Result<SignedBaseGovernanceTransaction, BaseGovernanceError> {
-    require_transaction_authorization(caller, &transaction.kind)?;
+    require_transaction_authorization(caller, &transaction)?;
     match pending_signature_action(&transaction)? {
         PendingSignatureAction::Sign => {
             require_affordable(config, operator, &transaction.envelope).await?;
-            require_transaction_authorization(caller, &transaction.kind)?;
+            require_transaction_authorization(caller, &transaction)?;
             sign_prepared(caller, config, transaction, operator).await
         }
         PendingSignatureAction::ReturnSigned => signed_view(&transaction, operator),
@@ -992,7 +985,7 @@ async fn sign_prepared(
     )
     .await
     .map_err(signing_failure)?;
-    require_transaction_authorization(caller, &transaction.kind)?;
+    require_transaction_authorization(caller, &transaction)?;
     if pending_transaction(transaction.id)? != transaction {
         return Err(BaseGovernanceError::StorageFailure);
     }
@@ -1489,12 +1482,72 @@ fn require_operational_config_unsealed() -> Result<(), BaseGovernanceError> {
     }
 }
 
+fn require_operational_config_seal_caller(caller: Principal) -> Result<(), BaseGovernanceError> {
+    let authorized = ::bridge_core::kernel::operational_config_seal_caller_authorized(
+        caller != Principal::anonymous() && ic_cdk::api::is_controller(&caller),
+        production_lifecycle()? == ProductionLifecycle::Bootstrap,
+    );
+    if authorized {
+        Ok(())
+    } else {
+        Err(BaseGovernanceError::Unauthorized)
+    }
+}
+
+const INITIAL_ACTIVATION_PHASE_SCHEDULE: u8 = 0;
+const INITIAL_ACTIVATION_PHASE_EXECUTE: u8 = 1;
+
+fn activation_action_phase(action: &GovernanceAction) -> Option<u8> {
+    match action {
+        GovernanceAction::ScheduleActivation => Some(INITIAL_ACTIVATION_PHASE_SCHEDULE),
+        GovernanceAction::ExecuteActivation => Some(INITIAL_ACTIVATION_PHASE_EXECUTE),
+        _ => None,
+    }
+}
+
+fn activation_transaction_phase(kind: &storage::GovernanceTransactionKind) -> Option<u8> {
+    match kind {
+        storage::GovernanceTransactionKind::ScheduleActivation { .. } => {
+            Some(INITIAL_ACTIVATION_PHASE_SCHEDULE)
+        }
+        storage::GovernanceTransactionKind::ExecuteActivation { .. } => {
+            Some(INITIAL_ACTIVATION_PHASE_EXECUTE)
+        }
+        _ => None,
+    }
+}
+
+fn activation_caller_authorized(
+    caller: Principal,
+    governance: bool,
+    phase: u8,
+    operation_id: u64,
+) -> Result<bool, BaseGovernanceError> {
+    Ok(::bridge_core::kernel::activation_prepare_authorized(
+        caller != Principal::anonymous() && ic_cdk::api::is_controller(&caller),
+        governance,
+        production_lifecycle()? == ProductionLifecycle::OperationalConfigSealed,
+        phase,
+        operation_id,
+    ))
+}
+
 fn require_action_authorization(
     caller: Principal,
     action: &GovernanceAction,
 ) -> Result<(), BaseGovernanceError> {
     let (governance, pause) = caller_roles(caller)?;
-    if action_authorized(governance, pause, action) {
+    let authorized = if let Some(phase) = activation_action_phase(action) {
+        let (_, _, next_operation_id, pending) =
+            governance_lane(storage::GovernanceNonceLane::Governance)?;
+        let operation_id = pending
+            .filter(|transaction| action_matches_pending(action, &transaction.kind))
+            .map_or(next_operation_id, |transaction| transaction.id);
+        activation_caller_authorized(caller, governance, phase, operation_id)?
+    } else {
+        action_authorized(governance, pause, action)
+    };
+    if authorized {
         Ok(())
     } else {
         Err(BaseGovernanceError::Unauthorized)
@@ -1503,10 +1556,15 @@ fn require_action_authorization(
 
 fn require_transaction_authorization(
     caller: Principal,
-    kind: &storage::GovernanceTransactionKind,
+    transaction: &storage::GovernanceTransaction,
 ) -> Result<(), BaseGovernanceError> {
     let (governance, pause) = caller_roles(caller)?;
-    if transaction_authorized(governance, pause, kind) {
+    let authorized = if let Some(phase) = activation_transaction_phase(&transaction.kind) {
+        activation_caller_authorized(caller, governance, phase, transaction.id)?
+    } else {
+        transaction_authorized(governance, pause, &transaction.kind)
+    };
+    if authorized {
         Ok(())
     } else {
         Err(BaseGovernanceError::Unauthorized)

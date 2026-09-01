@@ -98,13 +98,13 @@ expect_rejected() {
   fi
 }
 
+printf 'fixture-controller-key\n' >"$TEST_TMP_ROOT/controller.pem"
 ACTIVATION_ARGS=(
   --phase schedule
-  --submission "$TEST_TMP_ROOT/activation-submission.json"
-  --sns-identity proposer
+  --step prepare
+  --artifact "$TEST_TMP_ROOT/schedule-artifact.json"
+  --controller-pem "$TEST_TMP_ROOT/controller.pem"
   --confirmation-relayer-identity confirmation-relayer
-  --sns-neuron-subaccount "$(printf 'a%.0s' {1..64})"
-  --sns-proposer-principal "aaaaa-aa"
   --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION
 )
 
@@ -234,11 +234,10 @@ printf '{"phase":"schedule","release_id":"release-test","source_revision":"%s"}\
   "$SOURCE_REVISION" >"$TEST_TMP_ROOT/schedule-receipt.json"
 EXECUTION_ARGS=(
   --phase execute
-  --submission "$TEST_TMP_ROOT/execution-submission.json"
-  --sns-identity proposer
+  --step prepare
+  --artifact "$TEST_TMP_ROOT/execute-artifact.json"
+  --controller-pem "$TEST_TMP_ROOT/controller.pem"
   --confirmation-relayer-identity confirmation-relayer
-  --sns-neuron-subaccount "$(printf 'b%.0s' {1..64})"
-  --sns-proposer-principal "aaaaa-aa"
   --prior-schedule-receipt "$TEST_TMP_ROOT/schedule-receipt.json"
   --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE
 )
