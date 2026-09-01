@@ -241,12 +241,14 @@ pub async fn seal_operational_config(
         .map_err(|_| BaseGovernanceError::InvalidArgument)?;
     let evidence = activation_preflight(&next).await?;
     require_operational_config_seal_caller(caller)?;
+    require_sole_controller(caller).await?;
     require_operational_config_unsealed()?;
     STORE.with(|store| {
         store
             .borrow_mut()
             .seal_operational_config(
                 &next,
+                caller,
                 evidence.attestation.clone(),
                 evidence.finalized_observation,
             )
@@ -368,7 +370,7 @@ pub async fn prepare(
     action: GovernanceAction,
 ) -> Result<SignedBaseGovernanceTransaction, BaseGovernanceError> {
     require_operational_config_sealed()?;
-    require_action_authorization(caller, &action)?;
+    let activation_authority = require_action_authorization(caller, &action)?;
     let config = config()?;
     if let GovernanceAction::SetServiceFee { value } = &action {
         let value = nat_u128(value).ok_or(BaseGovernanceError::InvalidArgument)?;
@@ -379,7 +381,7 @@ pub async fn prepare(
             .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
         crate::api::cache_runtime_attestation(&config, &observed)
             .map_err(|_| BaseGovernanceError::StorageFailure)?;
-        require_action_authorization(caller, &action)?;
+        revalidate_action_authorization(caller, &action, activation_authority.as_ref()).await?;
         if !::bridge_core::kernel::service_fee_change_allowed(
             value,
             config.expected_minimum_service_fee,
@@ -389,7 +391,7 @@ pub async fn prepare(
         }
     }
     let operator = operator_address_for_role(action_signer_role(&action))?;
-    require_action_authorization(caller, &action)?;
+    revalidate_action_authorization(caller, &action, activation_authority.as_ref()).await?;
     let lane = action_nonce_lane(&action);
     let (initialized, _, _, pending) = governance_lane(lane)?;
     if let Some(pending) = pending {
@@ -410,7 +412,7 @@ pub async fn prepare(
     } else {
         None
     };
-    require_action_authorization(caller, &action)?;
+    revalidate_action_authorization(caller, &action, activation_authority.as_ref()).await?;
     let (initialized, stored_nonce, id, pending) = governance_lane(lane)?;
     if let Some(pending) = pending {
         require_transaction_authorization(caller, &pending)?;
@@ -431,7 +433,7 @@ pub async fn prepare(
             | GovernanceAction::ExecuteControlPlaneRotation
     ) {
         activation_preflight(&config).await?;
-        require_action_authorization(caller, &action)?;
+        revalidate_action_authorization(caller, &action, activation_authority.as_ref()).await?;
     }
     let (kind, target, calldata) = encode_action(action, id).await?;
     let payload_hash: [u8; 32] = Sha256::digest(&calldata).into();
@@ -466,9 +468,11 @@ pub async fn prepare(
         kind,
         envelope,
         state: storage::GovernanceTransactionState::Prepared,
+        activation_controller_authority: activation_authority,
     };
     require_affordable(&config, operator, &transaction.envelope).await?;
     require_transaction_authorization(caller, &transaction)?;
+    require_transaction_controller_authority(&transaction).await?;
     if !initialized {
         STORE.with(|store| {
             store
@@ -553,6 +557,7 @@ pub async fn prepare_replacement(
     transaction.envelope.max_priority_fee_per_gas = max_priority_fee_per_gas;
     require_affordable(&config, operator, &transaction.envelope).await?;
     require_transaction_authorization(caller, &transaction)?;
+    require_transaction_controller_authority(&transaction).await?;
     let raw = signer::sign_governance_for_role(
         &transaction.envelope,
         &config,
@@ -561,6 +566,7 @@ pub async fn prepare_replacement(
     .await
     .map_err(signing_failure)?;
     require_transaction_authorization(caller, &transaction)?;
+    require_transaction_controller_authority(&transaction).await?;
     let current_pending = pending_transaction(args.operation_id)?;
     if current_pending.envelope.signed_transactions.last() != Some(current)
         || !matches!(
@@ -646,6 +652,7 @@ pub async fn confirm(
     {
         return Err(BaseGovernanceError::InvalidArgument);
     }
+    require_transaction_controller_authority(&transaction).await?;
     let config = config()?;
     let outcome = evm_rpc::confirmed_receipt_outcome(&config, transaction_hash)
         .await
@@ -657,6 +664,7 @@ pub async fn confirm(
             BaseGovernanceError::ObservationUnavailable
         })?;
     require_confirmation_caller(caller)?;
+    require_transaction_controller_authority(&transaction).await?;
     let (receipt_block_number, succeeded, finalized_observation) = match outcome {
         evm_rpc::ConfirmedReceiptOutcome::Missing
         | evm_rpc::ConfirmedReceiptOutcome::Pending { .. } => {
@@ -699,6 +707,7 @@ pub async fn confirm(
                     BaseGovernanceError::ObservationUnavailable
                 })?;
         require_confirmation_caller(caller)?;
+        require_transaction_controller_authority(&transaction).await?;
         crate::api::cache_runtime_attestation(&config, &observed)
             .map_err(|_| BaseGovernanceError::StorageFailure)?;
         if !activation_postcondition_matches(
@@ -735,6 +744,7 @@ pub async fn confirm(
             .await
             .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
         require_confirmation_caller(caller)?;
+        require_transaction_controller_authority(&transaction).await?;
         if !control_plane_rotation_postcondition_matches(
             observed.snapshot.bridge_signer,
             observed.snapshot.deposits_paused,
@@ -763,6 +773,7 @@ pub async fn confirm(
             receipt_block_number,
         }
     };
+    require_transaction_controller_authority(&transaction).await?;
     if activates {
         let governance_principal = STORE.with(|store| {
             store
@@ -963,6 +974,7 @@ async fn resume_pending(
         PendingSignatureAction::Sign => {
             require_affordable(config, operator, &transaction.envelope).await?;
             require_transaction_authorization(caller, &transaction)?;
+            require_transaction_controller_authority(&transaction).await?;
             sign_prepared(caller, config, transaction, operator).await
         }
         PendingSignatureAction::ReturnSigned => signed_view(&transaction, operator),
@@ -986,6 +998,7 @@ async fn sign_prepared(
     .await
     .map_err(signing_failure)?;
     require_transaction_authorization(caller, &transaction)?;
+    require_transaction_controller_authority(&transaction).await?;
     if pending_transaction(transaction.id)? != transaction {
         return Err(BaseGovernanceError::StorageFailure);
     }
@@ -1497,6 +1510,21 @@ fn require_operational_config_seal_caller(caller: Principal) -> Result<(), BaseG
 const INITIAL_ACTIVATION_PHASE_SCHEDULE: u8 = 0;
 const INITIAL_ACTIVATION_PHASE_EXECUTE: u8 = 1;
 
+async fn require_sole_controller(expected: Principal) -> Result<(), BaseGovernanceError> {
+    let status = ic_cdk_management_canister::canister_status(
+        &ic_cdk_management_canister::CanisterStatusArgs {
+            canister_id: ic_cdk::api::canister_self(),
+        },
+    )
+    .await
+    .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    if status.settings.controllers.as_slice() == [expected] {
+        Ok(())
+    } else {
+        Err(BaseGovernanceError::Unauthorized)
+    }
+}
+
 fn activation_action_phase(action: &GovernanceAction) -> Option<u8> {
     match action {
         GovernanceAction::ScheduleActivation => Some(INITIAL_ACTIVATION_PHASE_SCHEDULE),
@@ -1521,37 +1549,63 @@ fn activation_caller_authorized(
     caller: Principal,
     governance: bool,
     phase: u8,
-    operation_id: u64,
 ) -> Result<bool, BaseGovernanceError> {
+    let bootstrap_controller = STORE.with(|store| {
+        store
+            .borrow()
+            .bootstrap_activation_controller()
+            .map_err(|_| BaseGovernanceError::StorageFailure)
+    })?;
+    let bootstrap_active = bootstrap_controller
+        .as_ref()
+        .is_some_and(ic_cdk::api::is_controller);
     Ok(::bridge_core::kernel::activation_prepare_authorized(
-        caller != Principal::anonymous() && ic_cdk::api::is_controller(&caller),
+        bootstrap_controller.as_ref() == Some(&caller) && bootstrap_active,
         governance,
         production_lifecycle()? == ProductionLifecycle::OperationalConfigSealed,
+        bootstrap_active,
         phase,
-        operation_id,
     ))
 }
 
 fn require_action_authorization(
     caller: Principal,
     action: &GovernanceAction,
-) -> Result<(), BaseGovernanceError> {
+) -> Result<Option<storage::ActivationControllerAuthority>, BaseGovernanceError> {
     let (governance, pause) = caller_roles(caller)?;
     let authorized = if let Some(phase) = activation_action_phase(action) {
-        let (_, _, next_operation_id, pending) =
-            governance_lane(storage::GovernanceNonceLane::Governance)?;
-        let operation_id = pending
-            .filter(|transaction| action_matches_pending(action, &transaction.kind))
-            .map_or(next_operation_id, |transaction| transaction.id);
-        activation_caller_authorized(caller, governance, phase, operation_id)?
+        activation_caller_authorized(caller, governance, phase)?
     } else {
         action_authorized(governance, pause, action)
     };
-    if authorized {
-        Ok(())
-    } else {
-        Err(BaseGovernanceError::Unauthorized)
+    if !authorized {
+        return Err(BaseGovernanceError::Unauthorized);
     }
+    let bootstrap_controller = STORE.with(|store| {
+        store
+            .borrow()
+            .bootstrap_activation_controller()
+            .map_err(|_| BaseGovernanceError::StorageFailure)
+    })?;
+    Ok((activation_action_phase(action).is_some()
+        && bootstrap_controller.as_ref() == Some(&caller)
+        && ic_cdk::api::is_controller(&caller))
+    .then_some(storage::ActivationControllerAuthority { controller: caller }))
+}
+
+async fn revalidate_action_authorization(
+    caller: Principal,
+    action: &GovernanceAction,
+    expected: Option<&storage::ActivationControllerAuthority>,
+) -> Result<(), BaseGovernanceError> {
+    let current = require_action_authorization(caller, action)?;
+    if current.as_ref() != expected {
+        return Err(BaseGovernanceError::Unauthorized);
+    }
+    if let Some(authority) = expected {
+        require_sole_controller(authority.controller).await?;
+    }
+    Ok(())
 }
 
 fn require_transaction_authorization(
@@ -1560,14 +1614,53 @@ fn require_transaction_authorization(
 ) -> Result<(), BaseGovernanceError> {
     let (governance, pause) = caller_roles(caller)?;
     let authorized = if let Some(phase) = activation_transaction_phase(&transaction.kind) {
-        activation_caller_authorized(caller, governance, phase, transaction.id)?
+        let role_authorized = activation_caller_authorized(caller, governance, phase)?;
+        let authority_matches = match transaction.activation_controller_authority.as_ref() {
+            Some(authority) => authority.controller == caller,
+            None => governance,
+        };
+        role_authorized && authority_matches
     } else {
-        transaction_authorized(governance, pause, &transaction.kind)
+        transaction.activation_controller_authority.is_none()
+            && transaction_authorized(governance, pause, &transaction.kind)
     };
     if authorized {
         Ok(())
     } else {
         Err(BaseGovernanceError::Unauthorized)
+    }
+}
+
+async fn require_transaction_controller_authority(
+    transaction: &storage::GovernanceTransaction,
+) -> Result<(), BaseGovernanceError> {
+    if activation_transaction_phase(&transaction.kind).is_none() {
+        return if transaction.activation_controller_authority.is_none() {
+            Ok(())
+        } else {
+            Err(BaseGovernanceError::Unauthorized)
+        };
+    }
+    if production_lifecycle()? != ProductionLifecycle::OperationalConfigSealed {
+        return Err(BaseGovernanceError::Unauthorized);
+    }
+    let bootstrap_controller = STORE.with(|store| {
+        store
+            .borrow()
+            .bootstrap_activation_controller()
+            .map_err(|_| BaseGovernanceError::StorageFailure)
+    })?;
+    match transaction.activation_controller_authority.as_ref() {
+        Some(authority) if bootstrap_controller.as_ref() == Some(&authority.controller) => {
+            require_sole_controller(authority.controller).await
+        }
+        None if bootstrap_controller
+            .as_ref()
+            .is_some_and(|controller| !ic_cdk::api::is_controller(controller)) =>
+        {
+            Ok(())
+        }
+        _ => Err(BaseGovernanceError::Unauthorized),
     }
 }
 
@@ -2355,6 +2448,7 @@ mod tests {
                 max_priority_fee_per_gas: 10,
                 signed_transactions: Vec::new(),
             },
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         }
     }

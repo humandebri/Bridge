@@ -106,16 +106,29 @@ not contain an E2E branch.
 Deployment is manual:
 
 ```sh
-VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id> pnpm run deploy
+BRIDGE_RELEASE_BUNDLE=<verified-gate-b-bundle> \
+BRIDGE_UI_RUNTIME_PROFILE_FILE=<gate-b-ui-runtime-profile> \
+BRIDGE_RELEASE_INPUTS_MANIFEST=<release-inputs-manifest> \
+VITE_DEPLOYMENT_PROFILE_JSON="$(cat <gate-b-ui-runtime-profile>)" \
+VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id> \
+pnpm run deploy
 ```
+
+Run this command only from the clean source revision bound by the Gate B bundle. The runtime
+profile and release-input manifest must be the files rendered from that same verified bundle.
 
 Before Gate B exists, a separately reviewed fail-closed UI may be published with:
 
 ```sh
+node scripts/production-assets.mjs generate <clean-build-receipt>
 BRIDGE_UI_PREACTIVATION_RECEIPT=<clean-build-receipt> \
 BRIDGE_UI_RUNTIME_PROFILE_FILE=<pre-activation-profile> \
 pnpm run deploy:preactivation
 ```
+
+Generate the receipt from the pinned Node/pnpm environment in a clean checkout. Use the reviewed
+Gate A release inputs' `ui-runtime-profile.json` as the pre-activation profile, verify its hash,
+and keep the receipt and profile unchanged between the check and deploy commands.
 
 Use `pnpm run deploy:preactivation:check` with the same variables for the non-mutating Wrangler
 dry run immediately before requesting deployment approval.

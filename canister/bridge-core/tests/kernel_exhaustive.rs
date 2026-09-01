@@ -85,7 +85,7 @@ fn boolean_decisions_are_exhaustive() {
 }
 
 #[test]
-fn initial_activation_authorization_is_controller_only_and_one_shot() {
+fn activation_authorization_follows_bootstrap_controller_removal() {
     for controller in [false, true] {
         for bootstrap in [false, true] {
             assert_eq!(
@@ -97,27 +97,25 @@ fn initial_activation_authorization_is_controller_only_and_one_shot() {
     for controller in [false, true] {
         for governance in [false, true] {
             for sealed_paused in [false, true] {
-                for phase in 0..=2 {
-                    for operation_id in 0..=3 {
-                        let initial_slot =
-                            (phase == 0 && operation_id == 0) || (phase == 1 && operation_id == 1);
+                for bootstrap_active in [false, true] {
+                    for phase in 0..=2 {
                         let expected = if phase > 1 {
                             false
-                        } else if initial_slot {
+                        } else if bootstrap_active {
                             controller && sealed_paused
                         } else {
-                            governance
+                            governance && sealed_paused
                         };
                         assert_eq!(
                             activation_prepare_authorized(
                                 controller,
                                 governance,
                                 sealed_paused,
+                                bootstrap_active,
                                 phase,
-                                operation_id,
                             ),
                             expected,
-                            "controller={controller} governance={governance} sealed_paused={sealed_paused} phase={phase} operation_id={operation_id}"
+                            "controller={controller} governance={governance} sealed_paused={sealed_paused} bootstrap_active={bootstrap_active} phase={phase}"
                         );
                     }
                 }

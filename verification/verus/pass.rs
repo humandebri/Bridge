@@ -889,23 +889,21 @@ proof fn operational_config_seal_requires_the_current_bootstrap_controller(
         <==> controller && bootstrap
 {}
 
-proof fn initial_activation_controller_is_exclusive_and_one_shot(
-    controller: bool,
+proof fn activation_authority_switches_on_bootstrap_controller_removal(
+    bootstrap_controller: bool,
     governance: bool,
     sealed_paused: bool,
+    bootstrap_active: bool,
     phase: int,
-    operation_id: int,
 )
     requires phase == 0 || phase == 1
     ensures
-        ((phase == 0 && operation_id == 0) || (phase == 1 && operation_id == 1))
-            ==> (kernel::activation_prepare_authorized_spec(
-                    controller, governance, sealed_paused, phase, operation_id)
-                <==> controller && sealed_paused),
-        !((phase == 0 && operation_id == 0) || (phase == 1 && operation_id == 1))
-            ==> (kernel::activation_prepare_authorized_spec(
-                    controller, governance, sealed_paused, phase, operation_id)
-                <==> governance),
+        bootstrap_active ==> (kernel::activation_prepare_authorized_spec(
+                bootstrap_controller, governance, sealed_paused, bootstrap_active, phase)
+            <==> bootstrap_controller && sealed_paused),
+        !bootstrap_active ==> (kernel::activation_prepare_authorized_spec(
+                bootstrap_controller, governance, sealed_paused, bootstrap_active, phase)
+            <==> governance && sealed_paused),
 {}
 
 proof fn audit_sequence_is_strictly_monotone(current: int)

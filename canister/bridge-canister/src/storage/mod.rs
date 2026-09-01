@@ -1148,6 +1148,8 @@ pub struct DepositAdmissionControl {
     pub next_independent_canceller_nonce: u64,
     pub next_governance_operation_id: u64,
     pub operational_config_sealed: bool,
+    #[serde(default)]
+    pub bootstrap_activation_controller: Option<Principal>,
     pub pending_governance_transaction: Option<GovernanceTransaction>,
     pub pending_runtime_administrator_transaction: Option<GovernanceTransaction>,
     pub pending_independent_canceller_transaction: Option<GovernanceTransaction>,
@@ -1395,11 +1397,18 @@ pub enum GovernanceTransactionState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivationControllerAuthority {
+    pub controller: Principal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernanceTransaction {
     pub id: u64,
     pub kind: GovernanceTransactionKind,
     pub envelope: bridge_core::GovernanceTransactionEnvelope,
     pub state: GovernanceTransactionState,
+    #[serde(default)]
+    pub activation_controller_authority: Option<ActivationControllerAuthority>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -5333,9 +5342,14 @@ impl StableStore {
         Ok(self.deposit_admission()?.operational_config_sealed)
     }
 
+    pub fn bootstrap_activation_controller(&self) -> Result<Option<Principal>, StorageError> {
+        Ok(self.deposit_admission()?.bootstrap_activation_controller)
+    }
+
     pub fn seal_operational_config(
         &mut self,
         value: &BridgeInitArgs,
+        bootstrap_activation_controller: Principal,
         attestation: crate::config::ActivationAttestation,
         finalized_observation: FinalizedObservationRecord,
     ) -> Result<(), StorageError> {
@@ -5365,6 +5379,7 @@ impl StableStore {
         }
         progress.observe_finalized(finalized_observation)?;
         admission.operational_config_sealed = true;
+        admission.bootstrap_activation_controller = Some(bootstrap_activation_controller);
         let next_config = encode(&Some(
             ImmutableBridgeConfig::from_init(value).with_activation_attestation(attestation),
         ))?;
@@ -5756,7 +5771,6 @@ impl StableStore {
         let previous_admission = self.deposit_admission.get()?;
         let mut admission = self.deposit_admission()?;
         Self::apply_governance_completion(&mut admission, &transaction)?;
-
         let previous_admin = self.admin_state.get()?;
         let mut admin = self.admin_state()?;
         if !admin.deposits_paused
@@ -9737,6 +9751,7 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(0), [0x43; 32]).assign_nonce(7),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -9754,6 +9769,7 @@ mod tests {
             id: 1,
             kind: GovernanceTransactionKind::ExecuteActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(1), [0x45; 32]).assign_nonce(8),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -9930,6 +9946,7 @@ mod tests {
         assert!(matches!(
             store.seal_operational_config(
                 &bootstrap,
+                Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
             ),
@@ -9957,12 +9974,19 @@ mod tests {
         store
             .seal_operational_config(
                 &next,
+                Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
             )
             .expect("seal operational config");
         assert_eq!(store.config().expect("sealed config"), Some(next.clone()));
         assert!(store.operational_config_sealed().expect("sealed lifecycle"));
+        assert_eq!(
+            store
+                .bootstrap_activation_controller()
+                .expect("sealed controller binding"),
+            Some(Principal::from_slice(&[0x99]))
+        );
         assert_eq!(
             store
                 .external_progress()
@@ -9977,6 +10001,7 @@ mod tests {
         assert!(matches!(
             store.seal_operational_config(
                 &conflicting,
+                Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
             ),
@@ -9993,6 +10018,12 @@ mod tests {
         assert!(reopened
             .operational_config_sealed()
             .expect("reopened lifecycle"));
+        assert_eq!(
+            reopened
+                .bootstrap_activation_controller()
+                .expect("reopened controller binding"),
+            Some(Principal::from_slice(&[0x99]))
+        );
         assert_eq!(storage_revision(&reopened), revision_before + 1);
     }
 
@@ -10013,7 +10044,12 @@ mod tests {
 
         let first = activation_attestation();
         store
-            .seal_operational_config(&initial, first.clone(), activation_finalized_observation())
+            .seal_operational_config(
+                &initial,
+                Principal::from_slice(&[0x99]),
+                first.clone(),
+                activation_finalized_observation(),
+            )
             .expect("seal operational config");
         let mut refreshed = first;
         refreshed.finalized_block_number += 1;
@@ -10073,6 +10109,7 @@ mod tests {
         assert!(store
             .seal_operational_config(
                 &next,
+                Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
             )
@@ -10137,6 +10174,7 @@ mod tests {
                 matches!(
                     store.seal_operational_config(
                         &initial,
+                        Principal::from_slice(&[0x99]),
                         mismatched,
                         activation_finalized_observation(),
                     ),
@@ -10158,6 +10196,7 @@ mod tests {
         store
             .seal_operational_config(
                 &initial,
+                Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
             )
@@ -10194,6 +10233,7 @@ mod tests {
         store
             .seal_operational_config(
                 &initial,
+                Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
             )
@@ -10247,6 +10287,7 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::PauseDepositMints,
             envelope: intent.assign_nonce(7),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10323,6 +10364,7 @@ mod tests {
                 salt,
             },
             envelope: governance_intent(GovernanceOperationId::new(0), [0x93; 32]).assign_nonce(7),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10341,6 +10383,7 @@ mod tests {
             id: 1,
             kind: GovernanceTransactionKind::PauseDepositMints,
             envelope: governance_intent(GovernanceOperationId::new(1), [0x95; 32]).assign_nonce(20),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10353,6 +10396,7 @@ mod tests {
                 operation_id: timelock_operation_id,
             },
             envelope: governance_intent(GovernanceOperationId::new(2), [0x96; 32]).assign_nonce(30),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10388,6 +10432,7 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::PauseDepositMints,
             envelope: governance_intent(GovernanceOperationId::new(0), [0xb1; 32]).assign_nonce(20),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10408,6 +10453,7 @@ mod tests {
                 salt: [0xb6; 32],
             },
             envelope: governance_intent(GovernanceOperationId::new(1), [0xb3; 32]).assign_nonce(10),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10461,6 +10507,7 @@ mod tests {
                 independent_canceller: rotation.independent_canceller,
             },
             envelope: governance_intent(GovernanceOperationId::new(0), [0xa3; 32]).assign_nonce(7),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10492,6 +10539,7 @@ mod tests {
                 independent_canceller: rotation.independent_canceller,
             },
             envelope: governance_intent(GovernanceOperationId::new(1), [0xa5; 32]).assign_nonce(8),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10550,6 +10598,7 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(0), [7; 32]).assign_nonce(7),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10575,6 +10624,7 @@ mod tests {
             id: 1,
             kind: GovernanceTransactionKind::ExecuteActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(1), [9; 32]).assign_nonce(8),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10601,6 +10651,7 @@ mod tests {
             id: 2,
             kind: GovernanceTransactionKind::ExecuteActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(2), [8; 32]).assign_nonce(9),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10792,6 +10843,7 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(0), [5; 32]).assign_nonce(4),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10831,6 +10883,7 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(0), [0x43; 32]).assign_nonce(4),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10860,6 +10913,7 @@ mod tests {
             id: 1,
             kind: GovernanceTransactionKind::SetServiceFee { value: 7 },
             envelope: governance_intent(GovernanceOperationId::new(1), [0x44; 32]).assign_nonce(4),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::SignedAwaitingRelay {
                 transaction_hash: [0x45; 32],
                 generation: 0,
@@ -10909,6 +10963,7 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(0), [0x53; 32]).assign_nonce(10),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10930,6 +10985,7 @@ mod tests {
             id: 1,
             kind: GovernanceTransactionKind::ExecuteActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(1), [0x55; 32]).assign_nonce(11),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10975,6 +11031,7 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(0), [0x33; 32]).assign_nonce(10),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10998,6 +11055,7 @@ mod tests {
                 operation_id: [0x35; 32],
             },
             envelope: governance_intent(GovernanceOperationId::new(1), [0x36; 32]).assign_nonce(11),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         assert!(store.prepare_governance_transaction(wrong).is_err());
@@ -11006,6 +11064,7 @@ mod tests {
             id: 1,
             kind: GovernanceTransactionKind::CancelTimelock { operation_id },
             envelope: governance_intent(GovernanceOperationId::new(1), [0x37; 32]).assign_nonce(11),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -12589,6 +12648,52 @@ mod tests {
 
         let store = StableStore::init(VectorMemory::default()).expect("initialize current schema");
         assert_eq!(store.schema_version(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn controller_authority_fields_default_when_reopening_pre_upgrade_cbor() {
+        fn without_field<T: Serialize>(value: &T, field: &str) -> StableBlob {
+            let encoded = encode(value).expect("encode current value");
+            let mut cbor: ciborium::value::Value =
+                ciborium::from_reader(&encoded.as_slice()[1..]).expect("decode CBOR value");
+            let ciborium::value::Value::Map(entries) = &mut cbor else {
+                panic!("serialized struct must be a CBOR map");
+            };
+            let before = entries.len();
+            entries.retain(|(key, _)| key != &ciborium::value::Value::Text(field.to_string()));
+            assert_eq!(entries.len() + 1, before, "field must exist before removal");
+            let mut bytes = vec![WIRE_VERSION];
+            ciborium::into_writer(&cbor, &mut bytes).expect("encode legacy CBOR value");
+            StableBlob::new(bytes).expect("bounded legacy value")
+        }
+
+        let mut admission = DepositAdmissionControl::default();
+        admission.operational_config_sealed = true;
+        admission.bootstrap_activation_controller = Some(Principal::from_slice(&[0x99]));
+        let decoded_admission: DepositAdmissionControl = decode(&without_field(
+            &admission,
+            "bootstrap_activation_controller",
+        ))
+        .expect("decode admission written before controller binding existed");
+        assert_eq!(decoded_admission.bootstrap_activation_controller, None);
+        assert!(decoded_admission.operational_config_sealed);
+
+        let transaction = GovernanceTransaction {
+            id: 4,
+            kind: GovernanceTransactionKind::PauseDepositMints,
+            envelope: governance_intent(GovernanceOperationId::new(4), [0x88; 32]).assign_nonce(9),
+            state: GovernanceTransactionState::Prepared,
+            activation_controller_authority: Some(ActivationControllerAuthority {
+                controller: Principal::from_slice(&[0x99]),
+            }),
+        };
+        let decoded_transaction: GovernanceTransaction = decode(&without_field(
+            &transaction,
+            "activation_controller_authority",
+        ))
+        .expect("decode transaction written before controller binding existed");
+        assert_eq!(decoded_transaction.activation_controller_authority, None);
+        assert_eq!(decoded_transaction.id, transaction.id);
     }
 
     #[test]

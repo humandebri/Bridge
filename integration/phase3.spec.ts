@@ -904,21 +904,177 @@ describe("Phase 3 PocketIC saga", () => {
     keeps_signing_privileged_while_restricting_confirmation_callers,
   );
 
-  async function permanently_disables_the_controller_activation_path_after_initial_activation() {
-    const { bridge, controller } = await setup(true, {}, bridgeWasm, true, true);
-    bridge.actor.setPrincipal(controller);
+  async function switches_activation_authority_only_after_bootstrap_controller_removal() {
+    const { bridge, controller, runtimePrincipal } = await setup(
+      false,
+      {},
+      bridgeWasm,
+      true,
+      true,
+    );
+    bridge.actor.setPrincipal(runtimePrincipal);
     expect(await (bridge.actor as any).schedule_activation())
       .toEqual({ Err: { Unauthorized: null } });
-    expect(await (bridge.actor as any).execute_activation())
-      .toEqual({ Err: { Unauthorized: null } });
-    expect(await (bridge.actor as any).prepare_base_governance_action({
-      SetServiceFee: { value: 1n },
-    })).toEqual({ Err: { Unauthorized: null } });
+
+    const replacementController = Principal.selfAuthenticating(new Uint8Array(32).fill(66));
+    await pic!.updateCanisterSettings({
+      canisterId: bridge.canisterId,
+      controllers: [replacementController],
+      sender: controller,
+    });
+    expect(await (bridge.actor as any).schedule_activation())
+      .toHaveProperty("Ok.kind.ScheduleActivation");
   }
 
   it(
-    "permanently disables the controller activation path after initial activation",
-    permanently_disables_the_controller_activation_path_after_initial_activation,
+    "switches activation authority only after bootstrap controller removal",
+    switches_activation_authority_only_after_bootstrap_controller_removal,
+  );
+
+  async function rejects_confirmation_when_controller_settings_change_across_an_await() {
+    const {
+      bridge,
+      evm,
+      controller,
+      confirmationRelayerPrincipal,
+    } = await setup(false, {}, bridgeWasm, true, true);
+    bridge.actor.setPrincipal(controller);
+    const scheduled: any = await (bridge.actor as any).schedule_activation();
+    expect(scheduled).toHaveProperty("Ok.kind.ScheduleActivation");
+    await (evm.actor as any).set_receipt_mode({ DelayedConfirmed: null });
+
+    const deferred = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
+    deferred.setPrincipal(confirmationRelayerPrincipal);
+    const completeConfirmation = await deferred.confirm_base_governance_transaction({
+      operation_id: scheduled.Ok.operation_id,
+      transaction_hash: scheduled.Ok.transaction_hash,
+    });
+    let receiptBarrier: Awaited<ReturnType<NonNullable<typeof pic>["getPendingHttpsOutcalls"]>>[number] | undefined;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await pic!.tick(1);
+      receiptBarrier = (await pic!.getPendingHttpsOutcalls())
+        .find((outcall) => outcall.url === "https://receipt-delay.invalid/");
+      if (receiptBarrier) break;
+    }
+    expect(receiptBarrier).toBeDefined();
+
+    const extraController = Principal.selfAuthenticating(new Uint8Array(32).fill(67));
+    await pic!.updateCanisterSettings({
+      canisterId: bridge.canisterId,
+      controllers: [controller, extraController],
+      sender: controller,
+    });
+    await pic!.mockPendingHttpsOutcall({
+      requestId: receiptBarrier!.requestId,
+      subnetId: receiptBarrier!.subnetId,
+      response: { type: "success", statusCode: 200, headers: [], body: new Uint8Array() },
+    });
+    expect(await completeConfirmation()).toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).get_pending_base_governance_transaction())
+      .toHaveProperty("Ok.0.kind.ScheduleActivation");
+
+    await pic!.updateCanisterSettings({
+      canisterId: bridge.canisterId,
+      controllers: [controller],
+      sender: controller,
+    });
+    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
+    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
+    expect(await (bridge.actor as any).confirm_base_governance_transaction({
+      operation_id: scheduled.Ok.operation_id,
+      transaction_hash: scheduled.Ok.transaction_hash,
+    })).toHaveProperty("Ok.succeeded", true);
+  }
+
+  it(
+    "rejects confirmation when controller settings change across an await",
+    rejects_confirmation_when_controller_settings_change_across_an_await,
+  );
+
+  async function rejects_activation_replacement_when_controller_settings_change_across_an_await() {
+    const { bridge, controller } = await setup(false, {}, bridgeWasm, true, true);
+    bridge.actor.setPrincipal(controller);
+    const scheduled: any = await (bridge.actor as any).schedule_activation();
+    expect(scheduled).toHaveProperty("Ok.kind.ScheduleActivation");
+
+    const deferred = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
+    deferred.setPrincipal(controller);
+    const bumpFee = (value: bigint) => (value * 11_250n + 9_999n) / 10_000n;
+    const completeReplacement = await deferred.prepare_base_governance_replacement({
+      operation_id: scheduled.Ok.operation_id,
+      expected_transaction_hash: scheduled.Ok.transaction_hash,
+      max_fee_per_gas: bumpFee(scheduled.Ok.max_fee_per_gas),
+      max_priority_fee_per_gas: bumpFee(scheduled.Ok.max_priority_fee_per_gas),
+    });
+    const extraController = Principal.selfAuthenticating(new Uint8Array(32).fill(68));
+    await pic!.updateCanisterSettings({
+      canisterId: bridge.canisterId,
+      controllers: [controller, extraController],
+      sender: controller,
+    });
+    expect(await completeReplacement()).toEqual({ Err: { Unauthorized: null } });
+    const pending: any = await (bridge.actor as any).get_pending_base_governance_transaction();
+    expect(pending).toHaveProperty("Ok.0.kind.ScheduleActivation");
+    expect(pending.Ok[0].transaction_hash).toEqual(scheduled.Ok.transaction_hash);
+    expect(pending.Ok[0].generation).toBe(scheduled.Ok.generation);
+  }
+
+  it(
+    "rejects activation replacement when controller settings change across an await",
+    rejects_activation_replacement_when_controller_settings_change_across_an_await,
+  );
+
+  async function rejects_governance_confirmation_if_bootstrap_controller_is_restored() {
+    const {
+      bridge,
+      evm,
+      controller,
+      runtimePrincipal,
+      confirmationRelayerPrincipal,
+    } = await setup(false, {}, bridgeWasm, true, true);
+    const replacementController = Principal.selfAuthenticating(new Uint8Array(32).fill(69));
+    await pic!.updateCanisterSettings({
+      canisterId: bridge.canisterId,
+      controllers: [replacementController],
+      sender: controller,
+    });
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const scheduled: any = await (bridge.actor as any).schedule_activation();
+    expect(scheduled).toHaveProperty("Ok.kind.ScheduleActivation");
+    await (evm.actor as any).set_receipt_mode({ DelayedConfirmed: null });
+
+    const deferred = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
+    deferred.setPrincipal(confirmationRelayerPrincipal);
+    const completeConfirmation = await deferred.confirm_base_governance_transaction({
+      operation_id: scheduled.Ok.operation_id,
+      transaction_hash: scheduled.Ok.transaction_hash,
+    });
+    let receiptBarrier: Awaited<ReturnType<NonNullable<typeof pic>["getPendingHttpsOutcalls"]>>[number] | undefined;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await pic!.tick(1);
+      receiptBarrier = (await pic!.getPendingHttpsOutcalls())
+        .find((outcall) => outcall.url === "https://receipt-delay.invalid/");
+      if (receiptBarrier) break;
+    }
+    expect(receiptBarrier).toBeDefined();
+    await pic!.updateCanisterSettings({
+      canisterId: bridge.canisterId,
+      controllers: [replacementController, controller],
+      sender: replacementController,
+    });
+    await pic!.mockPendingHttpsOutcall({
+      requestId: receiptBarrier!.requestId,
+      subnetId: receiptBarrier!.subnetId,
+      response: { type: "success", statusCode: 200, headers: [], body: new Uint8Array() },
+    });
+    expect(await completeConfirmation()).toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).get_pending_base_governance_transaction())
+      .toHaveProperty("Ok.0.kind.ScheduleActivation");
+  }
+
+  it(
+    "rejects governance confirmation if bootstrap controller is restored",
+    rejects_governance_confirmation_if_bootstrap_controller_is_restored,
   );
 
   async function reauthorizes_confirmation_after_external_receipt_observation() {

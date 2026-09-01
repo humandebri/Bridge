@@ -199,15 +199,13 @@ macro_rules! operational_config_seal_caller_authorized_body {
 }
 
 macro_rules! activation_prepare_authorized_body {
-    ($controller:expr, $governance:expr, $sealed_paused:expr, $phase:expr, $operation_id:expr, $schedule:expr, $execute:expr, $zero:expr, $one:expr) => {{
-        let initial_slot = ($phase == $schedule && $operation_id == $zero)
-            || ($phase == $execute && $operation_id == $one);
+    ($bootstrap_controller:expr, $governance:expr, $sealed_paused:expr, $bootstrap_active:expr, $phase:expr, $schedule:expr, $execute:expr) => {{
         if $phase != $schedule && $phase != $execute {
             false
-        } else if initial_slot {
-            $controller && $sealed_paused
+        } else if $bootstrap_active {
+            $bootstrap_controller && $sealed_paused
         } else {
-            $governance
+            $governance && $sealed_paused
         }
     }};
 }
@@ -1778,22 +1776,20 @@ pub const fn operational_config_seal_caller_authorized(
 
 #[cfg(not(verus_keep_ghost))]
 pub const fn activation_prepare_authorized(
-    is_controller: bool,
+    is_bootstrap_controller: bool,
     is_governance: bool,
     lifecycle_is_operational_config_sealed: bool,
+    bootstrap_controller_is_active: bool,
     phase: u8,
-    operation_id: u64,
 ) -> bool {
     activation_prepare_authorized_body!(
-        is_controller,
+        is_bootstrap_controller,
         is_governance,
         lifecycle_is_operational_config_sealed,
+        bootstrap_controller_is_active,
         phase,
-        operation_id,
         0u8,
-        1u8,
-        0u64,
-        1u64
+        1u8
     )
 }
 
@@ -2550,26 +2546,22 @@ verus! {
     }
 
     pub open spec fn activation_prepare_authorized_spec(
-        controller: bool,
+        bootstrap_controller: bool,
         governance: bool,
         sealed_paused: bool,
+        bootstrap_active: bool,
         phase: int,
-        operation_id: int,
     ) -> bool {
         let schedule: int = 0;
         let execute: int = 1;
-        let zero: int = 0;
-        let one: int = 1;
         activation_prepare_authorized_body!(
-            controller,
+            bootstrap_controller,
             governance,
             sealed_paused,
+            bootstrap_active,
             phase,
-            operation_id,
             schedule,
-            execute,
-            zero,
-            one
+            execute
         )
     }
 
