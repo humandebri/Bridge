@@ -15,9 +15,8 @@ import check_no_obsolete_release_dependencies as guard
 
 class ObsoleteReleaseDependencyTests(unittest.TestCase):
     def violations(self, root: Path) -> list[str]:
-        # These fixtures model repository-local layouts. The trusted container
-        # sets BRIDGE_CANDIDATE_SCRIPTS for its real checkout, but that path is
-        # intentionally absent from each temporary fixture.
+        # These temporary fixtures model repository-local layouts and
+        # intentionally omit the candidate-scripts tree used by trusted runs.
         with mock.patch.dict(os.environ, clear=False):
             os.environ.pop("BRIDGE_CANDIDATE_SCRIPTS", None)
             return guard.violations(root)
