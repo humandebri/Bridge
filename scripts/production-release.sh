@@ -19,6 +19,9 @@ ACTIVATION_STEP=""
 ACTIVATION_ARTIFACT=""
 ACTIVATION_CONFIRMATION_RECEIPT=""
 CONTROLLER_ACTIVATION_RECEIPT=""
+ACTIVATION_REPLACEMENT_ARTIFACT=""
+ACTIVATION_REPLACEMENT_MAX_FEE=""
+ACTIVATION_REPLACEMENT_PRIORITY_FEE=""
 PRODUCTION_CONTROLLER_PEM=""
 CONFIRMATION_RELAYER_PEM=""
 CONFIRMATION_RELAYER_IDENTITY=""
@@ -56,7 +59,7 @@ while [[ "$#" -gt 0 ]]; do
       shift 2
       ;;
     --step)
-      [[ "$#" -ge 2 ]] || { echo "--step requires prepare, relay, or confirm" >&2; exit 2; }
+      [[ "$#" -ge 2 ]] || { echo "--step requires prepare, replace, relay, or confirm" >&2; exit 2; }
       ACTIVATION_STEP="$2"
       shift 2
       ;;
@@ -90,6 +93,21 @@ while [[ "$#" -gt 0 ]]; do
       CONTROLLER_ACTIVATION_RECEIPT="$2"
       shift 2
       ;;
+    --replacement-artifact)
+      [[ "$#" -ge 2 ]] || { echo "--replacement-artifact requires a path" >&2; exit 2; }
+      ACTIVATION_REPLACEMENT_ARTIFACT="$2"
+      shift 2
+      ;;
+    --replacement-max-fee)
+      [[ "$#" -ge 2 ]] || { echo "--replacement-max-fee requires a value" >&2; exit 2; }
+      ACTIVATION_REPLACEMENT_MAX_FEE="$2"
+      shift 2
+      ;;
+    --replacement-priority-fee)
+      [[ "$#" -ge 2 ]] || { echo "--replacement-priority-fee requires a value" >&2; exit 2; }
+      ACTIVATION_REPLACEMENT_PRIORITY_FEE="$2"
+      shift 2
+      ;;
     --prior-schedule-receipt)
       [[ "$#" -ge 2 ]] || { echo "--prior-schedule-receipt requires a path" >&2; exit 2; }
       PRIOR_SCHEDULE_RECEIPT="$2"
@@ -108,7 +126,7 @@ done
 
 usage() {
   echo "usage: $0 deploy --bundle DIR --release-inputs DIR --canister-install-receipt FILE --receipt FILE -- DEPLOY_DRIVER" >&2
-  echo "       $0 activate --phase schedule|execute --step prepare|relay|confirm --artifact FILE --bundle DIR --release-inputs DIR --receipt FILE --confirmation-relayer-identity NAME [--controller-pem FILE] [--confirmation-relayer-pem FILE --confirmation-receipt NEW_FILE --activation-receipt NEW_FILE] --confirm-asset-acceptance TOKEN -- scripts/production-activate-driver.sh" >&2
+  echo "       $0 activate --phase schedule|execute --step prepare|replace|relay|confirm --artifact FILE --bundle DIR --release-inputs DIR --receipt FILE [--controller-pem FILE --confirmation-relayer-identity NAME] [--replacement-artifact NEW_FILE --replacement-max-fee WEI --replacement-priority-fee WEI] [--confirmation-relayer-pem FILE --confirmation-receipt NEW_FILE --activation-receipt NEW_FILE] [--prior-schedule-receipt FILE] --confirm-asset-acceptance TOKEN -- scripts/production-activate-driver.sh" >&2
   exit 2
 }
 
@@ -264,8 +282,8 @@ else
     echo "activation phase requires its exact explicit confirmation" >&2
     exit 1
   }
-  [[ "$ACTIVATION_STEP" == prepare || "$ACTIVATION_STEP" == relay || "$ACTIVATION_STEP" == confirm ]] || {
-    echo "activation requires --step prepare, relay, or confirm" >&2
+  [[ "$ACTIVATION_STEP" == prepare || "$ACTIVATION_STEP" == replace || "$ACTIVATION_STEP" == relay || "$ACTIVATION_STEP" == confirm ]] || {
+    echo "activation requires --step prepare, replace, relay, or confirm" >&2
     exit 1
   }
   [[ -n "$ACTIVATION_ARTIFACT" ]] || {
@@ -274,6 +292,13 @@ else
   }
   if [[ "$ACTIVATION_STEP" == prepare ]]; then
     [[ -n "$PRODUCTION_CONTROLLER_PEM" && -n "$CONFIRMATION_RELAYER_IDENTITY" ]] || { echo "activation prepare requires controller PEM and confirmation relayer identity" >&2; exit 1; }
+  elif [[ "$ACTIVATION_STEP" == replace ]]; then
+    [[ -f "$ACTIVATION_ARTIFACT" && ! -L "$ACTIVATION_ARTIFACT" ]] || { echo "activation replacement requires the fixed activation artifact" >&2; exit 1; }
+    [[ -n "$PRODUCTION_CONTROLLER_PEM" && -n "$ACTIVATION_REPLACEMENT_ARTIFACT" \
+      && -n "$ACTIVATION_REPLACEMENT_MAX_FEE" && -n "$ACTIVATION_REPLACEMENT_PRIORITY_FEE" ]] || {
+      echo "activation replacement requires controller PEM, a new artifact, max fee, and priority fee" >&2
+      exit 1
+    }
   else
     [[ -f "$ACTIVATION_ARTIFACT" && ! -L "$ACTIVATION_ARTIFACT" ]] || { echo "relay/confirm require the fixed activation artifact" >&2; exit 1; }
   fi
@@ -297,6 +322,8 @@ raise SystemExit(0 if actual==expected else 1)
   fi
   [[ -f "$RECEIPT" ]] || { echo "Gate B requires the matching Gate A receipt" >&2; exit 1; }
   [[ -f "$BUNDLE/gate-a-receipt.json" ]] || { echo "Gate B bundle is missing its Gate A receipt artifact" >&2; exit 1; }
+  [[ -f "$BUNDLE/gate-a-profile.json" ]] || { echo "Gate B bundle is missing its immutable Gate A profile artifact" >&2; exit 1; }
+  [[ -f "$BUNDLE/production-canister-upgrade-receipt.json" ]] || { echo "Gate B bundle is missing its production upgrade receipt artifact" >&2; exit 1; }
   cmp -s "$RECEIPT" "$BUNDLE/gate-a-receipt.json" || {
     echo "external Gate A receipt differs from the Gate B receipt artifact" >&2
     exit 1
@@ -337,6 +364,13 @@ print(t.get("from_source_revision", ""), t.get("from_source_tree_sha256", ""), t
     echo "Gate A source tree is not available from the current repository" >&2
     exit 1
   }
+  read -r GATE_A_CANISTER_WASM_SHA256 GATE_A_BRIDGE_RUNTIME_SHA256 < <(
+    python3 -c '
+import json,sys
+p=json.load(open(sys.argv[1],encoding="utf-8"))
+print(p.get("bridge_canister_wasm_sha256", ""), p.get("bridge_runtime_bytecode_sha256", ""))
+' "$BUNDLE/gate-a-profile.json"
+  )
   python3 -c '
 import json, sys
 r = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -344,8 +378,8 @@ expected = sys.argv[2:8]
 actual = [r.get("gate_a_manifest_sha256"), r.get("release_id"), r.get("source_revision"), r.get("source_tree_sha256"), r.get("bridge_canister_wasm_sha256"), r.get("bridge_runtime_bytecode_sha256")]
 raise SystemExit(0 if [str(v).lower() for v in actual] == [v.lower() for v in expected] else 1)
 ' "$RECEIPT" "$RECEIPT_MANIFEST_SHA256" "$RELEASE_ID" \
-    "$GATE_A_SOURCE_REVISION" "$GATE_A_SOURCE_TREE_SHA256" "$CANISTER_WASM_SHA256" "$BRIDGE_RUNTIME_SHA256" || {
-    echo "Gate A receipt does not match the current release" >&2
+    "$GATE_A_SOURCE_REVISION" "$GATE_A_SOURCE_TREE_SHA256" "$GATE_A_CANISTER_WASM_SHA256" "$GATE_A_BRIDGE_RUNTIME_SHA256" || {
+    echo "Gate A receipt does not match the immutable Gate A profile" >&2
     exit 1
   }
   GATE_OUTPUT="$(run_profile_gate validate-bundle --offline --gate-b "$BUNDLE")"
@@ -411,6 +445,9 @@ else
   export BRIDGE_ACTIVATION_ARTIFACT="$ACTIVATION_ARTIFACT"
   export BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$ACTIVATION_CONFIRMATION_RECEIPT"
   export BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$CONTROLLER_ACTIVATION_RECEIPT"
+  export BRIDGE_ACTIVATION_REPLACEMENT_ARTIFACT="$ACTIVATION_REPLACEMENT_ARTIFACT"
+  export BRIDGE_ACTIVATION_REPLACEMENT_MAX_FEE="$ACTIVATION_REPLACEMENT_MAX_FEE"
+  export BRIDGE_ACTIVATION_REPLACEMENT_PRIORITY_FEE="$ACTIVATION_REPLACEMENT_PRIORITY_FEE"
   export BRIDGE_PRODUCTION_CONTROLLER_PEM="$PRODUCTION_CONTROLLER_PEM"
   export BRIDGE_CONFIRMATION_RELAYER_PEM="$CONFIRMATION_RELAYER_PEM"
   export BRIDGE_CONFIRMATION_RELAYER_IDENTITY="$CONFIRMATION_RELAYER_IDENTITY"

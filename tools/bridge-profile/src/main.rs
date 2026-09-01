@@ -1,7 +1,13 @@
 #![recursion_limit = "256"]
 
 use candid::{CandidType, Decode, Encode, Nat, Principal, Reserved};
-use ic_agent::Agent;
+use ic_agent::{
+    agent::CallResponse,
+    identity::{BasicIdentity, Identity, Secp256k1Identity},
+    Agent,
+};
+use ic_transport_types::{Envelope, EnvelopeContent};
+use k256::ecdsa::{signature::Verifier, Signature as Secp256k1Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -36,7 +42,7 @@ const GATE_A_ARTIFACTS: [&str; 6] = [
     "bsns-runtime.bin",
     "bsns-runtime-layout.json",
 ];
-const GATE_B_ARTIFACTS: [&str; 13] = [
+const GATE_B_ARTIFACTS: [&str; 15] = [
     "profile.json",
     "rpc-e2e.json",
     "monitor-drill.json",
@@ -49,6 +55,8 @@ const GATE_B_ARTIFACTS: [&str; 13] = [
     "bsns-runtime.bin",
     "bsns-runtime-layout.json",
     "gate-a-receipt.json",
+    "gate-a-profile.json",
+    "production-canister-upgrade-receipt.json",
     "post-gate-a-policy-transition.json",
 ];
 
@@ -378,12 +386,106 @@ struct PostGateAPolicyTransition {
     bridge_contract: String,
     bsns_contract: String,
     timelock_contract: String,
-    bridge_canister_wasm_sha256: String,
+    from_bridge_canister_wasm_sha256: String,
+    to_bridge_canister_wasm_sha256: String,
+    production_canister_upgrade_receipt_sha256: String,
     bridge_runtime_bytecode_sha256: String,
     bsns_runtime_bytecode_sha256: String,
     bsns_runtime_template_sha256: String,
     bridge_deployment_transaction_hash: String,
     timelock_deployment_transaction_hash: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionCanisterUpgradeReceipt {
+    schema_version: u8,
+    kind: String,
+    source_revision: String,
+    source_tree_sha256: String,
+    bridge_canister_id: String,
+    install_mode: String,
+    executing_principal: String,
+    executed_at_unix: u64,
+    verified_at_unix: u64,
+    recovered: bool,
+    recovered_at_unix: Option<u64>,
+    before_controllers: Vec<String>,
+    after_controllers: Vec<String>,
+    before_canister_version: u64,
+    after_canister_version: u64,
+    before_module_sha256: String,
+    after_module_sha256: String,
+    wasm_sha256: String,
+    before_schema_version: u16,
+    after_schema_version: u16,
+    before_lifecycle: String,
+    after_lifecycle: String,
+    before_deposits_paused: bool,
+    after_deposits_paused: bool,
+    before_storage_validation_complete: bool,
+    after_storage_validation_complete: bool,
+    before_management_status_json_hex: String,
+    before_management_status_json_sha256: String,
+    after_management_status_json_hex: String,
+    after_management_status_json_sha256: String,
+    before_bridge_status_response_hex: String,
+    before_bridge_status_response_sha256: String,
+    after_bridge_status_response_hex: String,
+    after_bridge_status_response_sha256: String,
+    before_lifecycle_response_hex: String,
+    before_lifecycle_response_sha256: String,
+    after_lifecycle_response_hex: String,
+    after_lifecycle_response_sha256: String,
+    before_runtime_binding_response_hex: String,
+    before_runtime_binding_response_sha256: String,
+    after_runtime_binding_response_hex: String,
+    after_runtime_binding_response_sha256: String,
+    before_storage_integrity_response_hex: String,
+    before_storage_integrity_response_sha256: String,
+    after_storage_integrity_response_hex: String,
+    after_storage_integrity_response_sha256: String,
+    before_public_state_sha256: String,
+    after_public_state_sha256: String,
+    command_argv: Vec<String>,
+    submission_json_hex: String,
+    submission_json_sha256: String,
+    request_id: String,
+    response_stdout_hex: String,
+    response_stdout_sha256: String,
+    response_stderr_hex: String,
+    response_stderr_sha256: String,
+}
+
+#[derive(CandidType, Deserialize)]
+enum ManagementInstallMode {
+    #[serde(rename = "upgrade")]
+    Upgrade,
+}
+
+#[derive(CandidType)]
+struct ManagementInstallCodeArgument {
+    mode: ManagementInstallMode,
+    canister_id: Principal,
+    wasm_module: Vec<u8>,
+    arg: Vec<u8>,
+    sender_canister_version: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionUpgradeSubmission {
+    schema_version: u8,
+    ic_host: String,
+    effective_canister_id: String,
+    sender_principal: String,
+    wasm_sha256: String,
+    argument_hex: String,
+    argument_sha256: String,
+    ingress_expiry: u64,
+    request_id: String,
+    signed_update_hex: String,
+    signed_update_sha256: String,
 }
 
 #[derive(Serialize, Debug, PartialEq, Eq)]
@@ -683,7 +785,7 @@ struct ProductionCanisterInstallReceipt {
     cycles_reserve_sufficient: bool,
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct LiveRuntimeBinding {
     base_chain_id: u64,
@@ -4147,18 +4249,214 @@ fn validate_ui_assets_receipt(root: &Path, manifest: &ReleaseManifest) -> Result
     Ok(())
 }
 
+fn production_upgrade_public_state_sha256(
+    status: &BridgeStatusLiveView,
+    values: &[&str],
+) -> Result<String, String> {
+    let mut digest = Sha256::new();
+    digest.update(b"KINIC_PRODUCTION_UPGRADE_PUBLIC_STATE_V1\0");
+    digest.update([u8::from(status.deposits_paused)]);
+    digest.update(status.mint_authorization_ttl_seconds.to_be_bytes());
+    digest.update(status.mint_authorization_epoch.to_be_bytes());
+    digest.update(status.counts.deposits.to_be_bytes());
+    digest.update(status.counts.withdrawals.to_be_bytes());
+    digest.update(status.counts.reconciliation_holds.to_be_bytes());
+    digest.update(status.counts.pending_ledger_operations.to_be_bytes());
+    digest.update(status.counts.reserved_deposit_mint_amount.to_be_bytes());
+    digest.update(status.counts.reserved_deposit_mint_operations.to_be_bytes());
+    digest.update(status.counts.retained_audit_events.to_be_bytes());
+    digest.update(status.counts.pruned_audit_events.to_be_bytes());
+    digest.update(status.counts.retained_deposit_index_entries.to_be_bytes());
+    for value in values {
+        let raw = decode_hex(value)?;
+        digest.update((raw.len() as u64).to_be_bytes());
+        digest.update(raw);
+    }
+    Ok(hex(&digest.finalize()))
+}
+
+fn production_upgrade_query_state(
+    status_hex: &str,
+    lifecycle_hex: &str,
+    runtime_hex: &str,
+    integrity_hex: &str,
+) -> Result<(BridgeStatusLiveView, RuntimeBindingView, String), String> {
+    let status = decode_candid_hex::<BridgeStatusLiveView>(status_hex)?;
+    if !matches!(
+        decode_candid_hex::<ProductionLifecycleResultView>(lifecycle_hex)?,
+        ProductionLifecycleResultView::Ok(ProductionLifecycleView::Bootstrap)
+    ) {
+        return Err("production upgrade requires Bootstrap lifecycle".into());
+    }
+    let runtime = decode_candid_hex::<RuntimeBindingView>(runtime_hex)?;
+    match decode_candid_hex::<StorageIntegrityResultView>(integrity_hex)? {
+        StorageIntegrityResultView::Ok(value) if value == "ok" => {}
+        _ => return Err("production upgrade storage integrity response is not ok".into()),
+    }
+    let public_state_sha256 = production_upgrade_public_state_sha256(
+        &status,
+        &[lifecycle_hex, runtime_hex, integrity_hex],
+    )?;
+    Ok((status, runtime, public_state_sha256))
+}
+
+fn production_upgrade_status_preserved(
+    before: &BridgeStatusLiveView,
+    after: &BridgeStatusLiveView,
+) -> bool {
+    before.reserve.sufficient
+        && after.reserve.sufficient
+        && before.deposits_paused == after.deposits_paused
+        && before.mint_authorization_ttl_seconds == after.mint_authorization_ttl_seconds
+        && before.mint_authorization_epoch == after.mint_authorization_epoch
+        && before.counts.deposits == after.counts.deposits
+        && before.counts.withdrawals == after.counts.withdrawals
+        && before.counts.reconciliation_holds == after.counts.reconciliation_holds
+        && before.counts.pending_ledger_operations == after.counts.pending_ledger_operations
+        && before.counts.reserved_deposit_mint_amount == after.counts.reserved_deposit_mint_amount
+        && before.counts.reserved_deposit_mint_operations
+            == after.counts.reserved_deposit_mint_operations
+        && before.counts.retained_audit_events == after.counts.retained_audit_events
+        && before.counts.pruned_audit_events == after.counts.pruned_audit_events
+        && before.counts.retained_deposit_index_entries
+            == after.counts.retained_deposit_index_entries
+}
+
+fn collect_json_key<'a>(value: &'a Value, key: &str, output: &mut Vec<&'a Value>) {
+    match value {
+        Value::Object(values) => {
+            for (name, child) in values {
+                if name == key {
+                    output.push(child);
+                }
+                collect_json_key(child, key, output);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                collect_json_key(child, key, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn management_module_sha256(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => {
+            let value = value.strip_prefix("0x").unwrap_or(value);
+            valid_sha256(value).then(|| value.to_ascii_lowercase())
+        }
+        Value::Array(values)
+            if values.len() == 32
+                && values
+                    .iter()
+                    .all(|value| value.as_u64().is_some_and(|value| value <= 255)) =>
+        {
+            Some(hex(&values
+                .iter()
+                .map(|value| value.as_u64().unwrap() as u8)
+                .collect::<Vec<_>>()))
+        }
+        Value::Object(values) if values.len() == 1 => {
+            management_module_sha256(values.values().next().unwrap())
+        }
+        _ => None,
+    }
+}
+
+fn production_upgrade_management_state(
+    raw_hex: &str,
+) -> Result<(Vec<String>, String, u64), String> {
+    let raw = decode_hex(raw_hex)?;
+    let value: Value = serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
+    let mut controllers = Vec::new();
+    let mut modules = Vec::new();
+    let mut versions = Vec::new();
+    collect_json_key(&value, "controllers", &mut controllers);
+    collect_json_key(&value, "module_hash", &mut modules);
+    collect_json_key(&value, "canister_version", &mut versions);
+    if controllers.len() != 1 || modules.len() != 1 || versions.len() != 1 {
+        return Err("production upgrade management status is ambiguous".into());
+    }
+    let mut controllers = controllers[0]
+        .as_array()
+        .ok_or("production upgrade controllers are malformed")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| principal(value))
+                .map(str::to_string)
+                .ok_or_else(|| "production upgrade controller is malformed".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    controllers.sort();
+    controllers.dedup();
+    if controllers.is_empty() {
+        return Err("production upgrade controller set is empty".into());
+    }
+    let module = management_module_sha256(modules[0])
+        .ok_or("production upgrade module hash is malformed")?;
+    let version = versions[0]
+        .as_u64()
+        .or_else(|| {
+            versions[0]
+                .as_str()
+                .and_then(|value| value.replace('_', "").parse().ok())
+        })
+        .ok_or("production upgrade canister version is malformed")?;
+    Ok((controllers, module, version))
+}
+
 fn validate_post_gate_a_policy_transition(
     root: &Path,
     manifest: &ReleaseManifest,
     profile: &Profile,
+    gate_a_profile: &Profile,
     receipt: &GateAReceipt,
     now: u64,
 ) -> Result<(), String> {
     let transition: PostGateAPolicyTransition =
         read_json(&root.join("post-gate-a-policy-transition.json"))?;
+    let upgrade_path = root.join("production-canister-upgrade-receipt.json");
+    let upgrade_bytes = fs::read(&upgrade_path).map_err(|e| e.to_string())?;
+    let upgrade: ProductionCanisterUpgradeReceipt =
+        serde_json::from_slice(&upgrade_bytes).map_err(|e| e.to_string())?;
     validate_evidence_time(transition.observed_at_unix, manifest.created_at_unix, now)?;
+    validate_evidence_time(upgrade.executed_at_unix, manifest.created_at_unix, now)?;
+    validate_evidence_time(upgrade.verified_at_unix, manifest.created_at_unix, now)?;
     let receipt_bytes = fs::read(root.join("gate-a-receipt.json")).map_err(|e| e.to_string())?;
-    if transition.schema_version != 1
+    let installer = &receipt.canister_install.installer_principal;
+    let expected_controllers = vec![installer.clone()];
+    let (before_controllers, before_module, before_canister_version) =
+        production_upgrade_management_state(&upgrade.before_management_status_json_hex)?;
+    let (after_controllers, after_module, after_canister_version) =
+        production_upgrade_management_state(&upgrade.after_management_status_json_hex)?;
+    let (before_status, before_runtime, before_public_state_sha256) =
+        production_upgrade_query_state(
+            &upgrade.before_bridge_status_response_hex,
+            &upgrade.before_lifecycle_response_hex,
+            &upgrade.before_runtime_binding_response_hex,
+            &upgrade.before_storage_integrity_response_hex,
+        )?;
+    let (after_status, after_runtime, after_public_state_sha256) = production_upgrade_query_state(
+        &upgrade.after_bridge_status_response_hex,
+        &upgrade.after_lifecycle_response_hex,
+        &upgrade.after_runtime_binding_response_hex,
+        &upgrade.after_storage_integrity_response_hex,
+    )?;
+    let submission_bytes = decode_hex(&upgrade.submission_json_hex)?;
+    let current_wasm =
+        fs::read(root.join("bridge-canister.wasm")).map_err(|error| error.to_string())?;
+    let validated_submission = validate_production_upgrade_submission_bytes(
+        &gate_a_profile.ic_host,
+        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?,
+        Principal::from_text(installer).map_err(|error| error.to_string())?,
+        &current_wasm,
+        &submission_bytes,
+    )?;
+    if transition.schema_version != 2
         || transition.reason != "activate-before-production-measurements"
         || !transition
             .gate_a_manifest_sha256
@@ -4185,8 +4483,17 @@ fn validate_post_gate_a_policy_transition(
             .timelock_contract
             .eq_ignore_ascii_case(&profile.timelock.address)
         || !transition
-            .bridge_canister_wasm_sha256
+            .from_bridge_canister_wasm_sha256
             .eq_ignore_ascii_case(&receipt.bridge_canister_wasm_sha256)
+        || !transition
+            .from_bridge_canister_wasm_sha256
+            .eq_ignore_ascii_case(&gate_a_profile.bridge_canister_wasm_sha256)
+        || !transition
+            .to_bridge_canister_wasm_sha256
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || !transition
+            .production_canister_upgrade_receipt_sha256
+            .eq_ignore_ascii_case(&hex(&Sha256::digest(&upgrade_bytes)))
         || !transition
             .bridge_runtime_bytecode_sha256
             .eq_ignore_ascii_case(&receipt.bridge_runtime_bytecode_sha256)
@@ -4205,9 +4512,142 @@ fn validate_post_gate_a_policy_transition(
         || !transition
             .timelock_deployment_transaction_hash
             .eq_ignore_ascii_case(&receipt.timelock_deployment_transaction_hash)
+        || upgrade.schema_version != 1
+        || upgrade.kind != "production-controller-bootstrap-upgrade"
+        || upgrade.source_revision != manifest.source_revision
+        || !upgrade
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
+        || upgrade.bridge_canister_id != profile.bridge_canister_id
+        || upgrade.install_mode != "upgrade"
+        || upgrade.executing_principal != *installer
+        || upgrade.executed_at_unix > upgrade.verified_at_unix
+        || upgrade.recovered != upgrade.recovered_at_unix.is_some()
+        || upgrade.recovered_at_unix.is_some_and(|value| {
+            value < upgrade.executed_at_unix || value > upgrade.verified_at_unix
+        })
+        || upgrade.verified_at_unix > transition.observed_at_unix
+        || upgrade.before_controllers != before_controllers
+        || upgrade.after_controllers != after_controllers
+        || upgrade.before_canister_version != before_canister_version
+        || upgrade.after_canister_version != after_canister_version
+        || before_canister_version.checked_add(1) != Some(after_canister_version)
+        || before_controllers != expected_controllers
+        || after_controllers != expected_controllers
+        || !upgrade
+            .before_module_sha256
+            .eq_ignore_ascii_case(&before_module)
+        || !before_module.eq_ignore_ascii_case(&gate_a_profile.bridge_canister_wasm_sha256)
+        || !upgrade
+            .after_module_sha256
+            .eq_ignore_ascii_case(&after_module)
+        || !after_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || !upgrade
+            .wasm_sha256
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || upgrade.before_schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || upgrade.after_schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || before_runtime.schema_version != upgrade.before_schema_version
+        || after_runtime.schema_version != upgrade.after_schema_version
+        || live_runtime_binding_from_view(&before_runtime)
+            != receipt.canister_install.runtime_binding
+        || live_runtime_binding_from_view(&after_runtime)
+            != receipt.canister_install.runtime_binding
+        || upgrade.before_lifecycle != "Bootstrap"
+        || upgrade.after_lifecycle != "Bootstrap"
+        || !upgrade.before_deposits_paused
+        || !upgrade.after_deposits_paused
+        || !before_status.deposits_paused
+        || !after_status.deposits_paused
+        || !upgrade.before_storage_validation_complete
+        || !upgrade.after_storage_validation_complete
+        || !hex_sha256_matches(
+            &upgrade.before_management_status_json_hex,
+            &upgrade.before_management_status_json_sha256,
+        )
+        || !hex_sha256_matches(
+            &upgrade.after_management_status_json_hex,
+            &upgrade.after_management_status_json_sha256,
+        )
+        || !hex_sha256_matches(
+            &upgrade.before_bridge_status_response_hex,
+            &upgrade.before_bridge_status_response_sha256,
+        )
+        || !hex_sha256_matches(
+            &upgrade.after_bridge_status_response_hex,
+            &upgrade.after_bridge_status_response_sha256,
+        )
+        || !hex_sha256_matches(
+            &upgrade.before_lifecycle_response_hex,
+            &upgrade.before_lifecycle_response_sha256,
+        )
+        || !hex_sha256_matches(
+            &upgrade.after_lifecycle_response_hex,
+            &upgrade.after_lifecycle_response_sha256,
+        )
+        || !hex_sha256_matches(
+            &upgrade.before_runtime_binding_response_hex,
+            &upgrade.before_runtime_binding_response_sha256,
+        )
+        || !hex_sha256_matches(
+            &upgrade.after_runtime_binding_response_hex,
+            &upgrade.after_runtime_binding_response_sha256,
+        )
+        || !hex_sha256_matches(
+            &upgrade.before_storage_integrity_response_hex,
+            &upgrade.before_storage_integrity_response_sha256,
+        )
+        || !hex_sha256_matches(
+            &upgrade.after_storage_integrity_response_hex,
+            &upgrade.after_storage_integrity_response_sha256,
+        )
+        || !production_upgrade_status_preserved(&before_status, &after_status)
+        || upgrade.before_lifecycle_response_hex != upgrade.after_lifecycle_response_hex
+        || upgrade.before_runtime_binding_response_hex != upgrade.after_runtime_binding_response_hex
+        || upgrade.before_storage_integrity_response_hex
+            != upgrade.after_storage_integrity_response_hex
+        || !upgrade
+            .before_public_state_sha256
+            .eq_ignore_ascii_case(&before_public_state_sha256)
+        || !upgrade
+            .after_public_state_sha256
+            .eq_ignore_ascii_case(&after_public_state_sha256)
+        || !before_public_state_sha256.eq_ignore_ascii_case(&after_public_state_sha256)
+        || upgrade.command_argv
+            != [
+                "bridge-profile",
+                "submit-production-canister-upgrade",
+                gate_a_profile.ic_host.as_str(),
+                profile.bridge_canister_id.as_str(),
+                installer.as_str(),
+                "<production-controller-pem>",
+                "<verified-release-artifact>",
+                "<durable-submission-artifact>",
+                "<durable-response-artifact>",
+            ]
+            .map(str::to_string)
+        || !valid_sha256(&upgrade.response_stdout_sha256)
+        || !hex_sha256_matches(
+            &upgrade.response_stdout_hex,
+            &upgrade.response_stdout_sha256,
+        )
+        || !hex_sha256_matches(
+            &upgrade.response_stderr_hex,
+            &upgrade.response_stderr_sha256,
+        )
+        || !hex_sha256_matches(
+            &upgrade.submission_json_hex,
+            &upgrade.submission_json_sha256,
+        )
+        || !valid_sha256(&upgrade.request_id)
+        || validated_submission.request_id != upgrade.request_id
+        || !production_upgrade_ingress_window_valid(
+            upgrade.executed_at_unix,
+            validated_submission.ingress_expiry,
+        )
     {
         return Err(
-            "post-Gate-A policy transition is incomplete or changes deployed identity".into(),
+            "post-Gate-A policy transition or production upgrade evidence is incomplete".into(),
         );
     }
     Ok(())
@@ -4312,15 +4752,27 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
     }
     if gate_b {
         let receipt: GateAReceipt = read_json(&root.join("gate-a-receipt.json"))?;
-        let mut gate_a_profile = profile.clone();
-        gate_a_profile.deployment_block = 0;
-        set_production_bootstrap_operational_config(&mut gate_a_profile);
+        let gate_a_profile: Profile = read_json(&root.join("gate-a-profile.json"))?;
+        validate_profile(&gate_a_profile, !manifest.test_only)?;
+        if gate_a_profile.deployment_block != 0
+            || !profile_uses_production_bootstrap_operational_config(&gate_a_profile)
+        {
+            return Err("Gate A profile artifact is not the immutable predeploy profile".into());
+        }
         let expected_gate_a_profile_hash = hex(&canonical_sha256(&gate_a_profile)?);
-        let mut expected_post_deploy_profile = profile.clone();
+        let mut expected_post_deploy_profile = gate_a_profile.clone();
+        expected_post_deploy_profile.deployment_block = profile.deployment_block;
         set_production_bootstrap_operational_config(&mut expected_post_deploy_profile);
         let expected_post_deploy_profile_hash = hex(&Sha256::digest(canonical_bytes(
             &expected_post_deploy_profile,
         )?));
+        let mut expected_current_profile = expected_post_deploy_profile.clone();
+        expected_current_profile.parameters = profile.parameters.clone();
+        expected_current_profile.bridge_canister_wasm_sha256 =
+            profile.bridge_canister_wasm_sha256.clone();
+        if canonical_bytes(&expected_current_profile)? != canonical_bytes(&profile)? {
+            return Err("Gate B profile changes fields outside the reviewed operational config and Wasm upgrade".into());
+        }
         if receipt.schema_version != 2
             || !receipt.gate_a_manifest_sha256.eq_ignore_ascii_case(
                 manifest
@@ -4337,10 +4789,10 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
                 .eq_ignore_ascii_case(&expected_gate_a_profile_hash)
             || !receipt
                 .bridge_canister_wasm_sha256
-                .eq_ignore_ascii_case(wasm_hash)
+                .eq_ignore_ascii_case(&gate_a_profile.bridge_canister_wasm_sha256)
             || !receipt
                 .bridge_runtime_bytecode_sha256
-                .eq_ignore_ascii_case(bytecode_hash)
+                .eq_ignore_ascii_case(&gate_a_profile.bridge_runtime_bytecode_sha256)
             || !valid_hash32(&receipt.bridge_deployment_transaction_hash)
             || !valid_hash32(&receipt.bridge_deployment_block_hash)
             || !valid_hash32(&receipt.timelock_deployment_transaction_hash)
@@ -4351,17 +4803,24 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
         {
             return Err("Gate B evidence is not bound to the Gate A release".into());
         }
-        let mut installed_profile = profile.clone();
-        set_production_bootstrap_operational_config(&mut installed_profile);
-        validate_production_canister_receipt(&installed_profile, &receipt.canister_install)?;
-        validate_post_gate_a_policy_transition(root, &manifest, &profile, &receipt, now)?;
+        validate_production_canister_receipt(
+            &expected_post_deploy_profile,
+            &receipt.canister_install,
+        )?;
+        validate_post_gate_a_policy_transition(
+            root,
+            &manifest,
+            &profile,
+            &gate_a_profile,
+            &receipt,
+            now,
+        )?;
     }
     if profile.test_assets_only != manifest.test_only {
         return Err("manifest/profile test-only mismatch".into());
     }
     if gate_b {
         let drill: MonitorDrill = read_json(&root.join("monitor-drill.json"))?;
-        let receipt: GateAReceipt = read_json(&root.join("gate-a-receipt.json"))?;
         let transition: PostGateAPolicyTransition =
             read_json(&root.join("post-gate-a-policy-transition.json"))?;
         validate_monitor_drill(
@@ -4370,7 +4829,7 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
             &profile,
             &transition.to_source_revision,
             &transition.to_source_tree_sha256,
-            &receipt.bridge_canister_wasm_sha256,
+            &transition.to_bridge_canister_wasm_sha256,
             now,
         )?;
         validate_provider_independence_receipt(root, &manifest, &profile, now)?;
@@ -6362,6 +6821,255 @@ fn verify_monitor_drill_authenticity(bundle: &ValidatedBundle) -> Result<(), Str
     Ok(())
 }
 
+fn production_upgrade_identity(pem_path: &Path) -> Result<Box<dyn Identity>, String> {
+    let pem = fs::read(pem_path).map_err(|error| error.to_string())?;
+    if let Ok(identity) = Secp256k1Identity::from_pem(&pem) {
+        return Ok(Box::new(identity));
+    }
+    if let Ok(identity) = BasicIdentity::from_pem(&pem) {
+        return Ok(Box::new(identity));
+    }
+    Err("production controller PEM is not a supported secp256k1 or Ed25519 identity".into())
+}
+
+fn validate_production_upgrade_submission(
+    host: &str,
+    canister: Principal,
+    sender: Principal,
+    wasm: &[u8],
+    submission_path: &Path,
+) -> Result<ProductionUpgradeSubmission, String> {
+    let bytes = fs::read(submission_path).map_err(|error| error.to_string())?;
+    validate_production_upgrade_submission_bytes(host, canister, sender, wasm, &bytes)
+}
+
+fn verify_production_upgrade_signature(
+    public_key_der: &[u8],
+    signature: &[u8],
+    message: &[u8],
+) -> Result<(), String> {
+    const ED25519_SPKI_PREFIX: &[u8] = &[
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+    const SECP256K1_SPKI_PREFIX: &[u8] = &[
+        0x30, 0x56, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05,
+        0x2b, 0x81, 0x04, 0x00, 0x0a, 0x03, 0x42, 0x00,
+    ];
+    if let Some(public_key) = public_key_der.strip_prefix(ED25519_SPKI_PREFIX) {
+        if public_key.len() != 32 {
+            return Err("production upgrade Ed25519 public key is malformed".into());
+        }
+        return ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public_key)
+            .verify(message, signature)
+            .map_err(|_| "production upgrade Ed25519 signature is invalid".into());
+    }
+    if let Some(public_key) = public_key_der.strip_prefix(SECP256K1_SPKI_PREFIX) {
+        let verifying_key =
+            VerifyingKey::from_sec1_bytes(public_key).map_err(|error| error.to_string())?;
+        let signature =
+            Secp256k1Signature::from_slice(signature).map_err(|error| error.to_string())?;
+        return verifying_key
+            .verify(message, &signature)
+            .map_err(|error| error.to_string());
+    }
+    Err("production upgrade signed envelope uses an unsupported public key algorithm".into())
+}
+
+fn production_upgrade_ingress_window_valid(executed_at_unix: u64, ingress_expiry: u64) -> bool {
+    executed_at_unix
+        .checked_mul(1_000_000_000)
+        .and_then(|executed_at_ns| {
+            executed_at_ns
+                .checked_add(5 * 60 * 1_000_000_000)
+                .map(|latest| ingress_expiry > executed_at_ns && ingress_expiry <= latest)
+        })
+        .unwrap_or(false)
+}
+
+fn validate_production_upgrade_submission_bytes(
+    host: &str,
+    canister: Principal,
+    sender: Principal,
+    wasm: &[u8],
+    submission_bytes: &[u8],
+) -> Result<ProductionUpgradeSubmission, String> {
+    let management = Principal::management_canister();
+    let argument = Encode!(&ManagementInstallCodeArgument {
+        mode: ManagementInstallMode::Upgrade,
+        canister_id: canister,
+        wasm_module: wasm.to_vec(),
+        arg: Vec::new(),
+        sender_canister_version: None,
+    })
+    .map_err(|error| error.to_string())?;
+    let wasm_sha256 = hex(&Sha256::digest(wasm));
+    let submission: ProductionUpgradeSubmission =
+        serde_json::from_slice(submission_bytes).map_err(|error| error.to_string())?;
+    if submission.schema_version != 1
+        || submission.ic_host != host
+        || submission.effective_canister_id != canister.to_text()
+        || submission.sender_principal != sender.to_text()
+        || !submission.wasm_sha256.eq_ignore_ascii_case(&wasm_sha256)
+        || !submission
+            .argument_hex
+            .eq_ignore_ascii_case(&hex(&argument))
+        || !hex_sha256_matches(&submission.argument_hex, &submission.argument_sha256)
+        || !hex_sha256_matches(
+            &submission.signed_update_hex,
+            &submission.signed_update_sha256,
+        )
+        || !valid_sha256(&submission.request_id)
+    {
+        return Err("production upgrade submission does not match the exact request".into());
+    }
+    let signed_update = decode_hex(&submission.signed_update_hex)?;
+    ic_agent::agent::signed_update_inspect(
+        sender,
+        management,
+        "install_code",
+        &argument,
+        submission.ingress_expiry,
+        signed_update.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    let envelope: Envelope<'_> =
+        serde_cbor::from_slice(&signed_update).map_err(|error| error.to_string())?;
+    let EnvelopeContent::Call { .. } = envelope.content.as_ref() else {
+        return Err("production upgrade submission is not an update call".into());
+    };
+    let public_key = envelope
+        .sender_pubkey
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("production upgrade submission has no sender public key")?;
+    let signature = envelope
+        .sender_sig
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("production upgrade submission has no sender signature")?;
+    let request_id = envelope.content.to_request_id();
+    if envelope.sender_delegation.is_some()
+        || Principal::self_authenticating(public_key) != sender
+        || !hex(request_id.as_slice()).eq_ignore_ascii_case(&submission.request_id)
+    {
+        return Err("production upgrade signed envelope identity or request ID is invalid".into());
+    }
+    verify_production_upgrade_signature(public_key, signature, &request_id.signable())?;
+    Ok(submission)
+}
+
+fn submit_production_canister_upgrade(
+    host: &str,
+    canister_text: &str,
+    expected_principal_text: &str,
+    pem_path: &Path,
+    wasm_path: &Path,
+    submission_path: &Path,
+    response_path: &Path,
+) -> Result<(), String> {
+    let canister = Principal::from_text(canister_text).map_err(|error| error.to_string())?;
+    let expected_principal =
+        Principal::from_text(expected_principal_text).map_err(|error| error.to_string())?;
+    let identity = production_upgrade_identity(pem_path)?;
+    let sender = identity.sender().map_err(|error| error.to_string())?;
+    if sender != expected_principal {
+        return Err(
+            "production controller PEM principal does not match the expected installer".into(),
+        );
+    }
+    let wasm = fs::read(wasm_path).map_err(|error| error.to_string())?;
+    let wasm_sha256 = hex(&Sha256::digest(&wasm));
+    let agent = Agent::builder()
+        .with_url(host)
+        .with_boxed_identity(identity)
+        .with_verify_query_signatures(true)
+        .build()
+        .map_err(|error| error.to_string())?;
+    let management = Principal::management_canister();
+    let argument = Encode!(&ManagementInstallCodeArgument {
+        mode: ManagementInstallMode::Upgrade,
+        canister_id: canister,
+        wasm_module: wasm.clone(),
+        arg: Vec::new(),
+        sender_canister_version: None,
+    })
+    .map_err(|error| error.to_string())?;
+    let submission = if submission_path.exists() {
+        validate_production_upgrade_submission(host, canister, sender, &wasm, submission_path)?
+    } else {
+        let signed = agent
+            .update(&management, "install_code")
+            .with_effective_canister_id(canister)
+            .with_arg(argument.clone())
+            .sign()
+            .map_err(|error| error.to_string())?;
+        let submission = ProductionUpgradeSubmission {
+            schema_version: 1,
+            ic_host: host.to_string(),
+            effective_canister_id: canister_text.to_string(),
+            sender_principal: sender.to_text(),
+            wasm_sha256: wasm_sha256.clone(),
+            argument_hex: hex(&argument),
+            argument_sha256: hex(&Sha256::digest(&argument)),
+            ingress_expiry: signed.ingress_expiry,
+            request_id: hex(signed.request_id.as_slice()),
+            signed_update_hex: hex(&signed.signed_update),
+            signed_update_sha256: hex(&Sha256::digest(&signed.signed_update)),
+        };
+        write_json_new(submission_path, &submission)?;
+        submission
+    };
+    let request_id = submission.request_id.clone();
+    let mut durable_response = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o400)
+        .open(response_path)
+        .map_err(|error| format!("{}: {error}", response_path.display()))?;
+    writeln!(durable_response, "request_id={request_id}").map_err(|error| error.to_string())?;
+    durable_response
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    fs::File::open(response_path.parent().unwrap_or_else(|| Path::new(".")))
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| error.to_string())?;
+    println!("request_id={request_id}");
+    std::io::stdout()
+        .flush()
+        .map_err(|error| error.to_string())?;
+    let signed_update = decode_hex(&submission.signed_update_hex)?;
+    let response = async_runtime()?.block_on(async {
+        match agent
+            .update_signed(canister, signed_update)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            CallResponse::Response(response) => Ok(response),
+            CallResponse::Poll(observed_request_id) => {
+                if hex(observed_request_id.as_slice()) != request_id {
+                    return Err("IC returned a request ID different from the signed update".into());
+                }
+                agent
+                    .wait(&observed_request_id, canister)
+                    .await
+                    .map(|(response, _)| response)
+                    .map_err(|error| error.to_string())
+            }
+        }
+    })?;
+    writeln!(durable_response, "response_hex={}", hex(&response))
+        .map_err(|error| error.to_string())?;
+    writeln!(durable_response, "sender_principal={sender}").map_err(|error| error.to_string())?;
+    writeln!(durable_response, "wasm_sha256={wasm_sha256}").map_err(|error| error.to_string())?;
+    durable_response
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    println!("response_hex={}", hex(&response));
+    println!("sender_principal={sender}");
+    println!("wasm_sha256={wasm_sha256}");
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args = env::args().collect::<Vec<_>>();
     match args.get(1).map(String::as_str) {
@@ -6594,7 +7302,50 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[3]
             );
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | validate-production-handover-candidate <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <schedule|execute> <bundle-dir> | authorize-controller-activation <schedule|execute> <bundle-dir> <gate-b-sha256> <authorization.json> | verify-controller-activation-authorization <schedule|execute> <bundle-dir> <gate-b-sha256> <authorization.json> | verify-controller-activation <schedule|execute> <bundle-dir> <artifact.json> <authorization.json> <prepare-receipt.json> <confirmation.json> <prior-schedule-receipt.json|-> <receipt.json> | verify-controller-schedule-receipt-live <bundle-dir> <controller-schedule-receipt.json> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json>".into()),
+        Some("submit-production-canister-upgrade") if args.len() == 9 => {
+            submit_production_canister_upgrade(
+                &args[2],
+                &args[3],
+                &args[4],
+                Path::new(&args[5]),
+                Path::new(&args[6]),
+                Path::new(&args[7]),
+                Path::new(&args[8]),
+            )?;
+        }
+        Some("production-upgrade-public-state-sha256") if args.len() == 6 => {
+            let (_, _, digest) = production_upgrade_query_state(
+                &args[2], &args[3], &args[4], &args[5],
+            )?;
+            println!("{digest}");
+        }
+        Some("verify-production-upgrade-state-preserved") if args.len() == 10 => {
+            let (before, _, before_digest) = production_upgrade_query_state(
+                &args[2], &args[3], &args[4], &args[5],
+            )?;
+            let (after, _, after_digest) = production_upgrade_query_state(
+                &args[6], &args[7], &args[8], &args[9],
+            )?;
+            if !production_upgrade_status_preserved(&before, &after)
+                || args[3] != args[7]
+                || args[4] != args[8]
+                || args[5] != args[9]
+                || !before_digest.eq_ignore_ascii_case(&after_digest)
+            {
+                return Err("production public state was not preserved across upgrade".into());
+            }
+            println!("{after_digest}");
+        }
+        Some("verify-production-upgrade-submission") if args.len() == 7 => {
+            let canister = Principal::from_text(&args[3]).map_err(|error| error.to_string())?;
+            let sender = Principal::from_text(&args[4]).map_err(|error| error.to_string())?;
+            let wasm = fs::read(&args[5]).map_err(|error| error.to_string())?;
+            let submission = validate_production_upgrade_submission(
+                &args[2], canister, sender, &wasm, Path::new(&args[6]),
+            )?;
+            println!("{}", submission.request_id);
+        }
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | validate-production-handover-candidate <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <schedule|execute> <bundle-dir> | authorize-controller-activation <schedule|execute> <bundle-dir> <gate-b-sha256> <authorization.json> | verify-controller-activation-authorization <schedule|execute> <bundle-dir> <gate-b-sha256> <authorization.json> | verify-controller-activation <schedule|execute> <bundle-dir> <artifact.json> <authorization.json> <prepare-receipt.json> <confirmation.json> <prior-schedule-receipt.json|-> <receipt.json> | verify-controller-schedule-receipt-live <bundle-dir> <controller-schedule-receipt.json> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json> | submit-production-canister-upgrade <ic-host> <canister> <expected-principal> <controller.pem> <wasm> <submission.json>".into()),
     }
     Ok(())
 }
@@ -8371,6 +9122,9 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 7,
             )
             .unwrap());
+        let upgrade_identity =
+            Secp256k1Identity::from_private_key(k256::SecretKey::from_slice(&[7u8; 32]).unwrap());
+        let upgrade_sender = upgrade_identity.sender().unwrap();
         let receipt = GateAReceipt {
             schema_version: 2,
             gate_a_manifest_sha256: gate_a.manifest_sha256.clone(),
@@ -8394,7 +9148,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 source_revision: "a".repeat(40),
                 source_tree_sha256: "2".repeat(64),
                 canister_id: profile.bridge_canister_id.clone(),
-                installer_principal: test_principal(31),
+                installer_principal: upgrade_sender.to_text(),
                 module_sha256: profile.bridge_canister_wasm_sha256.clone(),
                 init_candid_sha256: canister_init_candid_sha256,
                 runtime_binding: canister_runtime_binding,
@@ -8485,6 +9239,9 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .sha256 = hex(&Sha256::digest(&final_profile_bytes));
         let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
         fs::write(root.join("gate-a-receipt.json"), &receipt_bytes).unwrap();
+        let gate_a_profile: Profile = serde_json::from_slice(&planned_profile).unwrap();
+        let gate_a_profile_bytes = canonical_bytes(&gate_a_profile).unwrap();
+        fs::write(root.join("gate-a-profile.json"), &gate_a_profile_bytes).unwrap();
         initial_parameters.profile_sha256 = hex(&canonical_sha256(&profile).unwrap());
         let initial_parameters_bytes = serde_json::to_vec(&initial_parameters).unwrap();
         fs::write(
@@ -8492,8 +9249,258 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             &initial_parameters_bytes,
         )
         .unwrap();
-        let transition = PostGateAPolicyTransition {
+        let production_upgrade = ProductionCanisterUpgradeReceipt {
+            // These raw responses are produced by the tracked production upgrade
+            // driver; the fixture uses the same Candid and management-status shapes.
             schema_version: 1,
+            kind: "production-controller-bootstrap-upgrade".into(),
+            source_revision: "a".repeat(40),
+            source_tree_sha256: "2".repeat(64),
+            bridge_canister_id: profile.bridge_canister_id.clone(),
+            install_mode: "upgrade".into(),
+            executing_principal: receipt.canister_install.installer_principal.clone(),
+            executed_at_unix: now - 22,
+            verified_at_unix: now - 21,
+            recovered: false,
+            recovered_at_unix: None,
+            before_controllers: vec![receipt.canister_install.installer_principal.clone()],
+            after_controllers: vec![receipt.canister_install.installer_principal.clone()],
+            before_canister_version: 10,
+            after_canister_version: 11,
+            before_module_sha256: gate_a_profile.bridge_canister_wasm_sha256.clone(),
+            after_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            before_schema_version: CURRENT_STABLE_SCHEMA_VERSION,
+            after_schema_version: CURRENT_STABLE_SCHEMA_VERSION,
+            before_lifecycle: "Bootstrap".into(),
+            after_lifecycle: "Bootstrap".into(),
+            before_deposits_paused: true,
+            after_deposits_paused: true,
+            before_storage_validation_complete: true,
+            after_storage_validation_complete: true,
+            before_management_status_json_hex: String::new(),
+            before_management_status_json_sha256: String::new(),
+            after_management_status_json_hex: String::new(),
+            after_management_status_json_sha256: String::new(),
+            before_bridge_status_response_hex: String::new(),
+            before_bridge_status_response_sha256: String::new(),
+            after_bridge_status_response_hex: String::new(),
+            after_bridge_status_response_sha256: String::new(),
+            before_lifecycle_response_hex: String::new(),
+            before_lifecycle_response_sha256: String::new(),
+            after_lifecycle_response_hex: String::new(),
+            after_lifecycle_response_sha256: String::new(),
+            before_runtime_binding_response_hex: String::new(),
+            before_runtime_binding_response_sha256: String::new(),
+            after_runtime_binding_response_hex: String::new(),
+            after_runtime_binding_response_sha256: String::new(),
+            before_storage_integrity_response_hex: String::new(),
+            before_storage_integrity_response_sha256: String::new(),
+            after_storage_integrity_response_hex: String::new(),
+            after_storage_integrity_response_sha256: String::new(),
+            before_public_state_sha256: String::new(),
+            after_public_state_sha256: String::new(),
+            command_argv: [
+                "bridge-profile",
+                "submit-production-canister-upgrade",
+                gate_a_profile.ic_host.as_str(),
+                profile.bridge_canister_id.as_str(),
+                receipt.canister_install.installer_principal.as_str(),
+                "<production-controller-pem>",
+                "<verified-release-artifact>",
+                "<durable-submission-artifact>",
+                "<durable-response-artifact>",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+            submission_json_hex: String::new(),
+            submission_json_sha256: String::new(),
+            request_id: String::new(),
+            response_stdout_hex: String::new(),
+            response_stdout_sha256: String::new(),
+            response_stderr_hex: String::new(),
+            response_stderr_sha256: hex(&Sha256::digest([])),
+        };
+        let status_raw = Encode!(&matching_handover_status()).unwrap();
+        let lifecycle_raw = Encode!(&ProductionLifecycleResultView::Ok(
+            ProductionLifecycleView::Bootstrap
+        ))
+        .unwrap();
+        let runtime_raw = Encode!(&matching_handover_runtime(
+            &gate_a_profile,
+            &matching_handover_status(),
+        ))
+        .unwrap();
+        let integrity_raw = Encode!(&StorageIntegrityResultView::Ok("ok".into())).unwrap();
+        let before_management_json = serde_json::to_vec(&serde_json::json!({
+            "status": {
+                "settings": {"controllers": [receipt.canister_install.installer_principal.clone()]},
+                "module_hash": profile.bridge_canister_wasm_sha256.clone(),
+                "canister_version": 10,
+            }
+        }))
+        .unwrap();
+        let after_management_json = serde_json::to_vec(&serde_json::json!({
+            "status": {
+                "settings": {"controllers": [receipt.canister_install.installer_principal.clone()]},
+                "module_hash": profile.bridge_canister_wasm_sha256.clone(),
+                "canister_version": 11,
+            }
+        }))
+        .unwrap();
+        let mut production_upgrade = production_upgrade;
+        production_upgrade.before_management_status_json_hex = hex(&before_management_json);
+        production_upgrade.before_management_status_json_sha256 =
+            hex(&Sha256::digest(&before_management_json));
+        production_upgrade.after_management_status_json_hex = hex(&after_management_json);
+        production_upgrade.after_management_status_json_sha256 =
+            hex(&Sha256::digest(&after_management_json));
+        for (before, before_digest, after, after_digest, raw) in [
+            (
+                &mut production_upgrade.before_bridge_status_response_hex,
+                &mut production_upgrade.before_bridge_status_response_sha256,
+                &mut production_upgrade.after_bridge_status_response_hex,
+                &mut production_upgrade.after_bridge_status_response_sha256,
+                &status_raw,
+            ),
+            (
+                &mut production_upgrade.before_lifecycle_response_hex,
+                &mut production_upgrade.before_lifecycle_response_sha256,
+                &mut production_upgrade.after_lifecycle_response_hex,
+                &mut production_upgrade.after_lifecycle_response_sha256,
+                &lifecycle_raw,
+            ),
+            (
+                &mut production_upgrade.before_runtime_binding_response_hex,
+                &mut production_upgrade.before_runtime_binding_response_sha256,
+                &mut production_upgrade.after_runtime_binding_response_hex,
+                &mut production_upgrade.after_runtime_binding_response_sha256,
+                &runtime_raw,
+            ),
+            (
+                &mut production_upgrade.before_storage_integrity_response_hex,
+                &mut production_upgrade.before_storage_integrity_response_sha256,
+                &mut production_upgrade.after_storage_integrity_response_hex,
+                &mut production_upgrade.after_storage_integrity_response_sha256,
+                &integrity_raw,
+            ),
+        ] {
+            *before = hex(raw);
+            *before_digest = hex(&Sha256::digest(raw));
+            *after = hex(raw);
+            *after_digest = hex(&Sha256::digest(raw));
+        }
+        production_upgrade.before_public_state_sha256 = production_upgrade_public_state_sha256(
+            &matching_handover_status(),
+            &[
+                &production_upgrade.before_lifecycle_response_hex,
+                &production_upgrade.before_runtime_binding_response_hex,
+                &production_upgrade.before_storage_integrity_response_hex,
+            ],
+        )
+        .unwrap();
+        production_upgrade.after_public_state_sha256 =
+            production_upgrade.before_public_state_sha256.clone();
+        let canister = Principal::from_text(&profile.bridge_canister_id).unwrap();
+        let wasm = fs::read(root.join("bridge-canister.wasm")).unwrap();
+        let argument = Encode!(&ManagementInstallCodeArgument {
+            mode: ManagementInstallMode::Upgrade,
+            canister_id: canister,
+            wasm_module: wasm.clone(),
+            arg: Vec::new(),
+            sender_canister_version: None,
+        })
+        .unwrap();
+        let signing_agent = Agent::builder()
+            .with_url(&profile.ic_host)
+            .with_identity(upgrade_identity)
+            .build()
+            .unwrap();
+        let signed = signing_agent
+            .update(&Principal::management_canister(), "install_code")
+            .with_effective_canister_id(canister)
+            .with_arg(argument.clone())
+            .sign()
+            .unwrap();
+        let submission = ProductionUpgradeSubmission {
+            schema_version: 1,
+            ic_host: profile.ic_host.clone(),
+            effective_canister_id: profile.bridge_canister_id.clone(),
+            sender_principal: upgrade_sender.to_text(),
+            wasm_sha256: hex(&Sha256::digest(&wasm)),
+            argument_hex: hex(&argument),
+            argument_sha256: hex(&Sha256::digest(&argument)),
+            ingress_expiry: signed.ingress_expiry,
+            request_id: hex(signed.request_id.as_slice()),
+            signed_update_hex: hex(&signed.signed_update),
+            signed_update_sha256: hex(&Sha256::digest(&signed.signed_update)),
+        };
+        let submission_bytes = serde_json::to_vec(&submission).unwrap();
+        let mut forged_submission: Value = serde_json::from_slice(&submission_bytes).unwrap();
+        forged_submission["request_id"] = Value::String("9".repeat(64));
+        assert!(validate_production_upgrade_submission_bytes(
+            &profile.ic_host,
+            canister,
+            upgrade_sender,
+            &wasm,
+            &serde_json::to_vec(&forged_submission).unwrap(),
+        )
+        .is_err());
+        let mut invalid_signature_envelope: Envelope<'_> =
+            serde_cbor::from_slice(&signed.signed_update).unwrap();
+        invalid_signature_envelope.sender_sig.as_mut().unwrap()[0] ^= 1;
+        let invalid_signed_update = serde_cbor::to_vec(&invalid_signature_envelope).unwrap();
+        let mut invalid_signature_submission: Value =
+            serde_json::from_slice(&submission_bytes).unwrap();
+        invalid_signature_submission["signed_update_hex"] =
+            Value::String(hex(&invalid_signed_update));
+        invalid_signature_submission["signed_update_sha256"] =
+            Value::String(hex(&Sha256::digest(&invalid_signed_update)));
+        assert!(validate_production_upgrade_submission_bytes(
+            &profile.ic_host,
+            canister,
+            upgrade_sender,
+            &wasm,
+            &serde_json::to_vec(&invalid_signature_submission).unwrap(),
+        )
+        .is_err());
+        let executed_at = production_upgrade.executed_at_unix;
+        let executed_at_ns = executed_at * 1_000_000_000;
+        assert!(!production_upgrade_ingress_window_valid(
+            executed_at,
+            executed_at_ns
+        ));
+        assert!(production_upgrade_ingress_window_valid(
+            executed_at,
+            executed_at_ns + 1
+        ));
+        assert!(production_upgrade_ingress_window_valid(
+            executed_at,
+            executed_at_ns + 5 * 60 * 1_000_000_000
+        ));
+        assert!(!production_upgrade_ingress_window_valid(
+            executed_at,
+            executed_at_ns + 5 * 60 * 1_000_000_000 + 1
+        ));
+        assert!(!production_upgrade_ingress_window_valid(u64::MAX, u64::MAX));
+        production_upgrade.submission_json_hex = hex(&submission_bytes);
+        production_upgrade.submission_json_sha256 = hex(&Sha256::digest(&submission_bytes));
+        production_upgrade.request_id = submission.request_id.clone();
+        let response_stdout = format!(
+            "request_id={}\nresponse_hex=\nsender_principal={}\nwasm_sha256={}\n",
+            submission.request_id, submission.sender_principal, submission.wasm_sha256
+        );
+        production_upgrade.response_stdout_hex = hex(response_stdout.as_bytes());
+        production_upgrade.response_stdout_sha256 =
+            hex(&Sha256::digest(response_stdout.as_bytes()));
+        let production_upgrade_bytes = serde_json::to_vec(&production_upgrade).unwrap();
+        fs::write(
+            root.join("production-canister-upgrade-receipt.json"),
+            &production_upgrade_bytes,
+        )
+        .unwrap();
+        let transition = PostGateAPolicyTransition {
+            schema_version: 2,
             reason: "activate-before-production-measurements".into(),
             observed_at_unix: now - 20,
             gate_a_manifest_sha256: receipt.gate_a_manifest_sha256.clone(),
@@ -8506,7 +9513,11 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             bridge_contract: profile.bridge_contract.clone(),
             bsns_contract: profile.bsns_contract.clone(),
             timelock_contract: profile.timelock.address.clone(),
-            bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            from_bridge_canister_wasm_sha256: gate_a_profile.bridge_canister_wasm_sha256.clone(),
+            to_bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            production_canister_upgrade_receipt_sha256: hex(&Sha256::digest(
+                &production_upgrade_bytes,
+            )),
             bridge_runtime_bytecode_sha256: profile.bridge_runtime_bytecode_sha256.clone(),
             bsns_runtime_bytecode_sha256: profile.bsns_runtime_bytecode_sha256.clone(),
             bsns_runtime_template_sha256: profile.bsns_runtime_template_sha256.clone(),
@@ -8524,6 +9535,14 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         artifacts.push(ArtifactDigest {
             path: "gate-a-receipt.json".into(),
             sha256: hex(&Sha256::digest(receipt_bytes)),
+        });
+        artifacts.push(ArtifactDigest {
+            path: "gate-a-profile.json".into(),
+            sha256: hex(&Sha256::digest(gate_a_profile_bytes)),
+        });
+        artifacts.push(ArtifactDigest {
+            path: "production-canister-upgrade-receipt.json".into(),
+            sha256: hex(&Sha256::digest(production_upgrade_bytes)),
         });
         artifacts.push(ArtifactDigest {
             path: "initial-operational-parameters.json".into(),
@@ -8550,15 +9569,12 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
-        let mut expected_gate_a_profile = profile.clone();
-        expected_gate_a_profile.deployment_block = 0;
-        set_production_bootstrap_operational_config(&mut expected_gate_a_profile);
         assert_eq!(
             receipt.gate_a_profile_sha256,
-            hex(&canonical_sha256(&expected_gate_a_profile).unwrap())
+            hex(&canonical_sha256(&gate_a_profile).unwrap())
         );
-        let mut expected_post_deploy_profile = profile.clone();
-        set_production_bootstrap_operational_config(&mut expected_post_deploy_profile);
+        let mut expected_post_deploy_profile = gate_a_profile.clone();
+        expected_post_deploy_profile.deployment_block = profile.deployment_block;
         assert_eq!(
             serde_json::to_value(&gate_a_post_deploy_profile).unwrap(),
             serde_json::to_value(&expected_post_deploy_profile).unwrap()
@@ -8570,6 +9586,42 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             ))
         );
         let bundle = validate_bundle(&root, true).unwrap();
+        let valid_manifest_bytes = fs::read(root.join("release-manifest.json")).unwrap();
+        let valid_production_upgrade_bytes =
+            fs::read(root.join("production-canister-upgrade-receipt.json")).unwrap();
+        let mut reinstall_upgrade: Value =
+            serde_json::from_slice(&valid_production_upgrade_bytes).unwrap();
+        reinstall_upgrade["install_mode"] = Value::String("reinstall".into());
+        let reinstall_upgrade_bytes = serde_json::to_vec(&reinstall_upgrade).unwrap();
+        fs::write(
+            root.join("production-canister-upgrade-receipt.json"),
+            &reinstall_upgrade_bytes,
+        )
+        .unwrap();
+        let mut rehashed_manifest: ReleaseManifest =
+            serde_json::from_slice(&valid_manifest_bytes).unwrap();
+        rehashed_manifest
+            .artifacts
+            .iter_mut()
+            .find(|artifact| artifact.path == "production-canister-upgrade-receipt.json")
+            .unwrap()
+            .sha256 = hex(&Sha256::digest(&reinstall_upgrade_bytes));
+        fs::write(
+            root.join("release-manifest.json"),
+            serde_json::to_vec(&rehashed_manifest).unwrap(),
+        )
+        .unwrap();
+        let reinstall_error = match validate_bundle(&root, true) {
+            Ok(_) => panic!("Gate B accepted reinstall evidence"),
+            Err(error) => error,
+        };
+        assert!(reinstall_error.contains("production upgrade evidence is incomplete"));
+        fs::write(
+            root.join("production-canister-upgrade-receipt.json"),
+            valid_production_upgrade_bytes,
+        )
+        .unwrap();
+        fs::write(root.join("release-manifest.json"), valid_manifest_bytes).unwrap();
         // Cryptographic live inputs are verified against the network by `verify-live`;
         // this fixture exercises only deterministic bundle inputs.
         let installer =

@@ -173,6 +173,7 @@ run_versions() {
   "$ROOT/scripts/test_production_canister_install.sh"
   "$ROOT/scripts/test_production_release.sh"
   "$ROOT/scripts/test_production_drivers.sh"
+  "$ROOT/scripts/test_production_canister_upgrade.sh"
   "$ROOT/scripts/test_production_activation.sh"
   "$ROOT/scripts/test_production_handover.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"

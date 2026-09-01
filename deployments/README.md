@@ -25,35 +25,42 @@ scripts/production-release.sh deploy --bundle evidence/release-id \
 
 Gate AとBaseのpause配置まではprofileにも同じBootstrap運用値を要求する。初回Governance operation IDはstable stateの単調counter初期値0である。配置後は、このIDとdeployment instanceから導出したsalt、Governance Operator sender、Timelock target、value 0、Bridgeの2つのunpause payload、zero predecessor、24時間delayから再構成できるexact `scheduleBatch` / `executeBatch` calldataのgas estimate、10件以上の異なるFinalized fee block、idle cycles burnを`initial-operational-parameters.json`へ記録する。Gate B profileでは固定式から導出したgovernance EVM fee 8項目、`cycles_floor`、`settlement_cycle_ceiling`だけを置換し、それ以外のGate A profile driftを拒否する。
 
-配置後はproduction installerを単独controllerとして残したまま、Canisterをpause状態で運用設定を一度だけsealする。Gate BはGate A lineage、`initial-operational-parameters.json`、fresh Finalized attestation、pause、reserve、live module hash、installer単独controllerを再検証する。合格後、既存SNS Governance principalが固定`schedule_activation` APIを呼ぶproposalを提出し、24時間後のfresh Gate Bとschedule receipt検証後に固定`execute_activation` APIを呼ぶ。提出成功だけでは完了扱いにせず、`verify-activation`がFinalized Base結果とCanister状態を束縛したreceiptを発行するまでpauseを維持する。7日計測、keeper drill、monitoring receipt、SNS Root単独controllerへのhandover、SNS同一Wasm upgradeはunpause後のGate Cに限る。任意のunpause commandは受け付けない。
+配置後はproduction installerを単独controllerとして残したまま、Canisterをpause状態で運用設定を一度だけsealする。Gate BはGate A lineage、`initial-operational-parameters.json`、fresh Finalized attestation、pause、reserve、live module hash、installer単独controllerを再検証する。合格後、production controllerが固定`schedule_activation`をprepareし、固定artifactを匿名relay、固定confirmation relayerがconfirmする。24時間後のfresh Gate Bとcontroller schedule receipt検証後、同じ三段階で固定`execute_activation`を実行する。confirm成功だけでは完了扱いにせず、`verify-controller-activation`がFinalized Base結果とCanister状態を束縛したreceiptを発行するまでpauseを維持する。SNS custom functionは初回activationに使用しない。7日計測、keeper drill、monitoring receipt、SNS Root単独controllerへのhandover、SNS同一Wasm upgradeはunpause後のGate Cに限る。任意のunpause commandは受け付けない。
 
 ```sh
-scripts/production-release.sh activate --phase schedule --bundle evidence/release-id \
+COMMON=(--phase schedule --bundle evidence/release-id \
   --release-inputs deployments/generated/release-id \
   --receipt evidence/release-id/gate-a-receipt.json \
-  --submission evidence/activation/schedule-submission.json \
-  --sns-identity proposer --sns-neuron-subaccount 64-hex \
-  --sns-proposer-principal principal \
-  --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION \
-  -- scripts/production-activate-driver.sh
+  --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION)
+ARTIFACT=evidence/activation/schedule-artifact.json
 
-cargo run -p bridge-profile -- verify-activation schedule evidence/release-id \
-  evidence/activation/schedule-submission.json - evidence/activation/schedule-receipt.json
+scripts/production-release.sh activate "${COMMON[@]}" --step prepare \
+  --artifact "$ARTIFACT" --controller-pem /secure/controller.pem \
+  --confirmation-relayer-identity confirmation-relayer \
+  -- scripts/production-activate-driver.sh
+BASE_RPC_URL=https://reviewed-base-rpc.example \
+  scripts/production-release.sh activate "${COMMON[@]}" --step relay \
+  --artifact "$ARTIFACT" -- scripts/production-activate-driver.sh
+scripts/production-release.sh activate "${COMMON[@]}" --step confirm \
+  --artifact "$ARTIFACT" --confirmation-relayer-pem /secure/confirmation-relayer.pem \
+  --confirmation-receipt evidence/activation/schedule-confirmation.json \
+  --activation-receipt evidence/activation/schedule-receipt.json \
+  -- scripts/production-activate-driver.sh
 ```
 
-24時間後の`execute`はfresh Gate Bを要求し、`--prior-schedule-receipt`と`UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE`を必須とする。release wrapperはproposal提出前に`verify-schedule-receipt-live`を実行し、receipt内部digest、認証済みSNS/Canister状態、canonical Finalized Base Timelock pending状態が一致しなければ停止する。execute proposalの後も、`verify-activation execute ... schedule-receipt.json execute-receipt.json`が成功するまで資産受付開始を完了扱いにしない。
+24時間後の`execute`はfresh Gate Bを要求し、全stepで`--prior-schedule-receipt`と`UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE`を必須とする。release wrapperはprepare前に`verify-controller-schedule-receipt-live`を実行し、receipt内部digest、installer単独controller、module hash、canonical Finalized Base Timelock pending状態が一致しなければ停止する。confirm後も`verify-controller-activation execute`がcontroller activation receiptを発行するまで資産受付開始を完了扱いにしない。pending transactionのfee replacementはrelay前に`--step replace`をproduction controllerで実行し、元artifact、authorization、binding、profileの回数・fee上限へ束縛した新しいartifactを使用する。
 
 bundle欠落、test profile、source/profile drift、Gate失敗では後続コマンドを起動しない。Gate Aのdeployコマンドにunpauseまたはresume操作を混在させることも拒否する。
 Gate A profileの`deployment_block`は未配置を示す`0`に固定する。deploy前にwrapperはCanister install receiptをtyped profileとclean sourceへ照合する。Base transaction送信直前には、そのreceiptもpredeploy verifierへ渡し、certified `read_state`のmodule hashがreceiptとprofileのWasm SHA-256の両方へ一致し、controller集合がreceiptのinstaller principal単独であることを再確認する。deploy後、wrapperは実receipt blockを入れた`<receipt>.post-deploy-profile.json`を生成し、そのSHA-256とinstall receipt全体をschema 2 Gate A receiptへ固定する。Gate B profileはこのpost-deploy profileを基礎に、`parameters`内のgovernance EVM fee 8項目、`cycles_floor`、`settlement_cycle_ceiling`だけをraw計測の導出値へ置換する。validatorはこの10項目をBootstrap値へ戻してpost-deploy hashを照合し、さらに`deployment_block`を0へ戻してGate A profile hashを照合する。その他のfield driftは拒否する。Gate B manifestは`parent_gate_a_manifest_sha256`、source/code binding、実deployment block、install時のCanister identity/module/runtime/pauseも一致しなければならない。staging monitor drillの直接RPC検証は`production-live-preflight.sh verify-monitor-drill BUNDLE`だけを使い、本番Base状態の正本にはしない。
 外部`--receipt`はGate B bundle内の`gate-a-receipt.json`とbyte単位で一致しなければならない。
 
-初回contract deployだけ一時EOAを使用し、deployerへroleを残さない。以後のBase管理操作はBridge Canisterがrole別derivationで導出するGovernance Operator、Runtime Administrator、Independent Cancellerから送信する。production IC操作は`BRIDGE_ICP_IDENTITY`とICP CLIへ統一し、`dfx`を使用しない。Timelock activationはSNS proposalからCanisterの固定schedule/execute APIを呼ぶ二段階とし、各段階でlive preflightを再実行する。失敗または曖昧結果ではIC/Base pauseを維持し、同じsigned transactionを追跡する。
+初回contract deployだけ一時EOAを使用し、deployerへroleを残さない。以後のBase管理操作はBridge Canisterがrole別derivationで導出するGovernance Operator、Runtime Administrator、Independent Cancellerから送信する。production IC操作は`BRIDGE_ICP_IDENTITY`とICP CLIへ統一し、`dfx`を使用しない。初回Timelock activationはproduction controller prepare、匿名relay、固定confirmation relayer confirmによるschedule/execute二段階とし、各段階でlive preflightを再実行する。Activated後の再activationは既存Governance principal認可に戻す。失敗または曖昧結果ではIC/Base pauseを維持し、同じsigned transactionを追跡する。
 
 production CanisterはGate A確定前にpause状態でinstallし、固有のMint Signer、Governance Operator、Runtime Administrator、Independent Cancellerをprofileへ固定する。Gate A deploy driverは外部指定のconstructor JSONを使用せず、固定sourceからbuildした`bridge-profile`でbundle内profileを一時directoryへ再生成し、稼働中Canisterの4 role addressとpause状態を照合してからcontract deploymentへ渡す。Canisterの再installやdeployment binding APIは実行しない。
 
 profileはCanisterから導出してBaseのFinalized attestationと照合する4 role address、current stable schema、公式EVM RPC Canister ID、単一emergency pause principal、Wasm/bytecode hash、Timelock、固定limit、fee/liveness/reserve関係を含む。Timelock delayはprofileとlive stateの完全一致を要求する。`timelock.runtime_code_hash`は`0x`付き32-byte Keccak runtime code hashであり、生成されたBridge constructor引数、配置直後の実code hash、Gate B Finalized attestationの三者が一致しなければならない。配置後にGate A receiptがBridge/Timelockのcanonical deployment transaction・blockを記録し、Gate Bは公式EVM RPC Canister経由でcurrent runtimeとroleを再照合する。監視欄は通知routingのSHA-256と、検知5分、担当確認15分、Base/IC双方pause 60分のSLOを正確に記録する。
 
-Gate Aはpre-deploy profileとBridge/BSNSの5 build artifact、合計6 artifactを束縛する。Canister install receiptは7番目のartifactへ追加せず、schema 2 Gate A receipt内へ完全に埋め込み、Gate Bへ推移的に継承する。Gate BはGate Aの6 artifactに、RPC rehearsal、monitor drill、初期運用値、provider independence、UI、Gate A receipt、post-Gate-A policy transitionを加えた正確に13 artifactである。controller handover、SNS upgrade、keeper drill、monitoring receipt、7日計測はGate Bに含めず、稼働後のGate Cで要求する。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、認証済みCanister公開設定、freshなFinalized Base attestationの三者一致で検証する。x402はBridgeの配置・activation条件ではない。
+Gate Aはpre-deploy profileとBridge/BSNSの5 build artifact、合計6 artifactを束縛する。Canister install receiptは7番目のartifactへ追加せず、schema 2 Gate A receipt内へ完全に埋め込み、Gate Bへ推移的に継承する。Gate Bはcurrent releaseの6 build artifactに、RPC rehearsal、monitor drill、初期運用値、provider independence、UI、Gate A receipt、不変Gate A profile、production controller upgrade receipt、post-Gate-A policy transitionを加えた正確に15 artifactである。Gate AでinstallしたWasmとcontroller-bootstrap Wasmが異なる場合は、typed upgrade receiptがsole controller、通常upgrade、前後module、schema、pause、storage/public-state continuityを証明し、policy transitionがそのreceipt hashを固定する。controller handover、SNS upgrade、keeper drill、monitoring receipt、7日計測はGate Bに含めず、稼働後のGate Cで要求する。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、認証済みCanister公開設定、freshなFinalized Base attestationの三者一致で検証する。x402はBridgeの配置・activation条件ではない。
 
 `validate-bundle --offline`はGate Aの正式なoffline認可判定として`gate_a=pass authorizing=true`だけを成功出力する。`verify-live`はGate Bの構造に加え、5分以内のactivation attestation、公開RuntimeBinding、reserve、production installer identity単独controller、live module hashを認証済みCanister応答で照合する。schedule/execute receiptの検証もhandover前は同じcontroller条件を使用する。SNS Root単独controllerと同一Wasm SNS upgradeはGate C後のhandover検証へ分離する。権限principal、rate/cycles policy、Governance fee、固定Ledger feeは、公開RuntimeBindingの`operational_config_sha256`をrelease profileから再構成した値と照合する。実値の確認はcontroller/governance限定`get_operational_config`を使う。認証またはpostconditionが欠ければ非ゼロ終了する。
 

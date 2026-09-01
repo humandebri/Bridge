@@ -31,7 +31,10 @@ fn copy_dir(from:&Path,to:&Path){fs::create_dir_all(to).unwrap();for e in fs::re
 fn main(){let a:Vec<String>=env::args().skip(1).collect();fs::OpenOptions::new().create(true).append(true).open(env::var("GATE_CALLS").unwrap()).and_then(|mut f|{use std::io::Write;writeln!(f,"{}",a.join(" "))}).unwrap();if a[0].starts_with("render-"){copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="validate"{println!("{:064}",2);return}if a[0]=="validate-bundle"{println!("gate_a=pass authorizing={} manifest_sha256={:064}",env::var("GATE_AUTHORIZING").unwrap_or_else(|_|"true".into()),1)}else{println!("gate=pass manifest_sha256={:064}",1)}if env::var("GATE_RESULT").as_deref()==Ok("fail"){std::process::exit(1)}}
 RS
 printf '%s\n' '#!/usr/bin/env bash' '[[ -f "$BRIDGE_CANISTER_INSTALL_RECEIPT" ]]' 'touch "$ACTION_MARKER"' 'printf '\''{"bridge":{"transaction_hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","block_number":1,"block_hash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"timelock":{"transaction_hash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","block_number":1,"block_hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}}\n'\'' >"$BRIDGE_DEPLOYMENT_BINDING_FILE"' 'rm "$BRIDGE_DEPLOYMENT_RESERVATION_FILE"' >"$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
-printf '%s\n' '#!/usr/bin/env bash' ': "${BRIDGE_CONFIRMATION_RELAYER_IDENTITY:?}"' 'touch "$ACTION_MARKER"' '[[ "${ACTION_FAIL:-0}" == 0 ]] || exit 23' >"$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'if [[ "$BRIDGE_ACTIVATION_STEP" == prepare ]]; then : "${BRIDGE_CONFIRMATION_RELAYER_IDENTITY:?}"; fi' \
+  'if [[ "$BRIDGE_ACTIVATION_STEP" == replace ]]; then : "${BRIDGE_ACTIVATION_REPLACEMENT_ARTIFACT:?}" "${BRIDGE_ACTIVATION_REPLACEMENT_MAX_FEE:?}" "${BRIDGE_ACTIVATION_REPLACEMENT_PRIORITY_FEE:?}"; fi' \
+  'touch "$ACTION_MARKER"' '[[ "${ACTION_FAIL:-0}" == 0 ]] || exit 23' >"$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$TEST_TMP_ROOT/source/scripts/production-live-preflight.sh"
 printf '%s\n' 'process.exit(0)' >"$TEST_TMP_ROOT/source/ui/scripts/production-assets.mjs"
 cp "$ROOT/scripts/production-release.sh" "$ROOT/scripts/production-validation.sh" "$TEST_TMP_ROOT/source/scripts/"
@@ -164,15 +167,22 @@ python3 -c 'import json,sys; json.dump({"profile_file_sha256":sys.argv[2]},open(
   "$TEST_TMP_ROOT/release-inputs/release-inputs-manifest.json" "$POST_PROFILE_SHA256"
 cp "$TEST_TMP_ROOT/receipt.json" "$TEST_TMP_ROOT/bundle-b/gate-a-receipt.json"
 GATE_RECEIPT_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/gate-a-receipt.json" | awk '{print $1}')"
+printf '{"bridge_canister_wasm_sha256":"%s","bridge_runtime_bytecode_sha256":"%s"}\n' \
+  "$WASM_SHA256" "$RUNTIME_SHA256" >"$TEST_TMP_ROOT/bundle-b/gate-a-profile.json"
+GATE_A_PROFILE_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/gate-a-profile.json" | awk '{print $1}')"
+printf '{}\n' >"$TEST_TMP_ROOT/bundle-b/production-canister-upgrade-receipt.json"
+UPGRADE_RECEIPT_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/production-canister-upgrade-receipt.json" | awk '{print $1}')"
 printf '{"from_source_revision":"%s","from_source_tree_sha256":"%s","to_source_revision":"%s","to_source_tree_sha256":"%s"}\n' \
   "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" \
   >"$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json"
 TRANSITION_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" | awk '{print $1}')"
-python3 - "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$GATE_RECEIPT_SHA256" "$TRANSITION_SHA256" <<'PY'
+python3 - "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$GATE_RECEIPT_SHA256" "$GATE_A_PROFILE_SHA256" "$UPGRADE_RECEIPT_SHA256" "$TRANSITION_SHA256" <<'PY'
 import json,sys
 p=sys.argv[1]; value=json.load(open(p)); value['artifacts'].extend([
     {'path':'gate-a-receipt.json','sha256':sys.argv[2]},
-    {'path':'post-gate-a-policy-transition.json','sha256':sys.argv[3]},
+    {'path':'gate-a-profile.json','sha256':sys.argv[3]},
+    {'path':'production-canister-upgrade-receipt.json','sha256':sys.argv[4]},
+    {'path':'post-gate-a-policy-transition.json','sha256':sys.argv[5]},
 ])
 json.dump(value,open(p,'w'),sort_keys=True,separators=(',',':'))
 PY
@@ -229,6 +239,23 @@ else
 fi
 [[ -e "$TEST_TMP_ROOT/activation-failed" ]]
 [[ -z "$(find "$TEST_TMP_ROOT/release-scratch" -mindepth 1 -maxdepth 1 -print -quit)" ]]
+
+printf '{}\n' >"$TEST_TMP_ROOT/schedule-artifact.json"
+expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" --phase schedule --step replace \
+  --artifact "$TEST_TMP_ROOT/schedule-artifact.json" --controller-pem "$TEST_TMP_ROOT/controller.pem" \
+  --replacement-artifact "$TEST_TMP_ROOT/schedule-replacement.json" \
+  --replacement-max-fee 2 --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION \
+  -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+ACTION_MARKER="$TEST_TMP_ROOT/replaced" run_release activate \
+  --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" --phase schedule --step replace \
+  --artifact "$TEST_TMP_ROOT/schedule-artifact.json" --controller-pem "$TEST_TMP_ROOT/controller.pem" \
+  --replacement-artifact "$TEST_TMP_ROOT/schedule-replacement.json" \
+  --replacement-max-fee 2 --replacement-priority-fee 1 \
+  --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION \
+  -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+[[ -e "$TEST_TMP_ROOT/replaced" ]]
 
 printf '{"phase":"schedule","release_id":"release-test","source_revision":"%s"}\n' \
   "$SOURCE_REVISION" >"$TEST_TMP_ROOT/schedule-receipt.json"
