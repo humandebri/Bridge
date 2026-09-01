@@ -30,4 +30,16 @@ describe("Base Sepolia asset profile template", () => {
     expect(manifest.scripts.deploy).toContain("$BRIDGE_UI_RUNTIME_PROFILE_FILE")
     expect(manifest.scripts.deploy).not.toContain("pnpm run build && wrangler deploy")
   })
+
+  it("keeps the production custom domain out of staging deployments", async () => {
+    const productionConfig = await readFile(path.resolve(import.meta.dirname, "../wrangler.production.jsonc"), "utf8")
+    const stagingConfig = await readFile(path.resolve(import.meta.dirname, "../wrangler.jsonc"), "utf8")
+    const productionAssets = await readFile(path.resolve(import.meta.dirname, "production-assets.mjs"), "utf8")
+    const stagingAssets = await readFile(path.resolve(import.meta.dirname, "staging-assets.mjs"), "utf8")
+    expect(productionConfig).toContain("bridge.kinic.xyz")
+    expect(stagingConfig).not.toContain("bridge.kinic.xyz")
+    expect(productionAssets).toContain("wrangler.production.jsonc")
+    expect(stagingAssets).toContain('resolve(uiRoot, "wrangler.jsonc")')
+    expect(stagingAssets).not.toContain("wrangler.production.jsonc")
+  })
 })

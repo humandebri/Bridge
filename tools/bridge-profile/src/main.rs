@@ -35,15 +35,11 @@ const GATE_A_ARTIFACTS: [&str; 6] = [
     "bsns-runtime.bin",
     "bsns-runtime-layout.json",
 ];
-const GATE_B_ARTIFACTS: [&str; 16] = [
+const GATE_B_ARTIFACTS: [&str; 13] = [
     "profile.json",
     "rpc-e2e.json",
-    "controller-handover.json",
-    "sns-upgrade.json",
     "monitor-drill.json",
-    "keeper-drill.json",
-    "monitoring-receipt.json",
-    "fee-cycles-measurements.json",
+    "initial-operational-parameters.json",
     "provider-independence.json",
     "ui-assets.json",
     "bridge-canister.wasm",
@@ -52,6 +48,7 @@ const GATE_B_ARTIFACTS: [&str; 16] = [
     "bsns-runtime.bin",
     "bsns-runtime-layout.json",
     "gate-a-receipt.json",
+    "post-gate-a-policy-transition.json",
 ];
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -282,6 +279,110 @@ struct Evidence {
     settlement_cycle_samples: Vec<MeasurementSample>,
     baseline_cycles_sample: MeasurementSample,
     expected_daily_settlements: u128,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct InitialGasEstimate {
+    action: String,
+    sender: String,
+    target: String,
+    #[serde(with = "u128_string")]
+    value_wei: u128,
+    calldata_hex: String,
+    #[serde(with = "u128_string")]
+    gas: u128,
+    block_number: u64,
+    block_hash: String,
+    observed_at_unix: u64,
+    source_ref: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct InitialFeeSample {
+    #[serde(with = "u128_string")]
+    base_fee_per_gas: u128,
+    #[serde(with = "u128_string")]
+    priority_fee_per_gas: u128,
+    #[serde(with = "u128_string")]
+    l1_fee_upper_bound_wei: u128,
+    block_number: u64,
+    block_hash: String,
+    observed_at_unix: u64,
+    source_ref: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct InitialOperationalParameters {
+    schema_version: u8,
+    environment: String,
+    chain_id: u64,
+    bridge_canister_id: String,
+    bridge_contract: String,
+    timelock_contract: String,
+    governance_sender: String,
+    deployment_instance_id: String,
+    governance_operation_id: u64,
+    operation_salt: String,
+    timelock_delay_seconds: u64,
+    profile_sha256: String,
+    gas_estimates: Vec<InitialGasEstimate>,
+    fee_samples: Vec<InitialFeeSample>,
+    #[serde(with = "u128_string")]
+    idle_cycles_burned_per_day: u128,
+    idle_cycles_observed_at_unix: u64,
+    idle_cycles_source_ref: String,
+    expected_daily_settlements: u128,
+    #[serde(with = "u128_string")]
+    settlement_cycle_ceiling: u128,
+    derived: InitialDerivedParameters,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct InitialDerivedParameters {
+    #[serde(with = "u128_string")]
+    gas_limit_ceiling: u128,
+    #[serde(with = "u128_string")]
+    max_fee_per_gas_ceiling: u128,
+    #[serde(with = "u128_string")]
+    max_priority_fee_per_gas_ceiling: u128,
+    #[serde(with = "u128_string")]
+    l1_fee_per_transaction_ceiling_wei: u128,
+    quote_validity_seconds: u64,
+    gas_limit_multiplier_bps: u32,
+    base_fee_multiplier_bps: u32,
+    l1_fee_multiplier_bps: u32,
+    #[serde(with = "u128_string")]
+    cycles_floor: u128,
+    #[serde(with = "u128_string")]
+    settlement_cycle_ceiling: u128,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PostGateAPolicyTransition {
+    schema_version: u8,
+    reason: String,
+    observed_at_unix: u64,
+    gate_a_manifest_sha256: String,
+    gate_a_receipt_sha256: String,
+    from_source_revision: String,
+    from_source_tree_sha256: String,
+    to_source_revision: String,
+    to_source_tree_sha256: String,
+    bridge_canister_id: String,
+    bridge_contract: String,
+    bsns_contract: String,
+    timelock_contract: String,
+    bridge_canister_wasm_sha256: String,
+    bridge_runtime_bytecode_sha256: String,
+    bsns_runtime_bytecode_sha256: String,
+    bsns_runtime_template_sha256: String,
+    bridge_deployment_transaction_hash: String,
+    timelock_deployment_transaction_hash: String,
 }
 
 #[derive(Serialize, Debug, PartialEq, Eq)]
@@ -1462,6 +1563,216 @@ fn validate_sample_sources<'a>(sources: impl Iterator<Item = &'a str>) -> Result
     Ok(())
 }
 
+fn derive_initial_operational_parameters(
+    evidence: &InitialOperationalParameters,
+) -> Result<InitialDerivedParameters, String> {
+    if evidence.schema_version != 1
+        || evidence.environment != "mainnet-candidate"
+        || evidence.chain_id != 8_453
+        || evidence.gas_estimates.len() < 2
+        || evidence.fee_samples.len() < 10
+        || evidence.idle_cycles_burned_per_day == 0
+        || evidence.expected_daily_settlements != 1
+        || evidence.settlement_cycle_ceiling != 5_000_000_000
+    {
+        return Err("invalid initial operational parameter evidence".into());
+    }
+    let deployment_instance_id: [u8; 32] = decode_hex(&evidence.deployment_instance_id)?
+        .try_into()
+        .map_err(|_| "invalid initial deployment instance ID")?;
+    let bridge = decode_address(&evidence.bridge_contract)?;
+    let operation_salt =
+        initial_activation_salt(deployment_instance_id, evidence.governance_operation_id);
+    if evidence.timelock_delay_seconds != 86_400
+        || evidence.governance_operation_id != 0
+        || !evm_address(&evidence.governance_sender)
+        || !valid_nonzero_hash32(&evidence.deployment_instance_id)
+        || !evidence
+            .operation_salt
+            .eq_ignore_ascii_case(&format!("0x{}", hex(&operation_salt)))
+    {
+        return Err("invalid initial activation operation binding".into());
+    }
+    let actions = evidence
+        .gas_estimates
+        .iter()
+        .map(|sample| sample.action.as_str())
+        .collect::<BTreeSet<_>>();
+    let finalized_blocks = evidence
+        .fee_samples
+        .iter()
+        .map(|sample| (sample.block_number, sample.block_hash.to_ascii_lowercase()))
+        .collect::<BTreeSet<_>>();
+    if actions != BTreeSet::from(["execute_activation", "schedule_activation"])
+        || evidence.gas_estimates.iter().any(|sample| {
+            let expected_calldata = initial_activation_calldata(
+                &sample.action,
+                bridge,
+                operation_salt,
+                evidence.timelock_delay_seconds,
+            );
+            sample.gas == 0
+                || !sample
+                    .sender
+                    .eq_ignore_ascii_case(&evidence.governance_sender)
+                || !sample
+                    .target
+                    .eq_ignore_ascii_case(&evidence.timelock_contract)
+                || sample.value_wei != 0
+                || expected_calldata.is_err()
+                || !expected_calldata
+                    .as_deref()
+                    .is_ok_and(|expected| sample.calldata_hex.eq_ignore_ascii_case(expected))
+                || sample.block_number == 0
+                || !valid_nonzero_hash32(&sample.block_hash)
+                || sample.observed_at_unix == 0
+                || sample.source_ref.trim() != sample.source_ref
+                || sample.source_ref.is_empty()
+        })
+        || evidence.fee_samples.iter().any(|sample| {
+            sample.base_fee_per_gas == 0
+                || sample.priority_fee_per_gas == 0
+                || sample.l1_fee_upper_bound_wei == 0
+                || sample.block_number == 0
+                || !valid_nonzero_hash32(&sample.block_hash)
+                || sample.observed_at_unix == 0
+        })
+        || finalized_blocks.len() < 10
+    {
+        return Err("initial parameter samples are incomplete".into());
+    }
+    validate_sample_sources(
+        evidence
+            .gas_estimates
+            .iter()
+            .map(|sample| sample.source_ref.as_str()),
+    )?;
+    validate_sample_sources(
+        evidence
+            .fee_samples
+            .iter()
+            .map(|sample| sample.source_ref.as_str()),
+    )?;
+    validate_sample_sources(std::iter::once(evidence.idle_cycles_source_ref.as_str()))?;
+    let gas_max = evidence
+        .gas_estimates
+        .iter()
+        .map(|sample| sample.gas)
+        .max()
+        .ok_or("missing activation gas estimates")?;
+    let gas_limit_ceiling = checked_ratio_ceil(gas_max, 130, 100)?
+        .checked_add(999)
+        .map(|value| value / 1_000 * 1_000)
+        .ok_or("initial gas limit overflow")?;
+    let priority = evidence
+        .fee_samples
+        .iter()
+        .map(|sample| sample.priority_fee_per_gas)
+        .collect::<Vec<_>>();
+    let base = evidence
+        .fee_samples
+        .iter()
+        .map(|sample| sample.base_fee_per_gas)
+        .collect::<Vec<_>>();
+    let l1 = evidence
+        .fee_samples
+        .iter()
+        .map(|sample| sample.l1_fee_upper_bound_wei)
+        .collect::<Vec<_>>();
+    let max_priority_fee_per_gas_ceiling = percentile(&priority, 95, 100)?
+        .checked_mul(4)
+        .ok_or("initial priority fee overflow")?;
+    let max_fee_per_gas_ceiling = percentile(&base, 99, 100)?
+        .checked_mul(20)
+        .ok_or("initial max fee overflow")?;
+    let l1_fee_per_transaction_ceiling_wei = percentile(&l1, 99, 100)?
+        .checked_mul(10)
+        .ok_or("initial L1 fee overflow")?;
+    let cycles_floor = evidence
+        .settlement_cycle_ceiling
+        .checked_mul(evidence.expected_daily_settlements)
+        .and_then(|value| value.checked_add(evidence.idle_cycles_burned_per_day))
+        .and_then(|value| value.checked_mul(30))
+        .and_then(|value| value.checked_mul(2))
+        .ok_or("initial cycles floor overflow")?;
+    Ok(InitialDerivedParameters {
+        gas_limit_ceiling,
+        max_fee_per_gas_ceiling,
+        max_priority_fee_per_gas_ceiling,
+        l1_fee_per_transaction_ceiling_wei,
+        quote_validity_seconds: 90,
+        gas_limit_multiplier_bps: 13_000,
+        base_fee_multiplier_bps: 60_000,
+        l1_fee_multiplier_bps: 15_000,
+        cycles_floor,
+        settlement_cycle_ceiling: evidence.settlement_cycle_ceiling,
+    })
+}
+
+fn validate_initial_operational_parameters(
+    evidence: &InitialOperationalParameters,
+    profile: &Profile,
+    manifest_created_at_unix: u64,
+    now: u64,
+) -> Result<(), String> {
+    let derived = derive_initial_operational_parameters(evidence)?;
+    let sample_times = evidence
+        .gas_estimates
+        .iter()
+        .map(|sample| sample.observed_at_unix)
+        .chain(
+            evidence
+                .fee_samples
+                .iter()
+                .map(|sample| sample.observed_at_unix),
+        )
+        .chain(std::iter::once(evidence.idle_cycles_observed_at_unix));
+    if sample_times.into_iter().any(|at| {
+        at == 0
+            || at > manifest_created_at_unix
+            || at > now
+            || now.saturating_sub(at) > MAX_EVIDENCE_AGE_SECS
+    }) {
+        return Err("initial operational observations are stale or future-dated".into());
+    }
+    if evidence.bridge_canister_id != profile.bridge_canister_id
+        || !evidence
+            .bridge_contract
+            .eq_ignore_ascii_case(&profile.bridge_contract)
+        || !evidence
+            .timelock_contract
+            .eq_ignore_ascii_case(&profile.timelock.address)
+        || !evidence
+            .governance_sender
+            .eq_ignore_ascii_case(&profile.governance_operator)
+        || !evidence
+            .deployment_instance_id
+            .eq_ignore_ascii_case(&profile.deployment_instance_id)
+        || evidence.timelock_delay_seconds != profile.timelock.minimum_delay_seconds
+        || !evidence
+            .profile_sha256
+            .eq_ignore_ascii_case(&hex(&canonical_sha256(profile)?))
+        || evidence.derived != derived
+        || profile.parameters.gas_limit_ceiling != derived.gas_limit_ceiling
+        || profile.parameters.max_fee_per_gas_ceiling != derived.max_fee_per_gas_ceiling
+        || profile.parameters.max_priority_fee_per_gas_ceiling
+            != derived.max_priority_fee_per_gas_ceiling
+        || profile.parameters.l1_fee_per_transaction_ceiling_wei
+            != derived.l1_fee_per_transaction_ceiling_wei
+        || profile.parameters.quote_validity_seconds != derived.quote_validity_seconds
+        || profile.parameters.gas_limit_multiplier_bps != derived.gas_limit_multiplier_bps
+        || profile.parameters.base_fee_multiplier_bps != derived.base_fee_multiplier_bps
+        || profile.parameters.l1_fee_multiplier_bps != derived.l1_fee_multiplier_bps
+        || profile.parameters.cycles_floor != derived.cycles_floor
+        || profile.parameters.settlement_cycle_ceiling != derived.settlement_cycle_ceiling
+    {
+        return Err(
+            "initial operational parameters do not exactly match the release profile".into(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_gate_b_operational_parameters(
     profile: &Profile,
     evidence: &Evidence,
@@ -1571,11 +1882,138 @@ fn valid_nonempty_hex(value: &str) -> bool {
 }
 
 fn evm_selector(signature: &str) -> String {
+    format!("0x{}", hex(&evm_selector_bytes(signature)))
+}
+
+fn evm_selector_bytes(signature: &str) -> [u8; 4] {
     let mut hash = [0u8; 32];
     let mut keccak = Keccak::v256();
     keccak.update(signature.as_bytes());
     keccak.finalize(&mut hash);
-    format!("0x{}", hex(&hash[..4]))
+    hash[..4].try_into().expect("selector prefix")
+}
+
+fn keccak256(value: &[u8]) -> [u8; 32] {
+    let mut hash = [0u8; 32];
+    let mut keccak = Keccak::v256();
+    keccak.update(value);
+    keccak.finalize(&mut hash);
+    hash
+}
+
+fn initial_activation_salt(deployment_instance_id: [u8; 32], operation_id: u64) -> [u8; 32] {
+    let mut input = b"KINIC_BRIDGE_ACTIVATION_V2".to_vec();
+    input.extend_from_slice(&deployment_instance_id);
+    input.extend_from_slice(&operation_id.to_be_bytes());
+    keccak256(&input)
+}
+
+fn initial_activation_operation_id(bridge: [u8; 20], salt: [u8; 32]) -> [u8; 32] {
+    keccak256(&initial_activation_arguments(bridge, salt, 0, false))
+}
+
+fn evm_word_u128(value: u128) -> [u8; 32] {
+    let mut word = [0u8; 32];
+    word[16..].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn encode_initial_address_array(values: &[[u8; 20]]) -> Vec<u8> {
+    let mut encoded = evm_word_u128(values.len() as u128).to_vec();
+    for value in values {
+        encoded.extend_from_slice(&[0; 12]);
+        encoded.extend_from_slice(value);
+    }
+    encoded
+}
+
+fn encode_initial_u128_array(values: &[u128]) -> Vec<u8> {
+    let mut encoded = evm_word_u128(values.len() as u128).to_vec();
+    for value in values {
+        encoded.extend_from_slice(&evm_word_u128(*value));
+    }
+    encoded
+}
+
+fn encode_initial_bytes(value: &[u8]) -> Vec<u8> {
+    let mut encoded = evm_word_u128(value.len() as u128).to_vec();
+    encoded.extend_from_slice(value);
+    encoded.resize(encoded.len().next_multiple_of(32), 0);
+    encoded
+}
+
+fn encode_initial_bytes_array(values: &[Vec<u8>]) -> Vec<u8> {
+    let values = values
+        .iter()
+        .map(|value| encode_initial_bytes(value))
+        .collect::<Vec<_>>();
+    let mut encoded = evm_word_u128(values.len() as u128).to_vec();
+    let mut offset = values.len() * 32;
+    for value in &values {
+        encoded.extend_from_slice(&evm_word_u128(offset as u128));
+        offset += value.len();
+    }
+    for value in values {
+        encoded.extend_from_slice(&value);
+    }
+    encoded
+}
+
+fn initial_activation_arguments(
+    bridge: [u8; 20],
+    salt: [u8; 32],
+    delay_seconds: u64,
+    include_delay: bool,
+) -> Vec<u8> {
+    let targets = encode_initial_address_array(&[bridge, bridge]);
+    let values = encode_initial_u128_array(&[0, 0]);
+    let payloads = encode_initial_bytes_array(&[
+        evm_selector_bytes("unpauseDepositMints()").to_vec(),
+        evm_selector_bytes("unpauseWithdrawals()").to_vec(),
+    ]);
+    let head_words = if include_delay { 6u128 } else { 5u128 };
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&evm_word_u128(head_words * 32));
+    encoded.extend_from_slice(&evm_word_u128(head_words * 32 + targets.len() as u128));
+    encoded.extend_from_slice(&evm_word_u128(
+        head_words * 32 + targets.len() as u128 + values.len() as u128,
+    ));
+    encoded.extend_from_slice(&[0; 32]);
+    encoded.extend_from_slice(&salt);
+    if include_delay {
+        encoded.extend_from_slice(&evm_word_u128(delay_seconds.into()));
+    }
+    encoded.extend_from_slice(&targets);
+    encoded.extend_from_slice(&values);
+    encoded.extend_from_slice(&payloads);
+    encoded
+}
+
+fn initial_activation_calldata(
+    action: &str,
+    bridge: [u8; 20],
+    salt: [u8; 32],
+    delay_seconds: u64,
+) -> Result<String, String> {
+    let (signature, include_delay) = match action {
+        "schedule_activation" => (
+            "scheduleBatch(address[],uint256[],bytes[],bytes32,bytes32,uint256)",
+            true,
+        ),
+        "execute_activation" => (
+            "executeBatch(address[],uint256[],bytes[],bytes32,bytes32)",
+            false,
+        ),
+        _ => return Err("unknown initial activation gas action".into()),
+    };
+    let mut calldata = evm_selector_bytes(signature).to_vec();
+    calldata.extend_from_slice(&initial_activation_arguments(
+        bridge,
+        salt,
+        delay_seconds,
+        include_delay,
+    ));
+    Ok(format!("0x{}", hex(&calldata)))
 }
 
 fn evm_topic(signature: &str) -> String {
@@ -1590,6 +2028,9 @@ fn validate_monitor_drill(
     drill: &MonitorDrill,
     manifest: &ReleaseManifest,
     profile: &Profile,
+    activation_source_revision: &str,
+    activation_source_tree_sha256: &str,
+    activation_wasm_sha256: &str,
     now: u64,
 ) -> Result<(), String> {
     for at in [
@@ -1641,10 +2082,10 @@ fn validate_monitor_drill(
     });
     if drill.schema_version != 4
         || drill.rehearsal_id.trim().is_empty()
-        || drill.source_revision != manifest.source_revision
+        || drill.source_revision != activation_source_revision
         || !drill
             .source_tree_sha256
-            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
+            .eq_ignore_ascii_case(activation_source_tree_sha256)
         || drill.ic_network != "ic"
         || drill.base_chain_id != 84_532
         || !principal(&drill.bridge_canister_id)
@@ -1652,7 +2093,7 @@ fn validate_monitor_drill(
         || !evm_address(&drill.timelock_contract)
         || !drill
             .bridge_canister_wasm_sha256
-            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+            .eq_ignore_ascii_case(activation_wasm_sha256)
         || !drill
             .bridge_runtime_bytecode_sha256
             .eq_ignore_ascii_case(&profile.bridge_runtime_bytecode_sha256)
@@ -3616,6 +4057,72 @@ fn validate_ui_assets_receipt(root: &Path, manifest: &ReleaseManifest) -> Result
     Ok(())
 }
 
+fn validate_post_gate_a_policy_transition(
+    root: &Path,
+    manifest: &ReleaseManifest,
+    profile: &Profile,
+    receipt: &GateAReceipt,
+    now: u64,
+) -> Result<(), String> {
+    let transition: PostGateAPolicyTransition =
+        read_json(&root.join("post-gate-a-policy-transition.json"))?;
+    validate_evidence_time(transition.observed_at_unix, manifest.created_at_unix, now)?;
+    let receipt_bytes = fs::read(root.join("gate-a-receipt.json")).map_err(|e| e.to_string())?;
+    if transition.schema_version != 1
+        || transition.reason != "activate-before-production-measurements"
+        || !transition
+            .gate_a_manifest_sha256
+            .eq_ignore_ascii_case(&receipt.gate_a_manifest_sha256)
+        || !transition
+            .gate_a_receipt_sha256
+            .eq_ignore_ascii_case(&hex(&Sha256::digest(receipt_bytes)))
+        || transition.from_source_revision != receipt.source_revision
+        || !transition
+            .from_source_tree_sha256
+            .eq_ignore_ascii_case(&receipt.source_tree_sha256)
+        || transition.to_source_revision != manifest.source_revision
+        || !transition
+            .to_source_tree_sha256
+            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
+        || transition.bridge_canister_id != profile.bridge_canister_id
+        || !transition
+            .bridge_contract
+            .eq_ignore_ascii_case(&profile.bridge_contract)
+        || !transition
+            .bsns_contract
+            .eq_ignore_ascii_case(&profile.bsns_contract)
+        || !transition
+            .timelock_contract
+            .eq_ignore_ascii_case(&profile.timelock.address)
+        || !transition
+            .bridge_canister_wasm_sha256
+            .eq_ignore_ascii_case(&receipt.bridge_canister_wasm_sha256)
+        || !transition
+            .bridge_runtime_bytecode_sha256
+            .eq_ignore_ascii_case(&receipt.bridge_runtime_bytecode_sha256)
+        || !transition
+            .bridge_runtime_bytecode_sha256
+            .eq_ignore_ascii_case(&profile.bridge_runtime_bytecode_sha256)
+        || !transition
+            .bsns_runtime_bytecode_sha256
+            .eq_ignore_ascii_case(&profile.bsns_runtime_bytecode_sha256)
+        || !transition
+            .bsns_runtime_template_sha256
+            .eq_ignore_ascii_case(&profile.bsns_runtime_template_sha256)
+        || !transition
+            .bridge_deployment_transaction_hash
+            .eq_ignore_ascii_case(&receipt.bridge_deployment_transaction_hash)
+        || !transition
+            .timelock_deployment_transaction_hash
+            .eq_ignore_ascii_case(&receipt.timelock_deployment_transaction_hash)
+    {
+        return Err(
+            "post-Gate-A policy transition is incomplete or changes deployed identity".into(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String> {
     if root.join("proof-attestation.json").exists() {
         return Err(
@@ -3624,7 +4131,8 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
         );
     }
     let manifest: ReleaseManifest = read_json(&root.join("release-manifest.json"))?;
-    if manifest.schema_version != 3
+    let expected_manifest_schema = if gate_b { 4 } else { 3 };
+    if manifest.schema_version != expected_manifest_schema
         || !valid_release_id(&manifest.release_id)
         || manifest.source_revision.trim().is_empty()
         || !valid_sha256(&manifest.source_tree_sha256)
@@ -3685,9 +4193,9 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
     let profile: Profile = read_json(&root.join("profile.json"))?;
     validate_profile(&profile, !manifest.test_only)?;
     if gate_b {
-        let measurements: Evidence = read_json(&root.join("fee-cycles-measurements.json"))?;
-        validate_measurement_time(&measurements, manifest.created_at_unix, now)?;
-        validate_gate_b_operational_parameters(&profile, &measurements)?;
+        let initial: InitialOperationalParameters =
+            read_json(&root.join("initial-operational-parameters.json"))?;
+        validate_initial_operational_parameters(&initial, &profile, manifest.created_at_unix, now)?;
         if profile.deployment_block == 0 {
             return Err("Gate B profile must bind the actual Bridge deployment block".into());
         }
@@ -3731,10 +4239,6 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
                     .unwrap_or_default(),
             )
             || receipt.release_id != manifest.release_id
-            || receipt.source_revision != manifest.source_revision
-            || !receipt
-                .source_tree_sha256
-                .eq_ignore_ascii_case(&manifest.source_tree_sha256)
             || !receipt
                 .post_deploy_profile_sha256
                 .eq_ignore_ascii_case(&expected_post_deploy_profile_hash)
@@ -3757,26 +4261,30 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
         {
             return Err("Gate B evidence is not bound to the Gate A release".into());
         }
-        validate_production_canister_receipt(&profile, &receipt.canister_install)?;
-        if receipt.canister_install.source_revision != manifest.source_revision
-            || !receipt
-                .canister_install
-                .source_tree_sha256
-                .eq_ignore_ascii_case(&manifest.source_tree_sha256)
-        {
-            return Err("Gate B does not descend from the installed production Canister".into());
-        }
+        let mut installed_profile = profile.clone();
+        set_production_bootstrap_operational_config(&mut installed_profile);
+        validate_production_canister_receipt(&installed_profile, &receipt.canister_install)?;
+        validate_post_gate_a_policy_transition(root, &manifest, &profile, &receipt, now)?;
     }
     if profile.test_assets_only != manifest.test_only {
         return Err("manifest/profile test-only mismatch".into());
     }
     if gate_b {
         let drill: MonitorDrill = read_json(&root.join("monitor-drill.json"))?;
-        validate_monitor_drill(&drill, &manifest, &profile, now)?;
-        validate_keeper_drill(root, &manifest, &profile, now)?;
+        let receipt: GateAReceipt = read_json(&root.join("gate-a-receipt.json"))?;
+        let transition: PostGateAPolicyTransition =
+            read_json(&root.join("post-gate-a-policy-transition.json"))?;
+        validate_monitor_drill(
+            &drill,
+            &manifest,
+            &profile,
+            &transition.to_source_revision,
+            &transition.to_source_tree_sha256,
+            &receipt.bridge_canister_wasm_sha256,
+            now,
+        )?;
         validate_provider_independence_receipt(root, &manifest, &profile, now)?;
         validate_ui_assets_receipt(root, &manifest)?;
-        validate_plan006_evidence(root, &manifest, &profile, now)?;
     }
     let hash = unsigned_manifest_hash(&manifest)?;
     Ok(ValidatedBundle {
@@ -4650,12 +5158,49 @@ fn verify_provider_independence_authenticity(bundle: &ValidatedBundle) -> Result
     Ok(())
 }
 
+fn gate_b_controller(bundle: &ValidatedBundle) -> Result<Principal, String> {
+    let receipt: GateAReceipt = read_json(&bundle.root.join("gate-a-receipt.json"))?;
+    Principal::from_text(&receipt.canister_install.installer_principal)
+        .map_err(|error| error.to_string())
+}
+
+fn validate_gate_b_management_snapshot(
+    bundle: &ValidatedBundle,
+    controllers: &[Principal],
+    module_hash: &[u8],
+) -> Result<(), String> {
+    let installer = gate_b_controller(bundle)?;
+    if controllers != [installer]
+        || !hex(module_hash).eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+    {
+        return Err("Gate B requires the production identity as sole controller".into());
+    }
+    Ok(())
+}
+
+fn verify_gate_b_management_state(bundle: &ValidatedBundle) -> Result<(), String> {
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let (controllers, module_hash) = async_runtime()?.block_on(async {
+        let controllers = agent
+            .read_state_canister_controllers(bridge)
+            .await
+            .map_err(|error| error.to_string())?;
+        let module_hash = agent
+            .read_state_canister_module_hash(bridge)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((controllers, module_hash))
+    })?;
+    validate_gate_b_management_snapshot(bundle, &controllers, &module_hash)
+}
+
 fn verify_live(bundle: &ValidatedBundle, expected_deposits_paused: bool) -> Result<(), String> {
     verify_live_inputs(bundle, expected_deposits_paused)?;
+    verify_gate_b_management_state(bundle)?;
     verify_activation_attestation_authenticity(bundle)?;
     verify_monitor_drill_authenticity(bundle)?;
-    verify_keeper_authenticity(bundle)?;
-    verify_sns_upgrade_authenticity(bundle)?;
     verify_provider_independence_authenticity(bundle)
 }
 
@@ -4688,6 +5233,35 @@ fn validate_schedule_receipt_binding(
     let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
     let payload_sha256 = hex(&Sha256::digest(canonical_payload));
     let now = now_unix()?;
+    let initial_path = bundle.root.join("initial-operational-parameters.json");
+    let initial_bytes = fs::read(&initial_path).map_err(|error| error.to_string())?;
+    let expected_initial_sha256 = bundle
+        .manifest
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.path == "initial-operational-parameters.json")
+        .ok_or("Gate B manifest has no initial operational parameter evidence")?
+        .sha256
+        .as_str();
+    if !hex(&Sha256::digest(&initial_bytes)).eq_ignore_ascii_case(expected_initial_sha256) {
+        return Err(
+            "initial operational parameter evidence changed after Gate B validation".into(),
+        );
+    }
+    let initial: InitialOperationalParameters =
+        serde_json::from_slice(&initial_bytes).map_err(|error| error.to_string())?;
+    validate_initial_operational_parameters(
+        &initial,
+        &bundle.profile,
+        bundle.manifest.created_at_unix,
+        now,
+    )?;
+    let deployment_instance_id: [u8; 32] = decode_hex(&initial.deployment_instance_id)?
+        .try_into()
+        .map_err(|_| "invalid initial deployment instance ID")?;
+    let expected_salt = initial_activation_salt(deployment_instance_id, 0);
+    let expected_operation_id =
+        initial_activation_operation_id(decode_address(&initial.bridge_contract)?, expected_salt);
     if receipt.schema_version != 4
         || receipt.phase != "schedule"
         || receipt.release_id != bundle.manifest.release_id
@@ -4722,6 +5296,12 @@ fn validate_schedule_receipt_binding(
         )?
         || !valid_hash32(&receipt.operation_id)
         || !valid_hash32(&receipt.operation_salt)
+        || !receipt
+            .operation_id
+            .eq_ignore_ascii_case(&format!("0x{}", hex(&expected_operation_id)))
+        || !receipt
+            .operation_salt
+            .eq_ignore_ascii_case(&format!("0x{}", hex(&expected_salt)))
         || receipt.prior_schedule_receipt_sha256.is_some()
     {
         return Err("prior schedule receipt is malformed or not bound to this release".into());
@@ -4886,6 +5466,7 @@ fn verify_activation(
         controllers,
         module_hash,
     } = snapshot;
+    validate_gate_b_management_snapshot(bundle, &controllers, &module_hash)?;
 
     let decoded = Decode!(&proposal_raw, GetProposalResponse).map_err(|error| error.to_string())?;
     let proposal = match decoded.result {
@@ -4916,8 +5497,6 @@ fn verify_activation(
         || proposal.decided_timestamp_seconds == 0
         || action.function_id != submission.function_id
         || action.payload != canonical_payload
-        || controllers != [Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?]
-        || !hex(&module_hash).eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
     {
         return Err(
             "authenticated activation proposal or live Canister state does not match the release"
@@ -4980,7 +5559,6 @@ fn verify_activation(
         .as_ref()
         .ok_or("activation has no Finalized Canister confirmation")?;
     if confirmation.phase != phase
-        || confirmation.governance_operation_id == 0
         || confirmation.receipt_block_number == 0
         || confirmation.transaction_hash.len() != 32
         || format!("0x{}", hex(&confirmation.timelock_operation_id)) != operation_id.to_lowercase()
@@ -5040,6 +5618,7 @@ fn verify_schedule_receipt_live(
         controllers,
         module_hash,
     } = snapshot;
+    validate_gate_b_management_snapshot(bundle, &controllers, &module_hash)?;
 
     let decoded = Decode!(&proposal_raw, GetProposalResponse).map_err(|error| error.to_string())?;
     let proposal = match decoded.result {
@@ -5067,8 +5646,6 @@ fn verify_schedule_receipt_live(
         || proposal.decided_timestamp_seconds == 0
         || action.function_id != receipt.function_id
         || action.payload != canonical_payload
-        || controllers != [Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?]
-        || !hex(&module_hash).eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
     {
         return Err(
             "authenticated schedule proposal or Canister state does not match the receipt".into(),
@@ -5115,7 +5692,6 @@ fn verify_schedule_receipt_live(
         .as_ref()
         .ok_or("schedule receipt has no Finalized Canister confirmation")?;
     if confirmation.phase != "schedule"
-        || confirmation.governance_operation_id == 0
         || confirmation.receipt_block_number == 0
         || confirmation.transaction_hash.len() != 32
         || format!("0x{}", hex(&confirmation.timelock_operation_id))
@@ -5319,6 +5895,24 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_activation_calldata_matches_the_solidity_abi_vectors() {
+        let bridge = [7; 20];
+        let salt = [0x11; 32];
+        let schedule =
+            initial_activation_calldata("schedule_activation", bridge, salt, 86_400).unwrap();
+        let execute =
+            initial_activation_calldata("execute_activation", bridge, salt, 86_400).unwrap();
+        assert_eq!(
+            hex(&Sha256::digest(decode_hex(&schedule).unwrap())),
+            "791b06b957a214ad82713256c3f1031c952c74029e28cb43f71cde76dc26c8c4"
+        );
+        assert_eq!(
+            hex(&Sha256::digest(decode_hex(&execute).unwrap())),
+            "5f84cf3c08bbb0b9fda03854d0cbd697ca22aa5d94e94ad220db58111904fc37"
+        );
+    }
 
     #[test]
     fn activation_timestamps_must_follow_gate_b_and_precede_verification() {
@@ -6708,15 +7302,139 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         measurements.settlement_cycle_samples = measurement_samples(1, measurement_start);
         measurements.baseline_cycles_sample.value = 1;
         measurements.expected_daily_settlements = 1;
-        let derived_measurements = derive(&measurements).unwrap();
-        profile.parameters.gas_limit_ceiling = derived_measurements.gas_limit_ceiling;
-        profile.parameters.max_fee_per_gas_ceiling = derived_measurements.max_fee_per_gas_ceiling;
+        let initial_observed_at = now - 6_000;
+        let governance_operation_id = 0;
+        let deployment_instance_id: [u8; 32] = decode_hex(&profile.deployment_instance_id)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let activation_bridge = decode_address(&profile.bridge_contract).unwrap();
+        let operation_salt =
+            initial_activation_salt(deployment_instance_id, governance_operation_id);
+        let mut initial_parameters = InitialOperationalParameters {
+            schema_version: 1,
+            environment: "mainnet-candidate".into(),
+            chain_id: 8_453,
+            bridge_canister_id: profile.bridge_canister_id.clone(),
+            bridge_contract: profile.bridge_contract.clone(),
+            timelock_contract: profile.timelock.address.clone(),
+            governance_sender: profile.governance_operator.clone(),
+            deployment_instance_id: profile.deployment_instance_id.clone(),
+            governance_operation_id,
+            operation_salt: format!("0x{}", hex(&operation_salt)),
+            timelock_delay_seconds: profile.timelock.minimum_delay_seconds,
+            profile_sha256: String::new(),
+            gas_estimates: vec![
+                InitialGasEstimate {
+                    action: "schedule_activation".into(),
+                    sender: profile.governance_operator.clone(),
+                    target: profile.timelock.address.clone(),
+                    value_wei: 0,
+                    calldata_hex: initial_activation_calldata(
+                        "schedule_activation",
+                        activation_bridge,
+                        operation_salt,
+                        profile.timelock.minimum_delay_seconds,
+                    )
+                    .unwrap(),
+                    gas: 100_000,
+                    block_number: 10,
+                    block_hash: format!("0x{}", "31".repeat(32)),
+                    observed_at_unix: initial_observed_at,
+                    source_ref: "schedule-estimate".into(),
+                },
+                InitialGasEstimate {
+                    action: "execute_activation".into(),
+                    sender: profile.governance_operator.clone(),
+                    target: profile.timelock.address.clone(),
+                    value_wei: 0,
+                    calldata_hex: initial_activation_calldata(
+                        "execute_activation",
+                        activation_bridge,
+                        operation_salt,
+                        profile.timelock.minimum_delay_seconds,
+                    )
+                    .unwrap(),
+                    gas: 120_000,
+                    block_number: 10,
+                    block_hash: format!("0x{}", "31".repeat(32)),
+                    observed_at_unix: initial_observed_at,
+                    source_ref: "execute-estimate".into(),
+                },
+            ],
+            fee_samples: (0..10)
+                .map(|index| InitialFeeSample {
+                    base_fee_per_gas: 100,
+                    priority_fee_per_gas: 10,
+                    l1_fee_upper_bound_wei: 1_000,
+                    block_number: 100 + index,
+                    block_hash: format!("0x{:064x}", index + 1),
+                    observed_at_unix: initial_observed_at + index,
+                    source_ref: format!("initial-fee-{index}"),
+                })
+                .collect(),
+            idle_cycles_burned_per_day: 1_000,
+            idle_cycles_observed_at_unix: initial_observed_at,
+            idle_cycles_source_ref: "icp-canister-status".into(),
+            expected_daily_settlements: 1,
+            settlement_cycle_ceiling: 5_000_000_000,
+            derived: InitialDerivedParameters {
+                gas_limit_ceiling: 0,
+                max_fee_per_gas_ceiling: 0,
+                max_priority_fee_per_gas_ceiling: 0,
+                l1_fee_per_transaction_ceiling_wei: 0,
+                quote_validity_seconds: 0,
+                gas_limit_multiplier_bps: 0,
+                base_fee_multiplier_bps: 0,
+                l1_fee_multiplier_bps: 0,
+                cycles_floor: 0,
+                settlement_cycle_ceiling: 0,
+            },
+        };
+        initial_parameters.derived =
+            derive_initial_operational_parameters(&initial_parameters).unwrap();
+        let mut candid_payload: InitialOperationalParameters =
+            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
+        candid_payload.gas_estimates[0].calldata_hex = "4449444c0000".into();
+        assert!(derive_initial_operational_parameters(&candid_payload).is_err());
+        let mut wrong_sender: InitialOperationalParameters =
+            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
+        wrong_sender.gas_estimates[0].sender = format!("0x{}", "99".repeat(20));
+        assert!(derive_initial_operational_parameters(&wrong_sender).is_err());
+        let mut wrong_target: InitialOperationalParameters =
+            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
+        wrong_target.gas_estimates[0].target = profile.bridge_contract.clone();
+        assert!(derive_initial_operational_parameters(&wrong_target).is_err());
+        let mut wrong_salt: InitialOperationalParameters =
+            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
+        wrong_salt.operation_salt = format!("0x{}", "88".repeat(32));
+        assert!(derive_initial_operational_parameters(&wrong_salt).is_err());
+        let mut wrong_operation_id: InitialOperationalParameters =
+            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
+        wrong_operation_id.governance_operation_id = 1;
+        wrong_operation_id.operation_salt = format!(
+            "0x{}",
+            hex(&initial_activation_salt(deployment_instance_id, 1))
+        );
+        assert!(derive_initial_operational_parameters(&wrong_operation_id).is_err());
+        profile.parameters.gas_limit_ceiling = initial_parameters.derived.gas_limit_ceiling;
+        profile.parameters.max_fee_per_gas_ceiling =
+            initial_parameters.derived.max_fee_per_gas_ceiling;
         profile.parameters.max_priority_fee_per_gas_ceiling =
-            derived_measurements.max_priority_fee_per_gas_ceiling;
-        profile.parameters.l1_fee_per_transaction_ceiling_wei =
-            derived_measurements.l1_fee_per_transaction_ceiling_wei;
-        profile.parameters.cycles_floor = derived_measurements.cycles_floor;
-        profile.parameters.settlement_cycle_ceiling = derived_measurements.settlement_cycle_ceiling;
+            initial_parameters.derived.max_priority_fee_per_gas_ceiling;
+        profile.parameters.l1_fee_per_transaction_ceiling_wei = initial_parameters
+            .derived
+            .l1_fee_per_transaction_ceiling_wei;
+        profile.parameters.quote_validity_seconds =
+            initial_parameters.derived.quote_validity_seconds;
+        profile.parameters.gas_limit_multiplier_bps =
+            initial_parameters.derived.gas_limit_multiplier_bps;
+        profile.parameters.base_fee_multiplier_bps =
+            initial_parameters.derived.base_fee_multiplier_bps;
+        profile.parameters.l1_fee_multiplier_bps = initial_parameters.derived.l1_fee_multiplier_bps;
+        profile.parameters.cycles_floor = initial_parameters.derived.cycles_floor;
+        profile.parameters.settlement_cycle_ceiling =
+            initial_parameters.derived.settlement_cycle_ceiling;
         profile.bsns_runtime_template_sha256 = hex(&Sha256::digest(b"bsns-runtime"));
         let final_operational_parameters = profile.parameters.clone();
         set_production_bootstrap_operational_config(&mut profile);
@@ -6976,63 +7694,57 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .sha256 = hex(&Sha256::digest(&final_profile_bytes));
         let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
         fs::write(root.join("gate-a-receipt.json"), &receipt_bytes).unwrap();
-        let gate_a_root = root.join("gate-a-bundle");
-        fs::create_dir(&gate_a_root).unwrap();
-        fs::write(gate_a_root.join("profile.json"), &planned_profile).unwrap();
-        for name in GATE_A_ARTIFACTS.iter().skip(1) {
-            fs::copy(root.join(name), gate_a_root.join(name)).unwrap();
-        }
+        initial_parameters.profile_sha256 = hex(&canonical_sha256(&profile).unwrap());
+        let initial_parameters_bytes = serde_json::to_vec(&initial_parameters).unwrap();
         fs::write(
-            gate_a_root.join("release-manifest.json"),
-            serde_json::to_vec(&gate_a_manifest).unwrap(),
+            root.join("initial-operational-parameters.json"),
+            &initial_parameters_bytes,
         )
         .unwrap();
-        let final_profile_path = root.join("final-profile.json");
-        fs::write(&final_profile_path, &final_profile_bytes).unwrap();
-        let install_receipt_path = root.join("install-receipt.json");
+        let transition = PostGateAPolicyTransition {
+            schema_version: 1,
+            reason: "activate-before-production-measurements".into(),
+            observed_at_unix: now - 20,
+            gate_a_manifest_sha256: receipt.gate_a_manifest_sha256.clone(),
+            gate_a_receipt_sha256: hex(&Sha256::digest(&receipt_bytes)),
+            from_source_revision: receipt.source_revision.clone(),
+            from_source_tree_sha256: receipt.source_tree_sha256.clone(),
+            to_source_revision: "a".repeat(40),
+            to_source_tree_sha256: "2".repeat(64),
+            bridge_canister_id: profile.bridge_canister_id.clone(),
+            bridge_contract: profile.bridge_contract.clone(),
+            bsns_contract: profile.bsns_contract.clone(),
+            timelock_contract: profile.timelock.address.clone(),
+            bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            bridge_runtime_bytecode_sha256: profile.bridge_runtime_bytecode_sha256.clone(),
+            bsns_runtime_bytecode_sha256: profile.bsns_runtime_bytecode_sha256.clone(),
+            bsns_runtime_template_sha256: profile.bsns_runtime_template_sha256.clone(),
+            bridge_deployment_transaction_hash: receipt.bridge_deployment_transaction_hash.clone(),
+            timelock_deployment_transaction_hash: receipt
+                .timelock_deployment_transaction_hash
+                .clone(),
+        };
+        let transition_bytes = serde_json::to_vec(&transition).unwrap();
         fs::write(
-            &install_receipt_path,
-            serde_json::to_vec(&receipt.canister_install).unwrap(),
+            root.join("post-gate-a-policy-transition.json"),
+            &transition_bytes,
         )
         .unwrap();
-        let deployment_binding_path = root.join("deployment-binding.json");
-        fs::write(
-            &deployment_binding_path,
-            canonical_bytes(&deployment_binding).unwrap(),
-        )
-        .unwrap();
-        assert!(validate_production_handover_candidate_files(
-            &gate_a_root,
-            &final_profile_path,
-            &root.join("fee-cycles-measurements.json"),
-            &root.join("gate-a-receipt.json"),
-            &install_receipt_path,
-            &deployment_binding_path,
-        )
-        .is_ok());
-        let mut drifted_final_profile = profile.clone();
-        drifted_final_profile.parameters.cycles_floor += 1;
-        fs::write(
-            &final_profile_path,
-            serde_json::to_vec(&drifted_final_profile).unwrap(),
-        )
-        .unwrap();
-        assert!(validate_production_handover_candidate_files(
-            &gate_a_root,
-            &final_profile_path,
-            &root.join("fee-cycles-measurements.json"),
-            &root.join("gate-a-receipt.json"),
-            &install_receipt_path,
-            &deployment_binding_path,
-        )
-        .is_err());
-        fs::write(&final_profile_path, &final_profile_bytes).unwrap();
         artifacts.push(ArtifactDigest {
             path: "gate-a-receipt.json".into(),
             sha256: hex(&Sha256::digest(receipt_bytes)),
         });
+        artifacts.push(ArtifactDigest {
+            path: "initial-operational-parameters.json".into(),
+            sha256: hex(&Sha256::digest(initial_parameters_bytes)),
+        });
+        artifacts.push(ArtifactDigest {
+            path: "post-gate-a-policy-transition.json".into(),
+            sha256: hex(&Sha256::digest(transition_bytes)),
+        });
+        artifacts.retain(|artifact| GATE_B_ARTIFACTS.contains(&artifact.path.as_str()));
         let manifest = ReleaseManifest {
-            schema_version: 3,
+            schema_version: 4,
             release_id: "release-1".into(),
             test_only: false,
             source_revision: "a".repeat(40),
@@ -7069,6 +7781,17 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         let bundle = validate_bundle(&root, true).unwrap();
         // Cryptographic live inputs are verified against the network by `verify-live`;
         // this fixture exercises only deterministic bundle inputs.
+        let installer =
+            Principal::from_text(&receipt.canister_install.installer_principal).unwrap();
+        let module_hash = decode_hex(&bundle.profile.bridge_canister_wasm_sha256).unwrap();
+        assert!(validate_gate_b_management_snapshot(&bundle, &[installer], &module_hash).is_ok());
+        assert!(validate_gate_b_management_snapshot(
+            &bundle,
+            &[Principal::from_text(KINIC_ROOT).unwrap()],
+            &module_hash,
+        )
+        .is_err());
+        assert!(validate_gate_b_management_snapshot(&bundle, &[installer], &[0; 32]).is_err());
 
         let valid_monitoring_bytes = fs::read(root.join("monitoring-receipt.json")).unwrap();
         let valid_keeper_bytes = fs::read(root.join("keeper-drill.json")).unwrap();
@@ -7136,11 +7859,25 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             function_registry_response_sha256: hex(&Sha256::digest(b"registry")),
             activation_status_response_hex: hex(b"activation"),
             activation_status_response_sha256: hex(&Sha256::digest(b"activation")),
-            operation_id: format!("0x{}", "1".repeat(64)),
-            operation_salt: format!("0x{}", "2".repeat(64)),
+            operation_id: format!(
+                "0x{}",
+                hex(&initial_activation_operation_id(
+                    activation_bridge,
+                    operation_salt
+                ))
+            ),
+            operation_salt: format!("0x{}", hex(&operation_salt)),
             prior_schedule_receipt_sha256: None,
         };
         assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_ok());
+        let valid_operation_id = schedule_receipt.operation_id.clone();
+        schedule_receipt.operation_id = format!("0x{}", "1".repeat(64));
+        assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
+        schedule_receipt.operation_id = valid_operation_id;
+        let valid_operation_salt = schedule_receipt.operation_salt.clone();
+        schedule_receipt.operation_salt = format!("0x{}", "2".repeat(64));
+        assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
+        schedule_receipt.operation_salt = valid_operation_salt;
         schedule_receipt.schema_version = 3;
         assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
         schedule_receipt.schema_version = 5;
@@ -7269,7 +8006,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             Err(error) => error,
         };
         assert!(
-            drift_error.contains("Gate B evidence is not bound"),
+            drift_error.contains("initial operational parameters do not exactly match"),
             "unexpected error: {drift_error}"
         );
         fs::write(root.join("profile.json"), valid_profile_bytes).unwrap();

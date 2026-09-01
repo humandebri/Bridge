@@ -9,9 +9,34 @@ export interface UiDeploymentMode {
   indexCanisterId?: string | null
   evmRpcCanisterId?: string | null
   gateBManifestSha256?: string | null
+  deploymentBlock?: bigint | number | string | null
   profileFileSha256?: string | null
   profileCanonicalSha256?: string | null
   timelockAddress?: string | null
+}
+
+export function assertPreActivationUiProfile(profile: UiDeploymentMode): void {
+  if (profile.testOnly !== false) throw new Error("Pre-activation UI deploy requires a production profile")
+  if (profile.environmentMode !== null) throw new Error("Pre-activation UI deploy rejects test-only environment modes")
+  if (profile.chainId !== BASE_MAINNET_CHAIN_ID) throw new Error("Pre-activation UI deploy requires Base Mainnet")
+  const timelockDelay = profile.activationTimelockDelaySeconds
+  if (typeof timelockDelay !== "number"
+    || !Number.isSafeInteger(timelockDelay)
+    || timelockDelay < MINIMUM_PRODUCTION_TIMELOCK_DELAY_SECONDS) {
+    throw new Error("Pre-activation UI deploy requires a Timelock delay of at least 24 hours")
+  }
+  if (!/^0x[0-9a-fA-F]{40}$/.test(profile.timelockAddress ?? "")) {
+    throw new Error("Pre-activation UI deploy requires a Timelock contract address")
+  }
+  if (profile.gateBManifestSha256 !== null) {
+    throw new Error("Pre-activation UI deploy requires an unset Gate B manifest hash")
+  }
+  if (BigInt(profile.deploymentBlock ?? -1) !== 0n) {
+    throw new Error("Pre-activation UI deploy requires deployment block zero")
+  }
+  if (![profile.profileFileSha256, profile.profileCanonicalSha256].every((value) => /^[0-9a-f]{64}$/i.test(value ?? "") && !/^0+$/.test(value ?? ""))) {
+    throw new Error("Pre-activation UI deploy requires nonzero source profile hashes")
+  }
 }
 
 export const BASE_MAINNET_CHAIN_ID = 8453

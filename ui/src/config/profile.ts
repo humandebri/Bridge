@@ -23,7 +23,7 @@ export const deploymentProfileSchema = z.object({
   profileFileSha256: sha256.nullable(),
   profileCanonicalSha256: sha256.nullable(),
   icHost: z.url(),
-  baseRpcUrl: z.url(),
+  baseRpcUrl: z.url().optional(),
   baseHistoryRpcUrls: z.array(z.url()).min(1)
     .refine(
       (urls) => new Set(urls.map(canonicalRpcUrl)).size === urls.length,
@@ -98,6 +98,14 @@ function assertEmbeddedTestUiProfile(profile: {
 }
 
 export type DeploymentProfile = z.infer<typeof deploymentProfileSchema>
+
+export const DEFAULT_BASE_MAINNET_RPC_URL = "https://mainnet.base.org"
+
+export function resolvedBaseRpcUrl(profile: Pick<DeploymentProfile, "baseRpcUrl" | "chainId">): string {
+  if (profile.baseRpcUrl) return profile.baseRpcUrl
+  if (profile.chainId === 8453) return DEFAULT_BASE_MAINNET_RPC_URL
+  throw new Error(`Deployment profile has no default RPC URL for chain ${profile.chainId}`)
+}
 
 // Local and test builds fail closed on this incomplete preflight profile. Production builds must
 // inject the reviewed Gate B JSON through VITE_DEPLOYMENT_PROFILE_JSON.

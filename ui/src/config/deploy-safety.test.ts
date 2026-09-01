@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { assertProductionUiProfile, assertTestUiProfile, OFFICIAL_EVM_RPC_CANISTER_ID } from "./deploy-safety"
+import { assertPreActivationUiProfile, assertProductionUiProfile, assertTestUiProfile, OFFICIAL_EVM_RPC_CANISTER_ID } from "./deploy-safety"
 
 describe("UI deployment safety", () => {
   it("requires a production profile bound to the verified Gate B manifest", () => {
@@ -24,6 +24,29 @@ describe("UI deployment safety", () => {
     expect(() => assertProductionUiProfile({ ...production, activationTimelockDelaySeconds: null }, manifest)).toThrow("at least 24 hours")
     expect(() => assertProductionUiProfile({ ...production, activationTimelockDelaySeconds: 300 }, manifest)).toThrow("at least 24 hours")
     expect(() => assertProductionUiProfile({ ...production, timelockAddress: null }, manifest)).toThrow("Timelock contract address")
+  })
+})
+
+describe("pre-activation UI deployment safety", () => {
+  const preActivation = {
+    testOnly: false,
+    environmentMode: null,
+    activationTimelockDelaySeconds: 86_400,
+    chainId: 8453,
+    timelockAddress: `0x${"11".repeat(20)}`,
+    gateBManifestSha256: null,
+    deploymentBlock: 0n,
+    profileFileSha256: "b".repeat(64),
+    profileCanonicalSha256: "c".repeat(64),
+  }
+
+  it("accepts only the fail-closed production profile before Gate B", () => {
+    expect(() => assertPreActivationUiProfile(preActivation)).not.toThrow()
+    expect(() => assertPreActivationUiProfile({ ...preActivation, testOnly: true })).toThrow("production profile")
+    expect(() => assertPreActivationUiProfile({ ...preActivation, chainId: 84532 })).toThrow("Base Mainnet")
+    expect(() => assertPreActivationUiProfile({ ...preActivation, gateBManifestSha256: "a".repeat(64) })).toThrow("unset Gate B")
+    expect(() => assertPreActivationUiProfile({ ...preActivation, deploymentBlock: 1n })).toThrow("block zero")
+    expect(() => assertPreActivationUiProfile({ ...preActivation, profileFileSha256: null })).toThrow("source profile hashes")
   })
 })
 

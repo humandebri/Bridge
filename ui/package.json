@@ -27,6 +27,8 @@
     "codegen:candid:check": "node scripts/generate-candid.mjs --check",
     "deploy:check": "node scripts/check-deploy-profile.mjs",
     "deploy": "pnpm run deploy:check && node scripts/production-assets.mjs deploy $BRIDGE_RELEASE_BUNDLE/ui-assets.json $BRIDGE_UI_RUNTIME_PROFILE_FILE",
+    "deploy:preactivation": "node scripts/production-assets.mjs deploy-preactivation $BRIDGE_UI_PREACTIVATION_RECEIPT $BRIDGE_UI_RUNTIME_PROFILE_FILE",
+    "deploy:preactivation:check": "node scripts/production-assets.mjs verify-preactivation $BRIDGE_UI_PREACTIVATION_RECEIPT $BRIDGE_UI_RUNTIME_PROFILE_FILE",
     "deploy:test": "pnpm run build:sepolia && node scripts/check-sepolia-assets.mjs && wrangler deploy --name kinic-bridge-ui-test",
     "artifact:test": "scripts/run-staging-assets.sh generate \"$BRIDGE_STAGING_UI_RECEIPT\"",
     "artifact:test:verify": "scripts/run-staging-assets.sh verify \"$BRIDGE_STAGING_UI_RECEIPT\"",
