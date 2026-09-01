@@ -11,11 +11,11 @@ RUN apt-get update \
         libxkbcommon0 libxrandr2 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --gid 10001 bridge-ci \
-    && useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash bridge-ci
+RUN groupadd --gid 1001 bridge-ci \
+    && useradd --uid 1001 --gid 1001 --create-home --shell /bin/bash bridge-ci
 
 RUN git config --system --add safe.directory /workspace \
     && git config --system --add safe.directory /workspace/contracts/lib/openzeppelin-contracts
 
-USER 10001:10001
+USER 1001:1001
 WORKDIR /workspace
