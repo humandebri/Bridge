@@ -124,6 +124,10 @@ This path accepts only a Base Mainnet production profile whose Gate B manifest h
 whose deployment block is zero. Runtime validation therefore disables all bridge writes. After
 Gate B passes, replace it with the normal Gate-B-bound deployment above.
 
+Production profiles intentionally omit a custom browser RPC. The UI derives Base Mainnet's
+standard `https://mainnet.base.org` endpoint from chain ID 8453; this is separate from the
+Canister's built-in `BaseMainnet` EVM RPC provider selection.
+
 The WalletConnect project ID is public client configuration but must be injected through the
 environment rather than committed. The normal deploy command fails unless it is present and the
 checked-in UI profile explicitly sets

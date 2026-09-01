@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { deploymentProfile, deploymentProfileSchema, profileCompleteness } from "./profile"
+import { DEFAULT_BASE_MAINNET_RPC_URL, deploymentProfile, deploymentProfileSchema, profileCompleteness, resolvedBaseRpcUrl } from "./profile"
 
 describe("reviewed deployment profile", () => {
   it("reports every missing preflight deployment value", () => {
@@ -22,6 +22,17 @@ describe("reviewed deployment profile", () => {
       deploymentBlock: "123",
     })
     expect(parsed.deploymentBlock).toBe(123n)
+  })
+
+  it("uses the official Base Mainnet RPC when a production profile omits a browser RPC", () => {
+    const profile = deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      testOnly: false,
+      chainId: 8453,
+      baseRpcUrl: undefined,
+    })
+    expect(resolvedBaseRpcUrl(profile)).toBe(DEFAULT_BASE_MAINNET_RPC_URL)
+    expect(() => resolvedBaseRpcUrl({ chainId: 31_337 })).toThrow("no default RPC URL")
   })
 
   it("rejects token metadata that does not use the Bridge-wide 8 decimal contract", () => {
