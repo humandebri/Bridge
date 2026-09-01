@@ -43,6 +43,15 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertTrue((evidence_dir / "fresh-stack-2026-08-28.json").is_file())
         self.assertTrue((ROOT / "scripts/plan007/check-upgrade-instance.mjs").is_file())
         self.assertTrue((ROOT / "scripts/plan007/sepolia_e2e.py").is_file())
+        obsolete_policy = "deployments/sepolia-staging/staging-bridge-upgrade-policy.json"
+        for active_consumer in (
+            ROOT / "scripts/plan007/generate-local-e2e.mjs",
+            ROOT / "ui/e2e-real/global-setup.mjs",
+        ):
+            self.assertNotIn(
+                obsolete_policy,
+                active_consumer.read_text(encoding="utf-8"),
+            )
         profile_source = (ROOT / "tools/bridge-profile/src/main.rs").read_text(encoding="utf-8")
         self.assertNotIn("validate-staging-canister-plan", profile_source)
         self.assertNotIn("render-staging-canister-inputs", profile_source)

@@ -35,7 +35,7 @@ bootstrap_attestation
 
 各stageはsource commit、artifact SHA-256、実行対象、raw receipt、観測postconditionを保存する。upgrade、binding、frontend、smoke、wallet、refundはstage receiptだけでは受理せず、tool/argv/exit code/raw JSON stdoutとそのdigestを持つstage固有`*-raw-capture`を必須とする。validatorはstdoutを再parseし、stage details、`details_sha256`、`capture_sha256`が一致することを確認する。RPC summaryは`rpc-rehearsal-manifest`のdigestと専用verifier結果へ結合し、`live_acceptance`は`reactivation-schedule-receipt`、`reactivation-execute-receipt`、`staging-monitoring-receipt`の3 artifactへ結合する。失敗commandの出力をPASS証跡にしない。
 
-`preflight`はlive queryからCanister ID、deployment instance、module、controller、cycles、schema/wire、minimum Withdrawal ID、storage integrity、state count、固定RPC順序とprovider chain bindingを検査する。profileの`rpcProviderUrlsSha256`をlive RuntimeBindingの集約digestへ一致させ、3 providerの個別URL digest順序を後続RPC rehearsalの`rpc_endpoints`へ結合する。Base Deposit/WithdrawalとCanister Depositはlive状態でunpausedでなければならない。
+`preflight`はlive queryからCanister ID、deployment instance、module、controller、cycles、schema/wire、minimum Withdrawal ID、storage integrity、state count、固定RPC順序とprovider chain bindingを検査する。`live-canister-status` artifactは`canister_id`、`module_hash`、`controller_principals`、`cycles_balance`を必須とし、`canister_id`をprofileのBridge Canisterへ一致させる。profileの`rpcProviderUrlsSha256`をlive RuntimeBindingの集約digestへ一致させ、3 providerの個別URL digest順序を後続RPC rehearsalの`rpc_endpoints`へ結合する。Base Deposit/WithdrawalとCanister Depositはlive状態でunpausedでなければならない。
 
 `current_schema_upgrade`はcanonical test-deployment Wasm `target/test-deployment/staging/bridge_canister.wasm`を`upgrade` modeで適用した証跡だけを受理する。次をすべて満たさなければならない。
 

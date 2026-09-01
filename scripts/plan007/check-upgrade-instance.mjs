@@ -34,7 +34,27 @@ function digestHex(value, context) {
   throw new Error(`${context} must be a 32-byte SHA-256 digest`)
 }
 
+function requireExactKeys(value, expected, context) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${context} must be an object`)
+  }
+  const actual = Object.keys(value).sort()
+  const required = [...expected].sort()
+  if (actual.length !== required.length || actual.some((key, index) => key !== required[index])) {
+    throw new Error(`${context} fields differ from the required status contract`)
+  }
+}
+
 export function verifyUpgradeInstance(profile, liveRuntimeBinding, liveCanisterStatus) {
+  requireExactKeys(
+    liveCanisterStatus,
+    ["canister_id", "module_hash", "controller_principals", "cycles_balance"],
+    "live canister status",
+  )
+  if (typeof profile?.bridgeCanisterId !== "string"
+    || liveCanisterStatus.canister_id !== profile.bridgeCanisterId) {
+    throw new Error("live canister status is not bound to the reviewed Bridge canister")
+  }
   const next = deploymentInstanceHex(profile?.deploymentInstanceId, "frontend profile deploymentInstanceId")
   const schemaVersion = Number(liveRuntimeBinding?.schema_version)
   if (schemaVersion !== 35) {

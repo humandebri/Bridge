@@ -422,6 +422,18 @@ def upgrade_instance_check(
     live_canister_status: dict[str, Any],
     bridge_canister_id: str,
 ) -> dict[str, Any]:
+    exact_keys(
+        live_canister_status,
+        {
+            "canister_id",
+            "module_hash",
+            "controller_principals",
+            "cycles_balance",
+        },
+        "live canister status",
+    )
+    if live_canister_status["canister_id"] != bridge_canister_id:
+        fail("live canister status is not bound to the reviewed Bridge canister")
     next_id = deployment_instance_hex(
         next_deployment_instance_id,
         "binding deployment_instance_id",

@@ -392,6 +392,7 @@ class SepoliaEvidenceTests(unittest.TestCase):
             (
                 sepolia_e2e.LIVE_CANISTER_STATUS_ARTIFACT_KIND,
                 {
+                    "canister_id": BRIDGE_CANISTER_ID,
                     "module_hash": TX,
                     "controller_principals": ["aaaaa-aa"],
                     "cycles_balance": 100,
@@ -807,6 +808,32 @@ class SepoliaEvidenceTests(unittest.TestCase):
         path.write_text(json.dumps(evidence), encoding="utf-8")
         with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "Ledger metadata"):
             sepolia_e2e.record(self.manifest, path)
+
+    def test_preflight_rejects_unbound_live_canister_status(self) -> None:
+        self.record_through("bootstrap_attestation")
+        for mutation, message in (
+            (
+                lambda status: status.__setitem__("canister_id", "aaaaa-aa"),
+                "reviewed Bridge canister",
+            ),
+            (lambda status: status.pop("canister_id"), "fields differ"),
+        ):
+            with self.subTest(message=message):
+                evidence = json.loads(self.evidence("preflight").read_text())
+                descriptor = next(
+                    artifact
+                    for artifact in evidence["artifacts"]
+                    if artifact["kind"] == sepolia_e2e.LIVE_CANISTER_STATUS_ARTIFACT_KIND
+                )
+                artifact_path = self.root / descriptor["path"]
+                status = json.loads(artifact_path.read_text())
+                mutation(status)
+                artifact_path.write_text(json.dumps(status), encoding="utf-8")
+                descriptor["sha256"] = sepolia_e2e.digest(artifact_path)
+                path = self.root / f"canister-status-{message.split()[0]}.json"
+                path.write_text(json.dumps(evidence), encoding="utf-8")
+                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, message):
+                    sepolia_e2e.record(self.manifest, path)
 
     def test_preflight_rejects_runtime_rpc_provider_digest_drift(self) -> None:
         self.record_through("bootstrap_attestation")

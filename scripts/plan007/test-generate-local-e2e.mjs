@@ -15,6 +15,10 @@ import { createExclusiveProgressPause } from "../../ui/e2e-real/progress-pause.m
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const schema = JSON.parse(await readFile(path.join(root, "deployments/sepolia-staging/local-e2e.schema.json"), "utf8"))
+const stagingFrontendProfile = JSON.parse(await readFile(
+  path.join(root, "deployments/sepolia-staging/frontend-profile.json"),
+  "utf8",
+))
 assert.equal(schema.properties.schema_version.const, LOCAL_E2E_SCHEMA_VERSION)
 assert.equal(schema.properties.activation_timelock_delay_seconds.const, STAGING_ACTIVATION_DELAY_SECONDS)
 assert.equal(schema.properties.stable_schema_version.const, CURRENT_STABLE_SCHEMA_VERSION)
@@ -89,11 +93,23 @@ const complete = { verified: true, before: structuredClone(state), after: struct
 assert.equal(validateUpgradeEvidence(structuredClone(complete)).verified, true)
 const deploymentInstanceId = `0x${"09".repeat(32)}`
 assert.equal(validateDeploymentInstanceBinding(complete, deploymentInstanceId), deploymentInstanceId)
+const profileBound = structuredClone(complete)
+const profileDeploymentInstanceBytes = Array.from(
+  Buffer.from(stagingFrontendProfile.deploymentInstanceId.slice(2), "hex"),
+)
+profileBound.before.runtime_binding.deployment_instance_id = profileDeploymentInstanceBytes
+profileBound.after.runtime_binding.deployment_instance_id = profileDeploymentInstanceBytes
+assert.equal(
+  validateDeploymentInstanceBinding(profileBound, stagingFrontendProfile.deploymentInstanceId),
+  stagingFrontendProfile.deploymentInstanceId,
+)
 assert.throws(
   () => validateDeploymentInstanceBinding(complete, `0x${"08".repeat(32)}`),
   /does not match/,
 )
 assert.throws(() => validateDeploymentInstanceBinding(complete, "0x09"), /invalid/)
+assert.throws(() => validateDeploymentInstanceBinding(complete, `0x${"00".repeat(32)}`), /invalid/)
+assert.throws(() => validateDeploymentInstanceBinding(complete, undefined), /invalid/)
 
 const progressEvents = []
 let releaseFirstOperation
