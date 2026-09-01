@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "semi": false,
+  "singleQuote": false,
+  "printWidth": 100,
+  "trailingComma": "all",
+  "sortImports": false,
+  "sortTailwindcss": false,
+  "sortPackageJson": false,
+  "ignorePatterns": [
+    "pnpm-lock.yaml",
+    "dist",
+    "coverage",
+    "src/generated",
+    "src/routeTree.gen.ts",
+    "e2e-real/generated",
+    "playwright-report",
+    "test-results",
+    ".e2e-runtime",
+    ".e2e-cache"
+  ]
+}

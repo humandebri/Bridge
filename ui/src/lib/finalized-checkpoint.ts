@@ -13,5 +13,5 @@ export async function finalizedCheckpointMatches({
 }): Promise<boolean> {
   if (finalizedBlock < checkpointBlock) return false
   if (finalizedBlock === checkpointBlock) return finalizedBlockHash === checkpointBlockHash
-  return await fetchCheckpointBlockHash(checkpointBlock) === checkpointBlockHash
+  return (await fetchCheckpointBlockHash(checkpointBlock)) === checkpointBlockHash
 }

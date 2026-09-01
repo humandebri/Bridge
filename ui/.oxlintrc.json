@@ -1,0 +1,50 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript"],
+  "env": {
+    "browser": true,
+    "es2023": true
+  },
+  "ignorePatterns": [
+    "dist",
+    "coverage",
+    "src/generated",
+    "src/routeTree.gen.ts",
+    "playwright-report",
+    "test-results",
+    "e2e-real/**/*.mjs",
+    ".e2e-runtime",
+    ".e2e-cache"
+  ],
+  "options": {
+    "typeAware": true,
+    "reportUnusedDisableDirectives": "error"
+  },
+  "rules": {
+    "typescript/no-floating-promises": "error",
+    "typescript/consistent-type-imports": "error",
+    "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "warn",
+    "react/static-components": "error",
+    "react/use-memo": "error",
+    "react/preserve-manual-memoization": "error",
+    "react/incompatible-library": "warn",
+    "react/immutability": "error",
+    "react/globals": "error",
+    "react/refs": "error",
+    "react/set-state-in-effect": "error",
+    "react/error-boundaries": "error",
+    "react/purity": "error",
+    "react/set-state-in-render": "error",
+    "react/unsupported-syntax": "warn"
+  },
+  "overrides": [
+    {
+      "files": ["**/*.{js,mjs,cjs}"],
+      "env": {
+        "browser": false,
+        "node": true
+      }
+    }
+  ]
+}

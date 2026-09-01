@@ -12,8 +12,10 @@ export function hasCanonicalMintAuthorizationDeadline(
   issuedAtTimestamp: bigint,
   deadline: bigint,
 ): boolean {
-  return issuedAtTimestamp <= MAX_NAT64 - MINT_AUTHORIZATION_TTL_SECONDS
-    && deadline === issuedAtTimestamp + MINT_AUTHORIZATION_TTL_SECONDS
+  return (
+    issuedAtTimestamp <= MAX_NAT64 - MINT_AUTHORIZATION_TTL_SECONDS &&
+    deadline === issuedAtTimestamp + MINT_AUTHORIZATION_TTL_SECONDS
+  )
 }
 
 export function mintAuthorizationWindow(

@@ -47,8 +47,13 @@ describe("activity history", () => {
     )
     const boundaries = bothBoundaries(20n, 30n)
 
-    expect(visibleActivityItems(items, "all", boundaries).map((item) => item.createdAtNs)).toEqual([50n, 40n])
-    expect(visibleActivityItems(items, "to-base", boundaries).map((item) => item.createdAtNs)).toEqual([50n, 20n])
+    expect(visibleActivityItems(items, "all", boundaries).map((item) => item.createdAtNs)).toEqual([
+      50n,
+      40n,
+    ])
+    expect(
+      visibleActivityItems(items, "to-base", boundaries).map((item) => item.createdAtNs),
+    ).toEqual([50n, 20n])
   })
 
   it("loads the source that currently limits the safe combined boundary", () => {
@@ -68,7 +73,11 @@ describe("activity history", () => {
 function bothBoundaries(depositNs?: bigint, withdrawalNs?: bigint): ActivityBoundaries {
   return {
     deposit: { enabled: true, hasMore: depositNs !== undefined, unseenBeforeNs: depositNs },
-    withdrawal: { enabled: true, hasMore: withdrawalNs !== undefined, unseenBeforeNs: withdrawalNs },
+    withdrawal: {
+      enabled: true,
+      hasMore: withdrawalNs !== undefined,
+      unseenBeforeNs: withdrawalNs,
+    },
   }
 }
 
@@ -80,8 +89,8 @@ function deposit(sequence: number, createdAtNs: bigint): DepositView {
     funding_ledger_block_index: [BigInt(sequence)],
     gross_amount: 100n,
     quote: [{ net_amount: 90n, service_fee: 10n }],
-  refund: [],
-  available_refund_amount: [],
+    refund: [],
+    available_refund_amount: [],
     max_service_fee: 10n,
     from_subaccount: [],
     base_recipient: new Uint8Array(20),
@@ -92,7 +101,11 @@ function deposit(sequence: number, createdAtNs: bigint): DepositView {
   }
 }
 
-function withdrawal(hash: `0x${string}`, logIndex: number, createdAtNs: bigint): WithdrawalHistoryItem {
+function withdrawal(
+  hash: `0x${string}`,
+  logIndex: number,
+  createdAtNs: bigint,
+): WithdrawalHistoryItem {
   return {
     id: BigInt(logIndex),
     amount: 100n,

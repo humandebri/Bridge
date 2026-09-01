@@ -1,6 +1,23 @@
-import type { DepositPhase, DepositView, SettlementActionResult, SettlementState, SettlementStopReason, WithdrawalPhase } from "@/generated/bridge.did"
+import type {
+  DepositPhase,
+  DepositView,
+  SettlementActionResult,
+  SettlementState,
+  SettlementStopReason,
+  WithdrawalPhase,
+} from "@/generated/bridge.did"
 
-const depositNames = ["EscrowedUnquoted", "AuthorizationPending", "AuthorizationAvailable", "RefundAvailable", "Minted", "FundingReconciliationHold", "RefundProcessing", "Refunded", "Cancelled"] as const
+const depositNames = [
+  "EscrowedUnquoted",
+  "AuthorizationPending",
+  "AuthorizationAvailable",
+  "RefundAvailable",
+  "Minted",
+  "FundingReconciliationHold",
+  "RefundProcessing",
+  "Refunded",
+  "Cancelled",
+] as const
 const withdrawalNames = ["Observed", "ReleasePending", "Paid", "ReconciliationHold"] as const
 
 function variantName(value: unknown, allowed: readonly string[]): string | undefined {
@@ -92,19 +109,30 @@ export function settlementStopReasonName(reason: SettlementStopReason): string {
 export function depositContinuation(record: DepositView): DepositContinuation {
   const reason = record.last_settlement_stop_reason?.[0]
   if ((record.automatic_progress?.length ?? 0) > 0) {
-    return { mode: "automatic", reason, message: reason ? "The previous attempt stopped temporarily. The Bridge will retry automatically." : undefined }
+    return {
+      mode: "automatic",
+      reason,
+      message: reason
+        ? "The previous attempt stopped temporarily. The Bridge will retry automatically."
+        : undefined,
+    }
   }
   if (!reason) return { mode: "active" }
   const name = settlementStopReasonName(reason)
-  const authorizationPhase = "EscrowedUnquoted" in record.state || "AuthorizationPending" in record.state
-  if (authorizationPhase && ["RpcUnavailable", "RpcInconsistent", "SigningUnavailable"].includes(name)) {
+  const authorizationPhase =
+    "EscrowedUnquoted" in record.state || "AuthorizationPending" in record.state
+  if (
+    authorizationPhase &&
+    ["RpcUnavailable", "RpcInconsistent", "SigningUnavailable"].includes(name)
+  ) {
     return {
       mode: "stopped",
       action: "retry-authorization",
       reason,
-      message: name === "SigningUnavailable"
-        ? "Bridge signing stopped temporarily. Retry the same authorization."
-        : "Base confirmation stopped temporarily. Retrying checks the same deposit again.",
+      message:
+        name === "SigningUnavailable"
+          ? "Bridge signing stopped temporarily. Retry the same authorization."
+          : "Base confirmation stopped temporarily. Retrying checks the same deposit again.",
     }
   }
   if (authorizationPhase && name === "AuthorizationExpired") {
@@ -112,7 +140,8 @@ export function depositContinuation(record: DepositView): DepositContinuation {
       mode: "stopped",
       action: "request-refund",
       reason,
-      message: "Mint authorization expired before signing completed. Request the finalized refund from History.",
+      message:
+        "Mint authorization expired before signing completed. Request the finalized refund from History.",
     }
   }
   if (authorizationPhase && name === "AuthorizationWindowTooShort") {
@@ -120,17 +149,33 @@ export function depositContinuation(record: DepositView): DepositContinuation {
       mode: "stopped",
       action: "request-refund",
       reason,
-      message: "Less than five minutes remained before signing completed. Wait for finalized Base time to pass the deadline, then request a refund from History.",
+      message:
+        "Less than five minutes remained before signing completed. Wait for finalized Base time to pass the deadline, then request a refund from History.",
     }
   }
   if (name === "BridgeSignerMismatch") {
-    return { mode: "stopped", reason, message: "Bridge signer verification failed. Bridge configuration review is required before this deposit can continue." }
+    return {
+      mode: "stopped",
+      reason,
+      message:
+        "Bridge signer verification failed. Bridge configuration review is required before this deposit can continue.",
+    }
   }
   if (name === "InvalidBaseResponse" || name === "BaseStateMismatch") {
-    return { mode: "stopped", reason, message: "Base verification failed. Bridge review is required before funds can move." }
+    return {
+      mode: "stopped",
+      reason,
+      message: "Base verification failed. Bridge review is required before funds can move.",
+    }
   }
   const unknown = "Unknown" in reason ? reason.Unknown : undefined
-  return { mode: "stopped", reason, message: unknown ? `Processing stopped: ${unknown}` : "Processing stopped. Bridge review is required." }
+  return {
+    mode: "stopped",
+    reason,
+    message: unknown
+      ? `Processing stopped: ${unknown}`
+      : "Processing stopped. Bridge review is required.",
+  }
 }
 
 export type AuthorizationDeadlineRefundStatus = "checking-finality" | "waiting-finality" | "ready"
@@ -151,9 +196,12 @@ export function depositReconciliationMessage(
   if (!("RefundAvailable" in phase) && !("RefundProcessing" in phase)) {
     if (!stopReason) return undefined
     const name = settlementStopReasonName(stopReason)
-    if (["RpcUnavailable", "RpcInconsistent", "SigningUnavailable"].includes(name)) return "Processing stopped — retry from History"
-    if (name === "AuthorizationExpired") return "Authorization expired — request a refund from History"
-    if (name === "AuthorizationWindowTooShort") return "Authorization window closed — wait for finality, then request a refund from History"
+    if (["RpcUnavailable", "RpcInconsistent", "SigningUnavailable"].includes(name))
+      return "Processing stopped — retry from History"
+    if (name === "AuthorizationExpired")
+      return "Authorization expired — request a refund from History"
+    if (name === "AuthorizationWindowTooShort")
+      return "Authorization window closed — wait for finality, then request a refund from History"
     return "Processing stopped — Bridge review required"
   }
   if (!stopReason) return undefined
@@ -196,12 +244,21 @@ function isSettlementStopReason(value: unknown): boolean {
   if (key === undefined) return false
   const payload: unknown = Reflect.get(value, key)
   if (key === "LedgerRejected" || key === "Unknown") return typeof payload === "string"
-  return [
-    "LedgerFeeExceedsServiceFee", "RpcUnavailable",
-    "RpcInconsistent", "LedgerAmbiguous", "LedgerUnavailable", "BaseStateMismatch",
-    "BridgeSignerMismatch", "SigningUnavailable", "InvalidBaseResponse",
-    "AuthorizationExpired", "AuthorizationWindowTooShort",
-  ].includes(key) && payload === null
+  return (
+    [
+      "LedgerFeeExceedsServiceFee",
+      "RpcUnavailable",
+      "RpcInconsistent",
+      "LedgerAmbiguous",
+      "LedgerUnavailable",
+      "BaseStateMismatch",
+      "BridgeSignerMismatch",
+      "SigningUnavailable",
+      "InvalidBaseResponse",
+      "AuthorizationExpired",
+      "AuthorizationWindowTooShort",
+    ].includes(key) && payload === null
+  )
 }
 
 export function isSettlementActionResult(value: unknown): value is SettlementActionResult {
@@ -215,7 +272,11 @@ export function isSettlementActionResult(value: unknown): value is SettlementAct
   const record = payload as Record<string, unknown>
   if (!isSettlementState(record.state)) return false
   if (key === "Complete" || key === "ReconciliationProgress") return hasExactKeys(record, ["state"])
-  if (key === "Deferred") return hasExactKeys(record, ["state", "next_run_at_ns"]) && typeof record.next_run_at_ns === "bigint"
-  if (key === "Stopped") return hasExactKeys(record, ["state", "reason"]) && isSettlementStopReason(record.reason)
+  if (key === "Deferred")
+    return (
+      hasExactKeys(record, ["state", "next_run_at_ns"]) && typeof record.next_run_at_ns === "bigint"
+    )
+  if (key === "Stopped")
+    return hasExactKeys(record, ["state", "reason"]) && isSettlementStopReason(record.reason)
   return false
 }

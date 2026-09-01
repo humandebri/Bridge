@@ -18,7 +18,9 @@ class FakeSignerPopup {
   private readyResponses = 1
 
   focus = vi.fn()
-  close = vi.fn(() => { this.closed = true })
+  close = vi.fn(() => {
+    this.closed = true
+  })
 
   postMessage = (message: unknown) => {
     const request = message as JsonRpcRequest
@@ -38,11 +40,13 @@ class FakeSignerPopup {
   }
 
   respond(request: JsonRpcRequest, result: unknown, origin = SIGNER_ORIGIN): void {
-    window.dispatchEvent(new MessageEvent("message", {
-      data: { jsonrpc: "2.0", id: request.id, result },
-      origin,
-      source: this as unknown as Window,
-    }))
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { jsonrpc: "2.0", id: request.id, result },
+        origin,
+        source: this as unknown as Window,
+      }),
+    )
   }
 }
 

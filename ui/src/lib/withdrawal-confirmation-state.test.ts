@@ -11,9 +11,12 @@ describe("decideWithdrawalFinalization", () => {
     ["reverted", 10n, 10n, "discard-reverted"],
     ["success", 10n, 11n, "notify"],
     ["reverted", 10n, 11n, "discard-reverted"],
-  ] as const)("maps %s at receipt %s with finalized %s to %s", (status, receipt, finalized, expected) => {
-    expect(decideWithdrawalFinalization(status, receipt, finalized, true)).toBe(expected)
-  })
+  ] as const)(
+    "maps %s at receipt %s with finalized %s to %s",
+    (status, receipt, finalized, expected) => {
+      expect(decideWithdrawalFinalization(status, receipt, finalized, true)).toBe(expected)
+    },
+  )
 
   it("retries a finalized receipt that is not on the canonical chain", () => {
     expect(decideWithdrawalFinalization("success", 10n, 10n, false)).toBe("retry")

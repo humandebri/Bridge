@@ -6,16 +6,16 @@ overrides:
   # Security override until miniflare no longer pins undici 7.28.0.
   undici: 7.29.0
 allowBuilds:
-  '@dfinity/pic': true
-  '@reown/appkit': false
+  "@dfinity/pic": true
+  "@reown/appkit": false
   esbuild: true
   sharp: true
   workerd: true
 patchedDependencies:
-  '@dfinity/oisy-wallet-signer@6.0.0': patches/@dfinity__oisy-wallet-signer@6.0.0.patch
+  "@dfinity/oisy-wallet-signer@6.0.0": patches/@dfinity__oisy-wallet-signer@6.0.0.patch
 peerDependencyRules:
   allowedVersions:
-    '@dfinity/oisy-wallet-signer>@dfinity/utils': 4.2.1
-    '@dfinity/oisy-wallet-signer>@icp-sdk/canisters': 3.6.0
-    '@dfinity/oisy-wallet-signer>@icp-sdk/core': 5.4.0
+    "@dfinity/oisy-wallet-signer>@dfinity/utils": 4.2.1
+    "@dfinity/oisy-wallet-signer>@icp-sdk/canisters": 3.6.0
+    "@dfinity/oisy-wallet-signer>@icp-sdk/core": 5.4.0
     typescript: 6.0.2

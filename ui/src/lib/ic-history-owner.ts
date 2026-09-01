@@ -78,17 +78,22 @@ export function sameIcAccount(left: IcAccount | undefined, right: IcAccount | un
   if (!left || !right || left.owner !== right.owner) return false
   const leftSubaccount = left.subaccount ?? new Uint8Array()
   const rightSubaccount = right.subaccount ?? new Uint8Array()
-  return leftSubaccount.length === rightSubaccount.length
-    && leftSubaccount.every((value, index) => value === rightSubaccount[index])
+  return (
+    leftSubaccount.length === rightSubaccount.length &&
+    leftSubaccount.every((value, index) => value === rightSubaccount[index])
+  )
 }
 
 function isStoredOwner(value: unknown): value is StoredIcHistoryOwner {
   if (!value || typeof value !== "object") return false
   const item = value as Partial<StoredIcHistoryOwner>
-  return item.version === STORAGE_VERSION
-    && typeof item.owner === "string"
-    && (item.provider === "oisy" || item.provider === "plug")
-    && (item.subaccount === null || (typeof item.subaccount === "string" && /^[0-9a-f]{64}$/.test(item.subaccount)))
+  return (
+    item.version === STORAGE_VERSION &&
+    typeof item.owner === "string" &&
+    (item.provider === "oisy" || item.provider === "plug") &&
+    (item.subaccount === null ||
+      (typeof item.subaccount === "string" && /^[0-9a-f]{64}$/.test(item.subaccount)))
+  )
 }
 
 function bytesHex(value: Uint8Array): string {

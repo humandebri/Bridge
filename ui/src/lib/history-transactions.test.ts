@@ -2,7 +2,11 @@ import { cleanup, render, screen } from "@testing-library/react"
 import { createElement } from "react"
 import { deploymentProfile } from "@/config/profile"
 import type { DepositView, WithdrawalView } from "@/generated/bridge.did"
-import { depositKinicTransactions, KinicTransactionLink, withdrawalKinicTransactions } from "@/routes/history"
+import {
+  depositKinicTransactions,
+  KinicTransactionLink,
+  withdrawalKinicTransactions,
+} from "@/routes/history"
 import { afterEach, describe, expect, it } from "vitest"
 
 const originalSnsRootCanisterId = deploymentProfile.snsRootCanisterId
@@ -36,10 +40,14 @@ describe("History KINIC transactions", () => {
 
   it("shows a payout only after the withdrawal release is confirmed", () => {
     expect(withdrawalKinicTransactions(undefined)).toEqual([])
-    expect(withdrawalKinicTransactions({ release_ledger_block_index: [] } as unknown as WithdrawalView)).toEqual([])
-    expect(withdrawalKinicTransactions({ release_ledger_block_index: [99n] } as unknown as WithdrawalView)).toEqual([
-      { kind: "payout", blockIndex: 99n },
-    ])
+    expect(
+      withdrawalKinicTransactions({ release_ledger_block_index: [] } as unknown as WithdrawalView),
+    ).toEqual([])
+    expect(
+      withdrawalKinicTransactions({
+        release_ledger_block_index: [99n],
+      } as unknown as WithdrawalView),
+    ).toEqual([{ kind: "payout", blockIndex: 99n }])
   })
 
   it("renders a block number without a link when the deployment has no SNS Root", () => {
@@ -54,7 +62,9 @@ describe("History KINIC transactions", () => {
     deploymentProfile.snsRootCanisterId = "7jkta-eyaaa-aaaaq-aaarq-cai"
     render(createElement(KinicTransactionLink, { kind: "payout", blockIndex: 97_754n }))
 
-    expect(screen.getByRole("link", { name: "Open KINIC payout transaction 97754 in explorer" })).toHaveAttribute(
+    expect(
+      screen.getByRole("link", { name: "Open KINIC payout transaction 97754 in explorer" }),
+    ).toHaveAttribute(
       "href",
       "https://dashboard.internetcomputer.org/sns/7jkta-eyaaa-aaaaq-aaarq-cai/transaction/97754",
     )

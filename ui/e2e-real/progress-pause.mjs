@@ -4,7 +4,9 @@ export function createExclusiveProgressPause(stopProgress, startProgress) {
   return async function withPausedProgress(operation) {
     const previous = tail
     let release
-    tail = new Promise((resolve) => { release = resolve })
+    tail = new Promise((resolve) => {
+      release = resolve
+    })
     await previous
     try {
       await stopProgress()

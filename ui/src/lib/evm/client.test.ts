@@ -1,7 +1,18 @@
 import { describe, expect, it, vi } from "vitest"
 import { deploymentProfile } from "@/config/profile"
 import type { baseHistoryClients } from "./client"
-import { basePublicClient, baseTransactionExplorerUrl, createBaseHistoryClients, createBasePublicClient, createProfileChain, firstSuccessfulHistoryClient, hasIndependentFinalizedRevertQuorum, profileChain, wagmiConfig, withHistoryClientFailover } from "./client"
+import {
+  basePublicClient,
+  baseTransactionExplorerUrl,
+  createBaseHistoryClients,
+  createBasePublicClient,
+  createProfileChain,
+  firstSuccessfulHistoryClient,
+  hasIndependentFinalizedRevertQuorum,
+  profileChain,
+  wagmiConfig,
+  withHistoryClientFailover,
+} from "./client"
 
 describe("Base clients", () => {
   it("uses the deployment profile for the default client", () => {
@@ -11,7 +22,9 @@ describe("Base clients", () => {
 
   it("offers injected and Coinbase connectors without the MetaMask SDK connector", () => {
     expect(wagmiConfig.connectors.some((connector) => connector.id === "injected")).toBe(true)
-    expect(wagmiConfig.connectors.some((connector) => connector.id === "coinbaseWalletSDK")).toBe(true)
+    expect(wagmiConfig.connectors.some((connector) => connector.id === "coinbaseWalletSDK")).toBe(
+      true,
+    )
     expect(wagmiConfig.connectors.some((connector) => connector.id === "metaMaskSDK")).toBe(false)
   })
 
@@ -24,7 +37,12 @@ describe("Base clients", () => {
   })
 
   it("creates an isolated chain and client for an arbitrary profile", () => {
-    const custom = { ...deploymentProfile, chainId: 31_337, label: "Local Base", baseRpcUrl: "http://127.0.0.1:8545" }
+    const custom = {
+      ...deploymentProfile,
+      chainId: 31_337,
+      label: "Local Base",
+      baseRpcUrl: "http://127.0.0.1:8545",
+    }
     expect(createProfileChain(custom).rpcUrls.default.http).toEqual([custom.baseRpcUrl])
     expect(createBasePublicClient(custom).chain?.id).toBe(31_337)
   })
@@ -43,29 +61,34 @@ describe("Base clients", () => {
       baseHistoryRpcUrls: ["https://history.example", "https://history.example/"],
     })
     expect(clients).toHaveLength(1)
-    await expect(hasIndependentFinalizedRevertQuorum(`0x${"12".repeat(32)}`, clients))
-      .resolves.toBe(false)
+    await expect(
+      hasIndependentFinalizedRevertQuorum(`0x${"12".repeat(32)}`, clients),
+    ).resolves.toBe(false)
   })
 
   it("accepts matching finalized revert evidence from two distinct clients", async () => {
     const blockHash = `0x${"34".repeat(32)}` as const
-    const client = () => ({
-      getTransactionReceipt: vi.fn().mockResolvedValue({
-        status: "reverted",
-        blockNumber: 42n,
-        blockHash,
-      }),
-      getBlock: vi.fn().mockImplementation((args: { blockTag?: string }) => Promise.resolve(
-        args.blockTag === "finalized"
-          ? { number: 43n, hash: `0x${"56".repeat(32)}` }
-          : { number: 42n, hash: blockHash },
-      )),
-    }) as unknown as (typeof baseHistoryClients)[number]
+    const client = () =>
+      ({
+        getTransactionReceipt: vi.fn().mockResolvedValue({
+          status: "reverted",
+          blockNumber: 42n,
+          blockHash,
+        }),
+        getBlock: vi
+          .fn()
+          .mockImplementation((args: { blockTag?: string }) =>
+            Promise.resolve(
+              args.blockTag === "finalized"
+                ? { number: 43n, hash: `0x${"56".repeat(32)}` }
+                : { number: 42n, hash: blockHash },
+            ),
+          ),
+      }) as unknown as (typeof baseHistoryClients)[number]
 
-    await expect(hasIndependentFinalizedRevertQuorum(
-      `0x${"12".repeat(32)}`,
-      [client(), client()],
-    )).resolves.toBe(true)
+    await expect(
+      hasIndependentFinalizedRevertQuorum(`0x${"12".repeat(32)}`, [client(), client()]),
+    ).resolves.toBe(true)
   })
 
   it("retries the whole history operation on the next client", async () => {
@@ -89,8 +112,11 @@ describe("Base clients", () => {
   })
 
   it("does not convert total history RPC failure into an empty history", async () => {
-    await expect(firstSuccessfulHistoryClient(["first", "second"], () => Promise.reject(new Error("unavailable"))))
-      .rejects.toThrow("Base history RPCs are unavailable")
+    await expect(
+      firstSuccessfulHistoryClient(["first", "second"], () =>
+        Promise.reject(new Error("unavailable")),
+      ),
+    ).rejects.toThrow("Base history RPCs are unavailable")
   })
 
   it("fails over when a downstream history operation fails after the finalized head", async () => {

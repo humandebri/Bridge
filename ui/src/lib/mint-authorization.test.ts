@@ -3,10 +3,7 @@ import { hashTypedData, recoverAddress } from "viem"
 import type { DepositView, MintAuthorizationView } from "@/generated/bridge.did"
 import type { FinalizedRuntimeObservation } from "@/lib/runtime-validation"
 import vector from "../../../verification/generated/mint-authorization-vector.json"
-import {
-  mintAuthorizationTypes,
-  validateMintAuthorization,
-} from "./mint-authorization"
+import { mintAuthorizationTypes, validateMintAuthorization } from "./mint-authorization"
 
 const mocks = vi.hoisted(() => ({
   getBlock: vi.fn(),
@@ -57,10 +54,12 @@ function authorizationRecord(): DepositView {
   return {
     base_recipient: authorization.recipient,
     deposit_id: authorization.deposit_id,
-    quote: [{
-      net_amount: authorization.gross_amount - authorization.charged_service_fee,
-      service_fee: authorization.charged_service_fee,
-    }],
+    quote: [
+      {
+        net_amount: authorization.gross_amount - authorization.charged_service_fee,
+        service_fee: authorization.charged_service_fee,
+      },
+    ],
     max_service_fee: authorization.max_service_fee,
     state: { AuthorizationAvailable: null },
     mint_authorization: [authorization],
@@ -102,12 +101,15 @@ describe("mint authorization protocol vector", () => {
     })
 
     expect(digest).toBe(vector.digest)
-    expect((await recoverAddress({
-      hash: digest,
-      signature: vector.signature as `0x${string}`,
-    })).toLowerCase()).toBe(vector.signer)
+    expect(
+      (
+        await recoverAddress({
+          hash: digest,
+          signature: vector.signature as `0x${string}`,
+        })
+      ).toLowerCase(),
+    ).toBe(vector.signer)
   })
-
 })
 
 describe("mint authorization latest Base admission", () => {
@@ -122,33 +124,38 @@ describe("mint authorization latest Base admission", () => {
       .mockResolvedValueOnce({ timestamp: deadline - 901n })
       .mockResolvedValueOnce({ timestamp: deadline - 900n })
 
-    await expect(validateMintAuthorization(authorizationRecord(), runtimeObservation()))
-      .rejects.toThrow("Mint authorization exceeds the Base contract deadline horizon")
-    await expect(validateMintAuthorization(authorizationRecord(), runtimeObservation()))
-      .resolves.toMatchObject({ latestBlockTimestamp: deadline - 900n })
+    await expect(
+      validateMintAuthorization(authorizationRecord(), runtimeObservation()),
+    ).rejects.toThrow("Mint authorization exceeds the Base contract deadline horizon")
+    await expect(
+      validateMintAuthorization(authorizationRecord(), runtimeObservation()),
+    ).resolves.toMatchObject({ latestBlockTimestamp: deadline - 900n })
   })
 
   it("accepts_exactly_300_seconds_of_remaining_Base_time", async () => {
     const deadline = BigInt(vector.authorization.deadline)
     mocks.getBlock.mockResolvedValue({ timestamp: deadline - 300n })
 
-    await expect(validateMintAuthorization(authorizationRecord(), runtimeObservation()))
-      .resolves.toMatchObject({ latestBlockTimestamp: deadline - 300n })
+    await expect(
+      validateMintAuthorization(authorizationRecord(), runtimeObservation()),
+    ).resolves.toMatchObject({ latestBlockTimestamp: deadline - 300n })
   })
 
   it("rejects_299_seconds_of_remaining_Base_time", async () => {
     const deadline = BigInt(vector.authorization.deadline)
     mocks.getBlock.mockResolvedValue({ timestamp: deadline - 299n })
 
-    await expect(validateMintAuthorization(authorizationRecord(), runtimeObservation()))
-      .rejects.toThrow("less than five minutes remaining")
+    await expect(
+      validateMintAuthorization(authorizationRecord(), runtimeObservation()),
+    ).rejects.toThrow("less than five minutes remaining")
   })
 
   it("fails_closed_when_latest_Base_state_cannot_be_refreshed", async () => {
     mocks.getBlock.mockRejectedValue(new Error("RPC unavailable"))
 
-    await expect(validateMintAuthorization(authorizationRecord(), runtimeObservation()))
-      .rejects.toThrow("No Base transaction was sent")
+    await expect(
+      validateMintAuthorization(authorizationRecord(), runtimeObservation()),
+    ).rejects.toThrow("No Base transaction was sent")
   })
 
   it("rejects_an_authorization_already_processed_on_Base", async () => {
@@ -156,7 +163,8 @@ describe("mint authorization latest Base admission", () => {
     mocks.readContract.mockResolvedValue(true)
     mocks.getBlock.mockResolvedValue({ timestamp: deadline - 300n })
 
-    await expect(validateMintAuthorization(authorizationRecord(), runtimeObservation()))
-      .rejects.toThrow("already processed on Base")
+    await expect(
+      validateMintAuthorization(authorizationRecord(), runtimeObservation()),
+    ).rejects.toThrow("already processed on Base")
   })
 })

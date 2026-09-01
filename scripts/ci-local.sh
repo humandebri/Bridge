@@ -797,6 +797,7 @@ run_ui_fast() {
   require_ui_dependencies
   pnpm --dir "$ROOT/ui" run codegen:abi:check
   pnpm --dir "$ROOT/ui" run codegen:candid:check
+  pnpm --dir "$ROOT/ui" run format:check
   pnpm --dir "$ROOT/ui" run typecheck
   pnpm --dir "$ROOT/ui" run lint
   pnpm --dir "$ROOT/ui" run test

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { estimatedAmountOut, formatTokenAmount, maximumDepositAmount, parseTokenAmount, requiredDepositBalance } from "./amounts"
+import {
+  estimatedAmountOut,
+  formatTokenAmount,
+  maximumDepositAmount,
+  parseTokenAmount,
+  requiredDepositBalance,
+} from "./amounts"
 
 describe("eight-decimal token amount handling", () => {
   it("parses and formats at exactly eight decimal places without numbers", () => {

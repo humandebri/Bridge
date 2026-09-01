@@ -103,12 +103,19 @@ function storageKey(): string {
 }
 
 export function createBridgeProgress(
-  input: Omit<BridgeProgressRecord, "version" | "id" | "createdAt" | "updatedAt" | "tokenApproval"> & { tokenApproval?: BridgeTokenApproval },
+  input: Omit<
+    BridgeProgressRecord,
+    "version" | "id" | "createdAt" | "updatedAt" | "tokenApproval"
+  > & { tokenApproval?: BridgeTokenApproval },
 ): BridgeProgressRecord {
   const now = Date.now()
   return {
     ...input,
-    tokenApproval: input.tokenApproval ?? (input.phase === "awaiting-ic-allowance" || input.phase === "awaiting-base-allowance" ? "required" : "not-required"),
+    tokenApproval:
+      input.tokenApproval ??
+      (input.phase === "awaiting-ic-allowance" || input.phase === "awaiting-base-allowance"
+        ? "required"
+        : "not-required"),
     version: STORAGE_VERSION,
     id: `${input.direction}:${now}:${Math.random().toString(16).slice(2)}`,
     createdAt: now,
@@ -175,10 +182,18 @@ export function removeLatestBridgeProgress(id?: string): void {
 }
 
 export function bridgeProgressLabel(record: BridgeProgressRecord): string {
-  if (record.direction === "deposit" && record.phase === "base-mint-included" && record.baseTransactionOutcome === "reverted") {
+  if (
+    record.direction === "deposit" &&
+    record.phase === "base-mint-included" &&
+    record.baseTransactionOutcome === "reverted"
+  ) {
     return "Base transaction reverted"
   }
-  if (record.direction === "deposit" && record.phase === "attention" && record.attentionPhase === "authorization-generating") {
+  if (
+    record.direction === "deposit" &&
+    record.phase === "attention" &&
+    record.attentionPhase === "authorization-generating"
+  ) {
     return "Bridge processing paused"
   }
   const labels: Record<BridgeProgressPhase, string> = {
@@ -206,24 +221,50 @@ export function bridgeProgressLabel(record: BridgeProgressRecord): string {
 }
 
 export function bridgeProgressDetail(record: BridgeProgressRecord): string {
-  if (record.phase === "attention") return record.attentionMessage ?? "Review the transfer in History before trying again."
-  if (record.phase === "complete") return record.completionMessage ?? "The transfer reached its destination."
-  if (record.phase === "verifying-ic-destination") return "The bridge is checking that the connected IC account matches the reviewed destination."
-  if (record.phase === "awaiting-ic-allowance") return `Allow the bridge to use the ${record.sendSymbol} required for this transfer.`
-  if (record.phase === "awaiting-ic-deposit") return `${record.sendAmount} ${record.sendSymbol} will be deposited for ${shortDestination(record.destination)}.`
-  if (record.phase === "authorization-generating") return "No wallet action is needed. The Bridge is signing the fixed mint recipient and amount."
-  if (record.phase === "awaiting-base-mint") return `${record.receiveAmount} ${record.receiveSymbol} will be minted to ${shortDestination(record.destination)}. Your connected Base wallet pays gas.`
-  if (record.phase === "awaiting-base-allowance") return `Allow the bridge to use the ${record.sendSymbol} required for this withdrawal.`
-  if (record.phase === "awaiting-base-withdrawal") return `${record.sendAmount} ${record.sendSymbol} will be burned and sent to ${shortDestination(record.destination)}.`
-  if (record.phase === "awaiting-ic-notification") return "No wallet action is needed. The browser is submitting the finalized Base withdrawal proof."
-  if (record.phase === "ledger-payout") return "The withdrawal is recorded. Open History to continue the payout if it has not completed."
-  if (record.direction === "deposit" && record.phase === "base-mint-included" && record.baseTransactionOutcome === "reverted") {
+  if (record.phase === "attention")
+    return record.attentionMessage ?? "Review the transfer in History before trying again."
+  if (record.phase === "complete")
+    return record.completionMessage ?? "The transfer reached its destination."
+  if (record.phase === "verifying-ic-destination")
+    return "The bridge is checking that the connected IC account matches the reviewed destination."
+  if (record.phase === "awaiting-ic-allowance")
+    return `Allow the bridge to use the ${record.sendSymbol} required for this transfer.`
+  if (record.phase === "awaiting-ic-deposit")
+    return `${record.sendAmount} ${record.sendSymbol} will be deposited for ${shortDestination(record.destination)}.`
+  if (record.phase === "authorization-generating")
+    return "No wallet action is needed. The Bridge is signing the fixed mint recipient and amount."
+  if (record.phase === "awaiting-base-mint")
+    return `${record.receiveAmount} ${record.receiveSymbol} will be minted to ${shortDestination(record.destination)}. Your connected Base wallet pays gas.`
+  if (record.phase === "awaiting-base-allowance")
+    return `Allow the bridge to use the ${record.sendSymbol} required for this withdrawal.`
+  if (record.phase === "awaiting-base-withdrawal")
+    return `${record.sendAmount} ${record.sendSymbol} will be burned and sent to ${shortDestination(record.destination)}.`
+  if (record.phase === "awaiting-ic-notification")
+    return "No wallet action is needed. The browser is submitting the finalized Base withdrawal proof."
+  if (record.phase === "ledger-payout")
+    return "The withdrawal is recorded. Open History to continue the payout if it has not completed."
+  if (
+    record.direction === "deposit" &&
+    record.phase === "base-mint-included" &&
+    record.baseTransactionOutcome === "reverted"
+  ) {
     return "The transaction reverted. Waiting for Base finality before enabling a safe retry."
   }
-  if (record.receiptBlockNumber && ["base-mint-included", "base-mint-finalizing", "base-withdrawal-included", "base-withdrawal-finalizing"].includes(record.phase)) {
+  if (
+    record.receiptBlockNumber &&
+    [
+      "base-mint-included",
+      "base-mint-finalizing",
+      "base-withdrawal-included",
+      "base-withdrawal-finalizing",
+    ].includes(record.phase)
+  ) {
     return `Included in Base block ${record.receiptBlockNumber}. Waiting for the finalized chain to confirm it.`
   }
-  if (record.transactionHash && ["base-mint-submitted", "base-withdrawal-submitted"].includes(record.phase)) {
+  if (
+    record.transactionHash &&
+    ["base-mint-submitted", "base-withdrawal-submitted"].includes(record.phase)
+  ) {
     return `Submitted ${record.transactionHash.slice(0, 12)}…. Waiting for inclusion in a Base block.`
   }
   return "The bridge is checking the next confirmed state."
@@ -240,12 +281,18 @@ export function bridgeProgressSteps(record: BridgeProgressRecord): BridgeProgres
     ["IC token approval", ["awaiting-ic-allowance"]],
     ["IC deposit transaction", ["awaiting-ic-deposit", "ic-deposit-accepted"]],
     ["Bridge authorization", ["authorization-generating"]],
-    ["Base mint transaction", ["awaiting-base-mint", "base-mint-submitted", "base-mint-included", "base-mint-finalizing"]],
+    [
+      "Base mint transaction",
+      ["awaiting-base-mint", "base-mint-submitted", "base-mint-included", "base-mint-finalizing"],
+    ],
   ] as const
   const withdrawal = [
     ["IC destination verification", ["verifying-ic-destination"]],
     ["Base token approval", ["awaiting-base-allowance"]],
-    ["Base withdrawal transaction", ["awaiting-base-withdrawal", "base-withdrawal-submitted", "base-withdrawal-included"]],
+    [
+      "Base withdrawal transaction",
+      ["awaiting-base-withdrawal", "base-withdrawal-submitted", "base-withdrawal-included"],
+    ],
     ["Base finality", ["base-withdrawal-finalizing"]],
     ["IC notification", ["awaiting-ic-notification"]],
     ["Ledger payout", ["ic-notification-recorded", "ledger-payout"]],
@@ -253,34 +300,53 @@ export function bridgeProgressSteps(record: BridgeProgressRecord): BridgeProgres
   ] as const
   const steps = record.direction === "deposit" ? deposit : withdrawal
   const depositTransactionComplete = isDepositTransactionComplete(record)
-  const currentIndex = record.phase === "attention"
-    ? Math.max(0, steps.findIndex(([, phases]) => (phases as readonly string[]).includes(record.attentionPhase ?? previousPhase(record))))
-    : Math.max(0, steps.findIndex(([, phases]) => (phases as readonly string[]).includes(record.phase)))
+  const currentIndex =
+    record.phase === "attention"
+      ? Math.max(
+          0,
+          steps.findIndex(([, phases]) =>
+            (phases as readonly string[]).includes(record.attentionPhase ?? previousPhase(record)),
+          ),
+        )
+      : Math.max(
+          0,
+          steps.findIndex(([, phases]) => (phases as readonly string[]).includes(record.phase)),
+        )
   const approvalLabel = record.direction === "deposit" ? "IC token approval" : "Base token approval"
   return steps.map(([label], index) => {
     const approvalNotRequired = label === approvalLabel && record.tokenApproval === "not-required"
     const step: BridgeProgressStep = {
       label,
-      status: record.phase === "attention" && index === currentIndex
-        ? "attention"
-        : record.phase === "complete" || depositTransactionComplete || approvalNotRequired
-        ? "complete"
-        : index < currentIndex ? "complete" : index === currentIndex ? "current" : "waiting",
+      status:
+        record.phase === "attention" && index === currentIndex
+          ? "attention"
+          : record.phase === "complete" || depositTransactionComplete || approvalNotRequired
+            ? "complete"
+            : index < currentIndex
+              ? "complete"
+              : index === currentIndex
+                ? "current"
+                : "waiting",
     }
     if (approvalNotRequired) step.note = "Not required"
     return step
   })
 }
 
-export function withdrawalFinalityProgress(record: BridgeProgressRecord): {
-  finalizedBlockNumber: string
-  targetBlockNumber: string
-  remainingBlocks: string
-} | undefined {
-  if (record.direction !== "withdraw"
-    || record.phase !== "base-withdrawal-finalizing"
-    || !record.finalizedBlockNumber
-    || !record.receiptBlockNumber) return undefined
+export function withdrawalFinalityProgress(record: BridgeProgressRecord):
+  | {
+      finalizedBlockNumber: string
+      targetBlockNumber: string
+      remainingBlocks: string
+    }
+  | undefined {
+  if (
+    record.direction !== "withdraw" ||
+    record.phase !== "base-withdrawal-finalizing" ||
+    !record.finalizedBlockNumber ||
+    !record.receiptBlockNumber
+  )
+    return undefined
   const finalized = BigInt(record.finalizedBlockNumber)
   const target = BigInt(record.receiptBlockNumber)
   return {
@@ -292,15 +358,19 @@ export function withdrawalFinalityProgress(record: BridgeProgressRecord): {
 
 /** True after Base has returned a successful receipt, before canonical finality is known. */
 export function isDepositTransactionComplete(record: BridgeProgressRecord): boolean {
-  return record.direction === "deposit"
-    && record.baseTransactionOutcome === "success"
-    && (record.phase === "base-mint-included" || record.phase === "base-mint-finalizing")
+  return (
+    record.direction === "deposit" &&
+    record.baseTransactionOutcome === "success" &&
+    (record.phase === "base-mint-included" || record.phase === "base-mint-finalizing")
+  )
 }
 
 function previousPhase(record: BridgeProgressRecord): string {
   if (record.withdrawal?.withdrawalId) return "ledger-payout"
-  if (record.receiptBlockNumber) return record.direction === "deposit" ? "base-mint-finalizing" : "base-withdrawal-finalizing"
-  if (record.transactionHash) return record.direction === "deposit" ? "base-mint-submitted" : "base-withdrawal-submitted"
+  if (record.receiptBlockNumber)
+    return record.direction === "deposit" ? "base-mint-finalizing" : "base-withdrawal-finalizing"
+  if (record.transactionHash)
+    return record.direction === "deposit" ? "base-mint-submitted" : "base-withdrawal-submitted"
   if (record.direction === "deposit" && record.deposit?.depositId) return "authorization-generating"
   return record.direction === "deposit" ? "awaiting-ic-deposit" : "verifying-ic-destination"
 }
@@ -312,35 +382,47 @@ function shortDestination(value: string): string {
 function isStoredBridgeProgress(value: unknown): value is StoredBridgeProgress {
   if (!value || typeof value !== "object") return false
   const item = value as Partial<StoredBridgeProgress>
-  if (!(item.version === STORAGE_VERSION
-    && typeof item.id === "string"
-    && item.id.length > 0
-    && (item.direction === "deposit" || item.direction === "withdraw")
-    && typeof item.source === "string"
-    && typeof item.destination === "string"
-    && typeof item.sendAmount === "string"
-    && typeof item.receiveAmount === "string"
-    && typeof item.sendSymbol === "string"
-    && typeof item.receiveSymbol === "string"
-    && (item.tokenApproval === "required" || item.tokenApproval === "not-required")
-    && typeof item.createdAt === "number"
-    && Number.isFinite(item.createdAt)
-    && item.createdAt >= 0
-    && validOptionalTransactionHash(item.transactionHash)
-    && validOptionalDepositIdentity(item.deposit)
-    && validOptionalWithdrawalIdentity(item.withdrawal))) return false
+  if (
+    !(
+      item.version === STORAGE_VERSION &&
+      typeof item.id === "string" &&
+      item.id.length > 0 &&
+      (item.direction === "deposit" || item.direction === "withdraw") &&
+      typeof item.source === "string" &&
+      typeof item.destination === "string" &&
+      typeof item.sendAmount === "string" &&
+      typeof item.receiveAmount === "string" &&
+      typeof item.sendSymbol === "string" &&
+      typeof item.receiveSymbol === "string" &&
+      (item.tokenApproval === "required" || item.tokenApproval === "not-required") &&
+      typeof item.createdAt === "number" &&
+      Number.isFinite(item.createdAt) &&
+      item.createdAt >= 0 &&
+      validOptionalTransactionHash(item.transactionHash) &&
+      validOptionalDepositIdentity(item.deposit) &&
+      validOptionalWithdrawalIdentity(item.withdrawal)
+    )
+  )
+    return false
 
-  if (item.phase === "attention") return typeof item.attentionMessage === "string"
-    && item.attentionMessage.length > 0
-    && validOptionalActivePhase(item.attentionPhase)
+  if (item.phase === "attention")
+    return (
+      typeof item.attentionMessage === "string" &&
+      item.attentionMessage.length > 0 &&
+      validOptionalActivePhase(item.attentionPhase)
+    )
   if (item.direction === "deposit") {
     if (!item.deposit?.depositId) return false
-    return item.phase === "authorization-generating"
-      || item.phase === "base-mint-submitted" && item.transactionHash !== undefined
+    return (
+      item.phase === "authorization-generating" ||
+      (item.phase === "base-mint-submitted" && item.transactionHash !== undefined)
+    )
   }
   if (!item.withdrawal) return false
-  return item.phase === "base-withdrawal-submitted" && item.transactionHash !== undefined
-    || item.phase === "ledger-payout" && item.withdrawal.withdrawalId !== undefined
+  return (
+    (item.phase === "base-withdrawal-submitted" && item.transactionHash !== undefined) ||
+    (item.phase === "ledger-payout" && item.withdrawal.withdrawalId !== undefined)
+  )
 }
 
 function restorablePhase(record: BridgeProgressRecord): RestorableBridgeProgressPhase | undefined {
@@ -356,47 +438,59 @@ function restorablePhase(record: BridgeProgressRecord): RestorableBridgeProgress
 }
 
 function validOptionalTransactionHash(value: unknown): value is `0x${string}` | undefined {
-  return value === undefined || typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value)
+  return value === undefined || (typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value))
 }
 
-function validOptionalDepositIdentity(value: unknown): value is BridgeProgressDepositIdentity | undefined {
+function validOptionalDepositIdentity(
+  value: unknown,
+): value is BridgeProgressDepositIdentity | undefined {
   if (value === undefined) return true
   if (!value || typeof value !== "object") return false
   const item = value as Partial<BridgeProgressDepositIdentity>
-  return typeof item.owner === "string"
-    && item.owner.length > 0
-    && typeof item.ownerSequence === "string"
-    && /^(0|[1-9][0-9]*)$/.test(item.ownerSequence)
-    && (item.depositId === undefined || /^0x[0-9a-fA-F]{64}$/.test(item.depositId))
+  return (
+    typeof item.owner === "string" &&
+    item.owner.length > 0 &&
+    typeof item.ownerSequence === "string" &&
+    /^(0|[1-9][0-9]*)$/.test(item.ownerSequence) &&
+    (item.depositId === undefined || /^0x[0-9a-fA-F]{64}$/.test(item.depositId))
+  )
 }
 
-function validOptionalWithdrawalIdentity(value: unknown): value is BridgeProgressWithdrawalIdentity | undefined {
+function validOptionalWithdrawalIdentity(
+  value: unknown,
+): value is BridgeProgressWithdrawalIdentity | undefined {
   if (value === undefined) return true
   if (!value || typeof value !== "object") return false
   const item = value as Partial<BridgeProgressWithdrawalIdentity>
-  return typeof item.owner === "string"
-    && item.owner.length > 0
-    && (item.withdrawalId === undefined || /^0x[0-9a-fA-F]{64}$/.test(item.withdrawalId))
+  return (
+    typeof item.owner === "string" &&
+    item.owner.length > 0 &&
+    (item.withdrawalId === undefined || /^0x[0-9a-fA-F]{64}$/.test(item.withdrawalId))
+  )
 }
 
 function validOptionalActivePhase(value: unknown): value is ActiveBridgeProgressPhase | undefined {
-  return value === undefined || typeof value === "string" && [
-    "verifying-ic-destination",
-    "awaiting-ic-allowance",
-    "awaiting-ic-deposit",
-    "ic-deposit-accepted",
-    "authorization-generating",
-    "awaiting-base-mint",
-    "base-mint-submitted",
-    "base-mint-included",
-    "base-mint-finalizing",
-    "awaiting-base-allowance",
-    "awaiting-base-withdrawal",
-    "base-withdrawal-submitted",
-    "base-withdrawal-included",
-    "base-withdrawal-finalizing",
-    "awaiting-ic-notification",
-    "ic-notification-recorded",
-    "ledger-payout",
-  ].includes(value)
+  return (
+    value === undefined ||
+    (typeof value === "string" &&
+      [
+        "verifying-ic-destination",
+        "awaiting-ic-allowance",
+        "awaiting-ic-deposit",
+        "ic-deposit-accepted",
+        "authorization-generating",
+        "awaiting-base-mint",
+        "base-mint-submitted",
+        "base-mint-included",
+        "base-mint-finalizing",
+        "awaiting-base-allowance",
+        "awaiting-base-withdrawal",
+        "base-withdrawal-submitted",
+        "base-withdrawal-included",
+        "base-withdrawal-finalizing",
+        "awaiting-ic-notification",
+        "ic-notification-recorded",
+        "ledger-payout",
+      ].includes(value))
+  )
 }

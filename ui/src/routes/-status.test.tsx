@@ -5,7 +5,9 @@ import { Route } from "./status"
 
 const mocks = vi.hoisted(() => ({
   heartbeat: {
-    data: undefined as undefined | { ready: boolean; blockers: string[]; checkedAt: number; status?: { source: string } },
+    data: undefined as
+      | undefined
+      | { ready: boolean; blockers: string[]; checkedAt: number; status?: { source: string } },
     dataUpdatedAt: 0,
     isError: false,
     error: undefined,
@@ -40,8 +42,21 @@ describe("StatusPage refresh", () => {
   afterEach(cleanup)
 
   beforeEach(() => {
-    Object.assign(mocks.heartbeat, { data: undefined, dataUpdatedAt: 0, isError: false, error: undefined, isFetched: false, isFetching: false })
-    Object.assign(mocks.canister, { data: undefined, dataUpdatedAt: 0, isError: false, error: undefined, isFetching: false })
+    Object.assign(mocks.heartbeat, {
+      data: undefined,
+      dataUpdatedAt: 0,
+      isError: false,
+      error: undefined,
+      isFetched: false,
+      isFetching: false,
+    })
+    Object.assign(mocks.canister, {
+      data: undefined,
+      dataUpdatedAt: 0,
+      isError: false,
+      error: undefined,
+      isFetching: false,
+    })
     mocks.heartbeatRefetch.mockReset().mockResolvedValue({
       data: { ready: true, blockers: [], checkedAt: Date.now(), status: { source: "heartbeat" } },
       isError: false,
@@ -54,7 +69,9 @@ describe("StatusPage refresh", () => {
 
     expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(3)
     expect(screen.queryByText("Unavailable")).not.toBeInTheDocument()
-    expect(screen.getByText("Live availability is unknown until current status checks succeed.")).toBeVisible()
+    expect(
+      screen.getByText("Live availability is unknown until current status checks succeed."),
+    ).toBeVisible()
     expect(mocks.canisterRefetch).not.toHaveBeenCalled()
   })
 
@@ -151,7 +168,11 @@ describe("StatusPage refresh", () => {
     const view = render(<StatusPage />)
     await waitFor(() => expect(mocks.canisterRefetch).toHaveBeenCalledOnce())
 
-    Object.assign(mocks.canister, { isError: true, error: new Error("IC unavailable"), isFetching: false })
+    Object.assign(mocks.canister, {
+      isError: true,
+      error: new Error("IC unavailable"),
+      isFetching: false,
+    })
     view.rerender(<StatusPage />)
 
     await waitFor(() => expect(mocks.canisterRefetch).toHaveBeenCalledOnce())
@@ -166,7 +187,11 @@ describe("StatusPage refresh", () => {
   })
 
   it("uses the Canister fallback when the heartbeat refresh fails", async () => {
-    mocks.heartbeatRefetch.mockResolvedValue({ data: undefined, isError: true, error: new Error("Base RPC unavailable") })
+    mocks.heartbeatRefetch.mockResolvedValue({
+      data: undefined,
+      isError: true,
+      error: new Error("Base RPC unavailable"),
+    })
     render(<StatusPage />)
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
 

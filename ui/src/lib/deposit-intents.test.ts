@@ -46,7 +46,11 @@ describe("durable deposit intents", () => {
 
   it("prefers a newer session intent when durable replacement fails", async () => {
     await saveDepositIntent(intent)
-    const replacement = { ...intent, recipient: `0x${"22".repeat(20)}` as const, state: "accepted" as const }
+    const replacement = {
+      ...intent,
+      recipient: `0x${"22".repeat(20)}` as const,
+      state: "accepted" as const,
+    }
     const originalSetItem = window.localStorage.setItem.bind(window.localStorage)
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation((key, value) => {
       if (key.startsWith("kinic.bridge.deposit-intent")) throw new Error("storage unavailable")
