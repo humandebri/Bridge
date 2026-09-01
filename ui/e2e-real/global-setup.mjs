@@ -42,13 +42,13 @@ const feeRecipient = Principal.selfAuthenticating(new Uint8Array(32).fill(10))
 const confirmationRelayerPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(11))
 const bridgeAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/Bridge.json"), "utf8"))
 const bsnsAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/BSNS.json"), "utf8"))
-const stagingUpgradePolicy = JSON.parse(await readFile(
-  path.join(root, "deployments/sepolia-staging/staging-bridge-upgrade-policy.json"),
+const stagingFrontendProfile = JSON.parse(await readFile(
+  path.join(root, "deployments/sepolia-staging/frontend-profile.json"),
   "utf8",
 ))
-const stagingDeploymentInstanceId = stagingUpgradePolicy.deployment_instance_id
-if (!/^0x[0-9a-f]{64}$/.test(stagingDeploymentInstanceId)) {
-  throw new Error("Staging upgrade policy has an invalid deployment instance ID")
+const stagingDeploymentInstanceId = stagingFrontendProfile.deploymentInstanceId
+if (!/^0x[0-9a-f]{64}$/.test(stagingDeploymentInstanceId) || /^0x0+$/.test(stagingDeploymentInstanceId)) {
+  throw new Error("Reviewed staging frontend profile has an invalid deployment instance ID")
 }
 const resources = {}
 const bridgeInitType = bridgeInitFactory({ IDL })[0]

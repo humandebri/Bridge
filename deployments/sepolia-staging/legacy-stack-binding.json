@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "kind": "legacy-staging-stack-binding-marker",
+  "environment": "sepolia-staging",
+  "disposition": "abandoned-test-only",
+  "authoritative_evidence": "evidence/legacy-stack-preflight-2026-08-27.json"
+}

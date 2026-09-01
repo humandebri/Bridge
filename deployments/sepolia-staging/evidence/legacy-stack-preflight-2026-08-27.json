@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "kind": "legacy-staging-stack-preflight",
+  "observed_at": "2026-08-27T08:32:29Z",
+  "result": "abandoned-test-only",
+  "binding": {
+    "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+    "deployment_instance_id": "0x2c344ca868267bc19791a2e1a966c210eef545945b3879223d3cb6c1255d789b",
+    "bridge_address": "0x722733d0fffd634abd828bf1f9bbedca55c7e004",
+    "base_chain_id": 84532
+  },
+  "ic_observation": {
+    "module_sha256": "edecad666c6777f7d0d6d5f47851d71c4df77633826b7b3906578a6950632697",
+    "stable_schema_version": 34,
+    "mint_authorization_ttl_seconds": 900,
+    "deposits_paused": false,
+    "deposits": 4,
+    "withdrawals": 3,
+    "pending_ledger_operations": 0,
+    "reconciliation_holds": 0,
+    "reserved_deposit_mint_operations": 1,
+    "reserved_deposit_mint_amount": 850000000,
+    "pending_timelock_operations": 0,
+    "pending_governance_transactions": 0,
+    "storage_integrity": "ok",
+    "cycles_balance": 365469351491
+  },
+  "base_observation": {
+    "deposit_mints_paused": false,
+    "withdrawals_paused": false,
+    "mint_authorization_epoch": 5,
+    "service_fee": 50000000,
+    "latest_block_number": 46025623,
+    "latest_block_timestamp": 1787819534,
+    "finalized_block_number": 46025018,
+    "finalized_block_timestamp": 1787818324,
+    "finality_lag_seconds": 1210
+  },
+  "recorded_unsettled_test_state": [
+    "IC deposits are not paused",
+    "Base deposit mints are not paused",
+    "Base withdrawals are not paused",
+    "one deposit mint reservation remains for 850000000 raw units"
+  ],
+  "next_action": "Do not route the staging UI, signer, Canister, or deployment profile to this stack. Preserve these observations as test-only abandonment evidence and create a fresh stack with unrelated identities."
+}
