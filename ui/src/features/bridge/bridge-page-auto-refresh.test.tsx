@@ -554,7 +554,8 @@ describe("BridgePage automatic wallet refresh", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
     fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
 
-    expect(await screen.findByText("Bridge configuration could not be verified")).toBeVisible()
+    expect(await screen.findByText("Bridge availability could not be confirmed. Please try again shortly.")).toBeVisible()
+    expect(screen.queryByText("Bridge configuration could not be verified")).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Try again" }))
     expect(await screen.findByText("Review the transfer details before continuing.")).toBeVisible()
     expect(mocks.baseRefetch).toHaveBeenCalledTimes(2)
