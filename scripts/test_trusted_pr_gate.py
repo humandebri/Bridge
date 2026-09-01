@@ -67,8 +67,12 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertTrue(mount_smoke.is_file())
         self.assertTrue(os.access(mountpoints, os.X_OK))
         self.assertTrue(os.access(mount_smoke, os.X_OK))
-        first_line = dockerfile.read_text(encoding="utf-8").splitlines()[0]
+        dockerfile_text = dockerfile.read_text(encoding="utf-8")
+        first_line = dockerfile_text.splitlines()[0]
         self.assertRegex(first_line, r"^FROM ubuntu@sha256:[0-9a-f]{64}$")
+        self.assertIn("groupadd --gid 1001 bridge-ci", dockerfile_text)
+        self.assertIn("useradd --uid 1001 --gid 1001", dockerfile_text)
+        self.assertIn("USER 1001:1001", dockerfile_text)
 
     def test_policy_is_loaded_from_the_base_commit(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
