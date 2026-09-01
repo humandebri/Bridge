@@ -10,7 +10,7 @@ describe("reviewed deployment profile", () => {
     expect(blockers).toContain("Timelock contract address is missing")
     expect(blockers).toContain("Timelock delay is missing")
     expect(blockers).toContain("Deployment instance ID is missing")
-    expect(blockers).toHaveLength(17)
+    expect(blockers).toHaveLength(15)
     expect(deploymentProfile.snsRootCanisterId).toBeNull()
     expect(deploymentProfile.icToken).toEqual({ name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 })
     expect(deploymentProfile.baseToken).toEqual({ symbol: "KINIC", decimals: 8 })
@@ -22,6 +22,18 @@ describe("reviewed deployment profile", () => {
       deploymentBlock: "123",
     })
     expect(parsed.deploymentBlock).toBe(123n)
+  })
+
+  it("strips release-management evidence from the browser runtime profile", () => {
+    const parsed = deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      gateBManifestSha256: "a".repeat(64),
+      profileFileSha256: "b".repeat(64),
+      profileCanonicalSha256: "c".repeat(64),
+    })
+    expect(parsed).not.toHaveProperty("gateBManifestSha256")
+    expect(parsed).not.toHaveProperty("profileFileSha256")
+    expect(parsed).not.toHaveProperty("profileCanonicalSha256")
   })
 
   it("uses the official Base Mainnet RPC when a production profile omits a browser RPC", () => {
@@ -77,15 +89,14 @@ describe("reviewed deployment profile", () => {
     })).toThrow("hash must be nonzero")
   })
 
-  it("fails closed for a production profile without Gate B deployment binding", () => {
+  it("requires the operational history start without exposing release management metadata", () => {
     const blockers = profileCompleteness({
       ...deploymentProfile,
       testOnly: false,
       deploymentBlock: 0n,
-      gateBManifestSha256: null,
     })
-    expect(blockers).toContain("Production deployment block is not Gate B bound")
-    expect(blockers).toContain("Verified Gate B manifest SHA-256 is missing")
+    expect(blockers).toContain("Deployment history start block is missing")
+    expect(blockers.join(" ")).not.toMatch(/Gate B|manifest|SHA-256/i)
     expect(blockers).toContain("KINIC SNS Root ID is missing")
   })
 })

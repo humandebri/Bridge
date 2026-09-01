@@ -110,15 +110,22 @@ function validateReceipt(receipt, identity, built) {
 }
 
 /** @param {string} targetRoot @param {string} profileFile */
-function installRuntimeProfile(targetRoot, profileFile) {
+async function installRuntimeProfile(targetRoot, profileFile) {
   const raw = readFileSync(profileFile, "utf8")
-  JSON.parse(raw)
-  writeFileSync(resolve(targetRoot, profileBootstrap), `globalThis.__KINIC_DEPLOYMENT_PROFILE_JSON__ = ${JSON.stringify(raw.trim())};\n`, { flag: "wx", mode: 0o400 })
+  const { deploymentProfileSchema } = await import("../src/config/profile.ts")
+  const parsedProfile = deploymentProfileSchema.parse(JSON.parse(raw))
+  const publicProfile = {
+    ...parsedProfile,
+    deploymentBlock: parsedProfile.deploymentBlock?.toString() ?? null,
+  }
+  const publicRaw = JSON.stringify(publicProfile)
+  writeFileSync(resolve(targetRoot, profileBootstrap), `globalThis.__KINIC_DEPLOYMENT_PROFILE_JSON__ = ${JSON.stringify(publicRaw)};\n`, { flag: "wx", mode: 0o400 })
 }
 
 /** @param {string} profileFile */
 async function validatePreActivationProfile(profileFile) {
   const raw = readFileSync(profileFile, "utf8")
+  const releaseProfile = JSON.parse(raw)
   /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
   const deploymentGlobal = globalThis
   deploymentGlobal.__KINIC_DEPLOYMENT_PROFILE_JSON__ = raw.trim()
@@ -126,11 +133,8 @@ async function validatePreActivationProfile(profileFile) {
     import("../src/config/profile.ts"),
     import("../src/config/deploy-safety.ts"),
   ])
-  assertPreActivationUiProfile(deploymentProfile)
-  const expectedBlockers = [
-    "Production deployment block is not Gate B bound",
-    "Verified Gate B manifest SHA-256 is missing",
-  ]
+  assertPreActivationUiProfile(releaseProfile)
+  const expectedBlockers = ["Deployment history start block is missing"]
   const blockers = profileCompleteness(deploymentProfile)
   if (JSON.stringify(blockers) !== JSON.stringify(expectedBlockers)) {
     throw new Error(`Pre-activation UI profile has unexpected blockers: ${blockers.join("; ")}`)
@@ -138,7 +142,7 @@ async function validatePreActivationProfile(profileFile) {
 }
 
 /** @param {ArtifactReceipt} receipt @param {string} profileFile @param {boolean} [dryRun] */
-function deployFrozenAssets(receipt, profileFile, dryRun = false) {
+async function deployFrozenAssets(receipt, profileFile, dryRun = false) {
   const frozen = mkdtempSync(resolve(tmpdir(), "kinic-ui-deploy."))
   try {
     for (const file of receipt.files) {
@@ -151,7 +155,7 @@ function deployFrozenAssets(receipt, profileFile, dryRun = false) {
       }
       chmodSync(target, 0o400)
     }
-    installRuntimeProfile(frozen, profileFile)
+    await installRuntimeProfile(frozen, profileFile)
     for (const path of readdirSync(frozen, { recursive: true }).map((entry) => resolve(frozen, String(entry))).sort().reverse()) {
       if (lstatSync(path).isDirectory()) chmodSync(path, 0o500)
     }
@@ -190,7 +194,7 @@ try {
     if (["deploy", "verify-preactivation", "deploy-preactivation"].includes(mode)) {
       if (!profileFile) throw new Error(`${mode} requires the UI runtime profile`)
       if (mode !== "deploy") await validatePreActivationProfile(profileFile)
-      deployFrozenAssets(receipt, profileFile, mode === "verify-preactivation")
+      await deployFrozenAssets(receipt, profileFile, mode === "verify-preactivation")
     }
     process.stdout.write(`ui_artifact_set_sha256=${built.artifact_set_sha256}\n`)
   }

@@ -48,9 +48,6 @@ const profile: DeploymentProfile = {
   activationTimelockDelaySeconds: 300,
   label: "Test",
   testOnly: true,
-  gateBManifestSha256: null,
-  profileFileSha256: "1".repeat(64),
-  profileCanonicalSha256: "2".repeat(64),
   icHost: "http://127.0.0.1:4943",
   baseRpcUrl: "http://127.0.0.1:8545",
   chainId: 31_337,
@@ -327,7 +324,6 @@ describe("validateRuntime token bindings", () => {
       testOnly: false,
       environmentMode: null,
       activationTimelockDelaySeconds: 86_400,
-      gateBManifestSha256: "d".repeat(64),
       snsRootCanisterId: "7jkta-eyaaa-aaaaq-aaarq-cai",
     }
 
