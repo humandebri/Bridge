@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "kind": "fresh-staging-stack-template-marker",
+  "environment": "sepolia-staging",
+  "stable_schema_version": 35,
+  "record_wire_version": 30,
+  "mint_authorization_ttl_seconds": 600,
+  "minimum_mint_authorization_remaining_seconds": 300,
+  "solidity_max_authorization_horizon_seconds": 900,
+  "authoritative_evidence": "evidence/fresh-stack-2026-08-28.json"
+}

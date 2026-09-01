@@ -1,7 +1,13 @@
 # Sepolia staging evidence
 
-リポジトリ内の`local-e2e.json`は過去のschema v7証跡であり、現行staging manifestの初期化入力に使用しない。`BRIDGE_LOCAL_E2E_EVIDENCE`に、clean HEADからrepo外へ生成したschema v8の絶対パスを指定する。Pythonの直接入口を含む全driverはcanonical pathを検査し、repo内の通常path、ignored path、`..` alias、repo内を指すsymlinkを拒否する。既定パスの`sepolia-e2e.json`はそのSHA-256とsource commitに加え、upgrade policyのSHA-256、review済みsource module／certified Candid、target Wasm／Candid、schema v35／wire v30をstaging bindingに固定する。既定パスのmanifestと`artifacts/`だけが、driverで再開できる現行staging証跡である。
+現行の外部staging証跡はschema v8だけを受理する。v8 manifestは`scripts/plan007/staging-e2e-driver.sh`で新規初期化し、固定10 stageを順に記録して、全受入条件を満たした場合だけ`SHORT_DELAY_LIVE`となる。現時点のrepositoryには完成済みv8 live-acceptance manifestを保存しておらず、過去証跡を遡及的に合格扱いしない。
 
-`archive/<source-prefix>/`は過去系列をmanifestとartifactの組で保持する監査履歴であり、再開、追記、現行staging判定には使用しない。旧`dbedb941`系列は`archive/dbedb941/`、version 31最終系列は`archive/f24c09d2/`へ固定している。`archive/dd0cbdb-failed-rpc-order/`は、version 32 reinstall直後の検査でCustom RPCの順序digest不一致を検出し、activation前に再reinstallした未使用installの証跡である。2026-07-31に確認したDeposit ID衝突と未救済5 TICRC1は失効した旧証跡として`incident-2026-07-31-deposit-id-collision.json`へ、2026-08-12に検出したreinstall後のactivation salt衝突は`incident-2026-08-12-activation-salt-collision.json`へ固定する。
+checked-in `local-e2e.json`と`archive/<source-prefix>/`以下のschema v7 manifest/artifactは読取専用の監査履歴である。v7はresume、追記、migration、dual-read、現行staging判定に使用しない。新しいschema v8 local evidenceはclean commitから`scripts/plan007-local-gate.sh /secure/work/local-e2e.json`でrepository外へ生成し、driverの`BRIDGE_STAGING_LOCAL_EVIDENCE`へ明示指定する。
 
-evidence schema v8は、5分Timelock staging、Canister v35 upgrade（same-schema）、real frontend E2E、same-Wasm reopen検証がすべて成功した後に`node scripts/plan007/generate-local-e2e.mjs`で再生成する。staging固有の`deployment_instance_id`はupgrade policyを正本とし、local real E2Eのversion 35 RuntimeBinding、生成証跡、frontend profileは同じ値へfail-closedで固定する。BridgeとbSNSの配置先固有immutable領域はSolidity artifactの`immutableReferences`でゼロ化し、正規化runtime template SHA-256を外部配置と照合する。配置先固有の生runtime hashは完成frontend profileへ別途固定する。`short-delay-test-only`証跡をproduction promotionまたは24時間Timelock rehearsalへ使用しない。
+`reinstall-decision-2026-08-27.json`と`fresh-stack-2026-08-28.json`は、既存Canister principalを一度だけdestructive reinstallし、現在のdeployment instanceとBase contractsを作成した履歴を固定する。v8の`bootstrap_attestation`はこの2 artifactのhashと現行bindingを照合するだけで、reinstall、contract redeploy、reactivationを実行または許可しない。将来の更新は同じCanister ID、deployment instance、Canister v35 upgrade（schema v35／wire v30を保つcurrent-schema upgrade）だけを受理する。
+
+v8のupgrade、binding、frontend、smoke、wallet、refund各stageはsummaryと一致するhash-bound stage receiptを必須とする。`rpc_rehearsal`は専用verifierを通過した`rpc-rehearsal-manifest`、`live_acceptance`はreactivation schedule/execute receiptと監視receiptを必須とし、自己申告summaryだけでは`SHORT_DELAY_LIVE`へ遷移しない。
+
+`archive/dbedb941/`、`archive/f24c09d2/`、`archive/dd0cbdb-failed-rpc-order/`、`archive/dd0cbdb-failed-activation-salt/`は失効した過去系列である。Deposit ID衝突、activation salt衝突、失敗RPC順序を含む各履歴は現行bindingや受入条件の根拠にしない。
+
+`short-delay-test-only`証跡をproduction promotionまたは259200秒Timelock rehearsalへ使用しない。秘密情報やcredential付きRPC URLをartifactへ保存しない。

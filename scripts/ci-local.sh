@@ -147,6 +147,8 @@ run_versions() {
     "$ROOT/scripts/production-activate-driver.sh" \
     "$ROOT/scripts/production-seal-driver.sh" \
     "$ROOT/scripts/production-handover-driver.sh" \
+    "$ROOT/scripts/base-sepolia-experiment/experiment.sh" \
+    "$ROOT/scripts/test_base_sepolia_experiment.sh" \
     "$ROOT/scripts/install-certora-solc.sh" \
     "$ROOT/scripts/trusted-pr-container.sh"
   "$ROOT/scripts/check_tool_versions.sh"
@@ -176,16 +178,18 @@ run_versions() {
   "$ROOT/scripts/test_production_canister_upgrade.sh"
   "$ROOT/scripts/test_production_activation.sh"
   "$ROOT/scripts/test_production_handover.sh"
+  bash "$ROOT/scripts/test_base_sepolia_experiment.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"
+  bash "$ROOT/scripts/plan007/test_staging_e2e_driver.sh"
   node "$ROOT/scripts/plan007/test-check-upgrade-instance.mjs"
   node "$ROOT/scripts/plan007/test-read-public-canister-metadata.mjs"
   python3 "$ROOT/scripts/plan007/test_candid_values.py"
   python3 "$ROOT/scripts/plan007/test_staging_wasm_artifact.py"
   staging_layout="$(python3 "$ROOT/scripts/trusted_staging_layout.py")"
   case "$staging_layout" in
-    upgrade) python3 "$ROOT/scripts/plan007/test_staging_canister_upgrade.py" ;;
     replacement) ;;
+    upgrade) echo "upgrade staging layout is obsolete; replacement-only policy applies" >&2; return 1 ;;
     *) echo "unrecognized staging lifecycle layout: $staging_layout" >&2; return 1 ;;
   esac
   python3 "$ROOT/scripts/test_staging_ui_node_wrapper.py"
@@ -665,6 +669,13 @@ run_lean_proofs() {
 run_policy_vector_consumers() {
   python3 "$ROOT/scripts/test_protocol_vectors.py" || return
   python3 "$ROOT/scripts/protocol_vectors.py" --check
+}
+
+run_proof_preflight() {
+  python3 "$ROOT/scripts/check_schema_consistency.py"
+  python3 "$ROOT/scripts/check_proof_impact.py"
+  python3 "$ROOT/scripts/check_claim_manifest.py"
+  python3 "$ROOT/scripts/check_claim_test_manifest.py" --validate-only
 }
 
 run_refinement_gate() {
@@ -1595,6 +1606,7 @@ run_smoke_step() {
 
 case "$MODE" in
   all)
+    run_step proof-preflight run_proof_preflight
     run_step versions run_versions
     run_step rust run_rust
     run_step contracts run_contracts
@@ -1605,6 +1617,7 @@ case "$MODE" in
     run_step smoke run_smoke_step
     ;;
   checks)
+    run_step proof-preflight run_proof_preflight
     run_step versions run_versions
     run_step rust run_rust
     run_step contracts run_contracts
@@ -1637,6 +1650,7 @@ case "$MODE" in
     run_step certora run_certora_advisory_checks
     ;;
   proofs)
+    run_step proof-preflight run_proof_preflight
     run_step versions run_versions
     run_step proofs run_proofs
     ;;

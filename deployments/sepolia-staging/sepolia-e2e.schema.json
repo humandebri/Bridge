@@ -4,23 +4,21 @@
   "additionalProperties": false,
   "required": ["schema_version", "kind", "state", "created_at", "updated_at", "binding", "stages", "complete"],
   "properties": {
-    "schema_version": { "const": 7 },
+    "schema_version": { "const": 8 },
     "kind": { "const": "kinic-bridge-sepolia-staging-e2e" },
     "state": {
       "enum": [
+        "AWAITING_BOOTSTRAP_ATTESTATION",
         "AWAITING_PREFLIGHT",
-        "AWAITING_CONTRACTS",
-        "AWAITING_INSTALL",
-        "AWAITING_INITIALIZE",
-        "AWAITING_ACTIVATION_SCHEDULE",
-        "AWAITING_ACTIVATION_EXECUTE",
+        "AWAITING_CURRENT_SCHEMA_UPGRADE",
+        "AWAITING_POST_UPGRADE_BINDING",
         "AWAITING_FRONTEND_PUBLISH",
         "AWAITING_SMOKE_E2E",
-        "SHORT_DELAY_ACTIVE_SMOKE_PASSED",
         "AWAITING_WALLET_E2E",
+        "AWAITING_REFUND_REHEARSAL",
         "AWAITING_RPC_REHEARSAL",
-        "AWAITING_FINAL_PAUSE",
-        "SHORT_DELAY_COMPLETE"
+        "AWAITING_LIVE_ACCEPTANCE",
+        "SHORT_DELAY_LIVE"
       ]
     },
     "created_at": { "type": "string", "format": "date-time" },
@@ -32,10 +30,7 @@
         "source_commit",
         "local_e2e_sha256",
         "bridge_wasm_sha256",
-        "target_candid_sha256",
-        "staging_upgrade_policy_sha256",
-        "source_module_sha256",
-        "source_candid_sha256",
+        "bridge_candid_sha256",
         "stable_schema_version",
         "record_wire_version",
         "bridge_runtime_template_sha256",
@@ -50,20 +45,18 @@
         "timelock_address",
         "bridge_runtime_sha256",
         "bsns_runtime_sha256",
-        "expected_bridge_signer"
-        ,"environment_mode"
-        ,"activation_timelock_delay_seconds"
-        ,"deployment_instance_id"
-        ,"minimum_withdrawal_id"
+        "expected_bridge_signer",
+        "rpc_provider_urls_sha256",
+        "environment_mode",
+        "activation_timelock_delay_seconds",
+        "deployment_instance_id",
+        "minimum_withdrawal_id"
       ],
       "properties": {
         "source_commit": { "$ref": "#/$defs/gitCommit" },
         "local_e2e_sha256": { "$ref": "#/$defs/sha256" },
         "bridge_wasm_sha256": { "$ref": "#/$defs/sha256" },
-        "target_candid_sha256": { "$ref": "#/$defs/sha256" },
-        "staging_upgrade_policy_sha256": { "$ref": "#/$defs/sha256" },
-        "source_module_sha256": { "$ref": "#/$defs/sha256" },
-        "source_candid_sha256": { "$ref": "#/$defs/sha256" },
+        "bridge_candid_sha256": { "$ref": "#/$defs/sha256" },
         "stable_schema_version": { "const": 35 },
         "record_wire_version": { "const": 30 },
         "bridge_runtime_template_sha256": { "$ref": "#/$defs/evmHash" },
@@ -72,47 +65,41 @@
         "bridge_canister_id": { "$ref": "#/$defs/principal" },
         "ledger_canister_id": { "$ref": "#/$defs/principal" },
         "index_canister_id": { "$ref": "#/$defs/principal" },
+        "environment_mode": { "const": "short-delay-test-only" },
+        "activation_timelock_delay_seconds": { "const": 300 },
+        "stable_schema_version": { "const": 35 },
+        "record_wire_version": { "const": 30 },
+        "deployment_instance_id": { "$ref": "#/$defs/evmHash" },
+        "minimum_withdrawal_id": { "$ref": "#/$defs/evmHash" },
         "chain_id": { "const": 84532 },
         "bridge_address": { "$ref": "#/$defs/evmAddress" },
         "bsns_address": { "$ref": "#/$defs/evmAddress" },
         "timelock_address": { "$ref": "#/$defs/evmAddress" },
         "bridge_runtime_sha256": { "$ref": "#/$defs/evmHash" },
         "bsns_runtime_sha256": { "$ref": "#/$defs/evmHash" },
-        "expected_bridge_signer": { "$ref": "#/$defs/evmAddress" }
-        ,"environment_mode": { "const": "short-delay-test-only" }
-        ,"activation_timelock_delay_seconds": { "const": 300 }
-        ,"deployment_instance_id": { "$ref": "#/$defs/evmHash" }
-        ,"minimum_withdrawal_id": { "$ref": "#/$defs/evmHash" }
+        "expected_bridge_signer": { "$ref": "#/$defs/evmAddress" },
+        "rpc_provider_urls_sha256": { "$ref": "#/$defs/evmHash" }
       }
     },
     "stages": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "preflight",
-        "install",
-        "initialize",
-        "contracts",
-        "activation_schedule",
-        "activation_execute",
-        "frontend_publish",
-        "smoke_e2e",
-        "wallet_e2e",
-        "rpc_rehearsal",
-        "final_pause"
+        "bootstrap_attestation", "preflight", "current_schema_upgrade", "post_upgrade_binding",
+        "frontend_publish", "smoke_e2e", "wallet_e2e", "refund_rehearsal", "rpc_rehearsal",
+        "live_acceptance"
       ],
       "properties": {
-        "preflight": { "$ref": "#/$defs/stage" },
-        "install": { "$ref": "#/$defs/stage" },
-        "initialize": { "$ref": "#/$defs/stage" },
-        "contracts": { "$ref": "#/$defs/stage" },
-        "activation_schedule": { "$ref": "#/$defs/stage" },
-        "activation_execute": { "$ref": "#/$defs/stage" },
-        "frontend_publish": { "$ref": "#/$defs/stage" },
-        "smoke_e2e": { "$ref": "#/$defs/stage" },
-        "wallet_e2e": { "$ref": "#/$defs/stage" },
-        "rpc_rehearsal": { "$ref": "#/$defs/stage" },
-        "final_pause": { "$ref": "#/$defs/stage" }
+        "bootstrap_attestation": { "allOf": [{ "$ref": "#/$defs/stage" }, { "if": { "type": "object" }, "then": { "properties": { "stage": { "const": "bootstrap_attestation" } } } }] },
+        "preflight": { "allOf": [{ "$ref": "#/$defs/stage" }, { "if": { "type": "object" }, "then": { "properties": { "stage": { "const": "preflight" } } } }] },
+        "current_schema_upgrade": { "allOf": [{ "$ref": "#/$defs/stage" }, { "if": { "type": "object" }, "then": { "properties": { "stage": { "const": "current_schema_upgrade" } } } }] },
+        "post_upgrade_binding": { "allOf": [{ "$ref": "#/$defs/stage" }, { "if": { "type": "object" }, "then": { "properties": { "stage": { "const": "post_upgrade_binding" } } } }] },
+        "frontend_publish": { "allOf": [{ "$ref": "#/$defs/stage" }, { "if": { "type": "object" }, "then": { "properties": { "stage": { "const": "frontend_publish" } } } }] },
+        "smoke_e2e": { "allOf": [{ "$ref": "#/$defs/stage" }, { "if": { "type": "object" }, "then": { "properties": { "stage": { "const": "smoke_e2e" } } } }] },
+        "wallet_e2e": { "allOf": [{ "$ref": "#/$defs/stage" }, { "if": { "type": "object" }, "then": { "properties": { "stage": { "const": "wallet_e2e" } } } }] },
+        "refund_rehearsal": { "allOf": [{ "$ref": "#/$defs/stage" }, { "if": { "type": "object" }, "then": { "properties": { "stage": { "const": "refund_rehearsal" } } } }] },
+        "rpc_rehearsal": { "allOf": [{ "$ref": "#/$defs/stage" }, { "if": { "type": "object" }, "then": { "properties": { "stage": { "const": "rpc_rehearsal" } } } }] },
+        "live_acceptance": { "allOf": [{ "$ref": "#/$defs/stage" }, { "if": { "type": "object" }, "then": { "properties": { "stage": { "const": "live_acceptance" } } } }] }
       }
     },
     "complete": { "type": "boolean" }
@@ -141,65 +128,33 @@
           "additionalProperties": false,
           "required": ["schema_version", "stage", "observed_at", "source_commit", "artifacts", "details"],
           "properties": {
-            "schema_version": { "const": 7 },
+            "schema_version": { "const": 8 },
             "stage": {
               "enum": [
-                "preflight",
-                "install",
-                "initialize",
-                "contracts",
-                "activation_schedule",
-                "activation_execute",
-                "frontend_publish",
-                "smoke_e2e",
-                "wallet_e2e",
-                "rpc_rehearsal",
-                "final_pause"
+                "bootstrap_attestation", "preflight", "current_schema_upgrade", "post_upgrade_binding",
+                "frontend_publish", "smoke_e2e", "wallet_e2e", "refund_rehearsal", "rpc_rehearsal",
+                "live_acceptance"
               ]
             },
             "observed_at": { "type": "string", "format": "date-time" },
             "source_commit": { "$ref": "#/$defs/gitCommit" },
-            "artifacts": {
-              "type": "array",
-              "minItems": 1,
-              "items": { "$ref": "#/$defs/artifact" }
-            },
+            "artifacts": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } },
             "details": { "type": "object" }
           },
           "allOf": [
             {
-              "if": {
-                "properties": { "stage": { "const": "preflight" } },
-                "required": ["stage"]
-              },
+              "if": { "properties": { "stage": { "const": "bootstrap_attestation" } }, "required": ["stage"] },
               "then": {
                 "properties": {
                   "artifacts": {
                     "allOf": [
                       {
-                        "contains": {
-                          "type": "object",
-                          "properties": { "kind": { "const": "live-public-config" } },
-                          "required": ["kind"]
-                        },
+                        "contains": { "type": "object", "properties": { "kind": { "const": "historical-reinstall-decision" } }, "required": ["kind"] },
                         "minContains": 1,
                         "maxContains": 1
                       },
                       {
-                        "contains": {
-                          "type": "object",
-                          "properties": { "kind": { "const": "upgrade-instance-check" } },
-                          "required": ["kind"]
-                        },
-                        "minContains": 1,
-                        "maxContains": 1
-                      },
-                      {
-                        "contains": {
-                          "type": "object",
-                          "properties": { "kind": { "const": "withdrawal-admission-boundary" } },
-                          "required": ["kind"]
-                        },
+                        "contains": { "type": "object", "properties": { "kind": { "const": "historical-fresh-stack" } }, "required": ["kind"] },
                         "minContains": 1,
                         "maxContains": 1
                       }
@@ -209,61 +164,79 @@
               }
             },
             {
-              "if": {
-                "properties": {
-                  "stage": { "const": "preflight" },
-                  "details": {
-                    "type": "object",
-                    "properties": {
-                      "replacement_mode": {
-                        "const": "current-schema-upgrade"
-                      }
-                    },
-                    "required": ["replacement_mode"]
-                  }
-                },
-                "required": ["stage", "details"]
-              },
+              "if": { "properties": { "stage": { "const": "preflight" } }, "required": ["stage"] },
               "then": {
                 "properties": {
                   "artifacts": {
                     "allOf": [
-                      {
-                        "contains": {
-                          "type": "object",
-                          "properties": { "kind": { "const": "live-bridge-status" } },
-                          "required": ["kind"]
-                        },
-                        "minContains": 1,
-                        "maxContains": 1
-                      },
-                      {
-                        "contains": {
-                          "type": "object",
-                          "properties": { "kind": { "const": "live-activation-status" } },
-                          "required": ["kind"]
-                        },
-                        "minContains": 1,
-                        "maxContains": 1
-                      },
-                      {
-                        "contains": {
-                          "type": "object",
-                          "properties": { "kind": { "const": "live-storage-integrity" } },
-                          "required": ["kind"]
-                        },
-                        "minContains": 1,
-                        "maxContains": 1
-                      },
-                      {
-                        "contains": {
-                          "type": "object",
-                          "properties": { "kind": { "const": "live-ledger-balance" } },
-                          "required": ["kind"]
-                        },
-                        "minContains": 1,
-                        "maxContains": 1
-                      }
+                      { "contains": { "type": "object", "properties": { "kind": { "const": "live-public-config" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                      { "contains": { "type": "object", "properties": { "kind": { "const": "upgrade-instance-check" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                      { "contains": { "type": "object", "properties": { "kind": { "const": "withdrawal-admission-boundary" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                      { "contains": { "type": "object", "properties": { "kind": { "const": "live-bridge-status" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                      { "contains": { "type": "object", "properties": { "kind": { "const": "live-activation-status" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                      { "contains": { "type": "object", "properties": { "kind": { "const": "live-storage-integrity" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                      { "contains": { "type": "object", "properties": { "kind": { "const": "live-ledger-balance" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                      { "contains": { "type": "object", "properties": { "kind": { "const": "live-ledger-metadata" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": { "properties": { "stage": { "const": "current_schema_upgrade" } }, "required": ["stage"] },
+              "then": { "properties": { "artifacts": { "allOf": [
+                { "contains": { "type": "object", "properties": { "kind": { "const": "current_schema_upgrade-receipt" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                { "contains": { "type": "object", "properties": { "kind": { "const": "current_schema_upgrade-raw-capture" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 }
+              ] } } }
+            },
+            {
+              "if": { "properties": { "stage": { "const": "post_upgrade_binding" } }, "required": ["stage"] },
+              "then": { "properties": { "artifacts": { "allOf": [
+                { "contains": { "type": "object", "properties": { "kind": { "const": "post_upgrade_binding-receipt" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                { "contains": { "type": "object", "properties": { "kind": { "const": "post_upgrade_binding-raw-capture" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 }
+              ] } } }
+            },
+            {
+              "if": { "properties": { "stage": { "const": "frontend_publish" } }, "required": ["stage"] },
+              "then": { "properties": { "artifacts": { "allOf": [
+                { "contains": { "type": "object", "properties": { "kind": { "const": "frontend_publish-receipt" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                { "contains": { "type": "object", "properties": { "kind": { "const": "frontend_publish-raw-capture" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 }
+              ] } } }
+            },
+            {
+              "if": { "properties": { "stage": { "const": "smoke_e2e" } }, "required": ["stage"] },
+              "then": { "properties": { "artifacts": { "allOf": [
+                { "contains": { "type": "object", "properties": { "kind": { "const": "smoke_e2e-receipt" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                { "contains": { "type": "object", "properties": { "kind": { "const": "smoke_e2e-raw-capture" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 }
+              ] } } }
+            },
+            {
+              "if": { "properties": { "stage": { "const": "wallet_e2e" } }, "required": ["stage"] },
+              "then": { "properties": { "artifacts": { "allOf": [
+                { "contains": { "type": "object", "properties": { "kind": { "const": "wallet_e2e-receipt" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                { "contains": { "type": "object", "properties": { "kind": { "const": "wallet_e2e-raw-capture" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 }
+              ] } } }
+            },
+            {
+              "if": { "properties": { "stage": { "const": "refund_rehearsal" } }, "required": ["stage"] },
+              "then": { "properties": { "artifacts": { "allOf": [
+                { "contains": { "type": "object", "properties": { "kind": { "const": "refund_rehearsal-receipt" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                { "contains": { "type": "object", "properties": { "kind": { "const": "refund_rehearsal-raw-capture" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 }
+              ] } } }
+            },
+            {
+              "if": { "properties": { "stage": { "const": "rpc_rehearsal" } }, "required": ["stage"] },
+              "then": { "properties": { "artifacts": { "contains": { "type": "object", "properties": { "kind": { "const": "rpc-rehearsal-manifest" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 } } }
+            },
+            {
+              "if": { "properties": { "stage": { "const": "live_acceptance" } }, "required": ["stage"] },
+              "then": {
+                "properties": {
+                  "artifacts": {
+                    "allOf": [
+                      { "contains": { "type": "object", "properties": { "kind": { "const": "reactivation-schedule-receipt" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                      { "contains": { "type": "object", "properties": { "kind": { "const": "reactivation-execute-receipt" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+                      { "contains": { "type": "object", "properties": { "kind": { "const": "staging-monitoring-receipt" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 }
                     ]
                   }
                 }

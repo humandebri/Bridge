@@ -1,81 +1,115 @@
 #!/usr/bin/env python3
-"""Regression tests for the Plan 007 staging evidence state machine."""
-
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
-import os
-import subprocess
-import sys
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("sepolia_e2e.py")
-DRIVER_PATH = Path(__file__).with_name("staging-e2e-driver.sh")
+REPO_ROOT = MODULE_PATH.parents[2]
 SPEC = importlib.util.spec_from_file_location("sepolia_e2e", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 sepolia_e2e = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sepolia_e2e)
+ORIGINAL_VERIFY_RPC_REHEARSAL_MANIFEST = sepolia_e2e.verify_rpc_rehearsal_manifest
 
-H64 = "1" * 64
-H64_B = "2" * 64
-H64_C = "3" * 64
-TX = f"0x{H64}"
-TX_B = f"0x{H64_B}"
-ADDRESS = f"0x{'4' * 40}"
-ADDRESS_B = f"0x{'5' * 40}"
-ADDRESS_C = f"0x{'6' * 40}"
 SOURCE = "a" * 40
+H64 = "a" * 64
+H64_B = "b" * 64
+H64_C = "c" * 64
+TX = "0x" + H64
+TX_B = "0x" + H64_B
+TX_C = "0x" + H64_C
+ADDRESS = "0x7936c3587902907db4918a2466cbc225fdc090dc"
+ADDRESS_B = "0x3a6e18a8bcae2b0e94383e0b5c2117107fcc53cd"
+ADDRESS_C = "0x5ffbd4b328a2d5688c4100183acc7246f7e5a5d3"
+ADDRESS_D = "0x801ddc785d2e79da8366cd282a1e5a9bed2492b5"
 BRIDGE_CANISTER_ID = "rlhjx-iyaaa-aaaaf-qcnyq-cai"
-PROFILE_INSTANCE = f"0x{'9' * 64}"
-CONTROLLERS = sorted(sepolia_e2e.STAGING_CONTROLLER_PRINCIPALS)
-MINIMUM_WITHDRAWAL_ID = f"0x{'0' * 63}3"
-BOUNDARY_OBSERVED_AT = "2026-07-24T00:00:00Z"
-PREFLIGHT_OBSERVED_AT = "2026-07-24T00:04:00Z"
+LEDGER_CANISTER_ID = "3jkp5-oyaaa-aaaaj-azwqa-cai"
+INDEX_CANISTER_ID = "qzre3-3iaaa-aaaai-aqmsa-cai"
+PROFILE_INSTANCE = "0x067b39c87fb0fae8fa5c161fc5e04641adbea230b571e11496e323e30b5bcda1"
+MINIMUM_WITHDRAWAL_ID = "0x" + "7b" * 32
+RPC_PROVIDER_URLS_SHA256 = "0x" + "05" * 32
+OBSERVED_AT = "2026-08-31T00:00:00Z"
 
 
-class SepoliaE2ETests(unittest.TestCase):
+class SepoliaEvidenceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
-        self.manifest = self.root / "sepolia-e2e.json"
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.manifest = self.root / "manifest.json"
         self.local = self.root / "local-e2e.json"
         self.profile = self.root / "frontend-profile.json"
-        runtime = {field: 1 for field in (
-            "minimum_withdrawal_id", "base_chain_id", "bridge_contract", "expected_bridge_runtime_sha256",
-            "timelock_contract", "expected_bridge_signer", "ledger_canister_id", "index_canister_id",
-            "evm_rpc_canister_id", "rpc_provider_urls_sha256", "operational_config_sha256")}
-        runtime.update({"deployment_instance_id": [153] * 32, "schema_version": 35})
-        operational = {field: 1 for field in (
-            "deposit_rate_limit_window_seconds", "deposit_rate_limit_global", "deposit_rate_limit_per_principal",
-            "notification_rate_limit_window_seconds", "notification_rate_limit_global",
-            "notification_ingestion_rate_limit_global", "settlement_rate_limit_window_seconds",
-            "settlement_rate_limit_global", "settlement_rate_limit_per_principal",
-            "settlement_rate_limit_per_record", "settlement_retry_interval_seconds")}
-        upgrade_state = {"owner_sequence": "1", "status": {"schema_version": 35,
-                         "counts": {"pending_ledger_operations": "0", "reserved_deposit_mint_operations": "1"},
-                         "settlement_scheduler": {}}, "runtime_binding": runtime,
-                         "operational_config": operational,
-                         "deposits": [{"deposit_id": "01", "owner_sequence": "0", "mint_authorization": [{}]}],
-                         "withdrawals": [], "audit_events": {},
-                         "activation_status": {"pending_timelock_operation": None, "deposits_paused": True},
-                         "storage_integrity": "ok"}
+        self.artifact_root = self.root / "artifacts"
+        self.artifact_root.mkdir()
+        upgrade_state = {
+            "owner_sequence": "1",
+            "status": {
+                "schema_version": 35,
+                "counts": {
+                    "pending_ledger_operations": "0",
+                    "reserved_deposit_mint_operations": "1",
+                },
+                "settlement_scheduler": {},
+            },
+            "runtime_binding": {
+                "deployment_instance_id": list(bytes.fromhex(PROFILE_INSTANCE[2:])),
+                "minimum_withdrawal_id": [0x7B] * 32,
+                "base_chain_id": 84532,
+                "bridge_contract": [1] * 20,
+                "expected_bridge_runtime_sha256": [1] * 32,
+                "timelock_contract": [3] * 20,
+                "expected_bridge_signer": [4] * 20,
+                "ledger_canister_id": LEDGER_CANISTER_ID,
+                "index_canister_id": INDEX_CANISTER_ID,
+                "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+                "rpc_provider_urls_sha256": [5] * 32,
+                "schema_version": 35,
+                "operational_config_sha256": [6] * 32,
+            },
+            "operational_config": {
+                "deposit_rate_limit_window_seconds": 60,
+                "deposit_rate_limit_global": 30,
+                "deposit_rate_limit_per_principal": 3,
+                "notification_rate_limit_window_seconds": 600,
+                "notification_rate_limit_global": 60,
+                "notification_ingestion_rate_limit_global": 30,
+                "settlement_rate_limit_window_seconds": 3600,
+                "settlement_rate_limit_global": 60,
+                "settlement_rate_limit_per_principal": 30,
+                "settlement_rate_limit_per_record": 3,
+                "settlement_retry_interval_seconds": 60,
+            },
+            "deposits": [{"deposit_id": [9] * 32}],
+            "withdrawals": [],
+            "audit_events": {},
+            "activation_status": {
+                "pending_timelock_operation": [],
+                "deposits_paused": False,
+            },
+            "storage_integrity": "ok",
+        }
         self.local.write_text(
             json.dumps(
                 {
                     "schema_version": 8,
                     "environment_mode": "short-delay-test-only",
                     "activation_timelock_delay_seconds": 300,
+                    "stable_schema_version": 35,
+                    "record_wire_version": 30,
                     "deployment_instance_id": PROFILE_INSTANCE,
-                    "created_at": "2026-07-24T00:00:00Z",
+                    "created_at": OBSERVED_AT,
                     "source_commit": SOURCE,
                     "bridge_wasm_sha256": H64,
+                    "candid_sha256": H64_B,
                     "bridge_runtime_template_sha256": TX,
                     "bsns_runtime_template_sha256": TX_B,
-                    "candid_sha256": H64,
                     "bridge_abi_sha256": H64,
                     "bsns_abi_sha256": H64_B,
                     "ledger_release": "ledger-suite-icrc-2026-03-09",
@@ -84,7 +118,7 @@ class SepoliaE2ETests(unittest.TestCase):
                     "state_upgrade": {
                         "verified": True,
                         "before": upgrade_state,
-                        "after": upgrade_state,
+                        "after": copy.deepcopy(upgrade_state),
                     },
                     "tests": {
                         "full_local_ci": "passed",
@@ -94,7 +128,8 @@ class SepoliaE2ETests(unittest.TestCase):
                         "state_upgrade": "passed",
                     },
                 }
-            ),
+            )
+            + "\n",
             encoding="utf-8",
         )
         self.profile.write_text(
@@ -102,342 +137,364 @@ class SepoliaE2ETests(unittest.TestCase):
                 {
                     "environment": "sepolia-staging",
                     "testOnly": True,
-                    "environmentMode": "short-delay-test-only",
-                    "activationTimelockDelaySeconds": 300,
                     "chainId": 84532,
                     "evmRpcCanisterId": "7hfb6-caaaa-aaaar-qadga-cai",
+                    "rpcProviderUrlsSha256": RPC_PROVIDER_URLS_SHA256,
+                    "environmentMode": "short-delay-test-only",
+                    "activationTimelockDelaySeconds": 300,
                     "bridgeCanisterId": BRIDGE_CANISTER_ID,
+                    "ledgerCanisterId": LEDGER_CANISTER_ID,
+                    "indexCanisterId": INDEX_CANISTER_ID,
                     "deploymentInstanceId": PROFILE_INSTANCE,
                     "minimumWithdrawalId": MINIMUM_WITHDRAWAL_ID,
-                    "ledgerCanisterId": "ryjl3-tyaaa-aaaaa-aaaba-cai",
-                    "indexCanisterId": "qhbym-qaaaa-aaaaa-aaafq-cai",
                     "bridgeAddress": ADDRESS,
                     "bsnsAddress": ADDRESS_B,
                     "timelockAddress": ADDRESS_C,
                     "bridgeRuntimeHash": TX,
                     "bsnsRuntimeHash": TX_B,
-                    "expected_bridge_signer": ADDRESS,
+                    "expected_bridge_signer": ADDRESS_D,
                 }
-            ),
+            )
+            + "\n",
             encoding="utf-8",
         )
-        self.upgrade_policy = json.loads(
-            sepolia_e2e.STAGING_UPGRADE_POLICY.read_text(encoding="utf-8")
-        )
-        self.upgrade_policy["deployment_instance_id"] = PROFILE_INSTANCE
-        self.upgrade_policy_path = self.root / "staging-bridge-upgrade-policy.json"
-        self.upgrade_policy_path.write_text(
-            json.dumps(self.upgrade_policy), encoding="utf-8"
-        )
-        original_policy_path = sepolia_e2e.STAGING_UPGRADE_POLICY
-        sepolia_e2e.STAGING_UPGRADE_POLICY = self.upgrade_policy_path
-        self.addCleanup(
-            setattr, sepolia_e2e, "STAGING_UPGRADE_POLICY", original_policy_path
-        )
         sepolia_e2e.initialize(self.manifest, self.local, self.profile)
+        self.rpc_verifier_patch = mock.patch.object(
+            sepolia_e2e, "verify_rpc_rehearsal_manifest"
+        )
+        self.rpc_verifier = self.rpc_verifier_patch.start()
 
     def tearDown(self) -> None:
-        self.temp.cleanup()
+        self.rpc_verifier_patch.stop()
+        self.temporary.cleanup()
 
-    def artifact(self, stage: str) -> list[dict[str, str]]:
-        path = self.root / "artifacts" / f"{stage}.json"
-        path.parent.mkdir(exist_ok=True)
-        path.write_text("{}\n", encoding="utf-8")
-        artifacts = [
+    def write_artifact(self, name: str, kind: str, value: object) -> dict[str, str]:
+        path = self.artifact_root / f"{name}.json"
+        path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+        return {
+            "path": f"artifacts/{path.name}",
+            "sha256": sepolia_e2e.digest(path),
+            "kind": kind,
+        }
+
+    def generic_artifact(
+        self, stage: str, details: dict[str, object]
+    ) -> list[dict[str, str]]:
+        kind = sepolia_e2e.STAGE_RECEIPT_KINDS[stage]
+        capture_kind = sepolia_e2e.STAGE_RAW_CAPTURE_KINDS[stage]
+        stdout = json.dumps(details, sort_keys=True, separators=(",", ":"))
+        capture = self.write_artifact(
+            f"{stage}-raw-capture",
+            capture_kind,
             {
-                "path": f"artifacts/{stage}.json",
-                "sha256": sepolia_e2e.digest(path),
-                "kind": "raw",
-            }
+                "schema_version": 1,
+                "kind": capture_kind,
+                "stage": stage,
+                "observed_at": OBSERVED_AT,
+                "source_commit": SOURCE,
+                "tool": "approved-stage-recorder",
+                "argv": ["approved-stage-recorder", stage],
+                "exit_code": 0,
+                "stdout": stdout,
+                "stdout_sha256": sepolia_e2e.hashlib.sha256(stdout.encode()).hexdigest(),
+            },
+        )
+        receipt = self.write_artifact(
+            stage,
+            kind,
+            {
+                "schema_version": 8,
+                "kind": kind,
+                "stage": stage,
+                "observed_at": OBSERVED_AT,
+                "source_commit": SOURCE,
+                "details_sha256": sepolia_e2e.object_digest(details),
+                "capture_sha256": capture["sha256"],
+            },
+        )
+        return [receipt, capture]
+
+    def rpc_artifact(self) -> list[dict[str, str]]:
+        binding = sepolia_e2e.load_object(self.manifest)["binding"]
+        value = {
+            "state": "EXTENDED_COMPLETE",
+            "launch_ready": True,
+            "extended_complete": True,
+            "scenarios": {scenario: {} for scenario in sepolia_e2e.RPC_SCENARIOS},
+            "binding": {
+                "base_chain_id": binding["chain_id"],
+                "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+                "bridge_canister_id": binding["bridge_canister_id"],
+                "ledger_canister_id": binding["ledger_canister_id"],
+                "index_canister_id": binding["index_canister_id"],
+                "bridge_contract": binding["bridge_address"],
+                "expected_bridge_signer": binding["expected_bridge_signer"],
+                "bridge_canister_wasm_sha256": binding["bridge_wasm_sha256"],
+                "bridge_runtime_bytecode_sha256": binding["bridge_runtime_sha256"][2:],
+                "rpc_endpoints": [
+                    {"url_sha256": digest}
+                    for digest in (H64, H64_B, H64_C)
+                ],
+            },
+        }
+        return [
+            self.write_artifact(
+                "rpc-rehearsal-manifest",
+                sepolia_e2e.RPC_REHEARSAL_MANIFEST_ARTIFACT_KIND,
+                value,
+            )
         ]
-        if stage == "preflight":
-            artifacts.extend(self.reinstall_artifacts())
-            self.add_upgrade_snapshots(artifacts)
+
+    def live_artifacts(self, details: dict[str, object]) -> list[dict[str, str]]:
+        schedule = {
+            "schema_version": 1,
+            "kind": sepolia_e2e.REACTIVATION_SCHEDULE_RECEIPT_ARTIFACT_KIND,
+            "chain_id": 84532,
+            "timelock_address": ADDRESS_C,
+            "operation_id": details["reactivation_operation_id"],
+            "transaction_hash": details["reactivation_schedule_transaction_hash"],
+            "success": True,
+            "block_number": 10,
+            "block_hash": TX_B,
+            "block_timestamp": 1_000,
+            "delay_seconds": 300,
+            "ready_timestamp": 1_300,
+        }
+        execute = {
+            "schema_version": 1,
+            "kind": sepolia_e2e.REACTIVATION_EXECUTE_RECEIPT_ARTIFACT_KIND,
+            "chain_id": 84532,
+            "timelock_address": ADDRESS_C,
+            "operation_id": details["reactivation_operation_id"],
+            "transaction_hash": details["reactivation_execute_transaction_hash"],
+            "success": True,
+            "block_number": 11,
+            "block_hash": TX_C,
+            "block_timestamp": 1_300,
+        }
+        monitoring = {
+            "artifact_schema_version": 1,
+            "kind": sepolia_e2e.STAGING_MONITORING_RECEIPT_ARTIFACT_KIND,
+            "observed_at": OBSERVED_AT,
+            **{
+                field: details[field]
+                for field in sepolia_e2e.LIVE_MONITOR_FIELDS
+            },
+        }
+        artifacts = [
+            self.write_artifact(
+                "reactivation-schedule",
+                sepolia_e2e.REACTIVATION_SCHEDULE_RECEIPT_ARTIFACT_KIND,
+                schedule,
+            ),
+            self.write_artifact(
+                "reactivation-execute",
+                sepolia_e2e.REACTIVATION_EXECUTE_RECEIPT_ARTIFACT_KIND,
+                execute,
+            ),
+            self.write_artifact(
+                "staging-monitoring",
+                sepolia_e2e.STAGING_MONITORING_RECEIPT_ARTIFACT_KIND,
+                monitoring,
+            ),
+        ]
+        details["monitoring_receipt_sha256"] = artifacts[-1]["sha256"]
         return artifacts
 
-    def reinstall_artifacts(
-        self,
-        live: dict[str, object] | None = None,
-        check: dict[str, object] | None = None,
-        status: dict[str, object] | None = None,
-    ) -> list[dict[str, str]]:
-        if live is None:
-            live = {"schema_version": 35, "deployment_instance_id": PROFILE_INSTANCE}
-        if check is None:
-            check = {
-                "replacement_mode": "current-schema-upgrade",
-                "live_schema_version": 35,
-                "previous_deployment_instance_id": PROFILE_INSTANCE,
-                "live_module_hash": "0x" + self.upgrade_policy["source_module_sha256"],
-                "next": PROFILE_INSTANCE,
-            }
-        if status is None:
-            status = {
-                "canister_id": BRIDGE_CANISTER_ID,
-                "module_hash": "0x" + self.upgrade_policy["source_module_sha256"],
-                "certified_candid_sha256": self.upgrade_policy["source_candid_sha256"],
-                "stable_schema_version": 35,
-                "record_wire_version": 30,
-                "controller_principals": list(CONTROLLERS),
-                "cycles_balance": 1,
-            }
-        artifacts = self.root / "artifacts"
-        artifacts.mkdir(exist_ok=True)
-        live_path = artifacts / "live-public-config.json"
-        check_path = artifacts / "upgrade-instance-check.json"
-        status_path = artifacts / "live-canister-status.json"
-        boundary_path = artifacts / "withdrawal-admission-boundary.json"
-        live_path.write_text(json.dumps(live) + "\n", encoding="utf-8")
-        check_path.write_text(json.dumps(check) + "\n", encoding="utf-8")
-        status_path.write_text(json.dumps(status) + "\n", encoding="utf-8")
-        boundary = {
-            "schema_version": 1,
-            "kind": "withdrawal-admission-boundary",
-            "observed_at": BOUNDARY_OBSERVED_AT,
-            "chain_id": 84532,
-            "bridge_address": ADDRESS,
-            "finalized_checkpoint_block_number": 100,
-            "finalized_checkpoint_block_hash": TX_B,
-            "withdrawals_paused": True,
-            "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
-            "providers": [
+    def bootstrap_artifacts(self) -> list[dict[str, str]]:
+        descriptors = []
+        for filename, kind in (
+            (
+                "reinstall-decision-2026-08-27.json",
+                sepolia_e2e.HISTORICAL_REINSTALL_DECISION_ARTIFACT_KIND,
+            ),
+            (
+                "fresh-stack-2026-08-28.json",
+                sepolia_e2e.HISTORICAL_FRESH_STACK_ARTIFACT_KIND,
+            ),
+        ):
+            source = REPO_ROOT / "deployments/sepolia-staging/evidence" / filename
+            target = self.root / filename
+            shutil.copyfile(source, target)
+            descriptors.append(
+                {"path": filename, "sha256": sepolia_e2e.digest(target), "kind": kind}
+            )
+        return descriptors
+
+    def counts(self) -> dict[str, int]:
+        return {field: 0 for field in sepolia_e2e.UPGRADE_STATE_COUNT_FIELDS}
+
+    def preflight_artifacts(self) -> list[dict[str, str]]:
+        values = [
+            (
+                sepolia_e2e.LIVE_PUBLIC_CONFIG_ARTIFACT_KIND,
                 {
-                    "provider_url_sha256": digest_char * 64,
-                    "finalized_head_block_number": 100,
-                    "checkpoint_block_number": 100,
-                    "checkpoint_block_hash": TX_B,
-                    "withdrawals_paused": True,
-                    "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
-                }
-                for digest_char in ("1", "2", "3")
-            ],
-        }
-        boundary_path.write_text(json.dumps(boundary) + "\n", encoding="utf-8")
-        return [
-            {
-                "path": "artifacts/live-public-config.json",
-                "sha256": sepolia_e2e.digest(live_path),
-                "kind": sepolia_e2e.LIVE_PUBLIC_CONFIG_ARTIFACT_KIND,
-            },
-            {
-                "path": "artifacts/upgrade-instance-check.json",
-                "sha256": sepolia_e2e.digest(check_path),
-                "kind": sepolia_e2e.UPGRADE_INSTANCE_CHECK_ARTIFACT_KIND,
-            },
-            {
-                "path": "artifacts/live-canister-status.json",
-                "sha256": sepolia_e2e.digest(status_path),
-                "kind": sepolia_e2e.LIVE_CANISTER_STATUS_ARTIFACT_KIND,
-            },
-            {
-                "path": "artifacts/withdrawal-admission-boundary.json",
-                "sha256": sepolia_e2e.digest(boundary_path),
-                "kind": sepolia_e2e.WITHDRAWAL_BOUNDARY_ARTIFACT_KIND,
-            },
-        ]
-
-    def validate_preflight(
-        self,
-        details: dict[str, object],
-        binding: dict[str, object],
-        artifacts: list[dict[str, str]],
-    ) -> None:
-        sepolia_e2e.validate_preflight(
-            details,
-            binding,
-            artifacts,
-            self.manifest,
-            PREFLIGHT_OBSERVED_AT,
-        )
-
-    def add_upgrade_snapshots(
-        self,
-        artifacts: list[dict[str, str]],
-        *,
-        bridge_status: dict[str, object] | None = None,
-        activation_status: dict[str, object] | None = None,
-        integrity: dict[str, object] | None = None,
-    ) -> None:
-        snapshots: dict[str, tuple[str, dict[str, object]]] = {
-            "bridge_status_sha256": (
-                sepolia_e2e.LIVE_BRIDGE_STATUS_ARTIFACT_KIND,
-                bridge_status
-                or {
-                    "deposits": 2,
-                    "withdrawals": 0,
-                    "pending_ledger_operations": 0,
-                    "reconciliation_holds": 0,
-                    "reserved_deposit_mint_operations": 2,
-                    "reserved_deposit_mint_amount": 1_000_000_000,
-                    "unpaid_withdrawal_count": 0,
-                    "unpaid_withdrawal_amount_out": 0,
+                    "schema_version": 35,
+                    "deployment_instance_id": PROFILE_INSTANCE,
+                    "rpc_provider_urls_sha256": [5] * 32,
                 },
             ),
-            "activation_status_sha256": (
+            (
+                sepolia_e2e.UPGRADE_INSTANCE_CHECK_ARTIFACT_KIND,
+                {
+                    "replacement_mode": "current-schema-upgrade",
+                    "live_schema_version": 35,
+                    "previous_deployment_instance_id": PROFILE_INSTANCE,
+                    "live_module_hash": TX,
+                    "next": PROFILE_INSTANCE,
+                },
+            ),
+            (
+                sepolia_e2e.WITHDRAWAL_BOUNDARY_ARTIFACT_KIND,
+                {
+                    "schema_version": 1,
+                    "kind": sepolia_e2e.WITHDRAWAL_BOUNDARY_ARTIFACT_KIND,
+                    "observed_at": OBSERVED_AT,
+                    "chain_id": 84532,
+                    "bridge_address": ADDRESS,
+                    "finalized_checkpoint_block_number": 10,
+                    "finalized_checkpoint_block_hash": TX,
+                    "withdrawals_paused": False,
+                    "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
+                    "providers": [
+                        {
+                            "provider_url_sha256": provider,
+                            "finalized_head_block_number": 10 + index,
+                            "checkpoint_block_number": 10,
+                            "checkpoint_block_hash": TX,
+                            "withdrawals_paused": False,
+                            "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
+                        }
+                        for index, provider in enumerate((H64, H64_B, H64_C))
+                    ],
+                },
+            ),
+            (sepolia_e2e.LIVE_BRIDGE_STATUS_ARTIFACT_KIND, self.counts()),
+            (
                 sepolia_e2e.LIVE_ACTIVATION_STATUS_ARTIFACT_KIND,
-                activation_status or {"pending_timelock_operations": 0},
+                {"pending_timelock_operations": 0},
             ),
-            "storage_integrity_sha256": (
-                sepolia_e2e.LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND,
-                integrity or {"result": "ok"},
+            (sepolia_e2e.LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND, {"result": "ok"}),
+            (sepolia_e2e.LIVE_LEDGER_BALANCE_ARTIFACT_KIND, {"balance_raw": 1}),
+            (
+                sepolia_e2e.LIVE_LEDGER_METADATA_ARTIFACT_KIND,
+                {
+                    "schema_version": 1,
+                    "kind": sepolia_e2e.LIVE_LEDGER_METADATA_ARTIFACT_KIND,
+                    "ledger_canister_id": LEDGER_CANISTER_ID,
+                    "index_canister_id": INDEX_CANISTER_ID,
+                    "index_ledger_id": LEDGER_CANISTER_ID,
+                    "symbol": "TICRC1",
+                    "decimals": 8,
+                    "fee": 10_000,
+                },
             ),
-            "ledger_balance_sha256": (
-                sepolia_e2e.LIVE_LEDGER_BALANCE_ARTIFACT_KIND,
-                {"balance_raw": 600_000_000},
+            (
+                sepolia_e2e.LIVE_CANISTER_STATUS_ARTIFACT_KIND,
+                {
+                    "canister_id": BRIDGE_CANISTER_ID,
+                    "module_hash": TX,
+                    "controller_principals": ["aaaaa-aa"],
+                    "cycles_balance": 100,
+                },
             ),
-        }
-        artifact_root = self.root / "artifacts"
-        for _, (kind, value) in snapshots.items():
-            path = artifact_root / f"{kind}.json"
-            path.write_text(json.dumps(value) + "\n", encoding="utf-8")
-            sha256 = sepolia_e2e.digest(path)
-            artifacts.append(
-                {"path": f"artifacts/{kind}.json", "sha256": sha256, "kind": kind}
-            )
-
-    def current_upgrade_artifacts(self) -> list[dict[str, str]]:
-        live = {
-        "schema_version": 35,
-            "deployment_instance_id": PROFILE_INSTANCE,
-        }
-        check = {
-            "replacement_mode": "current-schema-upgrade",
-            "live_schema_version": 35,
-            "previous_deployment_instance_id": PROFILE_INSTANCE,
-            "live_module_hash": "0x" + self.upgrade_policy["source_module_sha256"],
-            "next": PROFILE_INSTANCE,
-        }
-        status = {
-            "canister_id": BRIDGE_CANISTER_ID,
-            "module_hash": "0x" + self.upgrade_policy["source_module_sha256"],
-            "certified_candid_sha256": self.upgrade_policy["source_candid_sha256"],
-            "stable_schema_version": 35,
-            "record_wire_version": 30,
-            "controller_principals": list(CONTROLLERS),
-            "cycles_balance": 1,
-        }
-        artifacts = self.reinstall_artifacts(live, check, status)
-        self.add_upgrade_snapshots(artifacts)
-        return artifacts
-
-    def obsolete_v32_reinstall_artifacts(self) -> list[dict[str, str]]:
-        live = {
-            "schema_version": 32,
-            "deployment_instance_id": [17] * 32,
-        }
-        check = {
-            "replacement_mode": "obsolete-schema-reinstall",
-            "live_schema_version": 32,
-            "previous_deployment_instance_id": TX,
-            "live_module_hash": TX,
-            "next": PROFILE_INSTANCE,
-        }
-        status = {
-            "canister_id": BRIDGE_CANISTER_ID,
-            "module_hash": "0x" + self.upgrade_policy["source_module_sha256"],
-            "certified_candid_sha256": self.upgrade_policy["source_candid_sha256"],
-            "stable_schema_version": 35,
-            "record_wire_version": 30,
-            "controller_principals": list(CONTROLLERS),
-            "cycles_balance": 1,
-        }
-        artifacts = self.reinstall_artifacts(live, check, status)
-        self.add_upgrade_snapshots(artifacts)
-        return artifacts
+        ]
+        return [self.write_artifact(kind, kind, value) for kind, value in values]
 
     def details(self, stage: str) -> dict[str, object]:
+        if stage == "bootstrap_attestation":
+            return {
+                "historical_reinstall_completed": True,
+                "historical_reinstall_resumable": False,
+                "future_update_mode": "current-schema-upgrade",
+                "bridge_canister_id": BRIDGE_CANISTER_ID,
+                "deployment_instance_id": PROFILE_INSTANCE,
+                "stable_schema_version": 35,
+            }
         if stage == "preflight":
             return {
                 "chain_id": 84532,
                 "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
                 "bridge_canister_id": BRIDGE_CANISTER_ID,
-                "ledger_canister_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
-                "index_canister_id": "qhbym-qaaaa-aaaaa-aaafq-cai",
+                "ledger_canister_id": LEDGER_CANISTER_ID,
+                "index_canister_id": INDEX_CANISTER_ID,
                 "ledger_symbol": "TICRC1",
                 "ledger_decimals": 8,
-                "ledger_fee": 100_000,
-                "index_ledger_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
-                "controller_principals": list(CONTROLLERS),
-                "cycles_balance": 1,
-                "base_deposits_paused": True,
-                "base_withdrawals_paused": True,
-                "canister_deposits_paused": True,
+                "ledger_fee": 10_000,
+                "index_ledger_id": LEDGER_CANISTER_ID,
+                "controller_principals": ["aaaaa-aa"],
+                "cycles_balance": 100,
+                "base_deposits_paused": False,
+                "base_withdrawals_paused": False,
+                "canister_deposits_paused": False,
                 "configured_rpc_url_sha256": [H64, H64_B, H64_C],
                 "replacement_mode": "current-schema-upgrade",
                 "live_schema_version": 35,
                 "previous_deployment_instance_id": PROFILE_INSTANCE,
                 "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
             }
-        if stage == "install":
-            counts = {field: 0 for field in sepolia_e2e.UPGRADE_STATE_COUNT_FIELDS}
+        if stage == "current_schema_upgrade":
             return {
-                "install_mode": "upgrade", "module_sha256": H64,
-                "source_module_sha256": self.upgrade_policy["source_module_sha256"],
-                "source_candid_sha256": self.upgrade_policy["source_candid_sha256"],
-                "target_candid_sha256": H64,
-                "staging_upgrade_policy_sha256": sepolia_e2e.digest(sepolia_e2e.STAGING_UPGRADE_POLICY),
-                "cycles_balance": 1,
-                "controller_principals": list(CONTROLLERS), "state_counts_before": counts,
-                "state_counts_after": dict(counts), "schema_version_before": 35,
-                "schema_version_after": 35, "record_wire_version_before": 30,
+                "install_mode": "upgrade",
+                "module_sha256": H64,
+                "candid_sha256": H64_B,
+                "cycles_balance_before": 100,
+                "cycles_balance_after": 90,
+                "controller_principals_before": ["aaaaa-aa"],
+                "controller_principals_after": ["aaaaa-aa"],
+                "state_counts_before": self.counts(),
+                "state_counts_after": self.counts(),
+                "bridge_canister_id_before": BRIDGE_CANISTER_ID,
+                "bridge_canister_id_after": BRIDGE_CANISTER_ID,
+                "schema_version_before": 35,
+                "schema_version_after": 35,
+                "record_wire_version_before": 30,
                 "record_wire_version_after": 30,
+                "deployment_instance_id_before": PROFILE_INSTANCE,
                 "deployment_instance_id_after": PROFILE_INSTANCE,
+                "minimum_withdrawal_id_before": MINIMUM_WITHDRAWAL_ID,
                 "minimum_withdrawal_id_after": MINIMUM_WITHDRAWAL_ID,
                 "storage_integrity_after": "ok",
             }
-        if stage == "initialize":
+        if stage == "post_upgrade_binding":
             return {
-        "schema_version": 35,
-                "deployment_instance_id": PROFILE_INSTANCE,
-                "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
-                "chain_id": 84532,
-                "ledger_canister_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
-                "index_canister_id": "qhbym-qaaaa-aaaaa-aaafq-cai",
-                "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
-                "expected_bridge_signer": ADDRESS,
-                "bridge_address": ADDRESS,
-                "timelock_address": ADDRESS_C,
-                "expected_bridge_runtime_sha256": TX,
-                "governance_operator": ADDRESS_B,
-                "canister_deposits_paused": True,
-                "storage_integrity": "ok",
-            }
-        if stage == "contracts":
-            return {
-                "bridge_address": ADDRESS,
-                "bsns_address": ADDRESS_B,
-                "timelock_address": ADDRESS_C,
-                "bridge_runtime_template_sha256": TX,
-                "bsns_runtime_template_sha256": TX_B,
-                "bridge_runtime_sha256": TX,
-                "bsns_runtime_sha256": TX_B,
-                "deployment_block": 1,
-                "deployment_transaction_hashes": [TX],
-                "mint_signer": ADDRESS,
-                "governance_operator": ADDRESS_B,
-                "deployer_roles_zero": True,
-            }
-        if stage == "activation_schedule":
-            return {
-                "operation_id": TX,
-                "schedule_transaction_hash": TX_B,
-                "finalized_block_number": 1,
-                "finalized_block_hash": TX,
-                "early_execute_reverted": True,
-            }
-        if stage == "activation_execute":
-            return {
-                "delay_seconds": 300,
-                "execute_transaction_hash": TX,
-                "finalized_block_number": 2,
-                "finalized_block_hash": TX_B,
-                "base_deposits_paused": False,
-                "base_withdrawals_paused": False,
-                "canister_deposits_paused": False,
-                "pending_timelock_operations": 0,
+                "canister": {
+                    "schema_version": 35,
+                    "record_wire_version": 30,
+                    "deployment_instance_id": PROFILE_INSTANCE,
+                    "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
+                    "chain_id": 84532,
+                    "ledger_canister_id": LEDGER_CANISTER_ID,
+                    "index_canister_id": INDEX_CANISTER_ID,
+                    "evm_rpc_canister_id": "7hfb6-caaaa-aaaar-qadga-cai",
+                    "rpc_provider_urls_sha256": RPC_PROVIDER_URLS_SHA256,
+                    "expected_bridge_signer": ADDRESS_D,
+                    "bridge_address": ADDRESS,
+                    "timelock_address": ADDRESS_C,
+                    "expected_bridge_runtime_sha256": TX,
+                    "module_sha256": H64,
+                    "candid_sha256": H64_B,
+                    "governance_operator": ADDRESS_B,
+                    "canister_deposits_paused": False,
+                    "storage_integrity": "ok",
+                },
+                "contracts": {
+                    "bridge_address": ADDRESS,
+                    "bsns_address": ADDRESS_B,
+                    "timelock_address": ADDRESS_C,
+                    "bridge_runtime_template_sha256": TX,
+                    "bsns_runtime_template_sha256": TX_B,
+                    "bridge_runtime_sha256": TX,
+                    "bsns_runtime_sha256": TX_B,
+                    "deployment_block": 1,
+                    "deployment_transaction_hashes": [TX],
+                    "mint_signer": ADDRESS_D,
+                    "governance_operator": ADDRESS_B,
+                    "deployer_roles_zero": True,
+                },
             }
         if stage == "frontend_publish":
-            profile_hash = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]["frontend_profile_sha256"]
+            profile_hash = sepolia_e2e.load_object(self.manifest)["binding"]["frontend_profile_sha256"]
             return {
                 "url": "https://kinic-bridge-ui-test.example.test",
                 "deployment_id": "deployment-1",
@@ -452,7 +509,7 @@ class SepoliaE2ETests(unittest.TestCase):
                 "deposit_id": TX,
                 "deposit_transaction_hash": TX_B,
                 "withdrawal_id": 1,
-                "withdrawal_transaction_hash": TX,
+                "withdrawal_transaction_hash": TX_C,
                 "reload_state_matched": True,
                 "base_deposits_paused": False,
                 "base_withdrawals_paused": False,
@@ -465,15 +522,23 @@ class SepoliaE2ETests(unittest.TestCase):
                 "ledger_block": 1,
                 "base_transaction_hash": TX_B,
                 "finalized_block_number": 2,
-                "finalized_block_hash": TX,
+                "finalized_block_hash": TX_C,
                 "completed": True,
             }
             return {
                 "chrome_version": "1",
-                "wallet_versions": {"Plug": "1", "OISY": "1", "MetaMask": "1", "Rabby": "1", "WalletConnect": "1"},
+                "wallet_versions": {
+                    "Plug": "1", "OISY": "1", "MetaMask": "1", "Rabby": "1", "WalletConnect": "1"
+                },
                 "deposits": [{**flow, "wallet": "Plug"}, {**flow, "wallet": "OISY"}],
                 "withdrawals": [{**flow, "wallet": "MetaMask"}, {**flow, "wallet": "Rabby"}],
-                "walletconnect": {"connected": True, "rejection_safe": True, "account_change_safe": True, "chain_change_safe": True, "csp_clean": True},
+                "walletconnect": {
+                    "connected": True,
+                    "rejection_safe": True,
+                    "account_change_safe": True,
+                    "chain_change_safe": True,
+                    "csp_clean": True,
+                },
                 "failure_checks": {
                     "wallet_rejection": True,
                     "popup_close": True,
@@ -488,7 +553,25 @@ class SepoliaE2ETests(unittest.TestCase):
                     "runtime_mismatch": True,
                     "notification_recovery": True,
                 },
-                "same_wasm_upgrade": {"before_state_sha256": H64, "after_state_sha256": H64, "storage_integrity": "ok", "verified": True},
+                "same_wasm_upgrade": {
+                    "before_state_sha256": H64,
+                    "after_state_sha256": H64,
+                    "storage_integrity": "ok",
+                    "verified": True,
+                },
+            }
+        if stage == "refund_rehearsal":
+            return {
+                "deposit_id": TX,
+                "authorization_digest": TX_B,
+                "deadline": 1_000,
+                "at_deadline_result": "NotClaimable",
+                "after_deadline_timestamp": 1_001,
+                "deposit_processed": False,
+                "refund_ledger_block": 7,
+                "final_state": "Refunded",
+                "finalized_block_number": 10,
+                "finalized_block_hash": TX_C,
             }
         if stage == "rpc_rehearsal":
             return {
@@ -499,624 +582,451 @@ class SepoliaE2ETests(unittest.TestCase):
                 "scenarios": sorted(sepolia_e2e.RPC_SCENARIOS),
                 "providers_restored": True,
             }
-        if stage == "final_pause":
+        if stage == "live_acceptance":
+            binding = sepolia_e2e.load_object(self.manifest)["binding"]
             return {
-                "base_deposits_paused": True,
-                "base_withdrawals_paused": True,
-                "canister_deposits_paused": True,
+                "initial_activation_operation_id": TX,
+                "reactivation_operation_id": TX_B,
+                "reactivation_schedule_transaction_hash": TX_B,
+                "reactivation_execute_transaction_hash": TX_C,
+                "reactivation_delay_seconds": 300,
+                "base_deposits_paused": False,
+                "base_withdrawals_paused": False,
+                "canister_deposits_paused": False,
+                "pending_governance_operations": 0,
                 "pending_timelock_operations": 0,
                 "pending_deposits": 0,
                 "pending_withdrawals": 0,
+                "pending_reconciliation_jobs": 0,
+                "pending_ledger_operations": 0,
+                "reserved_deposit_mint_operations": 0,
+                "reserved_deposit_mint_amount": 0,
+                "unpaid_withdrawal_count": 0,
+                "unpaid_withdrawal_amount_out": 0,
                 "providers_restored": True,
-                "finalized_block_number": 3,
-                "finalized_block_hash": TX,
+                "settlement_scheduler_healthy": True,
+                "storage_integrity": "ok",
+                "reserve_sufficient": True,
+                "schema_version": 35,
+                "record_wire_version": 30,
+                "deployment_instance_id": PROFILE_INSTANCE,
+                "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
+                "bridge_canister_id": BRIDGE_CANISTER_ID,
+                "module_sha256": H64,
+                "candid_sha256": H64_B,
+                "frontend_profile_sha256": binding["frontend_profile_sha256"],
+                "bridge_runtime_sha256": TX,
+                "mint_authorization_ttl_seconds": 600,
+                "solidity_max_authorization_horizon_seconds": 900,
+                "old_stack_excluded": True,
+                "monitoring_receipt_sha256": H64_C,
+                "finalized_block_number": 11,
+                "finalized_block_hash": TX_C,
             }
         raise AssertionError(stage)
 
-    def evidence(self, stage: str) -> Path:
+    def artifacts(
+        self, stage: str, details: dict[str, object]
+    ) -> list[dict[str, str]]:
+        if stage == "bootstrap_attestation":
+            return self.bootstrap_artifacts()
+        if stage == "preflight":
+            return self.preflight_artifacts()
+        if stage == "rpc_rehearsal":
+            artifacts = self.rpc_artifact()
+            details["manifest_sha256"] = artifacts[0]["sha256"]
+            return artifacts
+        if stage == "live_acceptance":
+            return self.live_artifacts(details)
+        return self.generic_artifact(stage, details)
+
+    def evidence(self, stage: str, *, details: dict[str, object] | None = None) -> Path:
         path = self.root / f"{stage}-evidence.json"
+        recorded_details = details if details is not None else self.details(stage)
         path.write_text(
             json.dumps(
                 {
-                    "schema_version": sepolia_e2e.SCHEMA_VERSION,
+                    "schema_version": 8,
                     "stage": stage,
-                    "observed_at": PREFLIGHT_OBSERVED_AT,
+                    "observed_at": OBSERVED_AT,
                     "source_commit": SOURCE,
-                    "artifacts": self.artifact(stage),
-                    "details": self.details(stage),
+                    "artifacts": self.artifacts(stage, recorded_details),
+                    "details": recorded_details,
                 }
-            ),
+            )
+            + "\n",
             encoding="utf-8",
         )
         return path
 
-    def test_complete_manifest_verifies_all_files_and_stages(self) -> None:
+    def record_through(self, final_stage: str) -> None:
         for stage in sepolia_e2e.STAGES:
             sepolia_e2e.record(self.manifest, self.evidence(stage))
+            if stage == final_stage:
+                return
+        raise AssertionError(final_stage)
+
+    def test_complete_manifest_reaches_short_delay_live(self) -> None:
+        self.record_through("live_acceptance")
         manifest = sepolia_e2e.load_object(self.manifest)
-        sepolia_e2e.validate_manifest(manifest, self.manifest, require_complete=True, verify_files=True)
-        self.assertEqual(manifest["state"], "SHORT_DELAY_COMPLETE")
+        sepolia_e2e.validate_manifest(
+            manifest,
+            self.manifest,
+            require_complete=True,
+            verify_files=True,
+        )
+        self.assertEqual(manifest["state"], "SHORT_DELAY_LIVE")
         self.assertTrue(manifest["complete"])
+        self.rpc_verifier.assert_called()
 
-    def test_out_of_order_stage_is_rejected(self) -> None:
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "expected stage preflight"):
-            sepolia_e2e.record(self.manifest, self.evidence("install"))
-
-    def test_binding_uses_profile_instance_instead_of_local_evidence(self) -> None:
-        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
-        self.assertEqual(manifest["binding"]["deployment_instance_id"], PROFILE_INSTANCE)
-
-    def test_current_schema_preflight_accepts_only_the_same_instance(self) -> None:
-        self.validate_preflight(
-            self.details("preflight"),
-            json.loads(self.manifest.read_text(encoding="utf-8"))["binding"],
-            self.artifact("preflight"),
+    def test_stage_order_has_no_reinstall_or_top_level_final_pause(self) -> None:
+        self.assertEqual(
+            sepolia_e2e.STAGES,
+            (
+                "bootstrap_attestation",
+                "preflight",
+                "current_schema_upgrade",
+                "post_upgrade_binding",
+                "frontend_publish",
+                "smoke_e2e",
+                "wallet_e2e",
+                "refund_rehearsal",
+                "rpc_rehearsal",
+                "live_acceptance",
+            ),
         )
+        self.assertNotIn("reinstall", sepolia_e2e.STAGES)
+        self.assertNotIn("final_pause", sepolia_e2e.STAGES)
+        self.assertIn("final_pause", sepolia_e2e.RPC_SCENARIOS)
 
-    def test_upgrade_install_requires_exact_state_and_instance_preservation(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        counts = {
-            "deposits": 2,
-            "withdrawals": 0,
-            "pending_ledger_operations": 0,
-            "reconciliation_holds": 0,
-            "reserved_deposit_mint_operations": 2,
-            "reserved_deposit_mint_amount": 1_000_000_000,
-            "unpaid_withdrawal_count": 0,
-            "unpaid_withdrawal_amount_out": 0,
-        }
-        details = {
-            "install_mode": "upgrade",
-            "module_sha256": H64,
-            "source_module_sha256": self.upgrade_policy["source_module_sha256"],
-            "source_candid_sha256": self.upgrade_policy["source_candid_sha256"],
-            "target_candid_sha256": H64,
-            "staging_upgrade_policy_sha256": sepolia_e2e.digest(sepolia_e2e.STAGING_UPGRADE_POLICY),
-            "cycles_balance": 1,
-            "controller_principals": list(CONTROLLERS),
-            "state_counts_before": counts,
-            "state_counts_after": dict(counts),
-            "schema_version_before": 35,
-            "schema_version_after": 35,
-            "record_wire_version_before": 30,
-            "record_wire_version_after": 30,
-            "deployment_instance_id_after": PROFILE_INSTANCE,
-            "minimum_withdrawal_id_after": MINIMUM_WITHDRAWAL_ID,
-            "storage_integrity_after": "ok",
-        }
-        sepolia_e2e.validate_install(details, binding)
-        details["state_counts_after"] = {**counts, "deposits": 1}
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "changed persisted"):
-            sepolia_e2e.validate_install(details, binding)
-
-    def test_preflight_requires_all_three_pause_postconditions(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        for field in (
-            "base_deposits_paused",
-            "base_withdrawals_paused",
-            "canister_deposits_paused",
-        ):
-            with self.subTest(field=field):
-                details = self.details("preflight")
-                details[field] = False
-                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "must be true"):
-                    self.validate_preflight(
-                        details,
-                        binding,
-                        self.reinstall_artifacts(),
-                    )
-
-    def test_checked_in_json_schema_tracks_manifest_schema_v7(self) -> None:
-        schema_path = MODULE_PATH.parents[2] / "deployments/sepolia-staging/sepolia-e2e.schema.json"
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        self.assertEqual(schema["properties"]["schema_version"]["const"], 7)
-        binding = schema["properties"]["binding"]
-        for field in (
-            "staging_upgrade_policy_sha256",
-            "source_module_sha256",
-            "source_candid_sha256",
-            "target_candid_sha256",
-            "stable_schema_version",
-            "record_wire_version",
-        ):
-            self.assertIn(field, binding["required"])
-            self.assertIn(field, binding["properties"])
-        schema_text = schema_path.read_text(encoding="utf-8")
-        self.assertNotIn("obsolete-state-disposition", schema_text)
-        self.assertIn("current-schema-upgrade", schema_text)
-        self.assertNotIn("obsolete-schema-reinstall", schema_text)
-        self.assertNotIn("current-schema-reinstall", schema_text)
-        self.assertNotIn("obsolete-pause-evidence", schema_text)
-
-    def test_v36_preflight_rejects_a_distinct_previous_instance(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        details = self.details("preflight")
-        details["live_schema_version"] = 35
-        details["previous_deployment_instance_id"] = TX
-        artifacts = self.reinstall_artifacts(
-            {"schema_version": 35, "deployment_instance_id": [17] * 32},
-            {
-                "replacement_mode": "current-schema-upgrade",
-                "live_schema_version": 35,
-                "previous_deployment_instance_id": TX,
-                "live_module_hash": TX,
-                "next": PROFILE_INSTANCE,
-            },
-        )
-        self.add_upgrade_snapshots(artifacts)
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reinstall is prohibited"):
-            self.validate_preflight(details, binding, artifacts)
-        for live in (
-            {"schema_version": 35},
-            {"schema_version": 35, "deployment_instance_id": f"0x{'0' * 64}"},
-            {"schema_version": 35, "deployment_instance_id": "0x11"},
-            {"schema_version": 35, "deployment_instance_id": [17] * 31},
-            {"schema_version": 28, "deployment_instance_id": TX},
-        ):
-            invalid_artifacts = self.reinstall_artifacts(live)
-            with self.assertRaises(sepolia_e2e.EvidenceError):
-                self.validate_preflight(
-                    details,
-                    binding,
-                    invalid_artifacts,
-                )
-
-    def test_v36_upgrade_preflight_requires_state_preservation_snapshots(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        details = self.details("preflight")
-        details.update(
-            {
-                "replacement_mode": "current-schema-upgrade",
-                "live_schema_version": 35,
-                "previous_deployment_instance_id": PROFILE_INSTANCE,
-            }
-        )
-        artifacts = self.current_upgrade_artifacts()
-        self.validate_preflight(details, binding, artifacts)
-        for kind in (
-            sepolia_e2e.LIVE_BRIDGE_STATUS_ARTIFACT_KIND,
-            sepolia_e2e.LIVE_ACTIVATION_STATUS_ARTIFACT_KIND,
-            sepolia_e2e.LIVE_STORAGE_INTEGRITY_ARTIFACT_KIND,
-            sepolia_e2e.LIVE_LEDGER_BALANCE_ARTIFACT_KIND,
-        ):
-            with self.subTest(kind=kind):
-                missing = [artifact for artifact in artifacts if artifact["kind"] != kind]
-                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "exactly one"):
-                    self.validate_preflight(
-                        details,
-                        binding,
-                        missing,
-                    )
-
-    def test_v32_is_rejected_instead_of_reinstalled(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        details = self.details("preflight")
-        details.update(
-            {
-                "replacement_mode": "current-schema-upgrade",
-                "live_schema_version": 32,
-                "previous_deployment_instance_id": TX,
-            }
-        )
-        artifacts = self.obsolete_v32_reinstall_artifacts()
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "requires current stable schema"):
-            self.validate_preflight(details, binding, artifacts)
-
-    def test_install_mode_must_match_preflight_replacement_mode(self) -> None:
-        sepolia_e2e.record(self.manifest, self.evidence("preflight"))
-        sepolia_e2e.record(self.manifest, self.evidence("contracts"))
-        install_evidence = json.loads(self.evidence("install").read_text(encoding="utf-8"))
-        install_evidence["details"]["install_mode"] = "install"
-        path = self.root / "invalid-install-evidence.json"
-        path.write_text(json.dumps(install_evidence), encoding="utf-8")
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "only a current-schema same-instance upgrade"):
+    def test_out_of_order_and_v7_stage_evidence_are_rejected(self) -> None:
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "expected stage bootstrap_attestation"):
+            sepolia_e2e.record(self.manifest, self.evidence("preflight"))
+        evidence = json.loads(self.evidence("bootstrap_attestation").read_text())
+        evidence["schema_version"] = 7
+        path = self.root / "v7-stage.json"
+        path.write_text(json.dumps(evidence), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "wrong schema"):
             sepolia_e2e.record(self.manifest, path)
 
-    def test_preflight_requires_unique_upgrade_and_boundary_artifacts(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        artifacts = self.artifact("preflight")
-        required_kinds = (
-            sepolia_e2e.LIVE_PUBLIC_CONFIG_ARTIFACT_KIND,
-            sepolia_e2e.UPGRADE_INSTANCE_CHECK_ARTIFACT_KIND,
-            sepolia_e2e.WITHDRAWAL_BOUNDARY_ARTIFACT_KIND,
-        )
-        for kind in required_kinds:
-            missing = [artifact for artifact in artifacts if artifact["kind"] != kind]
-            with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "exactly one"):
-                self.validate_preflight(
-                    self.details("preflight"),
-                    binding,
-                    missing,
-                )
-            duplicate = artifacts + [
-                next(artifact.copy() for artifact in artifacts if artifact["kind"] == kind)
-            ]
-            with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "exactly one"):
-                self.validate_preflight(
-                    self.details("preflight"),
-                    binding,
-                    duplicate,
-                )
-
-    def test_preflight_rejects_stale_or_future_withdrawal_boundaries(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        for name, observed_at in (
-            ("stale", "2026-07-23T23:58:59Z"),
-            ("future", "2026-07-24T00:04:01Z"),
-        ):
-            with self.subTest(name=name):
-                artifacts = self.current_upgrade_artifacts()
-                boundary_path = self.root / "artifacts/withdrawal-admission-boundary.json"
-                boundary = json.loads(boundary_path.read_text(encoding="utf-8"))
-                boundary["observed_at"] = observed_at
-                boundary_path.write_text(json.dumps(boundary) + "\n", encoding="utf-8")
-                boundary_artifact = next(
-                    artifact
-                    for artifact in artifacts
-                    if artifact["kind"] == sepolia_e2e.WITHDRAWAL_BOUNDARY_ARTIFACT_KIND
-                )
-                boundary_artifact["sha256"] = sepolia_e2e.digest(boundary_path)
-                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "five minutes before preflight"):
-                    self.validate_preflight(self.details("preflight"), binding, artifacts)
-
-    def test_preflight_rejects_withdrawal_boundary_provider_order_drift(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        artifacts = self.current_upgrade_artifacts()
-        boundary_path = self.root / "artifacts/withdrawal-admission-boundary.json"
-        boundary = json.loads(boundary_path.read_text(encoding="utf-8"))
-        boundary["providers"][0], boundary["providers"][1] = (
-            boundary["providers"][1],
-            boundary["providers"][0],
-        )
-        boundary_path.write_text(json.dumps(boundary) + "\n", encoding="utf-8")
-        boundary_artifact = next(
-            artifact
-            for artifact in artifacts
-            if artifact["kind"] == sepolia_e2e.WITHDRAWAL_BOUNDARY_ARTIFACT_KIND
-        )
-        boundary_artifact["sha256"] = sepolia_e2e.digest(boundary_path)
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "provider order differs"):
-            self.validate_preflight(self.details("preflight"), binding, artifacts)
-
-    def test_preflight_rejects_boundary_provider_below_median_checkpoint(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        artifacts = self.current_upgrade_artifacts()
-        boundary_path = self.root / "artifacts/withdrawal-admission-boundary.json"
-        boundary = json.loads(boundary_path.read_text(encoding="utf-8"))
-        boundary["providers"][0]["finalized_head_block_number"] = 99
-        boundary_path.write_text(json.dumps(boundary) + "\n", encoding="utf-8")
-        boundary_artifact = next(
-            artifact
-            for artifact in artifacts
-            if artifact["kind"] == sepolia_e2e.WITHDRAWAL_BOUNDARY_ARTIFACT_KIND
-        )
-        boundary_artifact["sha256"] = sepolia_e2e.digest(boundary_path)
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "below the median checkpoint"):
-            self.validate_preflight(self.details("preflight"), binding, artifacts)
-
-    def test_preflight_rejects_artifact_and_summary_drift(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        details = self.details("preflight")
-        artifacts = self.reinstall_artifacts(
-            {"schema_version": 35, "deployment_instance_id": TX},
-            {
-                "replacement_mode": "current-schema-upgrade",
-                "live_schema_version": 35,
-                "previous_deployment_instance_id": TX,
-                "live_module_hash": TX,
-                "next": TX,
-            },
-        )
-        self.add_upgrade_snapshots(artifacts)
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reinstall is prohibited"):
-            self.validate_preflight(
-                details,
-                binding,
-                artifacts,
-            )
-
-        artifacts = self.reinstall_artifacts(
-            {"schema_version": 35, "deployment_instance_id": PROFILE_INSTANCE},
-            {
-                "replacement_mode": "current-schema-upgrade",
-                "live_schema_version": 35,
-                "previous_deployment_instance_id": PROFILE_INSTANCE,
-                "live_module_hash": TX,
-                "next": PROFILE_INSTANCE,
-                "unexpected": True,
-            },
-        )
-        self.add_upgrade_snapshots(artifacts)
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "fields differ"):
-            self.validate_preflight(
-                details,
-                binding,
-                artifacts,
-            )
-
-        artifacts = self.reinstall_artifacts()
-        self.add_upgrade_snapshots(artifacts)
-        with self.assertRaisesRegex(
-            sepolia_e2e.EvidenceError,
-            "summary differs from the withdrawal admission boundary",
-        ):
-            self.validate_preflight(
-                {
-                    **details,
-                    "minimum_withdrawal_id": TX,
-                },
-                binding,
-                artifacts,
-            )
-
-    def test_preflight_rejects_required_artifact_hash_and_json_drift(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        artifacts = self.artifact("preflight")
-        live_path = self.root / "artifacts/live-public-config.json"
-        live_path.write_text('{"schema_version":30}\n', encoding="utf-8")
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "sha256 does not match"):
-            self.validate_preflight(
-                self.details("preflight"),
-                binding,
-                artifacts,
-            )
-        artifacts = self.artifact("preflight")
-        live_path.write_text("{\n", encoding="utf-8")
-        live_artifact = next(
-            artifact
-            for artifact in artifacts
-            if artifact["kind"] == sepolia_e2e.LIVE_PUBLIC_CONFIG_ARTIFACT_KIND
-        )
-        live_artifact["sha256"] = sepolia_e2e.digest(live_path)
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "cannot read JSON object"):
-            self.validate_preflight(
-                self.details("preflight"),
-                binding,
-                artifacts,
-            )
-
-    def test_node_checker_output_is_accepted_by_manifest_validation(self) -> None:
-        live = {"schema_version": 35, "deployment_instance_id": PROFILE_INSTANCE}
-        live_path = self.root / "node-live-public-config.json"
-        live_path.write_text(json.dumps(live), encoding="utf-8")
-        status = {"module_hash": TX}
-        status_path = self.root / "node-live-canister-status.json"
-        status_path.write_text(json.dumps(status), encoding="utf-8")
-        output = subprocess.run(
-            [
-                "node",
-                str(MODULE_PATH.with_name("check-upgrade-instance.mjs")),
-                str(self.profile),
-                str(live_path),
-                str(status_path),
-            ],
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-        ).stdout
-        check = json.loads(output)
-        details = self.details("preflight")
-        details["live_schema_version"] = 35
-        details["previous_deployment_instance_id"] = PROFILE_INSTANCE
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        self.validate_preflight(
-            details,
-            binding,
-            self.current_upgrade_artifacts(),
-        )
-
-    def test_preflight_and_install_reject_controller_set_drift(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        mutations = (
-            CONTROLLERS[:1],
-            [*CONTROLLERS, "2vxsx-fae"],
-            [CONTROLLERS[0], CONTROLLERS[0]],
-            ["2vxsx-fae", CONTROLLERS[1]],
-        )
-        for controllers in mutations:
-            with self.subTest(controllers=controllers):
-                preflight = self.details("preflight")
-                preflight["controller_principals"] = controllers
-                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reviewed staging controller set"):
-                    self.validate_preflight(
-                        preflight,
-                        binding,
-                        self.current_upgrade_artifacts(),
-                    )
-
-                install = self.details("install")
-                install["controller_principals"] = controllers
-                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "reviewed staging controller set"):
-                    sepolia_e2e.validate_install(install, binding)
-
-    def test_preflight_rejects_unreviewed_canister_module_candid_and_wire(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        base_status = {
-            "canister_id": BRIDGE_CANISTER_ID,
-            "module_hash": "0x" + self.upgrade_policy["source_module_sha256"],
-            "certified_candid_sha256": self.upgrade_policy["source_candid_sha256"],
-            "stable_schema_version": 35,
-            "record_wire_version": 30,
-            "controller_principals": list(CONTROLLERS),
-            "cycles_balance": 1,
-        }
-        mutations = (
-            {"canister_id": "2vxsx-fae"},
-            {"module_hash": TX_B},
-            {"certified_candid_sha256": H64_B},
-            {"stable_schema_version": 34},
-            {"record_wire_version": 29},
-        )
-        for mutation in mutations:
-            with self.subTest(mutation=mutation):
-                artifacts = self.reinstall_artifacts(status={**base_status, **mutation})
-                self.add_upgrade_snapshots(artifacts)
-                with self.assertRaises(sepolia_e2e.EvidenceError):
-                    self.validate_preflight(self.details("preflight"), binding, artifacts)
-
-    def test_install_rejects_schema_wire_policy_and_candid_drift(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        for field, value in (
-            ("schema_version_before", 34),
-            ("schema_version_after", 34),
-            ("record_wire_version_before", 29),
-            ("record_wire_version_after", 29),
-            ("source_module_sha256", H64_B),
-            ("source_candid_sha256", H64_B),
-            ("target_candid_sha256", H64_B),
-            ("staging_upgrade_policy_sha256", H64_B),
-        ):
-            with self.subTest(field=field):
-                details = self.details("install")
-                details[field] = value
-                with self.assertRaises(sepolia_e2e.EvidenceError):
-                    sepolia_e2e.validate_install(details, binding)
-
-    def test_later_record_revalidates_preflight_artifacts(self) -> None:
-        sepolia_e2e.record(self.manifest, self.evidence("preflight"))
-        (self.root / "artifacts/live-public-config.json").unlink()
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "does not exist"):
-            sepolia_e2e.record(self.manifest, self.evidence("contracts"))
-
-    def test_install_record_immediately_rejects_controller_order_drift(self) -> None:
-        sepolia_e2e.record(self.manifest, self.evidence("preflight"))
-        sepolia_e2e.record(self.manifest, self.evidence("contracts"))
-        install_path = self.evidence("install")
-        install = json.loads(install_path.read_text(encoding="utf-8"))
-        install["details"]["controller_principals"] = list(reversed(CONTROLLERS))
-        install_path.write_text(json.dumps(install), encoding="utf-8")
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "changed from the reviewed preflight"):
-            sepolia_e2e.record(self.manifest, install_path)
-
-    def test_initialize_rejects_profile_instance_mismatch(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        details = self.details("initialize")
-        details["deployment_instance_id"] = TX
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "differs"):
-            sepolia_e2e.validate_initialize(details, binding)
-
-    def test_deployment_identity_rejects_each_contract_tuple_drift(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        mutations = {
-            "bridge_address": ADDRESS_C,
-            "bsns_address": ADDRESS_C,
-            "timelock_address": ADDRESS,
-            "bridge_runtime_sha256": TX_B,
-            "bsns_runtime_sha256": TX,
-            "mint_signer": ADDRESS_B,
-        }
-        for field, value in mutations.items():
-            with self.subTest(field=field):
-                details = self.details("contracts")
-                details[field] = value
-                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "differs"):
-                    sepolia_e2e.validate_contracts(details, binding)
-
-    def test_public_config_identity_rejects_each_shared_field_drift(self) -> None:
-        binding = json.loads(self.manifest.read_text(encoding="utf-8"))["binding"]
-        mutations = {
-            "chain_id": 1,
-            "bridge_address": ADDRESS_C,
-            "timelock_address": ADDRESS,
-            "expected_bridge_runtime_sha256": TX_B,
-            "expected_bridge_signer": ADDRESS_B,
-            "deployment_instance_id": TX,
-        }
-        for field, value in mutations.items():
-            with self.subTest(field=field):
-                details = self.details("initialize")
-                details[field] = value
-                with self.assertRaises(sepolia_e2e.EvidenceError):
-                    sepolia_e2e.validate_initialize(details, binding)
-
-    def test_upgrade_hash_drift_is_rejected(self) -> None:
-        details = self.details("wallet_e2e")
-        details["same_wasm_upgrade"]["after_state_sha256"] = H64_B
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "did not preserve canonical state"):
-            sepolia_e2e.validate_wallet_e2e(details)
-
-    def test_obsolete_local_upgrade_schema_is_rejected(self) -> None:
-        self.manifest.unlink()
-        local = json.loads(self.local.read_text(encoding="utf-8"))
-        local["state_upgrade"]["before"]["status"]["schema_version"] = 28
-        local["state_upgrade"]["after"]["status"]["schema_version"] = 28
-        self.local.write_text(json.dumps(local), encoding="utf-8")
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "must use stable schema v35"):
-            sepolia_e2e.initialize(self.manifest, self.local, self.profile)
-
-    def test_obsolete_local_evidence_schema_v7_is_rejected(self) -> None:
-        self.manifest.unlink()
-        local = json.loads(self.local.read_text(encoding="utf-8"))
+    def test_v7_local_evidence_is_not_migrated(self) -> None:
+        local = json.loads(self.local.read_text())
         local["schema_version"] = 7
         self.local.write_text(json.dumps(local), encoding="utf-8")
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "complete schema v8 pass"):
-            sepolia_e2e.initialize(self.manifest, self.local, self.profile)
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "schema v8"):
+            sepolia_e2e.initialize(
+                self.root / "v7-manifest.json", self.local, self.profile
+            )
 
-    def test_driver_requires_repo_external_local_evidence(self) -> None:
-        environment = os.environ.copy()
-        environment.pop("BRIDGE_LOCAL_E2E_EVIDENCE", None)
-        missing = subprocess.run(
-            ["bash", str(DRIVER_PATH), "init"],
-            env=environment,
-            text=True,
-            capture_output=True,
+    def test_local_evidence_inside_the_repository_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            sepolia_e2e.EvidenceError,
+            "local promotion evidence must be generated outside the repository",
+        ):
+            sepolia_e2e.initialize(
+                self.root / "inside-repo-manifest.json",
+                self.local,
+                self.profile,
+                repo_root=self.root,
+            )
+
+    def test_local_evidence_requires_current_schema_wire_and_complete_upgrade_state(self) -> None:
+        for mutate, message in (
+            (
+                lambda value: value.__setitem__("record_wire_version", 29),
+                "stable schema or record wire",
+            ),
+            (
+                lambda value: (
+                    value["state_upgrade"]["before"].pop("activation_status"),
+                    value["state_upgrade"]["after"].pop("activation_status"),
+                ),
+                "missing required upgrade state",
+            ),
+        ):
+            with self.subTest(message=message):
+                local = json.loads(self.local.read_text())
+                mutate(local)
+                candidate = self.root / f"invalid-{message.split()[0]}.json"
+                candidate.write_text(json.dumps(local), encoding="utf-8")
+                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, message):
+                    sepolia_e2e.initialize(
+                        self.root / f"manifest-{message.split()[0]}.json",
+                        candidate,
+                        self.profile,
+                    )
+
+    def test_bootstrap_attestation_is_non_resumable_and_hash_bound(self) -> None:
+        invalid = self.details("bootstrap_attestation")
+        invalid["historical_reinstall_resumable"] = True
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "must be false"):
+            sepolia_e2e.record(
+                self.manifest,
+                self.evidence("bootstrap_attestation", details=invalid),
+            )
+        evidence = json.loads(self.evidence("bootstrap_attestation").read_text())
+        evidence["artifacts"][0]["sha256"] = H64
+        tampered = self.root / "tampered-bootstrap.json"
+        tampered.write_text(json.dumps(evidence), encoding="utf-8")
+        with self.assertRaisesRegex(
+            sepolia_e2e.EvidenceError, "sha256 does not match|pinned historical"
+        ):
+            sepolia_e2e.record(self.manifest, tampered)
+
+    def test_upgrade_rejects_reinstall_instance_and_preflight_drift(self) -> None:
+        self.record_through("preflight")
+        for field, value, message in (
+            ("install_mode", "reinstall", "only a current-schema"),
+            ("bridge_canister_id_after", "aaaaa-aa", "changed the Bridge Canister"),
+            ("record_wire_version_after", 29, "record wire version"),
+            ("deployment_instance_id_after", TX_C, "changed the deployment instance"),
+            ("cycles_balance_before", 101, "preflight Canister status"),
+        ):
+            with self.subTest(field=field):
+                details = self.details("current_schema_upgrade")
+                details[field] = value
+                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, message):
+                    sepolia_e2e.record(
+                        self.manifest,
+                        self.evidence("current_schema_upgrade", details=details),
+                    )
+
+    def test_preflight_rejects_live_ledger_fee_drift(self) -> None:
+        self.record_through("bootstrap_attestation")
+        evidence = json.loads(self.evidence("preflight").read_text())
+        metadata_descriptor = next(
+            artifact
+            for artifact in evidence["artifacts"]
+            if artifact["kind"] == sepolia_e2e.LIVE_LEDGER_METADATA_ARTIFACT_KIND
         )
-        self.assertEqual(missing.returncode, 2)
-        self.assertIn("BRIDGE_LOCAL_E2E_EVIDENCE", missing.stderr)
+        metadata_path = self.root / metadata_descriptor["path"]
+        metadata = json.loads(metadata_path.read_text())
+        metadata["fee"] = 100_000
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        metadata_descriptor["sha256"] = sepolia_e2e.digest(metadata_path)
+        path = self.root / "fee-drift-preflight.json"
+        path.write_text(json.dumps(evidence), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "Ledger metadata"):
+            sepolia_e2e.record(self.manifest, path)
 
-        environment["BRIDGE_LOCAL_E2E_EVIDENCE"] = str(MODULE_PATH.parents[2] / "README.md")
-        inside = subprocess.run(
-            ["bash", str(DRIVER_PATH), "init"],
-            env=environment,
-            text=True,
-            capture_output=True,
+    def test_preflight_rejects_unbound_live_canister_status(self) -> None:
+        self.record_through("bootstrap_attestation")
+        for mutation, message in (
+            (
+                lambda status: status.__setitem__("canister_id", "aaaaa-aa"),
+                "reviewed Bridge canister",
+            ),
+            (lambda status: status.pop("canister_id"), "fields differ"),
+        ):
+            with self.subTest(message=message):
+                evidence = json.loads(self.evidence("preflight").read_text())
+                descriptor = next(
+                    artifact
+                    for artifact in evidence["artifacts"]
+                    if artifact["kind"] == sepolia_e2e.LIVE_CANISTER_STATUS_ARTIFACT_KIND
+                )
+                artifact_path = self.root / descriptor["path"]
+                status = json.loads(artifact_path.read_text())
+                mutation(status)
+                artifact_path.write_text(json.dumps(status), encoding="utf-8")
+                descriptor["sha256"] = sepolia_e2e.digest(artifact_path)
+                path = self.root / f"canister-status-{message.split()[0]}.json"
+                path.write_text(json.dumps(evidence), encoding="utf-8")
+                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, message):
+                    sepolia_e2e.record(self.manifest, path)
+
+    def test_preflight_rejects_runtime_rpc_provider_digest_drift(self) -> None:
+        self.record_through("bootstrap_attestation")
+        evidence = json.loads(self.evidence("preflight").read_text())
+        descriptor = next(
+            artifact
+            for artifact in evidence["artifacts"]
+            if artifact["kind"] == sepolia_e2e.LIVE_PUBLIC_CONFIG_ARTIFACT_KIND
         )
-        self.assertEqual(inside.returncode, 2)
-        self.assertIn("outside the repository", inside.stderr)
+        artifact_path = self.root / descriptor["path"]
+        runtime = json.loads(artifact_path.read_text())
+        runtime["rpc_provider_urls_sha256"] = [6] * 32
+        artifact_path.write_text(json.dumps(runtime), encoding="utf-8")
+        descriptor["sha256"] = sepolia_e2e.digest(artifact_path)
+        path = self.root / "rpc-provider-digest-drift.json"
+        path.write_text(json.dumps(evidence), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "RPC provider digest"):
+            sepolia_e2e.record(self.manifest, path)
 
-        alias = self.root / "repo-evidence-alias.json"
-        alias.symlink_to(MODULE_PATH.parents[2] / "README.md")
-        environment["BRIDGE_LOCAL_E2E_EVIDENCE"] = str(alias)
-        symlinked = subprocess.run(
-            ["bash", str(DRIVER_PATH), "init"],
-            env=environment,
-            text=True,
-            capture_output=True,
+    def test_post_upgrade_rejects_runtime_rpc_provider_digest_drift(self) -> None:
+        self.record_through("current_schema_upgrade")
+        details = self.details("post_upgrade_binding")
+        details["canister"]["rpc_provider_urls_sha256"] = TX_C
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "RPC provider digest"):
+            sepolia_e2e.record(
+                self.manifest,
+                self.evidence("post_upgrade_binding", details=details),
+            )
+
+    def test_stage_receipt_must_bind_the_recorded_details(self) -> None:
+        self.record_through("preflight")
+        evidence = json.loads(self.evidence("current_schema_upgrade").read_text())
+        receipt_path = self.root / evidence["artifacts"][0]["path"]
+        receipt = json.loads(receipt_path.read_text())
+        receipt["details_sha256"] = H64_C
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        evidence["artifacts"][0]["sha256"] = sepolia_e2e.digest(receipt_path)
+        evidence_path = self.root / "unbound-upgrade.json"
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "recorded details"):
+            sepolia_e2e.record(self.manifest, evidence_path)
+
+        evidence = json.loads(self.evidence("current_schema_upgrade").read_text())
+        receipt_descriptor = next(
+            artifact
+            for artifact in evidence["artifacts"]
+            if artifact["kind"] == "current_schema_upgrade-receipt"
         )
-        self.assertEqual(symlinked.returncode, 2)
-        self.assertIn("outside the repository", symlinked.stderr)
+        capture_descriptor = next(
+            artifact
+            for artifact in evidence["artifacts"]
+            if artifact["kind"] == "current_schema_upgrade-raw-capture"
+        )
+        capture_path = self.root / capture_descriptor["path"]
+        capture = json.loads(capture_path.read_text())
+        capture["stdout"] = "{}"
+        capture["stdout_sha256"] = sepolia_e2e.hashlib.sha256(b"{}").hexdigest()
+        capture_path.write_text(json.dumps(capture), encoding="utf-8")
+        capture_descriptor["sha256"] = sepolia_e2e.digest(capture_path)
+        receipt_path = self.root / receipt_descriptor["path"]
+        receipt = json.loads(receipt_path.read_text())
+        receipt["capture_sha256"] = capture_descriptor["sha256"]
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        receipt_descriptor["sha256"] = sepolia_e2e.digest(receipt_path)
+        evidence_path = self.root / "unbound-raw-upgrade.json"
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "does not reproduce"):
+            sepolia_e2e.record(self.manifest, evidence_path)
 
-    def test_artifact_hash_drift_is_rejected(self) -> None:
-        evidence = self.evidence("preflight")
-        artifact = self.root / "artifacts/preflight.json"
-        artifact.write_text('{"changed":true}\n', encoding="utf-8")
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "does not match"):
-            sepolia_e2e.record(self.manifest, evidence)
+    def test_refund_rehearsal_enforces_strict_deadline_and_unprocessed_state(self) -> None:
+        valid = self.details("refund_rehearsal")
+        sepolia_e2e.validate_refund_rehearsal(valid)
+        for field, value, message in (
+            ("after_deadline_timestamp", 1_000, "strictly after"),
+            ("deposit_processed", True, "must be false"),
+            ("at_deadline_result", "Refunded", "equal to the deadline"),
+        ):
+            with self.subTest(field=field):
+                invalid = copy.deepcopy(valid)
+                invalid[field] = value
+                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, message):
+                    sepolia_e2e.validate_refund_rehearsal(invalid)
 
-    def test_initialization_requires_external_evidence_and_clean_source(self) -> None:
-        self.manifest.unlink()
-        repo = self.root / "source-repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "Plan 007 Test"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "plan007@example.invalid"], cwd=repo, check=True)
-        tracked = repo / "tracked.txt"
-        tracked.write_text("tracked\n", encoding="utf-8")
-        subprocess.run(["git", "add", tracked.name], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-qm", "test fixture"], cwd=repo, check=True)
-        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
-        local = json.loads(self.local.read_text(encoding="utf-8"))
-        local["source_commit"] = head
-        self.local.write_text(json.dumps(local), encoding="utf-8")
-        sepolia_e2e.initialize(self.manifest, self.local, self.profile, repo)
-        self.manifest.unlink()
-        inside = repo / "local-e2e.json"
-        inside.write_bytes(self.local.read_bytes())
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "outside the repository"):
-            sepolia_e2e.initialize(self.manifest, inside, self.profile, repo)
-        tracked.write_text("dirty\n", encoding="utf-8")
-        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "clean source worktree"):
-            sepolia_e2e.initialize(self.manifest, self.local, self.profile, repo)
+    def test_live_acceptance_fails_closed_on_pause_pending_provider_and_identity_drift(self) -> None:
+        binding = sepolia_e2e.load_object(self.manifest)["binding"]
+        valid = self.details("live_acceptance")
+        sepolia_e2e.validate_live_acceptance(valid, binding)
+        cases = (
+            ("base_deposits_paused", True),
+            ("pending_deposits", 1),
+            ("pending_ledger_operations", 1),
+            ("reserved_deposit_mint_amount", 1),
+            ("unpaid_withdrawal_count", 1),
+            ("providers_restored", False),
+            ("deployment_instance_id", TX_C),
+            ("module_sha256", H64_C),
+            ("reactivation_operation_id", TX),
+        )
+        for field, value in cases:
+            with self.subTest(field=field):
+                invalid = copy.deepcopy(valid)
+                invalid[field] = value
+                with self.assertRaises(sepolia_e2e.EvidenceError):
+                    sepolia_e2e.validate_live_acceptance(invalid, binding)
+
+    def test_live_acceptance_binds_timelock_and_monitoring_receipts(self) -> None:
+        self.record_through("rpc_rehearsal")
+        evidence = json.loads(self.evidence("live_acceptance").read_text())
+        schedule_path = self.root / evidence["artifacts"][0]["path"]
+        schedule = json.loads(schedule_path.read_text())
+        schedule["ready_timestamp"] -= 1
+        schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+        evidence["artifacts"][0]["sha256"] = sepolia_e2e.digest(schedule_path)
+        evidence_path = self.root / "bad-ready-time.json"
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "exact five-minute"):
+            sepolia_e2e.record(self.manifest, evidence_path)
+
+        evidence = json.loads(self.evidence("live_acceptance").read_text())
+        monitor_path = self.root / evidence["artifacts"][2]["path"]
+        monitor = json.loads(monitor_path.read_text())
+        monitor["providers_restored"] = False
+        monitor_path.write_text(json.dumps(monitor), encoding="utf-8")
+        evidence["artifacts"][2]["sha256"] = sepolia_e2e.digest(monitor_path)
+        evidence["details"]["monitoring_receipt_sha256"] = evidence["artifacts"][2]["sha256"]
+        evidence_path = self.root / "bad-monitor.json"
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "providers_restored"):
+            sepolia_e2e.record(self.manifest, evidence_path)
+
+    def test_rpc_rehearsal_hash_and_verifier_are_mandatory(self) -> None:
+        self.record_through("refund_rehearsal")
+        evidence = json.loads(self.evidence("rpc_rehearsal").read_text())
+        evidence["details"]["manifest_sha256"] = H64_C
+        path = self.root / "rpc-hash-drift.json"
+        path.write_text(json.dumps(evidence), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "summary digest"):
+            sepolia_e2e.record(self.manifest, path)
+
+        self.rpc_verifier.side_effect = sepolia_e2e.EvidenceError("invalid raw RPC evidence")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "invalid raw RPC"):
+            sepolia_e2e.record(self.manifest, self.evidence("rpc_rehearsal"))
+
+    def test_rpc_rehearsal_rejects_provider_order_drift(self) -> None:
+        self.record_through("refund_rehearsal")
+        evidence = json.loads(self.evidence("rpc_rehearsal").read_text())
+        artifact_path = self.root / evidence["artifacts"][0]["path"]
+        rehearsal = json.loads(artifact_path.read_text())
+        rehearsal["binding"]["rpc_endpoints"].reverse()
+        artifact_path.write_text(json.dumps(rehearsal), encoding="utf-8")
+        artifact_sha256 = sepolia_e2e.digest(artifact_path)
+        evidence["artifacts"][0]["sha256"] = artifact_sha256
+        evidence["details"]["manifest_sha256"] = artifact_sha256
+        path = self.root / "rpc-provider-order-drift.json"
+        path.write_text(json.dumps(evidence), encoding="utf-8")
+        with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "provider order"):
+            sepolia_e2e.record(self.manifest, path)
+
+    def test_rpc_verifier_command_fails_closed(self) -> None:
+        self.rpc_verifier_patch.stop()
+        try:
+            with mock.patch.object(
+                sepolia_e2e.subprocess,
+                "run",
+                return_value=mock.Mock(returncode=1, stderr="bad evidence", stdout=""),
+            ) as run:
+                with self.assertRaisesRegex(sepolia_e2e.EvidenceError, "bad evidence"):
+                    ORIGINAL_VERIFY_RPC_REHEARSAL_MANIFEST(self.root / "rpc.json")
+                self.assertEqual(run.call_args.args[0][-2], "verify")
+        finally:
+            self.rpc_verifier_patch = mock.patch.object(
+                sepolia_e2e, "verify_rpc_rehearsal_manifest"
+            )
+            self.rpc_verifier = self.rpc_verifier_patch.start()
+
+    def test_checked_in_schema_matches_python_v8_contract(self) -> None:
+        schema_path = MODULE_PATH.parents[2] / "deployments/sepolia-staging/sepolia-e2e.schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        self.assertEqual(schema["properties"]["schema_version"]["const"], 8)
+        self.assertEqual(
+            set(schema["properties"]["stages"]["required"]),
+            set(sepolia_e2e.STAGES),
+        )
+        expected_states = {
+            f"AWAITING_{stage.upper()}" for stage in sepolia_e2e.STAGES
+        } | {"SHORT_DELAY_LIVE"}
+        self.assertEqual(
+            set(schema["properties"]["state"]["enum"]), expected_states
+        )
+        binding = sepolia_e2e.load_object(self.manifest)["binding"]
+        self.assertEqual(
+            set(schema["properties"]["binding"]["required"]), set(binding)
+        )
 
 
 if __name__ == "__main__":

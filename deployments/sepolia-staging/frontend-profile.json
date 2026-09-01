@@ -5,8 +5,8 @@
   "environmentMode": "short-delay-test-only",
   "activationTimelockDelaySeconds": 300,
   "gateBManifestSha256": null,
-  "profileFileSha256": "808f17ef9108a153ff088984129c2a21628462b7257b9b339f3883e32f60a399",
-  "profileCanonicalSha256": "9645c43caa6d9d026d1d5348f33c0ebf86c207e7babcdc18c6d40ca9ae4a5f8f",
+  "profileFileSha256": "17d4632a8733e1b8a70e1b5ba6552c782102293982432c5da7996a538ddc6c9e",
+  "profileCanonicalSha256": "2162452594b5b530dbd551d10ec4a40cc7079b456e14ab4c8d1570db7aa9d2ed",
   "icHost": "https://icp-api.io",
   "baseRpcUrl": "https://base-sepolia-rpc.publicnode.com",
   "baseHistoryRpcUrls": [
@@ -34,7 +34,7 @@
   "expected_bridge_signer": "0x801ddc785d2e79da8366cd282a1e5a9bed2492b5",
   "evmRpcCanisterId": "7hfb6-caaaa-aaaar-qadga-cai",
   "rpcProviderUrlsSha256": "0xdf7e867aaf6abeaf00b0f61e8662fa87c6f8675eb0aebdf7b09f8c99a499d064",
-  "deploymentBlock": "46056458",
+  "deploymentBlock": "46053027",
   "bridgeRuntimeHash": "0x31d58992a215153ae6068c5fd604463e2a14d9dbf38abfea7bddab04ae61b931",
   "bsnsRuntimeHash": "0xe7a0c70f94a2b1ecbb85cbc32128b3ff97519c9782abfcd9cedf8611bfeb9664"
 }

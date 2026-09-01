@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MANIFEST="${BRIDGE_STAGING_E2E_MANIFEST:-$ROOT/deployments/sepolia-staging/evidence/sepolia-e2e.json}"
-LOCAL_EVIDENCE="${BRIDGE_LOCAL_E2E_EVIDENCE:-}"
+LOCAL_EVIDENCE="${BRIDGE_STAGING_LOCAL_EVIDENCE:-}"
 PROFILE="$ROOT/deployments/sepolia-staging/frontend-profile.json"
 RECORDER="$ROOT/scripts/plan007/sepolia_e2e.py"
 RPC_RECORDER="$ROOT/scripts/evm-rpc-rehearsal/rehearsal.py"
@@ -13,14 +13,13 @@ MODE="${1:-status}"
 case "$MODE" in
   init)
     [[ -n "$LOCAL_EVIDENCE" && "$LOCAL_EVIDENCE" = /* && -f "$LOCAL_EVIDENCE" ]] || {
-      echo "BRIDGE_LOCAL_E2E_EVIDENCE must name an existing absolute repo-external schema v8 evidence file" >&2
+      echo "BRIDGE_STAGING_LOCAL_EVIDENCE must name an existing absolute schema v8 evidence file outside the repository" >&2
       exit 2
     }
-    CANONICAL_LOCAL_EVIDENCE="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve(strict=True))' "$LOCAL_EVIDENCE")"
-    CANONICAL_ROOT="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve(strict=True))' "$ROOT")"
-    case "$CANONICAL_LOCAL_EVIDENCE" in
-      "$CANONICAL_ROOT"|"$CANONICAL_ROOT"/*)
-        echo "BRIDGE_LOCAL_E2E_EVIDENCE must stay outside the repository" >&2
+    LOCAL_EVIDENCE="$(realpath "$LOCAL_EVIDENCE")"
+    case "$LOCAL_EVIDENCE" in
+      "$ROOT"|"$ROOT"/*)
+        echo "BRIDGE_STAGING_LOCAL_EVIDENCE must be outside the repository; checked-in v7 evidence is history-only" >&2
         exit 2
         ;;
     esac
