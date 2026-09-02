@@ -235,9 +235,11 @@ pub fn production_lifecycle() -> Result<ProductionLifecycle, BaseGovernanceError
 pub async fn seal_operational_config(
     caller: Principal,
     value: crate::config::OperationalConfigArgs,
+    expected_governance_operation_id: u64,
 ) -> Result<OperationalConfigSealReceipt, BaseGovernanceError> {
     require_operational_config_seal_caller(caller)?;
     require_operational_config_unsealed()?;
+    require_next_governance_operation_id(expected_governance_operation_id)?;
     value
         .validate_seal_candidate()
         .map_err(|_| BaseGovernanceError::InvalidArgument)?;
@@ -250,11 +252,13 @@ pub async fn seal_operational_config(
     require_operational_config_seal_caller(caller)?;
     require_unchanged_controller_authority(&controller_snapshot).await?;
     require_operational_config_unsealed()?;
+    require_next_governance_operation_id(expected_governance_operation_id)?;
     STORE.with(|store| {
         store
             .borrow_mut()
             .seal_operational_config(
                 &next,
+                expected_governance_operation_id,
                 caller,
                 evidence.attestation.clone(),
                 evidence.finalized_observation,
@@ -265,6 +269,14 @@ pub async fn seal_operational_config(
         lifecycle: production_lifecycle()?,
         activation_attestation: evidence.attestation,
     })
+}
+
+fn require_next_governance_operation_id(expected: u64) -> Result<(), BaseGovernanceError> {
+    let (_, _, observed, _) = governance_lane(storage::GovernanceNonceLane::Governance)?;
+    if expected == u64::MAX || observed != expected {
+        return Err(BaseGovernanceError::InvalidArgument);
+    }
+    Ok(())
 }
 
 pub fn activation_attestation() -> Result<crate::config::ActivationAttestation, BaseGovernanceError>

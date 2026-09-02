@@ -27,12 +27,15 @@ Gate AとBaseのpause配置まではprofileにも同じBootstrap運用値を要�
 
 配置後はproduction installerを単独controllerとして残したまま、Canisterをpause状態で運用設定を一度だけsealする。pre-seal Gate BはGate A lineage、proof、`initial-operational-parameters.json`と導出値を構造検証し、sealだけを認可する。seal後、schedule/executeのprepare wrapperが固定confirmation relayerでFinalized attestationをrefreshし、pause、reserve、live module hash、installer単独controllerを含むfresh live Gate Bを通過した場合だけproduction controllerのprepareへ進む。固定artifactを匿名relay、固定confirmation relayerがconfirmする。24時間後もprepare wrapper内でfresh live Gate Bとcontroller schedule receiptを検証してから、同じ三段階で固定`execute_activation`を実行する。confirm成功だけでは完了扱いにせず、`verify-controller-activation`がFinalized Base結果とCanister状態を束縛したreceiptを発行するまでpauseを維持する。SNS custom functionは初回activationに使用しない。7日計測、keeper drill、monitoring receipt、SNS Root単独controllerへのhandover、SNS同一Wasm upgradeはunpause後のGate Cに限る。任意のunpause commandは受け付けない。
 
+`seal_operational_config`の第2引数は`initial-operational-parameters.json`の`governance_operation_id`である。Canisterはawait前、await後、stable commit内でこの値を次のstable governance operation IDと照合し、不一致または採番不能な最大値ならsealせずBootstrapを維持する。
+
 Gate B前にUIを先行公開する場合は、clean sourceから`production-assets.mjs generate`でasset receiptを作り、review済みGate A release inputsのpre-activation profileを使って`deploy:preactivation:check`を通した後、承認済みの同一入力で`deploy:preactivation`する。このprofileはGate B hash未設定かつdeployment block 0なので、全writeはfail closedになる。Gate B合格後は、検証済みbundleからrenderしたGate-B-bound profileと同じasset receiptを通常production deployへ渡して差し替える。
 
 ```sh
 COMMON=(--phase schedule --bundle evidence/release-id \
   --release-inputs deployments/generated/release-id \
   --receipt evidence/release-id/gate-a-receipt.json \
+  --operational-config-seal-receipt evidence/operational-config-seal-receipt.json \
   --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION)
 ARTIFACT=evidence/activation/schedule-artifact.json
 

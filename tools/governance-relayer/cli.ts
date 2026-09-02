@@ -64,6 +64,7 @@ async function main(): Promise<void> {
       const parametersBytes = await readFile(parametersPath)
       const parsed = JSON.parse(parametersBytes.toString("utf8")) as {
         derived?: Record<string, unknown>
+        governance_operation_id?: unknown
       }
       const derived = parsed.derived
       if (!derived || typeof derived !== "object") {
@@ -77,6 +78,9 @@ async function main(): Promise<void> {
         }
         return BigInt(value)
       }
+      const expectedGovernanceOperationId = parseExpectedGovernanceOperationId(
+        parsed.governance_operation_id,
+      )
       const receipt = unwrap(await actor.seal_operational_config({
         governance_evm_fee: {
           gas_limit_ceiling: natural("gas_limit_ceiling"),
@@ -90,7 +94,7 @@ async function main(): Promise<void> {
         },
         cycles_floor: natural("cycles_floor"),
         settlement_cycle_ceiling: natural("settlement_cycle_ceiling"),
-      }))
+      }, expectedGovernanceOperationId))
       const evidence = {
         schema_version: 1,
         parameters_sha256: createHash("sha256").update(parametersBytes).digest("hex"),
@@ -311,6 +315,19 @@ async function main(): Promise<void> {
     default:
       throw new Error(`Unknown command: ${command}`)
   }
+}
+
+export function parseExpectedGovernanceOperationId(value: unknown): bigint {
+  if ((typeof value !== "string" && typeof value !== "number")
+    || (typeof value === "number" && !Number.isSafeInteger(value))
+    || !/^(0|[1-9][0-9]*)$/.test(String(value))) {
+    throw new Error("Invalid expected governance operation ID")
+  }
+  const operationId = BigInt(value)
+  if (operationId >= 18_446_744_073_709_551_615n) {
+    throw new Error("Expected governance operation ID cannot be allocated")
+  }
+  return operationId
 }
 
 export function storedActivationConfirmationIdentity(value: unknown): {

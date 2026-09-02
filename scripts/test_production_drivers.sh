@@ -480,13 +480,16 @@ grep -q 'verify-controller-activation-authorization' "$TRACE"
 ! grep -q 'prepare-schedule-activation' "$TRACE"
 MISSING_PENDING_ARTIFACT="$T/missing-pending-activation-artifact.json"
 cp "$ACTIVATION_ARTIFACT_FIXTURE.authorization.json" "$MISSING_PENDING_ARTIFACT.authorization.json"
-if env RECOVERY_PENDING_MISSING=true "${COMMON_ACTIVATION_ENV[@]}" \
+: >"$TRACE"
+env RECOVERY_PENDING_MISSING=true "${COMMON_ACTIVATION_ENV[@]}" \
   BRIDGE_ACTIVATION_ARTIFACT="$MISSING_PENDING_ARTIFACT" \
-  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
-  echo "activation resume accepted an authorization without a live pending transaction" >&2
-  exit 1
-fi
-[[ ! -e "$MISSING_PENDING_ARTIFACT" && ! -e "$MISSING_PENDING_ARTIFACT.prepare-receipt.json" ]]
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh"
+grep -q 'recover-activation' "$TRACE"
+grep -q 'proofs proofs' "$TRACE"
+grep -q 'profile verify-live schedule' "$TRACE"
+grep -q 'prepare-schedule-activation' "$TRACE"
+grep -q "node_identity=$CONTROLLER_PEM_FIXTURE" "$TRACE"
+[[ -s "$MISSING_PENDING_ARTIFACT" && -s "$MISSING_PENDING_ARTIFACT.prepare-receipt.json" ]]
 if env CANISTER_CONTROLLER_DRIFT=true "${COMMON_ACTIVATION_ENV[@]}" \
   "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
   echo "activation resume accepted a changed certified controller set" >&2

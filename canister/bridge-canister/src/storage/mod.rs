@@ -5349,6 +5349,7 @@ impl StableStore {
     pub fn seal_operational_config(
         &mut self,
         value: &BridgeInitArgs,
+        expected_governance_operation_id: u64,
         bootstrap_activation_controller: Principal,
         attestation: crate::config::ActivationAttestation,
         finalized_observation: FinalizedObservationRecord,
@@ -5361,6 +5362,11 @@ impl StableStore {
         let previous_progress = self.external_progress.get()?;
         let mut admission = decode::<DepositAdmissionControl>(&previous_admission)?;
         let mut progress = decode::<ExternalProgress>(&previous_progress)?;
+        if expected_governance_operation_id == u64::MAX
+            || admission.next_governance_operation_id != expected_governance_operation_id
+        {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
         match ::bridge_core::kernel::operational_config_seal_decision(
             admission.operational_config_sealed,
             crate::config::OperationalConfigArgs {
@@ -9946,6 +9952,7 @@ mod tests {
         assert!(matches!(
             store.seal_operational_config(
                 &bootstrap,
+                0,
                 Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
@@ -9971,9 +9978,25 @@ mod tests {
             .expect("initialize configured store");
         let revision_before = storage_revision(&store);
 
+        assert!(matches!(
+            store.seal_operational_config(
+                &next,
+                1,
+                Principal::from_slice(&[0x99]),
+                activation_attestation(),
+                activation_finalized_observation(),
+            ),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+        assert_eq!(storage_revision(&store), revision_before);
+        assert!(!store
+            .operational_config_sealed()
+            .expect("operation ID mismatch leaves lifecycle unsealed"));
+
         store
             .seal_operational_config(
                 &next,
+                0,
                 Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
@@ -10001,6 +10024,7 @@ mod tests {
         assert!(matches!(
             store.seal_operational_config(
                 &conflicting,
+                0,
                 Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
@@ -10046,6 +10070,7 @@ mod tests {
         store
             .seal_operational_config(
                 &initial,
+                0,
                 Principal::from_slice(&[0x99]),
                 first.clone(),
                 activation_finalized_observation(),
@@ -10109,6 +10134,7 @@ mod tests {
         assert!(store
             .seal_operational_config(
                 &next,
+                0,
                 Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
@@ -10174,6 +10200,7 @@ mod tests {
                 matches!(
                     store.seal_operational_config(
                         &initial,
+                        0,
                         Principal::from_slice(&[0x99]),
                         mismatched,
                         activation_finalized_observation(),
@@ -10196,6 +10223,7 @@ mod tests {
         store
             .seal_operational_config(
                 &initial,
+                0,
                 Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
@@ -10233,6 +10261,7 @@ mod tests {
         store
             .seal_operational_config(
                 &initial,
+                0,
                 Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),

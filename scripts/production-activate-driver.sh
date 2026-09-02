@@ -183,9 +183,17 @@ case "$BRIDGE_ACTIVATION_STEP" in
     else
       verify_authorization
       unset IC_IDENTITY_PEM
-      "${CLI[@]}" recover-activation --phase "$BRIDGE_ACTIVATION_PHASE" \
-        --authorization-file "$AUTHORIZATION_RECEIPT" \
-        --artifact-file "$BRIDGE_ACTIVATION_ARTIFACT"
+      if ! "${CLI[@]}" recover-activation --phase "$BRIDGE_ACTIVATION_PHASE" \
+          --authorization-file "$AUTHORIZATION_RECEIPT" \
+          --artifact-file "$BRIDGE_ACTIVATION_ARTIFACT"; then
+        # A Prepared record is intentionally absent from the anonymous pending query.
+        # A fresh live gate plus the same controller call resumes it idempotently; if
+        # the first call never reached the Canister, this creates the one allowed record.
+        production_validate_gate gate-b-live "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256"
+        export IC_IDENTITY_PEM="$BRIDGE_PRODUCTION_CONTROLLER_PEM"
+        "${CLI[@]}" "prepare-${BRIDGE_ACTIVATION_PHASE}-activation" \
+          --artifact-file "$BRIDGE_ACTIVATION_ARTIFACT"
+      fi
     fi
     if [[ ! -e "$PREPARE_RECEIPT" ]]; then write_prepare_receipt; else verify_prepare_receipt; fi
     ;;

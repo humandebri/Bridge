@@ -97,7 +97,7 @@ describe("Phase 3 PocketIC saga", () => {
         governance_evm_fee: init.governance_evm_fee,
         cycles_floor: init.cycles_floor,
         settlement_cycle_ceiling: init.settlement_cycle_ceiling,
-      })).toHaveProperty("Ok.lifecycle.OperationalConfigSealed");
+      }, 0n)).toHaveProperty("Ok.lifecycle.OperationalConfigSealed");
     }
     if (activate) await activateBridgeThroughController(
       bridge,
@@ -164,13 +164,17 @@ describe("Phase 3 PocketIC saga", () => {
     };
     for (const caller of [Principal.anonymous(), runtimePrincipal, init.pause_principal]) {
       bridge.actor.setPrincipal(caller);
-      expect(await (bridge.actor as any).seal_operational_config(candidate))
+      expect(await (bridge.actor as any).seal_operational_config(candidate, 0n))
         .toEqual({ Err: { Unauthorized: null } });
     }
     bridge.actor.setPrincipal(controller);
-    expect(await (bridge.actor as any).seal_operational_config(candidate))
+    expect(await (bridge.actor as any).seal_operational_config(candidate, 1n))
+      .toEqual({ Err: { InvalidArgument: null } });
+    expect(await (bridge.actor as any).get_production_lifecycle())
+      .toEqual({ Ok: { Bootstrap: null } });
+    expect(await (bridge.actor as any).seal_operational_config(candidate, 0n))
       .toHaveProperty("Ok.lifecycle.OperationalConfigSealed");
-    expect(await (bridge.actor as any).seal_operational_config(candidate))
+    expect(await (bridge.actor as any).seal_operational_config(candidate, 0n))
       .toEqual({ Err: { Unauthorized: null } });
   }
 
@@ -188,7 +192,7 @@ describe("Phase 3 PocketIC saga", () => {
       governance_evm_fee: init.governance_evm_fee,
       cycles_floor: init.cycles_floor,
       settlement_cycle_ceiling: init.settlement_cycle_ceiling,
-    });
+    }, 0n);
     await pic!.updateCanisterSettings({
       canisterId: bridge.canisterId,
       controllers: [replacementController],
@@ -1943,7 +1947,7 @@ describe("Phase 3 PocketIC saga", () => {
       governance_evm_fee: init.governance_evm_fee,
       cycles_floor: init.cycles_floor,
       settlement_cycle_ceiling: init.settlement_cycle_ceiling,
-    })).toHaveProperty("Ok.lifecycle.OperationalConfigSealed");
+    }, 0n)).toHaveProperty("Ok.lifecycle.OperationalConfigSealed");
     const reinstalledAttestationCalls = initialAttestationCalls + 3n;
     expect(await (evm.actor as any).get_code_call_count()).toBe(reinstalledAttestationCalls);
     bridge.actor.setPrincipal(runtimePrincipal);

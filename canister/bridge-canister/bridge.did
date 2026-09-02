@@ -787,7 +787,7 @@ service : (BridgeInitArgs) -> {
   rotate_fee_recipient : (FeeRecipientConfig) -> (Result_18);
   rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_18);
   schedule_activation : () -> (Result_5);
-  seal_operational_config : (OperationalConfigArgs) -> (Result_23);
+  seal_operational_config : (OperationalConfigArgs, nat64) -> (Result_23);
   start_storage_validation : () -> (Result_3);
   storage_integrity_check : () -> (Result_24) query;
 }

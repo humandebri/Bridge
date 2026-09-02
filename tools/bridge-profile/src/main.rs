@@ -1055,6 +1055,10 @@ struct ActivationReceipt {
 struct DirectActivationArtifact {
     operation_id: String,
     kind: Value,
+    chain_id: String,
+    sender: String,
+    target: String,
+    calldata: String,
     transaction_hash: String,
 }
 
@@ -1823,6 +1827,7 @@ fn derive_initial_operational_parameters(
         || evidence.chain_id != 8_453
         || evidence.gas_estimates.len() < 2
         || evidence.fee_samples.len() < 10
+        || evidence.governance_operation_id == u64::MAX
         || evidence.idle_cycles_burned_per_day == 0
         || evidence.expected_daily_settlements != 1
         || evidence.settlement_cycle_ceiling != 5_000_000_000
@@ -6595,6 +6600,12 @@ fn verify_controller_activation_artifact_binding(
     {
         return Err("fixed activation artifact contains a malformed hash".into());
     }
+    validate_direct_activation_transaction_fields(
+        phase,
+        &bundle.profile,
+        operation_salt,
+        &artifact,
+    )?;
     match (phase, prior_path) {
         ("schedule", None) => {
             let (expected_governance_operation_id, expected_operation_id, expected_salt) =
@@ -6626,6 +6637,42 @@ fn verify_controller_activation_artifact_binding(
         }
         ("execute", None) => return Err("execute requires the controller schedule receipt".into()),
         _ => unreachable!(),
+    }
+    Ok(())
+}
+
+fn validate_direct_activation_transaction_fields(
+    phase: &str,
+    profile: &Profile,
+    operation_salt: &str,
+    artifact: &DirectActivationArtifact,
+) -> Result<(), String> {
+    let action = match phase {
+        "schedule" => "schedule_activation",
+        "execute" => "execute_activation",
+        _ => return Err("activation phase must be schedule or execute".into()),
+    };
+    let salt: [u8; 32] = decode_hex(operation_salt)?
+        .try_into()
+        .map_err(|_| "fixed activation artifact contains a malformed salt")?;
+    let expected_calldata = initial_activation_calldata(
+        action,
+        decode_address(&profile.bridge_contract)?,
+        salt,
+        profile.timelock.minimum_delay_seconds,
+    )?;
+    if artifact.chain_id.parse::<u64>().ok() != Some(profile.chain_id)
+        || !artifact
+            .sender
+            .eq_ignore_ascii_case(&profile.governance_operator)
+        || !artifact
+            .target
+            .eq_ignore_ascii_case(&profile.timelock.address)
+        || !artifact.calldata.eq_ignore_ascii_case(&expected_calldata)
+    {
+        return Err(
+            "controller activation artifact transaction differs from the release profile".into(),
+        );
     }
     Ok(())
 }
@@ -9433,6 +9480,51 @@ mod tests {
     }
 
     #[test]
+    fn controller_activation_artifact_binds_exact_transaction_fields() {
+        let profile = valid_profile();
+        let salt = [0x5a; 32];
+        let mut artifact = DirectActivationArtifact {
+            operation_id: "7".into(),
+            kind: serde_json::json!({
+                "ScheduleActivation": {
+                    "operation_id": format!("0x{}", "11".repeat(32)),
+                    "salt": format!("0x{}", hex(&salt)),
+                }
+            }),
+            chain_id: profile.chain_id.to_string(),
+            sender: profile.governance_operator.clone(),
+            target: profile.timelock.address.clone(),
+            calldata: initial_activation_calldata(
+                "schedule_activation",
+                decode_address(&profile.bridge_contract).unwrap(),
+                salt,
+                profile.timelock.minimum_delay_seconds,
+            )
+            .unwrap(),
+            transaction_hash: format!("0x{}", "22".repeat(32)),
+        };
+        let salt_hex = format!("0x{}", hex(&salt));
+        assert!(validate_direct_activation_transaction_fields(
+            "schedule", &profile, &salt_hex, &artifact,
+        )
+        .is_ok());
+
+        let expected_target = artifact.target.clone();
+        artifact.target = profile.bridge_contract.clone();
+        assert!(validate_direct_activation_transaction_fields(
+            "schedule", &profile, &salt_hex, &artifact,
+        )
+        .is_err());
+        artifact.target = expected_target;
+
+        artifact.calldata = format!("0x{}", "00".repeat(32));
+        assert!(validate_direct_activation_transaction_fields(
+            "schedule", &profile, &salt_hex, &artifact,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn bundle_gate_validates_hashes_and_slo() {
         let root = env::temp_dir().join(format!(
             "bridge-profile-{}-{}",
@@ -9832,7 +9924,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             )
             .unwrap();
         }
-        assert!(derive_initial_operational_parameters(&maximum_operation_id).is_ok());
+        assert!(derive_initial_operational_parameters(&maximum_operation_id).is_err());
         profile.parameters.gas_limit_ceiling = initial_parameters.derived.gas_limit_ceiling;
         profile.parameters.max_fee_per_gas_ceiling =
             initial_parameters.derived.max_fee_per_gas_ceiling;

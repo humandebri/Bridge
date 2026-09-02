@@ -13,6 +13,7 @@ import {
   identityFromPem,
   isActivationArtifact,
   isNonceTooLow,
+  parseExpectedGovernanceOperationId,
   parseOptions,
   selectPendingArtifact,
   selectPendingActivationArtifact,
@@ -22,6 +23,21 @@ import {
   validateCommandOptions,
   waitForFinalized,
 } from "./cli.ts"
+
+test("parses only an allocatable exact governance operation ID", () => {
+  assert.equal(parseExpectedGovernanceOperationId(0), 0n)
+  assert.equal(parseExpectedGovernanceOperationId("9007199254740992"), 9_007_199_254_740_992n)
+  for (const invalid of [
+    9_007_199_254_740_992,
+    "18446744073709551615",
+    -1,
+    "01",
+    1.5,
+    null,
+  ]) {
+    assert.throws(() => parseExpectedGovernanceOperationId(invalid))
+  }
+})
 
 test("uses an anonymous IC actor only for read-only status, recovery, and raw relay commands", () => {
   for (const command of ["status", "relay", "recover-activation"]) {
