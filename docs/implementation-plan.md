@@ -220,8 +220,8 @@ Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みで�
 - production controllerを単独controllerとして保持したまま、固定運用値をsealし、Gate Bと個別承認後に初回schedule／executeを行う。
 - 初回executeのConfirmed完了時に内部bootstrap activation authorityを永久に消費し、外部controller設定を変えなくても以後はGovernance principalだけを認可する。
 - upgrade 前後で未完了のDeposit Authorization、Withdrawal、Governance EVM transaction、Reconciliation Holdが再開できることを、実データ相当のstateで検証する。
-- unpause後に7日・各10件以上の本番計測とGate C証跡を収集する。結果は運用値を自動更新せず、handoverの実施時期も自動決定しない。
-- 別途明示承認された時期にhandoverを実行する場合は、controller一覧をSNS Rootだけにし、開発者identity、fallback identity、NNS Rootを残さない。
+- unpause後に7日・各10件以上の本番計測とGate C証跡を収集する。結果は運用値を自動更新せず、handoverの認可入力または実施時期の自動決定にも使わない。
+- 別途明示承認された時期にhandoverを実行する場合は、初期運用値、seal／schedule／execute receipt、live RuntimeBinding、post-Gate-A upgrade chainをcurrent profile Wasmへ束縛する。送信直前はproduction identity一件だけのcontroller、Activated、Base両flowとIC Depositのunpausedを必須にし、変更前後のmodule、runtime、storage integrity、運用状態のcontinuityを保存する。空stateは要求せず、変更後のcontroller一覧はSNS Rootだけにして開発者identity、fallback identity、NNS Rootを残さない。
 - handover 後の upgrade proposal に添付する成果物（Wasm hash、source revision、Verus 結果、テスト結果、stable schema 互換性）の生成を CI で自動化する。
 - EIP-3009はbSNSの任意連携機能とし、x402 resource serverやfacilitatorとの互換性をBridgeの配置・activation条件に含めない（ADR 0015）。
 - UI 側の要件として、Deposit 前に bSNS では投票と投票報酬を得られないことを明示する（ADR 0002）。UI 実装が別リポジトリの場合は要件として引き渡す。

@@ -16,8 +16,10 @@ Bridge canisterはupgrade可能にする。初回activationと本番計測中は
 ## Consequences
 
 - production identityがcontrollerであること自体は、初回activation後の本番資産受付を禁止しない。受付可否はGate B、Confirmed execute、pause状態と運用limitで決める。
-- unpause後の本番計測はhandover時期を自動決定せず、移管には別の明示承認を必要とする。
-- handover完了条件はcontroller一覧がSNS Rootだけであることとし、開発者identity、fallback identity、NNS Rootを残さない。
+- unpause後の7日・各10件の本番計測と`fee-cycles-measurements.json`はhandoverの認可入力にしない。移管は初期運用値、seal／schedule／execute receipt、live RuntimeBinding、current profile Wasmへ束縛し、別の明示承認を必要とする。
+- handover送信直前はproduction identityだけをcontrollerとし、ActivatedかつBase Deposit／WithdrawalとIC Depositをすべてunpausedにする。完了条件はcontroller一覧がSNS Rootだけであることとし、開発者identity、fallback identity、NNS Rootを残さない。
+- 初回install hashとlive moduleを同一視せず、post-Gate-A policy transitionと通常upgrade receiptからcurrent profile Wasmまでのchainを検証する。
+- controller変更前後のmodule、RuntimeBinding、storage integrity、activation／pause状態、record／audit countをraw evidenceへ保存してcontinuityを検証する。運用中stateの空化は要求しない。
 - handover後のupgradeはSNS proposalにWasm hash、source revision、Verus結果、テスト結果、stable schema互換性を添付する。
 - Rust stateはstable structuresへ直接保存し、全stateを`pre_upgrade`でserializeする設計を避ける。
 - upgrade前後で未完了Deposit、Withdrawal、EVM transaction、Reconciliation Holdを再開できることを検証する。

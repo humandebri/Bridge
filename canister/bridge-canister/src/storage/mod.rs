@@ -5444,7 +5444,13 @@ impl StableStore {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
         let admin = self.admin_state()?;
-        if !admin.deposits_paused {
+        let expected_paused = self.bootstrap_activation_controller()?.is_some();
+        if !::bridge_core::kernel::activation_base_preflight_matches(
+            true,
+            admin.deposits_paused,
+            admin.deposits_paused,
+            expected_paused,
+        ) {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
         let current = decode::<Option<ImmutableBridgeConfig>>(&previous_config)?
@@ -10059,7 +10065,8 @@ mod tests {
 
     #[test]
     #[serial]
-    fn activation_attestation_refresh_requires_sealed_paused_state_and_replaces_only_observation() {
+    fn activation_attestation_refresh_requires_lifecycle_pause_consistency_and_replaces_only_observation(
+    ) {
         let memory = VectorMemory::default();
         let initial = config();
         let mut store = StableStore::init_configured(memory.clone(), &initial)
@@ -10083,8 +10090,8 @@ mod tests {
             )
             .expect("seal operational config");
         let mut refreshed = first;
-        refreshed.finalized_block_number += 1;
-        refreshed.observed_at_ns += 1;
+        refreshed.finalized_block_number = 1_000;
+        refreshed.observed_at_ns = 1_000;
         store
             .refresh_activation_attestation(
                 refreshed.clone(),
@@ -10115,6 +10122,73 @@ mod tests {
 
         drop(store);
         let reopened = StableStore::reopen(memory).expect("reopen refreshed store");
+        assert_eq!(
+            reopened
+                .activation_attestation()
+                .expect("reopen attestation"),
+            Some(refreshed)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn activated_unpaused_state_can_refresh_activation_attestation() {
+        let memory = VectorMemory::default();
+        let initial = config();
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize configured store");
+        store
+            .seal_operational_config(
+                &initial,
+                0,
+                Principal::from_slice(&[0x99]),
+                activation_attestation(),
+                activation_finalized_observation(),
+            )
+            .expect("seal operational config");
+        let mut admission = store.deposit_admission().expect("sealed admission");
+        admission.bootstrap_activation_controller = None;
+        store
+            .set_deposit_admission(&admission)
+            .expect("consume bootstrap authority");
+        let mut admin = store.admin_state().expect("paused admin");
+        admin.deposits_paused = false;
+        store.set_admin_state(&admin).expect("resume deposits");
+
+        let mut refreshed = activation_attestation();
+        refreshed.deposits_paused = false;
+        refreshed.withdrawals_paused = false;
+        refreshed.finalized_block_number += 1;
+        refreshed.observed_at_ns += 1;
+        store
+            .refresh_activation_attestation(
+                refreshed.clone(),
+                FinalizedObservationRecord {
+                    block_number: refreshed.finalized_block_number,
+                    observed_at_ns: refreshed.observed_at_ns,
+                    ..activation_finalized_observation()
+                },
+            )
+            .expect("refresh active attestation");
+        assert_eq!(
+            store.activation_attestation().expect("read attestation"),
+            Some(refreshed.clone())
+        );
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen active refreshed store");
+        assert!(
+            !reopened
+                .admin_state()
+                .expect("active admin")
+                .deposits_paused
+        );
+        assert_eq!(
+            reopened
+                .bootstrap_activation_controller()
+                .expect("consumed bootstrap authority"),
+            None
+        );
         assert_eq!(
             reopened
                 .activation_attestation()

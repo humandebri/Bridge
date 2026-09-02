@@ -2035,6 +2035,23 @@ describe("Phase 3 PocketIC saga", () => {
       .toHaveProperty("Ok.deposits_paused", true);
   });
 
+  async function refreshes_activation_evidence_after_activation_without_pausing_traffic() {
+    const { bridge, confirmationRelayerPrincipal } = await setup(true);
+    await pic!.advanceTime(31_000);
+    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
+    const refreshed: any = await (bridge.actor as any).refresh_activation_attestation();
+    expect(refreshed).toHaveProperty("Ok.deposits_paused", false);
+    expect(refreshed).toHaveProperty("Ok.withdrawals_paused", false);
+    expect((await (bridge.actor as any).get_bridge_status()).deposits_paused).toBe(false);
+    expect(await (bridge.actor as any).get_production_lifecycle())
+      .toEqual({ Ok: { Activated: null } });
+  }
+
+  it(
+    "refreshes activation evidence after activation without pausing traffic",
+    refreshes_activation_evidence_after_activation_without_pausing_traffic,
+  );
+
   it.each([
     { mode: { FinalizedUnavailable: null }, error: "RpcUnavailable", tag: 0x9c },
     { mode: { CanonicalInconsistent: null }, error: "RpcInconsistent", tag: 0x9f },

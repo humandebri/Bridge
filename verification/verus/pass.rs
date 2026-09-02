@@ -547,14 +547,17 @@ proof fn withdrawal_admission_boundary_requires_well_formed_nonzero_ge_minimum(
             <==> well_formed_len && minimum_nonzero && observed_ge_minimum
 {}
 
-proof fn activation_preflight_requires_signer_match_and_paused_state(
+proof fn activation_preflight_requires_signer_and_expected_pause_state(
     signer_matches: bool,
     deposits_paused: bool,
     withdrawals_paused: bool,
+    expected_paused: bool,
 )
     ensures kernel::activation_base_preflight_matches_spec(
-        signer_matches, deposits_paused, withdrawals_paused)
-            <==> signer_matches && deposits_paused && withdrawals_paused
+        signer_matches, deposits_paused, withdrawals_paused, expected_paused)
+            <==> signer_matches
+                && deposits_paused == expected_paused
+                && withdrawals_paused == expected_paused
 {}
 
 proof fn activation_postcondition_requires_unpaused_state(

@@ -950,7 +950,7 @@ struct ProviderIndependenceReceipt {
     governance_query_response_sha256: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
 struct ControllerHandover {
@@ -966,7 +966,42 @@ struct ControllerHandover {
     response_stdout_hex: String,
     response_stderr_hex: String,
     response_sha256: String,
+    before_controllers: Vec<String>,
+    before_module_sha256: String,
+    pre_send_controllers: Vec<String>,
+    pre_send_module_sha256: String,
     final_controllers: Vec<String>,
+    after_module_sha256: String,
+    before_management_status_response_json_hex: String,
+    before_management_status_response_sha256: String,
+    pre_send_management_status_response_json_hex: String,
+    pre_send_management_status_response_sha256: String,
+    after_management_status_response_json_hex: String,
+    after_management_status_response_sha256: String,
+    before_bridge_status_response_json_hex: String,
+    before_bridge_status_response_sha256: String,
+    after_bridge_status_response_json_hex: String,
+    after_bridge_status_response_sha256: String,
+    before_lifecycle_response_json_hex: String,
+    before_lifecycle_response_sha256: String,
+    after_lifecycle_response_json_hex: String,
+    after_lifecycle_response_sha256: String,
+    before_runtime_binding_response_json_hex: String,
+    before_runtime_binding_response_sha256: String,
+    after_runtime_binding_response_json_hex: String,
+    after_runtime_binding_response_sha256: String,
+    before_storage_integrity_response_json_hex: String,
+    before_storage_integrity_response_sha256: String,
+    after_storage_integrity_response_json_hex: String,
+    after_storage_integrity_response_sha256: String,
+    before_activation_status_response_json_hex: String,
+    before_activation_status_response_sha256: String,
+    after_activation_status_response_json_hex: String,
+    after_activation_status_response_sha256: String,
+    before_activation_attestation_response_json_hex: String,
+    before_activation_attestation_response_sha256: String,
+    after_activation_attestation_response_json_hex: String,
+    after_activation_attestation_response_sha256: String,
     cycles_balance: u128,
     freezing_threshold_seconds: u64,
     idle_cycles_burned_per_day: u128,
@@ -3417,54 +3452,30 @@ fn validate_production_handover_receipt_files(
 
 fn validate_production_handover_candidate_files(
     bundle_path: &Path,
-    final_profile_path: &Path,
-    measurements_path: &Path,
-    gate_a_receipt_path: &Path,
-    install_receipt_path: &Path,
-    deployment_binding_path: &Path,
-) -> Result<
-    (
-        ValidatedBundle,
-        GateAReceipt,
-        ProductionCanisterInstallReceipt,
-        Profile,
-    ),
-    String,
-> {
-    validate_production_handover_receipt_files(
-        bundle_path,
-        gate_a_receipt_path,
-        install_receipt_path,
-        deployment_binding_path,
+    seal_receipt_path: &Path,
+    schedule_receipt_path: &Path,
+    execute_receipt_path: &Path,
+) -> Result<(ValidatedBundle, GateAReceipt, ControllerActivationReceipt), String> {
+    let bundle = validate_bundle(bundle_path, true)?;
+    if bundle.manifest.schema_version != 4 {
+        return Err("controller handover requires the current Gate B bundle".into());
+    }
+    let seal_receipt_sha256 = validate_operational_config_seal_receipt(
+        &bundle,
+        seal_receipt_path,
+        SealReceiptLiveContext::ExecuteFinalization,
     )?;
-    let bundle = validate_bundle(bundle_path, false)?;
-    let gate_a_receipt: GateAReceipt = read_json(gate_a_receipt_path)?;
-    let install_receipt: ProductionCanisterInstallReceipt = read_json(install_receipt_path)?;
-    let final_profile: Profile = read_json(final_profile_path)?;
-    validate_profile(&final_profile, true)?;
-    let measurements: Evidence = read_json(measurements_path)?;
-    let now = now_unix()?;
-    validate_measurement_time(&measurements, now, now)?;
-    validate_gate_b_operational_parameters(&final_profile, &measurements)?;
-    if final_profile.deployment_block != gate_a_receipt.bridge_deployment_block_number
-        || profile_uses_production_bootstrap_operational_config(&final_profile)
-    {
-        return Err(
-            "handover final profile must bind the deployment block and derived operational values"
-                .into(),
-        );
-    }
-    let mut normalized = final_profile.clone();
-    set_production_bootstrap_operational_config(&mut normalized);
-    if !hex(&Sha256::digest(canonical_bytes(&normalized)?))
-        .eq_ignore_ascii_case(&gate_a_receipt.post_deploy_profile_sha256)
-    {
-        return Err(
-            "handover final profile differs from Gate A outside the deferred operational values"
-                .into(),
-        );
-    }
-    Ok((bundle, gate_a_receipt, install_receipt, final_profile))
+    let schedule_receipt: ControllerActivationReceipt = read_json(schedule_receipt_path)?;
+    validate_controller_schedule_receipt(&bundle, &schedule_receipt, &seal_receipt_sha256)?;
+    let execute_receipt: ControllerActivationReceipt = read_json(execute_receipt_path)?;
+    validate_controller_execute_receipt(
+        &bundle,
+        &execute_receipt,
+        &seal_receipt_sha256,
+        schedule_receipt_path,
+    )?;
+    let gate_a_receipt: GateAReceipt = read_json(&bundle.root.join("gate-a-receipt.json"))?;
+    Ok((bundle, gate_a_receipt, execute_receipt))
 }
 
 fn decode_candid_hex<T: CandidType + for<'de> Deserialize<'de>>(value: &str) -> Result<T, String> {
@@ -4180,6 +4191,195 @@ fn validate_activation_attestation_time(
     Ok(())
 }
 
+fn handover_json_evidence(raw_hex: &str, expected_sha256: &str) -> Result<Value, String> {
+    let raw = decode_hex(raw_hex)?;
+    if !valid_sha256(expected_sha256)
+        || !hex(&Sha256::digest(&raw)).eq_ignore_ascii_case(expected_sha256)
+    {
+        return Err("controller handover snapshot digest mismatch".into());
+    }
+    serde_json::from_slice(&raw).map_err(|error| error.to_string())
+}
+
+fn single_json_key<'a>(value: &'a Value, key: &str) -> Result<&'a Value, String> {
+    let mut found = Vec::new();
+    collect_json_key(value, key, &mut found);
+    if found.len() != 1 {
+        return Err(format!(
+            "controller handover snapshot must contain one {key}"
+        ));
+    }
+    Ok(found[0])
+}
+
+fn json_u128(value: &Value, key: &str) -> Result<u128, String> {
+    let value = single_json_key(value, key)?;
+    value
+        .as_u64()
+        .map(u128::from)
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|value| value.replace('_', "").parse().ok())
+        })
+        .ok_or_else(|| format!("controller handover {key} is not an integer"))
+}
+
+fn validate_controller_handover_continuity(
+    handover: &ControllerHandover,
+    profile: &Profile,
+    installer: &str,
+) -> Result<(), String> {
+    let before_management = handover_json_evidence(
+        &handover.before_management_status_response_json_hex,
+        &handover.before_management_status_response_sha256,
+    )?;
+    let pre_send_management = handover_json_evidence(
+        &handover.pre_send_management_status_response_json_hex,
+        &handover.pre_send_management_status_response_sha256,
+    )?;
+    let after_management = handover_json_evidence(
+        &handover.after_management_status_response_json_hex,
+        &handover.after_management_status_response_sha256,
+    )?;
+    let management = |value: &Value| -> Result<(Vec<String>, String), String> {
+        let mut controllers = Vec::new();
+        collect_json_key(value, "controllers", &mut controllers);
+        let controllers = controllers
+            .first()
+            .and_then(|value| value.as_array())
+            .ok_or("controller handover management controllers are malformed")?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "controller handover controller is malformed".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut modules = Vec::new();
+        collect_json_key(value, "module_hash", &mut modules);
+        if modules.is_empty() {
+            collect_json_key(value, "module", &mut modules);
+        }
+        let module = modules
+            .first()
+            .and_then(|value| management_module_sha256(value))
+            .ok_or("controller handover management module is malformed")?;
+        Ok((controllers, module))
+    };
+    let (before_controllers, before_module) = management(&before_management)?;
+    let (pre_send_controllers, pre_send_module) = management(&pre_send_management)?;
+    let (after_controllers, after_module) = management(&after_management)?;
+    if before_controllers != [installer]
+        || pre_send_controllers != [installer]
+        || after_controllers != [KINIC_ROOT]
+        || handover.executing_principal != installer
+        || handover.before_controllers != before_controllers
+        || handover.pre_send_controllers != pre_send_controllers
+        || handover.final_controllers != after_controllers
+        || !before_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || pre_send_module != before_module
+        || after_module != before_module
+        || !handover
+            .before_module_sha256
+            .eq_ignore_ascii_case(&before_module)
+        || !handover
+            .pre_send_module_sha256
+            .eq_ignore_ascii_case(&pre_send_module)
+        || !handover
+            .after_module_sha256
+            .eq_ignore_ascii_case(&after_module)
+    {
+        return Err("controller handover management continuity is invalid".into());
+    }
+
+    let before_bridge = handover_json_evidence(
+        &handover.before_bridge_status_response_json_hex,
+        &handover.before_bridge_status_response_sha256,
+    )?;
+    let after_bridge = handover_json_evidence(
+        &handover.after_bridge_status_response_json_hex,
+        &handover.after_bridge_status_response_sha256,
+    )?;
+    let before_lifecycle = handover_json_evidence(
+        &handover.before_lifecycle_response_json_hex,
+        &handover.before_lifecycle_response_sha256,
+    )?;
+    let after_lifecycle = handover_json_evidence(
+        &handover.after_lifecycle_response_json_hex,
+        &handover.after_lifecycle_response_sha256,
+    )?;
+    let before_runtime = handover_json_evidence(
+        &handover.before_runtime_binding_response_json_hex,
+        &handover.before_runtime_binding_response_sha256,
+    )?;
+    let after_runtime = handover_json_evidence(
+        &handover.after_runtime_binding_response_json_hex,
+        &handover.after_runtime_binding_response_sha256,
+    )?;
+    let before_integrity = handover_json_evidence(
+        &handover.before_storage_integrity_response_json_hex,
+        &handover.before_storage_integrity_response_sha256,
+    )?;
+    let after_integrity = handover_json_evidence(
+        &handover.after_storage_integrity_response_json_hex,
+        &handover.after_storage_integrity_response_sha256,
+    )?;
+    let before_activation = handover_json_evidence(
+        &handover.before_activation_status_response_json_hex,
+        &handover.before_activation_status_response_sha256,
+    )?;
+    let after_activation = handover_json_evidence(
+        &handover.after_activation_status_response_json_hex,
+        &handover.after_activation_status_response_sha256,
+    )?;
+    let before_attestation = handover_json_evidence(
+        &handover.before_activation_attestation_response_json_hex,
+        &handover.before_activation_attestation_response_sha256,
+    )?;
+    let after_attestation = handover_json_evidence(
+        &handover.after_activation_attestation_response_json_hex,
+        &handover.after_activation_attestation_response_sha256,
+    )?;
+    let contains = |value: &Value, expected: &str| {
+        serde_json::to_string(value)
+            .is_ok_and(|value| value.to_ascii_lowercase().contains(expected))
+    };
+    if before_runtime != after_runtime
+        || before_lifecycle != after_lifecycle
+        || before_activation != after_activation
+        || !contains(&before_lifecycle, "activated")
+        || single_json_key(&before_integrity, "Ok")? != &Value::String("ok".into())
+        || single_json_key(&after_integrity, "Ok")? != &Value::String("ok".into())
+        || single_json_key(&before_bridge, "deposits_paused")? != &Value::Bool(false)
+        || single_json_key(&after_bridge, "deposits_paused")? != &Value::Bool(false)
+        || single_json_key(&before_activation, "deposits_paused")? != &Value::Bool(false)
+        || single_json_key(&after_activation, "deposits_paused")? != &Value::Bool(false)
+        || single_json_key(&before_attestation, "deposits_paused")? != &Value::Bool(false)
+        || single_json_key(&before_attestation, "withdrawals_paused")? != &Value::Bool(false)
+        || single_json_key(&after_attestation, "deposits_paused")? != &Value::Bool(false)
+        || single_json_key(&after_attestation, "withdrawals_paused")? != &Value::Bool(false)
+        || single_json_key(&before_bridge, "sufficient")? != &Value::Bool(true)
+        || single_json_key(&after_bridge, "sufficient")? != &Value::Bool(true)
+        || json_u128(&before_bridge, "mint_authorization_ttl_seconds")?
+            != json_u128(&after_bridge, "mint_authorization_ttl_seconds")?
+        || json_u128(&before_bridge, "mint_authorization_epoch")?
+            != json_u128(&after_bridge, "mint_authorization_epoch")?
+        || json_u128(&after_bridge, "deposits")? < json_u128(&before_bridge, "deposits")?
+        || json_u128(&after_bridge, "withdrawals")? < json_u128(&before_bridge, "withdrawals")?
+        || json_u128(&after_bridge, "retained_audit_events")?
+            .checked_add(json_u128(&after_bridge, "pruned_audit_events")?)
+            .ok_or("controller handover audit sequence overflow")?
+            < json_u128(&before_bridge, "retained_audit_events")?
+                .checked_add(json_u128(&before_bridge, "pruned_audit_events")?)
+                .ok_or("controller handover audit sequence overflow")?
+    {
+        return Err("controller handover operational continuity is invalid".into());
+    }
+    Ok(())
+}
+
 #[allow(dead_code)]
 fn validate_plan006_evidence(
     root: &Path,
@@ -4189,6 +4389,12 @@ fn validate_plan006_evidence(
 ) -> Result<(), String> {
     let handover: ControllerHandover = read_json(&root.join("controller-handover.json"))?;
     validate_evidence_time(handover.observed_at_unix, manifest.created_at_unix, now)?;
+    let gate_a_receipt: GateAReceipt = read_json(&root.join("gate-a-receipt.json"))?;
+    validate_controller_handover_continuity(
+        &handover,
+        profile,
+        &gate_a_receipt.canister_install.installer_principal,
+    )?;
     let required_prefix = ["icp", "canister", "settings", "update", "bridge-canister"];
     let add_controller_positions = handover
         .command_argv
@@ -4225,7 +4431,7 @@ fn validate_plan006_evidence(
         .request_id
         .trim_start_matches("0x")
         .to_ascii_lowercase();
-    if handover.schema_version != 2
+    if handover.schema_version != 3
         || handover.stage != "complete"
         || handover.bridge_canister_id != profile.bridge_canister_id
         || handover.sns_root_canister_id != KINIC_ROOT
@@ -4546,6 +4752,116 @@ fn validate_post_gate_a_policy_transition(
         &current_wasm,
         &submission_bytes,
     )?;
+    if !before_module.eq_ignore_ascii_case(&gate_a_profile.bridge_canister_wasm_sha256)
+        || !after_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || !hex(&Sha256::digest(&current_wasm))
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+    {
+        return Err("post-Gate-A Wasm upgrade chain does not reach the current profile".into());
+    }
+    if transition.schema_version != 2
+        || transition.reason != "activate-before-production-measurements"
+        || !transition
+            .gate_a_manifest_sha256
+            .eq_ignore_ascii_case(&receipt.gate_a_manifest_sha256)
+        || !transition
+            .gate_a_receipt_sha256
+            .eq_ignore_ascii_case(&hex(&Sha256::digest(&receipt_bytes)))
+        || transition.from_source_revision != receipt.source_revision
+        || !transition
+            .from_source_tree_sha256
+            .eq_ignore_ascii_case(&receipt.source_tree_sha256)
+        || transition.to_source_revision != manifest.source_revision
+        || !transition
+            .to_source_tree_sha256
+            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
+        || transition.bridge_canister_id != profile.bridge_canister_id
+        || !transition
+            .bridge_contract
+            .eq_ignore_ascii_case(&profile.bridge_contract)
+        || !transition
+            .bsns_contract
+            .eq_ignore_ascii_case(&profile.bsns_contract)
+        || !transition
+            .timelock_contract
+            .eq_ignore_ascii_case(&profile.timelock.address)
+        || !transition
+            .production_canister_upgrade_receipt_sha256
+            .eq_ignore_ascii_case(&hex(&Sha256::digest(&upgrade_bytes)))
+        || !transition
+            .bridge_runtime_bytecode_sha256
+            .eq_ignore_ascii_case(&receipt.bridge_runtime_bytecode_sha256)
+        || !transition
+            .bridge_runtime_bytecode_sha256
+            .eq_ignore_ascii_case(&profile.bridge_runtime_bytecode_sha256)
+        || !transition
+            .bsns_runtime_bytecode_sha256
+            .eq_ignore_ascii_case(&profile.bsns_runtime_bytecode_sha256)
+        || !transition
+            .bsns_runtime_template_sha256
+            .eq_ignore_ascii_case(&profile.bsns_runtime_template_sha256)
+        || !transition
+            .bridge_deployment_transaction_hash
+            .eq_ignore_ascii_case(&receipt.bridge_deployment_transaction_hash)
+        || !transition
+            .timelock_deployment_transaction_hash
+            .eq_ignore_ascii_case(&receipt.timelock_deployment_transaction_hash)
+    {
+        return Err("post-Gate-A policy transition identity binding is incomplete".into());
+    }
+    if upgrade.schema_version != 1
+        || upgrade.kind != "production-controller-bootstrap-upgrade"
+        || upgrade.source_revision != manifest.source_revision
+        || !upgrade
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
+        || upgrade.bridge_canister_id != profile.bridge_canister_id
+        || upgrade.install_mode != "upgrade"
+        || upgrade.executing_principal != *installer
+        || upgrade.executed_at_unix > upgrade.verified_at_unix
+        || upgrade.recovered != upgrade.recovered_at_unix.is_some()
+        || upgrade.recovered_at_unix.is_some_and(|value| {
+            value < upgrade.executed_at_unix || value > upgrade.verified_at_unix
+        })
+        || upgrade.verified_at_unix > transition.observed_at_unix
+        || upgrade.before_controllers != before_controllers
+        || upgrade.after_controllers != after_controllers
+        || upgrade.before_canister_version != before_canister_version
+        || upgrade.after_canister_version != after_canister_version
+        || before_canister_version.checked_add(1) != Some(after_canister_version)
+        || before_controllers != expected_controllers
+        || after_controllers != expected_controllers
+        || !upgrade
+            .before_module_sha256
+            .eq_ignore_ascii_case(&before_module)
+        || !upgrade
+            .after_module_sha256
+            .eq_ignore_ascii_case(&after_module)
+    {
+        return Err("production upgrade management metadata is incomplete".into());
+    }
+    if upgrade.before_schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || upgrade.after_schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || before_runtime.schema_version != upgrade.before_schema_version
+        || after_runtime.schema_version != upgrade.after_schema_version
+        || live_runtime_binding_from_view(&before_runtime)
+            != receipt.canister_install.runtime_binding
+        || live_runtime_binding_from_view(&after_runtime)
+            != receipt.canister_install.runtime_binding
+    {
+        return Err("production upgrade schema or RuntimeBinding continuity is incomplete".into());
+    }
+    if upgrade.before_lifecycle != "Bootstrap"
+        || upgrade.after_lifecycle != "Bootstrap"
+        || !upgrade.before_deposits_paused
+        || !upgrade.after_deposits_paused
+        || !before_status.deposits_paused
+        || !after_status.deposits_paused
+        || !upgrade.before_storage_validation_complete
+        || !upgrade.after_storage_validation_complete
+    {
+        return Err("production upgrade lifecycle or pause continuity is incomplete".into());
+    }
     if transition.schema_version != 2
         || transition.reason != "activate-before-production-measurements"
         || !transition
@@ -5336,29 +5652,36 @@ fn verify_production_canister_predeploy(
 struct ProductionHandoverCanisterObservation<'a> {
     lifecycle: &'a ProductionLifecycleView,
     attestation: Option<&'a ActivationAttestationView>,
+    activation_status: &'a ActivationStatusView,
     runtime: &'a RuntimeBindingView,
     status: &'a BridgeStatusLiveView,
+    storage_integrity: &'a StorageIntegrityResultView,
     controllers: &'a [Principal],
     module_hash: &'a [u8],
 }
 
+struct ProductionHandoverActivationBinding<'a> {
+    governance_operation_id: u64,
+    finalized_block_number: u64,
+    timelock_operation_id: &'a str,
+    transaction_hash: &'a str,
+}
+
 fn validate_production_handover_canister_state(
     profile: &Profile,
-    install_receipt: &ProductionCanisterInstallReceipt,
+    installer: Principal,
     gate_a_receipt: &GateAReceipt,
+    activation: &ProductionHandoverActivationBinding<'_>,
     observation: &ProductionHandoverCanisterObservation<'_>,
     manifest_created_at_unix: u64,
     now: u64,
 ) -> Result<(), String> {
-    if !matches!(
-        observation.lifecycle,
-        ProductionLifecycleView::OperationalConfigSealed
-    ) {
-        return Err("production Canister must be OperationalConfigSealed before handover".into());
+    if !matches!(observation.lifecycle, ProductionLifecycleView::Activated) {
+        return Err("production Canister must be Activated before handover".into());
     }
-    validate_production_canister_management_state(
+    validate_current_profile_management_snapshot(
         profile,
-        install_receipt,
+        installer,
         observation.controllers,
         observation.module_hash,
     )?;
@@ -5378,11 +5701,39 @@ fn validate_production_handover_canister_state(
     {
         return Err("production Canister runtime code binding differs from the profile".into());
     }
-    validate_empty_paused_production_status(observation.status)?;
-    let attestation = observation.attestation.ok_or(
-        "authenticated activation attestation is unavailable after operational configuration seal",
-    )?;
-    validate_activation_attestation(
+    if observation.status.deposits_paused || !observation.status.reserve.sufficient {
+        return Err("production Canister must be active and reserved for handover".into());
+    }
+    if !matches!(
+        observation.storage_integrity,
+        StorageIntegrityResultView::Ok(value) if value == "ok"
+    ) {
+        return Err("production Canister storage integrity is not ok for handover".into());
+    }
+    let last = observation
+        .activation_status
+        .last_confirmed_activation
+        .as_ref()
+        .ok_or("active handover has no confirmed execute activation")?;
+    if observation.activation_status.deposits_paused
+        || observation
+            .activation_status
+            .pending_timelock_operation
+            .is_some()
+        || last.phase != "execute"
+        || last.governance_operation_id != activation.governance_operation_id
+        || last.receipt_block_number != activation.finalized_block_number
+        || !format!("0x{}", hex(&last.timelock_operation_id))
+            .eq_ignore_ascii_case(activation.timelock_operation_id)
+        || !format!("0x{}", hex(&last.transaction_hash))
+            .eq_ignore_ascii_case(activation.transaction_hash)
+    {
+        return Err("live activation state differs from the execute receipt".into());
+    }
+    let attestation = observation
+        .attestation
+        .ok_or("authenticated activation attestation is unavailable for active handover")?;
+    validate_activation_attestation_with_pause(
         profile,
         attestation,
         manifest_created_at_unix,
@@ -5390,73 +5741,91 @@ fn validate_production_handover_canister_state(
             .bridge_deployment_block_number
             .max(gate_a_receipt.timelock_deployment_block_number),
         now,
+        Some(false),
     )
 }
 
 fn verify_production_canister_handover(
     bundle_path: &Path,
-    final_profile_path: &Path,
-    measurements_path: &Path,
-    gate_a_receipt_path: &Path,
-    install_receipt_path: &Path,
-    deployment_binding_path: &Path,
+    seal_receipt_path: &Path,
+    schedule_receipt_path: &Path,
+    execute_receipt_path: &Path,
 ) -> Result<(), String> {
-    let (bundle, gate_a_receipt, install_receipt, final_profile) =
-        validate_production_handover_candidate_files(
-            bundle_path,
-            final_profile_path,
-            measurements_path,
-            gate_a_receipt_path,
-            install_receipt_path,
-            deployment_binding_path,
-        )?;
-    let bridge = Principal::from_text(&final_profile.bridge_canister_id)
+    let (bundle, gate_a_receipt, execute_receipt) = validate_production_handover_candidate_files(
+        bundle_path,
+        seal_receipt_path,
+        schedule_receipt_path,
+        execute_receipt_path,
+    )?;
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
-    let agent = mainnet_agent(&final_profile.ic_host, false)?;
-    let (lifecycle_raw, attestation_raw, runtime_raw, status_raw, controllers, module_hash) =
-        async_runtime()?.block_on(async {
-            let empty = Encode!().map_err(|error| error.to_string())?;
-            let lifecycle = agent
-                .query(&bridge, "get_production_lifecycle")
-                .with_arg(empty.clone())
-                .call_with_verification()
-                .await
-                .map_err(|error| error.to_string())?;
-            let attestation = agent
-                .query(&bridge, "get_activation_attestation")
-                .with_arg(empty)
-                .call_with_verification()
-                .await
-                .map_err(|error| error.to_string())?;
-            let runtime = agent
-                .query(&bridge, "get_runtime_binding")
-                .with_arg(Encode!().map_err(|error| error.to_string())?)
-                .call_with_verification()
-                .await
-                .map_err(|error| error.to_string())?;
-            let status = agent
-                .query(&bridge, "get_bridge_status")
-                .with_arg(Encode!().map_err(|error| error.to_string())?)
-                .call_with_verification()
-                .await
-                .map_err(|error| error.to_string())?;
-            let controllers = agent
-                .read_state_canister_controllers(bridge)
-                .await
-                .map_err(|error| error.to_string())?;
-            let module_hash = agent
-                .read_state_canister_module_hash(bridge)
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok::<_, String>((
-                lifecycle,
-                attestation,
-                runtime,
-                status,
-                controllers,
-                module_hash,
-            ))
-        })?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let (
+        lifecycle_raw,
+        attestation_raw,
+        activation_status_raw,
+        runtime_raw,
+        status_raw,
+        storage_integrity_raw,
+        controllers,
+        module_hash,
+    ) = async_runtime()?.block_on(async {
+        let empty = Encode!().map_err(|error| error.to_string())?;
+        let lifecycle = agent
+            .query(&bridge, "get_production_lifecycle")
+            .with_arg(empty.clone())
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let attestation = agent
+            .query(&bridge, "get_activation_attestation")
+            .with_arg(empty)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let activation_status = agent
+            .query(&bridge, "get_activation_status")
+            .with_arg(Encode!().map_err(|error| error.to_string())?)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let runtime = agent
+            .query(&bridge, "get_runtime_binding")
+            .with_arg(Encode!().map_err(|error| error.to_string())?)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let status = agent
+            .query(&bridge, "get_bridge_status")
+            .with_arg(Encode!().map_err(|error| error.to_string())?)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let storage_integrity = agent
+            .query(&bridge, "storage_integrity_check")
+            .with_arg(Encode!().map_err(|error| error.to_string())?)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let controllers = agent
+            .read_state_canister_controllers(bridge)
+            .await
+            .map_err(|error| error.to_string())?;
+        let module_hash = agent
+            .read_state_canister_module_hash(bridge)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((
+            lifecycle,
+            attestation,
+            activation_status,
+            runtime,
+            status,
+            storage_integrity,
+            controllers,
+            module_hash,
+        ))
+    })?;
     let lifecycle = match Decode!(&lifecycle_raw, ProductionLifecycleResultView)
         .map_err(|error| error.to_string())?
     {
@@ -5471,27 +5840,53 @@ fn verify_production_canister_handover(
         ActivationAttestationResultView::Ok(value) => Some(value),
         ActivationAttestationResultView::Err(_) => None,
     };
+    let activation_status = match Decode!(&activation_status_raw, ActivationStatusResultView)
+        .map_err(|error| error.to_string())?
+    {
+        ActivationStatusResultView::Ok(value) => value,
+        ActivationStatusResultView::Err(_) => {
+            return Err("authenticated activation status is unavailable".into())
+        }
+    };
     let runtime = Decode!(&runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
     let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
+    let storage_integrity = Decode!(&storage_integrity_raw, StorageIntegrityResultView)
+        .map_err(|error| error.to_string())?;
     let observation = ProductionHandoverCanisterObservation {
         lifecycle: &lifecycle,
         attestation: attestation.as_deref(),
+        activation_status: &activation_status,
         runtime: &runtime,
         status: &status,
+        storage_integrity: &storage_integrity,
         controllers: &controllers,
         module_hash: &module_hash,
     };
+    let activation = ProductionHandoverActivationBinding {
+        governance_operation_id: execute_receipt
+            .governance_operation_id
+            .parse::<u64>()
+            .map_err(|_| "invalid execute governance operation ID")?,
+        finalized_block_number: execute_receipt
+            .finalized_block_number
+            .parse::<u64>()
+            .map_err(|_| "invalid execute Finalized block")?,
+        timelock_operation_id: &execute_receipt.timelock_operation_id,
+        transaction_hash: &execute_receipt.transaction_hash,
+    };
+    let installer = gate_b_controller(&bundle)?;
     validate_production_handover_canister_state(
-        &final_profile,
-        &install_receipt,
+        &bundle.profile,
+        installer,
         &gate_a_receipt,
+        &activation,
         &observation,
         bundle.manifest.created_at_unix,
         now_unix()?,
     )?;
     println!(
         "production_canister_handover=verified canister={}",
-        final_profile.bridge_canister_id
+        bundle.profile.bridge_canister_id
     );
     Ok(())
 }
@@ -5621,6 +6016,24 @@ fn validate_activation_attestation(
     minimum_finalized_block: u64,
     now: u64,
 ) -> Result<(), String> {
+    validate_activation_attestation_with_pause(
+        profile,
+        attestation,
+        manifest_created_at_unix,
+        minimum_finalized_block,
+        now,
+        Some(true),
+    )
+}
+
+fn validate_activation_attestation_with_pause(
+    profile: &Profile,
+    attestation: &ActivationAttestationView,
+    manifest_created_at_unix: u64,
+    minimum_finalized_block: u64,
+    now: u64,
+    expected_paused: Option<bool>,
+) -> Result<(), String> {
     validate_activation_attestation_time(
         attestation.observed_at_ns,
         manifest_created_at_unix,
@@ -5637,8 +6050,9 @@ fn validate_activation_attestation(
         || attestation.finalized_block_hash.len() != 32
         || attestation.bridge_signer != expected_signer
         || attestation.bridge_runtime_sha256 != expected_runtime
-        || !attestation.deposits_paused
-        || !attestation.withdrawals_paused
+        || expected_paused.is_some_and(|paused| {
+            attestation.deposits_paused != paused || attestation.withdrawals_paused != paused
+        })
         || attestation.bridge_timelock != expected_timelock
         || attestation.runtime_administrator != expected_runtime_administrator
         || attestation.timelock_admin != expected_timelock
@@ -5820,8 +6234,22 @@ fn validate_gate_b_management_snapshot(
     module_hash: &[u8],
 ) -> Result<(), String> {
     let installer = gate_b_controller(bundle)?;
+    validate_current_profile_management_snapshot(
+        &bundle.profile,
+        installer,
+        controllers,
+        module_hash,
+    )
+}
+
+fn validate_current_profile_management_snapshot(
+    profile: &Profile,
+    installer: Principal,
+    controllers: &[Principal],
+    module_hash: &[u8],
+) -> Result<(), String> {
     if controllers != [installer]
-        || !hex(module_hash).eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+        || !hex(module_hash).eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
     {
         return Err("Gate B requires the production identity as sole controller".into());
     }
@@ -6312,7 +6740,13 @@ fn validate_operational_config_seal_receipt(
         let ActivationAttestationResultView::Ok(live_attestation) = live_attestation else {
             return Err("live activation attestation is unavailable for seal recovery".into());
         };
-        validate_activation_attestation(
+        let expected_paused = match live_context {
+            SealReceiptLiveContext::PendingResume
+            | SealReceiptLiveContext::ScheduleFinalization => true,
+            SealReceiptLiveContext::ExecuteFinalization => false,
+            SealReceiptLiveContext::PrePrepare => unreachable!(),
+        };
+        validate_activation_attestation_with_pause(
             &bundle.profile,
             &live_attestation,
             bundle.manifest.created_at_unix,
@@ -6320,6 +6754,7 @@ fn validate_operational_config_seal_receipt(
                 .bridge_deployment_block_number
                 .max(gate_a.timelock_deployment_block_number),
             now_unix()?,
+            Some(expected_paused),
         )?;
         let live_expected_digest = expected_operational_config_sha256(
             &bundle.profile,
@@ -7374,6 +7809,124 @@ fn validate_controller_schedule_receipt(
     Ok((governance_operation_id, finalized_block))
 }
 
+fn validate_controller_execute_receipt(
+    bundle: &ValidatedBundle,
+    receipt: &ControllerActivationReceipt,
+    expected_seal_receipt_sha256: &str,
+    schedule_receipt_path: &Path,
+) -> Result<(u64, u64), String> {
+    let installer = gate_b_controller(bundle)?;
+    let schedule_bytes = fs::read(schedule_receipt_path).map_err(|error| error.to_string())?;
+    let schedule_receipt_sha256 = hex(&Sha256::digest(&schedule_bytes));
+    let schedule: ControllerActivationReceipt =
+        serde_json::from_slice(&schedule_bytes).map_err(|error| error.to_string())?;
+    let (schedule_governance_operation_id, _) =
+        validate_controller_schedule_receipt(bundle, &schedule, expected_seal_receipt_sha256)?;
+    let authorization_bytes = decode_hex(&receipt.authorization_receipt_hex)?;
+    let authorization: ControllerActivationAuthorizationReceipt =
+        serde_json::from_slice(&authorization_bytes).map_err(|error| error.to_string())?;
+    let prepare_receipt_bytes = decode_hex(&receipt.prepare_receipt_hex)?;
+    let prepare_receipt: ControllerActivationPrepareReceipt =
+        serde_json::from_slice(&prepare_receipt_bytes).map_err(|error| error.to_string())?;
+    let governance_operation_id = receipt
+        .governance_operation_id
+        .parse::<u64>()
+        .map_err(|_| "invalid execute governance operation ID")?;
+    let finalized_block = receipt
+        .finalized_block_number
+        .parse::<u64>()
+        .map_err(|_| "invalid execute Finalized block")?;
+    let now = now_unix()?;
+    if receipt.schema_version != 1
+        || receipt.phase != "execute"
+        || receipt.release_id != bundle.manifest.release_id
+        || receipt.source_revision != bundle.manifest.source_revision
+        || !receipt
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
+        || !receipt
+            .bridge_canister_wasm_sha256
+            .eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+        || !receipt
+            .gate_b_manifest_sha256
+            .eq_ignore_ascii_case(&bundle.manifest_sha256)
+        || receipt.controller_principal != installer.to_text()
+        || receipt.certified_controller_set != [installer.to_text()]
+        || receipt.deposits_paused
+        || receipt.prior_schedule_receipt_sha256.as_deref()
+            != Some(schedule_receipt_sha256.as_str())
+        || governance_operation_id <= schedule_governance_operation_id
+        || finalized_block == 0
+        || !receipt
+            .timelock_operation_id
+            .eq_ignore_ascii_case(&schedule.timelock_operation_id)
+        || !receipt
+            .operation_salt
+            .eq_ignore_ascii_case(&schedule.operation_salt)
+        || !valid_hash32(&receipt.transaction_hash)
+        || !valid_sha256(&receipt.artifact_sha256)
+        || !valid_sha256(&receipt.authorization_receipt_sha256)
+        || !hex(&Sha256::digest(&authorization_bytes))
+            .eq_ignore_ascii_case(&receipt.authorization_receipt_sha256)
+        || validate_controller_activation_authorization(
+            "execute",
+            bundle,
+            &bundle.manifest_sha256,
+            expected_seal_receipt_sha256,
+            &authorization,
+        )
+        .is_err()
+        || !valid_sha256(&receipt.prepare_receipt_sha256)
+        || !hex(&Sha256::digest(&prepare_receipt_bytes))
+            .eq_ignore_ascii_case(&receipt.prepare_receipt_sha256)
+        || !controller_activation_prepare_fields_match(
+            &prepare_receipt,
+            "execute",
+            &bundle.manifest_sha256,
+            &receipt.artifact_sha256,
+            &receipt.authorization_receipt_sha256,
+        )
+        || validate_controller_activation_timeline(
+            bundle.manifest.created_at_unix,
+            authorization.authorized_at_unix,
+            prepare_receipt.bound_at_unix,
+            receipt.confirmed_at_unix,
+            receipt.verified_at_unix,
+            now,
+        )
+        .is_err()
+        || !activation_raw_digest_matches(
+            &receipt.activation_status_response_hex,
+            &receipt.activation_status_response_sha256,
+        )?
+    {
+        return Err("controller execute receipt is not bound to this Gate B release".into());
+    }
+    let raw = decode_hex(&receipt.activation_status_response_hex)?;
+    let ActivationStatusResultView::Ok(status) =
+        Decode!(&raw, ActivationStatusResultView).map_err(|error| error.to_string())?
+    else {
+        return Err("controller execute receipt contains an error response".into());
+    };
+    let last = status
+        .last_confirmed_activation
+        .as_ref()
+        .ok_or("controller execute receipt has no confirmation")?;
+    if status.deposits_paused
+        || status.pending_timelock_operation.is_some()
+        || last.phase != "execute"
+        || last.governance_operation_id != governance_operation_id
+        || last.receipt_block_number != finalized_block
+        || !format!("0x{}", hex(&last.timelock_operation_id))
+            .eq_ignore_ascii_case(&receipt.timelock_operation_id)
+        || !format!("0x{}", hex(&last.transaction_hash))
+            .eq_ignore_ascii_case(&receipt.transaction_hash)
+    {
+        return Err("controller execute receipt response disagrees with its fields".into());
+    }
+    Ok((governance_operation_id, finalized_block))
+}
+
 fn gate_b_initial_activation_binding(
     bundle: &ValidatedBundle,
 ) -> Result<(u64, [u8; 32], [u8; 32]), String> {
@@ -8280,24 +8833,20 @@ fn run() -> Result<(), String> {
         Some("verify-production-canister-predeploy") if args.len() == 4 => {
             verify_production_canister_predeploy(Path::new(&args[2]), Path::new(&args[3]))?;
         }
-        Some("validate-production-handover-candidate") if args.len() == 8 => {
+        Some("validate-production-handover-candidate") if args.len() == 6 => {
             validate_production_handover_candidate_files(
                 Path::new(&args[2]),
                 Path::new(&args[3]),
                 Path::new(&args[4]),
                 Path::new(&args[5]),
-                Path::new(&args[6]),
-                Path::new(&args[7]),
             )?;
         }
-        Some("verify-production-canister-handover") if args.len() == 8 => {
+        Some("verify-production-canister-handover") if args.len() == 6 => {
             verify_production_canister_handover(
                 Path::new(&args[2]),
                 Path::new(&args[3]),
                 Path::new(&args[4]),
                 Path::new(&args[5]),
-                Path::new(&args[6]),
-                Path::new(&args[7]),
             )?;
         }
         Some("storage-validation-complete") if args.len() == 3 => {
@@ -8564,7 +9113,7 @@ fn run() -> Result<(), String> {
             )?;
             println!("{}", submission.request_id);
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | validate-production-handover-candidate <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <schedule|execute> <bundle-dir> | reserve-operational-config-seal <bundle-dir> <gate-b-sha256> <reservation.json> | write-operational-config-seal-receipt <bundle-dir> <reservation.json> <attempt.json|-> <receipt.json> | authorize-controller-activation <schedule|execute> <bundle-dir> <gate-b-sha256> <seal-receipt.json> <authorization.json> | verify-controller-activation-authorization[-fresh] <schedule|execute> <bundle-dir> <gate-b-sha256> <seal-receipt.json> <authorization.json> | verify-controller-activation <schedule|execute> <bundle-dir> <artifact.json> <seal-receipt.json> <authorization.json> <prepare-receipt.json> <confirmation.json> <prior-schedule-receipt.json|-> <receipt.json> | verify-controller-schedule-receipt-live <bundle-dir> <seal-receipt.json> <controller-schedule-receipt.json> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json> | submit-production-canister-upgrade <ic-host> <canister> <expected-principal> <controller.pem> <wasm> <submission.json>".into()),
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | validate-production-handover-candidate <gate-b-bundle-dir> <seal-receipt.json> <schedule-receipt.json> <execute-receipt.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-b-bundle-dir> <seal-receipt.json> <schedule-receipt.json> <execute-receipt.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <schedule|execute> <bundle-dir> | reserve-operational-config-seal <bundle-dir> <gate-b-sha256> <reservation.json> | write-operational-config-seal-receipt <bundle-dir> <reservation.json> <attempt.json|-> <receipt.json> | authorize-controller-activation <schedule|execute> <bundle-dir> <gate-b-sha256> <seal-receipt.json> <authorization.json> | verify-controller-activation-authorization[-fresh] <schedule|execute> <bundle-dir> <gate-b-sha256> <seal-receipt.json> <authorization.json> | verify-controller-activation <schedule|execute> <bundle-dir> <artifact.json> <seal-receipt.json> <authorization.json> <prepare-receipt.json> <confirmation.json> <prior-schedule-receipt.json|-> <receipt.json> | verify-controller-schedule-receipt-live <bundle-dir> <seal-receipt.json> <controller-schedule-receipt.json> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json> | submit-production-canister-upgrade <ic-host> <canister> <expected-principal> <controller.pem> <wasm> <submission.json>".into()),
     }
     Ok(())
 }
@@ -9282,19 +9831,19 @@ mod tests {
     fn matching_handover_status() -> BridgeStatusLiveView {
         BridgeStatusLiveView {
             reserve: ReserveStatusView { sufficient: true },
-            deposits_paused: true,
+            deposits_paused: false,
             mint_authorization_ttl_seconds: 900,
             mint_authorization_epoch: 7,
             counts: ProductionStatusCountsView {
-                deposits: 0,
-                withdrawals: 0,
-                reconciliation_holds: 0,
-                pending_ledger_operations: 0,
-                reserved_deposit_mint_amount: 0,
-                reserved_deposit_mint_operations: 0,
-                retained_audit_events: 0,
-                pruned_audit_events: 0,
-                retained_deposit_index_entries: 0,
+                deposits: 2,
+                withdrawals: 3,
+                reconciliation_holds: 1,
+                pending_ledger_operations: 2,
+                reserved_deposit_mint_amount: 50,
+                reserved_deposit_mint_operations: 1,
+                retained_audit_events: 8,
+                pruned_audit_events: 5,
+                retained_deposit_index_entries: 2,
             },
         }
     }
@@ -9354,18 +9903,45 @@ mod tests {
     }
 
     #[test]
-    fn production_handover_requires_sealed_fresh_post_deployment_attestation() {
+    fn production_handover_requires_active_integral_state_and_fresh_attestation() {
         let profile = valid_profile();
         assert!(profile.rpc_providers.is_empty());
         let install_receipt = production_canister_receipt(&profile);
-        let gate_a_receipt = handover_gate_a_receipt(&profile, install_receipt.clone());
-        let controllers = [Principal::from_text(&install_receipt.installer_principal).unwrap()];
-        let module_hash = decode_hex(&install_receipt.module_sha256).unwrap();
+        let mut gate_a_receipt = handover_gate_a_receipt(&profile, install_receipt.clone());
+        gate_a_receipt.bridge_canister_wasm_sha256 = "6".repeat(64);
+        gate_a_receipt.canister_install.module_sha256 = "6".repeat(64);
+        let installer = Principal::from_text(&install_receipt.installer_principal).unwrap();
+        let controllers = [installer];
+        let module_hash = decode_hex(&profile.bridge_canister_wasm_sha256).unwrap();
         let created = 1_000_000;
         let now = created + 600;
-        let attestation = matching_activation_attestation(&profile, now, 101);
+        let mut attestation = matching_activation_attestation(&profile, now, 101);
+        attestation.deposits_paused = false;
+        attestation.withdrawals_paused = false;
         let status = matching_handover_status();
         let runtime = matching_handover_runtime(&profile, &status);
+        let storage_integrity = StorageIntegrityResultView::Ok("ok".into());
+        let activation_status = ActivationStatusView {
+            deposits_paused: false,
+            pending_timelock_operation: None,
+            last_confirmed_activation: Some(ActivationConfirmationStatusView {
+                phase: "execute".into(),
+                governance_operation_id: 8,
+                timelock_operation_id: vec![0x51; 32],
+                transaction_hash: vec![0x52; 32],
+                receipt_block_number: 102,
+                generation: 0,
+                signed_at_ns: 123,
+            }),
+        };
+        let timelock_operation_id = format!("0x{}", "51".repeat(32));
+        let transaction_hash = format!("0x{}", "52".repeat(32));
+        let activation = ProductionHandoverActivationBinding {
+            governance_operation_id: 8,
+            finalized_block_number: 102,
+            timelock_operation_id: &timelock_operation_id,
+            transaction_hash: &transaction_hash,
+        };
         let validate = |lifecycle: &ProductionLifecycleView,
                         attestation: Option<&ActivationAttestationView>,
                         controllers: &[Principal],
@@ -9373,22 +9949,25 @@ mod tests {
             let observation = ProductionHandoverCanisterObservation {
                 lifecycle,
                 attestation,
+                activation_status: &activation_status,
                 runtime: &runtime,
                 status: &status,
+                storage_integrity: &storage_integrity,
                 controllers,
                 module_hash,
             };
             validate_production_handover_canister_state(
                 &profile,
-                &install_receipt,
+                installer,
                 &gate_a_receipt,
+                &activation,
                 &observation,
                 created,
                 now,
             )
         };
         assert!(validate(
-            &ProductionLifecycleView::OperationalConfigSealed,
+            &ProductionLifecycleView::Activated,
             Some(&attestation),
             &controllers,
             &module_hash,
@@ -9403,6 +9982,13 @@ mod tests {
         .is_err());
         assert!(validate(
             &ProductionLifecycleView::OperationalConfigSealed,
+            Some(&attestation),
+            &controllers,
+            &module_hash,
+        )
+        .is_err());
+        assert!(validate(
+            &ProductionLifecycleView::Activated,
             None,
             &controllers,
             &module_hash,
@@ -9415,7 +10001,7 @@ mod tests {
             101,
         );
         assert!(validate(
-            &ProductionLifecycleView::OperationalConfigSealed,
+            &ProductionLifecycleView::Activated,
             Some(&stale),
             &controllers,
             &module_hash,
@@ -9424,7 +10010,7 @@ mod tests {
         stale.observed_at_ns = now * 1_000_000_000;
         stale.finalized_block_number = 100;
         assert!(validate(
-            &ProductionLifecycleView::OperationalConfigSealed,
+            &ProductionLifecycleView::Activated,
             Some(&stale),
             &controllers,
             &module_hash,
@@ -9434,15 +10020,42 @@ mod tests {
         let mut profile_drift = attestation;
         profile_drift.chain_id = 84532;
         assert!(validate(
-            &ProductionLifecycleView::OperationalConfigSealed,
+            &ProductionLifecycleView::Activated,
             Some(&profile_drift),
+            &controllers,
+            &module_hash,
+        )
+        .is_err());
+        let initial_install_module =
+            decode_hex(&gate_a_receipt.bridge_canister_wasm_sha256).unwrap();
+        assert!(validate(
+            &ProductionLifecycleView::Activated,
+            Some(&matching_activation_attestation(&profile, now, 101)),
+            &controllers,
+            &initial_install_module,
+        )
+        .is_err());
+        let mut base_deposit_paused = matching_activation_attestation(&profile, now, 101);
+        base_deposit_paused.deposits_paused = true;
+        assert!(validate(
+            &ProductionLifecycleView::Activated,
+            Some(&base_deposit_paused),
+            &controllers,
+            &module_hash,
+        )
+        .is_err());
+        let mut base_withdrawal_paused = matching_activation_attestation(&profile, now, 101);
+        base_withdrawal_paused.withdrawals_paused = true;
+        assert!(validate(
+            &ProductionLifecycleView::Activated,
+            Some(&base_withdrawal_paused),
             &controllers,
             &module_hash,
         )
         .is_err());
         let extra_controllers = [controllers[0], Principal::anonymous()];
         assert!(validate(
-            &ProductionLifecycleView::OperationalConfigSealed,
+            &ProductionLifecycleView::Activated,
             Some(&matching_activation_attestation(&profile, now, 101)),
             &extra_controllers,
             &module_hash,
@@ -9451,14 +10064,14 @@ mod tests {
         let mut drifted_module = module_hash.clone();
         drifted_module[0] ^= 1;
         assert!(validate(
-            &ProductionLifecycleView::OperationalConfigSealed,
+            &ProductionLifecycleView::Activated,
             Some(&matching_activation_attestation(&profile, now, 101)),
             &controllers,
             &drifted_module,
         )
         .is_err());
 
-        let sealed_lifecycle = ProductionLifecycleView::OperationalConfigSealed;
+        let active_lifecycle = ProductionLifecycleView::Activated;
         let validate_runtime =
             |candidate_profile: &Profile,
              candidate_runtime: &RuntimeBindingView,
@@ -9466,17 +10079,20 @@ mod tests {
                 let candidate_attestation =
                     matching_activation_attestation(candidate_profile, now, 101);
                 let observation = ProductionHandoverCanisterObservation {
-                    lifecycle: &sealed_lifecycle,
+                    lifecycle: &active_lifecycle,
                     attestation: Some(&candidate_attestation),
+                    activation_status: &activation_status,
                     runtime: candidate_runtime,
                     status: candidate_status,
+                    storage_integrity: &storage_integrity,
                     controllers: &controllers,
                     module_hash: &module_hash,
                 };
                 validate_production_handover_canister_state(
                     candidate_profile,
-                    &install_receipt,
+                    installer,
                     &gate_a_receipt,
+                    &activation,
                     &observation,
                     created,
                     now,
@@ -9497,18 +10113,40 @@ mod tests {
         let mut runtime_drift = matching_handover_runtime(&profile, &status);
         runtime_drift.rpc_provider_urls_sha256[0] ^= 1;
         assert!(validate_runtime(&profile, &runtime_drift, &status).is_err());
+        let mut schema_drift = matching_handover_runtime(&profile, &status);
+        schema_drift.schema_version -= 1;
+        assert!(validate_runtime(&profile, &schema_drift, &status).is_err());
         let mut runtime_code_drift = matching_handover_runtime(&profile, &status);
         runtime_code_drift.expected_bridge_runtime_sha256[0] ^= 1;
         assert!(validate_runtime(&profile, &runtime_code_drift, &status).is_err());
-        let mut unpaused = matching_handover_status();
-        unpaused.deposits_paused = false;
-        assert!(validate_runtime(&profile, &runtime, &unpaused).is_err());
         let mut insufficient_reserve = matching_handover_status();
         insufficient_reserve.reserve.sufficient = false;
         assert!(validate_runtime(&profile, &runtime, &insufficient_reserve).is_err());
-        let mut nonempty = matching_handover_status();
-        nonempty.counts.deposits = 1;
-        assert!(validate_runtime(&profile, &runtime, &nonempty).is_err());
+        let mut paused = matching_handover_status();
+        paused.deposits_paused = true;
+        assert!(validate_runtime(&profile, &runtime, &paused).is_err());
+
+        let failed_integrity = StorageIntegrityResultView::Err(Reserved);
+        let observation = ProductionHandoverCanisterObservation {
+            lifecycle: &active_lifecycle,
+            attestation: Some(&matching_activation_attestation(&profile, now, 101)),
+            activation_status: &activation_status,
+            runtime: &runtime,
+            status: &status,
+            storage_integrity: &failed_integrity,
+            controllers: &controllers,
+            module_hash: &module_hash,
+        };
+        assert!(validate_production_handover_canister_state(
+            &profile,
+            installer,
+            &gate_a_receipt,
+            &activation,
+            &observation,
+            created,
+            now,
+        )
+        .is_err());
     }
 
     #[test]
@@ -10061,8 +10699,8 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
 "###;
         let generated = Command::new("python3")
             .arg("-c")
-            .arg(python)
-            .arg(test_helper)
+            .arg(&python)
+            .arg(&test_helper)
             .arg(root.join("rpc-e2e.json"))
             .arg(&profile.expected_bridge_signer)
             .arg(&profile.bridge_canister_wasm_sha256)
@@ -10070,7 +10708,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .status()
             .unwrap();
         assert!(generated.success());
-        let drill = MonitorDrill {
+        let mut drill = MonitorDrill {
             schema_version: 4,
             rehearsal_id: "rehearsal-1".into(),
             source_revision: "a".repeat(40),
@@ -10124,13 +10762,42 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 audit_raw_hex: hex(&[0x13; 32]),
             },
         };
+        let installer = test_principal(31);
+        let json_bytes = |value: Value| serde_json::to_vec(&value).unwrap();
+        let before_management = json_bytes(serde_json::json!({
+            "controllers": [installer],
+            "module_hash": profile.bridge_canister_wasm_sha256.clone(),
+        }));
+        let after_management = json_bytes(serde_json::json!({
+            "controllers": [KINIC_ROOT],
+            "module_hash": profile.bridge_canister_wasm_sha256.clone(),
+        }));
+        let bridge_status = json_bytes(serde_json::json!({
+            "reserve": {"sufficient": true},
+            "deposits_paused": false,
+            "mint_authorization_ttl_seconds": 900,
+            "mint_authorization_epoch": 7,
+            "counts": {"deposits": 2,"withdrawals": 3,"retained_audit_events": 8,"pruned_audit_events": 5}
+        }));
+        let lifecycle = json_bytes(serde_json::json!({"Ok":{"Activated":null}}));
+        let runtime = json_bytes(serde_json::json!({
+            "schema_version": profile.canister_schema_version,
+            "operational_config_sha256": "7".repeat(64)
+        }));
+        let integrity = json_bytes(serde_json::json!({"Ok":"ok"}));
+        let activation_status = json_bytes(serde_json::json!({
+            "Ok":{"deposits_paused":false,"pending_timelock_operation":[],"last_confirmed_activation":[{"phase":"execute"}]}
+        }));
+        let attestation = json_bytes(serde_json::json!({
+            "Ok":{"deposits_paused":false,"withdrawals_paused":false}
+        }));
         let handover = ControllerHandover {
-            schema_version: 2,
+            schema_version: 3,
             stage: "complete".into(),
             observed_at_unix: now - 95,
             bridge_canister_id: profile.bridge_canister_id.clone(),
             sns_root_canister_id: profile.root_canister_id.clone(),
-            executing_principal: test_principal(31),
+            executing_principal: installer.clone(),
             command_argv: vec![
                 "icp",
                 "canister",
@@ -10156,12 +10823,77 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             response_sha256: hex(&Sha256::digest(
                 format!("request_id={}\n", "3".repeat(64)).as_bytes(),
             )),
+            before_controllers: vec![installer.clone()],
+            before_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            pre_send_controllers: vec![installer.clone()],
+            pre_send_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
             final_controllers: vec![profile.root_canister_id.clone()],
+            after_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            before_management_status_response_json_hex: hex(&before_management),
+            before_management_status_response_sha256: hex(&Sha256::digest(&before_management)),
+            pre_send_management_status_response_json_hex: hex(&before_management),
+            pre_send_management_status_response_sha256: hex(&Sha256::digest(&before_management)),
+            after_management_status_response_json_hex: hex(&after_management),
+            after_management_status_response_sha256: hex(&Sha256::digest(&after_management)),
+            before_bridge_status_response_json_hex: hex(&bridge_status),
+            before_bridge_status_response_sha256: hex(&Sha256::digest(&bridge_status)),
+            after_bridge_status_response_json_hex: hex(&bridge_status),
+            after_bridge_status_response_sha256: hex(&Sha256::digest(&bridge_status)),
+            before_lifecycle_response_json_hex: hex(&lifecycle),
+            before_lifecycle_response_sha256: hex(&Sha256::digest(&lifecycle)),
+            after_lifecycle_response_json_hex: hex(&lifecycle),
+            after_lifecycle_response_sha256: hex(&Sha256::digest(&lifecycle)),
+            before_runtime_binding_response_json_hex: hex(&runtime),
+            before_runtime_binding_response_sha256: hex(&Sha256::digest(&runtime)),
+            after_runtime_binding_response_json_hex: hex(&runtime),
+            after_runtime_binding_response_sha256: hex(&Sha256::digest(&runtime)),
+            before_storage_integrity_response_json_hex: hex(&integrity),
+            before_storage_integrity_response_sha256: hex(&Sha256::digest(&integrity)),
+            after_storage_integrity_response_json_hex: hex(&integrity),
+            after_storage_integrity_response_sha256: hex(&Sha256::digest(&integrity)),
+            before_activation_status_response_json_hex: hex(&activation_status),
+            before_activation_status_response_sha256: hex(&Sha256::digest(&activation_status)),
+            after_activation_status_response_json_hex: hex(&activation_status),
+            after_activation_status_response_sha256: hex(&Sha256::digest(&activation_status)),
+            before_activation_attestation_response_json_hex: hex(&attestation),
+            before_activation_attestation_response_sha256: hex(&Sha256::digest(&attestation)),
+            after_activation_attestation_response_json_hex: hex(&attestation),
+            after_activation_attestation_response_sha256: hex(&Sha256::digest(&attestation)),
             cycles_balance: 10_000_000,
             freezing_threshold_seconds: 86_400,
             idle_cycles_burned_per_day: 1_000,
             required_freezing_cycles: 1_000,
         };
+        assert!(validate_controller_handover_continuity(&handover, &profile, &installer).is_ok());
+        let mut runtime_drift = handover.clone();
+        let after_runtime = json_bytes(serde_json::json!({
+            "schema_version": profile.canister_schema_version,
+            "operational_config_sha256": "8".repeat(64)
+        }));
+        runtime_drift.after_runtime_binding_response_json_hex = hex(&after_runtime);
+        runtime_drift.after_runtime_binding_response_sha256 = hex(&Sha256::digest(&after_runtime));
+        assert!(
+            validate_controller_handover_continuity(&runtime_drift, &profile, &installer).is_err()
+        );
+        let mut base_pause_drift = handover.clone();
+        let paused_attestation = json_bytes(serde_json::json!({
+            "Ok":{"deposits_paused":false,"withdrawals_paused":true}
+        }));
+        base_pause_drift.after_activation_attestation_response_json_hex = hex(&paused_attestation);
+        base_pause_drift.after_activation_attestation_response_sha256 =
+            hex(&Sha256::digest(&paused_attestation));
+        assert!(
+            validate_controller_handover_continuity(&base_pause_drift, &profile, &installer)
+                .is_err()
+        );
+        let mut controller_race = handover.clone();
+        controller_race
+            .pre_send_controllers
+            .push(test_principal(32));
+        assert!(
+            validate_controller_handover_continuity(&controller_race, &profile, &installer)
+                .is_err()
+        );
         let upgrade = SnsUpgrade {
             schema_version: 3,
             observed_at_unix: now - 90,
@@ -10670,6 +11402,40 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             &forged_binding,
         )
         .is_err());
+        let gate_a_profile: Profile = serde_json::from_slice(&planned_profile).unwrap();
+        let upgraded_wasm = b"wasm-upgrade";
+        profile.bridge_canister_wasm_sha256 = hex(&Sha256::digest(upgraded_wasm));
+        fs::write(root.join("bridge-canister.wasm"), upgraded_wasm).unwrap();
+        artifacts
+            .iter_mut()
+            .find(|artifact| artifact.path == "bridge-canister.wasm")
+            .unwrap()
+            .sha256 = profile.bridge_canister_wasm_sha256.clone();
+        drill.bridge_canister_wasm_sha256 = profile.bridge_canister_wasm_sha256.clone();
+        let drill_bytes = serde_json::to_vec(&drill).unwrap();
+        fs::write(root.join("monitor-drill.json"), &drill_bytes).unwrap();
+        artifacts
+            .iter_mut()
+            .find(|artifact| artifact.path == "monitor-drill.json")
+            .unwrap()
+            .sha256 = hex(&Sha256::digest(&drill_bytes));
+        let regenerated = Command::new("python3")
+            .arg("-c")
+            .arg(&python)
+            .arg(&test_helper)
+            .arg(root.join("rpc-e2e.json"))
+            .arg(&profile.expected_bridge_signer)
+            .arg(&profile.bridge_canister_wasm_sha256)
+            .arg(&profile.bridge_runtime_bytecode_sha256)
+            .status()
+            .unwrap();
+        assert!(regenerated.success());
+        let rpc_bytes = fs::read(root.join("rpc-e2e.json")).unwrap();
+        artifacts
+            .iter_mut()
+            .find(|artifact| artifact.path == "rpc-e2e.json")
+            .unwrap()
+            .sha256 = hex(&Sha256::digest(&rpc_bytes));
         profile.parameters = final_operational_parameters;
         let final_profile_bytes = serde_json::to_vec(&profile).unwrap();
         fs::write(root.join("profile.json"), &final_profile_bytes).unwrap();
@@ -10680,7 +11446,6 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .sha256 = hex(&Sha256::digest(&final_profile_bytes));
         let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
         fs::write(root.join("gate-a-receipt.json"), &receipt_bytes).unwrap();
-        let gate_a_profile: Profile = serde_json::from_slice(&planned_profile).unwrap();
         let gate_a_profile_bytes = canonical_bytes(&gate_a_profile).unwrap();
         fs::write(root.join("gate-a-profile.json"), &gate_a_profile_bytes).unwrap();
         initial_parameters.profile_sha256 = hex(&canonical_sha256(&profile).unwrap());
@@ -10700,8 +11465,8 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             bridge_canister_id: profile.bridge_canister_id.clone(),
             install_mode: "upgrade".into(),
             executing_principal: receipt.canister_install.installer_principal.clone(),
-            executed_at_unix: now - 22,
-            verified_at_unix: now - 21,
+            executed_at_unix: manifest_created,
+            verified_at_unix: manifest_created,
             recovered: false,
             recovered_at_unix: None,
             before_controllers: vec![receipt.canister_install.installer_principal.clone()],
@@ -10762,7 +11527,9 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             response_stderr_hex: String::new(),
             response_stderr_sha256: hex(&Sha256::digest([])),
         };
-        let status_raw = Encode!(&matching_handover_status()).unwrap();
+        let mut upgrade_status = matching_handover_status();
+        upgrade_status.deposits_paused = true;
+        let status_raw = Encode!(&upgrade_status).unwrap();
         let lifecycle_raw = Encode!(&ProductionLifecycleResultView::Ok(
             ProductionLifecycleView::Bootstrap
         ))
@@ -10776,7 +11543,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         let before_management_json = serde_json::to_vec(&serde_json::json!({
             "status": {
                 "settings": {"controllers": [receipt.canister_install.installer_principal.clone()]},
-                "module_hash": profile.bridge_canister_wasm_sha256.clone(),
+                "module_hash": gate_a_profile.bridge_canister_wasm_sha256.clone(),
                 "canister_version": 10,
             }
         }))
@@ -10832,7 +11599,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             *after_digest = hex(&Sha256::digest(raw));
         }
         production_upgrade.before_public_state_sha256 = production_upgrade_public_state_sha256(
-            &matching_handover_status(),
+            &upgrade_status,
             &[
                 &production_upgrade.before_lifecycle_response_hex,
                 &production_upgrade.before_runtime_binding_response_hex,
@@ -10943,7 +11710,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         let transition = PostGateAPolicyTransition {
             schema_version: 2,
             reason: "activate-before-production-measurements".into(),
-            observed_at_unix: now - 20,
+            observed_at_unix: manifest_created,
             gate_a_manifest_sha256: receipt.gate_a_manifest_sha256.clone(),
             gate_a_receipt_sha256: hex(&Sha256::digest(&receipt_bytes)),
             from_source_revision: receipt.source_revision.clone(),
@@ -10991,7 +11758,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         });
         artifacts.push(ArtifactDigest {
             path: "post-gate-a-policy-transition.json".into(),
-            sha256: hex(&Sha256::digest(transition_bytes)),
+            sha256: hex(&Sha256::digest(&transition_bytes)),
         });
         artifacts.retain(|artifact| GATE_B_ARTIFACTS.contains(&artifact.path.as_str()));
         let manifest = ReleaseManifest {
@@ -11047,6 +11814,22 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .find(|artifact| artifact.path == "production-canister-upgrade-receipt.json")
             .unwrap()
             .sha256 = hex(&Sha256::digest(&reinstall_upgrade_bytes));
+        let mut reinstall_transition: PostGateAPolicyTransition =
+            serde_json::from_slice(&transition_bytes).unwrap();
+        reinstall_transition.production_canister_upgrade_receipt_sha256 =
+            hex(&Sha256::digest(&reinstall_upgrade_bytes));
+        let reinstall_transition_bytes = serde_json::to_vec(&reinstall_transition).unwrap();
+        fs::write(
+            root.join("post-gate-a-policy-transition.json"),
+            &reinstall_transition_bytes,
+        )
+        .unwrap();
+        rehashed_manifest
+            .artifacts
+            .iter_mut()
+            .find(|artifact| artifact.path == "post-gate-a-policy-transition.json")
+            .unwrap()
+            .sha256 = hex(&Sha256::digest(&reinstall_transition_bytes));
         fs::write(
             root.join("release-manifest.json"),
             serde_json::to_vec(&rehashed_manifest).unwrap(),
@@ -11056,10 +11839,18 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             Ok(_) => panic!("Gate B accepted reinstall evidence"),
             Err(error) => error,
         };
-        assert!(reinstall_error.contains("production upgrade evidence is incomplete"));
+        assert!(
+            reinstall_error.contains("production upgrade management metadata is incomplete"),
+            "{reinstall_error}"
+        );
         fs::write(
             root.join("production-canister-upgrade-receipt.json"),
             valid_production_upgrade_bytes,
+        )
+        .unwrap();
+        fs::write(
+            root.join("post-gate-a-policy-transition.json"),
+            transition_bytes,
         )
         .unwrap();
         fs::write(root.join("release-manifest.json"), valid_manifest_bytes).unwrap();

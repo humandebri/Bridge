@@ -247,6 +247,35 @@ fn activation_admission_open() -> Result<bool, BaseGovernanceError> {
     })
 }
 
+fn attestation_refresh_expected_paused() -> Result<bool, BaseGovernanceError> {
+    STORE.with(|store| {
+        let store = store.borrow();
+        if !store
+            .operational_config_sealed()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?
+        {
+            return Err(BaseGovernanceError::InvalidArgument);
+        }
+        let expected_paused = store
+            .bootstrap_activation_controller()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?
+            .is_some();
+        let deposits_paused = store
+            .admin_state()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?
+            .deposits_paused;
+        if !::bridge_core::kernel::activation_base_preflight_matches(
+            true,
+            deposits_paused,
+            deposits_paused,
+            expected_paused,
+        ) {
+            return Err(BaseGovernanceError::InvalidArgument);
+        }
+        Ok(expected_paused)
+    })
+}
+
 pub async fn seal_operational_config(
     caller: Principal,
     value: crate::config::OperationalConfigArgs,
@@ -263,7 +292,7 @@ pub async fn seal_operational_config(
     next.validate()
         .map_err(|_| BaseGovernanceError::InvalidArgument)?;
     let controller_snapshot = capture_controller_authority(caller).await?;
-    let evidence = activation_preflight(&next).await?;
+    let evidence = activation_preflight(&next, true).await?;
     require_operational_config_seal_caller(caller)?;
     require_unchanged_controller_authority(&controller_snapshot).await?;
     require_operational_config_unsealed()?;
@@ -313,14 +342,12 @@ pub async fn refresh_activation_attestation(
     if !attestation_refresh_authorized(&before, caller) {
         return Err(BaseGovernanceError::Unauthorized);
     }
-    if !activation_admission_open()? {
-        return Err(BaseGovernanceError::InvalidArgument);
-    }
-    let evidence = activation_preflight(&before).await?;
+    let expected_paused = attestation_refresh_expected_paused()?;
+    let evidence = activation_preflight(&before, expected_paused).await?;
     if config()? != before || !attestation_refresh_authorized(&before, caller) {
         return Err(BaseGovernanceError::Unauthorized);
     }
-    if !activation_admission_open()? {
+    if attestation_refresh_expected_paused()? != expected_paused {
         return Err(BaseGovernanceError::InvalidArgument);
     }
     STORE.with(|store| {
@@ -512,7 +539,7 @@ pub async fn prepare(
             | GovernanceAction::ScheduleControlPlaneRotation
             | GovernanceAction::ExecuteControlPlaneRotation
     ) {
-        activation_preflight(&config).await?;
+        activation_preflight(&config, true).await?;
         revalidate_action_authorization(
             caller,
             &action,
@@ -1139,6 +1166,7 @@ async fn sign_prepared(
 
 async fn activation_preflight(
     config: &crate::config::BridgeInitArgs,
+    expected_paused: bool,
 ) -> Result<ActivationPreflightEvidence, BaseGovernanceError> {
     let expected_bridge_signer = signer::ethereum_address(config)
         .await
@@ -1162,6 +1190,7 @@ async fn activation_preflight(
         expected_bridge_signer,
         observed.snapshot.deposits_paused,
         observed.snapshot.withdrawals_paused,
+        expected_paused,
     ) {
         return Err(BaseGovernanceError::ObservationUnavailable);
     }
@@ -1287,11 +1316,13 @@ fn activation_base_preflight_matches(
     expected_signer: [u8; 20],
     deposits_paused: bool,
     withdrawals_paused: bool,
+    expected_paused: bool,
 ) -> bool {
     ::bridge_core::kernel::activation_base_preflight_matches(
         observed_signer == expected_signer,
         deposits_paused,
         withdrawals_paused,
+        expected_paused,
     )
 }
 
@@ -2484,16 +2515,22 @@ mod tests {
     #[test]
     fn activation_preflight_and_postcondition_fail_closed() {
         assert!(activation_base_preflight_matches(
-            [7; 20], [7; 20], true, true
+            [7; 20], [7; 20], true, true, true
+        ));
+        assert!(activation_base_preflight_matches(
+            [7; 20], [7; 20], false, false, false
         ));
         assert!(!activation_base_preflight_matches(
-            [8; 20], [7; 20], true, true
+            [8; 20], [7; 20], true, true, true
         ));
         assert!(!activation_base_preflight_matches(
-            [7; 20], [7; 20], false, true
+            [7; 20], [7; 20], false, true, true
         ));
         assert!(!activation_base_preflight_matches(
-            [7; 20], [7; 20], true, false
+            [7; 20], [7; 20], true, false, true
+        ));
+        assert!(!activation_base_preflight_matches(
+            [7; 20], [7; 20], true, true, false
         ));
         assert!(activation_postcondition_matches(false, false));
         assert!(!activation_postcondition_matches(true, false));

@@ -313,8 +313,10 @@ macro_rules! withdrawal_id_is_admissible_body {
 }
 
 macro_rules! activation_base_preflight_matches_body {
-    ($signer_matches:expr, $deposits_paused:expr, $withdrawals_paused:expr) => {
-        $signer_matches && $deposits_paused && $withdrawals_paused
+    ($signer_matches:expr, $deposits_paused:expr, $withdrawals_paused:expr, $expected_paused:expr) => {
+        $signer_matches
+            && $deposits_paused == $expected_paused
+            && $withdrawals_paused == $expected_paused
     };
 }
 
@@ -1133,8 +1135,14 @@ pub fn activation_base_preflight_matches(
     signer_matches: bool,
     deposits_paused: bool,
     withdrawals_paused: bool,
+    expected_paused: bool,
 ) -> bool {
-    activation_base_preflight_matches_body!(signer_matches, deposits_paused, withdrawals_paused)
+    activation_base_preflight_matches_body!(
+        signer_matches,
+        deposits_paused,
+        withdrawals_paused,
+        expected_paused
+    )
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -2416,9 +2424,10 @@ verus! {
         signer_matches: bool,
         deposits_paused: bool,
         withdrawals_paused: bool,
+        expected_paused: bool,
     ) -> bool {
         activation_base_preflight_matches_body!(
-            signer_matches, deposits_paused, withdrawals_paused)
+            signer_matches, deposits_paused, withdrawals_paused, expected_paused)
     }
 
     pub open spec fn activation_postcondition_matches_spec(

@@ -181,6 +181,9 @@ production_validate_gate() {
   local deployment_binding="${6:-}"
   local final_profile="${7:-}"
   local fee_cycles_measurements="${8:-}"
+  local handover_seal_receipt="${5:-}"
+  local handover_schedule_receipt="${6:-}"
+  local handover_execute_receipt="${7:-}"
   local source_root target profile_bin output actual_hash revision tree manifest_revision manifest_tree
   local expected_relayer resolved_relayer bridge_canister refresh_output final_output
   source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -195,7 +198,7 @@ production_validate_gate() {
   CARGO_TARGET_DIR="$target" cargo build --locked --quiet --release --manifest-path "$source_root/Cargo.toml" -p bridge-profile || { rm -rf "$target"; return 1; }
   profile_bin="$target/release/bridge-profile"
   if [[ "$mode" == gate-a ]]; then output="$("$profile_bin" validate-bundle --offline "$bundle")" || { rm -rf "$target"; return 1; }
-  elif [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }
+  elif [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live || "$mode" == handover ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }
   else rm -rf "$target"; echo "invalid production gate mode" >&2; return 1
   fi
   if [[ "$mode" == gate-a ]]; then
@@ -213,56 +216,47 @@ production_validate_gate() {
     rm -rf "$target"
     return 0
   fi
+  if [[ "$mode" == handover ]]; then
+    [[ -z "$canister_install_receipt" ]] || {
+      rm -rf "$target"
+      echo "handover mode does not accept an install receipt" >&2
+      return 1
+    }
+    for receipt in "$handover_seal_receipt" "$handover_schedule_receipt" "$handover_execute_receipt"; do
+      [[ -f "$receipt" && ! -L "$receipt" ]] || {
+        rm -rf "$target"
+        echo "controller handover requires seal, schedule, and execute receipts" >&2
+        return 1
+      }
+    done
+    "$profile_bin" verify-production-canister-handover \
+      "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
+      "$handover_execute_receipt" >/dev/null || {
+      rm -rf "$target"
+      echo "production Canister is not active, integral, and bound to the activation lineage" >&2
+      return 1
+    }
+    rm -rf "$target"
+    return 0
+  fi
   if [[ "$mode" == gate-a ]]; then
     [[ -f "$canister_install_receipt" && ! -L "$canister_install_receipt" ]] || {
       rm -rf "$target"
       echo "Gate A requires the verified production Canister install receipt" >&2
       return 1
     }
-    if [[ -n "$completed_gate_a_receipt" ]]; then
-      [[ -f "$completed_gate_a_receipt" && ! -L "$completed_gate_a_receipt" ]] || {
-        rm -rf "$target"
-        echo "controller handover requires the completed schema-2 Gate A receipt" >&2
-        return 1
-      }
-      [[ -f "$deployment_binding" && ! -L "$deployment_binding" ]] || {
-        rm -rf "$target"
-        echo "controller handover requires the canonical deployment binding" >&2
-        return 1
-      }
-      [[ -f "$final_profile" && ! -L "$final_profile" ]] || {
-        rm -rf "$target"
-        echo "controller handover requires the measurement-derived final profile" >&2
-        return 1
-      }
-      [[ -f "$fee_cycles_measurements" && ! -L "$fee_cycles_measurements" ]] || {
-        rm -rf "$target"
-        echo "controller handover requires the raw fee/cycles measurements" >&2
-        return 1
-      }
-      "$profile_bin" validate-production-handover-receipt \
-        "$bundle" "$completed_gate_a_receipt" "$canister_install_receipt" \
-        "$deployment_binding" >/dev/null || {
-        rm -rf "$target"
-        echo "completed Gate A receipt is not valid for controller handover" >&2
-        return 1
-      }
-      "$profile_bin" verify-production-canister-handover \
-        "$bundle" "$final_profile" "$fee_cycles_measurements" \
-        "$completed_gate_a_receipt" "$canister_install_receipt" \
-        "$deployment_binding" >/dev/null || {
-        rm -rf "$target"
-        echo "production Canister is not sealed and attested for controller handover" >&2
-        return 1
-      }
-    else
-      "$profile_bin" verify-production-canister-predeploy \
-        "$bundle/profile.json" "$canister_install_receipt" >/dev/null || {
-        rm -rf "$target"
-        echo "live production Canister no longer matches the paused predeploy profile" >&2
-        return 1
-      }
-    fi
+    [[ -z "$completed_gate_a_receipt" && -z "$deployment_binding" \
+      && -z "$final_profile" && -z "$fee_cycles_measurements" ]] || {
+      rm -rf "$target"
+      echo "Gate A mode rejects legacy controller handover inputs" >&2
+      return 1
+    }
+    "$profile_bin" verify-production-canister-predeploy \
+      "$bundle/profile.json" "$canister_install_receipt" >/dev/null || {
+      rm -rf "$target"
+      echo "live production Canister no longer matches the paused predeploy profile" >&2
+      return 1
+    }
     rm -rf "$target"
     return 0
   fi
