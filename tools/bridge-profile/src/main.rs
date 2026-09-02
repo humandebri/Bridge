@@ -743,6 +743,7 @@ struct MonitorIcPause {
     audit_raw_hex: String,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct KeeperDrill {
@@ -761,6 +762,7 @@ struct KeeperDrill {
     manual_fallback_drilled: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MonitoringReceipt {
@@ -774,6 +776,7 @@ struct MonitoringReceipt {
     paid: MonitoringPaidObservation,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MonitoringBurnReceipt {
@@ -787,6 +790,7 @@ struct MonitoringBurnReceipt {
     canonical_finalized: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MonitoringPaidObservation {
@@ -797,6 +801,7 @@ struct MonitoringPaidObservation {
     authenticated_query: bool,
 }
 
+#[allow(dead_code)]
 #[derive(CandidType, Deserialize, Serialize, Debug, Eq, PartialEq)]
 enum WithdrawalPhaseView {
     Paid,
@@ -805,6 +810,7 @@ enum WithdrawalPhaseView {
     Observed,
 }
 
+#[allow(dead_code)]
 #[derive(CandidType, Deserialize, Serialize, Debug, Eq, PartialEq)]
 struct WithdrawalView {
     charged_service_fee: Nat,
@@ -832,6 +838,7 @@ struct ProviderIndependenceReceipt {
     governance_query_response_sha256: String,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ControllerHandover {
@@ -854,6 +861,7 @@ struct ControllerHandover {
     required_freezing_cycles: u128,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SnsUpgrade {
@@ -1841,6 +1849,7 @@ fn evm_selector(signature: &str) -> String {
     format!("0x{}", hex(&hash[..4]))
 }
 
+#[allow(dead_code)]
 fn evm_topic(signature: &str) -> String {
     let mut hash = [0u8; 32];
     let mut keccak = Keccak::v256();
@@ -1957,6 +1966,7 @@ fn validate_monitor_drill(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn validate_keeper_drill(
     root: &Path,
     manifest: &ReleaseManifest,
@@ -3724,6 +3734,7 @@ fn validate_activation_attestation_time(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn validate_plan006_evidence(
     root: &Path,
     manifest: &ReleaseManifest,
@@ -4759,6 +4770,7 @@ fn verify_monitor_ic_certificate(bundle: &ValidatedBundle) -> Result<(), String>
     Ok(())
 }
 
+#[allow(dead_code)]
 fn verify_keeper_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
     let monitoring: MonitoringReceipt = read_json(&bundle.root.join("monitoring-receipt.json"))?;
     let withdrawal_id = decode_hex(&monitoring.withdrawal_id)?;
@@ -4865,6 +4877,7 @@ fn verify_activation_attestation_authenticity(bundle: &ValidatedBundle) -> Resul
     )
 }
 
+#[allow(dead_code)]
 fn verify_sns_upgrade_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
     let upgrade: SnsUpgrade = read_json(&bundle.root.join("sns-upgrade.json"))?;
     let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|e| e.to_string())?;
