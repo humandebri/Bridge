@@ -28,6 +28,15 @@ class TrustedPrGateTests(unittest.TestCase):
         repository_gate = workflow.index("run: scripts/ci-local.sh all")
         self.assertLess(root_install, repository_gate)
 
+    def test_main_push_caches_are_reusable_across_commits(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("bridge-main-rust-${{ github.ref_name }}-", workflow)
+        self.assertIn("bridge-main-pnpm-${{ github.ref_name }}-", workflow)
+        self.assertNotIn("bridge-main-rust-${{ github.sha }}-", workflow)
+        self.assertNotIn("bridge-main-pnpm-${{ github.sha }}-", workflow)
+
     def test_staging_keeps_only_current_schema_upgrade_and_historical_reinstall_evidence(self) -> None:
         policy_dir = ROOT / "deployments" / "sepolia-staging"
         evidence_dir = policy_dir / "evidence"
@@ -207,6 +216,19 @@ class TrustedPrGateTests(unittest.TestCase):
             "matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'",
             workflow,
         )
+
+    def test_real_prefetch_uses_only_ui_dependency_tree(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        rust_start = workflow.index("Prefetch PocketIC runtime for Rust integration checks")
+        real_start = workflow.index("Prefetch PocketIC runtime for real E2E checks")
+        cache_start = workflow.index("Restore trusted image build cache", real_start)
+        rust_step = workflow[rust_start:real_start]
+        real_step = workflow[real_start:cache_start]
+        self.assertIn("matrix.area == 'rust'", rust_step)
+        self.assertIn("$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic", rust_step)
+        self.assertIn("matrix.area == 'real'", real_step)
+        self.assertNotIn("$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic", real_step)
+        self.assertIn("$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic", real_step)
         self.assertIn("trusted-policy/.github/trusted-pr/Dockerfile", workflow)
         self.assertIn("trusted-policy/scripts/trusted-pr-container.sh", workflow)
         self.assertIn('source trusted-policy "$1" "$BRIDGE_TRUSTED_DEPENDENCY_ROOT"', workflow)
@@ -477,6 +499,8 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("fail-fast: false", workflow)
         self.assertIn("area: ${{ fromJSON(needs.classify.outputs.matrix) }}", workflow)
         self.assertIn("name: test (${{ matrix.area }})", workflow)
+        self.assertIn("needs.classify.outputs.any == 'true'", workflow)
+        self.assertIn("*) exit 2", workflow)
         self.assertIn('if [[ "$ANY" == true ]]; then', workflow)
         self.assertIn('test "$TEST_RESULT" = success', workflow)
         self.assertNotIn("POLICY", workflow)
@@ -527,6 +551,7 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertNotIn("pr-gate:", workflow)
         self.assertIn("push-classify:", workflow)
         self.assertIn("scripts/ci_changed_areas.py", workflow)
+        self.assertIn("needs.push-classify.outputs.any == 'true'", workflow)
 
 
 if __name__ == "__main__":

@@ -22,6 +22,28 @@ class ChangedAreaTests(unittest.TestCase):
     def test_docs_only_runs_no_component_gate(self) -> None:
         self.assert_areas(["docs/bridge-flow.md", "README.md", "LICENSE", ".gitignore"])
 
+    def test_docs_only_emits_a_nonempty_workflow_matrix(self) -> None:
+        with tempfile.NamedTemporaryFile() as output:
+            subprocess.run(
+                [
+                    sys.executable,
+                    ci_changed_areas.__file__,
+                    "--github-output",
+                    output.name,
+                    "docs/bridge-flow.md",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            output.seek(0)
+            values = dict(
+                line.rstrip().split("=", 1)
+                for line in output.read().decode("utf-8").splitlines()
+            )
+        self.assertEqual(values["any"], "false")
+        self.assertEqual(json.loads(values["matrix"]), ["none"])
+
     def test_rust_change_runs_rust_real_and_icp(self) -> None:
         self.assert_areas(
             ["canister/bridge-canister/src/api.rs"],

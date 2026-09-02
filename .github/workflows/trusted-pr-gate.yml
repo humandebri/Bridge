@@ -232,11 +232,14 @@ jobs:
       - name: Prefetch verified real-E2E ledger artifacts
         if: matrix.area == 'real'
         run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
-      - name: Prefetch PocketIC runtime for integration checks
-        if: matrix.area == 'rust' || matrix.area == 'real'
+      - name: Prefetch PocketIC runtime for Rust integration checks
+        if: matrix.area == 'rust'
         run: |
           node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic/postinstall.mjs"
           node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"
+      - name: Prefetch PocketIC runtime for real E2E checks
+        if: matrix.area == 'real'
+        run: node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"
       - name: Restore trusted image build cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
