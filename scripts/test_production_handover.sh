@@ -11,6 +11,12 @@ cat >"$T/source/scripts/ci-local.sh" <<'SH'
 set -euo pipefail
 [[ "${1:-}" == proofs ]]
 printf 'proofs %s\n' "$*" >>"$TRACE"
+if [[ "${MUTATE_HANDOVER_INPUT_AFTER_FREEZE:-false}" == true ]]; then
+  printf '{"bridge_canister_id":"rrkah-fqaaa-aaaaa-aaaaq-cai"}\n' >"$ORIGINAL_PROFILE"
+fi
+if [[ "${MUTATE_HANDOVER_RECEIPT_AFTER_FREEZE:-false}" == true ]]; then
+  printf '{"kind":"execute","schedule_receipt_sha256":"wrong"}\n' >"$ORIGINAL_EXECUTE_RECEIPT"
+fi
 if [[ "${PROOF_GATE_FAIL:-false}" == true ]]; then exit 42; fi
 SH
 cat >"$T/source/scripts/rebuild-release-artifacts.sh" <<'SH'
@@ -36,7 +42,7 @@ version = "0.0.0"
 LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs};
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="verify-production-canister-handover"{let valid=a.len()==5&&fs::read_to_string(&a[2]).is_ok_and(|v|v.contains("\"kind\":\"seal\"")&&v.contains("\"initial_operational_parameters_sha256\":\"1111\""))&&fs::read_to_string(&a[3]).is_ok_and(|v|v.contains("\"kind\":\"schedule\"")&&v.contains("\"seal_receipt_sha256\":\"2222\""))&&fs::read_to_string(&a[4]).is_ok_and(|v|v.contains("\"kind\":\"execute\"")&&v.contains("\"schedule_receipt_sha256\":\"3333\""));if !valid||["HANDOVER_BOOTSTRAP","HANDOVER_SEALED","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_INITIAL_PARAMETERS_DRIFT","HANDOVER_SEAL_RECEIPT_DRIFT","HANDOVER_SCHEDULE_RECEIPT_DRIFT","HANDOVER_EXECUTE_RECEIPT_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_RESERVE_DRIFT","HANDOVER_STORAGE_INTEGRITY_DRIFT","HANDOVER_IC_DEPOSITS_PAUSED","HANDOVER_BASE_DEPOSITS_PAUSED","HANDOVER_BASE_WITHDRAWALS_PAUSED"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else{println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","a".repeat(64))}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="verify-production-canister-handover"{let counter=env::var("TRACE").unwrap()+".verify";let n=fs::read_to_string(&counter).ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(0);fs::write(&counter,(n+1).to_string()).unwrap();let valid=a.len()==5&&fs::read_to_string(&a[2]).is_ok_and(|v|v.contains("\"kind\":\"seal\"")&&v.contains("\"initial_operational_parameters_sha256\":\"1111\""))&&fs::read_to_string(&a[3]).is_ok_and(|v|v.contains("\"kind\":\"schedule\"")&&v.contains("\"seal_receipt_sha256\":\"2222\""))&&fs::read_to_string(&a[4]).is_ok_and(|v|v.contains("\"kind\":\"execute\"")&&v.contains("\"schedule_receipt_sha256\":\"3333\""));if (n>0&&env::var("HANDOVER_PRE_SEND_ACTIVE_DRIFT").as_deref()==Ok("true"))||!valid||["HANDOVER_BOOTSTRAP","HANDOVER_SEALED","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_INITIAL_PARAMETERS_DRIFT","HANDOVER_SEAL_RECEIPT_DRIFT","HANDOVER_SCHEDULE_RECEIPT_DRIFT","HANDOVER_EXECUTE_RECEIPT_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_RESERVE_DRIFT","HANDOVER_STORAGE_INTEGRITY_DRIFT","HANDOVER_IC_DEPOSITS_PAUSED","HANDOVER_BASE_DEPOSITS_PAUSED","HANDOVER_BASE_WITHDRAWALS_PAUSED"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else{println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","a".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -45,11 +51,14 @@ git -C "$T/source" add .
 git -C "$T/source" commit -qm 'handover fixture'
 REVISION="$(git -C "$T/source" rev-parse HEAD)"
 TREE="$(git -C "$T/source" archive HEAD | shasum -a 256 | awk '{print $1}')"
-printf '{"source_revision":"%s","source_tree_sha256":"%s"}\n' "$REVISION" "$TREE" >"$T/bundle/release-manifest.json"
 cat >"$T/bundle/profile.json" <<'JSON'
 {"bridge_canister_id":"2vxsx-fae","root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","bridge_canister_wasm_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parameters":{"cycles_floor":"1000"}}
 JSON
+PROFILE_SHA="$(shasum -a 256 "$T/bundle/profile.json" | awk '{print $1}')"
+printf '{"source_revision":"%s","source_tree_sha256":"%s","artifacts":[{"path":"profile.json","sha256":"%s"}]}\n' "$REVISION" "$TREE" "$PROFILE_SHA" >"$T/bundle/release-manifest.json"
 export TRACE="$T/trace"
+export ORIGINAL_PROFILE="$T/bundle/profile.json"
+export ORIGINAL_EXECUTE_RECEIPT="$T/controller-execute-receipt.json"
 cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
 echo "icp $*" >>"$TRACE"
@@ -90,6 +99,7 @@ run_handover() {
   local evidence="$1"
   shift
   rm -f "$TRACE.updated"
+  rm -f "$TRACE.verify"
   BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" \
   BRIDGE_RELEASE_BUNDLE="$T/bundle" \
   BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$T/operational-config-seal-receipt.json" \
@@ -107,6 +117,12 @@ import hashlib,json,sys
 v=json.load(open(sys.argv[1]))
 assert v['final_controllers']==['7jkta-eyaaa-aaaaq-aaarq-cai']
 assert v['schema_version']==3 and v['stage']=='complete'
+assert v['source_revision'] and len(v['source_tree_sha256'])==64
+assert v['gate_b_manifest_sha256']=='a'*64
+assert v['operational_config_seal_receipt_sha256']==hashlib.sha256(open(sys.argv[1].replace('handover.json','operational-config-seal-receipt.json'),'rb').read()).hexdigest()
+assert v['controller_schedule_receipt_sha256']==hashlib.sha256(open(sys.argv[1].replace('handover.json','controller-schedule-receipt.json'),'rb').read()).hexdigest()
+assert v['controller_execute_receipt_sha256']==hashlib.sha256(open(sys.argv[1].replace('handover.json','controller-execute-receipt.json'),'rb').read()).hexdigest()
+assert not any('fee_cycles' in key for key in v)
 assert v['cycles_balance']==1000000 and v['required_freezing_cycles']==100
 transcript=bytes.fromhex(v['response_stdout_hex'])+bytes.fromhex(v['response_stderr_hex'])
 assert v['response_exit_code']==0 and hashlib.sha256(transcript).hexdigest()==v['response_sha256']
@@ -117,6 +133,18 @@ PY
 rg -q 'settings update bridge-canister -e production --remove-all-controllers --add-controller 7jkta-eyaaa-aaaaq-aaarq-cai --force --identity production --debug' "$TRACE"
 rg -q '^proofs proofs$' "$TRACE"
 rg -q '^rebuild ' "$TRACE"
+
+cp "$T/bundle/profile.json" "$T/profile.before-race.json"
+MUTATE_HANDOVER_INPUT_AFTER_FREEZE=true run_handover "$T/frozen-input-race.json"
+mv "$T/profile.before-race.json" "$T/bundle/profile.json"
+python3 - "$T/frozen-input-race.json" <<'PY'
+import json,sys
+v=json.load(open(sys.argv[1]))
+assert v['bridge_canister_id']=='2vxsx-fae' and v['before_module_sha256']=='a'*64
+PY
+cp "$T/controller-execute-receipt.json" "$T/execute.before-race.json"
+MUTATE_HANDOVER_RECEIPT_AFTER_FREEZE=true run_handover "$T/frozen-receipt-race.json"
+mv "$T/execute.before-race.json" "$T/controller-execute-receipt.json"
 
 if BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" \
   BRIDGE_RELEASE_BUNDLE="$T/bundle" \
@@ -172,6 +200,14 @@ if REPRODUCIBLE_BUILD_FAIL=true run_handover "$T/rebuild-failed.json" >/dev/null
   echo "handover accepted a failed reproducible artifact build" >&2; exit 1
 fi
 [[ ! -e "$T/rebuild-failed.json" ]]
+
+updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+if HANDOVER_PRE_SEND_ACTIVE_DRIFT=true run_handover "$T/pre-send-active-drift.json" >/dev/null 2>&1; then
+  echo "handover accepted active-state drift after evidence reservation" >&2; exit 1
+fi
+updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+[[ "$updates_before" == "$updates_after" ]]
+[[ -f "$T/pre-send-active-drift.json" && ! -s "$T/pre-send-active-drift.json" ]]
 
 if HANDOVER_CANISTER_ID=rrkah-fqaaa-aaaaa-aaaaq-cai run_handover "$T/wrong-canister.json" >/dev/null 2>&1; then
   echo "handover accepted a production mapping drift" >&2; exit 1

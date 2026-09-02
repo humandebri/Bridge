@@ -1232,7 +1232,7 @@ async fn activation_preflight(
             .admin_state()
             .map_err(|_| BaseGovernanceError::StorageFailure)?
             .deposits_paused;
-        if !locally_paused {
+        if locally_paused != expected_paused {
             return Err(BaseGovernanceError::ObservationUnavailable);
         }
         Ok(())

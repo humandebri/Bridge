@@ -175,6 +175,37 @@ finally: os.close(directory)
 PY
 }
 
+# Freeze one externally supplied receipt through a no-follow descriptor before
+# validation so a later path swap cannot change the bytes authorized for use.
+production_freeze_receipt() {
+  local source="$1" destination="$2" label="${3:-receipt}"
+  python3 - "$source" "$destination" "$label" <<'PY'
+import os,stat,sys
+source,destination,label=sys.argv[1:]
+fd=os.open(source,os.O_RDONLY|os.O_NOFOLLOW)
+try:
+ info=os.fstat(fd)
+ if not stat.S_ISREG(info.st_mode) or info.st_size>16*1024*1024:
+  raise SystemExit(f'{label} is not a bounded regular file')
+ chunks=[]
+ while True:
+  chunk=os.read(fd,1024*1024)
+  if not chunk: break
+  chunks.append(chunk)
+ data=b''.join(chunks)
+finally: os.close(fd)
+out=os.open(destination,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+try:
+ view=memoryview(data)
+ while view:
+  written=os.write(out,view)
+  if written<=0: raise SystemExit(f'short write while freezing {label}')
+  view=view[written:]
+ os.fsync(out)
+finally: os.close(out)
+PY
+}
+
 production_validate_gate() {
   local mode="$1" bundle="$2" expected_hash="$3" canister_install_receipt="${4:-}"
   local completed_gate_a_receipt="${5:-}"
@@ -229,6 +260,13 @@ production_validate_gate() {
         return 1
       }
     done
+    "$profile_bin" validate-production-handover-candidate \
+      "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
+      "$handover_execute_receipt" >/dev/null || {
+      rm -rf "$target"
+      echo "controller handover activation lineage is invalid" >&2
+      return 1
+    }
     "$profile_bin" verify-production-canister-handover \
       "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
       "$handover_execute_receipt" >/dev/null || {
@@ -236,6 +274,13 @@ production_validate_gate() {
       echo "production Canister is not active, integral, and bound to the activation lineage" >&2
       return 1
     }
+    if [[ -n "${BRIDGE_HANDOVER_VALIDATOR_BIN:-}" ]]; then
+      [[ ! -e "$BRIDGE_HANDOVER_VALIDATOR_BIN" && ! -L "$BRIDGE_HANDOVER_VALIDATOR_BIN" ]] || {
+        rm -rf "$target"; echo "handover validator output already exists or is a symlink" >&2; return 1;
+      }
+      cp "$profile_bin" "$BRIDGE_HANDOVER_VALIDATOR_BIN" || { rm -rf "$target"; return 1; }
+      chmod 500 "$BRIDGE_HANDOVER_VALIDATOR_BIN" || { rm -rf "$target"; return 1; }
+    fi
     rm -rf "$target"
     return 0
   fi

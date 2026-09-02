@@ -5445,12 +5445,14 @@ impl StableStore {
         }
         let admin = self.admin_state()?;
         let expected_paused = self.bootstrap_activation_controller()?.is_some();
-        if !::bridge_core::kernel::activation_base_preflight_matches(
-            true,
-            admin.deposits_paused,
-            admin.deposits_paused,
-            expected_paused,
-        ) {
+        if admin.deposits_paused != expected_paused
+            || !::bridge_core::kernel::activation_base_preflight_matches(
+                true,
+                attestation.deposits_paused,
+                attestation.withdrawals_paused,
+                expected_paused,
+            )
+        {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
         let current = decode::<Option<ImmutableBridgeConfig>>(&previous_config)?
@@ -10089,6 +10091,19 @@ mod tests {
                 activation_finalized_observation(),
             )
             .expect("seal operational config");
+        let mut unpaused = activation_attestation();
+        unpaused.deposits_paused = false;
+        unpaused.withdrawals_paused = false;
+        assert!(matches!(
+            store.refresh_activation_attestation(unpaused, activation_finalized_observation(),),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+        let mut one_sided = activation_attestation();
+        one_sided.withdrawals_paused = false;
+        assert!(matches!(
+            store.refresh_activation_attestation(one_sided, activation_finalized_observation(),),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
         let mut refreshed = first;
         refreshed.finalized_block_number = 1_000;
         refreshed.observed_at_ns = 1_000;
@@ -10154,6 +10169,20 @@ mod tests {
         let mut admin = store.admin_state().expect("paused admin");
         admin.deposits_paused = false;
         store.set_admin_state(&admin).expect("resume deposits");
+
+        assert!(matches!(
+            store.refresh_activation_attestation(
+                activation_attestation(),
+                activation_finalized_observation(),
+            ),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+        let mut one_sided = activation_attestation();
+        one_sided.deposits_paused = false;
+        assert!(matches!(
+            store.refresh_activation_attestation(one_sided, activation_finalized_observation(),),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
 
         let mut refreshed = activation_attestation();
         refreshed.deposits_paused = false;

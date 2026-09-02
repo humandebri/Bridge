@@ -26,6 +26,24 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 }
 for tool in icp python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
 
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/bridge-handover.XXXXXX")"
+cleanup_handover_tmp() {
+  chmod -R u+w "$TMP" 2>/dev/null || true
+  rm -rf "$TMP"
+}
+trap cleanup_handover_tmp EXIT
+FROZEN_BUNDLE="$TMP/release-bundle"
+mkdir -m 700 "$FROZEN_BUNDLE"
+production_freeze_bundle "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_BUNDLE"
+production_freeze_receipt "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$TMP/seal-receipt.json" "seal receipt"
+production_freeze_receipt "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" "$TMP/schedule-receipt.json" "schedule receipt"
+production_freeze_receipt "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT" "$TMP/execute-receipt.json" "execute receipt"
+BRIDGE_RELEASE_BUNDLE="$FROZEN_BUNDLE"
+BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$TMP/seal-receipt.json"
+BRIDGE_CONTROLLER_SCHEDULE_RECEIPT="$TMP/schedule-receipt.json"
+BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$TMP/execute-receipt.json"
+BRIDGE_HANDOVER_VALIDATOR_BIN="$TMP/bridge-profile"
+
 production_validate_gate handover "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" "" \
   "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" \
   "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT"
@@ -41,8 +59,6 @@ p=json.load(open(sys.argv[1])); print(p["bridge_canister_id"],p["root_canister_i
   echo "production ICP environment does not map the reviewed Bridge Canister" >&2; exit 1;
 }
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/bridge-handover.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
 icp canister call bridge-canister get_bridge_status '()' -e production --json >"$TMP/bridge-status.json"
 icp canister call bridge-canister get_production_lifecycle '()' -e production --json >"$TMP/lifecycle.json"
 icp canister call bridge-canister get_runtime_binding '()' -e production --json >"$TMP/runtime-binding.json"
@@ -51,9 +67,9 @@ icp canister call bridge-canister get_activation_status '()' -e production --jso
 icp canister call bridge-canister get_activation_attestation '()' -e production --json >"$TMP/activation-attestation.json"
 icp canister status bridge-canister -e production --identity "$BRIDGE_ICP_IDENTITY" --json >"$TMP/canister-status.json"
 EXECUTING_PRINCIPAL="$(icp identity principal --identity "$BRIDGE_ICP_IDENTITY")"
-python3 - "$TMP/bridge-status.json" "$TMP/canister-status.json" "$EXECUTING_PRINCIPAL" "$CYCLES_FLOOR" "$EXPECTED_WASM" "$TMP/lifecycle.json" "$TMP/runtime-binding.json" "$TMP/storage-integrity.json" "$TMP/activation-status.json" "$TMP/activation-attestation.json" >"$TMP/preflight.json" <<'PY'
+python3 - "$TMP/bridge-status.json" "$TMP/canister-status.json" "$EXECUTING_PRINCIPAL" "$CYCLES_FLOOR" "$EXPECTED_WASM" "$TMP/lifecycle.json" "$TMP/runtime-binding.json" "$TMP/storage-integrity.json" "$TMP/activation-status.json" "$TMP/activation-attestation.json" "$BRIDGE_RELEASE_BUNDLE/release-manifest.json" "$BRIDGE_GATE_B_MANIFEST_SHA256" "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT" >"$TMP/preflight.json" <<'PY'
 import hashlib,json,re,sys
-bridge_path,status_path,caller,floor,expected_wasm,lifecycle_path,runtime_path,integrity_path,activation_path,attestation_path=sys.argv[1:]
+bridge_path,status_path,caller,floor,expected_wasm,lifecycle_path,runtime_path,integrity_path,activation_path,attestation_path,manifest_path,gate_hash,seal_path,schedule_path,execute_path=sys.argv[1:]
 bridge=json.load(open(bridge_path)); status=json.load(open(status_path)); floor=int(floor)
 def values(value,key):
  out=[]
@@ -85,7 +101,14 @@ if cycles < floor or cycles < freeze_required: raise SystemExit('cycles do not s
 def evidence(path,prefix):
  raw=open(path,'rb').read()
  return {prefix+'_response_json_hex':raw.hex(),prefix+'_response_sha256':hashlib.sha256(raw).hexdigest()}
-snapshot={'before_controllers':[caller],'before_module_sha256':module,'cycles_balance':cycles,
+manifest=json.load(open(manifest_path))
+digest=lambda path: hashlib.sha256(open(path,'rb').read()).hexdigest()
+snapshot={'source_revision':manifest['source_revision'],'source_tree_sha256':manifest['source_tree_sha256'],
+          'gate_b_manifest_sha256':gate_hash.lower(),
+          'operational_config_seal_receipt_sha256':digest(seal_path),
+          'controller_schedule_receipt_sha256':digest(schedule_path),
+          'controller_execute_receipt_sha256':digest(execute_path),
+          'before_controllers':[caller],'before_module_sha256':module,'cycles_balance':cycles,
           'freezing_threshold_seconds':threshold,'idle_cycles_burned_per_day':burn,
           'required_freezing_cycles':freeze_required}
 for path,prefix in [(bridge_path,'before_bridge_status'),(status_path,'before_management_status'),
@@ -98,6 +121,14 @@ PY
 # Prove that the durable evidence target supports create, fsync and atomic
 # replacement before changing the controller set.
 production_reserve_output "$BRIDGE_HANDOVER_EVIDENCE_FILE" "handover evidence"
+
+# Re-run the complete authenticated active-state verifier after the final
+# filesystem preparation. Only the sole-controller/module read below may occur
+# between this check and the irreversible settings update.
+"$BRIDGE_HANDOVER_VALIDATOR_BIN" verify-production-canister-handover \
+  "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
+  "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT" \
+  >/dev/null
 
 # Re-read management state after every pre-send preparation step. This is the
 # controller/module snapshot that authorizes the irreversible settings update.
@@ -284,4 +315,11 @@ fd,tmp=tempfile.mkstemp(prefix='.handover-evidence.',dir=parent)
 out=os.fdopen(fd,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
 fd=os.open(os.path.dirname(os.path.abspath(target)) or '.',os.O_RDONLY); os.fsync(fd); os.close(fd)
 PY
+if ! "$BRIDGE_HANDOVER_VALIDATOR_BIN" validate-controller-handover-completion \
+  "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
+  "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT" \
+  "$BRIDGE_HANDOVER_EVIDENCE_FILE"; then
+  echo "INCIDENT: controller handover completed but durable completion evidence failed typed validation" >&2
+  exit 1
+fi
 echo "controller handover completed; evidence=$BRIDGE_HANDOVER_EVIDENCE_FILE" >&2

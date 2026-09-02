@@ -957,6 +957,12 @@ struct ControllerHandover {
     schema_version: u8,
     stage: String,
     observed_at_unix: u64,
+    source_revision: String,
+    source_tree_sha256: String,
+    gate_b_manifest_sha256: String,
+    operational_config_seal_receipt_sha256: String,
+    controller_schedule_receipt_sha256: String,
+    controller_execute_receipt_sha256: String,
     bridge_canister_id: String,
     sns_root_canister_id: String,
     executing_principal: String,
@@ -3478,6 +3484,36 @@ fn validate_production_handover_candidate_files(
     Ok((bundle, gate_a_receipt, execute_receipt))
 }
 
+fn validate_controller_handover_completion_files(
+    bundle_path: &Path,
+    seal_receipt_path: &Path,
+    schedule_receipt_path: &Path,
+    execute_receipt_path: &Path,
+    handover_path: &Path,
+) -> Result<(), String> {
+    let (bundle, gate_a_receipt, _) = validate_production_handover_candidate_files(
+        bundle_path,
+        seal_receipt_path,
+        schedule_receipt_path,
+        execute_receipt_path,
+    )?;
+    let handover: ControllerHandover = read_json(handover_path)?;
+    validate_controller_handover_lineage(
+        &handover,
+        &bundle,
+        seal_receipt_path,
+        schedule_receipt_path,
+        execute_receipt_path,
+    )?;
+    validate_controller_handover_completion(
+        &handover,
+        &bundle.profile,
+        &gate_a_receipt.canister_install.installer_principal,
+        bundle.manifest.created_at_unix,
+        now_unix()?,
+    )
+}
+
 fn decode_candid_hex<T: CandidType + for<'de> Deserialize<'de>>(value: &str) -> Result<T, String> {
     let bytes = decode_hex(value.trim())?;
     Decode!(&bytes, T).map_err(|error| error.to_string())
@@ -4225,6 +4261,59 @@ fn json_u128(value: &Value, key: &str) -> Result<u128, String> {
         .ok_or_else(|| format!("controller handover {key} is not an integer"))
 }
 
+fn validate_controller_handover_lineage(
+    handover: &ControllerHandover,
+    bundle: &ValidatedBundle,
+    seal_receipt_path: &Path,
+    schedule_receipt_path: &Path,
+    execute_receipt_path: &Path,
+) -> Result<(), String> {
+    let file_sha256 = |path: &Path| -> Result<String, String> {
+        Ok(hex(&Sha256::digest(
+            fs::read(path).map_err(|error| error.to_string())?,
+        )))
+    };
+    if !controller_handover_lineage_fields_match(
+        handover,
+        &bundle.manifest.source_revision,
+        &bundle.manifest.source_tree_sha256,
+        &bundle.manifest_sha256,
+        &file_sha256(seal_receipt_path)?,
+        &file_sha256(schedule_receipt_path)?,
+        &file_sha256(execute_receipt_path)?,
+    ) {
+        return Err("controller handover completion lineage is invalid".into());
+    }
+    Ok(())
+}
+
+fn controller_handover_lineage_fields_match(
+    handover: &ControllerHandover,
+    source_revision: &str,
+    source_tree_sha256: &str,
+    gate_b_manifest_sha256: &str,
+    seal_receipt_sha256: &str,
+    schedule_receipt_sha256: &str,
+    execute_receipt_sha256: &str,
+) -> bool {
+    handover.source_revision == source_revision
+        && handover
+            .source_tree_sha256
+            .eq_ignore_ascii_case(source_tree_sha256)
+        && handover
+            .gate_b_manifest_sha256
+            .eq_ignore_ascii_case(gate_b_manifest_sha256)
+        && handover
+            .operational_config_seal_receipt_sha256
+            .eq_ignore_ascii_case(seal_receipt_sha256)
+        && handover
+            .controller_schedule_receipt_sha256
+            .eq_ignore_ascii_case(schedule_receipt_sha256)
+        && handover
+            .controller_execute_receipt_sha256
+            .eq_ignore_ascii_case(execute_receipt_sha256)
+}
+
 fn validate_controller_handover_continuity(
     handover: &ControllerHandover,
     profile: &Profile,
@@ -4380,21 +4469,15 @@ fn validate_controller_handover_continuity(
     Ok(())
 }
 
-#[allow(dead_code)]
-fn validate_plan006_evidence(
-    root: &Path,
-    manifest: &ReleaseManifest,
+fn validate_controller_handover_completion(
+    handover: &ControllerHandover,
     profile: &Profile,
+    installer: &str,
+    manifest_created_at_unix: u64,
     now: u64,
 ) -> Result<(), String> {
-    let handover: ControllerHandover = read_json(&root.join("controller-handover.json"))?;
-    validate_evidence_time(handover.observed_at_unix, manifest.created_at_unix, now)?;
-    let gate_a_receipt: GateAReceipt = read_json(&root.join("gate-a-receipt.json"))?;
-    validate_controller_handover_continuity(
-        &handover,
-        profile,
-        &gate_a_receipt.canister_install.installer_principal,
-    )?;
+    validate_evidence_time(handover.observed_at_unix, manifest_created_at_unix, now)?;
+    validate_controller_handover_continuity(handover, profile, installer)?;
     let required_prefix = ["icp", "canister", "settings", "update", "bridge-canister"];
     let add_controller_positions = handover
         .command_argv
@@ -4465,7 +4548,25 @@ fn validate_plan006_evidence(
     {
         return Err("controller handover evidence is not an atomic SNS Root-only transfer".into());
     }
+    Ok(())
+}
 
+#[allow(dead_code)]
+fn validate_plan006_evidence(
+    root: &Path,
+    manifest: &ReleaseManifest,
+    profile: &Profile,
+    now: u64,
+) -> Result<(), String> {
+    let handover: ControllerHandover = read_json(&root.join("controller-handover.json"))?;
+    let gate_a_receipt: GateAReceipt = read_json(&root.join("gate-a-receipt.json"))?;
+    validate_controller_handover_completion(
+        &handover,
+        profile,
+        &gate_a_receipt.canister_install.installer_principal,
+        manifest.created_at_unix,
+        now,
+    )?;
     let upgrade: SnsUpgrade = read_json(&root.join("sns-upgrade.json"))?;
     validate_evidence_time(upgrade.observed_at_unix, manifest.created_at_unix, now)?;
     validate_evidence_time(upgrade.executed_at_unix, manifest.created_at_unix, now)?;
@@ -8841,6 +8942,15 @@ fn run() -> Result<(), String> {
                 Path::new(&args[5]),
             )?;
         }
+        Some("validate-controller-handover-completion") if args.len() == 7 => {
+            validate_controller_handover_completion_files(
+                Path::new(&args[2]),
+                Path::new(&args[3]),
+                Path::new(&args[4]),
+                Path::new(&args[5]),
+                Path::new(&args[6]),
+            )?;
+        }
         Some("verify-production-canister-handover") if args.len() == 6 => {
             verify_production_canister_handover(
                 Path::new(&args[2]),
@@ -9113,7 +9223,7 @@ fn run() -> Result<(), String> {
             )?;
             println!("{}", submission.request_id);
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | validate-production-handover-candidate <gate-b-bundle-dir> <seal-receipt.json> <schedule-receipt.json> <execute-receipt.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-b-bundle-dir> <seal-receipt.json> <schedule-receipt.json> <execute-receipt.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <schedule|execute> <bundle-dir> | reserve-operational-config-seal <bundle-dir> <gate-b-sha256> <reservation.json> | write-operational-config-seal-receipt <bundle-dir> <reservation.json> <attempt.json|-> <receipt.json> | authorize-controller-activation <schedule|execute> <bundle-dir> <gate-b-sha256> <seal-receipt.json> <authorization.json> | verify-controller-activation-authorization[-fresh] <schedule|execute> <bundle-dir> <gate-b-sha256> <seal-receipt.json> <authorization.json> | verify-controller-activation <schedule|execute> <bundle-dir> <artifact.json> <seal-receipt.json> <authorization.json> <prepare-receipt.json> <confirmation.json> <prior-schedule-receipt.json|-> <receipt.json> | verify-controller-schedule-receipt-live <bundle-dir> <seal-receipt.json> <controller-schedule-receipt.json> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json> | submit-production-canister-upgrade <ic-host> <canister> <expected-principal> <controller.pem> <wasm> <submission.json>".into()),
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | validate-production-handover-candidate <gate-b-bundle-dir> <seal-receipt.json> <schedule-receipt.json> <execute-receipt.json> | validate-controller-handover-completion <gate-b-bundle-dir> <seal-receipt.json> <schedule-receipt.json> <execute-receipt.json> <controller-handover.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-b-bundle-dir> <seal-receipt.json> <schedule-receipt.json> <execute-receipt.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <schedule|execute> <bundle-dir> | reserve-operational-config-seal <bundle-dir> <gate-b-sha256> <reservation.json> | write-operational-config-seal-receipt <bundle-dir> <reservation.json> <attempt.json|-> <receipt.json> | authorize-controller-activation <schedule|execute> <bundle-dir> <gate-b-sha256> <seal-receipt.json> <authorization.json> | verify-controller-activation-authorization[-fresh] <schedule|execute> <bundle-dir> <gate-b-sha256> <seal-receipt.json> <authorization.json> | verify-controller-activation <schedule|execute> <bundle-dir> <artifact.json> <seal-receipt.json> <authorization.json> <prepare-receipt.json> <confirmation.json> <prior-schedule-receipt.json|-> <receipt.json> | verify-controller-schedule-receipt-live <bundle-dir> <seal-receipt.json> <controller-schedule-receipt.json> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json> | submit-production-canister-upgrade <ic-host> <canister> <expected-principal> <controller.pem> <wasm> <submission.json>".into()),
     }
     Ok(())
 }
@@ -10795,6 +10905,12 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             schema_version: 3,
             stage: "complete".into(),
             observed_at_unix: now - 95,
+            source_revision: "1".repeat(40),
+            source_tree_sha256: "1".repeat(64),
+            gate_b_manifest_sha256: "2".repeat(64),
+            operational_config_seal_receipt_sha256: "3".repeat(64),
+            controller_schedule_receipt_sha256: "4".repeat(64),
+            controller_execute_receipt_sha256: "5".repeat(64),
             bridge_canister_id: profile.bridge_canister_id.clone(),
             sns_root_canister_id: profile.root_canister_id.clone(),
             executing_principal: installer.clone(),
@@ -10865,6 +10981,36 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             required_freezing_cycles: 1_000,
         };
         assert!(validate_controller_handover_continuity(&handover, &profile, &installer).is_ok());
+        let lineage_matches = |value: &ControllerHandover| {
+            controller_handover_lineage_fields_match(
+                value,
+                &"1".repeat(40),
+                &"1".repeat(64),
+                &"2".repeat(64),
+                &"3".repeat(64),
+                &"4".repeat(64),
+                &"5".repeat(64),
+            )
+        };
+        assert!(lineage_matches(&handover));
+        for mutate in [
+            |value: &mut ControllerHandover| value.source_revision = "9".repeat(40),
+            |value: &mut ControllerHandover| value.source_tree_sha256 = "9".repeat(64),
+            |value: &mut ControllerHandover| value.gate_b_manifest_sha256 = "9".repeat(64),
+            |value: &mut ControllerHandover| {
+                value.operational_config_seal_receipt_sha256 = "9".repeat(64)
+            },
+            |value: &mut ControllerHandover| {
+                value.controller_schedule_receipt_sha256 = "9".repeat(64)
+            },
+            |value: &mut ControllerHandover| {
+                value.controller_execute_receipt_sha256 = "9".repeat(64)
+            },
+        ] {
+            let mut drift = handover.clone();
+            mutate(&mut drift);
+            assert!(!lineage_matches(&drift));
+        }
         let mut runtime_drift = handover.clone();
         let after_runtime = json_bytes(serde_json::json!({
             "schema_version": profile.canister_schema_version,
