@@ -26,5 +26,5 @@ Lean定理、強い仮定、production未結合境界は`conditional-liveness.ts
 
 監査提出前には固定toolchainで`scripts/ci-local.sh proofs`を実行し、receipt schema 7の
 source fingerprint、全10 stageの`pass`、`complete: true`、40件の`release-ready`、
-`release-blocked: 0`、`model-support: 0`、19/18件の証拠強度区分を確認する。receipt自体はgit追跡せず、監査対象checkout
+`release-blocked: 0`、`model-support: 0`、22/18件の証拠強度区分を確認する。receipt自体はgit追跡せず、監査対象checkout
 から再生成する。
