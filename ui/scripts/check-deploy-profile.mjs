@@ -59,8 +59,8 @@ try {
     throw new Error("Production UI checkout differs from the Gate B source revision or tree")
   }
   const cargoArgs = ["run", "--locked", "--quiet", "--manifest-path", join(sourceRoot, "Cargo.toml"), "-p", "bridge-profile", "--"]
-  const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", bundle], { encoding: "utf8" })
-  const verifiedManifestSha256 = /manifest_sha256=([0-9a-fA-F]{64})/.exec(gateOutput)?.[1]
+  const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", "schedule", bundle], { encoding: "utf8" })
+  const verifiedManifestSha256 = /^gate_b=live-pass authorizing=schedule manifest_sha256=([0-9a-fA-F]{64})$/m.exec(gateOutput)?.[1]
   if (!verifiedManifestSha256) throw new Error("Fixed bridge-profile did not verify the Gate B manifest")
   const rendered = mkdtempSync(join(tmpdir(), "bridge-ui-release-inputs."))
   try {

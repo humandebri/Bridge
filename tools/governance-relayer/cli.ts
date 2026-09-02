@@ -113,6 +113,30 @@ async function main(): Promise<void> {
       printArtifact(artifact)
       return
     }
+    case "recover-activation": {
+      const phase = requiredOption(options, "phase")
+      if (phase !== "schedule" && phase !== "execute") {
+        throw new Error("--phase must be schedule or execute")
+      }
+      const pending = unwrap(await actor.get_pending_base_governance_transaction())
+      const artifact = selectPendingActivationArtifact(pending, phase)
+      const authorization = JSON.parse(
+        (await readFile(requiredOption(options, "authorization-file"))).toString("utf8"),
+      ) as Record<string, unknown>
+      const expectedGate = requiredEnv("BRIDGE_GATE_B_MANIFEST_SHA256").toLowerCase()
+      if (authorization.schema_version !== 1
+        || authorization.phase !== phase
+        || authorization.gate_b_manifest_sha256 !== expectedGate
+        || typeof authorization.authorized_at_unix !== "number"
+        || !Number.isSafeInteger(authorization.authorized_at_unix)
+        || authorization.authorized_at_unix <= 0
+        || artifact.signed_at_ns < BigInt(authorization.authorized_at_unix) * 1_000_000_000n) {
+        throw new Error("Live activation pending transaction predates or differs from its authorization")
+      }
+      await writeOrMatchArtifact(artifact, requiredOption(options, "artifact-file"))
+      printArtifact(artifact)
+      return
+    }
     case "relay": {
       const rpc = rpcClient()
       const artifact = await pendingArtifact(actor, options)
@@ -151,7 +175,9 @@ async function main(): Promise<void> {
       } else {
         throw new Error("Fixed governance artifact differs from the live pending transaction")
       }
-      const hash = confirmationHash(options) ?? expectedHash
+      const hash = storedIsActivation
+        ? activationConfirmationHash(options, expectedHash)
+        : confirmationHash(options) ?? expectedHash
       const receipt = unwrap(await actor.confirm_base_governance_transaction({
         operation_id: operationId,
         transaction_hash: hexToBytes(hash),
@@ -307,7 +333,7 @@ export function storedActivationConfirmationIdentity(value: unknown): {
 }
 
 export function commandRequiresIdentity(command: string): boolean {
-  return !new Set(["status", "relay"]).has(command)
+  return !new Set(["status", "relay", "recover-activation"]).has(command)
 }
 
 function rpcClient(): RelayerRpc {
@@ -582,6 +608,19 @@ export function selectPendingArtifact<T extends { operation_id: bigint }>(
   return artifacts[0]
 }
 
+export function selectPendingActivationArtifact(
+  artifacts: readonly SignedBaseGovernanceTransaction[],
+  phase: "schedule" | "execute",
+): SignedBaseGovernanceTransaction {
+  const matching = artifacts.filter(
+    (artifact) => isActivationArtifact(artifact) && activationPhase(artifact) === phase,
+  )
+  if (matching.length !== 1) {
+    throw new Error(`Expected exactly one pending ${phase} activation transaction`)
+  }
+  return matching[0]!
+}
+
 export async function validateArtifact(
   artifact: SignedBaseGovernanceTransaction,
 ): Promise<void> {
@@ -692,6 +731,7 @@ const COMMAND_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   prepare: ["help", "action", "value"],
   "seal-operational-config": ["help", "parameters-file", "receipt-file"],
   status: ["help", "operation-id"],
+  "recover-activation": ["help", "phase", "artifact-file", "authorization-file"],
   relay: ["help", "operation-id", "artifact-file", "authorization-file", "binding-file"],
   confirm: ["help", "operation-id", "transaction-hash", "hash", "artifact-file", "authorization-file", "binding-file", "receipt-file"],
   replace: ["help", "operation-id", "max-fee", "priority-fee", "artifact-file", "output-artifact-file"],
@@ -764,6 +804,14 @@ export function confirmationHash(options: Options): Hex | undefined {
   return optionHash(options["transaction-hash"] ?? options.hash)
 }
 
+export function activationConfirmationHash(options: Options, expectedHash: Hex): Hex {
+  const explicit = confirmationHash(options)
+  if (explicit !== undefined && explicit.toLowerCase() !== expectedHash.toLowerCase()) {
+    throw new Error("Explicit transaction hash differs from the fixed activation artifact")
+  }
+  return expectedHash
+}
+
 function bytesHex(value: Uint8Array | number[]): Hex {
   return `0x${Array.from(value, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
 }
@@ -811,6 +859,7 @@ Commands:
   seal-operational-config --parameters-file FILE --receipt-file NEW_FILE
   prepare --action pause-deposits|pause-withdrawals|cancel-timelock|set-service-fee [--value N]
   status [--operation-id N]
+  recover-activation --phase schedule|execute --authorization-file FILE --artifact-file FILE
   relay --artifact-file FILE [--authorization-file FILE --binding-file FILE] [--operation-id N]
   confirm --artifact-file FILE [--authorization-file FILE --binding-file FILE] --receipt-file NEW_FILE [--operation-id N] [--hash 0x...]
   run [--operation-id N]

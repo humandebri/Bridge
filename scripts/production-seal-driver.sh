@@ -49,8 +49,54 @@ print(p.get("bridge_canister_id",""),p.get("ic_host",""))
 }
 export BRIDGE_CANISTER_ID IC_HOST
 export IC_IDENTITY_PEM="$BRIDGE_PRODUCTION_CONTROLLER_PEM"
+PROFILE=(cargo run --locked --quiet --release --manifest-path "$SOURCE_ROOT/Cargo.toml" -p bridge-profile --)
+RESERVATION="$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT.reservation.json"
+ATTEMPT="$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT.attempt.json"
+[[ "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" == /* \
+  && ! -e "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
+  && ! -L "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
+  && -d "$(dirname "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT")" ]] || {
+  echo "seal receipt must be a new absolute file in an existing directory" >&2
+  exit 1
+}
+for sidecar in "$RESERVATION" "$ATTEMPT"; do
+  [[ ! -L "$sidecar" ]] || { echo "seal sidecar must not be a symlink: $sidecar" >&2; exit 1; }
+done
+if [[ ! -e "$RESERVATION" && -e "$ATTEMPT" ]]; then
+  echo "seal attempt exists without its durable reservation; no update was sent" >&2
+  exit 1
+fi
 
-node --no-warnings --experimental-strip-types \
-  "$SOURCE_ROOT/tools/governance-relayer/cli.ts" seal-operational-config \
-  --parameters-file "$PARAMETERS" \
-  --receipt-file "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT"
+RESERVATION_STATE="$("${PROFILE[@]}" reserve-operational-config-seal \
+  "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" "$RESERVATION")"
+[[ "$RESERVATION_STATE" == created || "$RESERVATION_STATE" == existing ]] || {
+  echo "unexpected operational config seal reservation result" >&2
+  exit 1
+}
+
+if [[ "$RESERVATION_STATE" == created ]]; then
+  set +e
+  node --no-warnings --experimental-strip-types \
+    "$SOURCE_ROOT/tools/governance-relayer/cli.ts" seal-operational-config \
+    --parameters-file "$PARAMETERS" \
+    --receipt-file "$ATTEMPT"
+  SEAL_STATUS=$?
+  set -e
+else
+  SEAL_STATUS=0
+fi
+
+ATTEMPT_ARG=-
+if [[ -f "$ATTEMPT" ]]; then ATTEMPT_ARG="$ATTEMPT"; fi
+if ! "${PROFILE[@]}" write-operational-config-seal-receipt \
+  "$BRIDGE_RELEASE_BUNDLE" "$RESERVATION" "$ATTEMPT_ARG" \
+  "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT"; then
+  if [[ "$RESERVATION_STATE" == existing && ! -f "$ATTEMPT" ]]; then
+    echo "seal reservation exists without a proven live seal; no update was resent" >&2
+  elif [[ "$SEAL_STATUS" -ne 0 ]]; then
+    echo "seal response was ambiguous and the live postconditions did not prove success" >&2
+  fi
+  exit 1
+fi
+
+echo "production operational config seal verified: $BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT"

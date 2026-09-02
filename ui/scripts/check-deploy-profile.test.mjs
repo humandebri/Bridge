@@ -48,7 +48,11 @@ function fixture(profileOverrides = {}) {
   const cargo = join(bin, "cargo")
   writeFileSync(cargo, `#!/usr/bin/env node
 const fs=require('node:fs'); const a=process.argv.slice(2);
-if(a.includes('verify-live')) { if(process.env.FAKE_VERIFY_FAIL) process.exit(1); console.log('gate_b=pass manifest_sha256=${gate}'); }
+if(a.includes('verify-live')) {
+  const i=a.indexOf('verify-live');
+  if(a[i+1]!=='schedule'||a[i+2]!==process.env.BRIDGE_RELEASE_BUNDLE||process.env.FAKE_VERIFY_FAIL) process.exit(1);
+  console.log('gate_b=live-pass authorizing=schedule manifest_sha256=${gate}');
+}
 else if(a.includes('render-bundle-inputs')) fs.cpSync(process.env.FAKE_INPUTS,a.at(-1),{recursive:true});
 else process.exit(2);
 `)

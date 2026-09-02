@@ -25,10 +25,15 @@ describe("Base Sepolia asset profile template", () => {
 
   it("deploys production only from the Gate B UI artifact receipt", async () => {
     const manifest = JSON.parse(await readFile(path.resolve(import.meta.dirname, "../package.json"), "utf8"))
+    const productionAssets = await readFile(path.resolve(import.meta.dirname, "production-assets.mjs"), "utf8")
     expect(manifest.scripts.deploy).toContain("production-assets.mjs deploy")
     expect(manifest.scripts.deploy).toContain("$BRIDGE_RELEASE_BUNDLE/ui-assets.json")
     expect(manifest.scripts.deploy).toContain("$BRIDGE_UI_RUNTIME_PROFILE_FILE")
     expect(manifest.scripts.deploy).not.toContain("pnpm run build && wrangler deploy")
+    expect(productionAssets).toContain('"verify-live", "schedule", bundle')
+    expect(productionAssets).toContain("readOrdinaryFile(profileFile)")
+    expect(productionAssets).toContain("deployFrozenAssets(receipt, rawProfile")
+    expect(productionAssets).not.toContain("installRuntimeProfile(frozen, profileFile)")
   })
 
   it("keeps the production custom domain out of staging deployments", async () => {

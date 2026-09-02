@@ -26,6 +26,7 @@ PRODUCTION_CONTROLLER_PEM=""
 CONFIRMATION_RELAYER_PEM=""
 CONFIRMATION_RELAYER_IDENTITY=""
 PRIOR_SCHEDULE_RECEIPT=""
+OPERATIONAL_CONFIG_SEAL_RECEIPT=""
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --bundle)
@@ -113,6 +114,11 @@ while [[ "$#" -gt 0 ]]; do
       PRIOR_SCHEDULE_RECEIPT="$2"
       shift 2
       ;;
+    --operational-config-seal-receipt)
+      [[ "$#" -ge 2 ]] || { echo "--operational-config-seal-receipt requires a path" >&2; exit 2; }
+      OPERATIONAL_CONFIG_SEAL_RECEIPT="$2"
+      shift 2
+      ;;
     --)
       shift
       break
@@ -126,7 +132,7 @@ done
 
 usage() {
   echo "usage: $0 deploy --bundle DIR --release-inputs DIR --canister-install-receipt FILE --receipt FILE -- DEPLOY_DRIVER" >&2
-  echo "       $0 activate --phase schedule|execute --step prepare|replace|relay|confirm --artifact FILE --bundle DIR --release-inputs DIR --receipt FILE [--controller-pem FILE --confirmation-relayer-identity NAME] [--replacement-artifact NEW_FILE --replacement-max-fee WEI --replacement-priority-fee WEI] [--confirmation-relayer-pem FILE --confirmation-receipt NEW_FILE --activation-receipt NEW_FILE] [--prior-schedule-receipt FILE] --confirm-asset-acceptance TOKEN -- scripts/production-activate-driver.sh" >&2
+  echo "       $0 activate --phase schedule|execute --step prepare|replace|relay|confirm --artifact FILE --bundle DIR --release-inputs DIR --receipt FILE --operational-config-seal-receipt FILE [--controller-pem FILE --confirmation-relayer-identity NAME] [--replacement-artifact NEW_FILE --replacement-max-fee WEI --replacement-priority-fee WEI] [--confirmation-relayer-pem FILE --confirmation-receipt NEW_FILE --activation-receipt NEW_FILE] [--prior-schedule-receipt FILE] --confirm-asset-acceptance TOKEN -- scripts/production-activate-driver.sh" >&2
   exit 2
 }
 
@@ -288,6 +294,10 @@ else
   }
   [[ -n "$ACTIVATION_ARTIFACT" ]] || {
     echo "activation requires a fixed artifact path" >&2
+    exit 1
+  }
+  [[ -f "$OPERATIONAL_CONFIG_SEAL_RECEIPT" && ! -L "$OPERATIONAL_CONFIG_SEAL_RECEIPT" ]] || {
+    echo "activation requires the verified operational config seal receipt" >&2
     exit 1
   }
   if [[ "$ACTIVATION_STEP" == prepare ]]; then
@@ -452,5 +462,6 @@ else
   export BRIDGE_CONFIRMATION_RELAYER_PEM="$CONFIRMATION_RELAYER_PEM"
   export BRIDGE_CONFIRMATION_RELAYER_IDENTITY="$CONFIRMATION_RELAYER_IDENTITY"
   export BRIDGE_PRIOR_SCHEDULE_RECEIPT="$PRIOR_SCHEDULE_RECEIPT"
+  export BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$OPERATIONAL_CONFIG_SEAL_RECEIPT"
   "$DRIVER_PATH"
 fi

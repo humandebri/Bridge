@@ -102,12 +102,14 @@ expect_rejected() {
 }
 
 printf 'fixture-controller-key\n' >"$TEST_TMP_ROOT/controller.pem"
+printf '{"schema_version":1}\n' >"$TEST_TMP_ROOT/operational-config-seal-receipt.json"
 ACTIVATION_ARGS=(
   --phase schedule
   --step prepare
   --artifact "$TEST_TMP_ROOT/schedule-artifact.json"
   --controller-pem "$TEST_TMP_ROOT/controller.pem"
   --confirmation-relayer-identity confirmation-relayer
+  --operational-config-seal-receipt "$TEST_TMP_ROOT/operational-config-seal-receipt.json"
   --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION
 )
 
@@ -244,6 +246,7 @@ printf '{}\n' >"$TEST_TMP_ROOT/schedule-artifact.json"
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
   --release-inputs "$TEST_TMP_ROOT/release-inputs" --phase schedule --step replace \
   --artifact "$TEST_TMP_ROOT/schedule-artifact.json" --controller-pem "$TEST_TMP_ROOT/controller.pem" \
+  --operational-config-seal-receipt "$TEST_TMP_ROOT/operational-config-seal-receipt.json" \
   --replacement-artifact "$TEST_TMP_ROOT/schedule-replacement.json" \
   --replacement-max-fee 2 --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION \
   -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
@@ -251,6 +254,7 @@ ACTION_MARKER="$TEST_TMP_ROOT/replaced" run_release activate \
   --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
   --release-inputs "$TEST_TMP_ROOT/release-inputs" --phase schedule --step replace \
   --artifact "$TEST_TMP_ROOT/schedule-artifact.json" --controller-pem "$TEST_TMP_ROOT/controller.pem" \
+  --operational-config-seal-receipt "$TEST_TMP_ROOT/operational-config-seal-receipt.json" \
   --replacement-artifact "$TEST_TMP_ROOT/schedule-replacement.json" \
   --replacement-max-fee 2 --replacement-priority-fee 1 \
   --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION \
@@ -265,6 +269,7 @@ EXECUTION_ARGS=(
   --artifact "$TEST_TMP_ROOT/execute-artifact.json"
   --controller-pem "$TEST_TMP_ROOT/controller.pem"
   --confirmation-relayer-identity confirmation-relayer
+  --operational-config-seal-receipt "$TEST_TMP_ROOT/operational-config-seal-receipt.json"
   --prior-schedule-receipt "$TEST_TMP_ROOT/schedule-receipt.json"
   --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE
 )

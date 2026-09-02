@@ -94,7 +94,28 @@ export TEST_INSTALLER="$INSTALLER" TEST_CANISTER="$CANISTER" TEST_LIVE_MODULE="$
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
   --gate-a-receipt "$T/gate-a-receipt.json" --evidence "$T/evidence/preflight.json" >/dev/null
-BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" execute \
+if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/receipt.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted a missing explicit confirmation" >&2
+  exit 1
+fi
+[[ "$(<"$T/live-version")" == 10 && ! -e "$T/evidence/receipt.json.execution.json" ]]
+if BRIDGE_ICP_IDENTITY=production BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=WRONG \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/receipt.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted an incorrect explicit confirmation" >&2
+  exit 1
+fi
+[[ "$(<"$T/live-version")" == 10 && ! -e "$T/evidence/receipt.json.execution.json" ]]
+BRIDGE_ICP_IDENTITY=production \
+BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
   --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" \
@@ -134,5 +155,16 @@ if BRIDGE_ICP_IDENTITY=anonymous "$T/source/scripts/production-canister-upgrade.
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
   --gate-a-receipt "$T/gate-a-receipt.json" --evidence "$T/evidence/anonymous.json" >/dev/null 2>&1; then
   echo "production upgrade accepted a non-production identity" >&2
+  exit 1
+fi
+
+if BRIDGE_ICP_IDENTITY=production \
+  BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" recover \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --controller-pem "$T/production.pem" --receipt "$T/evidence/unexpected-confirmation.json" \
+  >/dev/null 2>&1; then
+  echo "production upgrade recovery accepted an execute-only confirmation" >&2
   exit 1
 fi

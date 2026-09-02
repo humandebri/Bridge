@@ -11,6 +11,7 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 : "${BRIDGE_ACTIVATION_PHASE:?set BRIDGE_ACTIVATION_PHASE=schedule or execute}"
 : "${BRIDGE_ACTIVATION_STEP:?set BRIDGE_ACTIVATION_STEP=prepare, replace, relay, or confirm}"
 : "${BRIDGE_ACTIVATION_ARTIFACT:?missing fixed activation artifact path}"
+: "${BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT:?missing operational config seal receipt}"
 
 [[ "$BRIDGE_ACTIVATION_PHASE" == schedule || "$BRIDGE_ACTIVATION_PHASE" == execute ]] || {
   echo "invalid activation phase" >&2
@@ -21,6 +22,11 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
   exit 1
 }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
+[[ -f "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
+  && ! -L "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" ]] || {
+  echo "operational config seal receipt must be an ordinary file" >&2
+  exit 1
+}
 
 FROZEN_BUNDLE="$(mktemp -d "${TMPDIR:-/tmp}/bridge-activation-plan.XXXXXX")"
 FROZEN_INPUTS="$(mktemp -d "${TMPDIR:-/tmp}/bridge-activation-inputs.XXXXXX")"
@@ -85,15 +91,16 @@ PY
 
 verify_authorization() {
   "${PROFILE[@]}" verify-controller-activation-authorization "$BRIDGE_ACTIVATION_PHASE" \
-    "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" "$AUTHORIZATION_RECEIPT"
+    "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
+    "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$AUTHORIZATION_RECEIPT"
 }
 
 freeze_activation_inputs() {
   python3 - "$BRIDGE_ACTIVATION_ARTIFACT" "$AUTHORIZATION_RECEIPT" "$PREPARE_RECEIPT" \
     "$FROZEN_INPUTS" "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_ACTIVATION_PHASE" \
-    "$BRIDGE_GATE_B_MANIFEST_SHA256" <<'PY'
+    "$BRIDGE_GATE_B_MANIFEST_SHA256" "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" <<'PY'
 import hashlib,json,os,sys
-artifact,authorization,binding,destination,bundle,phase,gate_hash=sys.argv[1:]
+artifact,authorization,binding,destination,bundle,phase,gate_hash,seal_receipt=sys.argv[1:]
 def read(path):
  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
  try:
@@ -110,13 +117,15 @@ manifest=json.load(open(os.path.join(bundle,'release-manifest.json'),encoding='u
 gate=json.load(open(os.path.join(bundle,'gate-a-receipt.json'),encoding='utf-8'))
 profile=json.load(open(os.path.join(bundle,'profile.json'),encoding='utf-8'))
 expected_authorization={'schema_version','phase','release_id','source_revision','source_tree_sha256',
- 'gate_b_manifest_sha256','controller_principal','certified_controller_set',
+ 'gate_b_manifest_sha256','operational_config_seal_receipt_sha256',
+ 'controller_principal','certified_controller_set',
  'certified_module_sha256','authorized_at_unix'}
 controller=gate['canister_install']['installer_principal']
 assert set(authorized)==expected_authorization and authorized['schema_version']==1 and authorized['phase']==phase
 assert authorized['release_id']==manifest['release_id'] and authorized['source_revision']==manifest['source_revision']
 assert authorized['source_tree_sha256'].lower()==manifest['source_tree_sha256'].lower()
 assert authorized['gate_b_manifest_sha256'].lower()==gate_hash.lower()
+assert authorized['operational_config_seal_receipt_sha256'].lower()==hashlib.sha256(read(seal_receipt)).hexdigest()
 assert authorized['controller_principal']==controller and authorized['certified_controller_set']==[controller]
 assert authorized['certified_module_sha256'].lower()==profile['bridge_canister_wasm_sha256'].lower()
 assert type(authorized['authorized_at_unix']) is int and authorized['authorized_at_unix']>0
@@ -163,13 +172,21 @@ case "$BRIDGE_ACTIVATION_STEP" in
       [[ ! -e "$BRIDGE_ACTIVATION_ARTIFACT" && ! -e "$PREPARE_RECEIPT" ]] || { echo "activation outputs exist without their authorization receipt" >&2; exit 1; }
       production_validate_gate gate-b-live "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256"
       "${PROFILE[@]}" authorize-controller-activation "$BRIDGE_ACTIVATION_PHASE" \
-        "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" "$AUTHORIZATION_RECEIPT"
+        "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
+        "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$AUTHORIZATION_RECEIPT"
+      "${PROFILE[@]}" verify-controller-activation-authorization-fresh "$BRIDGE_ACTIVATION_PHASE" \
+        "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
+        "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$AUTHORIZATION_RECEIPT"
+      export IC_IDENTITY_PEM="$BRIDGE_PRODUCTION_CONTROLLER_PEM"
+      "${CLI[@]}" "prepare-${BRIDGE_ACTIVATION_PHASE}-activation" \
+        --artifact-file "$BRIDGE_ACTIVATION_ARTIFACT"
     else
       verify_authorization
+      unset IC_IDENTITY_PEM
+      "${CLI[@]}" recover-activation --phase "$BRIDGE_ACTIVATION_PHASE" \
+        --authorization-file "$AUTHORIZATION_RECEIPT" \
+        --artifact-file "$BRIDGE_ACTIVATION_ARTIFACT"
     fi
-    export IC_IDENTITY_PEM="$BRIDGE_PRODUCTION_CONTROLLER_PEM"
-    "${CLI[@]}" "prepare-${BRIDGE_ACTIVATION_PHASE}-activation" \
-      --artifact-file "$BRIDGE_ACTIVATION_ARTIFACT"
     if [[ ! -e "$PREPARE_RECEIPT" ]]; then write_prepare_receipt; else verify_prepare_receipt; fi
     ;;
   replace)
@@ -182,7 +199,8 @@ case "$BRIDGE_ACTIVATION_STEP" in
     verify_prepare_receipt
     freeze_activation_inputs
     "${PROFILE[@]}" verify-controller-activation-authorization "$BRIDGE_ACTIVATION_PHASE" \
-      "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" "$FROZEN_INPUTS/authorization.json"
+      "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
+      "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$FROZEN_INPUTS/authorization.json"
     copy_replacement_authorization
     export IC_IDENTITY_PEM="$BRIDGE_PRODUCTION_CONTROLLER_PEM"
     "${CLI[@]}" replace-activation \
@@ -199,7 +217,15 @@ case "$BRIDGE_ACTIVATION_STEP" in
     verify_prepare_receipt
     freeze_activation_inputs
     "${PROFILE[@]}" verify-controller-activation-authorization "$BRIDGE_ACTIVATION_PHASE" \
-      "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" "$FROZEN_INPUTS/authorization.json"
+      "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
+      "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$FROZEN_INPUTS/authorization.json"
+    PRIOR_RECEIPT="${BRIDGE_PRIOR_SCHEDULE_RECEIPT:--}"
+    [[ -n "$PRIOR_RECEIPT" ]] || PRIOR_RECEIPT="-"
+    "${PROFILE[@]}" verify-controller-activation-artifact "$BRIDGE_ACTIVATION_PHASE" \
+      "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_INPUTS/artifact.json" \
+      "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
+      "$FROZEN_INPUTS/authorization.json" "$FROZEN_INPUTS/binding.json" \
+      "$PRIOR_RECEIPT"
     unset IC_IDENTITY_PEM
     "${CLI[@]}" relay --artifact-file "$FROZEN_INPUTS/artifact.json" \
       --authorization-file "$FROZEN_INPUTS/authorization.json" \
@@ -213,7 +239,8 @@ case "$BRIDGE_ACTIVATION_STEP" in
     verify_prepare_receipt
     freeze_activation_inputs
     "${PROFILE[@]}" verify-controller-activation-authorization "$BRIDGE_ACTIVATION_PHASE" \
-      "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" "$FROZEN_INPUTS/authorization.json"
+      "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
+      "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$FROZEN_INPUTS/authorization.json"
     export IC_IDENTITY_PEM="$BRIDGE_CONFIRMATION_RELAYER_PEM"
     "${CLI[@]}" confirm --artifact-file "$FROZEN_INPUTS/artifact.json" \
       --authorization-file "$FROZEN_INPUTS/authorization.json" \
@@ -223,6 +250,7 @@ case "$BRIDGE_ACTIVATION_STEP" in
     [[ -n "$PRIOR_RECEIPT" ]] || PRIOR_RECEIPT="-"
     "${PROFILE[@]}" verify-controller-activation "$BRIDGE_ACTIVATION_PHASE" \
       "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_INPUTS/artifact.json" \
+      "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
       "$FROZEN_INPUTS/authorization.json" "$FROZEN_INPUTS/binding.json" \
       "$BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT" "$PRIOR_RECEIPT" \
       "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT"

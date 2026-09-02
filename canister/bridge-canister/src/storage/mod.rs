@@ -12667,9 +12667,11 @@ mod tests {
             StableBlob::new(bytes).expect("bounded legacy value")
         }
 
-        let mut admission = DepositAdmissionControl::default();
-        admission.operational_config_sealed = true;
-        admission.bootstrap_activation_controller = Some(Principal::from_slice(&[0x99]));
+        let admission = DepositAdmissionControl {
+            operational_config_sealed: true,
+            bootstrap_activation_controller: Some(Principal::from_slice(&[0x99])),
+            ..Default::default()
+        };
         let decoded_admission: DepositAdmissionControl = decode(&without_field(
             &admission,
             "bootstrap_activation_controller",

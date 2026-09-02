@@ -857,6 +857,7 @@ struct MonitorIcPause {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct KeeperDrill {
     schema_version: u8,
     source_revision: String,
@@ -875,6 +876,7 @@ struct KeeperDrill {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct MonitoringReceipt {
     schema_version: u8,
     source_revision: String,
@@ -888,6 +890,7 @@ struct MonitoringReceipt {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct MonitoringBurnReceipt {
     base_chain_id: u64,
     bridge_contract: String,
@@ -901,6 +904,7 @@ struct MonitoringBurnReceipt {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct MonitoringPaidObservation {
     observed_at_unix: u64,
     state: String,
@@ -910,6 +914,7 @@ struct MonitoringPaidObservation {
 }
 
 #[derive(CandidType, Deserialize, Serialize, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
 enum WithdrawalPhaseView {
     Paid,
     ReleasePending,
@@ -918,6 +923,7 @@ enum WithdrawalPhaseView {
 }
 
 #[derive(CandidType, Deserialize, Serialize, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
 struct WithdrawalView {
     charged_service_fee: Nat,
     withdrawal_id: Vec<u8>,
@@ -946,6 +952,7 @@ struct ProviderIndependenceReceipt {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct ControllerHandover {
     schema_version: u8,
     stage: String,
@@ -968,6 +975,7 @@ struct ControllerHandover {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct SnsUpgrade {
     schema_version: u8,
     observed_at_unix: u64,
@@ -1037,6 +1045,7 @@ struct ActivationReceipt {
     function_registry_response_sha256: String,
     activation_status_response_hex: String,
     activation_status_response_sha256: String,
+    governance_operation_id: String,
     operation_id: String,
     operation_salt: String,
     prior_schedule_receipt_sha256: Option<String>,
@@ -1058,6 +1067,7 @@ struct ControllerActivationAuthorizationReceipt {
     source_revision: String,
     source_tree_sha256: String,
     gate_b_manifest_sha256: String,
+    operational_config_seal_receipt_sha256: String,
     controller_principal: String,
     certified_controller_set: Vec<String>,
     certified_module_sha256: String,
@@ -1122,6 +1132,56 @@ struct ControllerActivationReceipt {
     activation_status_response_sha256: String,
     prior_schedule_receipt_sha256: Option<String>,
     confirmed_at_unix: u64,
+    verified_at_unix: u64,
+}
+
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct OperationalConfigSealReservation {
+    schema_version: u8,
+    release_id: String,
+    source_revision: String,
+    source_tree_sha256: String,
+    gate_b_manifest_sha256: String,
+    bridge_canister_id: String,
+    controller_principal: String,
+    certified_module_sha256: String,
+    parameters_sha256: String,
+    operational_args_sha256: String,
+    reserved_at_unix: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OperationalConfigSealReceiptEvidence {
+    schema_version: u8,
+    release_id: String,
+    source_revision: String,
+    source_tree_sha256: String,
+    gate_b_manifest_sha256: String,
+    reservation_hex: String,
+    reservation_sha256: String,
+    parameters_sha256: String,
+    operational_args_sha256: String,
+    bridge_canister_id: String,
+    controller_principal: String,
+    certified_controller_set: Vec<String>,
+    certified_module_sha256: String,
+    expected_operational_config_sha256: String,
+    observed_operational_config_sha256: String,
+    recovered: bool,
+    attempt_hex: Option<String>,
+    attempt_sha256: Option<String>,
+    lifecycle_response_hex: String,
+    lifecycle_response_sha256: String,
+    activation_attestation_response_hex: String,
+    activation_attestation_response_sha256: String,
+    runtime_binding_response_hex: String,
+    runtime_binding_response_sha256: String,
+    bridge_status_response_hex: String,
+    bridge_status_response_sha256: String,
+    pending_transactions_response_hex: String,
+    pending_transactions_response_sha256: String,
     verified_at_unix: u64,
 }
 
@@ -1776,7 +1836,6 @@ fn derive_initial_operational_parameters(
     let operation_salt =
         initial_activation_salt(deployment_instance_id, evidence.governance_operation_id);
     if evidence.timelock_delay_seconds != 86_400
-        || evidence.governance_operation_id != 0
         || !evm_address(&evidence.governance_sender)
         || !valid_nonzero_hash32(&evidence.deployment_instance_id)
         || !evidence
@@ -2208,6 +2267,7 @@ fn initial_activation_calldata(
     Ok(format!("0x{}", hex(&calldata)))
 }
 
+#[allow(dead_code)]
 fn evm_topic(signature: &str) -> String {
     let mut hash = [0u8; 32];
     let mut keccak = Keccak::v256();
@@ -2324,6 +2384,7 @@ fn validate_monitor_drill(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn validate_keeper_drill(
     root: &Path,
     manifest: &ReleaseManifest,
@@ -4091,6 +4152,7 @@ fn validate_activation_attestation_time(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn validate_plan006_evidence(
     root: &Path,
     manifest: &ReleaseManifest,
@@ -5492,6 +5554,7 @@ fn verify_monitor_ic_certificate(bundle: &ValidatedBundle) -> Result<(), String>
     Ok(())
 }
 
+#[allow(dead_code)]
 fn verify_keeper_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
     let monitoring: MonitoringReceipt = read_json(&bundle.root.join("monitoring-receipt.json"))?;
     let withdrawal_id = decode_hex(&monitoring.withdrawal_id)?;
@@ -5598,6 +5661,7 @@ fn verify_activation_attestation_authenticity(bundle: &ValidatedBundle) -> Resul
     )
 }
 
+#[allow(dead_code)]
 fn verify_sns_upgrade_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
     let upgrade: SnsUpgrade = read_json(&bundle.root.join("sns-upgrade.json"))?;
     let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|e| e.to_string())?;
@@ -5791,6 +5855,487 @@ fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+fn operational_config_seal_reservation(
+    bundle: &ValidatedBundle,
+    expected_gate_hash: &str,
+    path: &Path,
+) -> Result<bool, String> {
+    if !expected_gate_hash.eq_ignore_ascii_case(&bundle.manifest_sha256) {
+        return Err("seal reservation Gate B hash differs from the bundle".into());
+    }
+    let parameters_path = bundle.root.join("initial-operational-parameters.json");
+    let parameters_bytes = fs::read(&parameters_path).map_err(|error| error.to_string())?;
+    let parameters: InitialOperationalParameters =
+        serde_json::from_slice(&parameters_bytes).map_err(|error| error.to_string())?;
+    validate_initial_operational_parameters(
+        &parameters,
+        &bundle.profile,
+        bundle.manifest.created_at_unix,
+        now_unix()?,
+    )?;
+    let controller = gate_b_controller(bundle)?.to_text();
+    let expected = OperationalConfigSealReservation {
+        schema_version: 1,
+        release_id: bundle.manifest.release_id.clone(),
+        source_revision: bundle.manifest.source_revision.clone(),
+        source_tree_sha256: bundle.manifest.source_tree_sha256.clone(),
+        gate_b_manifest_sha256: bundle.manifest_sha256.clone(),
+        bridge_canister_id: bundle.profile.bridge_canister_id.clone(),
+        controller_principal: controller,
+        certified_module_sha256: bundle.profile.bridge_canister_wasm_sha256.clone(),
+        parameters_sha256: hex(&Sha256::digest(&parameters_bytes)),
+        operational_args_sha256: hex(&canonical_sha256(&parameters.derived)?),
+        reserved_at_unix: now_unix()?,
+    };
+    if path.exists() {
+        let existing: OperationalConfigSealReservation = read_json(path)?;
+        let mut comparable = expected;
+        comparable.reserved_at_unix = existing.reserved_at_unix;
+        if existing != comparable || existing.reserved_at_unix == 0 {
+            return Err("existing seal reservation differs from the reviewed release".into());
+        }
+        return Ok(false);
+    }
+    write_json_new(path, &expected)?;
+    Ok(true)
+}
+
+fn write_operational_config_seal_receipt(
+    bundle: &ValidatedBundle,
+    reservation_path: &Path,
+    attempt_path: Option<&Path>,
+    output_path: &Path,
+) -> Result<(), String> {
+    let reservation_bytes = fs::read(reservation_path).map_err(|error| error.to_string())?;
+    let reservation: OperationalConfigSealReservation =
+        serde_json::from_slice(&reservation_bytes).map_err(|error| error.to_string())?;
+    operational_config_seal_reservation(bundle, &bundle.manifest_sha256, reservation_path)?;
+    let parameters_bytes = fs::read(bundle.root.join("initial-operational-parameters.json"))
+        .map_err(|error| error.to_string())?;
+    let attempt_bytes = if let Some(path) = attempt_path {
+        let bytes = fs::read(path).map_err(|error| error.to_string())?;
+        Some(bytes)
+    } else {
+        None
+    };
+
+    verify_live(bundle, true)?;
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let (lifecycle_raw, attestation_raw, runtime_raw, status_raw, pending_raw) =
+        async_runtime()?.block_on(async {
+            let empty = Encode!().map_err(|error| error.to_string())?;
+            let lifecycle = agent
+                .query(&bridge, "get_production_lifecycle")
+                .with_arg(empty.clone())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let attestation = agent
+                .query(&bridge, "get_activation_attestation")
+                .with_arg(empty.clone())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let runtime = agent
+                .query(&bridge, "get_runtime_binding")
+                .with_arg(empty.clone())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let status = agent
+                .query(&bridge, "get_bridge_status")
+                .with_arg(empty.clone())
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            let pending = agent
+                .query(&bridge, "get_pending_base_governance_transaction")
+                .with_arg(empty)
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok::<_, String>((lifecycle, attestation, runtime, status, pending))
+        })?;
+    let lifecycle = Decode!(&lifecycle_raw, ProductionLifecycleResultView)
+        .map_err(|error| error.to_string())?;
+    let attestation = Decode!(&attestation_raw, ActivationAttestationResultView)
+        .map_err(|error| error.to_string())?;
+    let runtime = Decode!(&runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
+    let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
+    let pending = Decode!(&pending_raw, PendingGovernanceTransactionsView)
+        .map_err(|error| error.to_string())?;
+    let expected_operational_config_sha256 = expected_operational_config_sha256(
+        &bundle.profile,
+        status.mint_authorization_ttl_seconds,
+        status.mint_authorization_epoch,
+    )?;
+    if !matches!(
+        lifecycle,
+        ProductionLifecycleResultView::Ok(ProductionLifecycleView::OperationalConfigSealed)
+    ) || !matches!(attestation, ActivationAttestationResultView::Ok(_))
+        || !status.deposits_paused
+        || !status.reserve.sufficient
+        || !matches!(pending, PendingGovernanceTransactionsView::Ok(ref values) if values.is_empty())
+        || runtime.operational_config_sha256 != expected_operational_config_sha256
+    {
+        return Err("live Canister state cannot prove the reviewed operational config seal".into());
+    }
+    let (controllers, module_hash) = gate_b_management_snapshot(bundle)?;
+    if controllers
+        .iter()
+        .map(Principal::to_text)
+        .collect::<Vec<_>>()
+        != [reservation.controller_principal.clone()]
+        || !hex(&module_hash).eq_ignore_ascii_case(&reservation.certified_module_sha256)
+        || reservation.parameters_sha256 != hex(&Sha256::digest(&parameters_bytes))
+    {
+        return Err("seal receipt management or parameter binding drifted".into());
+    }
+    let verified_at_unix = now_unix()?;
+    let attempt_sha256 = attempt_bytes
+        .as_deref()
+        .map(|bytes| {
+            validate_operational_config_seal_attempt(bytes, &reservation, verified_at_unix)
+        })
+        .transpose()?;
+    let receipt = OperationalConfigSealReceiptEvidence {
+        schema_version: 1,
+        release_id: reservation.release_id,
+        source_revision: reservation.source_revision,
+        source_tree_sha256: reservation.source_tree_sha256,
+        gate_b_manifest_sha256: reservation.gate_b_manifest_sha256,
+        reservation_hex: hex(&reservation_bytes),
+        reservation_sha256: hex(&Sha256::digest(&reservation_bytes)),
+        parameters_sha256: reservation.parameters_sha256,
+        operational_args_sha256: reservation.operational_args_sha256,
+        bridge_canister_id: reservation.bridge_canister_id,
+        controller_principal: reservation.controller_principal.clone(),
+        certified_controller_set: vec![reservation.controller_principal],
+        certified_module_sha256: hex(&module_hash),
+        expected_operational_config_sha256: hex(&expected_operational_config_sha256),
+        observed_operational_config_sha256: hex(&runtime.operational_config_sha256),
+        recovered: attempt_path.is_none(),
+        attempt_hex: attempt_bytes.as_deref().map(hex),
+        attempt_sha256,
+        lifecycle_response_hex: hex(&lifecycle_raw),
+        lifecycle_response_sha256: hex(&Sha256::digest(&lifecycle_raw)),
+        activation_attestation_response_hex: hex(&attestation_raw),
+        activation_attestation_response_sha256: hex(&Sha256::digest(&attestation_raw)),
+        runtime_binding_response_hex: hex(&runtime_raw),
+        runtime_binding_response_sha256: hex(&Sha256::digest(&runtime_raw)),
+        bridge_status_response_hex: hex(&status_raw),
+        bridge_status_response_sha256: hex(&Sha256::digest(&status_raw)),
+        pending_transactions_response_hex: hex(&pending_raw),
+        pending_transactions_response_sha256: hex(&Sha256::digest(&pending_raw)),
+        verified_at_unix,
+    };
+    write_json_new(output_path, &receipt)
+}
+
+fn validate_operational_config_seal_attempt(
+    bytes: &[u8],
+    reservation: &OperationalConfigSealReservation,
+    verified_at_unix: u64,
+) -> Result<String, String> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    let object = value
+        .as_object()
+        .ok_or("seal attempt must be a JSON object")?;
+    let mut keys = object.keys().map(String::as_str).collect::<Vec<_>>();
+    keys.sort_unstable();
+    let response = object.get("response").and_then(Value::as_object);
+    let response_keys = response.map(|value| {
+        let mut keys = value.keys().map(String::as_str).collect::<Vec<_>>();
+        keys.sort_unstable();
+        keys
+    });
+    let lifecycle = response
+        .and_then(|value| value.get("lifecycle"))
+        .and_then(Value::as_object);
+    let sealed_at_unix = object.get("sealed_at_unix").and_then(Value::as_u64);
+    if keys
+        != [
+            "parameters_sha256",
+            "response",
+            "schema_version",
+            "sealed_at_unix",
+        ]
+        || object.get("schema_version").and_then(Value::as_u64) != Some(1)
+        || object.get("parameters_sha256").and_then(Value::as_str)
+            != Some(reservation.parameters_sha256.as_str())
+        || response_keys.as_deref() != Some(&["activation_attestation", "lifecycle"])
+        || lifecycle.and_then(|value| value.get("OperationalConfigSealed")) != Some(&Value::Null)
+        || !sealed_at_unix
+            .is_some_and(|value| value >= reservation.reserved_at_unix && value <= verified_at_unix)
+    {
+        return Err(
+            "seal attempt differs from the durable reservation or verified timeline".into(),
+        );
+    }
+    Ok(hex(&Sha256::digest(bytes)))
+}
+
+#[derive(Clone, Copy)]
+enum SealReceiptLiveContext {
+    PrePrepare,
+    PendingResume,
+    ScheduleFinalization,
+    ExecuteFinalization,
+}
+
+fn validate_operational_config_seal_receipt(
+    bundle: &ValidatedBundle,
+    path: &Path,
+    live_context: SealReceiptLiveContext,
+) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    let receipt: OperationalConfigSealReceiptEvidence =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let reservation_bytes = decode_hex(&receipt.reservation_hex)?;
+    if !hex(&Sha256::digest(&reservation_bytes)).eq_ignore_ascii_case(&receipt.reservation_sha256) {
+        return Err("seal receipt reservation digest does not match its bytes".into());
+    }
+    let reservation: OperationalConfigSealReservation =
+        serde_json::from_slice(&reservation_bytes).map_err(|error| error.to_string())?;
+    let parameters_bytes = fs::read(bundle.root.join("initial-operational-parameters.json"))
+        .map_err(|error| error.to_string())?;
+    let parameters: InitialOperationalParameters =
+        serde_json::from_slice(&parameters_bytes).map_err(|error| error.to_string())?;
+    validate_initial_operational_parameters(
+        &parameters,
+        &bundle.profile,
+        bundle.manifest.created_at_unix,
+        now_unix()?,
+    )?;
+    let controller = gate_b_controller(bundle)?.to_text();
+    if reservation.schema_version != 1
+        || reservation.release_id != bundle.manifest.release_id
+        || reservation.source_revision != bundle.manifest.source_revision
+        || !reservation
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
+        || !reservation
+            .gate_b_manifest_sha256
+            .eq_ignore_ascii_case(&bundle.manifest_sha256)
+        || reservation.bridge_canister_id != bundle.profile.bridge_canister_id
+        || reservation.controller_principal != controller
+        || !reservation
+            .certified_module_sha256
+            .eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+        || reservation.parameters_sha256 != hex(&Sha256::digest(&parameters_bytes))
+        || reservation.operational_args_sha256 != hex(&canonical_sha256(&parameters.derived)?)
+        || reservation.reserved_at_unix == 0
+        || receipt.schema_version != 1
+        || receipt.release_id != reservation.release_id
+        || receipt.source_revision != reservation.source_revision
+        || !receipt
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&reservation.source_tree_sha256)
+        || !receipt
+            .gate_b_manifest_sha256
+            .eq_ignore_ascii_case(&reservation.gate_b_manifest_sha256)
+        || receipt.parameters_sha256 != reservation.parameters_sha256
+        || receipt.operational_args_sha256 != reservation.operational_args_sha256
+        || receipt.bridge_canister_id != reservation.bridge_canister_id
+        || receipt.controller_principal != reservation.controller_principal
+        || receipt.certified_controller_set != [reservation.controller_principal.clone()]
+        || !receipt
+            .certified_module_sha256
+            .eq_ignore_ascii_case(&reservation.certified_module_sha256)
+        || receipt.recovered != receipt.attempt_sha256.is_none()
+        || receipt.recovered != receipt.attempt_hex.is_none()
+        || receipt.verified_at_unix < reservation.reserved_at_unix
+        || receipt.verified_at_unix > now_unix()?
+    {
+        return Err("operational config seal receipt is not bound to this Gate B release".into());
+    }
+    if let (Some(attempt_hex), Some(expected_attempt_sha256)) =
+        (&receipt.attempt_hex, &receipt.attempt_sha256)
+    {
+        let attempt_bytes = decode_hex(attempt_hex)?;
+        let actual_attempt_sha256 = validate_operational_config_seal_attempt(
+            &attempt_bytes,
+            &reservation,
+            receipt.verified_at_unix,
+        )?;
+        if !actual_attempt_sha256.eq_ignore_ascii_case(expected_attempt_sha256) {
+            return Err("seal receipt attempt digest does not match its bytes".into());
+        }
+    }
+    let raw_fields = [
+        (
+            &receipt.lifecycle_response_hex,
+            &receipt.lifecycle_response_sha256,
+        ),
+        (
+            &receipt.activation_attestation_response_hex,
+            &receipt.activation_attestation_response_sha256,
+        ),
+        (
+            &receipt.runtime_binding_response_hex,
+            &receipt.runtime_binding_response_sha256,
+        ),
+        (
+            &receipt.bridge_status_response_hex,
+            &receipt.bridge_status_response_sha256,
+        ),
+        (
+            &receipt.pending_transactions_response_hex,
+            &receipt.pending_transactions_response_sha256,
+        ),
+    ];
+    for (raw, digest) in raw_fields {
+        if !activation_raw_digest_matches(raw, digest)? {
+            return Err("operational config seal receipt raw response digest drifted".into());
+        }
+    }
+    let lifecycle_raw = decode_hex(&receipt.lifecycle_response_hex)?;
+    let attestation_raw = decode_hex(&receipt.activation_attestation_response_hex)?;
+    let runtime_raw = decode_hex(&receipt.runtime_binding_response_hex)?;
+    let status_raw = decode_hex(&receipt.bridge_status_response_hex)?;
+    let pending_raw = decode_hex(&receipt.pending_transactions_response_hex)?;
+    let lifecycle = Decode!(&lifecycle_raw, ProductionLifecycleResultView)
+        .map_err(|error| error.to_string())?;
+    let attestation = Decode!(&attestation_raw, ActivationAttestationResultView)
+        .map_err(|error| error.to_string())?;
+    let runtime = Decode!(&runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
+    let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
+    let pending = Decode!(&pending_raw, PendingGovernanceTransactionsView)
+        .map_err(|error| error.to_string())?;
+    let ActivationAttestationResultView::Ok(attestation) = attestation else {
+        return Err("seal receipt has no activation attestation".into());
+    };
+    let gate_a: GateAReceipt = read_json(&bundle.root.join("gate-a-receipt.json"))?;
+    validate_activation_attestation(
+        &bundle.profile,
+        &attestation,
+        bundle.manifest.created_at_unix,
+        gate_a
+            .bridge_deployment_block_number
+            .max(gate_a.timelock_deployment_block_number),
+        receipt.verified_at_unix,
+    )?;
+    let historical_expected_operational_config_sha256 = expected_operational_config_sha256(
+        &bundle.profile,
+        status.mint_authorization_ttl_seconds,
+        status.mint_authorization_epoch,
+    )?;
+    if !matches!(
+        lifecycle,
+        ProductionLifecycleResultView::Ok(ProductionLifecycleView::OperationalConfigSealed)
+    ) || !status.deposits_paused
+        || !status.reserve.sufficient
+        || !matches!(pending, PendingGovernanceTransactionsView::Ok(ref values) if values.is_empty())
+        || runtime.operational_config_sha256 != historical_expected_operational_config_sha256
+        || !receipt
+            .expected_operational_config_sha256
+            .eq_ignore_ascii_case(&hex(&historical_expected_operational_config_sha256))
+        || !receipt
+            .observed_operational_config_sha256
+            .eq_ignore_ascii_case(&hex(&runtime.operational_config_sha256))
+    {
+        return Err("operational config seal receipt contains unsafe live state".into());
+    }
+    if matches!(live_context, SealReceiptLiveContext::PrePrepare) {
+        verify_live(bundle, true)?;
+    } else {
+        let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+            .map_err(|error| error.to_string())?;
+        let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+        let (live_lifecycle_raw, live_attestation_raw, live_runtime_raw, live_status_raw) =
+            async_runtime()?.block_on(async {
+                let empty = Encode!().map_err(|error| error.to_string())?;
+                let lifecycle = agent
+                    .query(&bridge, "get_production_lifecycle")
+                    .with_arg(empty.clone())
+                    .call_with_verification()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let attestation = agent
+                    .query(&bridge, "get_activation_attestation")
+                    .with_arg(empty.clone())
+                    .call_with_verification()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let runtime = agent
+                    .query(&bridge, "get_runtime_binding")
+                    .with_arg(empty.clone())
+                    .call_with_verification()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let status = agent
+                    .query(&bridge, "get_bridge_status")
+                    .with_arg(empty)
+                    .call_with_verification()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>((lifecycle, attestation, runtime, status))
+            })?;
+        let live_lifecycle = Decode!(&live_lifecycle_raw, ProductionLifecycleResultView)
+            .map_err(|error| error.to_string())?;
+        let live_attestation = Decode!(&live_attestation_raw, ActivationAttestationResultView)
+            .map_err(|error| error.to_string())?;
+        let live_runtime =
+            Decode!(&live_runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
+        let live_status =
+            Decode!(&live_status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
+        let ActivationAttestationResultView::Ok(live_attestation) = live_attestation else {
+            return Err("live activation attestation is unavailable for seal recovery".into());
+        };
+        validate_activation_attestation(
+            &bundle.profile,
+            &live_attestation,
+            bundle.manifest.created_at_unix,
+            gate_a
+                .bridge_deployment_block_number
+                .max(gate_a.timelock_deployment_block_number),
+            now_unix()?,
+        )?;
+        let live_expected_digest = expected_operational_config_sha256(
+            &bundle.profile,
+            live_status.mint_authorization_ttl_seconds,
+            live_status.mint_authorization_epoch,
+        )?;
+        let lifecycle_matches = match live_context {
+            SealReceiptLiveContext::PendingResume
+            | SealReceiptLiveContext::ScheduleFinalization => {
+                matches!(
+                    live_lifecycle,
+                    ProductionLifecycleResultView::Ok(
+                        ProductionLifecycleView::OperationalConfigSealed
+                    )
+                ) && live_status.deposits_paused
+            }
+            SealReceiptLiveContext::ExecuteFinalization => {
+                matches!(
+                    live_lifecycle,
+                    ProductionLifecycleResultView::Ok(ProductionLifecycleView::Activated)
+                ) && !live_status.deposits_paused
+            }
+            SealReceiptLiveContext::PrePrepare => unreachable!(),
+        };
+        if !lifecycle_matches
+            || !live_status.reserve.sufficient
+            || live_runtime.operational_config_sha256 != live_expected_digest
+        {
+            return Err("live activation phase is inconsistent with the seal receipt".into());
+        }
+    }
+    let (controllers, module_hash) = gate_b_management_snapshot(bundle)?;
+    if controllers
+        .iter()
+        .map(Principal::to_text)
+        .collect::<Vec<_>>()
+        != receipt.certified_controller_set
+        || !hex(&module_hash).eq_ignore_ascii_case(&receipt.certified_module_sha256)
+    {
+        return Err("live management state differs from the seal receipt".into());
+    }
+    Ok(hex(&Sha256::digest(&bytes)))
+}
+
 fn activation_raw_digest_matches(raw: &str, digest: &str) -> Result<bool, String> {
     Ok(valid_sha256(digest) && hex(&Sha256::digest(decode_hex(raw)?)).eq_ignore_ascii_case(digest))
 }
@@ -5799,6 +6344,7 @@ fn validate_controller_activation_authorization(
     phase: &str,
     bundle: &ValidatedBundle,
     expected_gate_hash: &str,
+    expected_seal_receipt_hash: &str,
     receipt: &ControllerActivationAuthorizationReceipt,
 ) -> Result<(), String> {
     let installer = gate_b_controller(bundle)?;
@@ -5810,6 +6356,7 @@ fn validate_controller_activation_authorization(
         &bundle.manifest.source_revision,
         &bundle.manifest.source_tree_sha256,
         expected_gate_hash,
+        expected_seal_receipt_hash,
         &installer.to_text(),
         &bundle.profile.bridge_canister_wasm_sha256,
     ) || !expected_gate_hash.eq_ignore_ascii_case(&bundle.manifest_sha256)
@@ -5833,6 +6380,7 @@ fn controller_activation_authorization_fields_match(
     source_revision: &str,
     source_tree_sha256: &str,
     gate_hash: &str,
+    seal_receipt_hash: &str,
     controller: &str,
     module_sha256: &str,
 ) -> bool {
@@ -5848,6 +6396,10 @@ fn controller_activation_authorization_fields_match(
         && receipt
             .gate_b_manifest_sha256
             .eq_ignore_ascii_case(gate_hash)
+        && valid_sha256(seal_receipt_hash)
+        && receipt
+            .operational_config_seal_receipt_sha256
+            .eq_ignore_ascii_case(seal_receipt_hash)
         && receipt.controller_principal == controller
         && receipt.certified_controller_set == [controller]
         && receipt
@@ -5895,9 +6447,19 @@ fn controller_activation_authorization(
     phase: &str,
     bundle: &ValidatedBundle,
     expected_gate_hash: &str,
+    seal_receipt_path: &Path,
     output: Option<&Path>,
     existing: Option<&Path>,
 ) -> Result<(), String> {
+    let seal_receipt_sha256 = validate_operational_config_seal_receipt(
+        bundle,
+        seal_receipt_path,
+        if existing.is_some() {
+            SealReceiptLiveContext::PendingResume
+        } else {
+            SealReceiptLiveContext::PrePrepare
+        },
+    )?;
     let receipt = if let Some(path) = existing {
         read_json(path)?
     } else {
@@ -5911,13 +6473,20 @@ fn controller_activation_authorization(
             source_revision: bundle.manifest.source_revision.clone(),
             source_tree_sha256: bundle.manifest.source_tree_sha256.clone(),
             gate_b_manifest_sha256: expected_gate_hash.to_ascii_lowercase(),
+            operational_config_seal_receipt_sha256: seal_receipt_sha256.clone(),
             controller_principal: installer.to_text(),
             certified_controller_set: controllers.iter().map(Principal::to_text).collect(),
             certified_module_sha256: hex(&module_hash),
             authorized_at_unix: now_unix()?,
         }
     };
-    validate_controller_activation_authorization(phase, bundle, expected_gate_hash, &receipt)?;
+    validate_controller_activation_authorization(
+        phase,
+        bundle,
+        expected_gate_hash,
+        &seal_receipt_sha256,
+        &receipt,
+    )?;
     gate_b_management_snapshot(bundle)?;
     if let Some(path) = output {
         write_json_new(path, &receipt)?;
@@ -5925,10 +6494,148 @@ fn controller_activation_authorization(
     Ok(())
 }
 
+fn verify_controller_activation_authorization_fresh(
+    phase: &str,
+    bundle: &ValidatedBundle,
+    expected_gate_hash: &str,
+    seal_receipt_path: &Path,
+    path: &Path,
+) -> Result<(), String> {
+    controller_activation_authorization(
+        phase,
+        bundle,
+        expected_gate_hash,
+        seal_receipt_path,
+        None,
+        Some(path),
+    )?;
+    let receipt: ControllerActivationAuthorizationReceipt = read_json(path)?;
+    let now = now_unix()?;
+    if !controller_activation_authorization_is_fresh(receipt.authorized_at_unix, now) {
+        return Err("controller activation authorization is too old for a new prepare".into());
+    }
+    Ok(())
+}
+
+fn controller_activation_authorization_is_fresh(authorized_at_unix: u64, now: u64) -> bool {
+    authorized_at_unix <= now && now - authorized_at_unix <= MAX_ACTIVATION_ATTESTATION_AGE_SECS
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_controller_activation_artifact_binding(
+    phase: &str,
+    bundle: &ValidatedBundle,
+    artifact_path: &Path,
+    seal_receipt_path: &Path,
+    authorization_path: &Path,
+    prepare_receipt_path: &Path,
+    prior_path: Option<&Path>,
+) -> Result<(), String> {
+    if phase != "schedule" && phase != "execute" {
+        return Err("activation phase must be schedule or execute".into());
+    }
+    let artifact_bytes = fs::read(artifact_path).map_err(|error| error.to_string())?;
+    let artifact: DirectActivationArtifact =
+        serde_json::from_slice(&artifact_bytes).map_err(|error| error.to_string())?;
+    let artifact_sha256 = hex(&Sha256::digest(&artifact_bytes));
+    let authorization_bytes = fs::read(authorization_path).map_err(|error| error.to_string())?;
+    let authorization: ControllerActivationAuthorizationReceipt =
+        serde_json::from_slice(&authorization_bytes).map_err(|error| error.to_string())?;
+    let seal_receipt_sha256 = validate_operational_config_seal_receipt(
+        bundle,
+        seal_receipt_path,
+        SealReceiptLiveContext::PendingResume,
+    )?;
+    validate_controller_activation_authorization(
+        phase,
+        bundle,
+        &bundle.manifest_sha256,
+        &seal_receipt_sha256,
+        &authorization,
+    )?;
+    let prepare_receipt: ControllerActivationPrepareReceipt = read_json(prepare_receipt_path)?;
+    let now = now_unix()?;
+    if authorization.authorized_at_unix > prepare_receipt.bound_at_unix
+        || prepare_receipt.bound_at_unix > now
+        || !controller_activation_prepare_fields_match(
+            &prepare_receipt,
+            phase,
+            &bundle.manifest_sha256,
+            &artifact_sha256,
+            &hex(&Sha256::digest(&authorization_bytes)),
+        )
+    {
+        return Err("activation artifact is not bound to its Gate B authorization".into());
+    }
+    let expected_kind = if phase == "schedule" {
+        "ScheduleActivation"
+    } else {
+        "ExecuteActivation"
+    };
+    let operation = artifact
+        .kind
+        .get(expected_kind)
+        .and_then(Value::as_object)
+        .ok_or("fixed artifact has the wrong activation phase")?;
+    let timelock_operation_id = operation
+        .get("operation_id")
+        .and_then(Value::as_str)
+        .ok_or("fixed artifact has no Timelock operation ID")?;
+    let operation_salt = operation
+        .get("salt")
+        .and_then(Value::as_str)
+        .ok_or("fixed artifact has no activation salt")?;
+    let governance_operation_id = artifact
+        .operation_id
+        .parse::<u64>()
+        .map_err(|_| "invalid governance operation ID")?;
+    if !valid_hash32(timelock_operation_id)
+        || !valid_hash32(operation_salt)
+        || !valid_hash32(&artifact.transaction_hash)
+    {
+        return Err("fixed activation artifact contains a malformed hash".into());
+    }
+    match (phase, prior_path) {
+        ("schedule", None) => {
+            let (expected_governance_operation_id, expected_operation_id, expected_salt) =
+                gate_b_initial_activation_binding(bundle)?;
+            if governance_operation_id != expected_governance_operation_id
+                || !timelock_operation_id
+                    .eq_ignore_ascii_case(&format!("0x{}", hex(&expected_operation_id)))
+                || !operation_salt.eq_ignore_ascii_case(&format!("0x{}", hex(&expected_salt)))
+            {
+                return Err(
+                    "controller schedule artifact differs from the Gate B activation binding"
+                        .into(),
+                );
+            }
+        }
+        ("schedule", Some(_)) => return Err("schedule forbids a prior receipt".into()),
+        ("execute", Some(path)) => {
+            let receipt: ControllerActivationReceipt = read_json(path)?;
+            let (schedule_governance_operation_id, _) =
+                validate_controller_schedule_receipt(bundle, &receipt, &seal_receipt_sha256)?;
+            if !receipt
+                .timelock_operation_id
+                .eq_ignore_ascii_case(timelock_operation_id)
+                || !receipt.operation_salt.eq_ignore_ascii_case(operation_salt)
+                || governance_operation_id <= schedule_governance_operation_id
+            {
+                return Err("execute artifact is not bound to the prior schedule".into());
+            }
+        }
+        ("execute", None) => return Err("execute requires the controller schedule receipt".into()),
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn verify_controller_activation(
     phase: &str,
     bundle: &ValidatedBundle,
     artifact_path: &Path,
+    seal_receipt_path: &Path,
     authorization_path: &Path,
     prepare_receipt_path: &Path,
     confirmation_path: &Path,
@@ -5945,10 +6652,20 @@ fn verify_controller_activation(
     let authorization_bytes = fs::read(authorization_path).map_err(|error| error.to_string())?;
     let authorization: ControllerActivationAuthorizationReceipt =
         serde_json::from_slice(&authorization_bytes).map_err(|error| error.to_string())?;
+    let seal_receipt_sha256 = validate_operational_config_seal_receipt(
+        bundle,
+        seal_receipt_path,
+        if phase == "schedule" {
+            SealReceiptLiveContext::ScheduleFinalization
+        } else {
+            SealReceiptLiveContext::ExecuteFinalization
+        },
+    )?;
     validate_controller_activation_authorization(
         phase,
         bundle,
         &bundle.manifest_sha256,
+        &seal_receipt_sha256,
         &authorization,
     )?;
     let authorization_sha256 = hex(&Sha256::digest(&authorization_bytes));
@@ -6023,9 +6740,18 @@ fn verify_controller_activation(
         .operation_id
         .parse::<u64>()
         .map_err(|_| "invalid governance operation ID")?;
-    let expected_governance_operation_id = if phase == "schedule" { 0 } else { 1 };
-    if governance_operation_id != expected_governance_operation_id {
-        return Err("controller activation uses an invalid governance operation ID".into());
+    if phase == "schedule" {
+        let (expected_governance_operation_id, expected_operation_id, expected_salt) =
+            gate_b_initial_activation_binding(bundle)?;
+        if governance_operation_id != expected_governance_operation_id
+            || !timelock_operation_id
+                .eq_ignore_ascii_case(&format!("0x{}", hex(&expected_operation_id)))
+            || !operation_salt.eq_ignore_ascii_case(&format!("0x{}", hex(&expected_salt)))
+        {
+            return Err(
+                "controller schedule artifact differs from the Gate B activation binding".into(),
+            );
+        }
     }
     let finalized_block_number = confirmation
         .response
@@ -6043,11 +6769,13 @@ fn verify_controller_activation(
             let bytes = fs::read(path).map_err(|error| error.to_string())?;
             let receipt: ControllerActivationReceipt =
                 serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-            validate_controller_schedule_receipt(bundle, &receipt)?;
+            let (schedule_governance_operation_id, _) =
+                validate_controller_schedule_receipt(bundle, &receipt, &seal_receipt_sha256)?;
             if !receipt
                 .timelock_operation_id
                 .eq_ignore_ascii_case(timelock_operation_id)
                 || !receipt.operation_salt.eq_ignore_ascii_case(operation_salt)
+                || governance_operation_id <= schedule_governance_operation_id
             {
                 return Err("execute prior schedule receipt is not bound to this operation".into());
             }
@@ -6161,6 +6889,7 @@ fn verify_controller_activation(
 fn validate_controller_schedule_receipt(
     bundle: &ValidatedBundle,
     receipt: &ControllerActivationReceipt,
+    expected_seal_receipt_sha256: &str,
 ) -> Result<(u64, u64), String> {
     let installer = gate_b_controller(bundle)?;
     let authorization_bytes = decode_hex(&receipt.authorization_receipt_hex)?;
@@ -6191,6 +6920,7 @@ fn validate_controller_schedule_receipt(
             "schedule",
             bundle,
             &bundle.manifest_sha256,
+            expected_seal_receipt_sha256,
             &authorization,
         )
         .is_err()
@@ -6215,7 +6945,6 @@ fn validate_controller_schedule_receipt(
         )
         || receipt.controller_principal != installer.to_text()
         || receipt.certified_controller_set != [installer.to_text()]
-        || receipt.governance_operation_id != "0"
         || receipt.prior_schedule_receipt_sha256.is_some()
         || !receipt.deposits_paused
         || !valid_hash32(&receipt.timelock_operation_id)
@@ -6232,11 +6961,21 @@ fn validate_controller_schedule_receipt(
         .governance_operation_id
         .parse::<u64>()
         .map_err(|_| "invalid schedule governance operation ID")?;
+    let (expected_governance_operation_id, expected_operation_id, expected_salt) =
+        gate_b_initial_activation_binding(bundle)?;
     let finalized_block = receipt
         .finalized_block_number
         .parse::<u64>()
         .map_err(|_| "invalid schedule Finalized block")?;
-    if finalized_block == 0 {
+    if finalized_block == 0
+        || governance_operation_id != expected_governance_operation_id
+        || !receipt
+            .timelock_operation_id
+            .eq_ignore_ascii_case(&format!("0x{}", hex(&expected_operation_id)))
+        || !receipt
+            .operation_salt
+            .eq_ignore_ascii_case(&format!("0x{}", hex(&expected_salt)))
+    {
         return Err("controller schedule receipt has no Finalized block".into());
     }
     let raw = decode_hex(&receipt.activation_status_response_hex)?;
@@ -6255,7 +6994,7 @@ fn validate_controller_schedule_receipt(
         .ok_or("controller schedule receipt has no confirmation")?;
     if !status.deposits_paused
         || last.phase != "schedule"
-        || last.governance_operation_id != 0
+        || last.governance_operation_id != governance_operation_id
         || last.receipt_block_number != finalized_block
         || !format!("0x{}", hex(&pending.operation_id))
             .eq_ignore_ascii_case(&receipt.timelock_operation_id)
@@ -6270,13 +7009,54 @@ fn validate_controller_schedule_receipt(
     Ok((governance_operation_id, finalized_block))
 }
 
+fn gate_b_initial_activation_binding(
+    bundle: &ValidatedBundle,
+) -> Result<(u64, [u8; 32], [u8; 32]), String> {
+    let path = bundle.root.join("initial-operational-parameters.json");
+    let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+    let expected_sha256 = bundle
+        .manifest
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.path == "initial-operational-parameters.json")
+        .ok_or("Gate B manifest has no initial operational parameter evidence")?
+        .sha256
+        .as_str();
+    if !hex(&Sha256::digest(&bytes)).eq_ignore_ascii_case(expected_sha256) {
+        return Err(
+            "initial operational parameter evidence changed after Gate B validation".into(),
+        );
+    }
+    let initial: InitialOperationalParameters =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    validate_initial_operational_parameters(
+        &initial,
+        &bundle.profile,
+        bundle.manifest.created_at_unix,
+        now_unix()?,
+    )?;
+    let deployment_instance_id: [u8; 32] = decode_hex(&initial.deployment_instance_id)?
+        .try_into()
+        .map_err(|_| "invalid initial deployment instance ID")?;
+    let salt = initial_activation_salt(deployment_instance_id, initial.governance_operation_id);
+    let operation_id =
+        initial_activation_operation_id(decode_address(&initial.bridge_contract)?, salt);
+    Ok((initial.governance_operation_id, operation_id, salt))
+}
+
 fn verify_controller_schedule_receipt_live(
     bundle: &ValidatedBundle,
+    seal_receipt_path: &Path,
     receipt_path: &Path,
 ) -> Result<(), String> {
+    let seal_receipt_sha256 = validate_operational_config_seal_receipt(
+        bundle,
+        seal_receipt_path,
+        SealReceiptLiveContext::PendingResume,
+    )?;
     let receipt: ControllerActivationReceipt = read_json(receipt_path)?;
     let (governance_operation_id, finalized_block) =
-        validate_controller_schedule_receipt(bundle, &receipt)?;
+        validate_controller_schedule_receipt(bundle, &receipt, &seal_receipt_sha256)?;
     let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
     let empty_arg = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
@@ -6336,35 +7116,8 @@ fn validate_schedule_receipt_binding(
     let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
     let payload_sha256 = hex(&Sha256::digest(canonical_payload));
     let now = now_unix()?;
-    let initial_path = bundle.root.join("initial-operational-parameters.json");
-    let initial_bytes = fs::read(&initial_path).map_err(|error| error.to_string())?;
-    let expected_initial_sha256 = bundle
-        .manifest
-        .artifacts
-        .iter()
-        .find(|artifact| artifact.path == "initial-operational-parameters.json")
-        .ok_or("Gate B manifest has no initial operational parameter evidence")?
-        .sha256
-        .as_str();
-    if !hex(&Sha256::digest(&initial_bytes)).eq_ignore_ascii_case(expected_initial_sha256) {
-        return Err(
-            "initial operational parameter evidence changed after Gate B validation".into(),
-        );
-    }
-    let initial: InitialOperationalParameters =
-        serde_json::from_slice(&initial_bytes).map_err(|error| error.to_string())?;
-    validate_initial_operational_parameters(
-        &initial,
-        &bundle.profile,
-        bundle.manifest.created_at_unix,
-        now,
-    )?;
-    let deployment_instance_id: [u8; 32] = decode_hex(&initial.deployment_instance_id)?
-        .try_into()
-        .map_err(|_| "invalid initial deployment instance ID")?;
-    let expected_salt = initial_activation_salt(deployment_instance_id, 0);
-    let expected_operation_id =
-        initial_activation_operation_id(decode_address(&initial.bridge_contract)?, expected_salt);
+    let (expected_governance_operation_id, expected_operation_id, expected_salt) =
+        gate_b_initial_activation_binding(bundle)?;
     if receipt.schema_version != 4
         || receipt.phase != "schedule"
         || receipt.release_id != bundle.manifest.release_id
@@ -6399,6 +7152,7 @@ fn validate_schedule_receipt_binding(
         )?
         || !valid_hash32(&receipt.operation_id)
         || !valid_hash32(&receipt.operation_salt)
+        || receipt.governance_operation_id != expected_governance_operation_id.to_string()
         || !receipt
             .operation_id
             .eq_ignore_ascii_case(&format!("0x{}", hex(&expected_operation_id)))
@@ -6661,6 +7415,7 @@ fn verify_activation(
         .last_confirmed_activation
         .as_ref()
         .ok_or("activation has no Finalized Canister confirmation")?;
+    let confirmation_governance_operation_id = confirmation.governance_operation_id;
     if confirmation.phase != phase
         || confirmation.receipt_block_number == 0
         || confirmation.transaction_hash.len() != 32
@@ -6669,6 +7424,29 @@ fn verify_activation(
         return Err(
             "authenticated activation confirmation does not match the requested phase".into(),
         );
+    }
+    if phase == "schedule" {
+        let (expected_governance_operation_id, expected_operation_id, expected_salt) =
+            gate_b_initial_activation_binding(bundle)?;
+        if confirmation_governance_operation_id != expected_governance_operation_id
+            || operation_id != format!("0x{}", hex(&expected_operation_id))
+            || operation_salt != format!("0x{}", hex(&expected_salt))
+        {
+            return Err(
+                "SNS schedule confirmation differs from the Gate B activation binding".into(),
+            );
+        }
+    } else {
+        let prior_governance_operation_id = prior
+            .as_ref()
+            .expect("execute prior checked")
+            .0
+            .governance_operation_id
+            .parse::<u64>()
+            .map_err(|_| "invalid prior schedule governance operation ID")?;
+        if confirmation_governance_operation_id <= prior_governance_operation_id {
+            return Err("SNS execute governance operation ID does not follow schedule".into());
+        }
     }
 
     let prior_schedule_receipt_sha256 = prior.as_ref().map(|(_, digest)| digest.clone());
@@ -6691,6 +7469,7 @@ fn verify_activation(
         function_registry_response_sha256: hex(&Sha256::digest(&registry_raw)),
         activation_status_response_hex: hex(&activation_raw),
         activation_status_response_sha256: hex(&Sha256::digest(&activation_raw)),
+        governance_operation_id: confirmation_governance_operation_id.to_string(),
         operation_id,
         operation_salt,
         prior_schedule_receipt_sha256,
@@ -6794,7 +7573,12 @@ fn verify_schedule_receipt_live(
         .last_confirmed_activation
         .as_ref()
         .ok_or("schedule receipt has no Finalized Canister confirmation")?;
+    let governance_operation_id = receipt
+        .governance_operation_id
+        .parse::<u64>()
+        .map_err(|_| "schedule receipt has an invalid governance operation ID")?;
     if confirmation.phase != "schedule"
+        || confirmation.governance_operation_id != governance_operation_id
         || confirmation.receipt_block_number == 0
         || confirmation.transaction_hash.len() != 32
         || format!("0x{}", hex(&confirmation.timelock_operation_id))
@@ -7203,7 +7987,36 @@ fn run() -> Result<(), String> {
                 phase, bundle.manifest_sha256
             );
         }
-        Some("authorize-controller-activation") if args.len() == 6 => {
+        Some("reserve-operational-config-seal") if args.len() == 5 => {
+            let bundle = validate_bundle(Path::new(&args[2]), true)?;
+            if bundle.manifest.test_only {
+                return Err("operational config seal reservation rejects test-only bundles".into());
+            }
+            let created = operational_config_seal_reservation(
+                &bundle,
+                &args[3],
+                Path::new(&args[4]),
+            )?;
+            println!("{}", if created { "created" } else { "existing" });
+        }
+        Some("write-operational-config-seal-receipt") if args.len() == 6 => {
+            let bundle = validate_bundle(Path::new(&args[2]), true)?;
+            if bundle.manifest.test_only {
+                return Err("operational config seal receipt rejects test-only bundles".into());
+            }
+            let attempt = if args[4] == "-" {
+                None
+            } else {
+                Some(Path::new(&args[4]))
+            };
+            write_operational_config_seal_receipt(
+                &bundle,
+                Path::new(&args[3]),
+                attempt,
+                Path::new(&args[5]),
+            )?;
+        }
+        Some("authorize-controller-activation") if args.len() == 7 => {
             let bundle = validate_bundle(Path::new(&args[3]), true)?;
             if bundle.manifest.test_only {
                 return Err("controller activation authorization rejects test-only bundles".into());
@@ -7212,11 +8025,12 @@ fn run() -> Result<(), String> {
                 &args[2],
                 &bundle,
                 &args[4],
-                Some(Path::new(&args[5])),
+                Path::new(&args[5]),
+                Some(Path::new(&args[6])),
                 None,
             )?;
         }
-        Some("verify-controller-activation-authorization") if args.len() == 6 => {
+        Some("verify-controller-activation-authorization") if args.len() == 7 => {
             let bundle = validate_bundle(Path::new(&args[3]), true)?;
             if bundle.manifest.test_only {
                 return Err("controller activation authorization rejects test-only bundles".into());
@@ -7225,8 +8039,22 @@ fn run() -> Result<(), String> {
                 &args[2],
                 &bundle,
                 &args[4],
+                Path::new(&args[5]),
                 None,
-                Some(Path::new(&args[5])),
+                Some(Path::new(&args[6])),
+            )?;
+        }
+        Some("verify-controller-activation-authorization-fresh") if args.len() == 7 => {
+            let bundle = validate_bundle(Path::new(&args[3]), true)?;
+            if bundle.manifest.test_only {
+                return Err("controller activation authorization rejects test-only bundles".into());
+            }
+            verify_controller_activation_authorization_fresh(
+                &args[2],
+                &bundle,
+                &args[4],
+                Path::new(&args[5]),
+                Path::new(&args[6]),
             )?;
         }
         Some("verify-activation") if args.len() == 7 => {
@@ -7253,15 +8081,36 @@ fn run() -> Result<(), String> {
             )?;
             println!("activation=verified phase={} receipt={}", args[2], args[6]);
         }
-        Some("verify-controller-activation") if args.len() == 10 => {
+        Some("verify-controller-activation-artifact") if args.len() == 9 => {
             let bundle = validate_bundle(Path::new(&args[3]), true)?;
             if bundle.manifest.test_only {
-                return Err("controller activation verification rejects test-only bundles".into());
+                return Err("controller activation artifact verification rejects test-only bundles".into());
             }
             let prior = if args[8] == "-" {
                 None
             } else {
                 Some(Path::new(&args[8]))
+            };
+            verify_controller_activation_artifact_binding(
+                &args[2],
+                &bundle,
+                Path::new(&args[4]),
+                Path::new(&args[5]),
+                Path::new(&args[6]),
+                Path::new(&args[7]),
+                prior,
+            )?;
+            println!("controller_activation_artifact=verified phase={}", args[2]);
+        }
+        Some("verify-controller-activation") if args.len() == 11 => {
+            let bundle = validate_bundle(Path::new(&args[3]), true)?;
+            if bundle.manifest.test_only {
+                return Err("controller activation verification rejects test-only bundles".into());
+            }
+            let prior = if args[9] == "-" {
+                None
+            } else {
+                Some(Path::new(&args[9]))
             };
             verify_controller_activation(
                 &args[2],
@@ -7270,24 +8119,29 @@ fn run() -> Result<(), String> {
                 Path::new(&args[5]),
                 Path::new(&args[6]),
                 Path::new(&args[7]),
+                Path::new(&args[8]),
                 prior,
-                Path::new(&args[9]),
+                Path::new(&args[10]),
             )?;
             println!(
                 "controller_activation=verified phase={} receipt={}",
-                args[2], args[9]
+                args[2], args[10]
             );
         }
-        Some("verify-controller-schedule-receipt-live") if args.len() == 4 => {
+        Some("verify-controller-schedule-receipt-live") if args.len() == 5 => {
             let bundle = validate_bundle(Path::new(&args[2]), true)?;
             if bundle.manifest.test_only {
                 return Err("controller schedule receipt verification rejects test-only bundles".into());
             }
             verify_live(&bundle, true)?;
-            verify_controller_schedule_receipt_live(&bundle, Path::new(&args[3]))?;
+            verify_controller_schedule_receipt_live(
+                &bundle,
+                Path::new(&args[3]),
+                Path::new(&args[4]),
+            )?;
             println!(
                 "controller_schedule_receipt=verified manifest_sha256={} receipt={}",
-                bundle.manifest_sha256, args[3]
+                bundle.manifest_sha256, args[4]
             );
         }
         Some("verify-schedule-receipt-live") if args.len() == 4 => {
@@ -7345,7 +8199,7 @@ fn run() -> Result<(), String> {
             )?;
             println!("{}", submission.request_id);
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | validate-production-handover-candidate <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <schedule|execute> <bundle-dir> | authorize-controller-activation <schedule|execute> <bundle-dir> <gate-b-sha256> <authorization.json> | verify-controller-activation-authorization <schedule|execute> <bundle-dir> <gate-b-sha256> <authorization.json> | verify-controller-activation <schedule|execute> <bundle-dir> <artifact.json> <authorization.json> <prepare-receipt.json> <confirmation.json> <prior-schedule-receipt.json|-> <receipt.json> | verify-controller-schedule-receipt-live <bundle-dir> <controller-schedule-receipt.json> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json> | submit-production-canister-upgrade <ic-host> <canister> <expected-principal> <controller.pem> <wasm> <submission.json>".into()),
+        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | validate-production-handover-candidate <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-a-bundle-dir> <final-profile.json> <measurements.json> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <schedule|execute> <bundle-dir> | reserve-operational-config-seal <bundle-dir> <gate-b-sha256> <reservation.json> | write-operational-config-seal-receipt <bundle-dir> <reservation.json> <attempt.json|-> <receipt.json> | authorize-controller-activation <schedule|execute> <bundle-dir> <gate-b-sha256> <seal-receipt.json> <authorization.json> | verify-controller-activation-authorization[-fresh] <schedule|execute> <bundle-dir> <gate-b-sha256> <seal-receipt.json> <authorization.json> | verify-controller-activation <schedule|execute> <bundle-dir> <artifact.json> <seal-receipt.json> <authorization.json> <prepare-receipt.json> <confirmation.json> <prior-schedule-receipt.json|-> <receipt.json> | verify-controller-schedule-receipt-live <bundle-dir> <seal-receipt.json> <controller-schedule-receipt.json> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json> | submit-production-canister-upgrade <ic-host> <canister> <expected-principal> <controller.pem> <wasm> <submission.json>".into()),
     }
     Ok(())
 }
@@ -7379,6 +8233,7 @@ mod tests {
             source_revision: "revision".into(),
             source_tree_sha256: "11".repeat(32),
             gate_b_manifest_sha256: "22".repeat(32),
+            operational_config_seal_receipt_sha256: "44".repeat(32),
             controller_principal: "aaaaa-aa".into(),
             certified_controller_set: vec!["aaaaa-aa".into()],
             certified_module_sha256: "33".repeat(32),
@@ -7392,6 +8247,7 @@ mod tests {
                 "revision",
                 &"11".repeat(32),
                 &"22".repeat(32),
+                &"44".repeat(32),
                 "aaaaa-aa",
                 &"33".repeat(32),
             )
@@ -7412,6 +8268,9 @@ mod tests {
         assert!(validate_controller_activation_timeline(100, 110, 126, 125, 130, 130).is_err());
         assert!(validate_controller_activation_timeline(100, 110, 120, 131, 130, 130).is_err());
         assert!(validate_controller_activation_timeline(100, 110, 120, 125, 131, 130).is_err());
+        assert!(controller_activation_authorization_is_fresh(100, 400));
+        assert!(!controller_activation_authorization_is_fresh(100, 401));
+        assert!(!controller_activation_authorization_is_fresh(101, 100));
 
         let mut binding = ControllerActivationPrepareReceipt {
             schema_version: 1,
@@ -8845,7 +9704,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         measurements.baseline_cycles_sample.value = 1;
         measurements.expected_daily_settlements = 1;
         let initial_observed_at = now - 6_000;
-        let governance_operation_id = 0;
+        let governance_operation_id = 7;
         let deployment_instance_id: [u8; 32] = decode_hex(&profile.deployment_instance_id)
             .unwrap()
             .try_into()
@@ -8953,12 +9812,27 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         assert!(derive_initial_operational_parameters(&wrong_salt).is_err());
         let mut wrong_operation_id: InitialOperationalParameters =
             serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
-        wrong_operation_id.governance_operation_id = 1;
+        wrong_operation_id.governance_operation_id = 8;
         wrong_operation_id.operation_salt = format!(
             "0x{}",
-            hex(&initial_activation_salt(deployment_instance_id, 1))
+            hex(&initial_activation_salt(deployment_instance_id, 8))
         );
         assert!(derive_initial_operational_parameters(&wrong_operation_id).is_err());
+        let mut maximum_operation_id: InitialOperationalParameters =
+            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
+        maximum_operation_id.governance_operation_id = u64::MAX;
+        let maximum_salt = initial_activation_salt(deployment_instance_id, u64::MAX);
+        maximum_operation_id.operation_salt = format!("0x{}", hex(&maximum_salt));
+        for estimate in &mut maximum_operation_id.gas_estimates {
+            estimate.calldata_hex = initial_activation_calldata(
+                &estimate.action,
+                activation_bridge,
+                maximum_salt,
+                profile.timelock.minimum_delay_seconds,
+            )
+            .unwrap();
+        }
+        assert!(derive_initial_operational_parameters(&maximum_operation_id).is_ok());
         profile.parameters.gas_limit_ceiling = initial_parameters.derived.gas_limit_ceiling;
         profile.parameters.max_fee_per_gas_ceiling =
             initial_parameters.derived.max_fee_per_gas_ceiling;
@@ -9702,6 +10576,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             function_registry_response_sha256: hex(&Sha256::digest(b"registry")),
             activation_status_response_hex: hex(b"activation"),
             activation_status_response_sha256: hex(&Sha256::digest(b"activation")),
+            governance_operation_id: governance_operation_id.to_string(),
             operation_id: format!(
                 "0x{}",
                 hex(&initial_activation_operation_id(

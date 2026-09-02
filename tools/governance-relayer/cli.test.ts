@@ -4,6 +4,7 @@ import test from "node:test"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Secp256k1KeyIdentity } from "@icp-sdk/core/identity/secp256k1"
 import {
+  activationConfirmationHash,
   activationBindingMatches,
   activationReplacementMatches,
   canisterErrorMessage,
@@ -14,6 +15,7 @@ import {
   isNonceTooLow,
   parseOptions,
   selectPendingArtifact,
+  selectPendingActivationArtifact,
   storedArtifactMatches,
   storedActivationConfirmationIdentity,
   unwrap,
@@ -21,13 +23,30 @@ import {
   waitForFinalized,
 } from "./cli.ts"
 
-test("uses an anonymous IC actor only for status and raw relay commands", () => {
-  for (const command of ["status", "relay"]) {
+test("uses an anonymous IC actor only for read-only status, recovery, and raw relay commands", () => {
+  for (const command of ["status", "relay", "recover-activation"]) {
     assert.equal(commandRequiresIdentity(command), false)
   }
   for (const command of ["confirm", "run", "prepare", "replace", "seal-operational-config", "prepare-schedule-activation", "prepare-execute-activation", "refresh-attestation", "drain-emergency"]) {
     assert.equal(commandRequiresIdentity(command), true)
   }
+})
+
+test("recovers exactly one pending activation transaction for the requested phase", () => {
+  const schedule = { kind: { ScheduleActivation: {} } }
+  const execute = { kind: { ExecuteActivation: {} } }
+  assert.equal(
+    selectPendingActivationArtifact([schedule, execute] as never, "schedule"),
+    schedule,
+  )
+  assert.throws(
+    () => selectPendingActivationArtifact([schedule, schedule] as never, "schedule"),
+    /exactly one pending schedule/,
+  )
+  assert.throws(
+    () => selectPendingActivationArtifact([execute] as never, "schedule"),
+    /exactly one pending schedule/,
+  )
 })
 
 test("loads an Ed25519 PKCS#8 identity exported by icp-cli", () => {
@@ -115,6 +134,22 @@ test("uses the documented transaction-hash option without discarding it", () => 
   const options = parseOptions(["--transaction-hash", hash])
   validateCommandOptions("confirm", options)
   assert.equal(confirmationHash(options), hash)
+})
+
+test("permits only the fixed activation transaction hash", () => {
+  const expected = `0x${"12".repeat(32)}` as `0x${string}`
+  assert.equal(
+    activationConfirmationHash(parseOptions(["--transaction-hash", expected.toUpperCase().replace("0X", "0x")]), expected),
+    expected,
+  )
+  assert.equal(activationConfirmationHash({}, expected), expected)
+  assert.throws(
+    () => activationConfirmationHash(
+      parseOptions(["--hash", `0x${"34".repeat(32)}`]),
+      expected,
+    ),
+    /differs from the fixed activation artifact/,
+  )
 })
 
 test("selects the requested governance nonce lane instead of the first pending transaction", () => {

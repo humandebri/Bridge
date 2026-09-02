@@ -32,6 +32,13 @@ usage() {
 }
 [[ "$MODE" == preflight || "$MODE" == execute || "$MODE" == recover ]] || usage
 [[ "${BRIDGE_ICP_IDENTITY:-}" == production ]] || { echo "production upgrade requires BRIDGE_ICP_IDENTITY=production" >&2; exit 1; }
+if [[ "$MODE" == execute ]]; then
+  [[ "${BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE:-}" == UPGRADE_PRODUCTION_BRIDGE_CANISTER ]] || {
+    echo "production upgrade requires the exact explicit confirmation token" >&2; exit 1;
+  }
+elif [[ -n "${BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE:-}" ]]; then
+  echo "production upgrade confirmation is accepted only in execute mode" >&2; exit 1
+fi
 for path in "$WASM" "$GATE_A_PROFILE" "$GATE_A_RECEIPT"; do
   [[ "$path" == /* && -f "$path" && ! -L "$path" ]] || { echo "upgrade inputs must be absolute regular files" >&2; exit 1; }
 done

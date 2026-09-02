@@ -291,7 +291,10 @@ production_validate_gate() {
   [[ "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "final Gate B manifest hash mismatch" >&2; return 1; }
   if [[ "$BRIDGE_ACTIVATION_PHASE" == execute ]]; then
     : "${BRIDGE_PRIOR_SCHEDULE_RECEIPT:?missing prior schedule receipt}"
-    "$profile_bin" verify-controller-schedule-receipt-live "$bundle" "$BRIDGE_PRIOR_SCHEDULE_RECEIPT" >/dev/null || { rm -rf "$target"; return 1; }
+    : "${BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT:?missing operational config seal receipt}"
+    "$profile_bin" verify-controller-schedule-receipt-live "$bundle" \
+      "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$BRIDGE_PRIOR_SCHEDULE_RECEIPT" \
+      >/dev/null || { rm -rf "$target"; return 1; }
   elif [[ "$BRIDGE_ACTIVATION_PHASE" != schedule ]]; then
     rm -rf "$target"
     echo "invalid activation phase" >&2
