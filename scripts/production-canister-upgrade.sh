@@ -52,7 +52,6 @@ if [[ "$MODE" == execute || "$MODE" == recover ]]; then
   [[ "$CONTROLLER_PEM" == /* && -f "$CONTROLLER_PEM" && ! -L "$CONTROLLER_PEM" ]] || {
     echo "execute requires an absolute production controller PEM file" >&2; exit 1;
   }
-  PREFLIGHT_SHA256="$(shasum -a 256 "$PREFLIGHT" | awk '{print tolower($1)}')"
 fi
 for tool in cargo git icp python3 shasum; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
 [[ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" ]] || {
@@ -86,6 +85,38 @@ EXECUTING_PRINCIPAL="$(icp identity principal --identity production)"
 DID="$ROOT/canister/bridge-canister/bridge.did"
 PROFILE_TARGET="$(mktemp -d "${TMPDIR:-/tmp}/bridge-upgrade-profile-target.XXXXXX")"
 trap 'rm -rf "$PROFILE_TARGET"' EXIT
+if [[ "$MODE" == execute || "$MODE" == recover ]]; then
+  FROZEN_PREFLIGHT="$PROFILE_TARGET/preflight.json"
+  python3 -I -S - "$PREFLIGHT" "$FROZEN_PREFLIGHT" <<'PY'
+import os,stat,sys
+source,target=sys.argv[1:]
+flags=os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)
+fd=os.open(source,flags)
+try:
+ before=os.fstat(fd)
+ if not stat.S_ISREG(before.st_mode): raise SystemExit('upgrade preflight is not a regular file')
+ chunks=[]
+ while True:
+  chunk=os.read(fd,1024*1024)
+  if not chunk: break
+  chunks.append(chunk)
+ after=os.fstat(fd)
+ if (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
+  raise SystemExit('upgrade preflight changed while it was frozen')
+finally: os.close(fd)
+out=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+try:
+ for chunk in chunks:
+  view=memoryview(chunk)
+  while view:
+   written=os.write(out,view)
+   view=view[written:]
+ os.fsync(out)
+finally: os.close(out)
+PY
+  PREFLIGHT="$FROZEN_PREFLIGHT"
+  PREFLIGHT_SHA256="$(shasum -a 256 "$PREFLIGHT" | awk '{print tolower($1)}')"
+fi
 CARGO_TARGET_DIR="$PROFILE_TARGET" cargo build --quiet --locked --manifest-path "$ROOT/Cargo.toml" -p bridge-profile
 PROFILE_BIN="$PROFILE_TARGET/debug/bridge-profile"
 

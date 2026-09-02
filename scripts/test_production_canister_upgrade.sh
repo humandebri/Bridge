@@ -28,13 +28,26 @@ name = "bridge-profile"
 version = "0.1.0"
 EOF
 cat >"$T/source/tools/bridge-profile/src/main.rs" <<'RS'
-use std::{env, fs, fs::OpenOptions, io::Write};
+use std::{env, fs, fs::OpenOptions, io::Write, path::Path};
 fn main() {
     let args = env::args().collect::<Vec<_>>();
     match args.get(1).map(String::as_str) {
-        Some("production-upgrade-public-state-sha256")
-        | Some("verify-production-upgrade-state-preserved") => println!("{}", "a".repeat(64)),
+        Some("production-upgrade-public-state-sha256") => {
+            if let (Ok(path), Ok(marker)) = (env::var("TEST_MUTATE_PREFLIGHT_PATH"), env::var("TEST_MUTATION_MARKER")) {
+                if !Path::new(&marker).exists() {
+                    let mut preflight = OpenOptions::new().append(true).open(path).unwrap();
+                    preflight.write_all(b" \n").unwrap();
+                    preflight.sync_all().unwrap();
+                    fs::write(marker, b"mutated\n").unwrap();
+                }
+            }
+            println!("{}", "a".repeat(64));
+        }
+        Some("verify-production-upgrade-state-preserved") => println!("{}", "a".repeat(64)),
         Some("submit-production-canister-upgrade") => {
+            let count_path = env::var("TEST_SUBMIT_COUNT").unwrap();
+            let count: u64 = fs::read_to_string(&count_path).unwrap().trim().parse().unwrap();
+            fs::write(&count_path, format!("{}\n", count + 1)).unwrap();
             fs::write(env::var("TEST_LIVE_MODULE").unwrap(), env::var("TEST_NEW_SHA").unwrap()).unwrap();
             let mut artifact = OpenOptions::new().write(true).create_new(true).open(&args[7]).unwrap();
             artifact.write_all(b"{\"schema_version\":1}\n").unwrap();
@@ -65,6 +78,7 @@ printf new-wasm >"$T/new.wasm"
 OLD_SHA="$(shasum -a 256 "$T/old.wasm" | awk '{print $1}')"
 NEW_SHA="$(shasum -a 256 "$T/new.wasm" | awk '{print $1}')"
 printf '%s\n' "$OLD_SHA" >"$T/live-module"
+printf '0\n' >"$T/submit-count"
 printf 'dummy production identity\n' >"$T/production.pem"
 printf '{"bridge_canister_id":"%s","bridge_canister_wasm_sha256":"%s","ic_host":"https://icp-api.io"}\n' \
   "$CANISTER" "$OLD_SHA" >"$T/gate-a-profile.json"
@@ -85,7 +99,7 @@ SH
 chmod +x "$T/bin/icp"
 export PATH="$T/bin:$PATH"
 export TEST_INSTALLER="$INSTALLER" TEST_CANISTER="$CANISTER" TEST_LIVE_MODULE="$T/live-module" \
-  TEST_NEW_SHA="$NEW_SHA"
+  TEST_NEW_SHA="$NEW_SHA" TEST_SUBMIT_COUNT="$T/submit-count"
 
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
@@ -99,6 +113,7 @@ if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade
   exit 1
 fi
 [[ ! -e "$T/evidence/receipt.json.execution.json" ]]
+[[ "$(<"$T/submit-count")" == 0 ]]
 if BRIDGE_ICP_IDENTITY=production BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=WRONG \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
@@ -109,7 +124,10 @@ if BRIDGE_ICP_IDENTITY=production BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=WRO
   exit 1
 fi
 [[ ! -e "$T/evidence/receipt.json.execution.json" ]]
-BRIDGE_ICP_IDENTITY=production \
+[[ "$(<"$T/submit-count")" == 0 ]]
+cp "$T/evidence/preflight.json" "$T/evidence/preflight.approved.json"
+BRIDGE_ICP_IDENTITY=production TEST_MUTATE_PREFLIGHT_PATH="$T/evidence/preflight.json" \
+TEST_MUTATION_MARKER="$T/preflight-mutated" \
 BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
@@ -129,15 +147,16 @@ assert value['request_id']=='9'*64
 assert value['recovered'] is False and value['recovered_at_unix'] is None
 assert hashlib.sha256(bytes.fromhex(value['response_stdout_hex'])).hexdigest()==value['response_stdout_sha256']
 PY
+[[ -e "$T/preflight-mutated" && "$(<"$T/submit-count")" == 1 ]]
+python3 -I -S - "$T/evidence/receipt.json.execution.json" "$T/evidence/preflight.approved.json" "$T/evidence/preflight.json" <<'PY'
+import hashlib,json,sys
+marker=json.load(open(sys.argv[1],encoding='utf-8'))
+approved=open(sys.argv[2],'rb').read(); changed=open(sys.argv[3],'rb').read()
+assert approved != changed
+assert marker['preflight_sha256']==hashlib.sha256(approved).hexdigest()
+PY
 
 mv "$T/evidence/receipt.json" "$T/evidence/receipt.initial.json"
-cp "$T/evidence/preflight.json" "$T/evidence/preflight.original.json"
-python3 -I -S - "$T/evidence/preflight.json" <<'PY'
-import json,sys
-path=sys.argv[1]; value=json.load(open(path,encoding='utf-8'))
-value['before_public_state_sha256']='b'*64
-open(path,'w',encoding='utf-8').write(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n')
-PY
 if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" recover \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
   --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
@@ -146,7 +165,8 @@ if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade
   exit 1
 fi
 [[ ! -e "$T/evidence/receipt.json" ]]
-mv "$T/evidence/preflight.original.json" "$T/evidence/preflight.json"
+[[ "$(<"$T/submit-count")" == 1 ]]
+mv "$T/evidence/preflight.approved.json" "$T/evidence/preflight.json"
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" recover \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
   --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
@@ -161,6 +181,7 @@ assert before==recovered,{k:(before.get(k),recovered.get(k)) for k in before.key
 value=json.load(open(sys.argv[2],encoding='utf-8'))
 assert value['recovered'] is True and isinstance(value['recovered_at_unix'],int)
 PY
+[[ "$(<"$T/submit-count")" == 1 ]]
 
 if BRIDGE_ICP_IDENTITY=anonymous "$T/source/scripts/production-canister-upgrade.sh" preflight \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
@@ -179,3 +200,4 @@ if BRIDGE_ICP_IDENTITY=production \
   echo "production upgrade recovery accepted an execute-only confirmation" >&2
   exit 1
 fi
+[[ "$(<"$T/submit-count")" == 1 ]]
