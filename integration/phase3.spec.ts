@@ -234,7 +234,12 @@ describe("Phase 3 PocketIC saga", () => {
       bridge,
       controller,
       init,
+      evm,
+      runtimePrincipal,
+      confirmationRelayerPrincipal,
     } = await setup(true, {}, bridgeWasm, true, true);
+    expect((await pic!.getControllers(bridge.canisterId)).map((value) => value.toText()))
+      .toEqual([controller.toText()]);
     expect(await (bridge.actor as any).get_production_lifecycle())
       .toEqual({ Ok: { Activated: null } });
 
@@ -249,6 +254,24 @@ describe("Phase 3 PocketIC saga", () => {
       .toEqual({ Err: { Unauthorized: null } });
     expect(await (bridge.actor as any).execute_activation())
       .toEqual({ Err: { Unauthorized: null } });
+
+    await (evm.actor as any).set_deposit_mints_paused(true);
+    await (evm.actor as any).set_withdrawals_paused(true);
+    for (const expectedKind of ["PauseDepositMints", "PauseWithdrawals"]) {
+      bridge.actor.setPrincipal(init.pause_principal);
+      const prepared: any = await (bridge.actor as any).prepare_next_emergency_base_action();
+      expect(prepared).toHaveProperty(`Ok.kind.${expectedKind}`);
+      bridge.actor.setPrincipal(confirmationRelayerPrincipal);
+      expect(await (bridge.actor as any).confirm_base_governance_transaction({
+        operation_id: prepared.Ok.operation_id,
+        transaction_hash: prepared.Ok.transaction_hash,
+      })).toHaveProperty("Ok.succeeded", true);
+    }
+    expect((await pic!.getControllers(bridge.canisterId)).map((value) => value.toText()))
+      .toEqual([controller.toText()]);
+    bridge.actor.setPrincipal(runtimePrincipal);
+    expect(await (bridge.actor as any).schedule_activation())
+      .toHaveProperty("Ok.kind.ScheduleActivation");
   }
 
   it(

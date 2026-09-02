@@ -7,7 +7,7 @@ use ic_agent::{
     Agent,
 };
 use ic_transport_types::{Envelope, EnvelopeContent};
-use k256::ecdsa::{signature::Verifier, Signature as Secp256k1Signature, VerifyingKey};
+use k256::ecdsa::{signature::Verifier, RecoveryId, Signature as Secp256k1Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1051,15 +1051,23 @@ struct ActivationReceipt {
     prior_schedule_receipt_sha256: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DirectActivationArtifact {
     operation_id: String,
     kind: Value,
     chain_id: String,
     sender: String,
+    nonce: String,
     target: String,
     calldata: String,
+    gas_limit: String,
+    max_fee_per_gas: String,
+    max_priority_fee_per_gas: String,
+    raw_transaction: String,
     transaction_hash: String,
+    generation: u8,
+    signed_at_ns: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -6641,12 +6649,299 @@ fn verify_controller_activation_artifact_binding(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum RlpItem<'a> {
+    Bytes(&'a [u8]),
+    List(&'a [u8]),
+}
+
+fn rlp_length(bytes: &[u8]) -> Result<usize, String> {
+    if bytes.is_empty() || bytes[0] == 0 {
+        return Err("signed activation transaction has non-canonical RLP length".into());
+    }
+    bytes.iter().try_fold(0usize, |value, byte| {
+        value
+            .checked_mul(256)
+            .and_then(|value| value.checked_add(usize::from(*byte)))
+            .ok_or_else(|| "signed activation transaction has oversized RLP length".into())
+    })
+}
+
+fn decode_rlp_item(input: &[u8]) -> Result<(RlpItem<'_>, usize), String> {
+    let first = *input
+        .first()
+        .ok_or("signed activation transaction has truncated RLP")?;
+    match first {
+        0x00..=0x7f => Ok((RlpItem::Bytes(&input[..1]), 1)),
+        0x80..=0xb7 => {
+            let length = usize::from(first - 0x80);
+            let end = 1usize
+                .checked_add(length)
+                .ok_or("signed activation transaction has oversized RLP bytes")?;
+            let value = input
+                .get(1..end)
+                .ok_or("signed activation transaction has truncated RLP bytes")?;
+            if length == 1 && value[0] < 0x80 {
+                return Err("signed activation transaction has non-canonical RLP bytes".into());
+            }
+            Ok((RlpItem::Bytes(value), end))
+        }
+        0xb8..=0xbf => {
+            let length_of_length = usize::from(first - 0xb7);
+            let prefix_end = 1usize
+                .checked_add(length_of_length)
+                .ok_or("signed activation transaction has oversized RLP prefix")?;
+            let length = rlp_length(
+                input
+                    .get(1..prefix_end)
+                    .ok_or("signed activation transaction has truncated RLP length")?,
+            )?;
+            if length < 56 {
+                return Err(
+                    "signed activation transaction has non-canonical long RLP bytes".into(),
+                );
+            }
+            let end = prefix_end
+                .checked_add(length)
+                .ok_or("signed activation transaction has oversized RLP bytes")?;
+            Ok((
+                RlpItem::Bytes(
+                    input
+                        .get(prefix_end..end)
+                        .ok_or("signed activation transaction has truncated RLP bytes")?,
+                ),
+                end,
+            ))
+        }
+        0xc0..=0xf7 => {
+            let length = usize::from(first - 0xc0);
+            let end = 1usize
+                .checked_add(length)
+                .ok_or("signed activation transaction has oversized RLP list")?;
+            Ok((
+                RlpItem::List(
+                    input
+                        .get(1..end)
+                        .ok_or("signed activation transaction has truncated RLP list")?,
+                ),
+                end,
+            ))
+        }
+        0xf8..=0xff => {
+            let length_of_length = usize::from(first - 0xf7);
+            let prefix_end = 1usize
+                .checked_add(length_of_length)
+                .ok_or("signed activation transaction has oversized RLP prefix")?;
+            let length = rlp_length(
+                input
+                    .get(1..prefix_end)
+                    .ok_or("signed activation transaction has truncated RLP length")?,
+            )?;
+            if length < 56 {
+                return Err("signed activation transaction has non-canonical long RLP list".into());
+            }
+            let end = prefix_end
+                .checked_add(length)
+                .ok_or("signed activation transaction has oversized RLP list")?;
+            Ok((
+                RlpItem::List(
+                    input
+                        .get(prefix_end..end)
+                        .ok_or("signed activation transaction has truncated RLP list")?,
+                ),
+                end,
+            ))
+        }
+    }
+}
+
+fn rlp_uint(item: RlpItem<'_>, maximum_bytes: usize) -> Result<u128, String> {
+    let RlpItem::Bytes(bytes) = item else {
+        return Err("signed activation transaction integer is an RLP list".into());
+    };
+    if bytes.len() > maximum_bytes || bytes.first() == Some(&0) {
+        return Err("signed activation transaction has a non-canonical integer".into());
+    }
+    Ok(bytes
+        .iter()
+        .fold(0u128, |value, byte| (value << 8) | u128::from(*byte)))
+}
+
+fn rlp_bytes(item: RlpItem<'_>) -> Result<&[u8], String> {
+    match item {
+        RlpItem::Bytes(bytes) => Ok(bytes),
+        RlpItem::List(_) => Err("signed activation transaction field is an RLP list".into()),
+    }
+}
+
+fn encode_rlp_list_payload(payload: &[u8]) -> Vec<u8> {
+    if payload.len() <= 55 {
+        let mut encoded = Vec::with_capacity(payload.len() + 1);
+        encoded.push(0xc0 + payload.len() as u8);
+        encoded.extend_from_slice(payload);
+        return encoded;
+    }
+    let length = payload.len().to_be_bytes();
+    let first = length
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(length.len() - 1);
+    let length = &length[first..];
+    let mut encoded = Vec::with_capacity(payload.len() + length.len() + 1);
+    encoded.push(0xf7 + length.len() as u8);
+    encoded.extend_from_slice(length);
+    encoded.extend_from_slice(payload);
+    encoded
+}
+
+fn encode_rlp_bytes(value: &[u8]) -> Vec<u8> {
+    if value.len() == 1 && value[0] < 0x80 {
+        return value.to_vec();
+    }
+    if value.len() <= 55 {
+        let mut encoded = Vec::with_capacity(value.len() + 1);
+        encoded.push(0x80 + value.len() as u8);
+        encoded.extend_from_slice(value);
+        return encoded;
+    }
+    let length = value.len().to_be_bytes();
+    let first = length
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(length.len() - 1);
+    let length = &length[first..];
+    let mut encoded = Vec::with_capacity(value.len() + length.len() + 1);
+    encoded.push(0xb7 + length.len() as u8);
+    encoded.extend_from_slice(length);
+    encoded.extend_from_slice(value);
+    encoded
+}
+
+fn encode_rlp_uint(value: u128) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    let first = bytes
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(bytes.len());
+    encode_rlp_bytes(&bytes[first..])
+}
+
+fn parse_decimal_u128(value: &str, field: &str) -> Result<u128, String> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(format!("signed activation artifact has invalid {field}"));
+    }
+    value
+        .parse()
+        .map_err(|_| format!("signed activation artifact has invalid {field}"))
+}
+
+fn validate_signed_eip1559_artifact(artifact: &DirectActivationArtifact) -> Result<(), String> {
+    let raw = decode_hex(&artifact.raw_transaction)?;
+    if raw.first() != Some(&0x02) {
+        return Err("signed activation transaction is not EIP-1559".into());
+    }
+    let (outer, consumed) = decode_rlp_item(&raw[1..])?;
+    if consumed != raw.len() - 1 {
+        return Err("signed activation transaction has trailing bytes".into());
+    }
+    let RlpItem::List(payload) = outer else {
+        return Err("signed activation transaction payload is not an RLP list".into());
+    };
+    let mut fields = Vec::with_capacity(12);
+    let mut encoded_fields = Vec::with_capacity(12);
+    let mut offset = 0usize;
+    while offset < payload.len() {
+        let (field, used) = decode_rlp_item(&payload[offset..])?;
+        fields.push(field);
+        encoded_fields.push(&payload[offset..offset + used]);
+        offset += used;
+    }
+    if fields.len() != 12 {
+        return Err("signed activation transaction must contain exactly 12 fields".into());
+    }
+    let chain_id = rlp_uint(fields[0], 8)?;
+    let nonce = rlp_uint(fields[1], 8)?;
+    let max_priority_fee_per_gas = rlp_uint(fields[2], 16)?;
+    let max_fee_per_gas = rlp_uint(fields[3], 16)?;
+    let gas_limit = rlp_uint(fields[4], 16)?;
+    let target = rlp_bytes(fields[5])?;
+    if target.len() != 20 {
+        return Err("signed activation transaction target is not 20 bytes".into());
+    }
+    if rlp_uint(fields[6], 16)? != 0 || !rlp_bytes(fields[6])?.is_empty() {
+        return Err("signed activation transaction value must be zero".into());
+    }
+    let calldata = rlp_bytes(fields[7])?;
+    if !matches!(fields[8], RlpItem::List(items) if items.is_empty()) {
+        return Err("signed activation transaction access list must be empty".into());
+    }
+    let parity = rlp_uint(fields[9], 1)?;
+    if parity > 1 {
+        return Err("signed activation transaction has invalid recovery parity".into());
+    }
+    let r = rlp_bytes(fields[10])?;
+    let s = rlp_bytes(fields[11])?;
+    if r.is_empty()
+        || r.len() > 32
+        || r.first() == Some(&0)
+        || s.is_empty()
+        || s.len() > 32
+        || s.first() == Some(&0)
+    {
+        return Err("signed activation transaction has invalid signature scalars".into());
+    }
+    let mut signature_bytes = [0u8; 64];
+    signature_bytes[32 - r.len()..32].copy_from_slice(r);
+    signature_bytes[64 - s.len()..].copy_from_slice(s);
+    let signature = Secp256k1Signature::from_slice(&signature_bytes)
+        .map_err(|_| "signed activation transaction has an invalid signature")?;
+    if signature.normalize_s().is_some() {
+        return Err("signed activation transaction signature is not low-s".into());
+    }
+    let mut unsigned_payload = Vec::new();
+    for encoded in &encoded_fields[..9] {
+        unsigned_payload.extend_from_slice(encoded);
+    }
+    let mut unsigned = vec![0x02];
+    unsigned.extend_from_slice(&encode_rlp_list_payload(&unsigned_payload));
+    let recovered = VerifyingKey::recover_from_prehash(
+        &keccak256(&unsigned),
+        &signature,
+        RecoveryId::new(parity == 1, false),
+    )
+    .map_err(|_| "signed activation transaction sender recovery failed")?;
+    let public_key = recovered.to_encoded_point(false);
+    let recovered_hash = keccak256(&public_key.as_bytes()[1..]);
+    let recovered_sender = &recovered_hash[12..];
+
+    if keccak256(&raw).as_slice() != decode_hex(&artifact.transaction_hash)?.as_slice()
+        || recovered_sender != decode_hex(&artifact.sender)?.as_slice()
+        || chain_id != parse_decimal_u128(&artifact.chain_id, "chain ID")?
+        || nonce != parse_decimal_u128(&artifact.nonce, "nonce")?
+        || target != decode_hex(&artifact.target)?.as_slice()
+        || calldata != decode_hex(&artifact.calldata)?.as_slice()
+        || gas_limit != parse_decimal_u128(&artifact.gas_limit, "gas limit")?
+        || max_fee_per_gas != parse_decimal_u128(&artifact.max_fee_per_gas, "max fee")?
+        || max_priority_fee_per_gas
+            != parse_decimal_u128(&artifact.max_priority_fee_per_gas, "priority fee")?
+        || parse_decimal_u128(&artifact.signed_at_ns, "signed timestamp")? == 0
+    {
+        return Err("signed activation transaction differs from the artifact fields".into());
+    }
+    let _ = artifact.generation;
+    Ok(())
+}
+
 fn validate_direct_activation_transaction_fields(
     phase: &str,
     profile: &Profile,
     operation_salt: &str,
     artifact: &DirectActivationArtifact,
 ) -> Result<(), String> {
+    validate_signed_eip1559_artifact(artifact)?;
     let action = match phase {
         "schedule" => "schedule_activation",
         "execute" => "execute_activation",
@@ -6783,6 +7078,12 @@ fn verify_controller_activation(
     {
         return Err("fixed activation artifact contains a malformed hash".into());
     }
+    validate_direct_activation_transaction_fields(
+        phase,
+        &bundle.profile,
+        operation_salt,
+        &artifact,
+    )?;
     let governance_operation_id = artifact
         .operation_id
         .parse::<u64>()
@@ -8261,6 +8562,93 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k256::ecdsa::SigningKey;
+
+    fn trim_leading_zeroes(value: &[u8]) -> &[u8] {
+        let first = value
+            .iter()
+            .position(|byte| *byte != 0)
+            .unwrap_or(value.len());
+        &value[first..]
+    }
+
+    fn signed_activation_artifact(
+        profile: &Profile,
+        salt: [u8; 32],
+        value: u128,
+        nonempty_access_list: bool,
+    ) -> DirectActivationArtifact {
+        let calldata = initial_activation_calldata(
+            "schedule_activation",
+            decode_address(&profile.bridge_contract).unwrap(),
+            salt,
+            profile.timelock.minimum_delay_seconds,
+        )
+        .unwrap();
+        let target = decode_hex(&profile.timelock.address).unwrap();
+        let access_list = if nonempty_access_list {
+            let mut storage_keys = Vec::new();
+            storage_keys.extend_from_slice(&encode_rlp_bytes(&[0x55; 32]));
+            let mut entry = Vec::new();
+            entry.extend_from_slice(&encode_rlp_bytes(&[0x44; 20]));
+            entry.extend_from_slice(&encode_rlp_list_payload(&storage_keys));
+            encode_rlp_list_payload(&encode_rlp_list_payload(&entry))
+        } else {
+            encode_rlp_list_payload(&[])
+        };
+        let unsigned_fields = vec![
+            encode_rlp_uint(profile.chain_id.into()),
+            encode_rlp_uint(7),
+            encode_rlp_uint(2),
+            encode_rlp_uint(20),
+            encode_rlp_uint(100_000),
+            encode_rlp_bytes(&target),
+            encode_rlp_uint(value),
+            encode_rlp_bytes(&decode_hex(&calldata).unwrap()),
+            access_list,
+        ];
+        let unsigned_payload = unsigned_fields.concat();
+        let mut unsigned = vec![0x02];
+        unsigned.extend_from_slice(&encode_rlp_list_payload(&unsigned_payload));
+        let signing_key = SigningKey::from_bytes((&[0x11; 32]).into()).unwrap();
+        let (signature, recovery) = signing_key
+            .sign_prehash_recoverable(&keccak256(&unsigned))
+            .unwrap();
+        let signature_bytes = signature.to_bytes();
+        let mut signed_fields = unsigned_fields;
+        signed_fields.push(encode_rlp_uint(u128::from(recovery.is_y_odd())));
+        signed_fields.push(encode_rlp_bytes(trim_leading_zeroes(
+            &signature_bytes[..32],
+        )));
+        signed_fields.push(encode_rlp_bytes(trim_leading_zeroes(
+            &signature_bytes[32..],
+        )));
+        let mut raw = vec![0x02];
+        raw.extend_from_slice(&encode_rlp_list_payload(&signed_fields.concat()));
+        let public_key = signing_key.verifying_key().to_encoded_point(false);
+        let sender_hash = keccak256(&public_key.as_bytes()[1..]);
+        DirectActivationArtifact {
+            operation_id: "7".into(),
+            kind: serde_json::json!({
+                "ScheduleActivation": {
+                    "operation_id": format!("0x{}", "11".repeat(32)),
+                    "salt": format!("0x{}", hex(&salt)),
+                }
+            }),
+            chain_id: profile.chain_id.to_string(),
+            sender: format!("0x{}", hex(&sender_hash[12..])),
+            nonce: "7".into(),
+            target: profile.timelock.address.clone(),
+            calldata,
+            gas_limit: "100000".into(),
+            max_fee_per_gas: "20".into(),
+            max_priority_fee_per_gas: "2".into(),
+            raw_transaction: format!("0x{}", hex(&raw)),
+            transaction_hash: format!("0x{}", hex(&keccak256(&raw))),
+            generation: 0,
+            signed_at_ns: "1".into(),
+        }
+    }
 
     #[test]
     fn controller_activation_raw_evidence_rejects_digest_drift() {
@@ -9481,28 +9869,10 @@ mod tests {
 
     #[test]
     fn controller_activation_artifact_binds_exact_transaction_fields() {
-        let profile = valid_profile();
+        let mut profile = valid_profile();
         let salt = [0x5a; 32];
-        let mut artifact = DirectActivationArtifact {
-            operation_id: "7".into(),
-            kind: serde_json::json!({
-                "ScheduleActivation": {
-                    "operation_id": format!("0x{}", "11".repeat(32)),
-                    "salt": format!("0x{}", hex(&salt)),
-                }
-            }),
-            chain_id: profile.chain_id.to_string(),
-            sender: profile.governance_operator.clone(),
-            target: profile.timelock.address.clone(),
-            calldata: initial_activation_calldata(
-                "schedule_activation",
-                decode_address(&profile.bridge_contract).unwrap(),
-                salt,
-                profile.timelock.minimum_delay_seconds,
-            )
-            .unwrap(),
-            transaction_hash: format!("0x{}", "22".repeat(32)),
-        };
+        let mut artifact = signed_activation_artifact(&profile, salt, 0, false);
+        profile.governance_operator = artifact.sender.clone();
         let salt_hex = format!("0x{}", hex(&salt));
         assert!(validate_direct_activation_transaction_fields(
             "schedule", &profile, &salt_hex, &artifact,
@@ -9522,6 +9892,58 @@ mod tests {
             "schedule", &profile, &salt_hex, &artifact,
         )
         .is_err());
+        artifact.calldata = signed_activation_artifact(&profile, salt, 0, false).calldata;
+
+        for drift in [
+            ("sender", "0x".to_owned() + &"33".repeat(20)),
+            ("nonce", "8".into()),
+            ("gas_limit", "100001".into()),
+            ("max_fee_per_gas", "21".into()),
+            ("max_priority_fee_per_gas", "3".into()),
+            ("transaction_hash", "0x".to_owned() + &"00".repeat(32)),
+        ] {
+            let mut drifted = signed_activation_artifact(&profile, salt, 0, false);
+            match drift.0 {
+                "sender" => drifted.sender = drift.1,
+                "nonce" => drifted.nonce = drift.1,
+                "gas_limit" => drifted.gas_limit = drift.1,
+                "max_fee_per_gas" => drifted.max_fee_per_gas = drift.1,
+                "max_priority_fee_per_gas" => drifted.max_priority_fee_per_gas = drift.1,
+                "transaction_hash" => drifted.transaction_hash = drift.1,
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_signed_eip1559_artifact(&drifted).is_err(),
+                "{}",
+                drift.0
+            );
+        }
+
+        assert!(
+            validate_signed_eip1559_artifact(
+                &signed_activation_artifact(&profile, salt, 1, false,)
+            )
+            .is_err()
+        );
+        assert!(
+            validate_signed_eip1559_artifact(&signed_activation_artifact(&profile, salt, 0, true,))
+                .is_err()
+        );
+        let mut wrong_type = signed_activation_artifact(&profile, salt, 0, false);
+        wrong_type.raw_transaction.replace_range(2..4, "01");
+        assert!(validate_signed_eip1559_artifact(&wrong_type).is_err());
+        let mut trailing = signed_activation_artifact(&profile, salt, 0, false);
+        trailing.raw_transaction.push_str("00");
+        assert!(validate_signed_eip1559_artifact(&trailing).is_err());
+        let mut noncanonical = signed_activation_artifact(&profile, salt, 0, false);
+        noncanonical.raw_transaction = "0x02b80100".into();
+        noncanonical.transaction_hash = format!(
+            "0x{}",
+            hex(&keccak256(
+                &decode_hex(&noncanonical.raw_transaction).unwrap()
+            ))
+        );
+        assert!(validate_signed_eip1559_artifact(&noncanonical).is_err());
     }
 
     #[test]

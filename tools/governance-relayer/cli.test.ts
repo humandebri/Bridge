@@ -6,6 +6,7 @@ import { Secp256k1KeyIdentity } from "@icp-sdk/core/identity/secp256k1"
 import { keccak256 } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import {
+  afterValidatingStoredArtifacts,
   activationConfirmationHash,
   activationBindingMatches,
   activationReplacementMatches,
@@ -69,13 +70,64 @@ test("binds stored artifact fields to the independently decoded signed transacti
   }
   await validateStoredArtifact(artifact)
   for (const drift of [
+    { ...artifact, sender: `0x${"33".repeat(20)}` },
     { ...artifact, target: `0x${"33".repeat(20)}` },
     { ...artifact, calldata: "0x1235" },
     { ...artifact, chain_id: "1" },
+    { ...artifact, nonce: "8" },
+    { ...artifact, gas_limit: "100001" },
+    { ...artifact, max_fee_per_gas: "21" },
+    { ...artifact, max_priority_fee_per_gas: "3" },
     { ...artifact, transaction_hash: `0x${"00".repeat(32)}` },
   ]) {
     await assert.rejects(() => validateStoredArtifact(drift))
   }
+
+  const nonzeroValueRaw = await account.signTransaction({
+    chainId: 8453,
+    type: "eip1559",
+    nonce: 7,
+    to: `0x${"22".repeat(20)}`,
+    data: "0x1234",
+    gas: 100_000n,
+    maxFeePerGas: 20n,
+    maxPriorityFeePerGas: 2n,
+    value: 1n,
+  })
+  await assert.rejects(() => validateStoredArtifact({
+    ...artifact,
+    raw_transaction: nonzeroValueRaw,
+    transaction_hash: keccak256(nonzeroValueRaw),
+  }))
+  const accessListRaw = await account.signTransaction({
+    chainId: 8453,
+    type: "eip1559",
+    nonce: 7,
+    to: `0x${"22".repeat(20)}`,
+    data: "0x1234",
+    gas: 100_000n,
+    maxFeePerGas: 20n,
+    maxPriorityFeePerGas: 2n,
+    value: 0n,
+    accessList: [{
+      address: `0x${"44".repeat(20)}`,
+      storageKeys: [`0x${"00".repeat(32)}`],
+    }],
+  })
+  await assert.rejects(() => validateStoredArtifact({
+    ...artifact,
+    raw_transaction: accessListRaw,
+    transaction_hash: keccak256(accessListRaw),
+  }))
+
+  let sideEffects = 0
+  await assert.rejects(() => afterValidatingStoredArtifacts(
+    [{ ...artifact, nonce: "8" }],
+    async () => { sideEffects += 1 },
+  ))
+  assert.equal(sideEffects, 0)
+  await afterValidatingStoredArtifacts([artifact], async () => { sideEffects += 1 })
+  assert.equal(sideEffects, 1)
 })
 
 test("uses an anonymous IC actor only for read-only status, recovery, and raw relay commands", () => {

@@ -168,26 +168,30 @@ async function main(): Promise<void> {
       )
       let operationId: bigint
       let expectedHash: Hex
+      let artifactToValidate: unknown
       if (pending && storedArtifactMatches(stored, pending)) {
         await requireMatchingActivationBinding(pending, artifactBytes, options)
-        await validateArtifact(pending)
         operationId = pending.operation_id
         expectedHash = bytesHex(pending.transaction_hash)
+        artifactToValidate = jsonValue(pending)
       } else if (!pending && storedIdentity) {
         await requireActivationBindingBytes(artifactBytes, options)
-        await validateStoredArtifact(stored)
         operationId = storedIdentity.operationId
         expectedHash = storedIdentity.transactionHash
+        artifactToValidate = stored
       } else {
         throw new Error("Fixed governance artifact differs from the live pending transaction")
       }
       const hash = storedIsActivation
         ? activationConfirmationHash(options, expectedHash)
         : confirmationHash(options) ?? expectedHash
-      const receipt = unwrap(await actor.confirm_base_governance_transaction({
-        operation_id: operationId,
-        transaction_hash: hexToBytes(hash),
-      }))
+      const receipt = unwrap(await afterValidatingStoredArtifacts(
+        [artifactToValidate],
+        () => actor.confirm_base_governance_transaction({
+          operation_id: operationId,
+          transaction_hash: hexToBytes(hash),
+        }),
+      ))
       const evidence = {
         schema_version: 1,
         confirmed_at_unix: Math.floor(Date.now() / 1_000),
@@ -226,23 +230,25 @@ async function main(): Promise<void> {
         throw new Error("replace-activation requires an activation artifact")
       }
       await requireActivationBindingBytes(oldBytes, options)
-      await validateStoredArtifact(stored)
-      await validateArtifact(artifact)
       const maxFee = BigInt(requiredOption(options, "max-fee"))
       const priorityFee = BigInt(requiredOption(options, "priority-fee"))
-      let replacement: SignedBaseGovernanceTransaction
-      if (storedArtifactMatches(stored, artifact)) {
-        replacement = unwrap(await actor.prepare_base_governance_replacement({
-          operation_id: artifact.operation_id,
-          expected_transaction_hash: artifact.transaction_hash,
-          max_fee_per_gas: maxFee,
-          max_priority_fee_per_gas: priorityFee,
-        }))
-      } else if (activationReplacementMatches(stored, artifact, maxFee, priorityFee)) {
-        replacement = artifact
-      } else {
-        throw new Error("Live activation pending transaction is not the authorized replacement")
-      }
+      const replacement = await afterValidatingStoredArtifacts(
+        [stored, jsonValue(artifact)],
+        async (): Promise<SignedBaseGovernanceTransaction> => {
+          if (storedArtifactMatches(stored, artifact)) {
+            return unwrap(await actor.prepare_base_governance_replacement({
+              operation_id: artifact.operation_id,
+              expected_transaction_hash: artifact.transaction_hash,
+              max_fee_per_gas: maxFee,
+              max_priority_fee_per_gas: priorityFee,
+            }))
+          }
+          if (activationReplacementMatches(stored, artifact, maxFee, priorityFee)) {
+            return artifact
+          }
+          throw new Error("Live activation pending transaction is not the authorized replacement")
+        },
+      )
       const outputArtifact = requiredOption(options, "output-artifact-file")
       await writeOrMatchArtifact(replacement, outputArtifact)
       const replacementBytes = await readFile(outputArtifact)
@@ -689,6 +695,14 @@ export async function validateStoredArtifact(value: unknown): Promise<void> {
     || ("accessList" in transaction && (transaction.accessList?.length ?? 0) !== 0)) {
     throw new Error("Signed governance transaction must have zero value and an empty access list")
   }
+}
+
+export async function afterValidatingStoredArtifacts<T>(
+  values: readonly unknown[],
+  effect: () => Promise<T>,
+): Promise<T> {
+  for (const value of values) await validateStoredArtifact(value)
+  return effect()
 }
 
 export async function relay(
