@@ -26,6 +26,10 @@ REQUIRED_LEAN_FAILURE_SHA256 = {
     "DestinationMutation.lean": "a3992470b4340e01eb81291efe4172fb9b3269141e987beea8238f02fded0cae",
     "DoubleDepositFeeTrace.lean": "daa0327e85847d2435b85c11f9bfe1031a2f19e0a53249d66e24effa7fe43434",
     "DoubleFee.lean": "076049e9a5e13cd6c1e4ebab231ed452dffc9fcac994b7aa15bdd8645e304851",
+    "DriftedConfirmedActivationEvidence.lean": (
+        "cce72323186747a19ebd7bd19393b756"
+        "24c5b5f5a330eebb6a24b6c75aa1df5a"
+    ),
     "EvidencelessMint.lean": "7d248eb1e8b57cfd2e9f2c3d3892e03b495934fbc920278146a056cca36b2c96",
     "FinalizedTimestampDeadline.lean": "614a8705cfd818db1749f072723d51e18f07d03b750a882a3f8d1fdb2935a212",
     "IncompleteAbsence.lean": "22ed9af027b854b148ed57fd103aa4cf9707a4366943ce43b4276e3ca4cbad62",
