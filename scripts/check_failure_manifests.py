@@ -66,6 +66,14 @@ def relative_fixture_paths(directory: Path, suffix: str) -> list[str]:
     )
 
 
+def require_unique_manifest_column(
+    manifest_rows: list[list[str]], column: int, label: str
+) -> None:
+    values = [row[column] for row in manifest_rows]
+    if len(set(values)) != len(values):
+        raise ValueError(f"duplicate {label} in failure manifest")
+
+
 def main() -> int:
     smt_dir = ROOT / "verification" / "smt" / "fail"
     smt_rows = rows(ROOT / "verification" / "smt" / "failure-manifest.tsv", 2)
@@ -136,6 +144,7 @@ def main() -> int:
         )
     )
     lean_rows = rows(ROOT / "verification" / "lean" / "deposit-failure-manifest.tsv", 3)
+    require_unique_manifest_column(lean_rows, 1, "Lean failure fixture")
     fixture_names = set(relative_fixture_paths(lean_dir, ".lean"))
     manifest_names = {fixture for _, fixture, _ in lean_rows}
     required_names = set(REQUIRED_LEAN_FAILURE_SHA256)
