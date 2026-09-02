@@ -2116,6 +2116,7 @@ fn validate_initial_operational_parameter_lineage(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_gate_b_operational_parameters(
     profile: &Profile,
     evidence: &Evidence,
@@ -2148,6 +2149,7 @@ fn validate_gate_b_operational_parameters(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_measurement_time(
     evidence: &Evidence,
     evidence_manifest_created_at_unix: u64,
@@ -7488,6 +7490,7 @@ fn encode_rlp_list_payload(payload: &[u8]) -> Vec<u8> {
     encoded
 }
 
+#[cfg(test)]
 fn encode_rlp_bytes(value: &[u8]) -> Vec<u8> {
     if value.len() == 1 && value[0] < 0x80 {
         return value.to_vec();
@@ -7511,6 +7514,7 @@ fn encode_rlp_bytes(value: &[u8]) -> Vec<u8> {
     encoded
 }
 
+#[cfg(test)]
 fn encode_rlp_uint(value: u128) -> Vec<u8> {
     let bytes = value.to_be_bytes();
     let first = bytes
@@ -11003,7 +11007,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
 "###;
         let generated = Command::new("python3")
             .arg("-c")
-            .arg(&python)
+            .arg(python)
             .arg(&test_helper)
             .arg(root.join("rpc-e2e.json"))
             .arg(&profile.expected_bridge_signer)
@@ -11799,7 +11803,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .sha256 = hex(&Sha256::digest(&drill_bytes));
         let regenerated = Command::new("python3")
             .arg("-c")
-            .arg(&python)
+            .arg(python)
             .arg(&test_helper)
             .arg(root.join("rpc-e2e.json"))
             .arg(&profile.expected_bridge_signer)
