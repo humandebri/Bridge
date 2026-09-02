@@ -3487,15 +3487,28 @@ fn validate_production_handover_candidate_files(
     schedule_receipt_path: &Path,
     execute_receipt_path: &Path,
 ) -> Result<(ValidatedBundle, GateAReceipt, ControllerActivationReceipt), String> {
+    validate_production_handover_evidence_files(
+        bundle_path,
+        seal_receipt_path,
+        schedule_receipt_path,
+        execute_receipt_path,
+        SealReceiptLiveContext::HandoverPreTransfer,
+    )
+}
+
+fn validate_production_handover_evidence_files(
+    bundle_path: &Path,
+    seal_receipt_path: &Path,
+    schedule_receipt_path: &Path,
+    execute_receipt_path: &Path,
+    live_context: SealReceiptLiveContext,
+) -> Result<(ValidatedBundle, GateAReceipt, ControllerActivationReceipt), String> {
     let bundle = validate_historical_gate_b_bundle(bundle_path)?;
     if bundle.manifest.schema_version != 4 {
         return Err("controller handover requires the current Gate B bundle".into());
     }
-    let seal_receipt_sha256 = validate_operational_config_seal_receipt(
-        &bundle,
-        seal_receipt_path,
-        SealReceiptLiveContext::Handover,
-    )?;
+    let seal_receipt_sha256 =
+        validate_operational_config_seal_receipt(&bundle, seal_receipt_path, live_context)?;
     let schedule_receipt: ControllerActivationReceipt = read_json(schedule_receipt_path)?;
     validate_controller_schedule_receipt(
         &bundle,
@@ -3522,11 +3535,12 @@ fn validate_controller_handover_completion_files(
     execute_receipt_path: &Path,
     handover_path: &Path,
 ) -> Result<(), String> {
-    let (bundle, gate_a_receipt, _) = validate_production_handover_candidate_files(
+    let (bundle, gate_a_receipt, _) = validate_production_handover_evidence_files(
         bundle_path,
         seal_receipt_path,
         schedule_receipt_path,
         execute_receipt_path,
+        SealReceiptLiveContext::HandoverPostTransfer,
     )?;
     let handover: ControllerHandover = read_json(handover_path)?;
     validate_controller_handover_lineage(
@@ -6449,6 +6463,12 @@ fn verify_gate_b_management_state(bundle: &ValidatedBundle) -> Result<(), String
 fn gate_b_management_snapshot(
     bundle: &ValidatedBundle,
 ) -> Result<(Vec<Principal>, Vec<u8>), String> {
+    let (controllers, module_hash) = live_management_snapshot(bundle)?;
+    validate_gate_b_management_snapshot(bundle, &controllers, &module_hash)?;
+    Ok((controllers, module_hash))
+}
+
+fn live_management_snapshot(bundle: &ValidatedBundle) -> Result<(Vec<Principal>, Vec<u8>), String> {
     let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
     let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
@@ -6463,8 +6483,21 @@ fn gate_b_management_snapshot(
             .map_err(|error| error.to_string())?;
         Ok::<_, String>((controllers, module_hash))
     })?;
-    validate_gate_b_management_snapshot(bundle, &controllers, &module_hash)?;
     Ok((controllers, module_hash))
+}
+
+fn validate_post_handover_management_snapshot(
+    profile: &Profile,
+    controllers: &[Principal],
+    module_hash: &[u8],
+) -> Result<(), String> {
+    let root = Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?;
+    if controllers != [root]
+        || !hex(module_hash).eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+    {
+        return Err("completed handover requires KINIC SNS Root as sole controller".into());
+    }
+    Ok(())
 }
 
 fn verify_live(bundle: &ValidatedBundle, expected_deposits_paused: bool) -> Result<(), String> {
@@ -6740,7 +6773,8 @@ enum SealReceiptLiveContext {
     PendingResume,
     ScheduleFinalization,
     ExecuteFinalization,
-    Handover,
+    HandoverPreTransfer,
+    HandoverPostTransfer,
 }
 
 fn validate_operational_config_seal_receipt(
@@ -6757,7 +6791,10 @@ fn validate_operational_config_seal_receipt(
     }
     let reservation: OperationalConfigSealReservation =
         serde_json::from_slice(&reservation_bytes).map_err(|error| error.to_string())?;
-    if matches!(live_context, SealReceiptLiveContext::Handover) {
+    if matches!(
+        live_context,
+        SealReceiptLiveContext::HandoverPreTransfer | SealReceiptLiveContext::HandoverPostTransfer
+    ) {
         validate_historical_evidence_window(
             bundle.manifest.created_at_unix,
             bundle.manifest.expires_at_unix,
@@ -6768,7 +6805,10 @@ fn validate_operational_config_seal_receipt(
         .map_err(|error| error.to_string())?;
     let parameters: InitialOperationalParameters =
         serde_json::from_slice(&parameters_bytes).map_err(|error| error.to_string())?;
-    if matches!(live_context, SealReceiptLiveContext::Handover) {
+    if matches!(
+        live_context,
+        SealReceiptLiveContext::HandoverPreTransfer | SealReceiptLiveContext::HandoverPostTransfer
+    ) {
         validate_initial_operational_parameter_lineage(
             &parameters,
             &bundle.profile,
@@ -6960,7 +7000,9 @@ fn validate_operational_config_seal_receipt(
         let expected_paused = match live_context {
             SealReceiptLiveContext::PendingResume
             | SealReceiptLiveContext::ScheduleFinalization => true,
-            SealReceiptLiveContext::ExecuteFinalization | SealReceiptLiveContext::Handover => false,
+            SealReceiptLiveContext::ExecuteFinalization
+            | SealReceiptLiveContext::HandoverPreTransfer
+            | SealReceiptLiveContext::HandoverPostTransfer => false,
             SealReceiptLiveContext::PrePrepare => unreachable!(),
         };
         validate_activation_attestation_with_pause(
@@ -6988,7 +7030,9 @@ fn validate_operational_config_seal_receipt(
                     )
                 ) && live_status.deposits_paused
             }
-            SealReceiptLiveContext::ExecuteFinalization | SealReceiptLiveContext::Handover => {
+            SealReceiptLiveContext::ExecuteFinalization
+            | SealReceiptLiveContext::HandoverPreTransfer
+            | SealReceiptLiveContext::HandoverPostTransfer => {
                 matches!(
                     live_lifecycle,
                     ProductionLifecycleResultView::Ok(ProductionLifecycleView::Activated)
@@ -7003,8 +7047,15 @@ fn validate_operational_config_seal_receipt(
             return Err("live activation phase is inconsistent with the seal receipt".into());
         }
     }
-    let (controllers, module_hash) = gate_b_management_snapshot(bundle)?;
-    if controllers
+    let (controllers, module_hash) =
+        if matches!(live_context, SealReceiptLiveContext::HandoverPostTransfer) {
+            live_management_snapshot(bundle)?
+        } else {
+            gate_b_management_snapshot(bundle)?
+        };
+    if matches!(live_context, SealReceiptLiveContext::HandoverPostTransfer) {
+        validate_post_handover_management_snapshot(&bundle.profile, &controllers, &module_hash)?;
+    } else if controllers
         .iter()
         .map(Principal::to_text)
         .collect::<Vec<_>>()
@@ -12330,6 +12381,25 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         )
         .is_err());
         assert!(validate_gate_b_management_snapshot(&bundle, &[installer], &[0; 32]).is_err());
+        let root_controller = Principal::from_text(KINIC_ROOT).unwrap();
+        assert!(validate_post_handover_management_snapshot(
+            &bundle.profile,
+            &[root_controller],
+            &module_hash,
+        )
+        .is_ok());
+        assert!(validate_post_handover_management_snapshot(
+            &bundle.profile,
+            &[installer],
+            &module_hash,
+        )
+        .is_err());
+        assert!(validate_post_handover_management_snapshot(
+            &bundle.profile,
+            &[root_controller],
+            &[0; 32],
+        )
+        .is_err());
 
         let valid_monitoring_bytes = fs::read(root.join("monitoring-receipt.json")).unwrap();
         let valid_keeper_bytes = fs::read(root.join("keeper-drill.json")).unwrap();

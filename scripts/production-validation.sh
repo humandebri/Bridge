@@ -229,25 +229,8 @@ production_validate_gate() {
   CARGO_TARGET_DIR="$target" cargo build --locked --quiet --release --manifest-path "$source_root/Cargo.toml" -p bridge-profile || { rm -rf "$target"; return 1; }
   profile_bin="$target/release/bridge-profile"
   if [[ "$mode" == gate-a ]]; then output="$("$profile_bin" validate-bundle --offline "$bundle")" || { rm -rf "$target"; return 1; }
-  elif [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live || "$mode" == handover ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }
-  else rm -rf "$target"; echo "invalid production gate mode" >&2; return 1
-  fi
-  if [[ "$mode" == gate-a ]]; then
-    [[ "$output" =~ ^gate_a=pass[[:space:]]authorizing=true[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver Gate A result is not authorizing" >&2; return 1; }
-    actual_hash="${BASH_REMATCH[1]}"
-  else
-    [[ "$output" =~ ^gate_b=pre_seal-pass[[:space:]]authorizing=seal[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver pre-seal Gate B result is malformed" >&2; return 1; }
-    actual_hash="${BASH_REMATCH[1]}"
-  fi
-  [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "driver Gate manifest hash mismatch" >&2; return 1; }
-  production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
-  "$source_root/scripts/rebuild-release-artifacts.sh" \
-    "$bundle" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
-  if [[ "$mode" == gate-b-pre-seal ]]; then
-    rm -rf "$target"
-    return 0
-  fi
-  if [[ "$mode" == handover ]]; then
+  elif [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }
+  elif [[ "$mode" == handover ]]; then
     [[ -z "$canister_install_receipt" ]] || {
       rm -rf "$target"
       echo "handover mode does not accept an install receipt" >&2
@@ -267,6 +250,25 @@ production_validate_gate() {
       echo "controller handover activation lineage is invalid" >&2
       return 1
     }
+    actual_hash="$(shasum -a 256 "$bundle/release-manifest.json" | awk '{print $1}')"
+  else rm -rf "$target"; echo "invalid production gate mode" >&2; return 1
+  fi
+  if [[ "$mode" == gate-a ]]; then
+    [[ "$output" =~ ^gate_a=pass[[:space:]]authorizing=true[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver Gate A result is not authorizing" >&2; return 1; }
+    actual_hash="${BASH_REMATCH[1]}"
+  elif [[ "$mode" != handover ]]; then
+    [[ "$output" =~ ^gate_b=pre_seal-pass[[:space:]]authorizing=seal[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver pre-seal Gate B result is malformed" >&2; return 1; }
+    actual_hash="${BASH_REMATCH[1]}"
+  fi
+  [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "driver Gate manifest hash mismatch" >&2; return 1; }
+  production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
+  "$source_root/scripts/rebuild-release-artifacts.sh" \
+    "$bundle" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
+  if [[ "$mode" == gate-b-pre-seal ]]; then
+    rm -rf "$target"
+    return 0
+  fi
+  if [[ "$mode" == handover ]]; then
     "$profile_bin" verify-production-canister-handover \
       "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
       "$handover_execute_receipt" >/dev/null || {
