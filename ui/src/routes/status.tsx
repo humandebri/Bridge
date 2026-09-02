@@ -98,11 +98,7 @@ function StatusPage() {
     )
     return timestamps.length === 2 ? Math.min(...timestamps) : undefined
   }, [base.dataUpdatedAt, canister.dataUpdatedAt])
-  const errors = [
-    ...(!base.isError && base.data?.ready === false ? base.data.blockers : []),
-    base.isError ? errorMessage(base.error, "Base RPC status could not be refreshed") : undefined,
-    canister.isError ? errorMessage(canister.error, "IC status could not be refreshed") : undefined,
-  ].filter((value): value is string => value !== undefined)
+  const statusCheckFailed = base.data?.ready === false || base.isError || canister.isError
 
   return (
     <div className="route-enter mx-auto max-w-4xl pt-8 md:pt-12">
@@ -120,13 +116,17 @@ function StatusPage() {
         </Button>
       </header>
 
-      {(!observationsAccepted || errors.length > 0) && (
+      {(!observationsAccepted || statusCheckFailed) && (
         <div className="mb-5 rounded-2xl border border-amber-300/60 bg-amber-50 p-4 text-sm text-amber-950">
           <p className="font-semibold">
             Live availability is unknown until current status checks succeed.
           </p>
-          {errors.length > 0 && <p className="mt-1 break-words">{errors.join(" · ")}</p>}
-          <p className="mt-1 text-amber-950">
+          {statusCheckFailed && (
+            <p className="mt-1">
+              Current bridge status could not be confirmed. Please try again shortly.
+            </p>
+          )}
+          <p className="mt-1 text-amber-900/70">
             Last updated: {lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleString() : "Never"}
           </p>
         </div>
@@ -182,10 +182,6 @@ function StatusPage() {
       </section>
     </div>
   )
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback
 }
 
 function Metric({
