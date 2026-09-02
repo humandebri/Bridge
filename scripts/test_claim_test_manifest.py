@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import check_claim_test_manifest as claim_tests
 
@@ -47,6 +48,23 @@ class ClaimTestManifestTests(unittest.TestCase):
         root, claims, manifest = self.fixture()
         manifest = manifest.replace("exact_test\texact_test", "missing\texact_test")
         with self.assertRaisesRegex(ValueError, "symbol is missing"):
+            claim_tests.parse_manifest(claims, manifest, root)
+
+    def test_manifest_rejects_an_excess_registration(self) -> None:
+        root, claims, manifest = self.fixture()
+        target = root / "canister/bridge-core/tests/example.rs"
+        target.write_text("fn exact_test() {}\nfn extra_test() {}\n", encoding="utf-8")
+        manifest += (
+            "rust-core\tcanister/bridge-core/tests/example.rs\t"
+            "extra_test\textra_test\n"
+        )
+        with self.assertRaisesRegex(ValueError, "does not match claims"):
+            claim_tests.parse_manifest(claims, manifest, root)
+
+    def test_manifest_rejects_an_unsupported_runner(self) -> None:
+        root, claims, manifest = self.fixture()
+        manifest = manifest.replace("rust-core", "python")
+        with self.assertRaisesRegex(ValueError, "unsupported claim test runner target"):
             claim_tests.parse_manifest(claims, manifest, root)
 
     def test_manifest_accepts_matching_symbol_and_selector(self) -> None:
@@ -209,6 +227,21 @@ class ClaimTestManifestTests(unittest.TestCase):
             claim_tests.MANIFEST.read_text(encoding="utf-8"),
         )
         self.assertGreater(len(parsed), 0)
+
+    def test_validate_only_does_not_build_or_execute_tests(self) -> None:
+        with (
+            mock.patch.object(
+                claim_tests,
+                "prepare_test_dependencies",
+                side_effect=AssertionError("validate-only must not build dependencies"),
+            ),
+            mock.patch.object(
+                claim_tests,
+                "execute_test",
+                side_effect=AssertionError("validate-only must not execute tests"),
+            ),
+        ):
+            self.assertEqual(claim_tests.main(["--validate-only"]), 0)
 
 
 if __name__ == "__main__":

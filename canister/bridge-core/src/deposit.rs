@@ -659,11 +659,10 @@ impl DepositRecord {
                     signature_absent: authorization
                         .is_some_and(|record| record.signature.is_none()),
                     signature_length_valid: signature.len() == 65,
-                    minimum_remaining: authorization.is_some_and(|record| {
-                        record
-                            .authorization
-                            .has_minimum_remaining_time(*observed_timestamp)
-                    }),
+                    observed_timestamp: *observed_timestamp,
+                    deadline: authorization
+                        .map(|record| record.authorization.deadline)
+                        .unwrap_or_default(),
                 };
                 (
                     guard,

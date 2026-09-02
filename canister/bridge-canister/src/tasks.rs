@@ -889,10 +889,10 @@ pub(crate) async fn advance_deposit(
                     .mint_authorization
                     .as_ref()
                     .ok_or(SettlementActionError::StorageFailure)?;
-                if !pending_authorization
-                    .authorization
-                    .has_minimum_remaining_time(observed_timestamp)
-                {
+                if !::bridge_core::kernel::mint_authorization_has_minimum_remaining_time(
+                    observed_timestamp,
+                    pending_authorization.authorization.deadline,
+                ) {
                     return Ok(SettlementActionResult::Stopped {
                         state,
                         reason: SettlementStopReason::AuthorizationWindowTooShort,
@@ -912,6 +912,7 @@ pub(crate) async fn advance_deposit(
                     }
                 }
                 lease.ensure_current()?;
+                let dispatch_observed_timestamp = ic_cdk::api::time() / 1_000_000_000;
                 let digest = STORE.with(|store| {
                     let mut store = store.borrow_mut();
                     let mut current = store
@@ -922,10 +923,10 @@ pub(crate) async fn advance_deposit(
                         .mint_authorization
                         .as_mut()
                         .ok_or(SettlementActionError::StorageFailure)?;
-                    if !authorization
-                        .authorization
-                        .has_minimum_remaining_time(observed_timestamp)
-                    {
+                    if !::bridge_core::kernel::mint_authorization_has_minimum_remaining_time(
+                        dispatch_observed_timestamp,
+                        authorization.authorization.deadline,
+                    ) {
                         return Ok::<_, SettlementActionError>(None);
                     }
                     authorization
@@ -1000,9 +1001,10 @@ pub(crate) async fn advance_deposit(
                         .mint_authorization
                         .as_ref()
                         .is_some_and(|authorization| {
-                            !authorization
-                                .authorization
-                                .has_minimum_remaining_time(observed_timestamp)
+                            !::bridge_core::kernel::mint_authorization_has_minimum_remaining_time(
+                                observed_timestamp,
+                                authorization.authorization.deadline,
+                            )
                         })
                     {
                         return Ok::<_, SettlementActionError>(false);

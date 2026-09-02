@@ -18,7 +18,7 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 `bridge-canister`はstable schema v35・record wire v30の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
 ICP→BaseではCanisterはFinalized Base snapshotで状態・fee・pauseを確認し、IC合意時刻の発行時点から10分を期限とするEIP-712 Mint Authorizationへ署名する。署名install時に5分以上残っていなければservice feeを計上せず停止し、Base transactionは生成・送信しない。任意のBase walletが残り5分以上で`mintDepositWithAuthorization`を送り、そのwalletがgasを支払う。Solidityは別途、現在のBase時刻から最大15分のdeadline上限を強制する。
 期限後、既存のBase Finalized snapshotを使うdeadline順の上限付きローカル走査でmint予約だけを解放する。Depositごとのtimerや個別Base照合、自動返金は行わない。任意の非anonymous Principalが`request_deposit_refund`を明示実行すると、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を照合し、未処理ならrecordに固定された元account・金額・transfer identityでLedger refund、処理済みならexact `DepositMinted` eventとcanonical receiptを保存して`Minted`へ進む。RPC不一致、event欠落、digest不一致では資金を動かさない。
-Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacementは存在しない。Base governanceではCanisterが用途別にGovernance Operator、Runtime Administrator、Independent Cancellerのtransactionを独立nonce laneでthreshold署名し、外部`governance-relayer` CLIだけがbroadcast、Finalized待機、確定通知を行う。自動replacementはなく、Governanceの明示要求時だけ同一nonceを最大3回、12.5%以上fee bumpして再署名する。
+Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacementは存在しない。Base governanceではCanisterがGovernance Operatorのtransactionをthreshold署名し、外部`governance-relayer` CLIだけがbroadcast、Finalized待機、確定通知を行う。自動replacementはなく、Governanceの明示要求時だけ同一nonceを最大3回、12.5%以上fee bumpして再署名する。
 Base側はKINICを表すERC-20（`name = "KINIC"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、固定limit、上限内Service Fee変更、role rotationを実装し、危険方向の操作をOpenZeppelinの24時間Timelockへ接続している。
 
 Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その同一transactionでbSNSの`transferFrom`、burn、固定受取額を持つ`Committed`化を原子的に実行する。Canisterは同じcanonical Finalized block hashへ束縛したreceipt、event、Withdrawal state、Bridge snapshotをquorumで検証し、固定IC Accountへの債務とtransfer identityを保存する。通知成功後にUIがbrowser identityで`continue_withdrawal`を1回実行し、未完了ならHistoryの明示操作ごとにLedger送金または照合を最大1 external step進める。Canister timerによるWithdrawal再試行、Base refund、release acknowledgementはない。Finalized headまたはcanonical hashが2-of-3で収束しない場合はfail closedとし、Safeへfallbackしない。
@@ -88,6 +88,31 @@ scripts/ci-local.sh contracts-coverage
 scripts/ci-local.sh ui-e2e
 ```
 
+安全性関連変更では、次の3つを別の終端として扱う。
+
+1. 実装完了: code、test、manifest、documentationの変更が揃っている。
+2. 検証完了: current source fingerprintと一致するcomplete proof receiptがある。
+3. deploy承認: Canister upgrade、frontend publish、Base transactionなどの外部変更が明示承認されている。
+
+proof合格は自動deployを意味しない。高コストproofの前に、登録driftを含む軽量検査を完了させる。
+
+```bash
+git diff --check
+cargo fmt --all -- --check
+python3 scripts/check_schema_consistency.py
+pnpm --dir ui run codegen:abi:check
+pnpm --dir ui run codegen:candid:check
+python3 scripts/check_proof_impact.py
+python3 scripts/check_claim_manifest.py
+python3 scripts/check_claim_test_manifest.py --validate-only
+```
+
+軽量検査と対象testが成功し、重複gateとwriterがないことを確認してから、current fingerprintのproofを一度実行する。長時間実行時は完全ログを保持する。
+
+```bash
+qrun -- scripts/ci-local.sh proofs
+```
+
 PR前はdeployと実Ledger統合を除く全検証を実行する。
 
 ```bash
@@ -149,10 +174,10 @@ python3 scripts/protocol_vectors.py --check
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
 3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 35、全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
-5. 24時間delay、Canister由来Governance Operator限定のproposer/executor、別derivationのIndependent Canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
+5. 24時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
 7. Bridge Signerからsmoke用Depositをmintし、ユーザーの`createWithdrawal`によるatomic burnと`Committed`固定quoteを確認する。Withdrawal用の追加Base transactionと再mint selectorが存在しないことも確認する。
-8. Canister由来Runtime AdministratorのService Fee変更とpause、外部EOAからの直接unpause拒否、Governance Operatorによる24時間前のTimelock execute拒否、経過後のCanister実行によるunpauseを確認する。
+8. Canister由来Governance OperatorのService Fee変更とpause、外部EOAからの直接unpause拒否、24時間前のTimelock execute拒否、経過後のCanister実行によるunpauseを確認する。
 9. Withdrawalのburn後の残高・supply、mint window、Withdrawal連番を確認する。
 10. 本スクリプトが起動したprocessだけを終了し、一時変更した`icp.yaml`を復元する。
 
@@ -171,4 +196,4 @@ icp network stop --project-root-override .
 
 手動実行の`prepare_local_network.py --write`は`icp.yaml`を永続的に変更する。必要なら停止後に利用者が元のportへ戻す。
 
-本番初回deployまではstable schemaを直接置換し、旧schema migration、dual-read、fallbackを追加しない。現行v35／wire v30以外はfail closedとする。Base Sepolia stagingも、review済みv35／wire v30と同一deployment instanceを保つupgradeだけを許可し、reinstallやlegacy migrationは許可しない。
+本番初回deployまではstable schemaを直接置換し、旧schema migration、dual-read、fallbackを追加しない。現行v35／wire v30以外はfail closedとする。現在のstagingは、一度限りのreinstall履歴を監査証跡へ固定した同じCanister・deployment instance・Base contract bindingを維持し、今後はcurrent-schema upgradeだけを許可する。v7 staging evidenceは読取専用とし、resumeまたはv8へのmigrationを行わない。

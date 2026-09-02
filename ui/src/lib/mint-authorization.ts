@@ -43,12 +43,12 @@ export interface ValidatedMintAuthorization {
   latestBlockTimestamp: bigint
 }
 
-export function assertMintAuthorizationContractHorizon(
+function assertMintAuthorizationContractHorizon(
   deadline: bigint,
   latestBaseTimestamp: bigint,
 ): void {
   if (deadline > latestBaseTimestamp + 900n) {
-    throw new Error("Mint authorization exceeds the Base contract deadline horizon. No Base transaction was sent.")
+    throw new Error("Mint authorization exceeds the Base contract deadline horizon")
   }
 }
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import subprocess
@@ -317,11 +318,21 @@ def execute_test(
         raise ValueError(f"unknown claim test runner: {test.runner}")
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="validate claim/test registration without building or executing tests",
+    )
+    args = parser.parse_args(argv)
     tests = parse_manifest(
         CLAIMS.read_text(encoding="utf-8"),
         MANIFEST.read_text(encoding="utf-8"),
     )
+    if args.validate_only:
+        print(f"claim test manifest passed ({len(tests)} tests)")
+        return 0
     prepare_test_dependencies(tests)
     for test in tests:
         execute_test(test)

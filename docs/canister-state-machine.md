@@ -4,7 +4,7 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、storageに依存しない決定的な状態遷移を定義する。`bridge-canister`は単一SQLite DBへ状態を保存し、Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-通常の再オープン、Production `post_upgrade`、test-deployment `post_upgrade`はstable schema v35、record wire version v30だけを受理する。旧schema、未知schema、未知wire、decode不能なDBはfail closedで起動を拒否し、migration、dual-read、互換fallbackは持たない。Base Sepolia stagingも、review済みv35／wire v30と同一deployment instanceを保つcurrent-schema upgradeだけを許可し、reinstallは許可しない。
+通常の再オープン、Production `post_upgrade`、test-deployment `post_upgrade`はstable schema v35、record wire version v30だけを受理する。旧schema、未知schema、未知wire、decode不能なDBはfail closedで起動を拒否し、migration、dual-read、互換fallbackは持たない。現在のstagingも同じCanisterとdeployment instanceを保つcurrent-schema upgradeだけを受理し、一度限りのreinstall履歴を再実行またはresumeしない。
 upgrade検証はcurrent schema v35のrecord・config・quota・auditを保持するsame-Wasm再オープンと、すべての旧schema・wireの拒否を検証する。
 
 `settlement_jobs`が実行中・停止中Settlementの正本である。Depositとfee payoutはtimerが自動claimし、Withdrawalは明示的な`continue_withdrawal`だけがmanual claimする。Withdrawal通知時はrecordと固定transfer identityだけをatomic保存し、jobを作らない。外部`await`前に署名dispatchやLedger transfer identityを永続化し、lease generationとDB上の状態だけが実行権を決める。
