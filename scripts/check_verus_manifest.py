@@ -78,6 +78,8 @@ def _definition_body(definition: str, name: str) -> str:
             depth += 1
         elif char == "}":
             if depth == 0:
+                if candidates and definition[index:].strip() == "}":
+                    break
                 raise ValueError(f"unbalanced Verus function body: {name}")
             depth -= 1
             if depth == 0:

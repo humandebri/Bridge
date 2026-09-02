@@ -325,6 +325,32 @@ proof fn registered_proof()
             source, "shared-expression", "registered_kernel", "registered_proof"
         )
 
+    def test_accepts_last_proof_before_the_verus_block_closes(self) -> None:
+        source = """
+proof fn registered_proof()
+    ensures kernel::registered_kernel_spec()
+{}
+}
+fn main() {}
+"""
+        validate_proof_binding(
+            source, "shared-expression", "registered_kernel", "registered_proof"
+        )
+
+    def test_rejects_more_than_one_trailing_unmatched_block_close(self) -> None:
+        source = """
+proof fn registered_proof()
+    ensures kernel::registered_kernel_spec()
+{}
+}
+}
+fn main() {}
+"""
+        with self.assertRaisesRegex(ValueError, "unbalanced Verus function body"):
+            validate_proof_binding(
+                source, "shared-expression", "registered_kernel", "registered_proof"
+            )
+
     def test_rejects_spec_reference_only_in_proof_body(self) -> None:
         source = """
 proof fn registered_proof()
