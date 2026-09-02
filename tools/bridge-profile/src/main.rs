@@ -4216,6 +4216,22 @@ fn validate_activation_time(at: u64, manifest_created: u64, now: u64) -> Result<
     Ok(())
 }
 
+fn validate_handover_completion_time(
+    observed_at: u64,
+    manifest_created: u64,
+    now: u64,
+) -> Result<(), String> {
+    if observed_at < manifest_created
+        || observed_at > now
+        || now - observed_at > MAX_EVIDENCE_AGE_SECS
+    {
+        return Err(
+            "handover completion timestamp predates Gate B, is future-dated, or is too old".into(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_activation_attestation_time(
     observed_at_ns: u64,
     manifest_created: u64,
@@ -4483,7 +4499,7 @@ fn validate_controller_handover_completion(
     manifest_created_at_unix: u64,
     now: u64,
 ) -> Result<(), String> {
-    validate_evidence_time(handover.observed_at_unix, manifest_created_at_unix, now)?;
+    validate_handover_completion_time(handover.observed_at_unix, manifest_created_at_unix, now)?;
     validate_controller_handover_continuity(handover, profile, installer)?;
     let required_prefix = ["icp", "canister", "settings", "update", "bridge-canister"];
     let add_controller_positions = handover
@@ -10988,6 +11004,44 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             required_freezing_cycles: 1_000,
         };
         assert!(validate_controller_handover_continuity(&handover, &profile, &installer).is_ok());
+        assert!(validate_controller_handover_completion(
+            &handover,
+            &profile,
+            &installer,
+            now - 100,
+            now,
+        )
+        .is_ok());
+        let mut pre_manifest = handover.clone();
+        pre_manifest.observed_at_unix = now - 101;
+        assert!(validate_controller_handover_completion(
+            &pre_manifest,
+            &profile,
+            &installer,
+            now - 100,
+            now,
+        )
+        .is_err());
+        let mut future = handover.clone();
+        future.observed_at_unix = now + 1;
+        assert!(validate_controller_handover_completion(
+            &future,
+            &profile,
+            &installer,
+            now - 100,
+            now,
+        )
+        .is_err());
+        let mut stale = handover.clone();
+        stale.observed_at_unix = now - MAX_EVIDENCE_AGE_SECS - 1;
+        assert!(validate_controller_handover_completion(
+            &stale,
+            &profile,
+            &installer,
+            stale.observed_at_unix - 1,
+            now,
+        )
+        .is_err());
         let lineage_matches = |value: &ControllerHandover| {
             controller_handover_lineage_fields_match(
                 value,
