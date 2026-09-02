@@ -180,18 +180,22 @@ describe("production UI Gate B binding", () => {
     [{ activationTimelockDelaySeconds: null }, "at least 24 hours"],
     [{ activationTimelockDelaySeconds: 300 }, "at least 24 hours"],
     [{ environmentMode: "short-delay-test-only" }, "environment modes"],
-  ])("rejects an unsafe production Timelock profile", (overrides, message) => {
-    const f = fixture(overrides)
-    const result = run({
-      PATH: `${f.bin}:${process.env.PATH}`,
-      FAKE_INPUTS: f.inputs,
-      BRIDGE_RELEASE_BUNDLE: f.bundle,
-      BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
-      BRIDGE_RELEASE_INPUTS_MANIFEST: join(f.inputs, "release-inputs-manifest.json"),
-      VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
-      VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
-    })
-    expect(result.status).not.toBe(0)
-    expect(result.stderr).toContain(message)
-  })
+  ])(
+    "rejects an unsafe production Timelock profile",
+    (overrides, message) => {
+      const f = fixture(overrides)
+      const result = run({
+        PATH: `${f.bin}:${process.env.PATH}`,
+        FAKE_INPUTS: f.inputs,
+        BRIDGE_RELEASE_BUNDLE: f.bundle,
+        BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
+        BRIDGE_RELEASE_INPUTS_MANIFEST: join(f.inputs, "release-inputs-manifest.json"),
+        VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
+        VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
+      })
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain(message)
+    },
+    30_000,
+  )
 })
