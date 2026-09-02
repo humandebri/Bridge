@@ -30,7 +30,7 @@ Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operato
 
 Gate Aは配置済みartifactとして不変に保持する。pre-seal Gate Bは初期運用値と構造証跡、live Gate Bはcertified config、attestation、sole production controller、module／pause／reserve／cycles／pending状態を検証する。Gate Cはunpause後の本番計測、monitoring、keeper、upgrade履歴を追加する。鍵ceremonyとrelease approvalは存在しない。Mint Signerはprofile、認証済みCanister公開設定、freshなFinalized Base attestationの三者一致で検証する。x402はBridgeの配置・activation条件に含めない。
 
-`monitor-drill.json`はpause principal、実request ID、audit sequence、audit digestを含む。Gate Bのfresh attestationは投票開始時の承認そのものではなく、schedule/execute時のCanister live preflight結果とSNS proposal実行証跡を別々に保存する。SNS proposal IDとGate B hashはCanisterへ自己申告値として渡さず、SNSとevidence側で管理する。manifestは最大90日、schedule用とexecute用は別bundleとする。
+`monitor-drill.json`はpause principal、実request ID、audit sequence、audit digestを含む。Gate Bのfresh attestationは初回activationの承認そのものではなく、controller activation authorization、prepare、confirmation、Finalized statusを別々のreceiptへ保存する。SNS proposal IDと実行証跡はhandover後の再activationにだけ使用し、Gate B hashとともにCanisterへ自己申告値として渡さない。manifestは最大90日、schedule用とexecute用は別bundleとする。
 
 ## 完了条件
 
