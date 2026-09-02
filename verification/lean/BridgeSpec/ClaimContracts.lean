@@ -124,16 +124,27 @@ def initialActivationAuthorized
     (bootstrapController governance sealed bootstrapActive validPhase : Bool) : Bool :=
   validPhase && sealed && if bootstrapActive then bootstrapController else governance
 
+def bootstrapActivationAuthorityAfterTransition
+    (authorityPresent confirmedExecute : Bool) : Bool :=
+  authorityPresent && !confirmedExecute
+
 def InitialActivationAuthorization : Prop :=
-  ∀ bootstrapController governance sealed bootstrapActive validPhase : Bool,
-    initialActivationAuthorized bootstrapController governance sealed bootstrapActive validPhase = true ↔
-      validPhase = true ∧ sealed = true ∧
-        (if bootstrapActive then bootstrapController = true else governance = true)
+  (∀ bootstrapController governance sealed bootstrapActive validPhase : Bool,
+      initialActivationAuthorized bootstrapController governance sealed bootstrapActive validPhase = true ↔
+        validPhase = true ∧ sealed = true ∧
+          (if bootstrapActive then bootstrapController = true else governance = true)) ∧
+  (∀ authorityPresent confirmedExecute : Bool,
+      bootstrapActivationAuthorityAfterTransition authorityPresent confirmedExecute = true ↔
+        authorityPresent = true ∧ confirmedExecute = false)
 
 theorem initial_activation_authorization_witness : InitialActivationAuthorization := by
-  intro bootstrapController governance sealed bootstrapActive validPhase
-  cases bootstrapController <;> cases governance <;> cases sealed <;> cases bootstrapActive <;>
-    cases validPhase <;> simp [initialActivationAuthorized]
+  constructor
+  · intro bootstrapController governance sealed bootstrapActive validPhase
+    cases bootstrapController <;> cases governance <;> cases sealed <;> cases bootstrapActive <;>
+      cases validPhase <;> simp [initialActivationAuthorized]
+  · intro authorityPresent confirmedExecute
+    cases authorityPresent <;> cases confirmedExecute <;>
+      simp [bootstrapActivationAuthorityAfterTransition]
 
 def IntegratedProtocolReachability : Prop :=
   (∀ {state : Protocol.ProtocolState}, Protocol.Reachable state → Protocol.Safe state) ∧

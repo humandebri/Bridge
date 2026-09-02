@@ -1051,11 +1051,11 @@ struct ActivationReceipt {
     prior_schedule_receipt_sha256: Option<String>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DirectActivationArtifact {
     operation_id: String,
-    kind: Value,
+    kind: DirectActivationKind,
     chain_id: String,
     sender: String,
     nonce: String,
@@ -1068,6 +1068,19 @@ struct DirectActivationArtifact {
     transaction_hash: String,
     generation: u8,
     signed_at_ns: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+enum DirectActivationKind {
+    ScheduleActivation(DirectActivationOperation),
+    ExecuteActivation(DirectActivationOperation),
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DirectActivationOperation {
+    operation_id: String,
+    salt: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1320,6 +1333,8 @@ struct ActivationConfirmationStatusView {
     timelock_operation_id: Vec<u8>,
     transaction_hash: Vec<u8>,
     receipt_block_number: u64,
+    generation: u8,
+    signed_at_ns: u64,
 }
 
 #[derive(CandidType, Deserialize)]
@@ -6534,6 +6549,18 @@ fn controller_activation_authorization_is_fresh(authorized_at_unix: u64, now: u6
     authorized_at_unix <= now && now - authorized_at_unix <= MAX_ACTIVATION_ATTESTATION_AGE_SECS
 }
 
+fn direct_activation_operation<'a>(
+    phase: &str,
+    kind: &'a DirectActivationKind,
+) -> Result<&'a DirectActivationOperation, String> {
+    match (phase, kind) {
+        ("schedule", DirectActivationKind::ScheduleActivation(operation))
+        | ("execute", DirectActivationKind::ExecuteActivation(operation)) => Ok(operation),
+        ("schedule" | "execute", _) => Err("fixed artifact has the wrong activation phase".into()),
+        _ => Err("activation phase must be schedule or execute".into()),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn verify_controller_activation_artifact_binding(
     phase: &str,
@@ -6580,24 +6607,9 @@ fn verify_controller_activation_artifact_binding(
     {
         return Err("activation artifact is not bound to its Gate B authorization".into());
     }
-    let expected_kind = if phase == "schedule" {
-        "ScheduleActivation"
-    } else {
-        "ExecuteActivation"
-    };
-    let operation = artifact
-        .kind
-        .get(expected_kind)
-        .and_then(Value::as_object)
-        .ok_or("fixed artifact has the wrong activation phase")?;
-    let timelock_operation_id = operation
-        .get("operation_id")
-        .and_then(Value::as_str)
-        .ok_or("fixed artifact has no Timelock operation ID")?;
-    let operation_salt = operation
-        .get("salt")
-        .and_then(Value::as_str)
-        .ok_or("fixed artifact has no activation salt")?;
+    let operation = direct_activation_operation(phase, &artifact.kind)?;
+    let timelock_operation_id = operation.operation_id.as_str();
+    let operation_salt = operation.salt.as_str();
     let governance_operation_id = artifact
         .operation_id
         .parse::<u64>()
@@ -6927,11 +6939,13 @@ fn validate_signed_eip1559_artifact(artifact: &DirectActivationArtifact) -> Resu
         || max_fee_per_gas != parse_decimal_u128(&artifact.max_fee_per_gas, "max fee")?
         || max_priority_fee_per_gas
             != parse_decimal_u128(&artifact.max_priority_fee_per_gas, "priority fee")?
-        || parse_decimal_u128(&artifact.signed_at_ns, "signed timestamp")? == 0
+        || !(1..=u128::from(u64::MAX)).contains(&parse_decimal_u128(
+            &artifact.signed_at_ns,
+            "signed timestamp",
+        )?)
     {
         return Err("signed activation transaction differs from the artifact fields".into());
     }
-    let _ = artifact.generation;
     Ok(())
 }
 
@@ -6970,6 +6984,15 @@ fn validate_direct_activation_transaction_fields(
         );
     }
     Ok(())
+}
+
+fn activation_confirmation_artifact_metadata_matches(
+    confirmation: &ActivationConfirmationStatusView,
+    artifact: &DirectActivationArtifact,
+) -> Result<bool, String> {
+    let signed_at_ns = parse_decimal_u128(&artifact.signed_at_ns, "signed timestamp")?;
+    Ok(confirmation.generation == artifact.generation
+        && u128::from(confirmation.signed_at_ns) == signed_at_ns)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7054,24 +7077,9 @@ fn verify_controller_activation(
     {
         return Err("controller activation confirmation differs from the fixed artifact".into());
     }
-    let expected_kind = if phase == "schedule" {
-        "ScheduleActivation"
-    } else {
-        "ExecuteActivation"
-    };
-    let operation = artifact
-        .kind
-        .get(expected_kind)
-        .and_then(Value::as_object)
-        .ok_or("fixed artifact has the wrong activation phase")?;
-    let timelock_operation_id = operation
-        .get("operation_id")
-        .and_then(Value::as_str)
-        .ok_or("fixed artifact has no Timelock operation ID")?;
-    let operation_salt = operation
-        .get("salt")
-        .and_then(Value::as_str)
-        .ok_or("fixed artifact has no activation salt")?;
+    let operation = direct_activation_operation(phase, &artifact.kind)?;
+    let timelock_operation_id = operation.operation_id.as_str();
+    let operation_salt = operation.salt.as_str();
     if !valid_hash32(timelock_operation_id)
         || !valid_hash32(operation_salt)
         || !valid_hash32(&artifact.transaction_hash)
@@ -7167,6 +7175,7 @@ fn verify_controller_activation(
     if last.phase != phase
         || last.governance_operation_id != governance_operation_id
         || last.receipt_block_number != finalized_block_number
+        || !activation_confirmation_artifact_metadata_matches(last, &artifact)?
         || !format!("0x{}", hex(&last.transaction_hash))
             .eq_ignore_ascii_case(&artifact.transaction_hash)
         || !format!("0x{}", hex(&last.timelock_operation_id))
@@ -8629,11 +8638,9 @@ mod tests {
         let sender_hash = keccak256(&public_key.as_bytes()[1..]);
         DirectActivationArtifact {
             operation_id: "7".into(),
-            kind: serde_json::json!({
-                "ScheduleActivation": {
-                    "operation_id": format!("0x{}", "11".repeat(32)),
-                    "salt": format!("0x{}", hex(&salt)),
-                }
+            kind: DirectActivationKind::ScheduleActivation(DirectActivationOperation {
+                operation_id: format!("0x{}", "11".repeat(32)),
+                salt: format!("0x{}", hex(&salt)),
             }),
             chain_id: profile.chain_id.to_string(),
             sender: format!("0x{}", hex(&sender_hash[12..])),
@@ -9944,6 +9951,44 @@ mod tests {
             ))
         );
         assert!(validate_signed_eip1559_artifact(&noncanonical).is_err());
+
+        let strict = signed_activation_artifact(&profile, salt, 0, false);
+        let mut dual_kind = serde_json::to_value(&strict).unwrap();
+        dual_kind["kind"]["ExecuteActivation"] = dual_kind["kind"]["ScheduleActivation"].clone();
+        assert!(serde_json::from_value::<DirectActivationArtifact>(dual_kind).is_err());
+        let mut extra_kind_field = serde_json::to_value(&strict).unwrap();
+        extra_kind_field["kind"]["ScheduleActivation"]["extra"] = Value::Bool(true);
+        assert!(serde_json::from_value::<DirectActivationArtifact>(extra_kind_field).is_err());
+    }
+
+    #[test]
+    fn controller_activation_confirmation_authenticates_generation_and_signing_time() {
+        let profile = valid_profile();
+        let salt = [0x5a; 32];
+        let mut artifact = signed_activation_artifact(&profile, salt, 0, false);
+        artifact.generation = 3;
+        artifact.signed_at_ns = "42".into();
+        let mut confirmation = ActivationConfirmationStatusView {
+            phase: "schedule".into(),
+            governance_operation_id: 7,
+            timelock_operation_id: vec![0x11; 32],
+            transaction_hash: decode_hex(&artifact.transaction_hash).unwrap(),
+            receipt_block_number: 10,
+            generation: 3,
+            signed_at_ns: 42,
+        };
+        assert!(
+            activation_confirmation_artifact_metadata_matches(&confirmation, &artifact).unwrap()
+        );
+        confirmation.generation = 4;
+        assert!(
+            !activation_confirmation_artifact_metadata_matches(&confirmation, &artifact).unwrap()
+        );
+        confirmation.generation = 3;
+        confirmation.signed_at_ns = 43;
+        assert!(
+            !activation_confirmation_artifact_metadata_matches(&confirmation, &artifact).unwrap()
+        );
     }
 
     #[test]

@@ -906,6 +906,17 @@ proof fn activation_authority_switches_on_bootstrap_controller_removal(
             <==> governance && sealed_paused),
 {}
 
+proof fn confirmed_execute_consumes_bootstrap_activation_authority(
+    authority_present: bool,
+    confirmed_execute: bool,
+)
+    ensures
+        kernel::bootstrap_activation_authority_after_transition_spec(
+            authority_present, confirmed_execute) == (authority_present && !confirmed_execute),
+        !kernel::bootstrap_activation_authority_after_transition_spec(false, confirmed_execute),
+        !kernel::bootstrap_activation_authority_after_transition_spec(authority_present, true),
+{}
+
 proof fn audit_sequence_is_strictly_monotone(current: int)
     requires 0 <= current < 0xffff_ffff_ffff_ffffint
     ensures kernel::audit_next_spec(current) == Some(current + 1), current + 1 > current

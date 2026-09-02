@@ -5777,7 +5777,12 @@ impl StableStore {
         let previous_admission = self.deposit_admission.get()?;
         let mut admission = self.deposit_admission()?;
         Self::apply_governance_completion(&mut admission, &transaction)?;
-        admission.bootstrap_activation_controller = None;
+        if !bridge_core::kernel::bootstrap_activation_authority_after_transition(
+            admission.bootstrap_activation_controller.is_some(),
+            true,
+        ) {
+            admission.bootstrap_activation_controller = None;
+        }
         let previous_admin = self.admin_state.get()?;
         let mut admin = self.admin_state()?;
         if !admin.deposits_paused
@@ -10763,8 +10768,8 @@ mod tests {
     #[test]
     #[serial]
     fn confirmed_activation_completion_keeps_pause_while_emergency_actions_remain() {
-        let mut store =
-            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init_configured(memory.clone(), &config()).expect("store");
         let (transaction, governance) = confirmed_activation_transaction(&mut store);
         store
             .enqueue_emergency_base_actions()
@@ -10786,6 +10791,22 @@ mod tests {
         assert!(store
             .emergency_base_actions_pending()
             .expect("emergency actions"));
+        assert_eq!(
+            store
+                .bootstrap_activation_controller()
+                .expect("consumed bootstrap authority"),
+            None
+        );
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen paused activation");
+        assert!(reopened.admin_state().expect("admin state").deposits_paused);
+        assert_eq!(
+            reopened
+                .bootstrap_activation_controller()
+                .expect("reopened consumed bootstrap authority"),
+            None
+        );
     }
 
     #[test]

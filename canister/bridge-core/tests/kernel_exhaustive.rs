@@ -125,6 +125,25 @@ fn activation_authorization_follows_bootstrap_controller_removal() {
 }
 
 #[test]
+fn confirmed_execute_consumes_bootstrap_activation_authority_permanently() {
+    use bridge_core::kernel::bootstrap_activation_authority_after_transition;
+
+    for authority_present in [false, true] {
+        assert!(!bootstrap_activation_authority_after_transition(
+            authority_present,
+            true,
+        ));
+    }
+    for confirmed_execute in [false, true] {
+        assert!(!bootstrap_activation_authority_after_transition(
+            false,
+            confirmed_execute,
+        ));
+    }
+    assert!(bootstrap_activation_authority_after_transition(true, false));
+}
+
+#[test]
 fn reserve_boundaries_and_overflow_are_checked() {
     assert_eq!(checked_requirement(0, 0, 0), Some(0));
     assert_eq!(checked_requirement(7, 3, 4), Some(19));

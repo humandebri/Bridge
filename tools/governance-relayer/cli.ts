@@ -200,7 +200,10 @@ async function main(): Promise<void> {
         transaction_hash: hash,
         response: jsonValue(receipt),
       }
-      await writeJsonNew(evidence, requiredOption(options, "receipt-file"))
+      await writeOrMatchConfirmationEvidence(
+        evidence,
+        requiredOption(options, "receipt-file"),
+      )
       process.stdout.write(`${JSON.stringify(evidence)}\n`)
       return
     }
@@ -449,6 +452,39 @@ async function writeJsonNew(value: unknown, path: string): Promise<void> {
   })
 }
 
+export function confirmationEvidenceMatches(stored: unknown, candidate: unknown): boolean {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)
+    || !candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false
+  const previous = stored as Record<string, unknown>
+  const current = candidate as Record<string, unknown>
+  const previousKeys = Object.keys(previous).sort().join(",")
+  if (previousKeys !== Object.keys(current).sort().join(",")) return false
+  if (typeof previous.confirmed_at_unix !== "number"
+    || !Number.isSafeInteger(previous.confirmed_at_unix)
+    || previous.confirmed_at_unix <= 0
+    || typeof current.confirmed_at_unix !== "number"
+    || previous.confirmed_at_unix > current.confirmed_at_unix) return false
+  const normalizedPrevious = { ...previous, confirmed_at_unix: current.confirmed_at_unix }
+  return JSON.stringify(normalizedPrevious) === JSON.stringify(current)
+}
+
+export async function writeOrMatchConfirmationEvidence(
+  value: unknown,
+  path: string,
+): Promise<void> {
+  try {
+    await writeJsonNew(value, path)
+  } catch (error) {
+    let stored: unknown
+    try {
+      stored = JSON.parse((await readFile(path)).toString("utf8"))
+    } catch {
+      throw error
+    }
+    if (!confirmationEvidenceMatches(stored, value)) throw error
+  }
+}
+
 async function requireMatchingArtifactFile(
   artifact: SignedBaseGovernanceTransaction,
   options: Options,
@@ -672,6 +708,45 @@ export async function validateStoredArtifact(value: unknown): Promise<void> {
       throw new Error(`Signed governance artifact has invalid ${name}`)
     }
     return BigInt(field)
+  }
+  const expectedFields = [
+    "operation_id", "kind", "chain_id", "sender", "nonce", "target", "calldata",
+    "gas_limit", "max_fee_per_gas", "max_priority_fee_per_gas", "raw_transaction",
+    "transaction_hash", "generation", "signed_at_ns",
+  ].sort().join(",")
+  if (Object.keys(artifact).sort().join(",") !== expectedFields) {
+    throw new Error("Signed governance artifact has unexpected fields")
+  }
+  const maxU64 = 18_446_744_073_709_551_615n
+  if (natural("operation_id") > maxU64 || natural("chain_id") > maxU64
+    || natural("nonce") > maxU64 || natural("signed_at_ns") === 0n
+    || natural("signed_at_ns") > maxU64) {
+    throw new Error("Signed governance artifact has an out-of-range nat64 field")
+  }
+  if (typeof artifact.generation !== "number" || !Number.isInteger(artifact.generation)
+    || artifact.generation < 0 || artifact.generation > 255) {
+    throw new Error("Signed governance artifact has an invalid generation")
+  }
+  if (!artifact.kind || typeof artifact.kind !== "object" || Array.isArray(artifact.kind)) {
+    throw new Error("Signed governance artifact has an invalid operation kind")
+  }
+  const kind = artifact.kind as Record<string, unknown>
+  const kindKeys = Object.keys(kind)
+  if (kindKeys.length !== 1) {
+    throw new Error("Signed governance artifact must have exactly one operation kind")
+  }
+  if (kindKeys[0] === "ScheduleActivation" || kindKeys[0] === "ExecuteActivation") {
+    const operation = kind[kindKeys[0]]
+    if (!operation || typeof operation !== "object" || Array.isArray(operation)
+      || Object.keys(operation).sort().join(",") !== "operation_id,salt") {
+      throw new Error("Signed governance artifact has invalid activation kind fields")
+    }
+    const activation = operation as Record<string, unknown>
+    for (const field of ["operation_id", "salt"]) {
+      if (typeof activation[field] !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(activation[field])) {
+        throw new Error(`Signed governance artifact has invalid activation ${field}`)
+      }
+    }
   }
   const raw = hexField("raw_transaction")
   const expectedHash = hexField("transaction_hash")

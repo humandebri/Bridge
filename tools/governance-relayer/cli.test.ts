@@ -1,5 +1,8 @@
 import assert from "node:assert/strict"
 import { generateKeyPairSync } from "node:crypto"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Secp256k1KeyIdentity } from "@icp-sdk/core/identity/secp256k1"
@@ -12,6 +15,7 @@ import {
   activationReplacementMatches,
   canisterErrorMessage,
   commandRequiresIdentity,
+  confirmationEvidenceMatches,
   confirmationHash,
   identityFromPem,
   isActivationArtifact,
@@ -26,6 +30,7 @@ import {
   validateCommandOptions,
   validateStoredArtifact,
   waitForFinalized,
+  writeOrMatchConfirmationEvidence,
 } from "./cli.ts"
 
 test("parses only an allocatable exact governance operation ID", () => {
@@ -57,6 +62,13 @@ test("binds stored artifact fields to the independently decoded signed transacti
     value: 0n,
   })
   const artifact = {
+    operation_id: "9",
+    kind: {
+      ScheduleActivation: {
+        operation_id: `0x${"44".repeat(32)}`,
+        salt: `0x${"55".repeat(32)}`,
+      },
+    },
     raw_transaction: raw,
     transaction_hash: keccak256(raw),
     sender: account.address,
@@ -67,6 +79,8 @@ test("binds stored artifact fields to the independently decoded signed transacti
     gas_limit: "100000",
     max_fee_per_gas: "20",
     max_priority_fee_per_gas: "2",
+    generation: 0,
+    signed_at_ns: "1",
   }
   await validateStoredArtifact(artifact)
   for (const drift of [
@@ -78,6 +92,18 @@ test("binds stored artifact fields to the independently decoded signed transacti
     { ...artifact, gas_limit: "100001" },
     { ...artifact, max_fee_per_gas: "21" },
     { ...artifact, max_priority_fee_per_gas: "3" },
+    { ...artifact, generation: 256 },
+    { ...artifact, signed_at_ns: "18446744073709551616" },
+    { ...artifact, kind: {
+      ...artifact.kind,
+      ExecuteActivation: artifact.kind.ScheduleActivation,
+    } },
+    { ...artifact, kind: {
+      ScheduleActivation: {
+        ...artifact.kind.ScheduleActivation,
+        extra: "unexpected",
+      },
+    } },
     { ...artifact, transaction_hash: `0x${"00".repeat(32)}` },
   ]) {
     await assert.rejects(() => validateStoredArtifact(drift))
@@ -128,6 +154,37 @@ test("binds stored artifact fields to the independently decoded signed transacti
   assert.equal(sideEffects, 0)
   await afterValidatingStoredArtifacts([artifact], async () => { sideEffects += 1 })
   assert.equal(sideEffects, 1)
+})
+
+test("reuses only an exact confirmation receipt after a post-confirmation restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bridge-confirmation-"))
+  const path = join(root, "confirmation.json")
+  const evidence = {
+    schema_version: 1,
+    confirmed_at_unix: 100,
+    artifact_sha256: "11".repeat(32),
+    operation_id: "7",
+    transaction_hash: `0x${"22".repeat(32)}`,
+    response: {
+      operation_id: "7",
+      transaction_hash: `0x${"22".repeat(32)}`,
+      receipt_block_number: "99",
+      succeeded: true,
+    },
+  }
+  try {
+    await writeOrMatchConfirmationEvidence(evidence, path)
+    const resumed = { ...evidence, confirmed_at_unix: 101 }
+    assert.equal(confirmationEvidenceMatches(evidence, resumed), true)
+    await writeOrMatchConfirmationEvidence(resumed, path)
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), evidence)
+    await assert.rejects(() => writeOrMatchConfirmationEvidence({
+      ...resumed,
+      transaction_hash: `0x${"33".repeat(32)}`,
+    }, path))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("uses an anonymous IC actor only for read-only status, recovery, and raw relay commands", () => {

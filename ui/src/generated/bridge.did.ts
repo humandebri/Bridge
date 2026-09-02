@@ -34,6 +34,8 @@ export interface ActivationAttestation {
 }
 export interface ActivationConfirmationView {
   'transaction_hash' : Uint8Array | number[],
+  'generation' : number,
+  'signed_at_ns' : bigint,
   'governance_operation_id' : bigint,
   'phase' : string,
   'timelock_operation_id' : Uint8Array | number[],

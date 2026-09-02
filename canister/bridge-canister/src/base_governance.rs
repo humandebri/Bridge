@@ -186,6 +186,8 @@ pub struct ActivationConfirmationView {
     pub timelock_operation_id: Vec<u8>,
     pub transaction_hash: Vec<u8>,
     pub receipt_block_number: u64,
+    pub generation: u8,
+    pub signed_at_ns: u64,
 }
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,36 +366,46 @@ pub fn activation_status() -> Result<ActivationStatus, BaseGovernanceError> {
         let last_confirmed_activation = store
             .last_completed_governance_transaction()
             .map_err(|_| BaseGovernanceError::StorageFailure)?
-            .and_then(|transaction| {
-                let (phase, timelock_operation_id) = match transaction.kind {
-                    storage::GovernanceTransactionKind::ScheduleActivation {
-                        operation_id, ..
-                    } => ("schedule", operation_id),
-                    storage::GovernanceTransactionKind::ExecuteActivation {
-                        operation_id, ..
-                    } => ("execute", operation_id),
-                    _ => return None,
-                };
-                let storage::GovernanceTransactionState::Confirmed {
-                    transaction_hash,
-                    receipt_block_number,
-                } = transaction.state
-                else {
-                    return None;
-                };
-                Some(ActivationConfirmationView {
-                    phase: phase.into(),
-                    governance_operation_id: transaction.id,
-                    timelock_operation_id: timelock_operation_id.to_vec(),
-                    transaction_hash: transaction_hash.to_vec(),
-                    receipt_block_number,
-                })
-            });
+            .and_then(|transaction| activation_confirmation_view(&transaction));
         Ok(ActivationStatus {
             deposits_paused,
             pending_timelock_operation,
             last_confirmed_activation,
         })
+    })
+}
+
+fn activation_confirmation_view(
+    transaction: &storage::GovernanceTransaction,
+) -> Option<ActivationConfirmationView> {
+    let (phase, timelock_operation_id) = match &transaction.kind {
+        storage::GovernanceTransactionKind::ScheduleActivation { operation_id, .. } => {
+            ("schedule", *operation_id)
+        }
+        storage::GovernanceTransactionKind::ExecuteActivation { operation_id, .. } => {
+            ("execute", *operation_id)
+        }
+        _ => return None,
+    };
+    let storage::GovernanceTransactionState::Confirmed {
+        transaction_hash,
+        receipt_block_number,
+    } = &transaction.state
+    else {
+        return None;
+    };
+    let signed = transaction.envelope.signed_transactions.last()?;
+    if signed.transaction_hash != *transaction_hash {
+        return None;
+    }
+    Some(ActivationConfirmationView {
+        phase: phase.into(),
+        governance_operation_id: transaction.id,
+        timelock_operation_id: timelock_operation_id.to_vec(),
+        transaction_hash: transaction_hash.to_vec(),
+        receipt_block_number: *receipt_block_number,
+        generation: signed.generation,
+        signed_at_ns: signed.signed_at_ns,
     })
 }
 
@@ -2339,9 +2351,9 @@ fn keccak(value: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::{
-        action_authorized, activation_base_preflight_matches, activation_operation_id,
-        activation_postcondition_matches, activation_salt, affordability_error,
-        confirmation_caller_authorized, conservative_observed_balance,
+        action_authorized, activation_base_preflight_matches, activation_confirmation_view,
+        activation_operation_id, activation_postcondition_matches, activation_salt,
+        affordability_error, confirmation_caller_authorized, conservative_observed_balance,
         control_plane_rotation_arguments, control_plane_rotation_postcondition_matches,
         execute_activation_calldata, initial_fee, minimum_fee_bump,
         operational_config_lifecycle_result, pending_signature_action,
@@ -2628,6 +2640,34 @@ mod tests {
             receipt_block_number: 10,
         };
         assert!(pending_signature_action(&transaction).is_err());
+    }
+
+    #[test]
+    fn activation_confirmation_exposes_only_the_confirmed_signed_attempt_metadata() {
+        let mut transaction = governance_transaction();
+        transaction.kind = GovernanceTransactionKind::ExecuteActivation {
+            operation_id: [2; 32],
+            salt: [3; 32],
+        };
+        let mut signed = signed_transaction();
+        signed.generation = 3;
+        signed.signed_at_ns = 42;
+        transaction.envelope.signed_transactions.push(signed);
+        transaction.state = GovernanceTransactionState::Confirmed {
+            transaction_hash: [7; 32],
+            receipt_block_number: 10,
+        };
+
+        let view = activation_confirmation_view(&transaction).unwrap();
+        assert_eq!(view.generation, 3);
+        assert_eq!(view.signed_at_ns, 42);
+        assert_eq!(view.transaction_hash, vec![7; 32]);
+
+        transaction.state = GovernanceTransactionState::Confirmed {
+            transaction_hash: [8; 32],
+            receipt_block_number: 10,
+        };
+        assert!(activation_confirmation_view(&transaction).is_none());
     }
 
     fn governance_transaction() -> GovernanceTransaction {

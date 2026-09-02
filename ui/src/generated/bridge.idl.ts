@@ -237,6 +237,8 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
   });
   const ActivationConfirmationView = IDL.Record({
     'transaction_hash' : IDL.Vec(IDL.Nat8),
+    'generation' : IDL.Nat8,
+    'signed_at_ns' : IDL.Nat64,
     'governance_operation_id' : IDL.Nat64,
     'phase' : IDL.Text,
     'timelock_operation_id' : IDL.Vec(IDL.Nat8),

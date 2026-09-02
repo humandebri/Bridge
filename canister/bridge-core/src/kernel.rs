@@ -210,6 +210,12 @@ macro_rules! activation_prepare_authorized_body {
     }};
 }
 
+macro_rules! bootstrap_activation_authority_after_transition_body {
+    ($authority_present:expr, $confirmed_execute:expr) => {
+        $authority_present && !$confirmed_execute
+    };
+}
+
 #[cfg(not(verus_keep_ghost))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetOperationLifecycleDecision {
@@ -1794,6 +1800,14 @@ pub const fn activation_prepare_authorized(
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn bootstrap_activation_authority_after_transition(
+    authority_present: bool,
+    confirmed_execute: bool,
+) -> bool {
+    bootstrap_activation_authority_after_transition_body!(authority_present, confirmed_execute)
+}
+
+#[cfg(not(verus_keep_ghost))]
 pub const fn audit_next(current: u64) -> Option<u64> {
     next_attempt_body!(current, u64::MAX, 1u64)
 }
@@ -2562,6 +2576,16 @@ verus! {
             phase,
             schedule,
             execute
+        )
+    }
+
+    pub open spec fn bootstrap_activation_authority_after_transition_spec(
+        authority_present: bool,
+        confirmed_execute: bool,
+    ) -> bool {
+        bootstrap_activation_authority_after_transition_body!(
+            authority_present,
+            confirmed_execute
         )
     }
 
