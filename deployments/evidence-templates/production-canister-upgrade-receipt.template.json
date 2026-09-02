@@ -12,8 +12,6 @@
   "recovered_at_unix": null,
   "before_controllers": ["<sole-production-controller-principal>"],
   "after_controllers": ["<sole-production-controller-principal>"],
-  "before_canister_version": 0,
-  "after_canister_version": 1,
   "before_module_sha256": "<Gate-A-installed-64-hex>",
   "after_module_sha256": "<controller-bootstrap-upgrade-64-hex>",
   "wasm_sha256": "<controller-bootstrap-upgrade-64-hex>",

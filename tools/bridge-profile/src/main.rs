@@ -412,8 +412,6 @@ struct ProductionCanisterUpgradeReceipt {
     recovered_at_unix: Option<u64>,
     before_controllers: Vec<String>,
     after_controllers: Vec<String>,
-    before_canister_version: u64,
-    after_canister_version: u64,
     before_module_sha256: String,
     after_module_sha256: String,
     wasm_sha256: String,
@@ -4823,18 +4821,14 @@ fn management_module_sha256(value: &Value) -> Option<String> {
     }
 }
 
-fn production_upgrade_management_state(
-    raw_hex: &str,
-) -> Result<(Vec<String>, String, u64), String> {
+fn production_upgrade_management_state(raw_hex: &str) -> Result<(Vec<String>, String), String> {
     let raw = decode_hex(raw_hex)?;
     let value: Value = serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
     let mut controllers = Vec::new();
     let mut modules = Vec::new();
-    let mut versions = Vec::new();
     collect_json_key(&value, "controllers", &mut controllers);
     collect_json_key(&value, "module_hash", &mut modules);
-    collect_json_key(&value, "canister_version", &mut versions);
-    if controllers.len() != 1 || modules.len() != 1 || versions.len() != 1 {
+    if controllers.len() != 1 || modules.len() != 1 {
         return Err("production upgrade management status is ambiguous".into());
     }
     let mut controllers = controllers[0]
@@ -4856,15 +4850,7 @@ fn production_upgrade_management_state(
     }
     let module = management_module_sha256(modules[0])
         .ok_or("production upgrade module hash is malformed")?;
-    let version = versions[0]
-        .as_u64()
-        .or_else(|| {
-            versions[0]
-                .as_str()
-                .and_then(|value| value.replace('_', "").parse().ok())
-        })
-        .ok_or("production upgrade canister version is malformed")?;
-    Ok((controllers, module, version))
+    Ok((controllers, module))
 }
 
 fn validate_post_gate_a_policy_transition(
@@ -4887,9 +4873,9 @@ fn validate_post_gate_a_policy_transition(
     let receipt_bytes = fs::read(root.join("gate-a-receipt.json")).map_err(|e| e.to_string())?;
     let installer = &receipt.canister_install.installer_principal;
     let expected_controllers = vec![installer.clone()];
-    let (before_controllers, before_module, before_canister_version) =
+    let (before_controllers, before_module) =
         production_upgrade_management_state(&upgrade.before_management_status_json_hex)?;
-    let (after_controllers, after_module, after_canister_version) =
+    let (after_controllers, after_module) =
         production_upgrade_management_state(&upgrade.after_management_status_json_hex)?;
     let (before_status, before_runtime, before_public_state_sha256) =
         production_upgrade_query_state(
@@ -4988,9 +4974,6 @@ fn validate_post_gate_a_policy_transition(
         || upgrade.verified_at_unix > transition.observed_at_unix
         || upgrade.before_controllers != before_controllers
         || upgrade.after_controllers != after_controllers
-        || upgrade.before_canister_version != before_canister_version
-        || upgrade.after_canister_version != after_canister_version
-        || before_canister_version.checked_add(1) != Some(after_canister_version)
         || before_controllers != expected_controllers
         || after_controllers != expected_controllers
         || !upgrade
@@ -5097,9 +5080,6 @@ fn validate_post_gate_a_policy_transition(
         || upgrade.verified_at_unix > transition.observed_at_unix
         || upgrade.before_controllers != before_controllers
         || upgrade.after_controllers != after_controllers
-        || upgrade.before_canister_version != before_canister_version
-        || upgrade.after_canister_version != after_canister_version
-        || before_canister_version.checked_add(1) != Some(after_canister_version)
         || before_controllers != expected_controllers
         || after_controllers != expected_controllers
         || !upgrade
@@ -11982,8 +11962,6 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             recovered_at_unix: None,
             before_controllers: vec![receipt.canister_install.installer_principal.clone()],
             after_controllers: vec![receipt.canister_install.installer_principal.clone()],
-            before_canister_version: 10,
-            after_canister_version: 11,
             before_module_sha256: gate_a_profile.bridge_canister_wasm_sha256.clone(),
             after_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
             wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
@@ -12055,7 +12033,6 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             "status": {
                 "settings": {"controllers": [receipt.canister_install.installer_principal.clone()]},
                 "module_hash": gate_a_profile.bridge_canister_wasm_sha256.clone(),
-                "canister_version": 10,
             }
         }))
         .unwrap();
@@ -12063,7 +12040,6 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             "status": {
                 "settings": {"controllers": [receipt.canister_install.installer_principal.clone()]},
                 "module_hash": profile.bridge_canister_wasm_sha256.clone(),
-                "canister_version": 11,
             }
         }))
         .unwrap();

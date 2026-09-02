@@ -52,6 +52,7 @@ if [[ "$MODE" == execute || "$MODE" == recover ]]; then
   [[ "$CONTROLLER_PEM" == /* && -f "$CONTROLLER_PEM" && ! -L "$CONTROLLER_PEM" ]] || {
     echo "execute requires an absolute production controller PEM file" >&2; exit 1;
   }
+  PREFLIGHT_SHA256="$(shasum -a 256 "$PREFLIGHT" | awk '{print tolower($1)}')"
 fi
 for tool in cargo git icp python3 shasum; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
 [[ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" ]] || {
@@ -106,13 +107,11 @@ def module(node):
  if isinstance(node,list) and len(node)==32 and all(type(v) is int and 0<=v<=255 for v in node): return bytes(node).hex()
  if isinstance(node,dict) and len(node)==1: return module(next(iter(node.values())))
  return None
-controllers=named(value,'controllers'); modules=named(value,'module_hash'); versions=named(value,'canister_version')
-if len(controllers)!=1 or not isinstance(controllers[0],list) or len(modules)!=1 or len(versions)!=1: raise SystemExit('ambiguous management status')
+controllers=named(value,'controllers'); modules=named(value,'module_hash')
+if len(controllers)!=1 or not isinstance(controllers[0],list) or len(modules)!=1: raise SystemExit('ambiguous management status')
 resolved=module(modules[0])
 if not resolved: raise SystemExit('invalid management module hash')
-version=str(versions[0]).replace('_','')
-if not version.isdigit(): raise SystemExit('invalid canister version')
-print(','.join(sorted(str(v) for v in controllers[0])),resolved,version)
+print(','.join(sorted(str(v) for v in controllers[0])),resolved)
 PY
 }
 
@@ -122,13 +121,12 @@ query_hex() {
 }
 
 snapshot() {
-  local prefix="$1" status controllers module version
+  local prefix="$1" status controllers module
   status="$(icp canister status "$CANISTER" -n ic --json --identity production)"
-  read -r controllers module version < <(status_fields "$status")
+  read -r controllers module < <(status_fields "$status")
   [[ "$controllers" == "$INSTALLER" ]] || { echo "production Canister is not controlled solely by the installer" >&2; return 1; }
   printf -v "${prefix}_MANAGEMENT" '%s' "$status"
   printf -v "${prefix}_MODULE" '%s' "$module"
-  printf -v "${prefix}_VERSION" '%s' "$version"
   printf -v "${prefix}_BRIDGE_STATUS" '%s' "$(query_hex get_bridge_status)"
   printf -v "${prefix}_LIFECYCLE" '%s' "$(query_hex get_production_lifecycle)"
   printf -v "${prefix}_RUNTIME" '%s' "$(query_hex get_runtime_binding)"
@@ -142,11 +140,11 @@ write_json() {
   EXECUTING_PRINCIPAL="$EXECUTING_PRINCIPAL" BEFORE_MANAGEMENT="$BEFORE_MANAGEMENT" BEFORE_MODULE="$BEFORE_MODULE" \
   BEFORE_BRIDGE_STATUS="$BEFORE_BRIDGE_STATUS" BEFORE_LIFECYCLE="$BEFORE_LIFECYCLE" \
   BEFORE_RUNTIME="$BEFORE_RUNTIME" BEFORE_INTEGRITY="$BEFORE_INTEGRITY" \
-  BEFORE_VERSION="$BEFORE_VERSION" BEFORE_PUBLIC_STATE="$BEFORE_PUBLIC_STATE" \
+  BEFORE_PUBLIC_STATE="$BEFORE_PUBLIC_STATE" \
   AFTER_MANAGEMENT="${AFTER_MANAGEMENT:-}" AFTER_MODULE="${AFTER_MODULE:-}" \
   AFTER_BRIDGE_STATUS="${AFTER_BRIDGE_STATUS:-}" AFTER_LIFECYCLE="${AFTER_LIFECYCLE:-}" \
   AFTER_RUNTIME="${AFTER_RUNTIME:-}" AFTER_INTEGRITY="${AFTER_INTEGRITY:-}" \
-  AFTER_VERSION="${AFTER_VERSION:-}" AFTER_PUBLIC_STATE="${AFTER_PUBLIC_STATE:-}" IC_HOST="$IC_HOST" \
+  AFTER_PUBLIC_STATE="${AFTER_PUBLIC_STATE:-}" IC_HOST="$IC_HOST" \
   RESPONSE_STDOUT_FILE="$stdout_file" RESPONSE_STDERR_FILE="$stderr_file" \
   SUBMISSION_FILE="${SUBMISSION_FILE:-}" REQUEST_ID="$request_id" RECOVERED="${RECOVERED:-false}" \
   python3 -I -S - <<'PY'
@@ -160,7 +158,6 @@ value={'schema_version':1,'kind':os.environ['KIND'],'source_revision':os.environ
  'source_tree_sha256':os.environ['SOURCE_TREE'],'bridge_canister_id':os.environ['CANISTER'],
  'install_mode':'upgrade','executing_principal':os.environ['EXECUTING_PRINCIPAL'],
  'wasm_sha256':os.environ['WASM_SHA256'],'before_module_sha256':os.environ['BEFORE_MODULE'],
- 'before_canister_version':int(os.environ['BEFORE_VERSION']),
  'before_controllers':[os.environ['INSTALLER']],'before_schema_version':35,'before_lifecycle':'Bootstrap',
  'before_deposits_paused':True,'before_storage_validation_complete':True,
  'before_management_status_json_hex':hx(raw('BEFORE_MANAGEMENT')),
@@ -179,7 +176,6 @@ if os.environ['KIND']=='production-controller-bootstrap-upgrade':
  value.update({'executed_at_unix':int(os.environ['EXECUTED_AT']),'verified_at_unix':now,
   'recovered':recovered,'recovered_at_unix':now if recovered else None,
   'after_controllers':[os.environ['INSTALLER']],'after_module_sha256':os.environ['AFTER_MODULE'],
-  'after_canister_version':int(os.environ['AFTER_VERSION']),
   'after_schema_version':35,'after_lifecycle':'Bootstrap','after_deposits_paused':True,
   'after_storage_validation_complete':True,'after_management_status_json_hex':hx(raw('AFTER_MANAGEMENT')),
   'after_management_status_json_sha256':h(raw('AFTER_MANAGEMENT')),
@@ -217,15 +213,13 @@ if [[ "$MODE" == recover ]]; then
   done
   BEFORE_MANAGEMENT="$(preflight_value before_management_status_json_hex hex)"
   BEFORE_MODULE="$(preflight_value before_module_sha256)"
-  BEFORE_VERSION="$(preflight_value before_canister_version)"
   BEFORE_BRIDGE_STATUS="$(preflight_value before_bridge_status_response_hex)"
   BEFORE_LIFECYCLE="$(preflight_value before_lifecycle_response_hex)"
   BEFORE_RUNTIME="$(preflight_value before_runtime_binding_response_hex)"
   BEFORE_INTEGRITY="$(preflight_value before_storage_integrity_response_hex)"
   BEFORE_PUBLIC_STATE="$(preflight_value before_public_state_sha256)"
-  read -r RECORDED_CONTROLLERS RECORDED_MODULE RECORDED_VERSION < <(status_fields "$BEFORE_MANAGEMENT")
-  [[ "$RECORDED_CONTROLLERS" == "$INSTALLER" && "$RECORDED_MODULE" == "$OLD_WASM" \
-    && "$RECORDED_VERSION" == "$BEFORE_VERSION" ]] || {
+  read -r RECORDED_CONTROLLERS RECORDED_MODULE < <(status_fields "$BEFORE_MANAGEMENT")
+  [[ "$RECORDED_CONTROLLERS" == "$INSTALLER" && "$RECORDED_MODULE" == "$OLD_WASM" ]] || {
     echo "reviewed preflight does not bind the sole controller and immutable Gate A Wasm" >&2; exit 1;
   }
   python3 -I -S - "$PREFLIGHT" "$SOURCE_REVISION" "$SOURCE_TREE" "$CANISTER" "$OLD_WASM" "$WASM_SHA256" "$INSTALLER" <<'PY'
@@ -236,16 +230,17 @@ actual=[p.get('source_revision'),p.get('source_tree_sha256'),p.get('bridge_canis
 if actual != [sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5].lower(),sys.argv[6],sys.argv[7]]:
  raise SystemExit('recovery preflight identity differs from the reviewed source or Gate A lineage')
 PY
-  read -r EXECUTED_AT EXECUTION_VERSION < <(python3 -I -S - "$EXECUTION_FILE" "$SOURCE_REVISION" "$WASM_SHA256" <<'PY'
+  EXECUTED_AT="$(python3 -I -S - "$EXECUTION_FILE" "$SOURCE_REVISION" "$WASM_SHA256" "$PREFLIGHT_SHA256" <<'PY'
 import json,sys
 v=json.load(open(sys.argv[1],encoding='utf-8'))
-if v.get('schema_version')!=1 or v.get('source_revision')!=sys.argv[2] or v.get('wasm_sha256')!=sys.argv[3]:
+if (v.get('schema_version')!=1 or v.get('source_revision')!=sys.argv[2]
+    or v.get('wasm_sha256')!=sys.argv[3] or v.get('preflight_sha256')!=sys.argv[4]):
  raise SystemExit('execution marker differs from the reviewed upgrade')
-print(v.get('executed_at_unix'),v.get('before_canister_version'))
+print(v.get('executed_at_unix'))
 PY
-  )
-  [[ "$EXECUTION_VERSION" == "$BEFORE_VERSION" && "$EXECUTED_AT" =~ ^[0-9]+$ ]] || {
-    echo "execution marker does not bind the reviewed before version" >&2; exit 1;
+  )"
+  [[ "$EXECUTED_AT" =~ ^[0-9]+$ ]] || {
+    echo "execution marker does not bind the reviewed upgrade time" >&2; exit 1;
   }
   REQUEST_ID="$($PROFILE_BIN verify-production-upgrade-submission \
     "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$SUBMISSION_FILE")"
@@ -255,8 +250,8 @@ found=re.findall(r'(?im)^request_id=([0-9a-f]{64})$',open(sys.argv[1],errors='re
 if set(v.lower() for v in found)!={sys.argv[2].lower()}: raise SystemExit('stdout does not bind the signed request ID')
 PY
   snapshot AFTER
-  [[ "$AFTER_MODULE" == "$WASM_SHA256" && "$AFTER_VERSION" -eq "$((BEFORE_VERSION + 1))" ]] || {
-    echo "recovery requires the exact reviewed Wasm and one Canister version increment" >&2; exit 1;
+  [[ "$AFTER_MODULE" == "$WASM_SHA256" ]] || {
+    echo "recovery requires the exact reviewed Wasm" >&2; exit 1;
   }
   AFTER_PUBLIC_STATE="$($PROFILE_BIN verify-production-upgrade-state-preserved \
     "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY" \
@@ -300,11 +295,11 @@ done
 EXECUTED_AT="$(date +%s)"
 export EXECUTED_AT
 TARGET="$EXECUTION_FILE" EXECUTED_AT="$EXECUTED_AT" SOURCE_REVISION="$SOURCE_REVISION" \
-WASM_SHA256="$WASM_SHA256" BEFORE_VERSION="$BEFORE_VERSION" python3 -I -S - <<'PY'
+WASM_SHA256="$WASM_SHA256" PREFLIGHT_SHA256="$PREFLIGHT_SHA256" python3 -I -S - <<'PY'
 import json,os
 value={'schema_version':1,'executed_at_unix':int(os.environ['EXECUTED_AT']),
  'source_revision':os.environ['SOURCE_REVISION'],'wasm_sha256':os.environ['WASM_SHA256'],
- 'before_canister_version':int(os.environ['BEFORE_VERSION'])}
+ 'preflight_sha256':os.environ['PREFLIGHT_SHA256']}
 fd=os.open(os.environ['TARGET'],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400)
 with os.fdopen(fd,'w') as f: json.dump(value,f,sort_keys=True,separators=(',',':')); f.write('\n'); f.flush(); os.fsync(f.fileno())
 fd=os.open(os.path.dirname(os.environ['TARGET']),os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
@@ -326,7 +321,6 @@ PY
 )" || { echo "successful upgrade response did not expose a unique request ID; preserve live state" >&2; exit 1; }
 snapshot AFTER
 [[ "$AFTER_MODULE" == "$WASM_SHA256" ]] || { echo "post-upgrade module hash differs from the reviewed Wasm" >&2; exit 1; }
-[[ "$AFTER_VERSION" -eq "$((BEFORE_VERSION + 1))" ]] || { echo "production Canister version did not advance exactly once" >&2; exit 1; }
 AFTER_PUBLIC_STATE="$($PROFILE_BIN verify-production-upgrade-state-preserved \
   "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY" \
   "$AFTER_BRIDGE_STATUS" "$AFTER_LIFECYCLE" "$AFTER_RUNTIME" "$AFTER_INTEGRITY")"

@@ -36,9 +36,6 @@ fn main() {
         | Some("verify-production-upgrade-state-preserved") => println!("{}", "a".repeat(64)),
         Some("submit-production-canister-upgrade") => {
             fs::write(env::var("TEST_LIVE_MODULE").unwrap(), env::var("TEST_NEW_SHA").unwrap()).unwrap();
-            let version_path = env::var("TEST_LIVE_VERSION").unwrap();
-            let version: u64 = fs::read_to_string(&version_path).unwrap().trim().parse().unwrap();
-            fs::write(version_path, format!("{}\n", version + 1)).unwrap();
             let mut artifact = OpenOptions::new().write(true).create_new(true).open(&args[7]).unwrap();
             artifact.write_all(b"{\"schema_version\":1}\n").unwrap();
             artifact.sync_all().unwrap();
@@ -68,7 +65,6 @@ printf new-wasm >"$T/new.wasm"
 OLD_SHA="$(shasum -a 256 "$T/old.wasm" | awk '{print $1}')"
 NEW_SHA="$(shasum -a 256 "$T/new.wasm" | awk '{print $1}')"
 printf '%s\n' "$OLD_SHA" >"$T/live-module"
-printf '10\n' >"$T/live-version"
 printf 'dummy production identity\n' >"$T/production.pem"
 printf '{"bridge_canister_id":"%s","bridge_canister_wasm_sha256":"%s","ic_host":"https://icp-api.io"}\n' \
   "$CANISTER" "$OLD_SHA" >"$T/gate-a-profile.json"
@@ -80,7 +76,7 @@ cat >"$T/bin/icp" <<'SH'
 set -euo pipefail
 if [[ "$1 $2" == "identity principal" ]]; then printf '%s\n' "$TEST_INSTALLER"; exit 0; fi
 if [[ "$1 $2 $3" == "canister status $TEST_CANISTER" ]]; then
-  printf '{"status":{"settings":{"controllers":["%s"]},"module_hash":"%s","canister_version":%s}}\n' "$TEST_INSTALLER" "$(<"$TEST_LIVE_MODULE")" "$(<"$TEST_LIVE_VERSION")"
+  printf '{"status":{"settings":{"controllers":["%s"]},"module_hash":"%s"}}\n' "$TEST_INSTALLER" "$(<"$TEST_LIVE_MODULE")"
   exit 0
 fi
 if [[ "$1 $2 $3" == "canister call $TEST_CANISTER" ]]; then printf '4449444c0000\n'; exit 0; fi
@@ -89,7 +85,7 @@ SH
 chmod +x "$T/bin/icp"
 export PATH="$T/bin:$PATH"
 export TEST_INSTALLER="$INSTALLER" TEST_CANISTER="$CANISTER" TEST_LIVE_MODULE="$T/live-module" \
-  TEST_LIVE_VERSION="$T/live-version" TEST_NEW_SHA="$NEW_SHA"
+  TEST_NEW_SHA="$NEW_SHA"
 
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
@@ -102,7 +98,7 @@ if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade
   echo "production upgrade accepted a missing explicit confirmation" >&2
   exit 1
 fi
-[[ "$(<"$T/live-version")" == 10 && ! -e "$T/evidence/receipt.json.execution.json" ]]
+[[ ! -e "$T/evidence/receipt.json.execution.json" ]]
 if BRIDGE_ICP_IDENTITY=production BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=WRONG \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
@@ -112,7 +108,7 @@ if BRIDGE_ICP_IDENTITY=production BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=WRO
   echo "production upgrade accepted an incorrect explicit confirmation" >&2
   exit 1
 fi
-[[ "$(<"$T/live-version")" == 10 && ! -e "$T/evidence/receipt.json.execution.json" ]]
+[[ ! -e "$T/evidence/receipt.json.execution.json" ]]
 BRIDGE_ICP_IDENTITY=production \
 BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
@@ -128,18 +124,34 @@ assert value['install_mode']=='upgrade'
 assert value['before_module_sha256']==sys.argv[2]
 assert value['after_module_sha256']==sys.argv[3]
 assert value['before_controllers']==value['after_controllers']==[sys.argv[4]]
-assert value['before_canister_version']==10 and value['after_canister_version']==11
+assert 'before_canister_version' not in value and 'after_canister_version' not in value
 assert value['request_id']=='9'*64
 assert value['recovered'] is False and value['recovered_at_unix'] is None
 assert hashlib.sha256(bytes.fromhex(value['response_stdout_hex'])).hexdigest()==value['response_stdout_sha256']
 PY
 
 mv "$T/evidence/receipt.json" "$T/evidence/receipt.initial.json"
+cp "$T/evidence/preflight.json" "$T/evidence/preflight.original.json"
+python3 -I -S - "$T/evidence/preflight.json" <<'PY'
+import json,sys
+path=sys.argv[1]; value=json.load(open(path,encoding='utf-8'))
+value['before_public_state_sha256']='b'*64
+open(path,'w',encoding='utf-8').write(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n')
+PY
+if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" recover \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --controller-pem "$T/production.pem" --receipt "$T/evidence/receipt.json" >/dev/null 2>&1; then
+  echo "production upgrade recovery accepted a different preflight" >&2
+  exit 1
+fi
+[[ ! -e "$T/evidence/receipt.json" ]]
+mv "$T/evidence/preflight.original.json" "$T/evidence/preflight.json"
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" recover \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
   --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" --receipt "$T/evidence/receipt.json" >/dev/null
-python3 -I -S - "$T/evidence/receipt.initial.json" "$T/evidence/receipt.json" "$T/live-version" <<'PY'
+python3 -I -S - "$T/evidence/receipt.initial.json" "$T/evidence/receipt.json" <<'PY'
 import json,sys
 before=json.load(open(sys.argv[1],encoding='utf-8')); recovered=json.load(open(sys.argv[2],encoding='utf-8'))
 before.pop('verified_at_unix'); recovered.pop('verified_at_unix')
@@ -148,7 +160,6 @@ before.pop('recovered_at_unix'); recovered.pop('recovered_at_unix')
 assert before==recovered,{k:(before.get(k),recovered.get(k)) for k in before.keys()|recovered.keys() if before.get(k)!=recovered.get(k)}
 value=json.load(open(sys.argv[2],encoding='utf-8'))
 assert value['recovered'] is True and isinstance(value['recovered_at_unix'],int)
-assert open(sys.argv[3],encoding='utf-8').read().strip()=='11'
 PY
 
 if BRIDGE_ICP_IDENTITY=anonymous "$T/source/scripts/production-canister-upgrade.sh" preflight \
