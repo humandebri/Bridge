@@ -4738,6 +4738,9 @@ fn production_upgrade_query_state(
     integrity_hex: &str,
 ) -> Result<(BridgeStatusLiveView, RuntimeBindingView, String), String> {
     let status = decode_candid_hex::<BridgeStatusLiveView>(status_hex)?;
+    if !status.reserve.sufficient {
+        return Err("production upgrade requires a sufficient cycles reserve".into());
+    }
     if !matches!(
         decode_candid_hex::<ProductionLifecycleResultView>(lifecycle_hex)?,
         ProductionLifecycleResultView::Ok(ProductionLifecycleView::Bootstrap)
@@ -10263,6 +10266,26 @@ mod tests {
                 retained_deposit_index_entries: 2,
             },
         }
+    }
+
+    #[test]
+    fn production_upgrade_query_state_rejects_insufficient_cycles_reserve() {
+        let profile = valid_profile();
+        let mut status = matching_handover_status();
+        status.reserve.sufficient = false;
+        let runtime = matching_handover_runtime(&profile, &status);
+        let error = production_upgrade_query_state(
+            &hex(&Encode!(&status).unwrap()),
+            &hex(&Encode!(&ProductionLifecycleResultView::Ok(
+                ProductionLifecycleView::Bootstrap
+            ))
+            .unwrap()),
+            &hex(&Encode!(&runtime).unwrap()),
+            &hex(&Encode!(&StorageIntegrityResultView::Ok("ok".into())).unwrap()),
+        )
+        .err()
+        .expect("insufficient reserve must fail closed");
+        assert!(error.contains("sufficient cycles reserve"));
     }
 
     fn matching_handover_runtime(

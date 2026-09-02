@@ -33,6 +33,10 @@ fn main() {
     let args = env::args().collect::<Vec<_>>();
     match args.get(1).map(String::as_str) {
         Some("production-upgrade-public-state-sha256") => {
+            if args.get(2).is_some_and(|value| value == "4449444c0002") {
+                eprintln!("production upgrade requires a sufficient cycles reserve");
+                std::process::exit(1);
+            }
             if let (Ok(path), Ok(marker)) = (env::var("TEST_MUTATE_PREFLIGHT_PATH"), env::var("TEST_MUTATION_MARKER")) {
                 if !Path::new(&marker).exists() {
                     let mut preflight = OpenOptions::new().append(true).open(path).unwrap();
@@ -80,6 +84,7 @@ NEW_SHA="$(shasum -a 256 "$T/new.wasm" | awk '{print $1}')"
 printf '%s\n' "$OLD_SHA" >"$T/live-module"
 printf '0\n' >"$T/submit-count"
 printf '0\n' >"$T/status-call-count"
+printf 'true\n' >"$T/reserve-sufficient"
 printf 'dummy production identity\n' >"$T/production.pem"
 printf '{"bridge_canister_id":"%s","bridge_canister_wasm_sha256":"%s","ic_host":"https://icp-api.io"}\n' \
   "$CANISTER" "$OLD_SHA" >"$T/gate-a-profile.json"
@@ -97,7 +102,13 @@ fi
 if [[ "$1 $2 $3" == "canister call $TEST_CANISTER" ]]; then
   if [[ "$4" == get_bridge_status ]]; then
     count="$(<"$TEST_STATUS_CALL_COUNT")"
-    if [[ "$count" == 0 ]]; then printf '4449444c0000\n'; else printf '4449444c0001\n'; fi
+    if [[ "$(<"$TEST_RESERVE_SUFFICIENT")" != true ]]; then
+      printf '4449444c0002\n'
+    elif [[ "$count" == 0 ]]; then
+      printf '4449444c0000\n'
+    else
+      printf '4449444c0001\n'
+    fi
     printf '%s\n' "$((count + 1))" >"$TEST_STATUS_CALL_COUNT"
   else
     printf '4449444c0000\n'
@@ -109,7 +120,8 @@ SH
 chmod +x "$T/bin/icp"
 export PATH="$T/bin:$PATH"
 export TEST_INSTALLER="$INSTALLER" TEST_CANISTER="$CANISTER" TEST_LIVE_MODULE="$T/live-module" \
-  TEST_NEW_SHA="$NEW_SHA" TEST_SUBMIT_COUNT="$T/submit-count" TEST_STATUS_CALL_COUNT="$T/status-call-count"
+  TEST_NEW_SHA="$NEW_SHA" TEST_SUBMIT_COUNT="$T/submit-count" TEST_STATUS_CALL_COUNT="$T/status-call-count" \
+  TEST_RESERVE_SUFFICIENT="$T/reserve-sufficient"
 
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
@@ -135,6 +147,20 @@ if BRIDGE_ICP_IDENTITY=production BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=WRO
 fi
 [[ ! -e "$T/evidence/receipt.json.execution.json" ]]
 [[ "$(<"$T/submit-count")" == 0 ]]
+printf 'false\n' >"$T/reserve-sufficient"
+if BRIDGE_ICP_IDENTITY=production \
+  BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/insufficient-receipt.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted an insufficient live cycles reserve" >&2
+  exit 1
+fi
+[[ ! -e "$T/evidence/insufficient-receipt.json.execution.json" ]]
+[[ "$(<"$T/submit-count")" == 0 ]]
+printf 'true\n' >"$T/reserve-sufficient"
 cp "$T/evidence/preflight.json" "$T/evidence/preflight.approved.json"
 BRIDGE_ICP_IDENTITY=production TEST_MUTATE_PREFLIGHT_PATH="$T/evidence/preflight.json" \
 TEST_MUTATION_MARKER="$T/preflight-mutated" \
