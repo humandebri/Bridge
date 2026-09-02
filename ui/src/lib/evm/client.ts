@@ -2,7 +2,12 @@ import { createConfig, http } from "wagmi"
 import { coinbaseWallet, injected, walletConnect } from "wagmi/connectors"
 import { createPublicClient, defineChain } from "viem"
 import { base, baseSepolia } from "viem/chains"
-import { canonicalRpcUrl, deploymentProfile, type DeploymentProfile } from "@/config/profile"
+import {
+  canonicalRpcUrl,
+  deploymentProfile,
+  resolvedBaseRpcUrl,
+  type DeploymentProfile,
+} from "@/config/profile"
 
 const baseExplorerByChainId = new Map<number, string>([
   [base.id, base.blockExplorers.default.url],
@@ -19,11 +24,12 @@ export function baseTransactionExplorerUrl(
 }
 
 export function createProfileChain(profile: DeploymentProfile) {
+  const rpcUrl = resolvedBaseRpcUrl(profile)
   return defineChain({
     id: profile.chainId,
     name: profile.label,
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: { default: { http: [profile.baseRpcUrl] } },
+    rpcUrls: { default: { http: [rpcUrl] } },
   })
 }
 
@@ -32,7 +38,7 @@ export const profileChain = createProfileChain(deploymentProfile)
 export function createBasePublicClient(profile: DeploymentProfile = deploymentProfile) {
   return createPublicClient({
     chain: createProfileChain(profile),
-    transport: http(profile.baseRpcUrl),
+    transport: http(resolvedBaseRpcUrl(profile)),
   })
 }
 
@@ -40,7 +46,7 @@ export const basePublicClient = createBasePublicClient()
 
 export function createBaseHistoryClients(profile: DeploymentProfile = deploymentProfile) {
   const urls = [
-    ...new Set((profile.baseHistoryRpcUrls ?? [profile.baseRpcUrl]).map(canonicalRpcUrl)),
+    ...new Set((profile.baseHistoryRpcUrls ?? [resolvedBaseRpcUrl(profile)]).map(canonicalRpcUrl)),
   ]
   return urls.map((url) =>
     createPublicClient({
@@ -151,7 +157,7 @@ export const wagmiConfig = createConfig({
         ]
       : []),
   ],
-  transports: { [profileChain.id]: http(deploymentProfile.baseRpcUrl) },
+  transports: { [profileChain.id]: http(resolvedBaseRpcUrl(deploymentProfile)) },
 })
 
 declare module "wagmi" {

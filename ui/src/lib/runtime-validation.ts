@@ -4,7 +4,7 @@ import { createIndexActor } from "@/lib/ic/index"
 import { createLedgerActor } from "@/lib/ic/ledger"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { bsnsAbi } from "@/generated/abi/bsns.generated"
-import { profileCompleteness, type DeploymentProfile } from "@/config/profile"
+import { profileCompleteness, resolvedBaseRpcUrl, type DeploymentProfile } from "@/config/profile"
 import { runtimeBytecodeSha256 } from "@/lib/runtime-bytecode-hash"
 import { createBasePublicClient } from "@/lib/evm/client"
 import type { BridgeStatus } from "@/generated/bridge.did"
@@ -71,7 +71,7 @@ export function runtimeProfileFingerprint(profile: DeploymentProfile): string {
     profile.environmentMode,
     profile.activationTimelockDelaySeconds,
     profile.icHost,
-    profile.baseRpcUrl,
+    resolvedBaseRpcUrl(profile),
     ...(profile.baseHistoryRpcUrls ?? []),
     profile.chainId,
     profile.bridgeCanisterId,

@@ -120,6 +120,8 @@ try {
     rmSync(rendered, { recursive: true, force: true })
   }
   const rawProfile = readFileSync(profileFile, "utf8")
+  const { releaseProfileSchema } = await import("../src/config/profile.ts")
+  const releaseProfile = releaseProfileSchema.parse(JSON.parse(rawProfile))
   const manifest = JSON.parse(readFileSync(inputsManifestFile, "utf8"))
   const actualHash = createHash("sha256").update(rawProfile).digest("hex")
   if (manifest.artifacts?.["ui-runtime-profile.json"] !== actualHash) {
@@ -128,15 +130,9 @@ try {
   if (process.env.VITE_DEPLOYMENT_PROFILE_JSON?.trim() !== rawProfile.trim()) {
     throw new Error("VITE_DEPLOYMENT_PROFILE_JSON must be the reviewed UI runtime profile verbatim")
   }
-  /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
-  const deploymentGlobal = globalThis
-  deploymentGlobal.__KINIC_DEPLOYMENT_PROFILE_JSON__ = process.env.VITE_DEPLOYMENT_PROFILE_JSON
-  const [{ deploymentProfile }, { assertProductionUiProfile }] = await Promise.all([
-    import("../src/config/profile.ts"),
-    import("../src/config/deploy-safety.ts"),
-  ])
-  assertProductionUiProfile(deploymentProfile, verifiedManifestSha256)
-  process.stdout.write(`Production UI profile accepted: ${deploymentProfile.environment}\n`)
+  const { assertProductionUiProfile } = await import("../src/config/deploy-safety.ts")
+  assertProductionUiProfile(releaseProfile, verifiedManifestSha256)
+  process.stdout.write(`Production UI profile accepted: ${releaseProfile.environment}\n`)
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
   process.exitCode = 1

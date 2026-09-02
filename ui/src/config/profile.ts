@@ -6,10 +6,10 @@ const address = z.custom<`0x${string}`>(
 const hash = z
   .custom<`0x${string}`>((value) => typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value))
   .refine((value) => !/^0x0+$/.test(value), "hash must be nonzero")
-const sha256 = z
+const releaseSha256 = z
   .string()
-  .regex(/^[0-9a-fA-F]{64}$/)
-  .refine((value) => !/^0+$/.test(value), "hash must be nonzero")
+  .regex(/^[0-9a-f]{64}$/i, "SHA-256 must be 64 hexadecimal characters")
+  .refine((value) => !/^0+$/.test(value), "SHA-256 must be nonzero")
 const tokenMetadata = z.object({
   symbol: z.string().min(1),
   decimals: z.literal(8),
@@ -26,11 +26,8 @@ export const deploymentProfileSchema = z
     testOnly: z.boolean(),
     environmentMode: z.enum(["short-delay-test-only"]).nullable(),
     activationTimelockDelaySeconds: z.number().int().positive().nullable(),
-    gateBManifestSha256: sha256.nullable(),
-    profileFileSha256: sha256.nullable(),
-    profileCanonicalSha256: sha256.nullable(),
     icHost: z.url(),
-    baseRpcUrl: z.url(),
+    baseRpcUrl: z.url().optional(),
     baseHistoryRpcUrls: z
       .array(z.url())
       .min(1)
@@ -121,17 +118,34 @@ function assertEmbeddedTestUiProfile(profile: {
 
 export type DeploymentProfile = z.infer<typeof deploymentProfileSchema>
 
-// Local and test builds fail closed on this incomplete preflight profile. Production builds must
-// inject the reviewed Gate B JSON through VITE_DEPLOYMENT_PROFILE_JSON.
+// Release inputs retain the evidence needed by deploy-time verification. This schema is
+// intentionally separate from the browser contract so release metadata cannot enter runtime.
+export const releaseProfileSchema = deploymentProfileSchema.extend({
+  gateBManifestSha256: releaseSha256.nullable(),
+  profileFileSha256: releaseSha256,
+  profileCanonicalSha256: releaseSha256,
+})
+
+export type ReleaseDeploymentProfile = z.infer<typeof releaseProfileSchema>
+
+export const DEFAULT_BASE_MAINNET_RPC_URL = "https://mainnet.base.org"
+
+export function resolvedBaseRpcUrl(
+  profile: Pick<DeploymentProfile, "baseRpcUrl" | "chainId">,
+): string {
+  if (profile.chainId === 8453) return DEFAULT_BASE_MAINNET_RPC_URL
+  if (profile.baseRpcUrl) return profile.baseRpcUrl
+  throw new Error(`Deployment profile has no default RPC URL for chain ${profile.chainId}`)
+}
+
+// Local and test builds fail closed on this incomplete profile. Managed deployments inject a
+// complete runtime profile; release evidence is intentionally not part of the browser contract.
 const preflightProfile = {
   environment: "base-sepolia-preflight",
   label: "Base Sepolia preflight",
   testOnly: true,
   environmentMode: null,
   activationTimelockDelaySeconds: null,
-  gateBManifestSha256: null,
-  profileFileSha256: null,
-  profileCanonicalSha256: null,
   icHost: "https://icp-api.io",
   baseRpcUrl: "https://base-sepolia-rpc.publicnode.com",
   baseHistoryRpcUrls: ["https://sepolia.base.org", "https://base-sepolia.api.onfinality.io/public"],
@@ -176,8 +190,6 @@ export function profileCompleteness(profile: DeploymentProfile): string[] {
   if (!profile.bridgeCanisterId) missing.push("Bridge canister ID is missing")
   if (!profile.deploymentInstanceId) missing.push("Deployment instance ID is missing")
   if (!profile.minimumWithdrawalId) missing.push("Minimum withdrawal ID is missing")
-  if (!profile.profileFileSha256) missing.push("Profile file SHA-256 is missing")
-  if (!profile.profileCanonicalSha256) missing.push("Canonical profile SHA-256 is missing")
   if (!profile.ledgerCanisterId) missing.push("IC token ledger ID is missing")
   if (!profile.indexCanisterId) missing.push("IC token index ID is missing")
   if (!profile.testOnly && !profile.snsRootCanisterId) missing.push("KINIC SNS Root ID is missing")
@@ -188,11 +200,9 @@ export function profileCompleteness(profile: DeploymentProfile): string[] {
   if (!profile.expected_bridge_signer) missing.push("Expected Bridge signer is missing")
   if (!profile.evmRpcCanisterId) missing.push("EVM RPC Canister ID is missing")
   if (!profile.rpcProviderUrlsSha256) missing.push("RPC provider URL digest is missing")
-  if (profile.deploymentBlock === null) missing.push("Deployment block is missing")
-  else if (!profile.testOnly && profile.deploymentBlock === 0n)
-    missing.push("Production deployment block is not Gate B bound")
-  if (!profile.testOnly && !profile.gateBManifestSha256)
-    missing.push("Verified Gate B manifest SHA-256 is missing")
+  if (profile.deploymentBlock === null || (!profile.testOnly && profile.deploymentBlock === 0n)) {
+    missing.push("Deployment history start block is missing")
+  }
   if (!profile.bridgeRuntimeHash) missing.push("Bridge runtime bytecode hash is missing")
   if (!profile.bsnsRuntimeHash) missing.push("bSNS runtime bytecode hash is missing")
   return missing

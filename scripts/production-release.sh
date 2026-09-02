@@ -283,14 +283,45 @@ raise SystemExit(0 if actual==expected else 1)
     echo "Gate B manifest is not descended from the Gate A receipt" >&2
     exit 1
   }
+  [[ -f "$BUNDLE/post-gate-a-policy-transition.json" ]] || {
+    echo "Gate B bundle is missing its policy transition artifact" >&2
+    exit 1
+  }
+  read -r GATE_A_SOURCE_REVISION GATE_A_SOURCE_TREE_SHA256 TRANSITION_SOURCE_REVISION TRANSITION_SOURCE_TREE_SHA256 < <(
+    python3 -c '
+import json, sys
+t = json.load(open(sys.argv[1], encoding="utf-8"))
+print(t.get("from_source_revision", ""), t.get("from_source_tree_sha256", ""), t.get("to_source_revision", ""), t.get("to_source_tree_sha256", ""))
+' "$BUNDLE/post-gate-a-policy-transition.json"
+  )
+  [[ "$GATE_A_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ \
+    && "$GATE_A_SOURCE_TREE_SHA256" =~ ^[0-9a-fA-F]{64}$ \
+    && "$TRANSITION_SOURCE_REVISION" == "$CURRENT_SOURCE_REVISION" \
+    && "$(printf '%s' "$TRANSITION_SOURCE_TREE_SHA256" | tr '[:upper:]' '[:lower:]')" == "$CURRENT_SOURCE_TREE_SHA256" ]] || {
+    echo "Gate B policy transition does not connect the Gate A source to the current clean source" >&2
+    exit 1
+  }
+  git -C "$SOURCE_ROOT" cat-file -e "${GATE_A_SOURCE_REVISION}^{commit}" 2>/dev/null \
+    && git -C "$SOURCE_ROOT" merge-base --is-ancestor \
+      "$GATE_A_SOURCE_REVISION" "$CURRENT_SOURCE_REVISION" \
+    || { echo "Gate A source is not an ancestor of the current clean source" >&2; exit 1; }
+  GATE_A_SOURCE_TREE_ACTUAL="$(
+    git -C "$SOURCE_ROOT" --attr-source="$GATE_A_SOURCE_REVISION" \
+      archive --format=tar "$GATE_A_SOURCE_REVISION" \
+      | shasum -a 256 | awk '{print tolower($1)}'
+  )"
+  [[ "$GATE_A_SOURCE_TREE_ACTUAL" == "$(printf '%s' "$GATE_A_SOURCE_TREE_SHA256" | tr '[:upper:]' '[:lower:]')" ]] || {
+    echo "Gate A source tree is not available from the current repository" >&2
+    exit 1
+  }
   python3 -c '
 import json, sys
 r = json.load(open(sys.argv[1], encoding="utf-8"))
-expected = sys.argv[2:9]
-actual = [r.get("gate_a_manifest_sha256"), r.get("release_id"), r.get("source_revision"), r.get("source_tree_sha256"), r.get("post_deploy_profile_sha256"), r.get("bridge_canister_wasm_sha256"), r.get("bridge_runtime_bytecode_sha256")]
+expected = sys.argv[2:8]
+actual = [r.get("gate_a_manifest_sha256"), r.get("release_id"), r.get("source_revision"), r.get("source_tree_sha256"), r.get("bridge_canister_wasm_sha256"), r.get("bridge_runtime_bytecode_sha256")]
 raise SystemExit(0 if [str(v).lower() for v in actual] == [v.lower() for v in expected] else 1)
 ' "$RECEIPT" "$RECEIPT_MANIFEST_SHA256" "$RELEASE_ID" \
-    "$CURRENT_SOURCE_REVISION" "$CURRENT_SOURCE_TREE_SHA256" "$PROFILE_SHA256" "$CANISTER_WASM_SHA256" "$BRIDGE_RUNTIME_SHA256" || {
+    "$GATE_A_SOURCE_REVISION" "$GATE_A_SOURCE_TREE_SHA256" "$CANISTER_WASM_SHA256" "$BRIDGE_RUNTIME_SHA256" || {
     echo "Gate A receipt does not match the current release" >&2
     exit 1
   }

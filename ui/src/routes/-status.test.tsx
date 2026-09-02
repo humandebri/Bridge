@@ -119,7 +119,12 @@ describe("StatusPage refresh", () => {
 
     expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(3)
     expect(screen.queryByText("Available")).not.toBeInTheDocument()
-    expect(screen.getByText("Bridge signer differs from the reviewed profile")).toBeVisible()
+    expect(
+      screen.getByText("Current bridge status could not be confirmed. Please try again shortly."),
+    ).toBeVisible()
+    expect(
+      screen.queryByText("Bridge signer differs from the reviewed profile"),
+    ).not.toBeInTheDocument()
   })
 
   it("loads Canister status automatically when the initial heartbeat fails", async () => {
