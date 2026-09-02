@@ -39,7 +39,6 @@ pub open spec fn deposit_identity_decision_view(
     }
 }
 
-
 proof fn deposit_ledger_block_transition_preserves_and_rejects_conflict(
     prior: int, different: int,
 )
@@ -770,19 +769,6 @@ fn deposit_continuation_requires_authenticated_retryable_stop(
         authenticated, authorization_phase, retryable_stop)
 }
 
-proof fn asset_operations_require_sealed_operational_config(sealed: bool)
-    ensures kernel::asset_operations_allowed_spec(sealed) <==> sealed,
-{}
-
-proof fn operational_config_seal_allows_only_pending_valid_candidate(
-    sealed: bool,
-    candidate_valid: bool,
-)
-    ensures
-        kernel::operational_config_seal_allowed_spec(sealed, candidate_valid)
-            <==> !sealed && candidate_valid,
-{}
-
 fn refund_request_requires_authenticated_caller(
     authenticated: bool,
 ) -> (result: kernel::RefundRequestIdentityDecision)
@@ -918,11 +904,28 @@ proof fn mint_finalization_requires_exact_finalized_success(
         <==> binding && succeeded && receipt_block <= finalized_block
 {}
 
-proof fn signature_install_requires_dispatch_absence_exact_length_and_minimum_remaining_time(
-    dispatched: bool, absent: bool, length: bool, minimum_remaining: bool,
+proof fn mint_authorization_minimum_remaining_time_accepts_300_rejects_299_and_overflow(
+    observed_timestamp: int, deadline: int,
 )
-    ensures kernel::signature_install_allowed_spec(dispatched, absent, length, minimum_remaining)
-        <==> dispatched && absent && length && minimum_remaining
+    ensures
+        kernel::mint_authorization_has_minimum_remaining_time_spec(
+            observed_timestamp, deadline)
+            <==> observed_timestamp <= 18446744073709551615 - 300
+                && observed_timestamp + 300 <= deadline,
+        kernel::mint_authorization_has_minimum_remaining_time_spec(700, 1000),
+        !kernel::mint_authorization_has_minimum_remaining_time_spec(701, 1000),
+        !kernel::mint_authorization_has_minimum_remaining_time_spec(
+            18446744073709551615, 18446744073709551615),
+{}
+
+proof fn signature_install_requires_dispatch_absence_exact_length_and_minimum_remaining_time(
+    dispatched: bool, absent: bool, length: bool, observed_timestamp: int, deadline: int,
+)
+    ensures kernel::signature_install_allowed_spec(
+        dispatched, absent, length, observed_timestamp, deadline)
+        <==> dispatched && absent && length
+            && kernel::mint_authorization_has_minimum_remaining_time_spec(
+                observed_timestamp, deadline)
 {}
 
 proof fn refund_start_requires_attempt_and_policy(attempt: bool, policy: bool)
@@ -1065,6 +1068,19 @@ proof fn deposit_refund_deducts_charged_fee_and_ledger_fee(
 
 proof fn refund_retry_requires_matching_evidence(request: bool, hold: bool, transfer: bool, open_or_retry: bool)
     ensures !kernel::evidence_matches_spec(request, hold, transfer, open_or_retry, false)
+{}
+
+proof fn asset_operations_require_sealed_operational_config(sealed: bool)
+    ensures kernel::asset_operations_allowed_spec(sealed) <==> sealed,
+{}
+
+proof fn operational_config_seal_allows_only_pending_valid_candidate(
+    sealed: bool,
+    candidate_valid: bool,
+)
+    ensures
+        kernel::operational_config_seal_allowed_spec(sealed, candidate_valid)
+            <==> !sealed && candidate_valid,
 {}
 
 }

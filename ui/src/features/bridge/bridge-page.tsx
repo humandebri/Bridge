@@ -38,7 +38,6 @@ import type { BridgeProgressPhase } from "@/lib/bridge-progress"
 
 export type BridgeDirection = "deposit" | "withdraw"
 type BridgeNetwork = "ic" | "base"
-const currentUnixSeconds = () => BigInt(Math.floor(Date.now() / 1_000))
 const automaticQueryOptions = {
   refetchOnWindowFocus: true,
   refetchOnReconnect: true,
@@ -64,7 +63,7 @@ interface DepositWriteGate {
   observation: FinalizedRuntimeObservation
 }
 
-function validatedDepositWriteGate(input: {
+export function validatedDepositWriteGate(input: {
   amount: bigint
   expectedSequence: bigint
   observation: FinalizedRuntimeObservation
@@ -77,8 +76,9 @@ function validatedDepositWriteGate(input: {
   if (quote.depositsPaused) throw new Error("Deposits are paused on Base")
   if (amount > quote.perDepositLimit) throw new Error("Amount exceeds the current per-deposit limit")
   if (amount <= quote.serviceFee) throw new Error("Amount must exceed the current service fee")
-  const now = currentUnixSeconds()
-  if (now < quote.startedAt + quote.duration && quote.minted + amount - quote.serviceFee > quote.limit) throw new Error("Amount exceeds the remaining mint window limit")
+  const windowEndsAt = quote.startedAt + quote.duration
+  if (quote.blockTimestamp === windowEndsAt) throw new Error("The finalized mint window snapshot is at its rollover boundary; refresh and review again")
+  if (quote.blockTimestamp < windowEndsAt && quote.minted + amount - quote.serviceFee > quote.limit) throw new Error("Amount exceeds the remaining mint window limit")
   if (sequence !== expectedSequence) throw new Error("Another deposit used this owner sequence; refresh and review again")
   if (ledger.balance < requiredDepositBalance(amount, ledger.fee, ledger.allowance)) throw new Error(`${deploymentProfile.icToken.symbol} balance does not cover the deposit and required ledger fees`)
   return { base: quote, ledger, sequence, observation }

@@ -9,14 +9,15 @@ const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const LOCAL_E2E_SCHEMA_VERSION = 8
 export const STAGING_ACTIVATION_DELAY_SECONDS = 300
 export const CURRENT_STABLE_SCHEMA_VERSION = 35
+export const CURRENT_RECORD_WIRE_VERSION = 30
 
 export function validateDeploymentInstanceBinding(upgrade, expectedDeploymentInstanceId) {
-  if (!/^0x[0-9a-f]{64}$/.test(expectedDeploymentInstanceId)) {
-    throw new Error("staging upgrade policy has an invalid deployment instance ID")
+  if (!/^0x[0-9a-f]{64}$/.test(expectedDeploymentInstanceId) || /^0x0+$/.test(expectedDeploymentInstanceId)) {
+    throw new Error("reviewed staging frontend profile has an invalid deployment instance ID")
   }
   const actualDeploymentInstanceId = bytesHex(upgrade?.after?.runtime_binding?.deployment_instance_id)
   if (actualDeploymentInstanceId !== expectedDeploymentInstanceId) {
-    throw new Error("real E2E deployment instance does not match the staging upgrade policy")
+    throw new Error("real E2E deployment instance does not match the reviewed staging frontend profile")
   }
   return actualDeploymentInstanceId
 }
@@ -76,11 +77,11 @@ export async function generateLocalEvidence(root = defaultRoot, requestedOutputP
   if (status.trim()) throw new Error("promotion evidence requires a clean working tree")
   const facts = JSON.parse(await readFile(factsPath, "utf8"))
   const upgrade = validateUpgradeEvidence(facts.state_upgrade)
-  const policy = JSON.parse(await readFile(
-    path.join(root, "deployments/sepolia-staging/staging-bridge-upgrade-policy.json"),
+  const profile = JSON.parse(await readFile(
+    path.join(root, "deployments/sepolia-staging/frontend-profile.json"),
     "utf8",
   ))
-  const deploymentInstanceId = validateDeploymentInstanceBinding(upgrade, policy.deployment_instance_id)
+  const deploymentInstanceId = validateDeploymentInstanceBinding(upgrade, profile.deploymentInstanceId)
   if (facts.activation?.delay_seconds !== STAGING_ACTIVATION_DELAY_SECONDS || facts.activation?.early_execute_reverted !== true) {
     throw new Error("real E2E did not prove the five-minute staging activation delay")
   }
@@ -88,6 +89,8 @@ export async function generateLocalEvidence(root = defaultRoot, requestedOutputP
     schema_version: LOCAL_E2E_SCHEMA_VERSION,
     environment_mode: "short-delay-test-only",
     activation_timelock_delay_seconds: STAGING_ACTIVATION_DELAY_SECONDS,
+    stable_schema_version: CURRENT_STABLE_SCHEMA_VERSION,
+    record_wire_version: CURRENT_RECORD_WIRE_VERSION,
     deployment_instance_id: deploymentInstanceId,
     created_at: new Date().toISOString(),
     source_commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),

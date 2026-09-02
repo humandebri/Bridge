@@ -3,6 +3,8 @@ import { z } from "zod"
 const address = z.custom<`0x${string}`>((value) => typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value))
 const hash = z.custom<`0x${string}`>((value) => typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value))
   .refine((value) => !/^0x0+$/.test(value), "hash must be nonzero")
+const releaseSha256 = z.string().regex(/^[0-9a-f]{64}$/i, "SHA-256 must be 64 hexadecimal characters")
+  .refine((value) => !/^0+$/.test(value), "SHA-256 must be nonzero")
 const tokenMetadata = z.object({
   symbol: z.string().min(1),
   decimals: z.literal(8),
@@ -95,11 +97,21 @@ function assertEmbeddedTestUiProfile(profile: {
 
 export type DeploymentProfile = z.infer<typeof deploymentProfileSchema>
 
+// Release inputs retain the evidence needed by deploy-time verification. This schema is
+// intentionally separate from the browser contract so release metadata cannot enter runtime.
+export const releaseProfileSchema = deploymentProfileSchema.extend({
+  gateBManifestSha256: releaseSha256.nullable(),
+  profileFileSha256: releaseSha256,
+  profileCanonicalSha256: releaseSha256,
+})
+
+export type ReleaseDeploymentProfile = z.infer<typeof releaseProfileSchema>
+
 export const DEFAULT_BASE_MAINNET_RPC_URL = "https://mainnet.base.org"
 
 export function resolvedBaseRpcUrl(profile: Pick<DeploymentProfile, "baseRpcUrl" | "chainId">): string {
-  if (profile.baseRpcUrl) return profile.baseRpcUrl
   if (profile.chainId === 8453) return DEFAULT_BASE_MAINNET_RPC_URL
+  if (profile.baseRpcUrl) return profile.baseRpcUrl
   throw new Error(`Deployment profile has no default RPC URL for chain ${profile.chainId}`)
 }
 

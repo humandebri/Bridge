@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "kind": "fresh-staging-stack",
+  "environment": "sepolia-staging",
+  "source_branch": "fix/base-finality-authorization-window",
+  "source_commit": "466a9fd98ef434eec56aa7779613c52cad13771c",
+  "proof_source_fingerprint": "397e44d2c8e7c582cc19c615b1cbc5cf04be48b92c3b6685f156430a18be9e62",
+  "stable_schema_version": 35,
+  "record_wire_version": 30,
+  "mint_authorization_ttl_seconds": 600,
+  "minimum_mint_authorization_remaining_seconds": 300,
+  "solidity_max_authorization_horizon_seconds": 900,
+  "reuse": {
+    "bridge_canister_id": "rlhjx-iyaaa-aaaaf-qcnyq-cai",
+    "ledger_canister_id": "3jkp5-oyaaa-aaaaj-azwqa-cai",
+    "index_canister_id": "qzre3-3iaaa-aaaai-aqmsa-cai"
+  },
+  "create": {
+    "deployment_instance_id": "0x067b39c87fb0fae8fa5c161fc5e04641adbea230b571e11496e323e30b5bcda1",
+    "timelock_address": "0x5ffbd4b328a2d5688c4100183acc7246f7e5a5d3",
+    "bridge_address": "0x7936c3587902907db4918a2466cbc225fdc090dc",
+    "bsns_address": "0x3a6e18a8bcae2b0e94383e0b5c2117107fcc53cd",
+    "expected_bridge_signer": "0x801ddc785d2e79da8366cd282a1e5a9bed2492b5"
+  },
+  "runtime": {
+    "bridge_sha256": "31d58992a215153ae6068c5fd604463e2a14d9dbf38abfea7bddab04ae61b931",
+    "bsns_sha256": "e7a0c70f94a2b1ecbb85cbc32128b3ff97519c9782abfcd9cedf8611bfeb9664",
+    "bridge_canister_wasm_sha256": "75b372b94e6daa913eac5e32618d5282a13895484ab7b3a485e78245c61db6d1"
+  },
+  "transactions": {
+    "deploy_timelock": "0x96f6ced37a990d6c3525f5a0244807d78cbe5f33aad60f19d40a6eeed7c43e7b",
+    "deploy_bridge_and_bsns": "0xb5f75600119a40e66090825a5f6a8aececf34f905c358f1ee2a0d6dc7d3940ce",
+    "schedule_activation": "0xafb3c9f42b6efaac19fac737a99f913b555cc5c0596bca1204991456e0e0ab61",
+    "execute_activation": "0xfca007e428f978b4870103c1354a412e17e06700d71f952ed9dce3a8cfe1976d"
+  },
+  "activation": {
+    "execute_block": 46062395,
+    "execute_block_hash": "0x02b981d4cba964cd6832fdc0ef2c5b0ef6f90a690de63f42c025cb1364019512",
+    "receipt_status": 1,
+    "canister_confirmation": "confirmed",
+    "lifecycle": "Activated",
+    "last_finalized_base_block": 46063727
+  },
+  "canister": {
+    "module_sha256": "75b372b94e6daa913eac5e32618d5282a13895484ab7b3a485e78245c61db6d1",
+    "execution_cycles_after_acceptance": "394751295336",
+    "freezing_threshold_seconds": 2592000,
+    "storage_integrity": "ok",
+    "pending_governance_transactions": 0
+  },
+  "funding": {
+    "cycles_minted_from_user_supplied_icp": "500000015929",
+    "cycles_topped_up_to_canister": "500000000000"
+  },
+  "acceptance": {
+    "legacy_base_stack_excluded_from_active_profile": true,
+    "prior_canister_test_state_discarded_by_reinstall": true,
+    "status_ttl_is_600": true,
+    "onchain_horizon_is_900": true,
+    "delayed_finalized_review_passed": false,
+    "wallet_deposit_mint_passed": false,
+    "unused_authorization_refund_rehearsal_passed": false
+  }
+}

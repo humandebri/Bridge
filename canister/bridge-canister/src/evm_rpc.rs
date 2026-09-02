@@ -418,17 +418,14 @@ async fn eth_call_target_at_observation(
     observation: FinalizedObservation,
 ) -> Result<String, ObservationError> {
     let request = eth_call_request(target, calldata, observation);
-    match client(args)
-        .multi_request(request)
-        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(value)) => Ok(value),
-        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
-    }
+    exact_quorum_response(
+        client(args)
+            .multi_request(request)
+            .with_response_size_estimate(SMALL_RESPONSE_BYTES)
+            .try_send()
+            .await
+            .map_err(|_| ObservationError::Rpc)?,
+    )
 }
 
 pub async fn deployment_postconditions_at(
@@ -782,17 +779,14 @@ async fn exact_mint_evidence_inner(
         serde_json::to_vec(&request).map_err(|_| ObservationError::InvalidResponse)?,
     )
     .into();
-    let value = match client(args)
-        .multi_request(request)
-        .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(value)) => value,
-        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => return Err(ObservationError::Inconsistent),
-    };
+    let value = exact_quorum_response(
+        client(args)
+            .multi_request(request)
+            .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
+            .try_send()
+            .await
+            .map_err(|_| ObservationError::Rpc)?,
+    )?;
     let rpc_response_digest = Sha256::digest(value.as_bytes()).into();
     let logs: Vec<evm_rpc_types::LogEntry> =
         serde_json::from_str(&value).map_err(|_| ObservationError::InvalidResponse)?;
@@ -1224,17 +1218,14 @@ async fn runtime_at_observation(
     observation: FinalizedObservation,
 ) -> Result<Vec<u8>, ObservationError> {
     let request = bridge_runtime_request(target, observation);
-    let value = match client(args)
-        .multi_request(request)
-        .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(value)) => value,
-        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => return Err(ObservationError::Inconsistent),
-    };
+    let value = exact_quorum_response(
+        client(args)
+            .multi_request(request)
+            .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
+            .try_send()
+            .await
+            .map_err(|_| ObservationError::Rpc)?,
+    )?;
     decode_hex(
         value
             .trim_matches('"')
@@ -1417,21 +1408,21 @@ async fn withdrawal_finalized_observation(
             let checkpoint_result = client(args)
                 .get_block_by_number(BlockTag::Number(Nat256::from(checkpoint)))
                 .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
+                .with_response_consensus(ConsensusStrategy::Equality)
                 .try_send()
                 .await
                 .map_err(|_| ObservationError::Rpc)?;
-            exact_withdrawal_finalized_block(&finalized_heads, checkpoint, checkpoint_result)?
+            exact_finalized_block(&finalized_heads, checkpoint, checkpoint_result)?
         }
     };
-    let block_number = u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?;
     Ok(FinalizedObservation {
-        block_number,
+        block_number: u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?,
         block_hash: *block.hash.as_array(),
         observed_at_ns: ic_cdk::api::time(),
     })
 }
 
-fn exact_withdrawal_finalized_block(
+fn exact_finalized_block(
     finalized_heads: &[(RpcService, Option<WithdrawalFinalizedIdentity>)],
     checkpoint: u64,
     result: MultiRpcResult<Block>,
@@ -1563,7 +1554,6 @@ fn receipt_consensus_fields_match(
     }
 }
 
-#[cfg(test)]
 fn exact_provider_response_quorum<T: Clone + PartialEq, E>(
     results: Vec<(RpcService, Result<T, E>)>,
 ) -> Result<T, ObservationError> {
@@ -1594,6 +1584,15 @@ fn exact_provider_response_quorum_by<T: Clone, E>(
         .ok_or(ObservationError::Inconsistent)
 }
 
+fn exact_quorum_response<T: Clone + PartialEq>(
+    result: MultiRpcResult<T>,
+) -> Result<T, ObservationError> {
+    match result {
+        MultiRpcResult::Consistent(Ok(value)) => Ok(value),
+        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(results) => exact_provider_response_quorum(results),
+    }
+}
 fn withdrawal_finalized_identity(block: &Block) -> Option<WithdrawalFinalizedIdentity> {
     Some(WithdrawalFinalizedIdentity {
         block_number: u64::try_from(block.number.clone()).ok()?,
@@ -1658,7 +1657,7 @@ async fn canonical_finalized_receipt_with_hash(
     {
         MultiRpcResult::Consistent(Ok(value)) => value,
         MultiRpcResult::Consistent(Err(error)) => return Err(canonical_probe_error(error)),
-        MultiRpcResult::Inconsistent(_) => return Err(ObservationError::Inconsistent),
+        MultiRpcResult::Inconsistent(results) => exact_provider_response_quorum(results)?,
     };
     validate_canonical_probe_response(receipt_observation, &probe_value)?;
     Ok(CanonicalFinalizedReceiptOutcome::Confirmed {
@@ -1694,39 +1693,33 @@ pub async fn transaction_count(
 ) -> Result<u64, ObservationError> {
     let address = Hex20::from_str(&format!("0x{}", hex(&address)))
         .map_err(|_| ObservationError::InvalidResponse)?;
-    match client(args)
-        .get_transaction_count(GetTransactionCountArgs {
-            address,
-            block: BlockTag::Pending,
-        })
-        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(value)) => {
-            u64::try_from(value).map_err(|_| ObservationError::Overflow)
-        }
-        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
-    }
+    let value = exact_quorum_response(
+        client(args)
+            .get_transaction_count(GetTransactionCountArgs {
+                address,
+                block: BlockTag::Pending,
+            })
+            .with_response_size_estimate(SMALL_RESPONSE_BYTES)
+            .try_send()
+            .await
+            .map_err(|_| ObservationError::Rpc)?,
+    )?;
+    u64::try_from(value).map_err(|_| ObservationError::Overflow)
 }
 pub async fn signer_eth_balance_safe(
     args: &BridgeInitArgs,
     address: [u8; 20],
 ) -> Result<u128, ObservationError> {
     let request = json!({ "jsonrpc":"2.0", "id":1, "method":"eth_getBalance", "params":[format!("0x{}", hex(&address)), "safe"] });
-    match client(args)
-        .multi_request(request)
-        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(value)) => parse_u128(&value),
-        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
-    }
+    let value = exact_quorum_response(
+        client(args)
+            .multi_request(request)
+            .with_response_size_estimate(SMALL_RESPONSE_BYTES)
+            .try_send()
+            .await
+            .map_err(|_| ObservationError::Rpc)?,
+    )?;
+    parse_u128(&value)
 }
 
 pub async fn signer_eth_balance_at(
@@ -1741,17 +1734,15 @@ pub async fn signer_eth_balance_at(
             "requireCanonical": true,
         }]
     });
-    match client(args)
-        .multi_request(request)
-        .with_response_size_estimate(SMALL_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
-        MultiRpcResult::Consistent(Ok(value)) => parse_u128(&value),
-        MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
-    }
+    let value = exact_quorum_response(
+        client(args)
+            .multi_request(request)
+            .with_response_size_estimate(SMALL_RESPONSE_BYTES)
+            .try_send()
+            .await
+            .map_err(|_| ObservationError::Rpc)?,
+    )?;
+    parse_u128(&value)
 }
 
 const ABI_WORD_BYTES: usize = 32;
@@ -2265,6 +2256,21 @@ mod tests {
         ];
 
         assert_eq!(exact_provider_response_quorum(responses), Ok(Some(42)));
+    }
+
+    #[test]
+    fn finalized_state_read_quorum_accepts_two_exact_values_and_one_stale_provider_error() {
+        let response = "0x000000000000000000000000000000000000000000000000000000000000002a";
+        let responses = vec![
+            (RpcService::Provider(1), Ok::<_, ()>(response.to_string())),
+            (RpcService::Provider(2), Err::<String, _>(())),
+            (RpcService::Provider(3), Ok::<_, ()>(response.to_string())),
+        ];
+
+        assert_eq!(
+            exact_provider_response_quorum(responses),
+            Ok(response.to_string())
+        );
     }
 
     #[test]

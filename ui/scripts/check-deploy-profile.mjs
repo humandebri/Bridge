@@ -75,7 +75,8 @@ try {
     rmSync(rendered, { recursive: true, force: true })
   }
   const rawProfile = readFileSync(profileFile, "utf8")
-  const releaseProfile = JSON.parse(rawProfile)
+  const { releaseProfileSchema } = await import("../src/config/profile.ts")
+  const releaseProfile = releaseProfileSchema.parse(JSON.parse(rawProfile))
   const manifest = JSON.parse(readFileSync(inputsManifestFile, "utf8"))
   const actualHash = createHash("sha256").update(rawProfile).digest("hex")
   if (manifest.artifacts?.["ui-runtime-profile.json"] !== actualHash) {

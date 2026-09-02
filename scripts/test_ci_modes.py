@@ -83,6 +83,25 @@ class CiModeTests(unittest.TestCase):
         self.assertIn('python3 "$ROOT/scripts/test_check_claim_manifest.py"', body)
         self.assertIn("run_proof_stage claim-transaction-tests", body)
 
+    def test_proof_preflight_validates_claim_links_without_running_tests(self) -> None:
+        body = function_body("run_proof_preflight")
+        expected = [
+            'python3 "$ROOT/scripts/check_schema_consistency.py"',
+            'python3 "$ROOT/scripts/check_proof_impact.py"',
+            'python3 "$ROOT/scripts/check_claim_manifest.py"',
+            'python3 "$ROOT/scripts/check_claim_test_manifest.py" --validate-only',
+        ]
+        positions = [body.index(command) for command in expected]
+        self.assertEqual(positions, sorted(positions))
+
+        for mode in ("all", "checks", "proofs"):
+            mode_source = mode_body(mode)
+            preflight = mode_source.index("run_step proof-preflight run_proof_preflight")
+            versions = mode_source.index("run_step versions run_versions")
+            proofs = mode_source.index("run_step proofs run_proofs")
+            self.assertLess(preflight, versions)
+            self.assertLess(versions, proofs)
+
     def test_certora_preflight_precedes_proof_impact_validation(self) -> None:
         body = function_body("run_versions")
         ast_build = body.index('forge build --root "$ROOT/contracts" --ast')
