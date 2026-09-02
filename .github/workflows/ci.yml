@@ -1,4 +1,4 @@
-# GitHub Actions: complete main, nightly, and manually dispatched repository gate.
+# GitHub Actions: targeted parallel main-push gates plus complete nightly/manual gate.
 name: bridge-ci
 
 on:
@@ -21,7 +21,185 @@ env:
   BRIDGE_EXPECTED_HEAD_SHA: ${{ github.sha }}
 
 jobs:
+  push-classify:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.classify.outputs.matrix }}
+      any: ${{ steps.classify.outputs.any }}
+    steps:
+      - name: Check out pushed commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Classify changed areas
+        id: classify
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          base_sha="$BEFORE_SHA"
+          if [[ "$base_sha" =~ ^0{40}$ ]]; then
+            base_sha="$(git rev-list --max-parents=0 HEAD)"
+          fi
+          git diff --name-only -z "$base_sha" HEAD |
+            python3 scripts/ci_changed_areas.py --null --base-sha "$base_sha" --head-sha "$(git rev-parse HEAD)" --github-output "$GITHUB_OUTPUT"
+      - name: Require complete classification
+        env:
+          ANY: ${{ steps.classify.outputs.any }}
+          MATRIX: ${{ steps.classify.outputs.matrix }}
+        run: |
+          case "$ANY" in true|false) ;; *) exit 1 ;; esac
+          test -n "$MATRIX"
+
+  push-preflight:
+    if: github.event_name == 'push'
+    needs: push-classify
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out pushed commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Node.js 24.14.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+      - name: Install pnpm 11.0.8
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        with:
+          version: 11.0.8
+          run_install: false
+      - name: Run shared preflight checks
+        run: |
+          git diff --check
+          python3 scripts/check_schema_consistency.py
+          python3 scripts/check_proof_impact.py
+          python3 scripts/check_claim_manifest.py
+          python3 scripts/check_claim_test_manifest.py --validate-only
+          python3 scripts/test_ci_changed_areas.py
+          python3 scripts/test_ci_modes.py
+          node --version
+          pnpm --version
+          rustc --version
+
+  push-area:
+    name: main (${{ matrix.area }})
+    if: github.event_name == 'push' && needs.push-classify.outputs.any == 'true'
+    needs: [push-classify, push-preflight]
+    strategy:
+      fail-fast: false
+      matrix:
+        area: ${{ fromJSON(needs.push-classify.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out pushed commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        if: matrix.area == 'rust' || matrix.area == 'icp'
+        run: rustup show
+      - name: Install Node.js 24.14.0
+        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+      - name: Install pnpm 11.0.8
+        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        with:
+          version: 11.0.8
+          run_install: false
+      - name: Restore Rust cache
+        if: matrix.area == 'rust' || matrix.area == 'icp'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            /home/runner/.cargo/registry
+            /home/runner/.cargo/git
+          key: bridge-main-rust-${{ github.sha }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - name: Restore pnpm store cache
+        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /home/runner/.local/share/pnpm/store
+          key: bridge-main-pnpm-${{ github.sha }}-${{ hashFiles('pnpm-lock.yaml', 'ui/pnpm-lock.yaml', '.node-version') }}
+      - name: Install Foundry 1.7.1
+        if: matrix.area == 'contracts' || matrix.area == 'proofs' || matrix.area == 'certora'
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
+        with:
+          version: v1.7.1
+      - name: Install uv 0.8.4
+        if: matrix.area == 'proofs'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: 0.8.4
+          enable-cache: true
+      - name: Install area toolchain
+        env:
+          AREA: ${{ matrix.area }}
+        run: |
+          case "$AREA" in
+            proofs) scripts/install-ci-tools.sh all ;;
+            *) scripts/install-ci-tools.sh ci ;;
+          esac
+      - name: Install workspace dependencies
+        if: matrix.area == 'rust'
+        run: pnpm install --frozen-lockfile
+      - name: Install UI dependencies
+        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
+        run: pnpm --dir ui install --frozen-lockfile
+      - name: Install Chromium
+        if: matrix.area == 'ui' || matrix.area == 'real'
+        run: pnpm --dir ui exec playwright install --with-deps chromium
+      - name: Run selected main-push checks
+        env:
+          AREA: ${{ matrix.area }}
+        run: |
+          case "$AREA" in
+            rust) scripts/ci-local.sh rust ;;
+            contracts) scripts/ci-local.sh contracts ;;
+            proofs) scripts/ci-local.sh proofs ;;
+            ui)
+              scripts/ci-local.sh ui-fast
+              scripts/ci-local.sh ui-e2e
+              ;;
+            real) scripts/ci-local.sh real ;;
+            icp) scripts/ci-local.sh icp ;;
+            certora) scripts/ci-local.sh certora ;;
+            *) exit 2 ;;
+          esac
+
+  push-ci:
+    if: always() && github.event_name == 'push'
+    needs: [push-classify, push-preflight, push-area]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all selected main-push checks
+        env:
+          CLASSIFY: ${{ needs.push-classify.result }}
+          ANY: ${{ needs.push-classify.outputs.any }}
+          PREFLIGHT: ${{ needs.push-preflight.result }}
+          AREAS: ${{ needs.push-area.result }}
+        run: |
+          test "$CLASSIFY" = success
+          if [[ "$ANY" == true ]]; then
+            test "$PREFLIGHT" = success
+            test "$AREAS" = success
+          else
+            test "$PREFLIGHT" = success
+            test "$AREAS" = skipped
+          fi
+
   full:
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

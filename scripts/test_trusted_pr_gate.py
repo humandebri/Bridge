@@ -162,7 +162,9 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("trusted-policy/scripts/install-ci-tools.sh \"$mode\"", workflow)
         self.assertIn("proofs) mode=\"all\"", workflow)
         self.assertIn("*) mode=\"ci\"", workflow)
-        self.assertEqual(workflow.count("docker build --file"), 1)
+        self.assertEqual(workflow.count("docker buildx build"), 1)
+        self.assertIn("Restore trusted image build cache", workflow)
+        self.assertIn("Save trusted image build cache", workflow)
         self.assertIn("actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
         self.assertIn("actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
         self.assertIn(
@@ -198,8 +200,11 @@ class TrustedPrGateTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "contains(fromJSON(needs.classify.outputs.matrix), 'rust') || "
-            "contains(fromJSON(needs.classify.outputs.matrix), 'real')",
+            "matrix.area == 'rust' || matrix.area == 'real' || matrix.area == 'icp'",
+            workflow,
+        )
+        self.assertIn(
+            "matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'",
             workflow,
         )
         self.assertIn("trusted-policy/.github/trusted-pr/Dockerfile", workflow)
@@ -255,8 +260,11 @@ class TrustedPrGateTests(unittest.TestCase):
             "dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly",
             wrapper,
         )
+        self.assertIn("DEPENDENCY_MOUNTS=()", wrapper)
         self.assertIn("dst=/workspace/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
+        self.assertIn('if [[ "$NEEDS_WORKSPACE_DEPS" == true ]]', wrapper)
+        self.assertIn('if [[ "$NEEDS_UI_DEPS" == true ]]', wrapper)
         self.assertIn("DEPENDENCY_ROOT", wrapper)
         self.assertNotIn("src=$POLICY_ROOT/node_modules", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.tmp", wrapper)
@@ -274,7 +282,11 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("dst=/workspace/.tools,readonly", wrapper)
         self.assertIn("BRIDGE_EXPECTED_HEAD_SHA", wrapper)
         self.assertNotIn("src=/home/runner,dst=/home/runner", wrapper)
-        self.assertIn(".cargo .rustup .local .elan .foundry setup-pnpm", wrapper)
+        self.assertIn("TOOL_PATHS=(.local)", wrapper)
+        self.assertIn("TOOL_PATHS+=(.cargo .rustup)", wrapper)
+        self.assertIn("TOOL_PATHS+=(.elan)", wrapper)
+        self.assertIn("TOOL_PATHS+=(.foundry)", wrapper)
+        self.assertIn("TOOL_PATHS+=(setup-pnpm)", wrapper)
         self.assertIn("/home/runner/.cache/ms-playwright", wrapper)
         self.assertIn("src=/home/runner/.svm,dst=/scratch/home/.svm,readonly", wrapper)
         self.assertIn(
@@ -462,6 +474,9 @@ class TrustedPrGateTests(unittest.TestCase):
 
     def test_aggregate_gate_requires_each_applicable_job_to_succeed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("fail-fast: false", workflow)
+        self.assertIn("area: ${{ fromJSON(needs.classify.outputs.matrix) }}", workflow)
+        self.assertIn("name: test (${{ matrix.area }})", workflow)
         self.assertIn('if [[ "$ANY" == true ]]; then', workflow)
         self.assertIn('test "$TEST_RESULT" = success', workflow)
         self.assertNotIn("POLICY", workflow)
@@ -510,7 +525,8 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("pr-gate:", workflow)
-        self.assertNotIn("ci_changed_areas.py", workflow)
+        self.assertIn("push-classify:", workflow)
+        self.assertIn("scripts/ci_changed_areas.py", workflow)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,13 @@ class ChangedAreaTests(unittest.TestCase):
     def test_visual_ui_change_avoids_real_integration(self) -> None:
         self.assert_areas(["ui/src/styles.css"], "ui")
 
+    def test_ui_dependency_only_change_runs_ui(self) -> None:
+        self.assert_areas(["ui/pnpm-lock.yaml"], "ui")
+        self.assert_areas(["ui/src/styles.css"], "ui")
+
+    def test_ui_real_e2e_change_runs_ui_and_real(self) -> None:
+        self.assert_areas(["ui/e2e-real/bridge-real.spec.ts"], "ui", "real")
+
     def test_integration_ui_change_runs_real(self) -> None:
         self.assert_areas(["ui/src/lib/ic/bridge.ts"], "ui", "real")
 
@@ -136,6 +143,13 @@ class ChangedAreaTests(unittest.TestCase):
 
     def test_proof_change_runs_proofs_only(self) -> None:
         self.assert_areas(["verification/lean/Bridge.lean"], "proofs")
+
+    def test_safety_kernel_and_proof_manifest_keep_safety_areas(self) -> None:
+        self.assert_areas(
+            ["tools/bridge-profile/src/main.rs", "verification/proof-impact.tsv"],
+            "rust",
+            "proofs",
+        )
 
     def test_certora_only_change_runs_only_advisory_checks(self) -> None:
         for path in (
