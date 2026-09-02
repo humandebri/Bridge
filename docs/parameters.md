@@ -57,14 +57,17 @@ service_fee初期値 = 0.5 KINIC
   + cycles の N 日分の運用費
 ```
 
-- ETH固定floor: 未確定。Sepolia governance gas 10回計測とBase mainnet 7日fee分布の証跡が揃った後、承認済みreserve window内のGovernance transaction数へ2倍の余裕を掛けて設定する。
-- max fee per gas上限: 未確定。Base mainnet直近7日のbase fee p99×20、priority fee p95×4、L1 fee p99×10で各ceilingを算出する。
-- cycles floor: 未確定。pause状態の基礎日次消費、10回のsettlement cycles計測、承認済み日次最大件数から次式で設定する。
+- ETH固定floor: Gate A profileで明示承認した固定値を維持する。`initial-operational-parameters.json`はこの値を変更せず、live残高が固定floorとcandidate transaction liabilityを満たさない場合は署名・送信しない。
+- governance fee上限: exact schedule／execute calldataのgas estimateと10件以上の異なるFinalized fee blockから導出する。gas limitは最大estimateの130%を1,000単位で切り上げ、max feeはbase fee p99×20、priority feeはp95×4、L1 ceilingはp99×10とする。quote validityは90秒、13,000／60,000／15,000 bps multiplierを維持する。
+- settlement cycle ceiling: `5000000000` cyclesに固定する。
+- cycles floor: pause状態の`idle_cycles_burned_per_day`から次式で設定する。
 
-production installとGate Aでは、上記3値が未確定のためschema 2 template固定のBootstrap運用値を使う。この値は運用上限ではなく、`Bootstrap` lifecycleとshared kernel gateの組でasset update、scheduler、Base governance transactionをfail closedにするための非運用値である。Baseをpause配置した後に計測を完了し、Gate B profileで3値だけを最終値へ置換して一度だけ封印する。
-- `cycles floor = (baseline cycles/day + max(settlement cycles) × expected daily settlements) × 30 × 2`
-- `settlement cycle ceiling = ceil(max(settlement cycles) × 1.5)`
+production installとGate Aではschema 2 template固定のBootstrap運用値を使う。この値は運用上限ではなく、`Bootstrap` lifecycleとshared kernel gateの組でasset update、scheduler、Base governance transactionをfail closedにするための非運用値である。Baseをpause配置した後に`initial-operational-parameters.json`を作成し、Gate B profileでgovernance fee 8項目、cycles floor、settlement cycle ceilingだけを導出値へ置換して一度だけsealする。
+- `cycles floor = (idle cycles burn/day + 5,000,000,000) × 30 × 2`
+- `settlement cycle ceiling = 5,000,000,000`
 - N: 30日
+
+unpause後は7日以上のBase feeとgovernance gas／settlement cycles各10件以上をGate Cで観測する。この観測結果はseal済み値を自動更新せず、変更が必要なら別upgradeとレビューを行う。
 
 未確定値をzeroや任意の仮値でmainnet plan/profileへ入れてはならない。install時だけはprotocol定義済みの固定Bootstrap sentinelを使用する。production Canister install planは`schema_version: 2`、install receiptは`schema_version: 3`、release profileは`schema_version: 5`、Gate A manifestは`schema_version: 3`、Gate B manifestは`schema_version: 4`、Gate A receiptは`schema_version: 2`だけを受理する。初回controller activation receiptはschema 1、handover後のSNS proposal型Activation Receiptはschema 4として別型のまま保持し、旧versionや未知versionをmigrationせずfail closedにする。`validate-bundle --offline --gate-b`のpre-seal結果はsealだけを認可し、seal後の`verify-live schedule`だけがschedule prepareを認可する。fee cap超過またはcycles不足ではtransactionを生成・送信しない。
 

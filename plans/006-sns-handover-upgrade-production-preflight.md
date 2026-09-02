@@ -17,7 +17,7 @@ Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operato
 1. clean revisionでCI、Verus、ABI/Candid、current schema reopenと未知schema fail-closedを完了する。
 2. 同一Wasmのtest canisterで10回計測、launch-ready RPC 5 scenario、実データ相当stateのupgrade、pause/cancel経路演習を完了する。
 3. production Canisterへpause状態でcontroller-bootstrap Wasmをinstallし、Canister固有のMint SignerとGovernance Operatorを導出する。既存Candid method／argument ABIを維持し、承認済みの`ActivationConfirmationView` 2 field以外に公開APIを増やさず、初回activation専用の内部bootstrap lifecycleを使う。
-4. 最終profile、予測contract address、4 artifactのGate Aを固定する。
+4. 最終pre-deploy profileとBridge／BSNSの5 build artifact、合計6 artifactのGate Aを固定する。
 5. 一時deployerでTimelockとBridgeをpause状態で配置する。constructorは導出済みMint Signer、Governance Operator、Timelockだけをroleへ設定し、deployerへroleを残さない。
 6. この端末のproduction preflightでcanonical receipt、runtime hash、role集合、deployer roleゼロ、pause状態を検証する。
 7. pre-seal Gate B後、production controllerが初期運用値を一度だけsealする。
