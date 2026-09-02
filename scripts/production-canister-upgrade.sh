@@ -308,13 +308,23 @@ if [[ "$MODE" == preflight ]]; then
 fi
 
 python3 -I -S - "$PREFLIGHT" "$SOURCE_REVISION" "$SOURCE_TREE" "$CANISTER" "$OLD_WASM" "$WASM_SHA256" \
-  "$BEFORE_MODULE" "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY" <<'PY'
+  "$BEFORE_MODULE" "$BEFORE_PUBLIC_STATE" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1],encoding='utf-8'))
-expected=[sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5].lower(),sys.argv[6],sys.argv[7],*sys.argv[8:12]]
-actual=[p.get('source_revision'),p.get('source_tree_sha256'),p.get('bridge_canister_id'),p.get('before_module_sha256','').lower(),p.get('wasm_sha256'),sys.argv[7],p.get('before_bridge_status_response_hex'),p.get('before_lifecycle_response_hex'),p.get('before_runtime_binding_response_hex'),p.get('before_storage_integrity_response_hex')]
+expected=[sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5].lower(),sys.argv[6],sys.argv[7],sys.argv[8]]
+actual=[p.get('source_revision'),p.get('source_tree_sha256'),p.get('bridge_canister_id'),p.get('before_module_sha256','').lower(),p.get('wasm_sha256'),sys.argv[7],p.get('before_public_state_sha256')]
 if actual!=expected: raise SystemExit('live state or source differs from the reviewed production upgrade preflight')
 PY
+# Receipt recovery must be byte-for-byte deterministic. The live snapshot above
+# authorizes sending via the canonical public-state hash; the durable receipt
+# records the exact reviewed preflight snapshot in both execute and recover.
+BEFORE_MANAGEMENT="$(preflight_value before_management_status_json_hex hex)"
+BEFORE_MODULE="$(preflight_value before_module_sha256)"
+BEFORE_BRIDGE_STATUS="$(preflight_value before_bridge_status_response_hex)"
+BEFORE_LIFECYCLE="$(preflight_value before_lifecycle_response_hex)"
+BEFORE_RUNTIME="$(preflight_value before_runtime_binding_response_hex)"
+BEFORE_INTEGRITY="$(preflight_value before_storage_integrity_response_hex)"
+BEFORE_PUBLIC_STATE="$(preflight_value before_public_state_sha256)"
 
 STDOUT_FILE="$OUTPUT.stdout"
 STDERR_FILE="$OUTPUT.stderr"

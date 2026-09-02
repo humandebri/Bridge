@@ -79,6 +79,7 @@ OLD_SHA="$(shasum -a 256 "$T/old.wasm" | awk '{print $1}')"
 NEW_SHA="$(shasum -a 256 "$T/new.wasm" | awk '{print $1}')"
 printf '%s\n' "$OLD_SHA" >"$T/live-module"
 printf '0\n' >"$T/submit-count"
+printf '0\n' >"$T/status-call-count"
 printf 'dummy production identity\n' >"$T/production.pem"
 printf '{"bridge_canister_id":"%s","bridge_canister_wasm_sha256":"%s","ic_host":"https://icp-api.io"}\n' \
   "$CANISTER" "$OLD_SHA" >"$T/gate-a-profile.json"
@@ -93,13 +94,22 @@ if [[ "$1 $2 $3" == "canister status $TEST_CANISTER" ]]; then
   printf '{"status":{"settings":{"controllers":["%s"]},"module_hash":"%s"}}\n' "$TEST_INSTALLER" "$(<"$TEST_LIVE_MODULE")"
   exit 0
 fi
-if [[ "$1 $2 $3" == "canister call $TEST_CANISTER" ]]; then printf '4449444c0000\n'; exit 0; fi
+if [[ "$1 $2 $3" == "canister call $TEST_CANISTER" ]]; then
+  if [[ "$4" == get_bridge_status ]]; then
+    count="$(<"$TEST_STATUS_CALL_COUNT")"
+    if [[ "$count" == 0 ]]; then printf '4449444c0000\n'; else printf '4449444c0001\n'; fi
+    printf '%s\n' "$((count + 1))" >"$TEST_STATUS_CALL_COUNT"
+  else
+    printf '4449444c0000\n'
+  fi
+  exit 0
+fi
 exit 97
 SH
 chmod +x "$T/bin/icp"
 export PATH="$T/bin:$PATH"
 export TEST_INSTALLER="$INSTALLER" TEST_CANISTER="$CANISTER" TEST_LIVE_MODULE="$T/live-module" \
-  TEST_NEW_SHA="$NEW_SHA" TEST_SUBMIT_COUNT="$T/submit-count"
+  TEST_NEW_SHA="$NEW_SHA" TEST_SUBMIT_COUNT="$T/submit-count" TEST_STATUS_CALL_COUNT="$T/status-call-count"
 
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
@@ -148,6 +158,7 @@ assert value['recovered'] is False and value['recovered_at_unix'] is None
 assert hashlib.sha256(bytes.fromhex(value['response_stdout_hex'])).hexdigest()==value['response_stdout_sha256']
 PY
 [[ -e "$T/preflight-mutated" && "$(<"$T/submit-count")" == 1 ]]
+[[ "$(<"$T/status-call-count")" -ge 3 ]]
 python3 -I -S - "$T/evidence/receipt.json.execution.json" "$T/evidence/preflight.approved.json" "$T/evidence/preflight.json" <<'PY'
 import hashlib,json,sys
 marker=json.load(open(sys.argv[1],encoding='utf-8'))
