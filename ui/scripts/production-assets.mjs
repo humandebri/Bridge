@@ -110,14 +110,39 @@ function validateReceipt(receipt, identity, built) {
 }
 
 /** @param {string} targetRoot @param {string} profileFile */
-function installRuntimeProfile(targetRoot, profileFile) {
+async function installRuntimeProfile(targetRoot, profileFile) {
   const raw = readFileSync(profileFile, "utf8")
-  JSON.parse(raw)
-  writeFileSync(resolve(targetRoot, profileBootstrap), `globalThis.__KINIC_DEPLOYMENT_PROFILE_JSON__ = ${JSON.stringify(raw.trim())};\n`, { flag: "wx", mode: 0o400 })
+  const { deploymentProfileSchema } = await import("../src/config/profile.ts")
+  const parsedProfile = deploymentProfileSchema.parse(JSON.parse(raw))
+  const publicProfile = {
+    ...parsedProfile,
+    deploymentBlock: parsedProfile.deploymentBlock?.toString() ?? null,
+  }
+  const publicRaw = JSON.stringify(publicProfile)
+  writeFileSync(resolve(targetRoot, profileBootstrap), `globalThis.__KINIC_DEPLOYMENT_PROFILE_JSON__ = ${JSON.stringify(publicRaw)};\n`, { flag: "wx", mode: 0o400 })
 }
 
-/** @param {ArtifactReceipt} receipt @param {string} profileFile */
-function deployFrozenAssets(receipt, profileFile) {
+/** @param {string} profileFile */
+async function validatePreActivationProfile(profileFile) {
+  const raw = readFileSync(profileFile, "utf8")
+  const releaseProfile = JSON.parse(raw)
+  /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
+  const deploymentGlobal = globalThis
+  deploymentGlobal.__KINIC_DEPLOYMENT_PROFILE_JSON__ = raw.trim()
+  const [{ deploymentProfile, profileCompleteness }, { assertPreActivationUiProfile }] = await Promise.all([
+    import("../src/config/profile.ts"),
+    import("../src/config/deploy-safety.ts"),
+  ])
+  assertPreActivationUiProfile(releaseProfile)
+  const expectedBlockers = ["Deployment history start block is missing"]
+  const blockers = profileCompleteness(deploymentProfile)
+  if (JSON.stringify(blockers) !== JSON.stringify(expectedBlockers)) {
+    throw new Error(`Pre-activation UI profile has unexpected blockers: ${blockers.join("; ")}`)
+  }
+}
+
+/** @param {ArtifactReceipt} receipt @param {string} profileFile @param {boolean} [dryRun] */
+async function deployFrozenAssets(receipt, profileFile, dryRun = false) {
   const frozen = mkdtempSync(resolve(tmpdir(), "kinic-ui-deploy."))
   try {
     for (const file of receipt.files) {
@@ -130,12 +155,14 @@ function deployFrozenAssets(receipt, profileFile) {
       }
       chmodSync(target, 0o400)
     }
-    installRuntimeProfile(frozen, profileFile)
+    await installRuntimeProfile(frozen, profileFile)
     for (const path of readdirSync(frozen, { recursive: true }).map((entry) => resolve(frozen, String(entry))).sort().reverse()) {
       if (lstatSync(path).isDirectory()) chmodSync(path, 0o500)
     }
     chmodSync(frozen, 0o500)
-    const deployed = spawnSync("pnpm", ["exec", "wrangler", "deploy", "--config", resolve(uiRoot, "wrangler.jsonc"), "--assets", frozen], {
+    const deployArgs = ["exec", "wrangler", "deploy", "--config", resolve(uiRoot, "wrangler.jsonc"), "--assets", frozen]
+    if (dryRun) deployArgs.push("--dry-run")
+    const deployed = spawnSync("pnpm", deployArgs, {
       cwd: uiRoot,
       env: process.env,
       stdio: "inherit",
@@ -152,8 +179,9 @@ function deployFrozenAssets(receipt, profileFile) {
 
 const [, , mode, receiptPath, profileFile] = process.argv
 try {
-  if (!receiptPath || !["generate", "verify", "deploy"].includes(mode)) {
-    throw new Error("usage: production-assets.mjs {generate|verify|deploy} RECEIPT [UI_RUNTIME_PROFILE]")
+  const modes = ["generate", "verify", "deploy", "verify-preactivation", "deploy-preactivation"]
+  if (!receiptPath || !modes.includes(mode)) {
+    throw new Error("usage: production-assets.mjs {generate|verify|deploy|verify-preactivation|deploy-preactivation} RECEIPT [UI_RUNTIME_PROFILE]")
   }
   const identity = await sourceIdentity()
   const built = buildGenericAssets()
@@ -163,9 +191,10 @@ try {
   } else {
     const receipt = JSON.parse(readFileSync(receiptPath, "utf8"))
     validateReceipt(receipt, identity, built)
-    if (mode === "deploy") {
-      if (!profileFile) throw new Error("deploy requires the verified UI runtime profile")
-      deployFrozenAssets(receipt, profileFile)
+    if (["deploy", "verify-preactivation", "deploy-preactivation"].includes(mode)) {
+      if (!profileFile) throw new Error(`${mode} requires the UI runtime profile`)
+      if (mode !== "deploy") await validatePreActivationProfile(profileFile)
+      await deployFrozenAssets(receipt, profileFile, mode === "verify-preactivation")
     }
     process.stdout.write(`ui_artifact_set_sha256=${built.artifact_set_sha256}\n`)
   }

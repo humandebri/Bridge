@@ -480,7 +480,9 @@ export function BridgePage({ direction, onDirectionChange }: { direction: Bridge
       return result
     } catch (error) {
       if (error instanceof StalePreflightError) throw error
-      const message = error instanceof Error ? error.message : "This check could not be completed"
+      const message = id === "runtime"
+        ? "Bridge availability could not be confirmed. Please try again shortly."
+        : error instanceof Error ? error.message : "This check could not be completed"
       updatePreflightCheck(runId, id, "failed", message)
       throw error
     }

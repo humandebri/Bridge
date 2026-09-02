@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "reason": "activate-before-production-measurements",
+  "observed_at_unix": 0,
+  "gate_a_manifest_sha256": "<64-hex>",
+  "gate_a_receipt_sha256": "<64-hex>",
+  "from_source_revision": "<gate-a-git-revision>",
+  "from_source_tree_sha256": "<gate-a-tree-64-hex>",
+  "to_source_revision": "<release-policy-git-revision>",
+  "to_source_tree_sha256": "<release-policy-tree-64-hex>",
+  "bridge_canister_id": "<production-bridge-canister-id>",
+  "bridge_contract": "<base-bridge-address>",
+  "bsns_contract": "<base-bsns-address>",
+  "timelock_contract": "<base-timelock-address>",
+  "bridge_canister_wasm_sha256": "<64-hex>",
+  "bridge_runtime_bytecode_sha256": "<64-hex>",
+  "bsns_runtime_bytecode_sha256": "<64-hex>",
+  "bsns_runtime_template_sha256": "<64-hex>",
+  "bridge_deployment_transaction_hash": "<0x-64-hex>",
+  "timelock_deployment_transaction_hash": "<0x-64-hex>"
+}

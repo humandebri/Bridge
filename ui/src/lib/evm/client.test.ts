@@ -9,6 +9,12 @@ describe("Base clients", () => {
     expect(basePublicClient.chain?.id).toBe(deploymentProfile.chainId)
   })
 
+  it("derives the Base Mainnet browser RPC when the release profile omits one", () => {
+    const production = { ...deploymentProfile, testOnly: false, chainId: 8453, baseRpcUrl: undefined, baseHistoryRpcUrls: undefined }
+    expect(createProfileChain(production).rpcUrls.default.http).toEqual(["https://mainnet.base.org"])
+    expect(createBaseHistoryClients(production)).toHaveLength(1)
+  })
+
   it("offers injected and Coinbase connectors without the MetaMask SDK connector", () => {
     expect(wagmiConfig.connectors.some((connector) => connector.id === "injected")).toBe(true)
     expect(wagmiConfig.connectors.some((connector) => connector.id === "coinbaseWalletSDK")).toBe(true)
