@@ -126,7 +126,7 @@ function StatusPage() {
               Current bridge status could not be confirmed. Please try again shortly.
             </p>
           )}
-          <p className="mt-1 text-amber-900/70">
+          <p className="mt-1 text-amber-950">
             Last updated: {lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleString() : "Never"}
           </p>
         </div>
