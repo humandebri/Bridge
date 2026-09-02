@@ -3,6 +3,8 @@ import { generateKeyPairSync } from "node:crypto"
 import test from "node:test"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Secp256k1KeyIdentity } from "@icp-sdk/core/identity/secp256k1"
+import { keccak256 } from "viem"
+import { privateKeyToAccount } from "viem/accounts"
 import {
   activationConfirmationHash,
   activationBindingMatches,
@@ -21,6 +23,7 @@ import {
   storedActivationConfirmationIdentity,
   unwrap,
   validateCommandOptions,
+  validateStoredArtifact,
   waitForFinalized,
 } from "./cli.ts"
 
@@ -36,6 +39,42 @@ test("parses only an allocatable exact governance operation ID", () => {
     null,
   ]) {
     assert.throws(() => parseExpectedGovernanceOperationId(invalid))
+  }
+})
+
+test("binds stored artifact fields to the independently decoded signed transaction", async () => {
+  const account = privateKeyToAccount(`0x${"11".repeat(32)}`)
+  const raw = await account.signTransaction({
+    chainId: 8453,
+    type: "eip1559",
+    nonce: 7,
+    to: `0x${"22".repeat(20)}`,
+    data: "0x1234",
+    gas: 100_000n,
+    maxFeePerGas: 20n,
+    maxPriorityFeePerGas: 2n,
+    value: 0n,
+  })
+  const artifact = {
+    raw_transaction: raw,
+    transaction_hash: keccak256(raw),
+    sender: account.address,
+    chain_id: "8453",
+    nonce: "7",
+    target: `0x${"22".repeat(20)}`,
+    calldata: "0x1234",
+    gas_limit: "100000",
+    max_fee_per_gas: "20",
+    max_priority_fee_per_gas: "2",
+  }
+  await validateStoredArtifact(artifact)
+  for (const drift of [
+    { ...artifact, target: `0x${"33".repeat(20)}` },
+    { ...artifact, calldata: "0x1235" },
+    { ...artifact, chain_id: "1" },
+    { ...artifact, transaction_hash: `0x${"00".repeat(32)}` },
+  ]) {
+    await assert.rejects(() => validateStoredArtifact(drift))
   }
 })
 

@@ -32,7 +32,10 @@ describe("Base Sepolia asset profile template", () => {
     expect(manifest.scripts.deploy).not.toContain("pnpm run build && wrangler deploy")
     expect(productionAssets).toContain('"verify-live", "schedule", bundle')
     expect(productionAssets).toContain("readOrdinaryFile(profileFile)")
-    expect(productionAssets).toContain("deployFrozenAssets(receipt, rawProfile")
+    expect(productionAssets).toContain("await deployFrozenAssets(receipt, rawProfile, identity")
+    expect(productionAssets).toContain("await requireUnchangedSourceIdentity(identity)")
+    expect(productionAssets).toContain('"HEAD:ui/wrangler.production.jsonc"')
+    expect(productionAssets).toContain('"--config", frozenConfig')
     expect(productionAssets).not.toContain("installRuntimeProfile(frozen, profileFile)")
   })
 

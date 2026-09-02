@@ -42,7 +42,7 @@ cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs,path::Path};
 fn copy_dir(from:&Path,to:&Path){fs::create_dir_all(to).unwrap();for e in fs::read_dir(from).unwrap(){let e=e.unwrap();let d=to.join(e.file_name());if e.path().is_dir(){copy_dir(&e.path(),&d)}else{fs::copy(e.path(),d).unwrap();}}}
 fn field(value:&str,name:&str)->String{value.split(&format!("\"{}\":\"",name)).nth(1).unwrap().split('"').next().unwrap().into()}
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if let Ok(trace)=env::var("TRACE"){use std::io::Write;writeln!(fs::OpenOptions::new().create(true).append(true).open(trace).unwrap(),"profile {}",a.join(" ")).unwrap()}if a[0]=="render-release-inputs"{copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="reserve-operational-config-seal"{if Path::new(&a[3]).exists(){println!("existing")}else{fs::write(&a[3],"{\"schema_version\":1}\n").unwrap();println!("created")}}else if a[0]=="write-operational-config-seal-receipt"{fs::write(&a[4],"{\"schema_version\":1}\n").unwrap()}else if a[0]=="authorize-controller-activation"{let root=Path::new(&a[2]);let m=fs::read_to_string(root.join("release-manifest.json")).unwrap();let p=fs::read_to_string(root.join("profile.json")).unwrap();let value=format!("{{\"schema_version\":1,\"phase\":\"{}\",\"release_id\":\"{}\",\"source_revision\":\"{}\",\"source_tree_sha256\":\"{}\",\"gate_b_manifest_sha256\":\"{}\",\"operational_config_seal_receipt_sha256\":\"{}\",\"controller_principal\":\"aaaaa-aa\",\"certified_controller_set\":[\"aaaaa-aa\"],\"certified_module_sha256\":\"{}\",\"authorized_at_unix\":1}}\n",a[1],field(&m,"release_id"),field(&m,"source_revision"),field(&m,"source_tree_sha256"),a[3],env::var("SEAL_RECEIPT_HASH").unwrap(),field(&p,"bridge_canister_wasm_sha256"));fs::write(&a[5],value).unwrap()}else if a[0]=="verify-controller-activation-authorization"&&env::var("CANISTER_CONTROLLER_DRIFT").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="verify-controller-activation-artifact"&&env::var("ACTIVATION_BINDING_DRIFT").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="validate-bundle"&&a.iter().any(|v|v=="--gate-b"){println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","b".repeat(64))}else if a[0]=="validate-bundle"{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}else if a[0]=="verify-production-canister-predeploy"{if a.len()!=3||env::var("CANISTER_PREDEPLOY_FAIL").as_deref()==Ok("true")||env::var("CANISTER_MODULE_DRIFT").as_deref()==Ok("true")||env::var("CANISTER_CONTROLLER_DRIFT").as_deref()==Ok("true"){std::process::exit(1)}println!("production_canister_predeploy=verified")}else if a[0]=="verify-live"{if env::var("FINAL_LIVE_FAIL").as_deref()==Ok("true"){std::process::exit(1)}println!("gate_b=live-pass authorizing={} manifest_sha256={}",a[1],"b".repeat(64))}else{println!("gate=pass manifest_sha256={}","b".repeat(64))}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if let Ok(trace)=env::var("TRACE"){use std::io::Write;writeln!(fs::OpenOptions::new().create(true).append(true).open(trace).unwrap(),"profile {}",a.join(" ")).unwrap()}if a[0]=="render-release-inputs"{copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="reserve-operational-config-seal"{if Path::new(&a[3]).exists(){println!("existing")}else{fs::write(&a[3],"{\"schema_version\":1}\n").unwrap();println!("created")}}else if a[0]=="write-operational-config-seal-receipt"{fs::write(&a[4],"{\"schema_version\":1}\n").unwrap()}else if a[0]=="authorize-controller-activation"{let root=Path::new(&a[2]);let m=fs::read_to_string(root.join("release-manifest.json")).unwrap();let p=fs::read_to_string(root.join("profile.json")).unwrap();let value=format!("{{\"schema_version\":1,\"phase\":\"{}\",\"release_id\":\"{}\",\"source_revision\":\"{}\",\"source_tree_sha256\":\"{}\",\"gate_b_manifest_sha256\":\"{}\",\"operational_config_seal_receipt_sha256\":\"{}\",\"controller_principal\":\"aaaaa-aa\",\"certified_controller_set\":[\"aaaaa-aa\"],\"certified_module_sha256\":\"{}\",\"authorized_at_unix\":1}}\n",a[1],field(&m,"release_id"),field(&m,"source_revision"),field(&m,"source_tree_sha256"),a[3],env::var("SEAL_RECEIPT_HASH").unwrap(),field(&p,"bridge_canister_wasm_sha256"));fs::write(&a[5],value).unwrap()}else if a[0]=="verify-controller-activation-authorization-fresh"&&env::var("STALE_ACTIVATION_AUTH").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="verify-controller-activation-authorization"&&env::var("CANISTER_CONTROLLER_DRIFT").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="verify-controller-activation-artifact"&&env::var("ACTIVATION_BINDING_DRIFT").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="validate-bundle"&&a.iter().any(|v|v=="--gate-b"){println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","b".repeat(64))}else if a[0]=="validate-bundle"{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}else if a[0]=="verify-production-canister-predeploy"{if a.len()!=3||env::var("CANISTER_PREDEPLOY_FAIL").as_deref()==Ok("true")||env::var("CANISTER_MODULE_DRIFT").as_deref()==Ok("true")||env::var("CANISTER_CONTROLLER_DRIFT").as_deref()==Ok("true"){std::process::exit(1)}println!("production_canister_predeploy=verified")}else if a[0]=="verify-live"{if env::var("FINAL_LIVE_FAIL").as_deref()==Ok("true"){std::process::exit(1)}println!("gate_b=live-pass authorizing={} manifest_sha256={}",a[1],"b".repeat(64))}else{println!("gate=pass manifest_sha256={}","b".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -487,9 +487,22 @@ env RECOVERY_PENDING_MISSING=true "${COMMON_ACTIVATION_ENV[@]}" \
 grep -q 'recover-activation' "$TRACE"
 grep -q 'proofs proofs' "$TRACE"
 grep -q 'profile verify-live schedule' "$TRACE"
+grep -q 'profile verify-controller-activation-authorization-fresh schedule' "$TRACE"
 grep -q 'prepare-schedule-activation' "$TRACE"
 grep -q "node_identity=$CONTROLLER_PEM_FIXTURE" "$TRACE"
 [[ -s "$MISSING_PENDING_ARTIFACT" && -s "$MISSING_PENDING_ARTIFACT.prepare-receipt.json" ]]
+STALE_RECOVERY_ARTIFACT="$T/stale-recovery-activation-artifact.json"
+cp "$ACTIVATION_ARTIFACT_FIXTURE.authorization.json" "$STALE_RECOVERY_ARTIFACT.authorization.json"
+: >"$TRACE"
+if env RECOVERY_PENDING_MISSING=true STALE_ACTIVATION_AUTH=true \
+  "${COMMON_ACTIVATION_ENV[@]}" BRIDGE_ACTIVATION_ARTIFACT="$STALE_RECOVERY_ARTIFACT" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation recovery created a transaction from a stale authorization" >&2
+  exit 1
+fi
+grep -q 'profile verify-controller-activation-authorization-fresh schedule' "$TRACE"
+! grep -q 'prepare-schedule-activation' "$TRACE"
+[[ ! -e "$STALE_RECOVERY_ARTIFACT" && ! -e "$STALE_RECOVERY_ARTIFACT.prepare-receipt.json" ]]
 if env CANISTER_CONTROLLER_DRIFT=true "${COMMON_ACTIVATION_ENV[@]}" \
   "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
   echo "activation resume accepted a changed certified controller set" >&2
@@ -502,8 +515,20 @@ env "${COMMON_ACTIVATION_ENV[@]}" BRIDGE_ACTIVATION_STEP=replace \
   BRIDGE_ACTIVATION_REPLACEMENT_MAX_FEE=200 \
   BRIDGE_ACTIVATION_REPLACEMENT_PRIORITY_FEE=3 \
   "$DRIVER_ROOT/scripts/production-activate-driver.sh"
+grep -q 'profile verify-controller-activation-artifact schedule' "$TRACE"
 grep -q 'replace-activation' "$TRACE"
 [[ -s "$REPLACEMENT_ARTIFACT" && -s "$REPLACEMENT_ARTIFACT.authorization.json" && -s "$REPLACEMENT_ARTIFACT.prepare-receipt.json" ]]
+: >"$TRACE"
+if env ACTIVATION_BINDING_DRIFT=true "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_STEP=replace \
+  BRIDGE_ACTIVATION_REPLACEMENT_ARTIFACT="$T/rejected-replacement.json" \
+  BRIDGE_ACTIVATION_REPLACEMENT_MAX_FEE=200 \
+  BRIDGE_ACTIVATION_REPLACEMENT_PRIORITY_FEE=3 \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation replacement accepted an artifact outside the exact Gate B binding" >&2
+  exit 1
+fi
+! grep -q 'replace-activation' "$TRACE"
 ARTIFACT_BEFORE="$(shasum -a 256 "$ACTIVATION_ARTIFACT_FIXTURE" | awk '{print $1}')"
 : >"$TRACE"
 env "${COMMON_ACTIVATION_ENV[@]}" BRIDGE_ACTIVATION_STEP=relay \
@@ -548,9 +573,21 @@ env "${COMMON_ACTIVATION_ENV[@]}" BRIDGE_ACTIVATION_STEP=confirm \
   BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$RAW_CONFIRMATION_FIXTURE" \
   BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$VERIFIED_ACTIVATION_FIXTURE" \
   "$DRIVER_ROOT/scripts/production-activate-driver.sh"
+grep -q 'profile verify-controller-activation-artifact schedule' "$TRACE"
 grep -q "node_identity=$RELAYER_PEM_FIXTURE" "$TRACE"
 grep -q ' confirm --artifact-file ' "$TRACE"
 grep -q 'profile verify-controller-activation schedule' "$TRACE"
 [[ -s "$RAW_CONFIRMATION_FIXTURE" ]]
+: >"$TRACE"
+if env ACTIVATION_BINDING_DRIFT=true "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_STEP=confirm \
+  BRIDGE_CONFIRMATION_RELAYER_PEM="$RELAYER_PEM_FIXTURE" \
+  BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$T/rejected-confirmation.json" \
+  BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/rejected-activation.json" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation confirmation accepted an artifact outside the exact Gate B binding" >&2
+  exit 1
+fi
+! grep -q ' confirm --artifact-file ' "$TRACE"
 ! grep -q '^cast send' "$TRACE"
 ! grep -q resume_new_deposits "$TRACE"

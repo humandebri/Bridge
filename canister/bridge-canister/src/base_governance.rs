@@ -218,17 +218,30 @@ pub fn production_lifecycle() -> Result<ProductionLifecycle, BaseGovernanceError
         let sealed = store
             .operational_config_sealed()
             .map_err(|_| BaseGovernanceError::StorageFailure)?;
+        let bootstrap_controller = store
+            .bootstrap_activation_controller()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
+        Ok(if !sealed {
+            ProductionLifecycle::Bootstrap
+        } else if bootstrap_controller.is_some() {
+            ProductionLifecycle::OperationalConfigSealed
+        } else {
+            ProductionLifecycle::Activated
+        })
+    })
+}
+
+fn activation_admission_open() -> Result<bool, BaseGovernanceError> {
+    STORE.with(|store| {
+        let store = store.borrow();
+        let sealed = store
+            .operational_config_sealed()
+            .map_err(|_| BaseGovernanceError::StorageFailure)?;
         let paused = store
             .admin_state()
             .map_err(|_| BaseGovernanceError::StorageFailure)?
             .deposits_paused;
-        Ok(if sealed && !paused {
-            ProductionLifecycle::Activated
-        } else if sealed {
-            ProductionLifecycle::OperationalConfigSealed
-        } else {
-            ProductionLifecycle::Bootstrap
-        })
+        Ok(sealed && paused)
     })
 }
 
@@ -298,14 +311,14 @@ pub async fn refresh_activation_attestation(
     if !attestation_refresh_authorized(&before, caller) {
         return Err(BaseGovernanceError::Unauthorized);
     }
-    if production_lifecycle()? != ProductionLifecycle::OperationalConfigSealed {
+    if !activation_admission_open()? {
         return Err(BaseGovernanceError::InvalidArgument);
     }
     let evidence = activation_preflight(&before).await?;
     if config()? != before || !attestation_refresh_authorized(&before, caller) {
         return Err(BaseGovernanceError::Unauthorized);
     }
-    if production_lifecycle()? != ProductionLifecycle::OperationalConfigSealed {
+    if !activation_admission_open()? {
         return Err(BaseGovernanceError::InvalidArgument);
     }
     STORE.with(|store| {
@@ -1625,11 +1638,12 @@ async fn capture_action_controller_authority(
                     .bootstrap_activation_controller()
                     .map_err(|_| BaseGovernanceError::StorageFailure)
             })?;
-            let bootstrap_controller =
-                bootstrap_controller.ok_or(BaseGovernanceError::Unauthorized)?;
-            current_controller_authority(bootstrap_controller, false)
-                .await
-                .map(Some)
+            match bootstrap_controller {
+                Some(controller) => current_controller_authority(controller, false)
+                    .await
+                    .map(Some),
+                None => Ok(None),
+            }
         }
         None => Ok(None),
     }
@@ -1645,7 +1659,7 @@ async fn capture_transaction_controller_authority(
             Err(BaseGovernanceError::Unauthorized)
         };
     }
-    if production_lifecycle()? != ProductionLifecycle::OperationalConfigSealed {
+    if !activation_admission_open()? {
         return Err(BaseGovernanceError::Unauthorized);
     }
     let bootstrap_controller = STORE.with(|store| {
@@ -1660,12 +1674,12 @@ async fn capture_transaction_controller_authority(
                 .await
                 .map(Some)
         }
-        None => current_controller_authority(
-            bootstrap_controller.ok_or(BaseGovernanceError::Unauthorized)?,
-            false,
-        )
-        .await
-        .map(Some),
+        None => match bootstrap_controller {
+            Some(controller) => current_controller_authority(controller, false)
+                .await
+                .map(Some),
+            None => Ok(None),
+        },
         _ => Err(BaseGovernanceError::Unauthorized),
     }
 }
@@ -1718,7 +1732,7 @@ fn activation_caller_authorized(
     Ok(::bridge_core::kernel::activation_prepare_authorized(
         bootstrap_controller.as_ref() == Some(&caller) && bootstrap_active,
         governance,
-        production_lifecycle()? == ProductionLifecycle::OperationalConfigSealed,
+        activation_admission_open()?,
         bootstrap_active,
         phase,
     ))
@@ -1772,7 +1786,7 @@ async fn revalidate_action_authorization(
         {
             require_unchanged_controller_authority(snapshot).await?;
         }
-        (None, None) if activation_action_phase(action).is_none() => {}
+        (None, None) => {}
         _ => return Err(BaseGovernanceError::Unauthorized),
     }
     Ok(())
@@ -1814,7 +1828,7 @@ async fn require_transaction_controller_authority(
             Err(BaseGovernanceError::Unauthorized)
         };
     }
-    if production_lifecycle()? != ProductionLifecycle::OperationalConfigSealed {
+    if !activation_admission_open()? {
         return Err(BaseGovernanceError::Unauthorized);
     }
     let bootstrap_controller = STORE.with(|store| {
@@ -1843,6 +1857,7 @@ async fn require_transaction_controller_authority(
             require_unchanged_controller_authority(controller_snapshot.expect("checked above"))
                 .await
         }
+        None if bootstrap_controller.is_none() && controller_snapshot.is_none() => Ok(()),
         _ => Err(BaseGovernanceError::Unauthorized),
     }
 }

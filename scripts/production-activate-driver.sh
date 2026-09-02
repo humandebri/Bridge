@@ -190,6 +190,9 @@ case "$BRIDGE_ACTIVATION_STEP" in
         # A fresh live gate plus the same controller call resumes it idempotently; if
         # the first call never reached the Canister, this creates the one allowed record.
         production_validate_gate gate-b-live "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256"
+        "${PROFILE[@]}" verify-controller-activation-authorization-fresh "$BRIDGE_ACTIVATION_PHASE" \
+          "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
+          "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$AUTHORIZATION_RECEIPT"
         export IC_IDENTITY_PEM="$BRIDGE_PRODUCTION_CONTROLLER_PEM"
         "${CLI[@]}" "prepare-${BRIDGE_ACTIVATION_PHASE}-activation" \
           --artifact-file "$BRIDGE_ACTIVATION_ARTIFACT"
@@ -209,6 +212,13 @@ case "$BRIDGE_ACTIVATION_STEP" in
     "${PROFILE[@]}" verify-controller-activation-authorization "$BRIDGE_ACTIVATION_PHASE" \
       "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
       "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$FROZEN_INPUTS/authorization.json"
+    PRIOR_RECEIPT="${BRIDGE_PRIOR_SCHEDULE_RECEIPT:--}"
+    [[ -n "$PRIOR_RECEIPT" ]] || PRIOR_RECEIPT="-"
+    "${PROFILE[@]}" verify-controller-activation-artifact "$BRIDGE_ACTIVATION_PHASE" \
+      "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_INPUTS/artifact.json" \
+      "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
+      "$FROZEN_INPUTS/authorization.json" "$FROZEN_INPUTS/binding.json" \
+      "$PRIOR_RECEIPT"
     copy_replacement_authorization
     export IC_IDENTITY_PEM="$BRIDGE_PRODUCTION_CONTROLLER_PEM"
     "${CLI[@]}" replace-activation \
@@ -249,13 +259,18 @@ case "$BRIDGE_ACTIVATION_STEP" in
     "${PROFILE[@]}" verify-controller-activation-authorization "$BRIDGE_ACTIVATION_PHASE" \
       "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
       "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$FROZEN_INPUTS/authorization.json"
+    PRIOR_RECEIPT="${BRIDGE_PRIOR_SCHEDULE_RECEIPT:--}"
+    [[ -n "$PRIOR_RECEIPT" ]] || PRIOR_RECEIPT="-"
+    "${PROFILE[@]}" verify-controller-activation-artifact "$BRIDGE_ACTIVATION_PHASE" \
+      "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_INPUTS/artifact.json" \
+      "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
+      "$FROZEN_INPUTS/authorization.json" "$FROZEN_INPUTS/binding.json" \
+      "$PRIOR_RECEIPT"
     export IC_IDENTITY_PEM="$BRIDGE_CONFIRMATION_RELAYER_PEM"
     "${CLI[@]}" confirm --artifact-file "$FROZEN_INPUTS/artifact.json" \
       --authorization-file "$FROZEN_INPUTS/authorization.json" \
       --binding-file "$FROZEN_INPUTS/binding.json" \
       --receipt-file "$BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT"
-    PRIOR_RECEIPT="${BRIDGE_PRIOR_SCHEDULE_RECEIPT:--}"
-    [[ -n "$PRIOR_RECEIPT" ]] || PRIOR_RECEIPT="-"
     "${PROFILE[@]}" verify-controller-activation "$BRIDGE_ACTIVATION_PHASE" \
       "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_INPUTS/artifact.json" \
       "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \

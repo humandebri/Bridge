@@ -5777,6 +5777,7 @@ impl StableStore {
         let previous_admission = self.deposit_admission.get()?;
         let mut admission = self.deposit_admission()?;
         Self::apply_governance_completion(&mut admission, &transaction)?;
+        admission.bootstrap_activation_controller = None;
         let previous_admin = self.admin_state.get()?;
         let mut admin = self.admin_state()?;
         if !admin.deposits_paused
@@ -10724,6 +10725,12 @@ mod tests {
         assert!(!store.admin_state().expect("admin state").deposits_paused);
         assert_eq!(
             store
+                .bootstrap_activation_controller()
+                .expect("consumed bootstrap authority"),
+            None
+        );
+        assert_eq!(
+            store
                 .last_completed_governance_transaction()
                 .expect("completed transaction"),
             Some(transaction.clone())
@@ -10745,6 +10752,12 @@ mod tests {
         let reopened = StableStore::reopen(memory).expect("reopen completed activation");
         assert_eq!(rpc_atomic_snapshot(&reopened, None), completed);
         assert_eq!(storage_revision(&reopened), revision_before + 1);
+        assert_eq!(
+            reopened
+                .bootstrap_activation_controller()
+                .expect("reopened consumed bootstrap authority"),
+            None
+        );
     }
 
     #[test]

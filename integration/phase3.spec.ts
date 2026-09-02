@@ -229,6 +229,33 @@ describe("Phase 3 PocketIC saga", () => {
     rolls_back_initial_activation_prepare_when_controller_changes_across_an_await,
   );
 
+  async function keeps_bootstrap_activation_authority_consumed_after_pause() {
+    const {
+      bridge,
+      controller,
+      init,
+    } = await setup(true, {}, bridgeWasm, true, true);
+    expect(await (bridge.actor as any).get_production_lifecycle())
+      .toEqual({ Ok: { Activated: null } });
+
+    bridge.actor.setPrincipal(init.pause_principal);
+    expect(await (bridge.actor as any).emergency_pause())
+      .toHaveProperty("Ok.base_actions_queued", true);
+    expect(await (bridge.actor as any).get_production_lifecycle())
+      .toEqual({ Ok: { Activated: null } });
+
+    bridge.actor.setPrincipal(controller);
+    expect(await (bridge.actor as any).schedule_activation())
+      .toEqual({ Err: { Unauthorized: null } });
+    expect(await (bridge.actor as any).execute_activation())
+      .toEqual({ Err: { Unauthorized: null } });
+  }
+
+  it(
+    "keeps bootstrap activation authority consumed after emergency pause",
+    keeps_bootstrap_activation_authority_consumed_after_pause,
+  );
+
   async function activateBridgeThroughController(
     bridge: any,
     evm: any,

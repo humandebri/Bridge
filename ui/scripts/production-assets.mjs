@@ -195,10 +195,22 @@ async function validateProductionProfile(profileFile, identity) {
   return raw
 }
 
-/** @param {ArtifactReceipt} receipt @param {string} rawProfile @param {boolean} [dryRun] */
-function deployFrozenAssets(receipt, rawProfile, dryRun = false) {
-  const frozen = mkdtempSync(resolve(tmpdir(), "kinic-ui-deploy."))
+/** @param {SourceIdentity} expected */
+async function requireUnchangedSourceIdentity(expected) {
+  const current = await sourceIdentity()
+  if (current.source_revision !== expected.source_revision
+    || current.source_tree_sha256 !== expected.source_tree_sha256) {
+    throw new Error("Production UI checkout changed before publication")
+  }
+}
+
+/** @param {ArtifactReceipt} receipt @param {string} rawProfile @param {SourceIdentity} identity @param {boolean} [dryRun] */
+async function deployFrozenAssets(receipt, rawProfile, identity, dryRun = false) {
+  const frozenRoot = mkdtempSync(resolve(tmpdir(), "kinic-ui-deploy."))
+  const frozen = resolve(frozenRoot, "assets")
+  const frozenConfig = resolve(frozenRoot, "wrangler.production.jsonc")
   try {
+    mkdirSync(frozen, { mode: 0o700 })
     for (const file of receipt.files) {
       const source = resolve(distRoot, file.path)
       const target = resolve(frozen, file.path)
@@ -210,11 +222,21 @@ function deployFrozenAssets(receipt, rawProfile, dryRun = false) {
       chmodSync(target, 0o400)
     }
     installRuntimeProfile(frozen, rawProfile)
+    const configBytes = readOrdinaryFile(productionWranglerConfig)
+    const reviewedConfig = execFileSync(
+      "git",
+      ["-C", sourceRoot, "show", "HEAD:ui/wrangler.production.jsonc"],
+    )
+    if (!configBytes.equals(reviewedConfig)) {
+      throw new Error("Production Wrangler config differs from the reviewed HEAD")
+    }
+    writeFileSync(frozenConfig, configBytes, { flag: "wx", mode: 0o400 })
     for (const path of readdirSync(frozen, { recursive: true }).map((entry) => resolve(frozen, String(entry))).sort().reverse()) {
       if (lstatSync(path).isDirectory()) chmodSync(path, 0o500)
     }
     chmodSync(frozen, 0o500)
-    const deployArgs = ["exec", "wrangler", "deploy", "--config", productionWranglerConfig, "--assets", frozen]
+    await requireUnchangedSourceIdentity(identity)
+    const deployArgs = ["exec", "wrangler", "deploy", "--config", frozenConfig, "--assets", frozen]
     if (dryRun) deployArgs.push("--dry-run")
     const deployed = spawnSync("pnpm", deployArgs, {
       cwd: uiRoot,
@@ -227,7 +249,7 @@ function deployFrozenAssets(receipt, rawProfile, dryRun = false) {
     for (const path of readdirSync(frozen, { recursive: true }).map((entry) => resolve(frozen, String(entry)))) {
       if (lstatSync(path).isDirectory()) chmodSync(path, 0o700)
     }
-    rmSync(frozen, { recursive: true, force: true })
+    rmSync(frozenRoot, { recursive: true, force: true })
   }
 }
 
@@ -251,7 +273,7 @@ try {
         ? await validateProductionProfile(profileFile, identity)
         : readOrdinaryFile(profileFile).toString("utf8")
       if (mode !== "deploy") await validatePreActivationProfile(rawProfile)
-      deployFrozenAssets(receipt, rawProfile, mode === "verify-preactivation")
+      await deployFrozenAssets(receipt, rawProfile, identity, mode === "verify-preactivation")
     }
     process.stdout.write(`ui_artifact_set_sha256=${built.artifact_set_sha256}\n`)
   }

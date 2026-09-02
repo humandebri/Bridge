@@ -170,10 +170,12 @@ async function main(): Promise<void> {
       let expectedHash: Hex
       if (pending && storedArtifactMatches(stored, pending)) {
         await requireMatchingActivationBinding(pending, artifactBytes, options)
+        await validateArtifact(pending)
         operationId = pending.operation_id
         expectedHash = bytesHex(pending.transaction_hash)
       } else if (!pending && storedIdentity) {
         await requireActivationBindingBytes(artifactBytes, options)
+        await validateStoredArtifact(stored)
         operationId = storedIdentity.operationId
         expectedHash = storedIdentity.transactionHash
       } else {
@@ -224,6 +226,8 @@ async function main(): Promise<void> {
         throw new Error("replace-activation requires an activation artifact")
       }
       await requireActivationBindingBytes(oldBytes, options)
+      await validateStoredArtifact(stored)
+      await validateArtifact(artifact)
       const maxFee = BigInt(requiredOption(options, "max-fee"))
       const priorityFee = BigInt(requiredOption(options, "priority-fee"))
       let replacement: SignedBaseGovernanceTransaction
@@ -641,21 +645,50 @@ export function selectPendingActivationArtifact(
 export async function validateArtifact(
   artifact: SignedBaseGovernanceTransaction,
 ): Promise<void> {
-  const raw = bytesHex(artifact.raw_transaction)
-  const expectedHash = bytesHex(artifact.transaction_hash)
+  await validateStoredArtifact(jsonValue(artifact))
+}
+
+export async function validateStoredArtifact(value: unknown): Promise<void> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Signed governance artifact is malformed")
+  }
+  const artifact = value as Record<string, unknown>
+  const hexField = (name: string): Hex => {
+    const field = artifact[name]
+    if (typeof field !== "string" || !/^0x[0-9a-fA-F]*$/.test(field)) {
+      throw new Error(`Signed governance artifact has invalid ${name}`)
+    }
+    return field as Hex
+  }
+  const natural = (name: string): bigint => {
+    const field = artifact[name]
+    if (typeof field !== "string" || !/^(0|[1-9][0-9]*)$/.test(field)) {
+      throw new Error(`Signed governance artifact has invalid ${name}`)
+    }
+    return BigInt(field)
+  }
+  const raw = hexField("raw_transaction")
+  const expectedHash = hexField("transaction_hash")
   if (keccak256(raw) !== expectedHash) throw new Error("Canister transaction hash does not match raw transaction")
   const transaction = parseTransaction(raw as TransactionSerialized)
   const sender = await recoverTransactionAddress({
     serializedTransaction: raw as TransactionSerialized,
   })
-  if (sender.toLowerCase() !== bytesHex(artifact.sender).toLowerCase()) throw new Error("Signed transaction sender mismatch")
-  if (transaction.chainId !== Number(artifact.chain_id)) throw new Error("Signed transaction chain mismatch")
-  if (transaction.nonce !== Number(artifact.nonce)) throw new Error("Signed transaction nonce mismatch")
-  if (transaction.to?.toLowerCase() !== bytesHex(artifact.target).toLowerCase()) throw new Error("Signed transaction target mismatch")
-  if ((transaction.data ?? "0x").toLowerCase() !== bytesHex(artifact.calldata).toLowerCase()) throw new Error("Signed transaction calldata mismatch")
-  if (transaction.gas !== artifact.gas_limit) throw new Error("Signed transaction gas limit mismatch")
-  if (transaction.maxFeePerGas !== artifact.max_fee_per_gas) throw new Error("Signed transaction max fee mismatch")
-  if (transaction.maxPriorityFeePerGas !== artifact.max_priority_fee_per_gas) throw new Error("Signed transaction priority fee mismatch")
+  if (sender.toLowerCase() !== hexField("sender").toLowerCase()) throw new Error("Signed transaction sender mismatch")
+  if (transaction.chainId === undefined || transaction.nonce === undefined) {
+    throw new Error("Signed governance transaction must bind chain ID and nonce")
+  }
+  if (BigInt(transaction.chainId) !== natural("chain_id")) throw new Error("Signed transaction chain mismatch")
+  if (BigInt(transaction.nonce) !== natural("nonce")) throw new Error("Signed transaction nonce mismatch")
+  if (transaction.to?.toLowerCase() !== hexField("target").toLowerCase()) throw new Error("Signed transaction target mismatch")
+  if ((transaction.data ?? "0x").toLowerCase() !== hexField("calldata").toLowerCase()) throw new Error("Signed transaction calldata mismatch")
+  if (transaction.gas !== natural("gas_limit")) throw new Error("Signed transaction gas limit mismatch")
+  if (transaction.maxFeePerGas !== natural("max_fee_per_gas")) throw new Error("Signed transaction max fee mismatch")
+  if (transaction.maxPriorityFeePerGas !== natural("max_priority_fee_per_gas")) throw new Error("Signed transaction priority fee mismatch")
+  if ((transaction.value ?? 0n) !== 0n
+    || ("accessList" in transaction && (transaction.accessList?.length ?? 0) !== 0)) {
+    throw new Error("Signed governance transaction must have zero value and an empty access list")
+  }
 }
 
 export async function relay(
