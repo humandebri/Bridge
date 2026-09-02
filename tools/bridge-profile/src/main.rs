@@ -855,7 +855,6 @@ struct MonitorIcPause {
     audit_raw_hex: String,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
@@ -875,7 +874,6 @@ struct KeeperDrill {
     manual_fallback_drilled: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
@@ -890,7 +888,6 @@ struct MonitoringReceipt {
     paid: MonitoringPaidObservation,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
@@ -905,7 +902,6 @@ struct MonitoringBurnReceipt {
     canonical_finalized: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
@@ -917,7 +913,6 @@ struct MonitoringPaidObservation {
     authenticated_query: bool,
 }
 
-#[allow(dead_code)]
 #[derive(CandidType, Deserialize, Serialize, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
 enum WithdrawalPhaseView {
@@ -927,7 +922,6 @@ enum WithdrawalPhaseView {
     Observed,
 }
 
-#[allow(dead_code)]
 #[derive(CandidType, Deserialize, Serialize, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
 struct WithdrawalView {
@@ -1020,7 +1014,6 @@ struct ControllerHandover {
     required_freezing_cycles: u128,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
@@ -2042,6 +2035,31 @@ fn validate_initial_operational_parameters(
     manifest_created_at_unix: u64,
     now: u64,
 ) -> Result<(), String> {
+    let sample_times = evidence
+        .gas_estimates
+        .iter()
+        .map(|sample| sample.observed_at_unix)
+        .chain(
+            evidence
+                .fee_samples
+                .iter()
+                .map(|sample| sample.observed_at_unix),
+        )
+        .chain(std::iter::once(evidence.idle_cycles_observed_at_unix));
+    if sample_times
+        .into_iter()
+        .any(|at| at > now || now.saturating_sub(at) > MAX_EVIDENCE_AGE_SECS)
+    {
+        return Err("initial operational observations are stale or future-dated".into());
+    }
+    validate_initial_operational_parameter_lineage(evidence, profile, manifest_created_at_unix)
+}
+
+fn validate_initial_operational_parameter_lineage(
+    evidence: &InitialOperationalParameters,
+    profile: &Profile,
+    manifest_created_at_unix: u64,
+) -> Result<(), String> {
     let derived = derive_initial_operational_parameters(evidence)?;
     let sample_times = evidence
         .gas_estimates
@@ -2054,13 +2072,11 @@ fn validate_initial_operational_parameters(
                 .map(|sample| sample.observed_at_unix),
         )
         .chain(std::iter::once(evidence.idle_cycles_observed_at_unix));
-    if sample_times.into_iter().any(|at| {
-        at == 0
-            || at > manifest_created_at_unix
-            || at > now
-            || now.saturating_sub(at) > MAX_EVIDENCE_AGE_SECS
-    }) {
-        return Err("initial operational observations are stale or future-dated".into());
+    if sample_times
+        .into_iter()
+        .any(|at| at == 0 || at > manifest_created_at_unix)
+    {
+        return Err("initial operational observations do not predate Gate B".into());
     }
     if evidence.bridge_canister_id != profile.bridge_canister_id
         || !evidence
@@ -3469,23 +3485,29 @@ fn validate_production_handover_candidate_files(
     schedule_receipt_path: &Path,
     execute_receipt_path: &Path,
 ) -> Result<(ValidatedBundle, GateAReceipt, ControllerActivationReceipt), String> {
-    let bundle = validate_bundle(bundle_path, true)?;
+    let bundle = validate_historical_gate_b_bundle(bundle_path)?;
     if bundle.manifest.schema_version != 4 {
         return Err("controller handover requires the current Gate B bundle".into());
     }
     let seal_receipt_sha256 = validate_operational_config_seal_receipt(
         &bundle,
         seal_receipt_path,
-        SealReceiptLiveContext::ExecuteFinalization,
+        SealReceiptLiveContext::Handover,
     )?;
     let schedule_receipt: ControllerActivationReceipt = read_json(schedule_receipt_path)?;
-    validate_controller_schedule_receipt(&bundle, &schedule_receipt, &seal_receipt_sha256)?;
+    validate_controller_schedule_receipt(
+        &bundle,
+        &schedule_receipt,
+        &seal_receipt_sha256,
+        ActivationReceiptFreshness::Historical,
+    )?;
     let execute_receipt: ControllerActivationReceipt = read_json(execute_receipt_path)?;
     validate_controller_execute_receipt(
         &bundle,
         &execute_receipt,
         &seal_receipt_sha256,
         schedule_receipt_path,
+        ActivationReceiptFreshness::Historical,
     )?;
     let gate_a_receipt: GateAReceipt = read_json(&bundle.root.join("gate-a-receipt.json"))?;
     Ok((bundle, gate_a_receipt, execute_receipt))
@@ -5184,6 +5206,27 @@ fn validate_post_gate_a_policy_transition(
 }
 
 fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String> {
+    validate_bundle_with_freshness(root, gate_b, true)
+}
+
+fn validate_historical_gate_b_bundle(root: &Path) -> Result<ValidatedBundle, String> {
+    validate_bundle_with_freshness(root, true, false)
+}
+
+fn validate_bundle_with_freshness(
+    root: &Path,
+    gate_b: bool,
+    require_current: bool,
+) -> Result<ValidatedBundle, String> {
+    validate_bundle_with_freshness_at(root, gate_b, require_current, now_unix()?)
+}
+
+fn validate_bundle_with_freshness_at(
+    root: &Path,
+    gate_b: bool,
+    require_current: bool,
+    wall_now: u64,
+) -> Result<ValidatedBundle, String> {
     if root.join("proof-attestation.json").exists() {
         return Err(
             "obsolete self-asserted proof attestation is forbidden; release drivers rerun proofs"
@@ -5214,11 +5257,15 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
         .expires_at_unix
         .checked_sub(manifest.created_at_unix)
         .ok_or("manifest expiry precedes creation")?;
-    let now = now_unix()?;
+    let now = if require_current {
+        wall_now
+    } else {
+        manifest.created_at_unix
+    };
     if lifetime == 0
         || lifetime > MAX_EVIDENCE_AGE_SECS
-        || now < manifest.created_at_unix
-        || now > manifest.expires_at_unix
+        || (require_current && now < manifest.created_at_unix)
+        || (require_current && now > manifest.expires_at_unix)
     {
         return Err("evidence bundle is not current or exceeds 90 days".into());
     }
@@ -5255,7 +5302,20 @@ fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String>
     if gate_b {
         let initial: InitialOperationalParameters =
             read_json(&root.join("initial-operational-parameters.json"))?;
-        validate_initial_operational_parameters(&initial, &profile, manifest.created_at_unix, now)?;
+        if require_current {
+            validate_initial_operational_parameters(
+                &initial,
+                &profile,
+                manifest.created_at_unix,
+                now,
+            )?;
+        } else {
+            validate_initial_operational_parameter_lineage(
+                &initial,
+                &profile,
+                manifest.created_at_unix,
+            )?;
+        }
         if profile.deployment_block == 0 {
             return Err("Gate B profile must bind the actual Bridge deployment block".into());
         }
@@ -6663,6 +6723,7 @@ enum SealReceiptLiveContext {
     PendingResume,
     ScheduleFinalization,
     ExecuteFinalization,
+    Handover,
 }
 
 fn validate_operational_config_seal_receipt(
@@ -6683,12 +6744,20 @@ fn validate_operational_config_seal_receipt(
         .map_err(|error| error.to_string())?;
     let parameters: InitialOperationalParameters =
         serde_json::from_slice(&parameters_bytes).map_err(|error| error.to_string())?;
-    validate_initial_operational_parameters(
-        &parameters,
-        &bundle.profile,
-        bundle.manifest.created_at_unix,
-        now_unix()?,
-    )?;
+    if matches!(live_context, SealReceiptLiveContext::Handover) {
+        validate_initial_operational_parameter_lineage(
+            &parameters,
+            &bundle.profile,
+            bundle.manifest.created_at_unix,
+        )?;
+    } else {
+        validate_initial_operational_parameters(
+            &parameters,
+            &bundle.profile,
+            bundle.manifest.created_at_unix,
+            now_unix()?,
+        )?;
+    }
     let controller = gate_b_controller(bundle)?.to_text();
     if reservation.schema_version != 1
         || reservation.release_id != bundle.manifest.release_id
@@ -6867,7 +6936,7 @@ fn validate_operational_config_seal_receipt(
         let expected_paused = match live_context {
             SealReceiptLiveContext::PendingResume
             | SealReceiptLiveContext::ScheduleFinalization => true,
-            SealReceiptLiveContext::ExecuteFinalization => false,
+            SealReceiptLiveContext::ExecuteFinalization | SealReceiptLiveContext::Handover => false,
             SealReceiptLiveContext::PrePrepare => unreachable!(),
         };
         validate_activation_attestation_with_pause(
@@ -6895,7 +6964,7 @@ fn validate_operational_config_seal_receipt(
                     )
                 ) && live_status.deposits_paused
             }
-            SealReceiptLiveContext::ExecuteFinalization => {
+            SealReceiptLiveContext::ExecuteFinalization | SealReceiptLiveContext::Handover => {
                 matches!(
                     live_lifecycle,
                     ProductionLifecycleResultView::Ok(ProductionLifecycleView::Activated)
@@ -6933,6 +7002,7 @@ fn validate_controller_activation_authorization(
     expected_gate_hash: &str,
     expected_seal_receipt_hash: &str,
     receipt: &ControllerActivationAuthorizationReceipt,
+    freshness: ActivationReceiptFreshness,
 ) -> Result<(), String> {
     let installer = gate_b_controller(bundle)?;
     let now = now_unix()?;
@@ -6947,12 +7017,18 @@ fn validate_controller_activation_authorization(
         &installer.to_text(),
         &bundle.profile.bridge_canister_wasm_sha256,
     ) || !expected_gate_hash.eq_ignore_ascii_case(&bundle.manifest_sha256)
-        || validate_activation_time(
-            receipt.authorized_at_unix,
-            bundle.manifest.created_at_unix,
-            now,
-        )
-        .is_err()
+        || match freshness {
+            ActivationReceiptFreshness::Current => validate_activation_time(
+                receipt.authorized_at_unix,
+                bundle.manifest.created_at_unix,
+                now,
+            )
+            .is_err(),
+            ActivationReceiptFreshness::Historical => {
+                receipt.authorized_at_unix < bundle.manifest.created_at_unix
+                    || receipt.authorized_at_unix > now
+            }
+        }
     {
         return Err("controller activation authorization is not bound to this live Gate B".into());
     }
@@ -7009,6 +7085,42 @@ fn validate_controller_activation_timeline(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum ActivationReceiptFreshness {
+    Current,
+    Historical,
+}
+
+fn validate_controller_activation_receipt_timeline(
+    freshness: ActivationReceiptFreshness,
+    manifest_created: u64,
+    authorized: u64,
+    bound: u64,
+    confirmed: u64,
+    verified: u64,
+    now: u64,
+) -> Result<(), String> {
+    if matches!(freshness, ActivationReceiptFreshness::Current) {
+        return validate_controller_activation_timeline(
+            manifest_created,
+            authorized,
+            bound,
+            confirmed,
+            verified,
+            now,
+        );
+    }
+    if authorized < manifest_created
+        || bound < authorized
+        || confirmed < bound
+        || verified < confirmed
+        || verified > now
+    {
+        return Err("historical controller activation receipt timestamps are out of order".into());
+    }
+    Ok(())
+}
+
 fn controller_activation_prepare_fields_match(
     receipt: &ControllerActivationPrepareReceipt,
     phase: &str,
@@ -7050,6 +7162,11 @@ fn controller_activation_authorization(
     let receipt = if let Some(path) = existing {
         read_json(path)?
     } else {
+        // Establish the authorization time before the final pending-transaction
+        // observation. Any transaction already signed before authorization is
+        // therefore visible to `verify_live` and rejected; a transaction signed
+        // after that observation is ordered after this authorization.
+        let authorized_at_unix = now_unix()?;
         verify_live(bundle, true)?;
         let (controllers, module_hash) = gate_b_management_snapshot(bundle)?;
         let installer = gate_b_controller(bundle)?;
@@ -7064,7 +7181,7 @@ fn controller_activation_authorization(
             controller_principal: installer.to_text(),
             certified_controller_set: controllers.iter().map(Principal::to_text).collect(),
             certified_module_sha256: hex(&module_hash),
-            authorized_at_unix: now_unix()?,
+            authorized_at_unix,
         }
     };
     validate_controller_activation_authorization(
@@ -7073,6 +7190,7 @@ fn controller_activation_authorization(
         expected_gate_hash,
         &seal_receipt_sha256,
         &receipt,
+        ActivationReceiptFreshness::Current,
     )?;
     gate_b_management_snapshot(bundle)?;
     if let Some(path) = output {
@@ -7151,6 +7269,7 @@ fn verify_controller_activation_artifact_binding(
         &bundle.manifest_sha256,
         &seal_receipt_sha256,
         &authorization,
+        ActivationReceiptFreshness::Current,
     )?;
     let prepare_receipt: ControllerActivationPrepareReceipt = read_json(prepare_receipt_path)?;
     let now = now_unix()?;
@@ -7188,7 +7307,7 @@ fn verify_controller_activation_artifact_binding(
     match (phase, prior_path) {
         ("schedule", None) => {
             let (expected_governance_operation_id, expected_operation_id, expected_salt) =
-                gate_b_initial_activation_binding(bundle)?;
+                gate_b_initial_activation_binding(bundle, ActivationReceiptFreshness::Current)?;
             if governance_operation_id != expected_governance_operation_id
                 || !timelock_operation_id
                     .eq_ignore_ascii_case(&format!("0x{}", hex(&expected_operation_id)))
@@ -7203,8 +7322,12 @@ fn verify_controller_activation_artifact_binding(
         ("schedule", Some(_)) => return Err("schedule forbids a prior receipt".into()),
         ("execute", Some(path)) => {
             let receipt: ControllerActivationReceipt = read_json(path)?;
-            let (schedule_governance_operation_id, _) =
-                validate_controller_schedule_receipt(bundle, &receipt, &seal_receipt_sha256)?;
+            let (schedule_governance_operation_id, _) = validate_controller_schedule_receipt(
+                bundle,
+                &receipt,
+                &seal_receipt_sha256,
+                ActivationReceiptFreshness::Current,
+            )?;
             if !receipt
                 .timelock_operation_id
                 .eq_ignore_ascii_case(timelock_operation_id)
@@ -7599,6 +7722,7 @@ fn verify_controller_activation(
         &bundle.manifest_sha256,
         &seal_receipt_sha256,
         &authorization,
+        ActivationReceiptFreshness::Current,
     )?;
     let authorization_sha256 = hex(&Sha256::digest(&authorization_bytes));
     let prepare_receipt_bytes =
@@ -7665,7 +7789,7 @@ fn verify_controller_activation(
         .map_err(|_| "invalid governance operation ID")?;
     if phase == "schedule" {
         let (expected_governance_operation_id, expected_operation_id, expected_salt) =
-            gate_b_initial_activation_binding(bundle)?;
+            gate_b_initial_activation_binding(bundle, ActivationReceiptFreshness::Current)?;
         if governance_operation_id != expected_governance_operation_id
             || !timelock_operation_id
                 .eq_ignore_ascii_case(&format!("0x{}", hex(&expected_operation_id)))
@@ -7692,8 +7816,12 @@ fn verify_controller_activation(
             let bytes = fs::read(path).map_err(|error| error.to_string())?;
             let receipt: ControllerActivationReceipt =
                 serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-            let (schedule_governance_operation_id, _) =
-                validate_controller_schedule_receipt(bundle, &receipt, &seal_receipt_sha256)?;
+            let (schedule_governance_operation_id, _) = validate_controller_schedule_receipt(
+                bundle,
+                &receipt,
+                &seal_receipt_sha256,
+                ActivationReceiptFreshness::Current,
+            )?;
             if !receipt
                 .timelock_operation_id
                 .eq_ignore_ascii_case(timelock_operation_id)
@@ -7814,6 +7942,7 @@ fn validate_controller_schedule_receipt(
     bundle: &ValidatedBundle,
     receipt: &ControllerActivationReceipt,
     expected_seal_receipt_sha256: &str,
+    freshness: ActivationReceiptFreshness,
 ) -> Result<(u64, u64), String> {
     let installer = gate_b_controller(bundle)?;
     let authorization_bytes = decode_hex(&receipt.authorization_receipt_hex)?;
@@ -7846,9 +7975,11 @@ fn validate_controller_schedule_receipt(
             &bundle.manifest_sha256,
             expected_seal_receipt_sha256,
             &authorization,
+            freshness,
         )
         .is_err()
-        || validate_controller_activation_timeline(
+        || validate_controller_activation_receipt_timeline(
+            freshness,
             bundle.manifest.created_at_unix,
             authorization.authorized_at_unix,
             prepare_receipt.bound_at_unix,
@@ -7886,7 +8017,7 @@ fn validate_controller_schedule_receipt(
         .parse::<u64>()
         .map_err(|_| "invalid schedule governance operation ID")?;
     let (expected_governance_operation_id, expected_operation_id, expected_salt) =
-        gate_b_initial_activation_binding(bundle)?;
+        gate_b_initial_activation_binding(bundle, freshness)?;
     let finalized_block = receipt
         .finalized_block_number
         .parse::<u64>()
@@ -7938,14 +8069,19 @@ fn validate_controller_execute_receipt(
     receipt: &ControllerActivationReceipt,
     expected_seal_receipt_sha256: &str,
     schedule_receipt_path: &Path,
+    freshness: ActivationReceiptFreshness,
 ) -> Result<(u64, u64), String> {
     let installer = gate_b_controller(bundle)?;
     let schedule_bytes = fs::read(schedule_receipt_path).map_err(|error| error.to_string())?;
     let schedule_receipt_sha256 = hex(&Sha256::digest(&schedule_bytes));
     let schedule: ControllerActivationReceipt =
         serde_json::from_slice(&schedule_bytes).map_err(|error| error.to_string())?;
-    let (schedule_governance_operation_id, _) =
-        validate_controller_schedule_receipt(bundle, &schedule, expected_seal_receipt_sha256)?;
+    let (schedule_governance_operation_id, _) = validate_controller_schedule_receipt(
+        bundle,
+        &schedule,
+        expected_seal_receipt_sha256,
+        freshness,
+    )?;
     let authorization_bytes = decode_hex(&receipt.authorization_receipt_hex)?;
     let authorization: ControllerActivationAuthorizationReceipt =
         serde_json::from_slice(&authorization_bytes).map_err(|error| error.to_string())?;
@@ -7998,6 +8134,7 @@ fn validate_controller_execute_receipt(
             &bundle.manifest_sha256,
             expected_seal_receipt_sha256,
             &authorization,
+            freshness,
         )
         .is_err()
         || !valid_sha256(&receipt.prepare_receipt_sha256)
@@ -8010,7 +8147,8 @@ fn validate_controller_execute_receipt(
             &receipt.artifact_sha256,
             &receipt.authorization_receipt_sha256,
         )
-        || validate_controller_activation_timeline(
+        || validate_controller_activation_receipt_timeline(
+            freshness,
             bundle.manifest.created_at_unix,
             authorization.authorized_at_unix,
             prepare_receipt.bound_at_unix,
@@ -8053,6 +8191,7 @@ fn validate_controller_execute_receipt(
 
 fn gate_b_initial_activation_binding(
     bundle: &ValidatedBundle,
+    freshness: ActivationReceiptFreshness,
 ) -> Result<(u64, [u8; 32], [u8; 32]), String> {
     let path = bundle.root.join("initial-operational-parameters.json");
     let bytes = fs::read(&path).map_err(|error| error.to_string())?;
@@ -8071,12 +8210,19 @@ fn gate_b_initial_activation_binding(
     }
     let initial: InitialOperationalParameters =
         serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    validate_initial_operational_parameters(
-        &initial,
-        &bundle.profile,
-        bundle.manifest.created_at_unix,
-        now_unix()?,
-    )?;
+    match freshness {
+        ActivationReceiptFreshness::Current => validate_initial_operational_parameters(
+            &initial,
+            &bundle.profile,
+            bundle.manifest.created_at_unix,
+            now_unix()?,
+        )?,
+        ActivationReceiptFreshness::Historical => validate_initial_operational_parameter_lineage(
+            &initial,
+            &bundle.profile,
+            bundle.manifest.created_at_unix,
+        )?,
+    }
     let deployment_instance_id: [u8; 32] = decode_hex(&initial.deployment_instance_id)?
         .try_into()
         .map_err(|_| "invalid initial deployment instance ID")?;
@@ -8097,8 +8243,12 @@ fn verify_controller_schedule_receipt_live(
         SealReceiptLiveContext::PendingResume,
     )?;
     let receipt: ControllerActivationReceipt = read_json(receipt_path)?;
-    let (governance_operation_id, finalized_block) =
-        validate_controller_schedule_receipt(bundle, &receipt, &seal_receipt_sha256)?;
+    let (governance_operation_id, finalized_block) = validate_controller_schedule_receipt(
+        bundle,
+        &receipt,
+        &seal_receipt_sha256,
+        ActivationReceiptFreshness::Current,
+    )?;
     let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
     let empty_arg = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
@@ -8159,7 +8309,7 @@ fn validate_schedule_receipt_binding(
     let payload_sha256 = hex(&Sha256::digest(canonical_payload));
     let now = now_unix()?;
     let (expected_governance_operation_id, expected_operation_id, expected_salt) =
-        gate_b_initial_activation_binding(bundle)?;
+        gate_b_initial_activation_binding(bundle, ActivationReceiptFreshness::Current)?;
     if receipt.schema_version != 4
         || receipt.phase != "schedule"
         || receipt.release_id != bundle.manifest.release_id
@@ -8469,7 +8619,7 @@ fn verify_activation(
     }
     if phase == "schedule" {
         let (expected_governance_operation_id, expected_operation_id, expected_salt) =
-            gate_b_initial_activation_binding(bundle)?;
+            gate_b_initial_activation_binding(bundle, ActivationReceiptFreshness::Current)?;
         if confirmation_governance_operation_id != expected_governance_operation_id
             || operation_id != format!("0x{}", hex(&expected_operation_id))
             || operation_salt != format!("0x{}", hex(&expected_salt))
@@ -9459,6 +9609,27 @@ mod tests {
             now - MAX_EVIDENCE_AGE_SECS - 1,
             now - MAX_EVIDENCE_AGE_SECS - 1,
             now,
+        )
+        .is_err());
+        let historical_now = now + MAX_EVIDENCE_AGE_SECS + 1;
+        assert!(validate_controller_activation_receipt_timeline(
+            ActivationReceiptFreshness::Historical,
+            created,
+            created,
+            created + 1,
+            created + 2,
+            created + 3,
+            historical_now,
+        )
+        .is_ok());
+        assert!(validate_controller_activation_receipt_timeline(
+            ActivationReceiptFreshness::Current,
+            created,
+            created,
+            created + 1,
+            created + 2,
+            created + 3,
+            historical_now,
         )
         .is_err());
     }
@@ -12001,6 +12172,13 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             ))
         );
         let bundle = validate_bundle(&root, true).unwrap();
+        let after_gate_b_freshness = now + MAX_EVIDENCE_AGE_SECS + 1;
+        assert!(
+            validate_bundle_with_freshness_at(&root, true, true, after_gate_b_freshness,).is_err()
+        );
+        assert!(
+            validate_bundle_with_freshness_at(&root, true, false, after_gate_b_freshness,).is_ok()
+        );
         let valid_manifest_bytes = fs::read(root.join("release-manifest.json")).unwrap();
         let valid_production_upgrade_bytes =
             fs::read(root.join("production-canister-upgrade-receipt.json")).unwrap();
