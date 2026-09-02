@@ -143,7 +143,7 @@ artifact公開前とreservation cleanup直前にmanagement statusを再取得し
 
 本番資産受付は、Gate Aでoffline artifactとconstructor条件を承認し、Timelock／Bridgeを専用EOAからpause配置する。production installer単独controllerのままpre-seal Gate Bを通し、`initial-operational-parameters.json`と完全一致する初期運用値を一度だけsealする。seal wrapperはupdate送信前に排他的reservationを保存し、曖昧な応答時は認証済みlive stateからのみ復旧する。自動再送は行わず、確定したseal receiptのhashを以後のactivation authorizationへ束縛する。その後`production-release.sh activate --phase schedule --step prepare`をproduction controller PEMで実行する。prepare wrapperはCanister prepareより先にattestationをrefreshしてpost-seal fresh live Gate Bを検証し、合格時だけ固定artifactを生成する。固定artifactを匿名relay、固定confirmation relayer confirmへ順に渡す。SNS custom functionは初回activationに使用しない。controller activation receiptはsource revision、Wasm、Gate B hash、seal receipt hash、certified controller set、governance operation ID、Timelock operation ID/salt、transaction hash、Finalized block、live activation statusを束縛する。24時間後もexecute prepare wrapper内でfresh live Gate Bとcontroller schedule receiptを再検証し、同じ三段階でexecuteする。executeのFinalized成功と同じstable transactionでbootstrap activation認可を消費し、Base Deposit/WithdrawalとIC Deposit受付を再開する。production installerをcontrollerから外す時期はユーザーが別途決めるため、この初回activationではcontroller集合を変更しない。以後は緊急pauseしてもbootstrap認可を復活させず、既存Governance principalだけがactivationをprepareできる。通常governance actionは常に既存role policyへ従う。
 
-unpause後は7日以上かつ各10件以上の本番計測、keeper drill、monitoring receipt、稼働状態snapshot、全upgrade履歴をGate Cへ記録する。修正不要と判断した場合だけ、active状態を維持したままcontrollerをproduction installerからSNS Root一件へ変更し、続けてSNS proposalで同一Wasm upgradeを行う。Gate C前にhandover driverを実行せず、Gate B、schedule、executeのcontroller条件はinstaller単独のままにする。
+unpause後は7日以上かつ各10件以上の本番計測、keeper drill、monitoring receipt、稼働状態snapshot、全upgrade履歴をGate Cへ記録する。Gate C合格はcontroller handoverの自動実行や時期を決定しない。運用者が別途明示承認した場合だけ、active状態を維持したままcontrollerをproduction installerからSNS Root一件へ変更し、続けてSNS proposalで同一Wasm upgradeを行う。初回Gate B、schedule、executeのcontroller条件はinstaller単独のままにする。
 
 Gate Bにはcleanなmanifest sourceからprofile非依存で生成したUI code/assetsの全file digestとaggregate digestを持つ`ui-assets.json`を必須登録する。activation driverは同じsourceから再buildしてreceipt一致を確認する。production UI deployはこのartifact集合だけを再生成し、検証済みGate Bからrenderした`ui-runtime-profile.json`を`deployment-profile.js`へ直前合成して公開する。dirty checkout、asset追加・欠落・hash drift、bundle外profileはすべて拒否する。
 
@@ -151,7 +151,7 @@ Gate B前のUI先行公開は、clean checkoutで`node ui/scripts/production-ass
 
 BaseScanのsource verification、contract-created BSNSのownership確認、Token Update申請は[`token-publication.md`](token-publication.md)に従う。この外部申請と審査はGate A、Gate B、activationの認可条件ではない。
 
-deployとactivation schedule/executeの固定driverは各操作の直前に、Gate C後のcontroller handover driverはhandover直前に、clean sourceから`scripts/ci-local.sh proofs`を再実行する。
+deployとactivation schedule/executeの固定driverは各操作の直前に、controller handover driverは実施時期が別途承認された後のhandover直前に、clean sourceから`scripts/ci-local.sh proofs`を再実行する。
 proof失敗、実行前後のsource/tree/submodule drift、またはobsoleteな`proof-attestation.json`を含むbundleはfail closedとする。
 
 `execute` prepare前はproofと再build後のattestation更新・`verify-live`に続けて`verify-controller-schedule-receipt-live`を実行し、schedule receipt内部のdigest、sole production controller、module hash、Canisterのpending Timelock operationを再照合する。その後、Base両flowのunpause確定後にCanisterがICをresumeする。ProductionのBase状態は公式EVM RPC Canisterの`BaseMainnet`観測を保存したactivation attestationと認証済みCanister queryで確認し、直接Custom RPC URLは使用しない。3-provider直接照合はstaging monitor drillだけに限定する。

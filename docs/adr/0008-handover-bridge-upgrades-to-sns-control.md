@@ -4,7 +4,7 @@ status: accepted
 
 # Bridge canisterをupgrade可能にしてSNS管理へ移管する
 
-Bridge canisterはupgrade可能にする。開発・初期検証中は開発者identityをcontrollerとし、本番資産の受付前にSNS管理へ移管する。移管後はSNS Rootを唯一のcontrollerとし、SNS Governanceの採択proposalだけがupgradeを承認する。
+Bridge canisterはupgrade可能にする。初回activationと本番計測中はproduction identityを単独controllerとして保持できる。初回executeのConfirmed完了は内部bootstrap activation authorityだけを永久に消費し、外部controller設定の変更時期を決めない。運用者が別途承認して移管する場合はSNS Rootを唯一のcontrollerとし、以後はSNS Governanceの採択proposalだけがupgradeを承認する。
 
 ## Considered Options
 
@@ -15,7 +15,8 @@ Bridge canisterはupgrade可能にする。開発・初期検証中は開発者i
 
 ## Consequences
 
-- 開発者identityがcontrollerである間はBridgeを未稼働または全面pauseとし、本番SNS tokenをpullしない。
+- production identityがcontrollerであること自体は、初回activation後の本番資産受付を禁止しない。受付可否はGate B、Confirmed execute、pause状態と運用limitで決める。
+- unpause後の本番計測はhandover時期を自動決定せず、移管には別の明示承認を必要とする。
 - handover完了条件はcontroller一覧がSNS Rootだけであることとし、開発者identity、fallback identity、NNS Rootを残さない。
 - handover後のupgradeはSNS proposalにWasm hash、source revision、Verus結果、テスト結果、stable schema互換性を添付する。
 - Rust stateはstable structuresへ直接保存し、全stateを`pre_upgrade`でserializeする設計を避ける。

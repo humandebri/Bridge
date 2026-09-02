@@ -3,7 +3,7 @@
 ## Status
 
 - **State**: IN PROGRESS
-- **Dependency**: Plan 005の10回・7日計測、固定limit承認、実pause principal、pause/cancel経路演習が完了していること
+- **Dependency**: Plan 005の初期運用値、固定limit、実pause principal、pause/cancel経路演習が完了していること。7日・各10件の本番計測はunpause後のGate Cで行う。
 - **Safety**: Gate B executeへの明示承認まで本番資産を受け付けない。外部transaction、controller変更、proposal提出、activationは個別承認なしに実行しない。
 
 ## 権限モデル
@@ -16,27 +16,29 @@ Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operato
 
 1. clean revisionでCI、Verus、ABI/Candid、current schema reopenと未知schema fail-closedを完了する。
 2. 同一Wasmのtest canisterで10回計測、launch-ready RPC 5 scenario、実データ相当stateのupgrade、pause/cancel経路演習を完了する。
-3. production Canisterへ通常のpause状態で同一Wasmをinstallし、Canister固有のMint SignerとGovernance Operatorを導出する。追加のbootstrap lifecycleやdeployment binding APIは設けない。
+3. production Canisterへpause状態でcontroller-bootstrap Wasmをinstallし、Canister固有のMint SignerとGovernance Operatorを導出する。既存Candid method／argument ABIを維持し、承認済みの`ActivationConfirmationView` 2 field以外に公開APIを増やさず、初回activation専用の内部bootstrap lifecycleを使う。
 4. 最終profile、予測contract address、4 artifactのGate Aを固定する。
 5. 一時deployerでTimelockとBridgeをpause状態で配置する。constructorは導出済みMint Signer、Governance Operator、Timelockだけをroleへ設定し、deployerへroleを残さない。
 6. この端末のproduction preflightでcanonical receipt、runtime hash、role集合、deployer roleゼロ、pause状態を検証する。
-7. controllerをKINIC SNS Root `7jkta-eyaaa-aaaaq-aaarq-cai`一件へhandoverし、SNS proposalによる同一Wasm upgradeを実証する。
-8. fresh Gate B後、SNS proposalから引数なしの`schedule_activation`を呼ぶ。Canisterがlive preflightを行い、Governance Operatorで固定された24時間Timelock operationをscheduleする。
-9. 24時間後に別のfresh Gate Bを作り、別SNS proposalから引数なしの`execute_activation`を呼ぶ。Canisterがlive preflightを再実行して記録済みoperationだけをexecuteする。
-10. Base両flowのcanonical Finalized成功後だけIC Depositを自動resumeする。失敗、曖昧結果、driftではpauseを維持する。
+7. pre-seal Gate B後、production controllerが初期運用値を一度だけsealする。
+8. fresh live Gate B後、production controllerが`schedule_activation`をprepareし、匿名relayと固定confirmation relayer confirmで24時間Timelock operationをscheduleする。
+9. 24時間後に別のfresh live Gate Bを作り、production controllerが`execute_activation`をprepareし、同じ役割分離で記録済みoperationだけをexecuteする。
+10. Base両flowのcanonical Finalized成功後だけIC Depositを自動resumeし、内部bootstrap activation authorityを永久に消費する。失敗、曖昧結果、driftではpauseを維持する。
+11. unpause後の7日・各10件以上の本番計測／Gate Cとcontroller handoverは独立に扱う。handoverは自動実行せず、運用者が時期を別途承認した場合だけSNS Root一件へ変更してSNS proposal upgradeを実証する。
 
 ## Evidence契約
 
-Gate AはprofileとBridge/BSNS build artifactの正確に6件とする。Gate Bは未認証snapshotを含めず、これらにlive運用証跡10件を加えた正確に16件とする。鍵ceremonyとrelease approvalは存在しない。Mint Signerはprofile、認証済みCanister公開設定、freshなFinalized Base attestationの三者一致で検証する。x402はBridgeの配置・activation条件に含めない。
+Gate Aは配置済みartifactとして不変に保持する。pre-seal Gate Bは初期運用値と構造証跡、live Gate Bはcertified config、attestation、sole production controller、module／pause／reserve／cycles／pending状態を検証する。Gate Cはunpause後の本番計測、monitoring、keeper、upgrade履歴を追加する。鍵ceremonyとrelease approvalは存在しない。Mint Signerはprofile、認証済みCanister公開設定、freshなFinalized Base attestationの三者一致で検証する。x402はBridgeの配置・activation条件に含めない。
 
 `monitor-drill.json`はpause principal、実request ID、audit sequence、audit digestを含む。Gate Bのfresh attestationは投票開始時の承認そのものではなく、schedule/execute時のCanister live preflight結果とSNS proposal実行証跡を別々に保存する。SNS proposal IDとGate B hashはCanisterへ自己申告値として渡さず、SNSとevidence側で管理する。manifestは最大90日、schedule用とexecute用は別bundleとする。
 
 ## 完了条件
 
 - 人間の永続EVM roleが0件である。
-- SNS Root-only controllerとSNS proposal upgradeが成功している。
+- 初回schedule／executeのcontroller activation receiptが揃い、内部bootstrap authorityが消費されている。
 - `preflight`、`authorization_mint`、`withdrawal_release`、`quorum_loss`、`final_pause`の主要5 scenarioがraw artifact付きで`LAUNCH_READY`になっている。
 - Canister発のTimelock schedule/executeとcanonical Finalized receiptが存在する。
 - Base/IC双方がactiveで、controller、code、role、reserveにdriftがない。
+- handoverを別途実行した場合だけ、SNS Root-only controllerとSNS proposal upgradeが成功している。
 
-EIP-3009はbSNSの任意連携機能であり、外部facilitatorとの互換性はBridgeの本番準備をblockしない。最後の明示承認までは本番資産受付を開始しない。
+EIP-3009はbSNSの任意連携機能であり、外部facilitatorとの互換性はBridgeの本番準備をblockしない。初回executeの明示承認までは本番資産受付を開始せず、handoverの明示承認は別に扱う。
