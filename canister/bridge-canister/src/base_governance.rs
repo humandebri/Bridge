@@ -394,8 +394,13 @@ fn activation_confirmation_view(
     else {
         return None;
     };
-    let signed = transaction.envelope.signed_transactions.last()?;
-    if signed.transaction_hash != *transaction_hash {
+    let mut matching_attempts = transaction
+        .envelope
+        .signed_transactions
+        .iter()
+        .filter(|signed| signed.transaction_hash == *transaction_hash);
+    let signed = matching_attempts.next()?;
+    if matching_attempts.next().is_some() {
         return None;
     }
     Some(ActivationConfirmationView {
@@ -2649,10 +2654,25 @@ mod tests {
             operation_id: [2; 32],
             salt: [3; 32],
         };
-        let mut signed = signed_transaction();
-        signed.generation = 3;
-        signed.signed_at_ns = 42;
-        transaction.envelope.signed_transactions.push(signed);
+        let mut first = signed_transaction();
+        first.transaction_hash = [6; 32];
+        first.generation = 2;
+        first.signed_at_ns = 41;
+        let mut last = signed_transaction();
+        last.generation = 3;
+        last.signed_at_ns = 42;
+        transaction.envelope.signed_transactions.push(first);
+        transaction.envelope.signed_transactions.push(last);
+        transaction.state = GovernanceTransactionState::Confirmed {
+            transaction_hash: [6; 32],
+            receipt_block_number: 10,
+        };
+
+        let view = activation_confirmation_view(&transaction).unwrap();
+        assert_eq!(view.generation, 2);
+        assert_eq!(view.signed_at_ns, 41);
+        assert_eq!(view.transaction_hash, vec![6; 32]);
+
         transaction.state = GovernanceTransactionState::Confirmed {
             transaction_hash: [7; 32],
             receipt_block_number: 10,
@@ -2665,6 +2685,14 @@ mod tests {
 
         transaction.state = GovernanceTransactionState::Confirmed {
             transaction_hash: [8; 32],
+            receipt_block_number: 10,
+        };
+        assert!(activation_confirmation_view(&transaction).is_none());
+
+        let duplicate = transaction.envelope.signed_transactions[0].clone();
+        transaction.envelope.signed_transactions.push(duplicate);
+        transaction.state = GovernanceTransactionState::Confirmed {
+            transaction_hash: [6; 32],
             receipt_block_number: 10,
         };
         assert!(activation_confirmation_view(&transaction).is_none());

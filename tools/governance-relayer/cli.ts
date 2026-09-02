@@ -169,7 +169,12 @@ async function main(): Promise<void> {
       let operationId: bigint
       let expectedHash: Hex
       let artifactToValidate: unknown
-      if (pending && storedArtifactMatches(stored, pending)) {
+      if (pending && storedIdentity && activationAttemptMatchesPendingLineage(stored, pending)) {
+        await requireActivationBindingBytes(artifactBytes, options)
+        operationId = storedIdentity.operationId
+        expectedHash = storedIdentity.transactionHash
+        artifactToValidate = stored
+      } else if (pending && storedArtifactMatches(stored, pending)) {
         await requireMatchingActivationBinding(pending, artifactBytes, options)
         operationId = pending.operation_id
         expectedHash = bytesHex(pending.transaction_hash)
@@ -621,6 +626,39 @@ export function activationReplacementMatches(
     && live.generation === oldGeneration + 1
     && live.max_fee_per_gas === maxFee
     && live.max_priority_fee_per_gas === priorityFee
+}
+
+export function activationAttemptMatchesPendingLineage(
+  stored: unknown,
+  live: SignedBaseGovernanceTransaction,
+): boolean {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)
+    || !isActivationArtifact(live)) return false
+  const old = stored as Record<string, unknown>
+  if (!isActivationArtifact(old as { kind: unknown })) return false
+  const current = jsonValue(live) as Record<string, unknown>
+  const invariantFields = [
+    "operation_id", "kind", "chain_id", "nonce", "sender", "target", "calldata", "gas_limit",
+  ]
+  if (!invariantFields.every(
+    (field) => JSON.stringify(old[field]) === JSON.stringify(current[field]),
+  )) return false
+  const oldGeneration = old.generation
+  const oldSignedAt = old.signed_at_ns
+  const oldMaxFee = old.max_fee_per_gas
+  const oldPriorityFee = old.max_priority_fee_per_gas
+  if (typeof oldGeneration !== "number" || !Number.isInteger(oldGeneration)
+    || oldGeneration < 0 || oldGeneration > live.generation
+    || typeof oldSignedAt !== "string" || !/^(0|[1-9][0-9]*)$/.test(oldSignedAt)
+    || typeof oldMaxFee !== "string" || !/^(0|[1-9][0-9]*)$/.test(oldMaxFee)
+    || typeof oldPriorityFee !== "string" || !/^(0|[1-9][0-9]*)$/.test(oldPriorityFee)) return false
+  const signedAt = BigInt(oldSignedAt)
+  const maxFee = BigInt(oldMaxFee)
+  const priorityFee = BigInt(oldPriorityFee)
+  if (signedAt === 0n || signedAt > live.signed_at_ns
+    || maxFee > live.max_fee_per_gas
+    || priorityFee > live.max_priority_fee_per_gas) return false
+  return oldGeneration < live.generation || storedArtifactMatches(stored, live)
 }
 
 export function isActivationArtifact(artifact: { kind: unknown }): boolean {

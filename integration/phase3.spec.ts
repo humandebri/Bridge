@@ -858,6 +858,7 @@ describe("Phase 3 PocketIC saga", () => {
       .toEqual({ Err: { Unauthorized: null } });
     const schedule: any = await (bridge.actor as any).schedule_activation();
     expect(schedule).toHaveProperty("Ok.kind.ScheduleActivation");
+    const originalScheduleTransaction = schedule.Ok;
     let scheduleTransaction = schedule.Ok;
     const bumped = (value: bigint) => (value * 11_250n + 9_999n) / 10_000n;
     bridge.actor.setPrincipal(Principal.anonymous());
@@ -900,9 +901,15 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (evm.actor as any).receipt_call_count()).toBe(receiptCallsBeforeUnauthorized);
     bridge.actor.setPrincipal(confirmationRelayerPrincipal);
     expect(await (bridge.actor as any).confirm_base_governance_transaction({
-      operation_id: scheduleTransaction.operation_id,
-      transaction_hash: scheduleTransaction.transaction_hash,
+      operation_id: originalScheduleTransaction.operation_id,
+      transaction_hash: originalScheduleTransaction.transaction_hash,
     })).toHaveProperty("Ok.succeeded", true);
+    const activationStatus: any = await (bridge.actor as any).get_activation_status();
+    expect(activationStatus).toHaveProperty("Ok.last_confirmed_activation.0.generation", 0);
+    expect(activationStatus.Ok.last_confirmed_activation[0].signed_at_ns)
+      .toBe(originalScheduleTransaction.signed_at_ns);
+    expect(activationStatus.Ok.last_confirmed_activation[0].transaction_hash)
+      .toEqual(originalScheduleTransaction.transaction_hash);
     expect(await (bridge.actor as any).prepare_base_governance_action({ PauseDepositMints: null }))
       .toEqual({ Err: { Unauthorized: null } });
     expect(await (bridge.actor as any).prepare_next_emergency_base_action())

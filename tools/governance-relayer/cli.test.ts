@@ -10,6 +10,7 @@ import { keccak256 } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import {
   afterValidatingStoredArtifacts,
+  activationAttemptMatchesPendingLineage,
   activationConfirmationHash,
   activationBindingMatches,
   activationReplacementMatches,
@@ -407,6 +408,62 @@ test("recovers only the exact next activation replacement generation", () => {
   assert.equal(activationReplacementMatches(stored, live, 200n, 3n), true)
   assert.equal(activationReplacementMatches(stored, { ...live, generation: 2 }, 200n, 3n), false)
   assert.equal(activationReplacementMatches(stored, live, 201n, 3n), false)
+})
+
+test("confirms a strictly validated older activation attempt after replacement", () => {
+  const stored = {
+    operation_id: "9",
+    kind: {
+      ScheduleActivation: {
+        operation_id: `0x${"44".repeat(32)}`,
+        salt: `0x${"55".repeat(32)}`,
+      },
+    },
+    chain_id: "8453",
+    nonce: "7",
+    sender: `0x${"11".repeat(20)}`,
+    target: `0x${"22".repeat(20)}`,
+    calldata: "0x1234",
+    gas_limit: "100000",
+    max_fee_per_gas: "20",
+    max_priority_fee_per_gas: "2",
+    raw_transaction: "0x02",
+    transaction_hash: `0x${"33".repeat(32)}`,
+    generation: 0,
+    signed_at_ns: "10",
+  }
+  const live = {
+    operation_id: 9n,
+    kind: {
+      ScheduleActivation: {
+        operation_id: new Uint8Array(32).fill(0x44),
+        salt: new Uint8Array(32).fill(0x55),
+      },
+    },
+    chain_id: 8453n,
+    nonce: 7n,
+    sender: new Uint8Array(20).fill(0x11),
+    target: new Uint8Array(20).fill(0x22),
+    calldata: new Uint8Array([0x12, 0x34]),
+    gas_limit: 100_000n,
+    max_fee_per_gas: 30n,
+    max_priority_fee_per_gas: 3n,
+    raw_transaction: new Uint8Array([0x02]),
+    transaction_hash: new Uint8Array(32).fill(0x66),
+    generation: 1,
+    signed_at_ns: 20n,
+  } as never
+  assert.equal(activationAttemptMatchesPendingLineage(stored, live), true)
+  for (const drift of [
+    { ...stored, operation_id: "10" },
+    { ...stored, nonce: "8" },
+    { ...stored, generation: 2 },
+    { ...stored, signed_at_ns: "21" },
+    { ...stored, max_fee_per_gas: "31" },
+    { ...stored, max_priority_fee_per_gas: "4" },
+  ]) {
+    assert.equal(activationAttemptMatchesPendingLineage(drift, live), false)
+  }
 })
 
 test("recovers an idempotent activation confirmation from the fixed artifact", () => {
