@@ -6719,6 +6719,21 @@ fn validate_operational_config_seal_attempt(
     Ok(hex(&Sha256::digest(bytes)))
 }
 
+fn validate_historical_evidence_window(
+    manifest_created: u64,
+    manifest_expires: u64,
+    timestamps: &[u64],
+) -> Result<(), String> {
+    if manifest_expires < manifest_created
+        || timestamps
+            .iter()
+            .any(|timestamp| *timestamp < manifest_created || *timestamp > manifest_expires)
+    {
+        return Err("historical evidence was created outside the Gate B validity window".into());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum SealReceiptLiveContext {
     PrePrepare,
@@ -6742,6 +6757,13 @@ fn validate_operational_config_seal_receipt(
     }
     let reservation: OperationalConfigSealReservation =
         serde_json::from_slice(&reservation_bytes).map_err(|error| error.to_string())?;
+    if matches!(live_context, SealReceiptLiveContext::Handover) {
+        validate_historical_evidence_window(
+            bundle.manifest.created_at_unix,
+            bundle.manifest.expires_at_unix,
+            &[reservation.reserved_at_unix, receipt.verified_at_unix],
+        )?;
+    }
     let parameters_bytes = fs::read(bundle.root.join("initial-operational-parameters.json"))
         .map_err(|error| error.to_string())?;
     let parameters: InitialOperationalParameters =
@@ -7026,10 +7048,12 @@ fn validate_controller_activation_authorization(
                 now,
             )
             .is_err(),
-            ActivationReceiptFreshness::Historical => {
-                receipt.authorized_at_unix < bundle.manifest.created_at_unix
-                    || receipt.authorized_at_unix > now
-            }
+            ActivationReceiptFreshness::Historical => validate_historical_evidence_window(
+                bundle.manifest.created_at_unix,
+                bundle.manifest.expires_at_unix,
+                &[receipt.authorized_at_unix],
+            )
+            .is_err(),
         }
     {
         return Err("controller activation authorization is not bound to this live Gate B".into());
@@ -7095,13 +7119,14 @@ enum ActivationReceiptFreshness {
 
 fn validate_controller_activation_receipt_timeline(
     freshness: ActivationReceiptFreshness,
-    manifest_created: u64,
+    manifest_window: (u64, u64),
     authorized: u64,
     bound: u64,
     confirmed: u64,
     verified: u64,
     now: u64,
 ) -> Result<(), String> {
+    let (manifest_created, manifest_expires) = manifest_window;
     if matches!(freshness, ActivationReceiptFreshness::Current) {
         return validate_controller_activation_timeline(
             manifest_created,
@@ -7112,11 +7137,15 @@ fn validate_controller_activation_receipt_timeline(
             now,
         );
     }
-    if authorized < manifest_created
+    if validate_historical_evidence_window(
+        manifest_created,
+        manifest_expires,
+        &[authorized, bound, confirmed, verified],
+    )
+    .is_err()
         || bound < authorized
         || confirmed < bound
         || verified < confirmed
-        || verified > now
     {
         return Err("historical controller activation receipt timestamps are out of order".into());
     }
@@ -7984,7 +8013,10 @@ fn validate_controller_schedule_receipt(
         .is_err()
         || validate_controller_activation_receipt_timeline(
             freshness,
-            bundle.manifest.created_at_unix,
+            (
+                bundle.manifest.created_at_unix,
+                bundle.manifest.expires_at_unix,
+            ),
             authorization.authorized_at_unix,
             prepare_receipt.bound_at_unix,
             receipt.confirmed_at_unix,
@@ -8153,7 +8185,10 @@ fn validate_controller_execute_receipt(
         )
         || validate_controller_activation_receipt_timeline(
             freshness,
-            bundle.manifest.created_at_unix,
+            (
+                bundle.manifest.created_at_unix,
+                bundle.manifest.expires_at_unix,
+            ),
             authorization.authorized_at_unix,
             prepare_receipt.bound_at_unix,
             receipt.confirmed_at_unix,
@@ -9604,6 +9639,7 @@ mod tests {
     #[test]
     fn activation_timestamps_must_follow_gate_b_and_precede_verification() {
         let created = MAX_EVIDENCE_AGE_SECS + 1_000_000;
+        let expires = created + 100;
         let now = created + 120;
         assert!(validate_activation_time(created, created, now).is_ok());
         assert!(validate_activation_time(created + 60, created, now).is_ok());
@@ -9618,7 +9654,7 @@ mod tests {
         let historical_now = now + MAX_EVIDENCE_AGE_SECS + 1;
         assert!(validate_controller_activation_receipt_timeline(
             ActivationReceiptFreshness::Historical,
-            created,
+            (created, expires),
             created,
             created + 1,
             created + 2,
@@ -9628,7 +9664,7 @@ mod tests {
         .is_ok());
         assert!(validate_controller_activation_receipt_timeline(
             ActivationReceiptFreshness::Current,
-            created,
+            (created, expires),
             created,
             created + 1,
             created + 2,
@@ -9636,6 +9672,44 @@ mod tests {
             historical_now,
         )
         .is_err());
+    }
+
+    #[test]
+    fn historical_activation_evidence_must_stay_within_the_original_gate_b_window() {
+        let created = 1_000_000;
+        let expires = created + 100;
+        let historical_now = expires + MAX_EVIDENCE_AGE_SECS;
+        let validate = |authorized, bound, confirmed, verified| {
+            validate_controller_activation_receipt_timeline(
+                ActivationReceiptFreshness::Historical,
+                (created, expires),
+                authorized,
+                bound,
+                confirmed,
+                verified,
+                historical_now,
+            )
+        };
+
+        assert!(validate(created, created + 1, created + 2, expires).is_ok());
+        assert!(validate(expires + 1, expires + 1, expires + 1, expires + 1).is_err());
+        assert!(validate(created, expires + 1, expires + 1, expires + 1).is_err());
+        assert!(validate(created, created + 1, expires + 1, expires + 1).is_err());
+        assert!(validate(created, created + 1, created + 2, expires + 1).is_err());
+    }
+
+    #[test]
+    fn historical_seal_evidence_must_stay_within_the_original_gate_b_window() {
+        let created = 1_000_000;
+        let expires = created + 100;
+
+        assert!(validate_historical_evidence_window(created, expires, &[created, expires]).is_ok());
+        assert!(
+            validate_historical_evidence_window(created, expires, &[created - 1, created]).is_err()
+        );
+        assert!(
+            validate_historical_evidence_window(created, expires, &[created, expires + 1]).is_err()
+        );
     }
 
     #[test]
