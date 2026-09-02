@@ -2,8 +2,6 @@ use crate::Amount;
 
 /// Validity issued by the Canister from the IC consensus timestamp.
 pub const MINT_AUTHORIZATION_TTL_SECONDS: u64 = 10 * 60;
-/// Minimum time that must remain before threshold signing can install a signature.
-pub const MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS: u64 = 5 * 60;
 pub const MINT_AUTHORIZATION_DOMAIN_NAME: &str = "KINIC Bridge";
 pub const MINT_AUTHORIZATION_DOMAIN_VERSION: &str = "1";
 
@@ -48,12 +46,6 @@ pub struct MintAuthorization {
 impl MintAuthorization {
     pub fn deadline_from_issued_at_timestamp(issued_at_timestamp: u64) -> Option<u64> {
         issued_at_timestamp.checked_add(MINT_AUTHORIZATION_TTL_SECONDS)
-    }
-
-    pub fn has_minimum_remaining_time(&self, observed_timestamp: u64) -> bool {
-        observed_timestamp
-            .checked_add(MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS)
-            .is_some_and(|minimum_deadline| minimum_deadline <= self.deadline)
     }
 }
 
@@ -165,7 +157,10 @@ mod tests {
     #[test]
     fn deadline_is_fixed_and_checked() {
         assert_eq!(MINT_AUTHORIZATION_TTL_SECONDS, 600);
-        assert_eq!(MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS, 300);
+        assert_eq!(
+            crate::kernel::MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS,
+            300
+        );
         assert_eq!(
             MintAuthorization::deadline_from_issued_at_timestamp(10),
             Some(610)
@@ -187,9 +182,24 @@ mod tests {
             deadline: 1_000,
             authorization_epoch: 1,
         };
-        assert!(authorization.has_minimum_remaining_time(700));
-        assert!(!authorization.has_minimum_remaining_time(701));
-        assert!(!authorization.has_minimum_remaining_time(u64::MAX));
+        assert!(
+            crate::kernel::mint_authorization_has_minimum_remaining_time(
+                700,
+                authorization.deadline
+            )
+        );
+        assert!(
+            !crate::kernel::mint_authorization_has_minimum_remaining_time(
+                701,
+                authorization.deadline
+            )
+        );
+        assert!(
+            !crate::kernel::mint_authorization_has_minimum_remaining_time(
+                u64::MAX,
+                authorization.deadline
+            )
+        );
     }
 
     fn unsigned_record() -> MintAuthorizationRecord {

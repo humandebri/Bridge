@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { DepositView } from "@/generated/bridge.did"
-import { authorizationExpiredRefundStatus, depositContinuation, depositPhaseName, depositPhaseTone, depositReconciliationMessage, depositUsesPendingMintStatus, isDepositPhase, isDepositTerminal, isSettlementActionResult, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName } from "./settlement-phase"
+import { authorizationDeadlineRefundStatus, depositContinuation, depositPhaseName, depositPhaseTone, depositReconciliationMessage, depositUsesPendingMintStatus, isDepositPhase, isDepositTerminal, isSettlementActionResult, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName } from "./settlement-phase"
 
 describe("settlement phase helpers", () => {
   it("preserves public display names and terminal tones", () => {
@@ -25,6 +25,8 @@ describe("settlement phase helpers", () => {
     expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } } } })).toBe(false)
     expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } }, reason: { LedgerFeeExceedsServiceFee: null } } })).toBe(true)
     expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } }, reason: { RpcUnavailable: null } } })).toBe(true)
+    expect(isSettlementActionResult({ Stopped: { state: { Deposit: { AuthorizationPending: null } }, reason: { AuthorizationExpired: null } } })).toBe(true)
+    expect(isSettlementActionResult({ Stopped: { state: { Deposit: { AuthorizationPending: null } }, reason: { AuthorizationWindowTooShort: null } } })).toBe(true)
     expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } }, reason: { LedgerRejected: null } } })).toBe(false)
     expect(isSettlementActionResult({ Submitted: { state: { Deposit: { AuthorizationPending: null } }, transaction_hash: new Uint8Array(32) } })).toBe(false)
   })
@@ -46,6 +48,12 @@ describe("settlement phase helpers", () => {
     expect(depositContinuation(record([{ SigningUnavailable: null }], true)).mode).toBe("automatic")
     expect(depositContinuation(record([{ RpcInconsistent: null }])).action).toBe("retry-authorization")
     expect(depositContinuation(record([{ AuthorizationExpired: null }])).action).toBe("request-refund")
+    const shortWindow = depositContinuation(record([{ AuthorizationWindowTooShort: null }]))
+    expect(shortWindow).toMatchObject({
+      mode: "stopped",
+      action: "request-refund",
+    })
+    expect(shortWindow.message).toContain("Wait for finalized Base time")
     expect(depositContinuation(record([{ BridgeSignerMismatch: null }]))).toMatchObject({ mode: "stopped" })
     expect(depositContinuation(record([{ BridgeSignerMismatch: null }])).action).toBeUndefined()
     expect(depositContinuation(record([{ Unknown: "future stop" }])).message).toContain("future stop")
@@ -78,9 +86,9 @@ describe("settlement phase helpers", () => {
       mint_authorization: [{ deadline: 1_000n }],
     } as DepositView
 
-    expect(authorizationExpiredRefundStatus(record)).toBe("checking-finality")
-    expect(authorizationExpiredRefundStatus(record, 999n)).toBe("waiting-finality")
-    expect(authorizationExpiredRefundStatus(record, 1_000n)).toBe("waiting-finality")
-    expect(authorizationExpiredRefundStatus(record, 1_001n)).toBe("ready")
+    expect(authorizationDeadlineRefundStatus(record)).toBe("checking-finality")
+    expect(authorizationDeadlineRefundStatus(record, 999n)).toBe("waiting-finality")
+    expect(authorizationDeadlineRefundStatus(record, 1_000n)).toBe("waiting-finality")
+    expect(authorizationDeadlineRefundStatus(record, 1_001n)).toBe("ready")
   })
 })

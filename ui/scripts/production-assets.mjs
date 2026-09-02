@@ -122,13 +122,20 @@ function validateReceipt(receipt, identity, built) {
 }
 
 /** @param {string} targetRoot @param {string} raw */
-function installRuntimeProfile(targetRoot, raw) {
-  JSON.parse(raw)
-  writeFileSync(resolve(targetRoot, profileBootstrap), `globalThis.__KINIC_DEPLOYMENT_PROFILE_JSON__ = ${JSON.stringify(raw.trim())};\n`, { flag: "wx", mode: 0o400 })
+async function installRuntimeProfile(targetRoot, raw) {
+  const { deploymentProfileSchema } = await import("../src/config/profile.ts")
+  const parsedProfile = deploymentProfileSchema.parse(JSON.parse(raw))
+  const publicProfile = {
+    ...parsedProfile,
+    deploymentBlock: parsedProfile.deploymentBlock?.toString() ?? null,
+  }
+  const publicRaw = JSON.stringify(publicProfile)
+  writeFileSync(resolve(targetRoot, profileBootstrap), `globalThis.__KINIC_DEPLOYMENT_PROFILE_JSON__ = ${JSON.stringify(publicRaw)};\n`, { flag: "wx", mode: 0o400 })
 }
 
 /** @param {string} raw */
 async function validatePreActivationProfile(raw) {
+  const releaseProfile = JSON.parse(raw)
   /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
   const deploymentGlobal = globalThis
   deploymentGlobal.__KINIC_DEPLOYMENT_PROFILE_JSON__ = raw.trim()
@@ -136,11 +143,8 @@ async function validatePreActivationProfile(raw) {
     import("../src/config/profile.ts"),
     import("../src/config/deploy-safety.ts"),
   ])
-  assertPreActivationUiProfile(deploymentProfile)
-  const expectedBlockers = [
-    "Production deployment block is not Gate B bound",
-    "Verified Gate B manifest SHA-256 is missing",
-  ]
+  assertPreActivationUiProfile(releaseProfile)
+  const expectedBlockers = ["Deployment history start block is missing"]
   const blockers = profileCompleteness(deploymentProfile)
   if (JSON.stringify(blockers) !== JSON.stringify(expectedBlockers)) {
     throw new Error(`Pre-activation UI profile has unexpected blockers: ${blockers.join("; ")}`)
@@ -221,7 +225,7 @@ async function deployFrozenAssets(receipt, rawProfile, identity, dryRun = false)
       }
       chmodSync(target, 0o400)
     }
-    installRuntimeProfile(frozen, rawProfile)
+    await installRuntimeProfile(frozen, rawProfile)
     const configBytes = readOrdinaryFile(productionWranglerConfig)
     const reviewedConfig = execFileSync(
       "git",

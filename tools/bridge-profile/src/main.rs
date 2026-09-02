@@ -855,6 +855,7 @@ struct MonitorIcPause {
     audit_raw_hex: String,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
@@ -874,6 +875,7 @@ struct KeeperDrill {
     manual_fallback_drilled: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
@@ -888,6 +890,7 @@ struct MonitoringReceipt {
     paid: MonitoringPaidObservation,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
@@ -902,6 +905,7 @@ struct MonitoringBurnReceipt {
     canonical_finalized: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
@@ -913,6 +917,7 @@ struct MonitoringPaidObservation {
     authenticated_query: bool,
 }
 
+#[allow(dead_code)]
 #[derive(CandidType, Deserialize, Serialize, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
 enum WithdrawalPhaseView {
@@ -922,6 +927,7 @@ enum WithdrawalPhaseView {
     Observed,
 }
 
+#[allow(dead_code)]
 #[derive(CandidType, Deserialize, Serialize, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
 struct WithdrawalView {
@@ -1014,6 +1020,7 @@ struct ControllerHandover {
     required_freezing_cycles: u128,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]

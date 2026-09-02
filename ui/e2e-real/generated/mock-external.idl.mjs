@@ -352,6 +352,8 @@ export const idlFactory = ({ IDL }) => {
   });
   const Result_9 = IDL.Variant({ 'Ok' : ChainKeyProbe, 'Err' : IDL.Text });
   const BlockMode = IDL.Variant({
+    'FinalizedCheckpointHeadError' : IDL.Null,
+    'FinalizedDelayed' : IDL.Null,
     'CanonicalInconsistent' : IDL.Null,
     'FinalizedInconsistent' : IDL.Null,
     'FinalizedUnavailable' : IDL.Null,

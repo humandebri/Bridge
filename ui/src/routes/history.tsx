@@ -49,7 +49,7 @@ import {
   removePendingConfirmation,
 } from "@/lib/pending-confirmations"
 import { refetchRuntimeAttestedWriteReady } from "@/lib/runtime-validation"
-import { authorizationExpiredRefundStatus, depositContinuation, depositPhaseName, depositPhaseTone, depositReconciliationMessage, depositUsesPendingMintStatus, isDepositTerminal, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName, withdrawalPhaseTone } from "@/lib/settlement-phase"
+import { authorizationDeadlineRefundStatus, depositContinuation, depositPhaseName, depositPhaseTone, depositReconciliationMessage, depositUsesPendingMintStatus, isDepositTerminal, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName, withdrawalPhaseTone } from "@/lib/settlement-phase"
 import { decodeWithdrawalDestination, fetchInBatches, fetchUniqueBlockTimestamps, notifyHistoryWithdrawal, scanWithdrawalLogs, type FinalizedEventLog, type WithdrawalLogScan } from "@/lib/withdrawal-history"
 import { withdrawalNotificationPresentation } from "@/lib/withdrawal-notification"
 
@@ -665,7 +665,7 @@ function HistoryUnavailable({
   </div>
 }
 
-function DepositActivityRow({ item, mintFinalization, mintTransactionHash, mintScan, finalizedBlockTimestamp, writesEnabled, actioningId, onRequestRefund, onContinue }: {
+export function DepositActivityRow({ item, mintFinalization, mintTransactionHash, mintScan, finalizedBlockTimestamp, writesEnabled, actioningId, onRequestRefund, onContinue }: {
   item: Extract<ActivityItem, { direction: "to-base" }>
   mintFinalization: DepositMintFinalizationStatus
   mintTransactionHash?: `0x${string}`
@@ -696,7 +696,7 @@ function DepositActivityRow({ item, mintFinalization, mintTransactionHash, mintS
   const kinicTransactions = depositKinicTransactions(record)
   const quote = record.quote[0]
   const continuation = depositContinuation(record)
-  const expiredRefundStatus = authorizationExpiredRefundStatus(record, finalizedBlockTimestamp)
+  const deadlineRefundStatus = authorizationDeadlineRefundStatus(record, finalizedBlockTimestamp)
   const refundPhase = "RefundAvailable" in record.state || "RefundProcessing" in record.state
   const reconciliationMessage = refundPhase
     ? depositReconciliationMessage(record.state, record.last_settlement_stop_reason[0])
@@ -733,9 +733,9 @@ function DepositActivityRow({ item, mintFinalization, mintTransactionHash, mintS
       : continuation.action === "retry-authorization"
         ? <Button size="sm" variant="ghost" disabled={!writesEnabled || actioningId === key} onClick={() => void onContinue(record)}>{actioningId === key ? "Retrying…" : "Retry authorization"}</Button>
       : continuation.action === "request-refund"
-        ? expiredRefundStatus === "ready"
+        ? deadlineRefundStatus === "ready"
           ? <Button size="sm" variant="ghost" disabled={!writesEnabled || actioningId === key} onClick={() => void onRequestRefund(record)}>{actioningId === key ? "Requesting…" : "Request refund"}</Button>
-          : <span className="text-sm text-[var(--muted)]">{expiredRefundStatus === "checking-finality" ? "Checking Base finality…" : "Waiting for Base finality"}</span>
+          : <span className="text-sm text-[var(--muted)]">{deadlineRefundStatus === "checking-finality" ? "Checking Base finality…" : "Waiting for Base finality"}</span>
       : "RefundAvailable" in record.state || ("RefundProcessing" in record.state && Boolean(record.last_settlement_stop_reason[0] || (refund && "ReconciliationRequired" in refund.status)))
         ? <Button size="sm" variant="ghost" disabled={!writesEnabled || actioningId === key} onClick={() => void onRequestRefund(record)}>{actioningId === key ? "Requesting…" : "Request refund"}</Button>
         : "RefundProcessing" in record.state

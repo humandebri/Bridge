@@ -215,6 +215,13 @@ def _integer_value(expression: str) -> int | None:
 def _constant_aliases(body: str) -> dict[str, int]:
     aliases: dict[str, int] = {}
     for match in re.finditer(
+        r"\b(?:pub\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*[^=;]+\s*=\s*([^;]+);",
+        body,
+    ):
+        value = _integer_value(match.group(2))
+        if value is not None:
+            aliases[match.group(1)] = value
+    for match in re.finditer(
         r"\blet\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=;]+)?\s*=\s*([^;]+);",
         body,
     ):
@@ -290,7 +297,8 @@ def validate_shared_expression(
     specification_parameters = _function_parameters(
         cleaned, f"{kernel}_spec", specification=True
     )
-    specification_aliases = _constant_aliases(specification)
+    production_aliases = _constant_aliases(cleaned)
+    specification_aliases = production_aliases | _constant_aliases(specification)
     declared_derived = {
         production_index: (specification_index, expression)
         for production_index, specification_index, expression in derived_bindings
@@ -300,7 +308,7 @@ def validate_shared_expression(
         zip(production_arguments, specification_arguments, strict=True)
     ):
         production_value = _normalized_argument(
-            production_argument, production_parameters, {}
+            production_argument, production_parameters, production_aliases
         )
         specification_value = _normalized_argument(
             specification_argument, specification_parameters, specification_aliases
