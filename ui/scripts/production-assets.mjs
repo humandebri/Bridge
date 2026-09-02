@@ -167,21 +167,28 @@ async function validateProductionProfile(profileFile, identity) {
   const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", "schedule", bundle], { encoding: "utf8" })
   const manifestSha256 = /^gate_b=live-pass authorizing=schedule manifest_sha256=([0-9a-fA-F]{64})$/m.exec(gateOutput)?.[1]
   if (!manifestSha256) throw new Error("Fixed bridge-profile did not verify the Gate B manifest")
+  const rawBuffer = readOrdinaryFile(profileFile)
+  const inputsManifestBuffer = readOrdinaryFile(inputsManifestFile)
   const rendered = mkdtempSync(resolve(tmpdir(), "bridge-ui-release-inputs."))
   try {
     execFileSync("cargo", [...cargoArgs, "render-bundle-inputs", bundle, rendered], { stdio: "pipe" })
     const reviewedRoot = dirname(inputsManifestFile)
-    for (const name of ["canister-init.json", "contract-constructor-args.json", "ui-runtime-profile.json", "release-inputs-manifest.json"]) {
-      if (!readFileSync(resolve(rendered, name)).equals(readFileSync(resolve(reviewedRoot, name)))) {
+    for (const name of ["canister-init.json", "contract-constructor-args.json"]) {
+      if (!readFileSync(resolve(rendered, name)).equals(readOrdinaryFile(resolve(reviewedRoot, name)))) {
         throw new Error(`Production release input drift: ${name}`)
       }
+    }
+    if (!readFileSync(resolve(rendered, "ui-runtime-profile.json")).equals(rawBuffer)) {
+      throw new Error("Production release input drift: ui-runtime-profile.json")
+    }
+    if (!readFileSync(resolve(rendered, "release-inputs-manifest.json")).equals(inputsManifestBuffer)) {
+      throw new Error("Production release input drift: release-inputs-manifest.json")
     }
   } finally {
     rmSync(rendered, { recursive: true, force: true })
   }
-  const rawBuffer = readOrdinaryFile(profileFile)
   const raw = rawBuffer.toString("utf8")
-  const inputsManifest = JSON.parse(readFileSync(inputsManifestFile, "utf8"))
+  const inputsManifest = JSON.parse(inputsManifestBuffer.toString("utf8"))
   if (inputsManifest.artifacts?.["ui-runtime-profile.json"] !== sha256(rawBuffer)) {
     throw new Error("Production UI profile hash differs from the reviewed release inputs")
   }
@@ -191,11 +198,12 @@ async function validateProductionProfile(profileFile, identity) {
   /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
   const deploymentGlobal = globalThis
   deploymentGlobal.__KINIC_DEPLOYMENT_PROFILE_JSON__ = raw.trim()
-  const [{ deploymentProfile }, { assertProductionUiProfile }] = await Promise.all([
+  const [{ releaseProfileSchema }, { assertProductionUiProfile }] = await Promise.all([
     import("../src/config/profile.ts"),
     import("../src/config/deploy-safety.ts"),
   ])
-  assertProductionUiProfile(deploymentProfile, manifestSha256)
+  const releaseProfile = releaseProfileSchema.parse(JSON.parse(raw))
+  assertProductionUiProfile(releaseProfile, manifestSha256)
   return raw
 }
 

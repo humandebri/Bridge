@@ -121,6 +121,48 @@ describe("production UI Gate B binding", () => {
     expect(result.status, result.stderr).toBe(0)
   })
 
+  it("rejects an alternate manifest basename even when its profile hash is valid", () => {
+    const f = fixture()
+    const alternateManifest = join(f.inputs, "alternate-manifest.json")
+    const profileHash = createHash("sha256").update(f.profile).digest("hex")
+    writeFileSync(alternateManifest, JSON.stringify({
+      artifacts: { "ui-runtime-profile.json": profileHash },
+      unreviewed: true,
+    }) + "\n")
+    const result = run({
+      PATH: `${f.bin}:${process.env.PATH}`, FAKE_INPUTS: f.inputs,
+      BRIDGE_RELEASE_BUNDLE: f.bundle, BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
+      BRIDGE_RELEASE_INPUTS_MANIFEST: alternateManifest,
+      VITE_DEPLOYMENT_PROFILE_JSON: f.profile, VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("Production release input drift: release-inputs-manifest.json")
+  })
+
+  it("rejects a self-consistent alternate profile and manifest pair", () => {
+    const f = fixture()
+    const drifted = JSON.stringify({
+      ...JSON.parse(f.profile),
+      bridgeAddress: `0x${"88".repeat(20)}`,
+    }) + "\n"
+    const alternateProfile = join(f.inputs, "alternate-profile.json")
+    const alternateManifest = join(f.inputs, "alternate-manifest.json")
+    writeFileSync(alternateProfile, drifted)
+    writeFileSync(alternateManifest, JSON.stringify({
+      artifacts: {
+        "ui-runtime-profile.json": createHash("sha256").update(drifted).digest("hex"),
+      },
+    }) + "\n")
+    const result = run({
+      PATH: `${f.bin}:${process.env.PATH}`, FAKE_INPUTS: f.inputs,
+      BRIDGE_RELEASE_BUNDLE: f.bundle, BRIDGE_UI_RUNTIME_PROFILE_FILE: alternateProfile,
+      BRIDGE_RELEASE_INPUTS_MANIFEST: alternateManifest,
+      VITE_DEPLOYMENT_PROFILE_JSON: drifted, VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("Production release input drift: ui-runtime-profile.json")
+  })
+
   it("rejects a dirty UI checkout before build or deploy", () => {
     const f = fixture()
     const result = run({
