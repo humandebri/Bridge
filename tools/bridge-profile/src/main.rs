@@ -9198,12 +9198,16 @@ fn run() -> Result<(), String> {
             verify_production_canister_predeploy(Path::new(&args[2]), Path::new(&args[3]))?;
         }
         Some("validate-production-handover-candidate") if args.len() == 6 => {
-            validate_production_handover_candidate_files(
+            let (bundle, _, _) = validate_production_handover_candidate_files(
                 Path::new(&args[2]),
                 Path::new(&args[3]),
                 Path::new(&args[4]),
                 Path::new(&args[5]),
             )?;
+            println!(
+                "production_handover_candidate=pass manifest_sha256={}",
+                bundle.manifest_sha256
+            );
         }
         Some("validate-controller-handover-completion") if args.len() == 7 => {
             validate_controller_handover_completion_files(

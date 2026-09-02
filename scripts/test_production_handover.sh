@@ -42,7 +42,7 @@ version = "0.0.0"
 LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs};
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="verify-production-canister-handover"{let counter=env::var("TRACE").unwrap()+".verify";let n=fs::read_to_string(&counter).ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(0);fs::write(&counter,(n+1).to_string()).unwrap();let valid=a.len()==5&&fs::read_to_string(&a[2]).is_ok_and(|v|v.contains("\"kind\":\"seal\"")&&v.contains("\"initial_operational_parameters_sha256\":\"1111\""))&&fs::read_to_string(&a[3]).is_ok_and(|v|v.contains("\"kind\":\"schedule\"")&&v.contains("\"seal_receipt_sha256\":\"2222\""))&&fs::read_to_string(&a[4]).is_ok_and(|v|v.contains("\"kind\":\"execute\"")&&v.contains("\"schedule_receipt_sha256\":\"3333\""));if (n>0&&env::var("HANDOVER_PRE_SEND_ACTIVE_DRIFT").as_deref()==Ok("true"))||!valid||["HANDOVER_BOOTSTRAP","HANDOVER_SEALED","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_INITIAL_PARAMETERS_DRIFT","HANDOVER_SEAL_RECEIPT_DRIFT","HANDOVER_SCHEDULE_RECEIPT_DRIFT","HANDOVER_EXECUTE_RECEIPT_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_RESERVE_DRIFT","HANDOVER_STORAGE_INTEGRITY_DRIFT","HANDOVER_IC_DEPOSITS_PAUSED","HANDOVER_BASE_DEPOSITS_PAUSED","HANDOVER_BASE_WITHDRAWALS_PAUSED"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else if a[0]=="validate-bundle"&&env::var("REJECT_CURRENT_GATE_B").as_deref()==Ok("true"){std::process::exit(1)}else{println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","a".repeat(64))}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="verify-production-canister-handover"{let counter=env::var("TRACE").unwrap()+".verify";let n=fs::read_to_string(&counter).ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(0);fs::write(&counter,(n+1).to_string()).unwrap();let valid=a.len()==5&&fs::read_to_string(&a[2]).is_ok_and(|v|v.contains("\"kind\":\"seal\"")&&v.contains("\"initial_operational_parameters_sha256\":\"1111\""))&&fs::read_to_string(&a[3]).is_ok_and(|v|v.contains("\"kind\":\"schedule\"")&&v.contains("\"seal_receipt_sha256\":\"2222\""))&&fs::read_to_string(&a[4]).is_ok_and(|v|v.contains("\"kind\":\"execute\"")&&v.contains("\"schedule_receipt_sha256\":\"3333\""));if (n>0&&env::var("HANDOVER_PRE_SEND_ACTIVE_DRIFT").as_deref()==Ok("true"))||!valid||["HANDOVER_BOOTSTRAP","HANDOVER_SEALED","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_INITIAL_PARAMETERS_DRIFT","HANDOVER_SEAL_RECEIPT_DRIFT","HANDOVER_SCHEDULE_RECEIPT_DRIFT","HANDOVER_EXECUTE_RECEIPT_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_RESERVE_DRIFT","HANDOVER_STORAGE_INTEGRITY_DRIFT","HANDOVER_IC_DEPOSITS_PAUSED","HANDOVER_BASE_DEPOSITS_PAUSED","HANDOVER_BASE_WITHDRAWALS_PAUSED"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else if a[0]=="validate-production-handover-candidate"{println!("production_handover_candidate=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-bundle"&&env::var("REJECT_CURRENT_GATE_B").as_deref()==Ok("true"){std::process::exit(1)}else{println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","a".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -56,7 +56,9 @@ cat >"$T/bundle/profile.json" <<'JSON'
 JSON
 PROFILE_SHA="$(shasum -a 256 "$T/bundle/profile.json" | awk '{print $1}')"
 printf '{"source_revision":"%s","source_tree_sha256":"%s","artifacts":[{"path":"profile.json","sha256":"%s"}]}\n' "$REVISION" "$TREE" "$PROFILE_SHA" >"$T/bundle/release-manifest.json"
-MANIFEST_SHA="$(shasum -a 256 "$T/bundle/release-manifest.json" | awk '{print $1}')"
+GATE_B_HASH="$(printf 'a%.0s' {1..64})"
+RAW_MANIFEST_SHA="$(shasum -a 256 "$T/bundle/release-manifest.json" | awk '{print $1}')"
+[[ "$RAW_MANIFEST_SHA" != "$GATE_B_HASH" ]]
 export TRACE="$T/trace"
 export ORIGINAL_PROFILE="$T/bundle/profile.json"
 export ORIGINAL_EXECUTE_RECEIPT="$T/controller-execute-receipt.json"
@@ -101,7 +103,7 @@ run_handover() {
   shift
   rm -f "$TRACE.updated"
   rm -f "$TRACE.verify"
-  BRIDGE_GATE_B_MANIFEST_SHA256="$MANIFEST_SHA" \
+  BRIDGE_GATE_B_MANIFEST_SHA256="$GATE_B_HASH" \
   BRIDGE_RELEASE_BUNDLE="$T/bundle" \
   BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$T/operational-config-seal-receipt.json" \
   BRIDGE_CONTROLLER_SCHEDULE_RECEIPT="$T/controller-schedule-receipt.json" \
@@ -114,7 +116,7 @@ run_handover() {
 
 run_handover "$T/handover.json"
 REJECT_CURRENT_GATE_B=true run_handover "$T/historical-lineage.json"
-python3 - "$T/handover.json" "$MANIFEST_SHA" <<'PY'
+python3 - "$T/handover.json" "$GATE_B_HASH" <<'PY'
 import hashlib,json,sys
 v=json.load(open(sys.argv[1]))
 assert v['final_controllers']==['7jkta-eyaaa-aaaaq-aaarq-cai']
@@ -148,7 +150,7 @@ cp "$T/controller-execute-receipt.json" "$T/execute.before-race.json"
 MUTATE_HANDOVER_RECEIPT_AFTER_FREEZE=true run_handover "$T/frozen-receipt-race.json"
 mv "$T/execute.before-race.json" "$T/controller-execute-receipt.json"
 
-if BRIDGE_GATE_B_MANIFEST_SHA256="$MANIFEST_SHA" \
+if BRIDGE_GATE_B_MANIFEST_SHA256="$GATE_B_HASH" \
   BRIDGE_RELEASE_BUNDLE="$T/bundle" \
   BRIDGE_ICP_IDENTITY=production \
   BRIDGE_HANDOVER_EVIDENCE_FILE="$T/predeploy-handover.json" \

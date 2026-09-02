@@ -243,14 +243,19 @@ production_validate_gate() {
         return 1
       }
     done
-    "$profile_bin" validate-production-handover-candidate \
+    output="$("$profile_bin" validate-production-handover-candidate \
       "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
-      "$handover_execute_receipt" >/dev/null || {
+      "$handover_execute_receipt")" || {
       rm -rf "$target"
       echo "controller handover activation lineage is invalid" >&2
       return 1
     }
-    actual_hash="$(shasum -a 256 "$bundle/release-manifest.json" | awk '{print $1}')"
+    [[ "$output" =~ ^production_handover_candidate=pass[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || {
+      rm -rf "$target"
+      echo "controller handover candidate result is malformed" >&2
+      return 1
+    }
+    actual_hash="${BASH_REMATCH[1]}"
   else rm -rf "$target"; echo "invalid production gate mode" >&2; return 1
   fi
   if [[ "$mode" == gate-a ]]; then
