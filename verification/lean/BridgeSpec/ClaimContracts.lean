@@ -146,6 +146,32 @@ theorem initial_activation_authorization_witness : InitialActivationAuthorizatio
     cases authorityPresent <;> cases confirmedExecute <;>
       simp [bootstrapActivationAuthorityAfterTransition]
 
+def confirmedActivationAttemptIsUnique
+    (foundMatch foundAdditionalMatch : Bool) : Bool :=
+  foundMatch && !foundAdditionalMatch
+
+def confirmedActivationMetadataMatches
+    (confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt : Nat) : Bool :=
+  confirmedGeneration == artifactGeneration && confirmedSignedAt == artifactSignedAt
+
+def ConfirmedActivationEvidenceBinding : Prop :=
+  (∀ foundMatch foundAdditionalMatch : Bool,
+      confirmedActivationAttemptIsUnique foundMatch foundAdditionalMatch = true ↔
+        foundMatch = true ∧ foundAdditionalMatch = false) ∧
+  (∀ confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt : Nat,
+      confirmedActivationMetadataMatches
+          confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt = true ↔
+        confirmedGeneration = artifactGeneration ∧ confirmedSignedAt = artifactSignedAt)
+
+theorem confirmed_activation_evidence_binding_witness :
+    ConfirmedActivationEvidenceBinding := by
+  constructor
+  · intro foundMatch foundAdditionalMatch
+    cases foundMatch <;> cases foundAdditionalMatch <;>
+      simp [confirmedActivationAttemptIsUnique]
+  · intro confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt
+    simp [confirmedActivationMetadataMatches, Bool.and_eq_true]
+
 def IntegratedProtocolReachability : Prop :=
   (∀ {state : Protocol.ProtocolState}, Protocol.Reachable state → Protocol.Safe state) ∧
     (∀ {stored reopened : Protocol.ProtocolState},

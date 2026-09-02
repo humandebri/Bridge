@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 KERNEL = ROOT / "canister" / "bridge-core" / "src" / "kernel.rs"
 BRIDGE_CORE_ROOT = (ROOT / "canister" / "bridge-core" / "src").resolve()
 BRIDGE_CANISTER_ROOT = (ROOT / "canister" / "bridge-canister" / "src").resolve()
+BRIDGE_PROFILE_ROOT = (ROOT / "tools" / "bridge-profile" / "src").resolve()
 
 
 def rust_body(cleaned: str, name: str) -> str:
@@ -222,6 +223,8 @@ def production_call_is_canonical(
         expected = f"crate::kernel::{kernel}"
     elif resolved.is_relative_to(BRIDGE_CANISTER_ROOT):
         expected = f"::bridge_core::kernel::{kernel}"
+    elif resolved.is_relative_to(BRIDGE_PROFILE_ROOT):
+        expected = f"bridge_core::kernel::{kernel}"
     else:
         return False
     return bool(calls) and calls == {expected} and not macros

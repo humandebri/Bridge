@@ -399,10 +399,14 @@ fn activation_confirmation_view(
         .signed_transactions
         .iter()
         .filter(|signed| signed.transaction_hash == *transaction_hash);
-    let signed = matching_attempts.next()?;
-    if matching_attempts.next().is_some() {
+    let signed = matching_attempts.next();
+    if !::bridge_core::kernel::confirmed_activation_attempt_is_unique(
+        signed.is_some(),
+        matching_attempts.next().is_some(),
+    ) {
         return None;
     }
+    let signed = signed?;
     Some(ActivationConfirmationView {
         phase: phase.into(),
         governance_operation_id: transaction.id,

@@ -144,6 +144,25 @@ fn confirmed_execute_consumes_bootstrap_activation_authority_permanently() {
 }
 
 #[test]
+fn confirmed_activation_evidence_requires_one_hash_and_exact_metadata() {
+    use bridge_core::kernel::{
+        confirmed_activation_attempt_is_unique, confirmed_activation_metadata_matches,
+    };
+
+    for found_match in [false, true] {
+        for found_additional_match in [false, true] {
+            assert_eq!(
+                confirmed_activation_attempt_is_unique(found_match, found_additional_match),
+                found_match && !found_additional_match,
+            );
+        }
+    }
+    assert!(confirmed_activation_metadata_matches(2, 41, 2, 41));
+    assert!(!confirmed_activation_metadata_matches(3, 41, 2, 41));
+    assert!(!confirmed_activation_metadata_matches(2, 42, 2, 41));
+}
+
+#[test]
 fn reserve_boundaries_and_overflow_are_checked() {
     assert_eq!(checked_requirement(0, 0, 0), Some(0));
     assert_eq!(checked_requirement(7, 3, 4), Some(19));

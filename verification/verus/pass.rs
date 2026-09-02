@@ -917,6 +917,33 @@ proof fn confirmed_execute_consumes_bootstrap_activation_authority(
         !kernel::bootstrap_activation_authority_after_transition_spec(authority_present, true),
 {}
 
+proof fn confirmed_activation_attempt_requires_exactly_one_hash(
+    found_match: bool,
+    found_additional_match: bool,
+)
+    ensures kernel::confirmed_activation_attempt_is_unique_spec(
+        found_match,
+        found_additional_match,
+    ) == (found_match && !found_additional_match),
+{}
+
+proof fn confirmed_activation_metadata_requires_exact_match(
+    confirmed_generation: int,
+    confirmed_signed_at_ns: int,
+    artifact_generation: int,
+    artifact_signed_at_ns: int,
+)
+    ensures kernel::confirmed_activation_metadata_matches_spec(
+        confirmed_generation,
+        confirmed_signed_at_ns,
+        artifact_generation,
+        artifact_signed_at_ns,
+    ) == (
+        confirmed_generation == artifact_generation
+            && confirmed_signed_at_ns == artifact_signed_at_ns
+    ),
+{}
+
 proof fn audit_sequence_is_strictly_monotone(current: int)
     requires 0 <= current < 0xffff_ffff_ffff_ffffint
     ensures kernel::audit_next_spec(current) == Some(current + 1), current + 1 > current

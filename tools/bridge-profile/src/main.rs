@@ -6990,9 +6990,17 @@ fn activation_confirmation_artifact_metadata_matches(
     confirmation: &ActivationConfirmationStatusView,
     artifact: &DirectActivationArtifact,
 ) -> Result<bool, String> {
-    let signed_at_ns = parse_decimal_u128(&artifact.signed_at_ns, "signed timestamp")?;
-    Ok(confirmation.generation == artifact.generation
-        && u128::from(confirmation.signed_at_ns) == signed_at_ns)
+    let signed_at_ns = u64::try_from(parse_decimal_u128(
+        &artifact.signed_at_ns,
+        "signed timestamp",
+    )?)
+    .map_err(|_| "signed timestamp exceeds nat64")?;
+    Ok(bridge_core::kernel::confirmed_activation_metadata_matches(
+        confirmation.generation,
+        confirmation.signed_at_ns,
+        artifact.generation,
+        signed_at_ns,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

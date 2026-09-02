@@ -216,6 +216,19 @@ macro_rules! bootstrap_activation_authority_after_transition_body {
     };
 }
 
+macro_rules! confirmed_activation_attempt_is_unique_body {
+    ($found_match:expr, $found_additional_match:expr) => {
+        $found_match && !$found_additional_match
+    };
+}
+
+macro_rules! confirmed_activation_metadata_matches_body {
+    ($confirmed_generation:expr, $confirmed_signed_at_ns:expr, $artifact_generation:expr, $artifact_signed_at_ns:expr) => {
+        $confirmed_generation == $artifact_generation
+            && $confirmed_signed_at_ns == $artifact_signed_at_ns
+    };
+}
+
 #[cfg(not(verus_keep_ghost))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetOperationLifecycleDecision {
@@ -1808,6 +1821,29 @@ pub const fn bootstrap_activation_authority_after_transition(
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn confirmed_activation_attempt_is_unique(
+    found_match: bool,
+    found_additional_match: bool,
+) -> bool {
+    confirmed_activation_attempt_is_unique_body!(found_match, found_additional_match)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn confirmed_activation_metadata_matches(
+    confirmed_generation: u8,
+    confirmed_signed_at_ns: u64,
+    artifact_generation: u8,
+    artifact_signed_at_ns: u64,
+) -> bool {
+    confirmed_activation_metadata_matches_body!(
+        confirmed_generation,
+        confirmed_signed_at_ns,
+        artifact_generation,
+        artifact_signed_at_ns
+    )
+}
+
+#[cfg(not(verus_keep_ghost))]
 pub const fn audit_next(current: u64) -> Option<u64> {
     next_attempt_body!(current, u64::MAX, 1u64)
 }
@@ -2586,6 +2622,27 @@ verus! {
         bootstrap_activation_authority_after_transition_body!(
             authority_present,
             confirmed_execute
+        )
+    }
+
+    pub open spec fn confirmed_activation_attempt_is_unique_spec(
+        found_match: bool,
+        found_additional_match: bool,
+    ) -> bool {
+        confirmed_activation_attempt_is_unique_body!(found_match, found_additional_match)
+    }
+
+    pub open spec fn confirmed_activation_metadata_matches_spec(
+        confirmed_generation: int,
+        confirmed_signed_at_ns: int,
+        artifact_generation: int,
+        artifact_signed_at_ns: int,
+    ) -> bool {
+        confirmed_activation_metadata_matches_body!(
+            confirmed_generation,
+            confirmed_signed_at_ns,
+            artifact_generation,
+            artifact_signed_at_ns
         )
     }
 

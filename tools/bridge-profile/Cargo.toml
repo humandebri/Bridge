@@ -6,6 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+bridge-core = { path = "../../canister/bridge-core" }
 candid.workspace = true
 ciborium.workspace = true
 ic-agent.workspace = true

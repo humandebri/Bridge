@@ -392,9 +392,16 @@ fn registered_proof()
         with self.assertRaisesRegex(ValueError, "outside Rust production roots"):
             production_call_site_path("scripts/test_verus_manifest.py")
 
+    def test_accepts_bridge_profile_as_a_rust_production_root(self) -> None:
+        self.assertEqual(
+            production_call_site_path("tools/bridge-profile/src/main.rs"),
+            (ROOT / "tools/bridge-profile/src/main.rs").resolve(),
+        )
+
     def test_requires_canonical_production_call_qualification(self) -> None:
         core = ROOT / "canister/bridge-core/src/deposit.rs"
         canister = ROOT / "canister/bridge-canister/src/api.rs"
+        profile = ROOT / "tools/bridge-profile/src/main.rs"
         kernel = ROOT / "canister/bridge-core/src/kernel.rs"
         self.assertTrue(
             production_call_is_canonical(
@@ -425,6 +432,11 @@ fn registered_proof()
         )
         self.assertTrue(
             production_call_is_canonical("{ target_body!(); }", "target", kernel)
+        )
+        self.assertTrue(
+            production_call_is_canonical(
+                "{ bridge_core::kernel::target(); }", "target", profile
+            )
         )
         for shadowed in (
             "{ use crate::kernel::target; target(); }",

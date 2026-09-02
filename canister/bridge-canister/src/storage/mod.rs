@@ -5777,7 +5777,7 @@ impl StableStore {
         let previous_admission = self.deposit_admission.get()?;
         let mut admission = self.deposit_admission()?;
         Self::apply_governance_completion(&mut admission, &transaction)?;
-        if !bridge_core::kernel::bootstrap_activation_authority_after_transition(
+        if !::bridge_core::kernel::bootstrap_activation_authority_after_transition(
             admission.bootstrap_activation_controller.is_some(),
             true,
         ) {
