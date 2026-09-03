@@ -34,6 +34,7 @@ const MAX_ACTIVATION_ATTESTATION_AGE_SECS: u64 = 5 * 60;
 const CURRENT_STABLE_SCHEMA_VERSION: u16 = 35;
 const RELEASE_PROFILE_SCHEMA_VERSION: u8 = 5;
 const PRODUCTION_CANISTER_INSTALL_RECEIPT_SCHEMA_VERSION: u8 = 3;
+const PRODUCTION_UPGRADE_CHUNK_SIZE: usize = 1024 * 1024;
 const GATE_A_ARTIFACTS: [&str; 6] = [
     "profile.json",
     "bridge-canister.wasm",
@@ -446,6 +447,8 @@ struct ProductionCanisterUpgradeReceipt {
     before_public_state_sha256: String,
     after_public_state_sha256: String,
     command_argv: Vec<String>,
+    chunk_upload_evidence_json_hex: String,
+    chunk_upload_evidence_json_sha256: String,
     submission_json_hex: String,
     submission_json_sha256: String,
     request_id: String,
@@ -462,22 +465,109 @@ enum ManagementInstallMode {
 }
 
 #[derive(CandidType)]
-struct ManagementInstallCodeArgument {
-    mode: ManagementInstallMode,
+struct ManagementUploadChunkArgument {
     canister_id: Principal,
-    wasm_module: Vec<u8>,
+    chunk: Vec<u8>,
+}
+
+#[derive(CandidType)]
+struct ManagementStoredChunksArgument {
+    canister_id: Principal,
+}
+
+#[derive(CandidType, Deserialize, Clone)]
+struct ManagementChunkHash {
+    hash: Vec<u8>,
+}
+
+#[derive(CandidType)]
+struct ManagementInstallChunkedCodeArgument {
+    mode: ManagementInstallMode,
+    target_canister: Principal,
+    store_canister: Option<Principal>,
+    chunk_hashes_list: Vec<ManagementChunkHash>,
+    wasm_module_hash: Vec<u8>,
     arg: Vec<u8>,
     sender_canister_version: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct ProductionUpgradeChunkSubmission {
+    index: u32,
+    offset: u64,
+    size_bytes: u64,
+    sha256: String,
+    argument_hex: String,
+    argument_sha256: String,
+    ingress_expiry: u64,
+    request_id: String,
+    signed_update_hex: String,
+    signed_update_sha256: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionUpgradeSignedUpdate {
+    argument_hex: String,
+    argument_sha256: String,
+    ingress_expiry: u64,
+    request_id: String,
+    signed_update_hex: String,
+    signed_update_sha256: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionUpgradeChunkResponse {
+    schema_version: u8,
+    index: u32,
+    request_id: String,
+    response_hex: String,
+    response_sha256: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionUpgradeStoredChunksResponse {
+    schema_version: u8,
+    request_id: String,
+    response_hex: String,
+    response_sha256: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionUpgradeUploadEvidence {
+    schema_version: u8,
+    stored_chunks_request_id: String,
+    stored_chunks_response_hex: String,
+    stored_chunks_response_sha256: String,
+    chunks: Vec<ProductionUpgradeChunkResponse>,
+}
+
+#[derive(Serialize)]
+struct ProductionUpgradeSendError {
+    schema_version: u8,
+    request_kind: String,
+    request_id: String,
+    observed_at_ns: u64,
+    error: String,
+    error_sha256: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ProductionUpgradeSubmission {
     schema_version: u8,
+    install_method: String,
     ic_host: String,
     effective_canister_id: String,
     sender_principal: String,
     wasm_sha256: String,
+    chunk_size_bytes: u64,
+    stored_chunks: ProductionUpgradeSignedUpdate,
+    chunks: Vec<ProductionUpgradeChunkSubmission>,
     argument_hex: String,
     argument_sha256: String,
     ingress_expiry: u64,
@@ -4903,6 +4993,8 @@ fn validate_post_gate_a_policy_transition(
         &current_wasm,
         &submission_bytes,
     )?;
+    let upload_evidence_bytes = decode_hex(&upgrade.chunk_upload_evidence_json_hex)?;
+    validate_production_upgrade_upload_evidence(&validated_submission, &upload_evidence_bytes)?;
     if !before_module.eq_ignore_ascii_case(&gate_a_profile.bridge_canister_wasm_sha256)
         || !after_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
         || !hex(&Sha256::digest(&current_wasm))
@@ -5174,6 +5266,7 @@ fn validate_post_gate_a_policy_transition(
                 "<production-controller-pem>",
                 "<verified-release-artifact>",
                 "<durable-submission-artifact>",
+                "<durable-chunk-upload-evidence>",
                 "<durable-response-artifact>",
             ]
             .map(str::to_string)
@@ -5189,6 +5282,10 @@ fn validate_post_gate_a_policy_transition(
         || !hex_sha256_matches(
             &upgrade.submission_json_hex,
             &upgrade.submission_json_sha256,
+        )
+        || !hex_sha256_matches(
+            &upgrade.chunk_upload_evidence_json_hex,
+            &upgrade.chunk_upload_evidence_json_sha256,
         )
         || !valid_sha256(&upgrade.request_id)
         || validated_submission.request_id != upgrade.request_id
@@ -8935,49 +9032,28 @@ fn production_upgrade_ingress_window_valid(executed_at_unix: u64, ingress_expiry
         .unwrap_or(false)
 }
 
-fn validate_production_upgrade_submission_bytes(
-    host: &str,
-    canister: Principal,
+#[allow(clippy::too_many_arguments)]
+fn validate_production_upgrade_signed_update(
     sender: Principal,
-    wasm: &[u8],
-    submission_bytes: &[u8],
-) -> Result<ProductionUpgradeSubmission, String> {
-    let management = Principal::management_canister();
-    let argument = Encode!(&ManagementInstallCodeArgument {
-        mode: ManagementInstallMode::Upgrade,
-        canister_id: canister,
-        wasm_module: wasm.to_vec(),
-        arg: Vec::new(),
-        sender_canister_version: None,
-    })
-    .map_err(|error| error.to_string())?;
-    let wasm_sha256 = hex(&Sha256::digest(wasm));
-    let submission: ProductionUpgradeSubmission =
-        serde_json::from_slice(submission_bytes).map_err(|error| error.to_string())?;
-    if submission.schema_version != 1
-        || submission.ic_host != host
-        || submission.effective_canister_id != canister.to_text()
-        || submission.sender_principal != sender.to_text()
-        || !submission.wasm_sha256.eq_ignore_ascii_case(&wasm_sha256)
-        || !submission
-            .argument_hex
-            .eq_ignore_ascii_case(&hex(&argument))
-        || !hex_sha256_matches(&submission.argument_hex, &submission.argument_sha256)
-        || !hex_sha256_matches(
-            &submission.signed_update_hex,
-            &submission.signed_update_sha256,
-        )
-        || !valid_sha256(&submission.request_id)
+    method_name: &str,
+    argument: &[u8],
+    ingress_expiry: u64,
+    request_id_hex: &str,
+    signed_update_hex: &str,
+    signed_update_sha256: &str,
+) -> Result<(), String> {
+    if !hex_sha256_matches(signed_update_hex, signed_update_sha256) || !valid_sha256(request_id_hex)
     {
-        return Err("production upgrade submission does not match the exact request".into());
+        return Err("production upgrade signed update metadata is invalid".into());
     }
-    let signed_update = decode_hex(&submission.signed_update_hex)?;
+    let management = Principal::management_canister();
+    let signed_update = decode_hex(signed_update_hex)?;
     ic_agent::agent::signed_update_inspect(
         sender,
         management,
-        "install_code",
-        &argument,
-        submission.ingress_expiry,
+        method_name,
+        argument,
+        ingress_expiry,
         signed_update.clone(),
     )
     .map_err(|error| error.to_string())?;
@@ -8999,22 +9075,214 @@ fn validate_production_upgrade_submission_bytes(
     let request_id = envelope.content.to_request_id();
     if envelope.sender_delegation.is_some()
         || Principal::self_authenticating(public_key) != sender
-        || !hex(request_id.as_slice()).eq_ignore_ascii_case(&submission.request_id)
+        || !hex(request_id.as_slice()).eq_ignore_ascii_case(request_id_hex)
     {
         return Err("production upgrade signed envelope identity or request ID is invalid".into());
     }
-    verify_production_upgrade_signature(public_key, signature, &request_id.signable())?;
+    verify_production_upgrade_signature(public_key, signature, &request_id.signable())
+}
+
+fn validate_production_upgrade_submission_bytes(
+    host: &str,
+    canister: Principal,
+    sender: Principal,
+    wasm: &[u8],
+    submission_bytes: &[u8],
+) -> Result<ProductionUpgradeSubmission, String> {
+    if wasm.is_empty() {
+        return Err("production upgrade Wasm must not be empty".into());
+    }
+    let wasm_sha256 = hex(&Sha256::digest(wasm));
+    let chunks = wasm
+        .chunks(PRODUCTION_UPGRADE_CHUNK_SIZE)
+        .collect::<Vec<_>>();
+    let chunk_hashes_list = chunks
+        .iter()
+        .map(|chunk| ManagementChunkHash {
+            hash: Sha256::digest(chunk).to_vec(),
+        })
+        .collect::<Vec<_>>();
+    let argument = Encode!(&ManagementInstallChunkedCodeArgument {
+        mode: ManagementInstallMode::Upgrade,
+        target_canister: canister,
+        store_canister: None,
+        chunk_hashes_list,
+        wasm_module_hash: Sha256::digest(wasm).to_vec(),
+        arg: Vec::new(),
+        sender_canister_version: None,
+    })
+    .map_err(|error| error.to_string())?;
+    let submission: ProductionUpgradeSubmission =
+        serde_json::from_slice(submission_bytes).map_err(|error| error.to_string())?;
+    if submission.schema_version != 2
+        || submission.install_method != "install_chunked_code"
+        || submission.ic_host != host
+        || submission.effective_canister_id != canister.to_text()
+        || submission.sender_principal != sender.to_text()
+        || !submission.wasm_sha256.eq_ignore_ascii_case(&wasm_sha256)
+        || submission.chunk_size_bytes != PRODUCTION_UPGRADE_CHUNK_SIZE as u64
+        || submission.chunks.len() != chunks.len()
+        || !submission
+            .argument_hex
+            .eq_ignore_ascii_case(&hex(&argument))
+        || !hex_sha256_matches(&submission.argument_hex, &submission.argument_sha256)
+    {
+        return Err("production upgrade submission does not match the exact request".into());
+    }
+    let stored_chunks_argument = Encode!(&ManagementStoredChunksArgument {
+        canister_id: canister,
+    })
+    .map_err(|error| error.to_string())?;
+    if !submission
+        .stored_chunks
+        .argument_hex
+        .eq_ignore_ascii_case(&hex(&stored_chunks_argument))
+        || !hex_sha256_matches(
+            &submission.stored_chunks.argument_hex,
+            &submission.stored_chunks.argument_sha256,
+        )
+    {
+        return Err("production upgrade stored-chunks request is invalid".into());
+    }
+    validate_production_upgrade_signed_update(
+        sender,
+        "stored_chunks",
+        &stored_chunks_argument,
+        submission.stored_chunks.ingress_expiry,
+        &submission.stored_chunks.request_id,
+        &submission.stored_chunks.signed_update_hex,
+        &submission.stored_chunks.signed_update_sha256,
+    )?;
+    validate_production_upgrade_signed_update(
+        sender,
+        "install_chunked_code",
+        &argument,
+        submission.ingress_expiry,
+        &submission.request_id,
+        &submission.signed_update_hex,
+        &submission.signed_update_sha256,
+    )?;
+    for (index, (chunk, recorded)) in chunks.iter().zip(&submission.chunks).enumerate() {
+        let chunk_sha256 = hex(&Sha256::digest(chunk));
+        let chunk_argument = Encode!(&ManagementUploadChunkArgument {
+            canister_id: canister,
+            chunk: chunk.to_vec(),
+        })
+        .map_err(|error| error.to_string())?;
+        if recorded.index != u32::try_from(index).map_err(|error| error.to_string())?
+            || recorded.offset
+                != u64::try_from(
+                    index
+                        .checked_mul(PRODUCTION_UPGRADE_CHUNK_SIZE)
+                        .ok_or("production upgrade chunk offset overflow")?,
+                )
+                .map_err(|error| error.to_string())?
+            || recorded.size_bytes
+                != u64::try_from(chunk.len()).map_err(|error| error.to_string())?
+            || !recorded.sha256.eq_ignore_ascii_case(&chunk_sha256)
+            || !recorded
+                .argument_hex
+                .eq_ignore_ascii_case(&hex(&chunk_argument))
+            || !hex_sha256_matches(&recorded.argument_hex, &recorded.argument_sha256)
+        {
+            return Err("production upgrade chunk submission does not match the exact Wasm".into());
+        }
+        validate_production_upgrade_signed_update(
+            sender,
+            "upload_chunk",
+            &chunk_argument,
+            recorded.ingress_expiry,
+            &recorded.request_id,
+            &recorded.signed_update_hex,
+            &recorded.signed_update_sha256,
+        )?;
+    }
     Ok(submission)
 }
 
-fn submit_production_canister_upgrade(
+fn validate_production_upgrade_upload_evidence(
+    submission: &ProductionUpgradeSubmission,
+    evidence_bytes: &[u8],
+) -> Result<ProductionUpgradeUploadEvidence, String> {
+    let evidence: ProductionUpgradeUploadEvidence =
+        serde_json::from_slice(evidence_bytes).map_err(|error| error.to_string())?;
+    if evidence.schema_version != 1
+        || evidence.stored_chunks_request_id != submission.stored_chunks.request_id
+        || !hex_sha256_matches(
+            &evidence.stored_chunks_response_hex,
+            &evidence.stored_chunks_response_sha256,
+        )
+        || evidence.chunks.len() != submission.chunks.len()
+    {
+        return Err("production upgrade upload evidence metadata is invalid".into());
+    }
+    let stored_response = decode_hex(&evidence.stored_chunks_response_hex)?;
+    let stored =
+        Decode!(&stored_response, Vec<ManagementChunkHash>).map_err(|error| error.to_string())?;
+    let expected = submission
+        .chunks
+        .iter()
+        .map(|chunk| chunk.sha256.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    if stored
+        .iter()
+        .any(|chunk| !expected.contains(&hex(&chunk.hash)))
+    {
+        return Err("production upgrade chunk store contains an unexpected chunk".into());
+    }
+    for (index, (recorded, chunk)) in evidence.chunks.iter().zip(&submission.chunks).enumerate() {
+        if recorded.schema_version != 1
+            || recorded.index != u32::try_from(index).map_err(|error| error.to_string())?
+            || recorded.request_id != chunk.request_id
+            || !hex_sha256_matches(&recorded.response_hex, &recorded.response_sha256)
+        {
+            return Err("production upgrade chunk response metadata is invalid".into());
+        }
+        let response = decode_hex(&recorded.response_hex)?;
+        let observed =
+            Decode!(&response, ManagementChunkHash).map_err(|error| error.to_string())?;
+        if !hex(&observed.hash).eq_ignore_ascii_case(&chunk.sha256) {
+            return Err("production upgrade chunk response hash is invalid".into());
+        }
+    }
+    Ok(evidence)
+}
+
+fn send_production_upgrade_signed_update(
+    agent: &Agent,
+    effective_canister_id: Principal,
+    request_id_hex: &str,
+    signed_update_hex: &str,
+) -> Result<Vec<u8>, String> {
+    let signed_update = decode_hex(signed_update_hex)?;
+    async_runtime()?.block_on(async {
+        match agent
+            .update_signed(effective_canister_id, signed_update)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            CallResponse::Response(response) => Ok(response),
+            CallResponse::Poll(observed_request_id) => {
+                if !hex(observed_request_id.as_slice()).eq_ignore_ascii_case(request_id_hex) {
+                    return Err("IC returned a request ID different from the signed update".into());
+                }
+                agent
+                    .wait(&observed_request_id, effective_canister_id)
+                    .await
+                    .map(|(response, _)| response)
+                    .map_err(|error| error.to_string())
+            }
+        }
+    })
+}
+
+fn prepare_production_canister_upgrade(
     host: &str,
     canister_text: &str,
     expected_principal_text: &str,
     pem_path: &Path,
     wasm_path: &Path,
     submission_path: &Path,
-    response_path: &Path,
 ) -> Result<(), String> {
     let canister = Principal::from_text(canister_text).map_err(|error| error.to_string())?;
     let expected_principal =
@@ -9035,29 +9303,88 @@ fn submit_production_canister_upgrade(
         .build()
         .map_err(|error| error.to_string())?;
     let management = Principal::management_canister();
-    let argument = Encode!(&ManagementInstallCodeArgument {
-        mode: ManagementInstallMode::Upgrade,
-        canister_id: canister,
-        wasm_module: wasm.clone(),
-        arg: Vec::new(),
-        sender_canister_version: None,
-    })
-    .map_err(|error| error.to_string())?;
-    let submission = if submission_path.exists() {
-        validate_production_upgrade_submission(host, canister, sender, &wasm, submission_path)?
-    } else {
+    if submission_path.exists() {
+        return Err("production upgrade submission artifact already exists".into());
+    }
+    let submission = {
+        let stored_chunks_argument = Encode!(&ManagementStoredChunksArgument {
+            canister_id: canister,
+        })
+        .map_err(|error| error.to_string())?;
+        let stored_chunks_signed = agent
+            .update(&management, "stored_chunks")
+            .with_effective_canister_id(canister)
+            .with_arg(stored_chunks_argument.clone())
+            .sign()
+            .map_err(|error| error.to_string())?;
+        let stored_chunks = ProductionUpgradeSignedUpdate {
+            argument_hex: hex(&stored_chunks_argument),
+            argument_sha256: hex(&Sha256::digest(&stored_chunks_argument)),
+            ingress_expiry: stored_chunks_signed.ingress_expiry,
+            request_id: hex(stored_chunks_signed.request_id.as_slice()),
+            signed_update_hex: hex(&stored_chunks_signed.signed_update),
+            signed_update_sha256: hex(&Sha256::digest(&stored_chunks_signed.signed_update)),
+        };
+        let mut chunks = Vec::new();
+        let mut chunk_hashes_list = Vec::new();
+        for (index, chunk) in wasm.chunks(PRODUCTION_UPGRADE_CHUNK_SIZE).enumerate() {
+            let chunk_sha256 = Sha256::digest(chunk).to_vec();
+            let argument = Encode!(&ManagementUploadChunkArgument {
+                canister_id: canister,
+                chunk: chunk.to_vec(),
+            })
+            .map_err(|error| error.to_string())?;
+            let signed = agent
+                .update(&management, "upload_chunk")
+                .with_effective_canister_id(canister)
+                .with_arg(argument.clone())
+                .sign()
+                .map_err(|error| error.to_string())?;
+            chunks.push(ProductionUpgradeChunkSubmission {
+                index: u32::try_from(index).map_err(|error| error.to_string())?,
+                offset: u64::try_from(
+                    index
+                        .checked_mul(PRODUCTION_UPGRADE_CHUNK_SIZE)
+                        .ok_or("production upgrade chunk offset overflow")?,
+                )
+                .map_err(|error| error.to_string())?,
+                size_bytes: u64::try_from(chunk.len()).map_err(|error| error.to_string())?,
+                sha256: hex(&chunk_sha256),
+                argument_hex: hex(&argument),
+                argument_sha256: hex(&Sha256::digest(&argument)),
+                ingress_expiry: signed.ingress_expiry,
+                request_id: hex(signed.request_id.as_slice()),
+                signed_update_hex: hex(&signed.signed_update),
+                signed_update_sha256: hex(&Sha256::digest(&signed.signed_update)),
+            });
+            chunk_hashes_list.push(ManagementChunkHash { hash: chunk_sha256 });
+        }
+        let argument = Encode!(&ManagementInstallChunkedCodeArgument {
+            mode: ManagementInstallMode::Upgrade,
+            target_canister: canister,
+            store_canister: None,
+            chunk_hashes_list,
+            wasm_module_hash: Sha256::digest(&wasm).to_vec(),
+            arg: Vec::new(),
+            sender_canister_version: None,
+        })
+        .map_err(|error| error.to_string())?;
         let signed = agent
-            .update(&management, "install_code")
+            .update(&management, "install_chunked_code")
             .with_effective_canister_id(canister)
             .with_arg(argument.clone())
             .sign()
             .map_err(|error| error.to_string())?;
         let submission = ProductionUpgradeSubmission {
-            schema_version: 1,
+            schema_version: 2,
+            install_method: "install_chunked_code".into(),
             ic_host: host.to_string(),
             effective_canister_id: canister_text.to_string(),
             sender_principal: sender.to_text(),
             wasm_sha256: wasm_sha256.clone(),
+            chunk_size_bytes: PRODUCTION_UPGRADE_CHUNK_SIZE as u64,
+            stored_chunks,
+            chunks,
             argument_hex: hex(&argument),
             argument_sha256: hex(&Sha256::digest(&argument)),
             ingress_expiry: signed.ingress_expiry,
@@ -9065,9 +9392,259 @@ fn submit_production_canister_upgrade(
             signed_update_hex: hex(&signed.signed_update),
             signed_update_sha256: hex(&Sha256::digest(&signed.signed_update)),
         };
-        write_json_new(submission_path, &submission)?;
         submission
     };
+    write_json_new(submission_path, &submission)?;
+    println!("request_id={}", submission.request_id);
+    Ok(())
+}
+
+fn production_upgrade_request_has_time(ingress_expiry: u64) -> Result<(), String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let minimum_remaining = 15_u128 * 1_000_000_000;
+    if u128::from(ingress_expiry) <= now.saturating_add(minimum_remaining) {
+        return Err(
+            "production upgrade signed request has expired or is too close to expiry".into(),
+        );
+    }
+    Ok(())
+}
+
+fn record_production_upgrade_send_error(
+    evidence_dir: &Path,
+    request_kind: &str,
+    request_id: &str,
+    error: &str,
+) -> Result<(), String> {
+    let observed_at_ns = u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|value| value.to_string())?
+            .as_nanos(),
+    )
+    .map_err(|value| value.to_string())?;
+    let value = ProductionUpgradeSendError {
+        schema_version: 1,
+        request_kind: request_kind.into(),
+        request_id: request_id.into(),
+        observed_at_ns,
+        error: error.into(),
+        error_sha256: hex(&Sha256::digest(error.as_bytes())),
+    };
+    write_json_new(
+        &evidence_dir.join(format!("error-{request_kind}-{observed_at_ns}.json")),
+        &value,
+    )
+}
+
+fn production_upgrade_agent(
+    host: &str,
+    expected_principal: Principal,
+    pem_path: &Path,
+) -> Result<(Agent, Principal), String> {
+    let identity = production_upgrade_identity(pem_path)?;
+    let sender = identity.sender().map_err(|error| error.to_string())?;
+    if sender != expected_principal {
+        return Err(
+            "production controller PEM principal does not match the expected installer".into(),
+        );
+    }
+    let agent = Agent::builder()
+        .with_url(host)
+        .with_boxed_identity(identity)
+        .with_verify_query_signatures(true)
+        .build()
+        .map_err(|error| error.to_string())?;
+    Ok((agent, sender))
+}
+
+fn validate_stored_chunks_response(
+    submission: &ProductionUpgradeSubmission,
+    response: &ProductionUpgradeStoredChunksResponse,
+) -> Result<(), String> {
+    if response.schema_version != 1
+        || response.request_id != submission.stored_chunks.request_id
+        || !hex_sha256_matches(&response.response_hex, &response.response_sha256)
+    {
+        return Err("production upgrade stored-chunks response metadata is invalid".into());
+    }
+    let raw = decode_hex(&response.response_hex)?;
+    let stored = Decode!(&raw, Vec<ManagementChunkHash>).map_err(|error| error.to_string())?;
+    let expected = submission
+        .chunks
+        .iter()
+        .map(|chunk| chunk.sha256.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    if stored
+        .iter()
+        .any(|chunk| !expected.contains(&hex(&chunk.hash)))
+    {
+        return Err("production upgrade chunk store contains an unexpected chunk".into());
+    }
+    Ok(())
+}
+
+fn validate_chunk_response(
+    chunk: &ProductionUpgradeChunkSubmission,
+    response: &ProductionUpgradeChunkResponse,
+) -> Result<(), String> {
+    if response.schema_version != 1
+        || response.index != chunk.index
+        || response.request_id != chunk.request_id
+        || !hex_sha256_matches(&response.response_hex, &response.response_sha256)
+    {
+        return Err("production upgrade chunk response metadata is invalid".into());
+    }
+    let raw = decode_hex(&response.response_hex)?;
+    let observed = Decode!(&raw, ManagementChunkHash).map_err(|error| error.to_string())?;
+    if !hex(&observed.hash).eq_ignore_ascii_case(&chunk.sha256) {
+        return Err("production upgrade chunk response hash is invalid".into());
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upload_production_canister_upgrade_chunks(
+    host: &str,
+    canister_text: &str,
+    expected_principal_text: &str,
+    pem_path: &Path,
+    wasm_path: &Path,
+    submission_path: &Path,
+    evidence_dir: &Path,
+) -> Result<(), String> {
+    let canister = Principal::from_text(canister_text).map_err(|error| error.to_string())?;
+    let expected_principal =
+        Principal::from_text(expected_principal_text).map_err(|error| error.to_string())?;
+    let wasm = fs::read(wasm_path).map_err(|error| error.to_string())?;
+    let (agent, sender) = production_upgrade_agent(host, expected_principal, pem_path)?;
+    let submission =
+        validate_production_upgrade_submission(host, canister, sender, &wasm, submission_path)?;
+    if evidence_dir.exists() {
+        let metadata = fs::symlink_metadata(evidence_dir).map_err(|error| error.to_string())?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err("production upgrade upload evidence path is unsafe".into());
+        }
+    } else {
+        fs::create_dir(evidence_dir).map_err(|error| error.to_string())?;
+    }
+    let complete_path = evidence_dir.join("complete.json");
+    if complete_path.exists() {
+        let bytes = fs::read(&complete_path).map_err(|error| error.to_string())?;
+        validate_production_upgrade_upload_evidence(&submission, &bytes)?;
+        println!("chunk_upload_evidence={}", complete_path.display());
+        return Ok(());
+    }
+    let stored_path = evidence_dir.join("stored-chunks.json");
+    let stored_response = if stored_path.exists() {
+        read_json::<ProductionUpgradeStoredChunksResponse>(&stored_path)?
+    } else {
+        production_upgrade_request_has_time(submission.stored_chunks.ingress_expiry)?;
+        let raw = match send_production_upgrade_signed_update(
+            &agent,
+            canister,
+            &submission.stored_chunks.request_id,
+            &submission.stored_chunks.signed_update_hex,
+        ) {
+            Ok(raw) => raw,
+            Err(error) => {
+                record_production_upgrade_send_error(
+                    evidence_dir,
+                    "stored-chunks",
+                    &submission.stored_chunks.request_id,
+                    &error,
+                )?;
+                return Err(error);
+            }
+        };
+        let response = ProductionUpgradeStoredChunksResponse {
+            schema_version: 1,
+            request_id: submission.stored_chunks.request_id.clone(),
+            response_hex: hex(&raw),
+            response_sha256: hex(&Sha256::digest(&raw)),
+        };
+        validate_stored_chunks_response(&submission, &response)?;
+        write_json_new(&stored_path, &response)?;
+        response
+    };
+    validate_stored_chunks_response(&submission, &stored_response)?;
+    let mut responses = Vec::with_capacity(submission.chunks.len());
+    for chunk in &submission.chunks {
+        let response_path = evidence_dir.join(format!("chunk-{:04}.json", chunk.index));
+        let response = if response_path.exists() {
+            read_json::<ProductionUpgradeChunkResponse>(&response_path)?
+        } else {
+            production_upgrade_request_has_time(chunk.ingress_expiry)?;
+            let raw = match send_production_upgrade_signed_update(
+                &agent,
+                canister,
+                &chunk.request_id,
+                &chunk.signed_update_hex,
+            ) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    record_production_upgrade_send_error(
+                        evidence_dir,
+                        &format!("chunk-{:04}", chunk.index),
+                        &chunk.request_id,
+                        &error,
+                    )?;
+                    return Err(error);
+                }
+            };
+            let response = ProductionUpgradeChunkResponse {
+                schema_version: 1,
+                index: chunk.index,
+                request_id: chunk.request_id.clone(),
+                response_hex: hex(&raw),
+                response_sha256: hex(&Sha256::digest(&raw)),
+            };
+            validate_chunk_response(chunk, &response)?;
+            write_json_new(&response_path, &response)?;
+            response
+        };
+        validate_chunk_response(chunk, &response)?;
+        responses.push(response);
+    }
+    let complete = ProductionUpgradeUploadEvidence {
+        schema_version: 1,
+        stored_chunks_request_id: stored_response.request_id,
+        stored_chunks_response_hex: stored_response.response_hex,
+        stored_chunks_response_sha256: stored_response.response_sha256,
+        chunks: responses,
+    };
+    let complete_bytes = serde_json::to_vec(&complete).map_err(|error| error.to_string())?;
+    validate_production_upgrade_upload_evidence(&submission, &complete_bytes)?;
+    write_json_new(&complete_path, &complete)?;
+    println!("chunk_upload_evidence={}", complete_path.display());
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn submit_production_canister_upgrade(
+    host: &str,
+    canister_text: &str,
+    expected_principal_text: &str,
+    pem_path: &Path,
+    wasm_path: &Path,
+    submission_path: &Path,
+    upload_evidence_path: &Path,
+    response_path: &Path,
+) -> Result<(), String> {
+    let canister = Principal::from_text(canister_text).map_err(|error| error.to_string())?;
+    let expected_principal =
+        Principal::from_text(expected_principal_text).map_err(|error| error.to_string())?;
+    let wasm = fs::read(wasm_path).map_err(|error| error.to_string())?;
+    let wasm_sha256 = hex(&Sha256::digest(&wasm));
+    let (agent, sender) = production_upgrade_agent(host, expected_principal, pem_path)?;
+    let submission =
+        validate_production_upgrade_submission(host, canister, sender, &wasm, submission_path)?;
+    let upload_evidence = fs::read(upload_evidence_path).map_err(|error| error.to_string())?;
+    validate_production_upgrade_upload_evidence(&submission, &upload_evidence)?;
+    production_upgrade_request_has_time(submission.ingress_expiry)?;
     let request_id = submission.request_id.clone();
     let mut durable_response = OpenOptions::new()
         .write(true)
@@ -9086,26 +9663,12 @@ fn submit_production_canister_upgrade(
     std::io::stdout()
         .flush()
         .map_err(|error| error.to_string())?;
-    let signed_update = decode_hex(&submission.signed_update_hex)?;
-    let response = async_runtime()?.block_on(async {
-        match agent
-            .update_signed(canister, signed_update)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            CallResponse::Response(response) => Ok(response),
-            CallResponse::Poll(observed_request_id) => {
-                if hex(observed_request_id.as_slice()) != request_id {
-                    return Err("IC returned a request ID different from the signed update".into());
-                }
-                agent
-                    .wait(&observed_request_id, canister)
-                    .await
-                    .map(|(response, _)| response)
-                    .map_err(|error| error.to_string())
-            }
-        }
-    })?;
+    let response = send_production_upgrade_signed_update(
+        &agent,
+        canister,
+        &request_id,
+        &submission.signed_update_hex,
+    )?;
     writeln!(durable_response, "response_hex={}", hex(&response))
         .map_err(|error| error.to_string())?;
     writeln!(durable_response, "sender_principal={sender}").map_err(|error| error.to_string())?;
@@ -9430,7 +9993,41 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[3]
             );
         }
-        Some("submit-production-canister-upgrade") if args.len() == 9 => {
+        Some("prepare-production-canister-upgrade") if args.len() == 8 => {
+            prepare_production_canister_upgrade(
+                &args[2],
+                &args[3],
+                &args[4],
+                Path::new(&args[5]),
+                Path::new(&args[6]),
+                Path::new(&args[7]),
+            )?;
+        }
+        Some("upload-production-canister-upgrade-chunks") if args.len() == 9 => {
+            upload_production_canister_upgrade_chunks(
+                &args[2],
+                &args[3],
+                &args[4],
+                Path::new(&args[5]),
+                Path::new(&args[6]),
+                Path::new(&args[7]),
+                Path::new(&args[8]),
+            )?;
+        }
+        Some("validate-production-upgrade-submission") if args.len() == 7 => {
+            let canister = Principal::from_text(&args[3]).map_err(|error| error.to_string())?;
+            let sender = Principal::from_text(&args[4]).map_err(|error| error.to_string())?;
+            let wasm = fs::read(&args[5]).map_err(|error| error.to_string())?;
+            let submission = validate_production_upgrade_submission(
+                &args[2],
+                canister,
+                sender,
+                &wasm,
+                Path::new(&args[6]),
+            )?;
+            println!("{}", submission.request_id);
+        }
+        Some("submit-production-canister-upgrade") if args.len() == 10 => {
             submit_production_canister_upgrade(
                 &args[2],
                 &args[3],
@@ -9439,6 +10036,7 @@ fn run() -> Result<(), String> {
                 Path::new(&args[6]),
                 Path::new(&args[7]),
                 Path::new(&args[8]),
+                Path::new(&args[9]),
             )?;
         }
         Some("production-upgrade-public-state-sha256") if args.len() == 6 => {
@@ -9464,16 +10062,18 @@ fn run() -> Result<(), String> {
             }
             println!("{after_digest}");
         }
-        Some("verify-production-upgrade-submission") if args.len() == 7 => {
+        Some("verify-production-upgrade-submission") if args.len() == 8 => {
             let canister = Principal::from_text(&args[3]).map_err(|error| error.to_string())?;
             let sender = Principal::from_text(&args[4]).map_err(|error| error.to_string())?;
             let wasm = fs::read(&args[5]).map_err(|error| error.to_string())?;
             let submission = validate_production_upgrade_submission(
                 &args[2], canister, sender, &wasm, Path::new(&args[6]),
             )?;
+            let evidence = fs::read(&args[7]).map_err(|error| error.to_string())?;
+            validate_production_upgrade_upload_evidence(&submission, &evidence)?;
             println!("{}", submission.request_id);
         }
-        _ => return Err("usage: bridge-profile <derive|validate|validate-test> <json-file> | validate-production-canister-plan <plan.json> | render-production-canister-inputs <plan.json> <output-dir> | validate-production-canister-receipt <profile.json> <receipt.json> | validate-production-handover-receipt <gate-a-bundle-dir> <gate-a-receipt.json> <install-receipt.json> <deployment-binding.json> | validate-production-handover-candidate <gate-b-bundle-dir> <seal-receipt.json> <schedule-receipt.json> <execute-receipt.json> | validate-controller-handover-completion <gate-b-bundle-dir> <seal-receipt.json> <schedule-receipt.json> <execute-receipt.json> <controller-handover.json> | verify-production-canister-predeploy <profile.json> <receipt.json> | verify-production-canister-handover <gate-b-bundle-dir> <seal-receipt.json> <schedule-receipt.json> <execute-receipt.json> | render-release-inputs <profile.json> <output-dir> | render-test-inputs <profile.json> <output-dir> | render-bundle-inputs <bundle-dir> <output-dir> | validate-bundle --offline <bundle-dir> | validate-bundle --offline --gate-b <bundle-dir> | verify-live <schedule|execute> <bundle-dir> | reserve-operational-config-seal <bundle-dir> <gate-b-sha256> <reservation.json> | write-operational-config-seal-receipt <bundle-dir> <reservation.json> <attempt.json|-> <receipt.json> | authorize-controller-activation <schedule|execute> <bundle-dir> <gate-b-sha256> <seal-receipt.json> <authorization.json> | verify-controller-activation-authorization[-fresh] <schedule|execute> <bundle-dir> <gate-b-sha256> <seal-receipt.json> <authorization.json> | verify-controller-activation <schedule|execute> <bundle-dir> <artifact.json> <seal-receipt.json> <authorization.json> <prepare-receipt.json> <confirmation.json> <prior-schedule-receipt.json|-> <receipt.json> | verify-controller-schedule-receipt-live <bundle-dir> <seal-receipt.json> <controller-schedule-receipt.json> | verify-schedule-receipt-live <bundle-dir> <schedule-receipt.json> | verify-activation <schedule|execute> <bundle-dir> <submission.json> <prior-schedule-receipt.json|-> <receipt.json> | submit-production-canister-upgrade <ic-host> <canister> <expected-principal> <controller.pem> <wasm> <submission.json>".into()),
+        _ => return Err("usage: bridge-profile <command> <arguments>; production upgrade commands: prepare-production-canister-upgrade, validate-production-upgrade-submission, upload-production-canister-upgrade-chunks, submit-production-canister-upgrade, verify-production-upgrade-submission".into()),
     }
     Ok(())
 }
@@ -11917,9 +12517,10 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         )
         .is_err());
         let gate_a_profile: Profile = serde_json::from_slice(&planned_profile).unwrap();
-        let upgraded_wasm = b"wasm-upgrade";
-        profile.bridge_canister_wasm_sha256 = hex(&Sha256::digest(upgraded_wasm));
-        fs::write(root.join("bridge-canister.wasm"), upgraded_wasm).unwrap();
+        let mut upgraded_wasm = vec![0x61; PRODUCTION_UPGRADE_CHUNK_SIZE + 1];
+        upgraded_wasm[..4].copy_from_slice(b"\0asm");
+        profile.bridge_canister_wasm_sha256 = hex(&Sha256::digest(&upgraded_wasm));
+        fs::write(root.join("bridge-canister.wasm"), &upgraded_wasm).unwrap();
         artifacts
             .iter_mut()
             .find(|artifact| artifact.path == "bridge-canister.wasm")
@@ -12027,10 +12628,13 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 "<production-controller-pem>",
                 "<verified-release-artifact>",
                 "<durable-submission-artifact>",
+                "<durable-chunk-upload-evidence>",
                 "<durable-response-artifact>",
             ]
             .map(str::to_string)
             .to_vec(),
+            chunk_upload_evidence_json_hex: String::new(),
+            chunk_upload_evidence_json_sha256: String::new(),
             submission_json_hex: String::new(),
             submission_json_sha256: String::new(),
             request_id: String::new(),
@@ -12121,31 +12725,84 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             production_upgrade.before_public_state_sha256.clone();
         let canister = Principal::from_text(&profile.bridge_canister_id).unwrap();
         let wasm = fs::read(root.join("bridge-canister.wasm")).unwrap();
-        let argument = Encode!(&ManagementInstallCodeArgument {
-            mode: ManagementInstallMode::Upgrade,
-            canister_id: canister,
-            wasm_module: wasm.clone(),
-            arg: Vec::new(),
-            sender_canister_version: None,
-        })
-        .unwrap();
         let signing_agent = Agent::builder()
             .with_url(&profile.ic_host)
             .with_identity(upgrade_identity)
             .build()
             .unwrap();
+        let stored_chunks_argument = Encode!(&ManagementStoredChunksArgument {
+            canister_id: canister,
+        })
+        .unwrap();
+        let stored_chunks_signed = signing_agent
+            .update(&Principal::management_canister(), "stored_chunks")
+            .with_effective_canister_id(canister)
+            .with_arg(stored_chunks_argument.clone())
+            .sign()
+            .unwrap();
+        let stored_chunks = ProductionUpgradeSignedUpdate {
+            argument_hex: hex(&stored_chunks_argument),
+            argument_sha256: hex(&Sha256::digest(&stored_chunks_argument)),
+            ingress_expiry: stored_chunks_signed.ingress_expiry,
+            request_id: hex(stored_chunks_signed.request_id.as_slice()),
+            signed_update_hex: hex(&stored_chunks_signed.signed_update),
+            signed_update_sha256: hex(&Sha256::digest(&stored_chunks_signed.signed_update)),
+        };
+        let mut chunks = Vec::new();
+        let mut chunk_hashes_list = Vec::new();
+        for (index, chunk) in wasm.chunks(PRODUCTION_UPGRADE_CHUNK_SIZE).enumerate() {
+            let chunk_sha256 = Sha256::digest(chunk).to_vec();
+            let chunk_argument = Encode!(&ManagementUploadChunkArgument {
+                canister_id: canister,
+                chunk: chunk.to_vec(),
+            })
+            .unwrap();
+            let chunk_signed = signing_agent
+                .update(&Principal::management_canister(), "upload_chunk")
+                .with_effective_canister_id(canister)
+                .with_arg(chunk_argument.clone())
+                .sign()
+                .unwrap();
+            chunks.push(ProductionUpgradeChunkSubmission {
+                index: index as u32,
+                offset: (index * PRODUCTION_UPGRADE_CHUNK_SIZE) as u64,
+                size_bytes: chunk.len() as u64,
+                sha256: hex(&chunk_sha256),
+                argument_hex: hex(&chunk_argument),
+                argument_sha256: hex(&Sha256::digest(&chunk_argument)),
+                ingress_expiry: chunk_signed.ingress_expiry,
+                request_id: hex(chunk_signed.request_id.as_slice()),
+                signed_update_hex: hex(&chunk_signed.signed_update),
+                signed_update_sha256: hex(&Sha256::digest(&chunk_signed.signed_update)),
+            });
+            chunk_hashes_list.push(ManagementChunkHash { hash: chunk_sha256 });
+        }
+        let argument = Encode!(&ManagementInstallChunkedCodeArgument {
+            mode: ManagementInstallMode::Upgrade,
+            target_canister: canister,
+            store_canister: None,
+            chunk_hashes_list,
+            wasm_module_hash: Sha256::digest(&wasm).to_vec(),
+            arg: Vec::new(),
+            sender_canister_version: None,
+        })
+        .unwrap();
         let signed = signing_agent
-            .update(&Principal::management_canister(), "install_code")
+            .update(&Principal::management_canister(), "install_chunked_code")
             .with_effective_canister_id(canister)
             .with_arg(argument.clone())
             .sign()
             .unwrap();
         let submission = ProductionUpgradeSubmission {
-            schema_version: 1,
+            schema_version: 2,
+            install_method: "install_chunked_code".into(),
             ic_host: profile.ic_host.clone(),
             effective_canister_id: profile.bridge_canister_id.clone(),
             sender_principal: upgrade_sender.to_text(),
             wasm_sha256: hex(&Sha256::digest(&wasm)),
+            chunk_size_bytes: PRODUCTION_UPGRADE_CHUNK_SIZE as u64,
+            stored_chunks,
+            chunks,
             argument_hex: hex(&argument),
             argument_sha256: hex(&Sha256::digest(&argument)),
             ingress_expiry: signed.ingress_expiry,
@@ -12154,6 +12811,12 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             signed_update_sha256: hex(&Sha256::digest(&signed.signed_update)),
         };
         let submission_bytes = serde_json::to_vec(&submission).unwrap();
+        assert_eq!(submission.chunks.len(), 2);
+        assert_eq!(
+            submission.chunks[0].size_bytes,
+            PRODUCTION_UPGRADE_CHUNK_SIZE as u64
+        );
+        assert_eq!(submission.chunks[1].size_bytes, 1);
         let mut forged_submission: Value = serde_json::from_slice(&submission_bytes).unwrap();
         forged_submission["request_id"] = Value::String("9".repeat(64));
         assert!(validate_production_upgrade_submission_bytes(
@@ -12162,6 +12825,31 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             upgrade_sender,
             &wasm,
             &serde_json::to_vec(&forged_submission).unwrap(),
+        )
+        .is_err());
+        let mut forged_install_argument: Value = serde_json::from_slice(&submission_bytes).unwrap();
+        let mut altered_argument =
+            decode_hex(forged_install_argument["argument_hex"].as_str().unwrap()).unwrap();
+        *altered_argument.last_mut().unwrap() ^= 1;
+        forged_install_argument["argument_hex"] = Value::String(hex(&altered_argument));
+        forged_install_argument["argument_sha256"] =
+            Value::String(hex(&Sha256::digest(&altered_argument)));
+        assert!(validate_production_upgrade_submission_bytes(
+            &profile.ic_host,
+            canister,
+            upgrade_sender,
+            &wasm,
+            &serde_json::to_vec(&forged_install_argument).unwrap(),
+        )
+        .is_err());
+        let mut forged_chunk_submission: Value = serde_json::from_slice(&submission_bytes).unwrap();
+        forged_chunk_submission["chunks"][0]["sha256"] = Value::String("9".repeat(64));
+        assert!(validate_production_upgrade_submission_bytes(
+            &profile.ic_host,
+            canister,
+            upgrade_sender,
+            &wasm,
+            &serde_json::to_vec(&forged_chunk_submission).unwrap(),
         )
         .is_err());
         let mut invalid_signature_envelope: Envelope<'_> =
@@ -12182,6 +12870,73 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             &serde_json::to_vec(&invalid_signature_submission).unwrap(),
         )
         .is_err());
+        let stored_response = Encode!(&Vec::<ManagementChunkHash>::new()).unwrap();
+        let chunk_responses = submission
+            .chunks
+            .iter()
+            .map(|chunk| {
+                let response = Encode!(&ManagementChunkHash {
+                    hash: decode_hex(&chunk.sha256).unwrap(),
+                })
+                .unwrap();
+                ProductionUpgradeChunkResponse {
+                    schema_version: 1,
+                    index: chunk.index,
+                    request_id: chunk.request_id.clone(),
+                    response_hex: hex(&response),
+                    response_sha256: hex(&Sha256::digest(&response)),
+                }
+            })
+            .collect::<Vec<_>>();
+        let upload_evidence = ProductionUpgradeUploadEvidence {
+            schema_version: 1,
+            stored_chunks_request_id: submission.stored_chunks.request_id.clone(),
+            stored_chunks_response_hex: hex(&stored_response),
+            stored_chunks_response_sha256: hex(&Sha256::digest(&stored_response)),
+            chunks: chunk_responses,
+        };
+        let upload_evidence_bytes = serde_json::to_vec(&upload_evidence).unwrap();
+        assert!(
+            validate_production_upgrade_upload_evidence(&submission, &upload_evidence_bytes)
+                .is_ok()
+        );
+        let unexpected_stored_response = Encode!(&vec![ManagementChunkHash {
+            hash: vec![0x99; 32],
+        }])
+        .unwrap();
+        let mut unexpected_store: Value = serde_json::from_slice(&upload_evidence_bytes).unwrap();
+        unexpected_store["stored_chunks_response_hex"] =
+            Value::String(hex(&unexpected_stored_response));
+        unexpected_store["stored_chunks_response_sha256"] =
+            Value::String(hex(&Sha256::digest(&unexpected_stored_response)));
+        assert!(validate_production_upgrade_upload_evidence(
+            &submission,
+            &serde_json::to_vec(&unexpected_store).unwrap()
+        )
+        .is_err());
+        let mut forged_upload_response: Value =
+            serde_json::from_slice(&upload_evidence_bytes).unwrap();
+        let forged_response = Encode!(&ManagementChunkHash {
+            hash: vec![0x42; 32],
+        })
+        .unwrap();
+        forged_upload_response["chunks"][0]["response_hex"] = Value::String(hex(&forged_response));
+        forged_upload_response["chunks"][0]["response_sha256"] =
+            Value::String(hex(&Sha256::digest(&forged_response)));
+        assert!(validate_production_upgrade_upload_evidence(
+            &submission,
+            &serde_json::to_vec(&forged_upload_response).unwrap()
+        )
+        .is_err());
+        let now_ns = u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        )
+        .unwrap();
+        assert!(production_upgrade_request_has_time(now_ns + 16 * 1_000_000_000).is_ok());
+        assert!(production_upgrade_request_has_time(now_ns + 14 * 1_000_000_000).is_err());
         let executed_at = production_upgrade.executed_at_unix;
         let executed_at_ns = executed_at * 1_000_000_000;
         assert!(!production_upgrade_ingress_window_valid(
@@ -12203,6 +12958,9 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         assert!(!production_upgrade_ingress_window_valid(u64::MAX, u64::MAX));
         production_upgrade.submission_json_hex = hex(&submission_bytes);
         production_upgrade.submission_json_sha256 = hex(&Sha256::digest(&submission_bytes));
+        production_upgrade.chunk_upload_evidence_json_hex = hex(&upload_evidence_bytes);
+        production_upgrade.chunk_upload_evidence_json_sha256 =
+            hex(&Sha256::digest(&upload_evidence_bytes));
         production_upgrade.request_id = submission.request_id.clone();
         let response_stdout = format!(
             "request_id={}\nresponse_hex=\nsender_principal={}\nwasm_sha256={}\n",

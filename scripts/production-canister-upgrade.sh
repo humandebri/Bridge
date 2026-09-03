@@ -57,6 +57,40 @@ for tool in cargo git icp python3 shasum; do command -v "$tool" >/dev/null || { 
 [[ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" ]] || {
   echo "production upgrade requires a clean source tree" >&2; exit 1;
 }
+PROFILE_TARGET="$(mktemp -d "${TMPDIR:-/tmp}/bridge-upgrade-profile-target.XXXXXX")"
+trap 'rm -rf "$PROFILE_TARGET"' EXIT
+python3 -I -S - "$WASM" "$PROFILE_TARGET/bridge-canister.wasm" \
+  "$GATE_A_PROFILE" "$PROFILE_TARGET/gate-a-profile.json" \
+  "$GATE_A_RECEIPT" "$PROFILE_TARGET/gate-a-receipt.json" <<'PY'
+import os,stat,sys
+for source,target in zip(sys.argv[1::2],sys.argv[2::2]):
+ flags=os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)
+ fd=os.open(source,flags)
+ try:
+  before=os.fstat(fd)
+  if not stat.S_ISREG(before.st_mode): raise SystemExit('upgrade input is not a regular file')
+  chunks=[]
+  while True:
+   chunk=os.read(fd,1024*1024)
+   if not chunk: break
+   chunks.append(chunk)
+  after=os.fstat(fd)
+  if (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
+   raise SystemExit('upgrade input changed while it was frozen')
+ finally: os.close(fd)
+ out=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+ try:
+  for chunk in chunks:
+   view=memoryview(chunk)
+   while view:
+    written=os.write(out,view)
+    view=view[written:]
+  os.fsync(out)
+ finally: os.close(out)
+PY
+WASM="$PROFILE_TARGET/bridge-canister.wasm"
+GATE_A_PROFILE="$PROFILE_TARGET/gate-a-profile.json"
+GATE_A_RECEIPT="$PROFILE_TARGET/gate-a-receipt.json"
 SOURCE_REVISION="$(git -C "$ROOT" rev-parse HEAD)"
 SOURCE_TREE="$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')"
 WASM_SHA256="$(shasum -a 256 "$WASM" | awk '{print tolower($1)}')"
@@ -83,8 +117,6 @@ git -C "$ROOT" merge-base --is-ancestor "$RECEIPT_SOURCE" "$SOURCE_REVISION" || 
 EXECUTING_PRINCIPAL="$(icp identity principal --identity production)"
 [[ "$EXECUTING_PRINCIPAL" == "$INSTALLER" ]] || { echo "production identity is not the Gate A installer" >&2; exit 1; }
 DID="$ROOT/canister/bridge-canister/bridge.did"
-PROFILE_TARGET="$(mktemp -d "${TMPDIR:-/tmp}/bridge-upgrade-profile-target.XXXXXX")"
-trap 'rm -rf "$PROFILE_TARGET"' EXIT
 if [[ "$MODE" == execute || "$MODE" == recover ]]; then
   FROZEN_PREFLIGHT="$PROFILE_TARGET/preflight.json"
   python3 -I -S - "$PREFLIGHT" "$FROZEN_PREFLIGHT" <<'PY'
@@ -177,7 +209,8 @@ write_json() {
   AFTER_RUNTIME="${AFTER_RUNTIME:-}" AFTER_INTEGRITY="${AFTER_INTEGRITY:-}" \
   AFTER_PUBLIC_STATE="${AFTER_PUBLIC_STATE:-}" IC_HOST="$IC_HOST" \
   RESPONSE_STDOUT_FILE="$stdout_file" RESPONSE_STDERR_FILE="$stderr_file" \
-  SUBMISSION_FILE="${SUBMISSION_FILE:-}" REQUEST_ID="$request_id" RECOVERED="${RECOVERED:-false}" \
+  SUBMISSION_FILE="${SUBMISSION_FILE:-}" UPLOAD_EVIDENCE_FILE="${UPLOAD_EVIDENCE_FILE:-}" \
+  REQUEST_ID="$request_id" RECOVERED="${RECOVERED:-false}" \
   python3 -I -S - <<'PY'
 import hashlib,json,os,time
 def h(value): return hashlib.sha256(value).hexdigest()
@@ -203,6 +236,7 @@ if os.environ['KIND']=='production-controller-bootstrap-upgrade':
  after=[candid('AFTER_BRIDGE_STATUS'),candid('AFTER_LIFECYCLE'),candid('AFTER_RUNTIME'),candid('AFTER_INTEGRITY')]
  stdout=open(os.environ['RESPONSE_STDOUT_FILE'],'rb').read(); stderr=open(os.environ['RESPONSE_STDERR_FILE'],'rb').read()
  submission=open(os.environ['SUBMISSION_FILE'],'rb').read()
+ upload_evidence=open(os.environ['UPLOAD_EVIDENCE_FILE'],'rb').read()
  now=int(time.time()); recovered=os.environ['RECOVERED']=='true'
  value.update({'executed_at_unix':int(os.environ['EXECUTED_AT']),'verified_at_unix':now,
   'recovered':recovered,'recovered_at_unix':now if recovered else None,
@@ -214,7 +248,8 @@ if os.environ['KIND']=='production-controller-bootstrap-upgrade':
   'after_lifecycle_response_hex':hx(after[1]),'after_lifecycle_response_sha256':h(after[1]),
   'after_runtime_binding_response_hex':hx(after[2]),'after_runtime_binding_response_sha256':h(after[2]),
   'after_storage_integrity_response_hex':hx(after[3]),'after_storage_integrity_response_sha256':h(after[3]),
-  'after_public_state_sha256':os.environ['AFTER_PUBLIC_STATE'],'command_argv':['bridge-profile','submit-production-canister-upgrade',os.environ['IC_HOST'],os.environ['CANISTER'],os.environ['INSTALLER'],'<production-controller-pem>','<verified-release-artifact>','<durable-submission-artifact>','<durable-response-artifact>'],
+  'after_public_state_sha256':os.environ['AFTER_PUBLIC_STATE'],'command_argv':['bridge-profile','submit-production-canister-upgrade',os.environ['IC_HOST'],os.environ['CANISTER'],os.environ['INSTALLER'],'<production-controller-pem>','<verified-release-artifact>','<durable-submission-artifact>','<durable-chunk-upload-evidence>','<durable-response-artifact>'],
+  'chunk_upload_evidence_json_hex':hx(upload_evidence),'chunk_upload_evidence_json_sha256':h(upload_evidence),
   'submission_json_hex':hx(submission),'submission_json_sha256':h(submission),
   'request_id':os.environ['REQUEST_ID'],'response_stdout_hex':hx(stdout),'response_stdout_sha256':h(stdout),
   'response_stderr_hex':hx(stderr),'response_stderr_sha256':h(stderr)})
@@ -238,8 +273,9 @@ if [[ "$MODE" == recover ]]; then
   STDOUT_FILE="$OUTPUT.stdout"
   STDERR_FILE="$OUTPUT.stderr"
   SUBMISSION_FILE="$OUTPUT.submission.json"
+  UPLOAD_EVIDENCE_FILE="$OUTPUT.uploads/complete.json"
   EXECUTION_FILE="$OUTPUT.execution.json"
-  for sidecar in "$STDOUT_FILE" "$STDERR_FILE" "$SUBMISSION_FILE" "$EXECUTION_FILE"; do
+  for sidecar in "$STDOUT_FILE" "$STDERR_FILE" "$SUBMISSION_FILE" "$UPLOAD_EVIDENCE_FILE" "$EXECUTION_FILE"; do
     [[ -f "$sidecar" && ! -L "$sidecar" ]] || { echo "recovery sidecar is missing or unsafe: $sidecar" >&2; exit 1; }
   done
   BEFORE_MANAGEMENT="$(preflight_value before_management_status_json_hex hex)"
@@ -274,7 +310,7 @@ PY
     echo "execution marker does not bind the reviewed upgrade time" >&2; exit 1;
   }
   REQUEST_ID="$($PROFILE_BIN verify-production-upgrade-submission \
-    "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$SUBMISSION_FILE")"
+    "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$SUBMISSION_FILE" "$UPLOAD_EVIDENCE_FILE")"
   python3 -I -S - "$STDOUT_FILE" "$REQUEST_ID" <<'PY'
 import re,sys
 found=re.findall(r'(?im)^request_id=([0-9a-f]{64})$',open(sys.argv[1],errors='replace').read())
@@ -329,14 +365,30 @@ BEFORE_PUBLIC_STATE="$(preflight_value before_public_state_sha256)"
 STDOUT_FILE="$OUTPUT.stdout"
 STDERR_FILE="$OUTPUT.stderr"
 SUBMISSION_FILE="$OUTPUT.submission.json"
+UPLOAD_DIR="$OUTPUT.uploads"
+UPLOAD_EVIDENCE_FILE="$UPLOAD_DIR/complete.json"
 EXECUTION_FILE="$OUTPUT.execution.json"
-for sidecar in "$STDOUT_FILE" "$STDERR_FILE" "$SUBMISSION_FILE" "$EXECUTION_FILE"; do
-  [[ ! -e "$sidecar" && ! -L "$sidecar" ]] || { echo "upgrade sidecar already exists: $sidecar" >&2; exit 1; }
-done
-EXECUTED_AT="$(date +%s)"
-export EXECUTED_AT
-TARGET="$EXECUTION_FILE" EXECUTED_AT="$EXECUTED_AT" SOURCE_REVISION="$SOURCE_REVISION" \
-WASM_SHA256="$WASM_SHA256" PREFLIGHT_SHA256="$PREFLIGHT_SHA256" python3 -I -S - <<'PY'
+if [[ -e "$EXECUTION_FILE" ]]; then
+  [[ -f "$EXECUTION_FILE" && ! -L "$EXECUTION_FILE" && -f "$SUBMISSION_FILE" && ! -L "$SUBMISSION_FILE" \
+    && -d "$UPLOAD_DIR" && ! -L "$UPLOAD_DIR" && ! -e "$STDOUT_FILE" && ! -e "$STDERR_FILE" ]] || {
+    echo "production upgrade partial attempt is unsafe to resume" >&2; exit 1;
+  }
+  EXECUTED_AT="$(python3 -I -S - "$EXECUTION_FILE" "$SOURCE_REVISION" "$WASM_SHA256" "$PREFLIGHT_SHA256" <<'PY'
+import json,sys
+v=json.load(open(sys.argv[1],encoding='utf-8'))
+if (v.get('schema_version')!=1 or v.get('source_revision')!=sys.argv[2]
+    or v.get('wasm_sha256')!=sys.argv[3] or v.get('preflight_sha256')!=sys.argv[4]):
+ raise SystemExit('execution marker differs from the reviewed upgrade')
+print(v.get('executed_at_unix'))
+PY
+  )"
+else
+  for sidecar in "$STDOUT_FILE" "$STDERR_FILE" "$SUBMISSION_FILE" "$UPLOAD_DIR" "$EXECUTION_FILE"; do
+    [[ ! -e "$sidecar" && ! -L "$sidecar" ]] || { echo "upgrade sidecar already exists: $sidecar" >&2; exit 1; }
+  done
+  EXECUTED_AT="$(date +%s)"
+  TARGET="$EXECUTION_FILE" EXECUTED_AT="$EXECUTED_AT" SOURCE_REVISION="$SOURCE_REVISION" \
+  WASM_SHA256="$WASM_SHA256" PREFLIGHT_SHA256="$PREFLIGHT_SHA256" python3 -I -S - <<'PY'
 import json,os
 value={'schema_version':1,'executed_at_unix':int(os.environ['EXECUTED_AT']),
  'source_revision':os.environ['SOURCE_REVISION'],'wasm_sha256':os.environ['WASM_SHA256'],
@@ -345,9 +397,32 @@ fd=os.open(os.environ['TARGET'],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400)
 with os.fdopen(fd,'w') as f: json.dump(value,f,sort_keys=True,separators=(',',':')); f.write('\n'); f.flush(); os.fsync(f.fileno())
 fd=os.open(os.path.dirname(os.environ['TARGET']),os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
 PY
+  "$PROFILE_BIN" prepare-production-canister-upgrade "$IC_HOST" "$CANISTER" "$INSTALLER" \
+    "$CONTROLLER_PEM" "$WASM" "$SUBMISSION_FILE" >/dev/null
+fi
+export EXECUTED_AT
+"$PROFILE_BIN" validate-production-upgrade-submission \
+  "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$SUBMISSION_FILE" >/dev/null
+"$PROFILE_BIN" upload-production-canister-upgrade-chunks \
+  "$IC_HOST" "$CANISTER" "$INSTALLER" "$CONTROLLER_PEM" "$WASM" "$SUBMISSION_FILE" "$UPLOAD_DIR" >/dev/null
+
+# Chunk uploads consume cycles and introduce await boundaries. Revalidate every
+# release invariant after the last upload and immediately before final install.
+snapshot FINAL
+[[ "$FINAL_MODULE" == "$(printf '%s' "$OLD_WASM" | tr '[:upper:]' '[:lower:]')" ]] || {
+  echo "live module changed while production upgrade chunks were uploaded" >&2; exit 1;
+}
+FINAL_PUBLIC_STATE="$($PROFILE_BIN production-upgrade-public-state-sha256 \
+  "$FINAL_BRIDGE_STATUS" "$FINAL_LIFECYCLE" "$FINAL_RUNTIME" "$FINAL_INTEGRITY")"
+[[ "$FINAL_PUBLIC_STATE" == "$BEFORE_PUBLIC_STATE" ]] || {
+  echo "live public state changed while production upgrade chunks were uploaded" >&2; exit 1;
+}
+[[ ! -e "$STDOUT_FILE" && ! -e "$STDERR_FILE" ]] || {
+  echo "final production upgrade send was already attempted; inspect live state and use recover" >&2; exit 1;
+}
 set +e
 "$PROFILE_BIN" submit-production-canister-upgrade "$IC_HOST" "$CANISTER" "$INSTALLER" \
-  "$CONTROLLER_PEM" "$WASM" "$SUBMISSION_FILE" "$STDOUT_FILE" \
+  "$CONTROLLER_PEM" "$WASM" "$SUBMISSION_FILE" "$UPLOAD_EVIDENCE_FILE" "$STDOUT_FILE" \
   >/dev/null 2>"$STDERR_FILE"
 STATUS=$?
 set -e

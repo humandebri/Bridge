@@ -48,15 +48,34 @@ fn main() {
             println!("{}", "a".repeat(64));
         }
         Some("verify-production-upgrade-state-preserved") => println!("{}", "a".repeat(64)),
+        Some("prepare-production-canister-upgrade") => {
+            let mut artifact = OpenOptions::new().write(true).create_new(true).open(&args[7]).unwrap();
+            artifact.write_all(b"{\"schema_version\":2}\n").unwrap();
+            artifact.sync_all().unwrap();
+            println!("request_id={}", "9".repeat(64));
+        }
+        Some("validate-production-upgrade-submission") => println!("{}", "9".repeat(64)),
+        Some("upload-production-canister-upgrade-chunks") => {
+            fs::create_dir_all(&args[8]).unwrap();
+            if let Ok(marker) = env::var("TEST_UPLOAD_FAIL_ONCE") {
+                if !Path::new(&marker).exists() {
+                    fs::write(marker, b"failed\n").unwrap();
+                    std::process::exit(1);
+                }
+            }
+            let mut evidence = OpenOptions::new().write(true).create_new(true).open(Path::new(&args[8]).join("complete.json")).unwrap();
+            evidence.write_all(b"{\"schema_version\":1,\"chunks\":[{\"index\":0}]}\n").unwrap();
+            evidence.sync_all().unwrap();
+            if let Ok(path) = env::var("TEST_DROP_RESERVE_AFTER_UPLOAD") {
+                fs::write(path, b"false\n").unwrap();
+            }
+        }
         Some("submit-production-canister-upgrade") => {
             let count_path = env::var("TEST_SUBMIT_COUNT").unwrap();
             let count: u64 = fs::read_to_string(&count_path).unwrap().trim().parse().unwrap();
             fs::write(&count_path, format!("{}\n", count + 1)).unwrap();
             fs::write(env::var("TEST_LIVE_MODULE").unwrap(), env::var("TEST_NEW_SHA").unwrap()).unwrap();
-            let mut artifact = OpenOptions::new().write(true).create_new(true).open(&args[7]).unwrap();
-            artifact.write_all(b"{\"schema_version\":1}\n").unwrap();
-            artifact.sync_all().unwrap();
-            let mut response = OpenOptions::new().write(true).create_new(true).open(&args[8]).unwrap();
+            let mut response = OpenOptions::new().write(true).create_new(true).open(&args[9]).unwrap();
             writeln!(response, "request_id={}", "9".repeat(64)).unwrap();
             writeln!(response, "response_hex=").unwrap();
             response.sync_all().unwrap();
@@ -161,6 +180,46 @@ fi
 [[ ! -e "$T/evidence/insufficient-receipt.json.execution.json" ]]
 [[ "$(<"$T/submit-count")" == 0 ]]
 printf 'true\n' >"$T/reserve-sufficient"
+if BRIDGE_ICP_IDENTITY=production TEST_UPLOAD_FAIL_ONCE="$T/upload-failed-once" \
+  BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/resume-receipt.json" >/dev/null 2>&1; then
+  echo "production upgrade did not stop after an incomplete chunk upload" >&2
+  exit 1
+fi
+[[ -f "$T/evidence/resume-receipt.json.execution.json" ]]
+[[ -f "$T/evidence/resume-receipt.json.submission.json" ]]
+[[ -d "$T/evidence/resume-receipt.json.uploads" ]]
+[[ ! -e "$T/evidence/resume-receipt.json.stdout" ]]
+[[ "$(<"$T/submit-count")" == 0 ]]
+BRIDGE_ICP_IDENTITY=production TEST_UPLOAD_FAIL_ONCE="$T/upload-failed-once" \
+BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/resume-receipt.json" >/dev/null
+[[ -f "$T/evidence/resume-receipt.json" && "$(<"$T/submit-count")" == 1 ]]
+printf '%s\n' "$OLD_SHA" >"$T/live-module"
+printf '0\n' >"$T/submit-count"
+printf 'true\n' >"$T/reserve-sufficient"
+if BRIDGE_ICP_IDENTITY=production TEST_DROP_RESERVE_AFTER_UPLOAD="$T/reserve-sufficient" \
+  BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/post-upload-insufficient.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted a reserve drop after chunk upload" >&2
+  exit 1
+fi
+[[ -f "$T/evidence/post-upload-insufficient.json.uploads/complete.json" ]]
+[[ ! -e "$T/evidence/post-upload-insufficient.json.stdout" ]]
+[[ "$(<"$T/submit-count")" == 0 ]]
+printf 'true\n' >"$T/reserve-sufficient"
 cp "$T/evidence/preflight.json" "$T/evidence/preflight.approved.json"
 BRIDGE_ICP_IDENTITY=production TEST_MUTATE_PREFLIGHT_PATH="$T/evidence/preflight.json" \
 TEST_MUTATION_MARKER="$T/preflight-mutated" \
@@ -182,6 +241,10 @@ assert 'before_canister_version' not in value and 'after_canister_version' not i
 assert value['request_id']=='9'*64
 assert value['recovered'] is False and value['recovered_at_unix'] is None
 assert hashlib.sha256(bytes.fromhex(value['response_stdout_hex'])).hexdigest()==value['response_stdout_sha256']
+assert hashlib.sha256(bytes.fromhex(value['submission_json_hex'])).hexdigest()==value['submission_json_sha256']
+assert hashlib.sha256(bytes.fromhex(value['chunk_upload_evidence_json_hex'])).hexdigest()==value['chunk_upload_evidence_json_sha256']
+evidence=json.loads(bytes.fromhex(value['chunk_upload_evidence_json_hex']))
+assert evidence['schema_version']==1 and evidence['chunks']
 PY
 [[ -e "$T/preflight-mutated" && "$(<"$T/submit-count")" == 1 ]]
 [[ "$(<"$T/status-call-count")" -ge 3 ]]
