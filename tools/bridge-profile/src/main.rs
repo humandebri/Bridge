@@ -542,16 +542,8 @@ struct ProductionUpgradeChunkResponse {
     schema_version: u8,
     index: u32,
     request_id: String,
-    source: Option<ProductionUpgradeChunkSource>,
     response_hex: String,
     response_sha256: String,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum ProductionUpgradeChunkSource {
-    Uploaded,
-    ReusedFromStoredChunks,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -9897,7 +9889,7 @@ fn validate_production_upgrade_upload_evidence(
 ) -> Result<ProductionUpgradeUploadEvidence, String> {
     let evidence: ProductionUpgradeUploadEvidence =
         serde_json::from_slice(evidence_bytes).map_err(|error| error.to_string())?;
-    if !matches!(evidence.schema_version, 1 | 2)
+    if evidence.schema_version != 1
         || evidence.stored_chunks_request_id != submission.stored_chunks.request_id
         || !hex_sha256_matches(
             &evidence.stored_chunks_response_hex,
@@ -9910,10 +9902,6 @@ fn validate_production_upgrade_upload_evidence(
     let stored_response = decode_hex(&evidence.stored_chunks_response_hex)?;
     let stored =
         Decode!(&stored_response, Vec<ManagementChunkHash>).map_err(|error| error.to_string())?;
-    let stored_hashes = stored
-        .iter()
-        .map(|chunk| hex(&chunk.hash))
-        .collect::<BTreeSet<_>>();
     let expected = submission
         .chunks
         .iter()
@@ -9926,37 +9914,18 @@ fn validate_production_upgrade_upload_evidence(
         return Err("production upgrade chunk store contains an unexpected chunk".into());
     }
     for (index, (recorded, chunk)) in evidence.chunks.iter().zip(&submission.chunks).enumerate() {
-        if recorded.schema_version != evidence.schema_version
+        if recorded.schema_version != 1
             || recorded.index != u32::try_from(index).map_err(|error| error.to_string())?
+            || recorded.request_id != chunk.request_id
             || !hex_sha256_matches(&recorded.response_hex, &recorded.response_sha256)
         {
             return Err("production upgrade chunk response metadata is invalid".into());
         }
-        match (evidence.schema_version, &recorded.source) {
-            (1, None) | (2, Some(ProductionUpgradeChunkSource::Uploaded)) => {
-                if recorded.request_id != chunk.request_id {
-                    return Err("production upgrade chunk response metadata is invalid".into());
-                }
-                let response = decode_hex(&recorded.response_hex)?;
-                let observed =
-                    Decode!(&response, ManagementChunkHash).map_err(|error| error.to_string())?;
-                if !hex(&observed.hash).eq_ignore_ascii_case(&chunk.sha256) {
-                    return Err("production upgrade chunk response hash is invalid".into());
-                }
-            }
-            (2, Some(ProductionUpgradeChunkSource::ReusedFromStoredChunks)) => {
-                if recorded.request_id != evidence.stored_chunks_request_id
-                    || recorded.response_hex != evidence.stored_chunks_response_hex
-                    || recorded.response_sha256 != evidence.stored_chunks_response_sha256
-                    || !stored_hashes.contains(&chunk.sha256.to_ascii_lowercase())
-                {
-                    return Err(
-                        "production upgrade reused chunk is not bound to the stored-chunks observation"
-                            .into(),
-                    );
-                }
-            }
-            _ => return Err("production upgrade chunk response source is invalid".into()),
+        let response = decode_hex(&recorded.response_hex)?;
+        let observed =
+            Decode!(&response, ManagementChunkHash).map_err(|error| error.to_string())?;
+        if !hex(&observed.hash).eq_ignore_ascii_case(&chunk.sha256) {
+            return Err("production upgrade chunk response hash is invalid".into());
         }
     }
     Ok(evidence)
@@ -10204,43 +10173,18 @@ fn validate_stored_chunks_response(
 fn validate_chunk_response(
     chunk: &ProductionUpgradeChunkSubmission,
     response: &ProductionUpgradeChunkResponse,
-    stored_response: &ProductionUpgradeStoredChunksResponse,
 ) -> Result<(), String> {
-    if response.schema_version != 2
+    if response.schema_version != 1
         || response.index != chunk.index
+        || response.request_id != chunk.request_id
         || !hex_sha256_matches(&response.response_hex, &response.response_sha256)
     {
         return Err("production upgrade chunk response metadata is invalid".into());
     }
-    match &response.source {
-        Some(ProductionUpgradeChunkSource::Uploaded) => {
-            if response.request_id != chunk.request_id {
-                return Err("production upgrade chunk response metadata is invalid".into());
-            }
-            let raw = decode_hex(&response.response_hex)?;
-            let observed = Decode!(&raw, ManagementChunkHash).map_err(|error| error.to_string())?;
-            if !hex(&observed.hash).eq_ignore_ascii_case(&chunk.sha256) {
-                return Err("production upgrade chunk response hash is invalid".into());
-            }
-        }
-        Some(ProductionUpgradeChunkSource::ReusedFromStoredChunks) => {
-            let raw = decode_hex(&stored_response.response_hex)?;
-            let stored =
-                Decode!(&raw, Vec<ManagementChunkHash>).map_err(|error| error.to_string())?;
-            if response.request_id != stored_response.request_id
-                || response.response_hex != stored_response.response_hex
-                || response.response_sha256 != stored_response.response_sha256
-                || !stored
-                    .iter()
-                    .any(|stored| hex(&stored.hash).eq_ignore_ascii_case(&chunk.sha256))
-            {
-                return Err(
-                    "production upgrade reused chunk is not bound to the stored-chunks observation"
-                        .into(),
-                );
-            }
-        }
-        None => return Err("production upgrade chunk response source is invalid".into()),
+    let raw = decode_hex(&response.response_hex)?;
+    let observed = Decode!(&raw, ManagementChunkHash).map_err(|error| error.to_string())?;
+    if !hex(&observed.hash).eq_ignore_ascii_case(&chunk.sha256) {
+        return Err("production upgrade chunk response hash is invalid".into());
     }
     Ok(())
 }
@@ -10278,7 +10222,6 @@ fn upload_production_canister_upgrade_chunks(
         return Ok(());
     }
     let stored_path = evidence_dir.join("stored-chunks.json");
-    let stored_observation_is_fresh = !stored_path.exists();
     let stored_response = if stored_path.exists() {
         read_json::<ProductionUpgradeStoredChunksResponse>(&stored_path)?
     } else {
@@ -10311,33 +10254,11 @@ fn upload_production_canister_upgrade_chunks(
         response
     };
     validate_stored_chunks_response(&submission, &stored_response)?;
-    let stored = Decode!(
-        &decode_hex(&stored_response.response_hex)?,
-        Vec<ManagementChunkHash>
-    )
-    .map_err(|error| error.to_string())?;
-    let stored_hashes = stored
-        .iter()
-        .map(|chunk| hex(&chunk.hash))
-        .collect::<BTreeSet<_>>();
     let mut responses = Vec::with_capacity(submission.chunks.len());
     for chunk in &submission.chunks {
         let response_path = evidence_dir.join(format!("chunk-{:04}.json", chunk.index));
         let response = if response_path.exists() {
             read_json::<ProductionUpgradeChunkResponse>(&response_path)?
-        } else if stored_observation_is_fresh
-            && stored_hashes.contains(&chunk.sha256.to_ascii_lowercase())
-        {
-            let response = ProductionUpgradeChunkResponse {
-                schema_version: 2,
-                index: chunk.index,
-                request_id: stored_response.request_id.clone(),
-                source: Some(ProductionUpgradeChunkSource::ReusedFromStoredChunks),
-                response_hex: stored_response.response_hex.clone(),
-                response_sha256: stored_response.response_sha256.clone(),
-            };
-            write_json_new(&response_path, &response)?;
-            response
         } else {
             production_upgrade_request_has_time(chunk.ingress_expiry)?;
             let raw = match send_production_upgrade_signed_update(
@@ -10358,22 +10279,21 @@ fn upload_production_canister_upgrade_chunks(
                 }
             };
             let response = ProductionUpgradeChunkResponse {
-                schema_version: 2,
+                schema_version: 1,
                 index: chunk.index,
                 request_id: chunk.request_id.clone(),
-                source: Some(ProductionUpgradeChunkSource::Uploaded),
                 response_hex: hex(&raw),
                 response_sha256: hex(&Sha256::digest(&raw)),
             };
-            validate_chunk_response(chunk, &response, &stored_response)?;
+            validate_chunk_response(chunk, &response)?;
             write_json_new(&response_path, &response)?;
             response
         };
-        validate_chunk_response(chunk, &response, &stored_response)?;
+        validate_chunk_response(chunk, &response)?;
         responses.push(response);
     }
     let complete = ProductionUpgradeUploadEvidence {
-        schema_version: 2,
+        schema_version: 1,
         stored_chunks_request_id: stored_response.request_id,
         stored_chunks_response_hex: stored_response.response_hex,
         stored_chunks_response_sha256: stored_response.response_sha256,
@@ -14092,7 +14012,6 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                     schema_version: 1,
                     index: chunk.index,
                     request_id: chunk.request_id.clone(),
-                    source: None,
                     response_hex: hex(&response),
                     response_sha256: hex(&Sha256::digest(&response)),
                 }
@@ -14110,59 +14029,6 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             validate_production_upgrade_upload_evidence(&submission, &upload_evidence_bytes)
                 .is_ok()
         );
-        let reused_stored_response = Encode!(&vec![ManagementChunkHash {
-            hash: decode_hex(&submission.chunks[0].sha256).unwrap(),
-        }])
-        .unwrap();
-        let reused_chunks = submission
-            .chunks
-            .iter()
-            .enumerate()
-            .map(|(index, chunk)| {
-                if index == 0 {
-                    ProductionUpgradeChunkResponse {
-                        schema_version: 2,
-                        index: chunk.index,
-                        request_id: submission.stored_chunks.request_id.clone(),
-                        source: Some(ProductionUpgradeChunkSource::ReusedFromStoredChunks),
-                        response_hex: hex(&reused_stored_response),
-                        response_sha256: hex(&Sha256::digest(&reused_stored_response)),
-                    }
-                } else {
-                    let response = Encode!(&ManagementChunkHash {
-                        hash: decode_hex(&chunk.sha256).unwrap(),
-                    })
-                    .unwrap();
-                    ProductionUpgradeChunkResponse {
-                        schema_version: 2,
-                        index: chunk.index,
-                        request_id: chunk.request_id.clone(),
-                        source: Some(ProductionUpgradeChunkSource::Uploaded),
-                        response_hex: hex(&response),
-                        response_sha256: hex(&Sha256::digest(&response)),
-                    }
-                }
-            })
-            .collect();
-        let reused_evidence = ProductionUpgradeUploadEvidence {
-            schema_version: 2,
-            stored_chunks_request_id: submission.stored_chunks.request_id.clone(),
-            stored_chunks_response_hex: hex(&reused_stored_response),
-            stored_chunks_response_sha256: hex(&Sha256::digest(&reused_stored_response)),
-            chunks: reused_chunks,
-        };
-        let reused_evidence_bytes = serde_json::to_vec(&reused_evidence).unwrap();
-        assert!(
-            validate_production_upgrade_upload_evidence(&submission, &reused_evidence_bytes,)
-                .is_ok()
-        );
-        let mut downgraded_reuse: Value = serde_json::from_slice(&reused_evidence_bytes).unwrap();
-        downgraded_reuse["chunks"][0]["source"] = Value::String("uploaded".into());
-        assert!(validate_production_upgrade_upload_evidence(
-            &submission,
-            &serde_json::to_vec(&downgraded_reuse).unwrap(),
-        )
-        .is_err());
         let unexpected_stored_response = Encode!(&vec![ManagementChunkHash {
             hash: vec![0x99; 32],
         }])
