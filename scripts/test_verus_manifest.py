@@ -325,8 +325,9 @@ proof fn registered_proof()
             source, "shared-expression", "registered_kernel", "registered_proof"
         )
 
-    def test_accepts_last_proof_before_the_verus_block_closes(self) -> None:
+    def test_ignores_the_closing_verus_block_after_the_last_proof(self) -> None:
         source = """
+verus! {
 proof fn registered_proof()
     ensures kernel::registered_kernel_spec()
 {}
@@ -339,6 +340,7 @@ fn main() {}
 
     def test_rejects_more_than_one_trailing_unmatched_block_close(self) -> None:
         source = """
+verus! {
 proof fn registered_proof()
     ensures kernel::registered_kernel_spec()
 {}

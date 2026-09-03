@@ -7,7 +7,8 @@ import { defineConfig } from "vite"
 export default defineConfig({
   plugins: [tanstackRouter({ target: "react", autoCodeSplitting: true }), react(), tailwindcss()],
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "./src") } },
-  define: process.env.KINIC_GENERIC_PRODUCTION_UI_BUILD === "1"
-    ? { "import.meta.env.VITE_DEPLOYMENT_PROFILE_JSON": "undefined" }
-    : undefined,
+  define:
+    process.env.KINIC_GENERIC_PRODUCTION_UI_BUILD === "1"
+      ? { "import.meta.env.VITE_DEPLOYMENT_PROFILE_JSON": "undefined" }
+      : undefined,
 })

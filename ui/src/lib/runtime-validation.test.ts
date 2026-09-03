@@ -91,24 +91,40 @@ beforeEach(() => {
   indexLedgerId = ledgerId
   contractSigner = expectedSigner
   timelockDelay = 300n
-  getBlockMock.mockResolvedValue({ number: 12n, hash: finalizedHash, timestamp: BigInt(Math.floor(Date.now() / 1_000)) })
-  getCodeMock.mockImplementation(({ address }: { address: string }) => Promise.resolve(address === bridgeAddress ? "0x01" : "0x02"))
+  getBlockMock.mockResolvedValue({
+    number: 12n,
+    hash: finalizedHash,
+    timestamp: BigInt(Math.floor(Date.now() / 1_000)),
+  })
+  getCodeMock.mockImplementation(({ address }: { address: string }) =>
+    Promise.resolve(address === bridgeAddress ? "0x01" : "0x02"),
+  )
   readContractMock.mockImplementation(({ functionName }: { functionName: string }) => {
-    if (functionName === "bridgeSnapshot") return Promise.resolve({
-      bridgeSigner: contractSigner,
-      serviceFee: 1n,
-      maxServiceFee: 1n,
-      perDepositLimit: 10n,
-      mintedInWindow: 0n,
-      mintWindowLimit: 10n,
-      mintWindowStartedAt: 0n,
-      mintWindowDuration: 60n,
-      depositMintsPaused: false,
-      withdrawalsPaused: false,
-      mintAuthorizationEpoch: 1n,
-      blockTimestamp: BigInt(Math.floor(Date.now() / 1_000)),
-    })
-    if (functionName === "eip712Domain") return Promise.resolve([0n, "KINIC Bridge", "1", BigInt(profile.chainId), bridgeAddress, "0x", []])
+    if (functionName === "bridgeSnapshot")
+      return Promise.resolve({
+        bridgeSigner: contractSigner,
+        serviceFee: 1n,
+        maxServiceFee: 1n,
+        perDepositLimit: 10n,
+        mintedInWindow: 0n,
+        mintWindowLimit: 10n,
+        mintWindowStartedAt: 0n,
+        mintWindowDuration: 60n,
+        depositMintsPaused: false,
+        withdrawalsPaused: false,
+        mintAuthorizationEpoch: 1n,
+        blockTimestamp: BigInt(Math.floor(Date.now() / 1_000)),
+      })
+    if (functionName === "eip712Domain")
+      return Promise.resolve([
+        0n,
+        "KINIC Bridge",
+        "1",
+        BigInt(profile.chainId),
+        bridgeAddress,
+        "0x",
+        [],
+      ])
     if (functionName === "bsns") return Promise.resolve(bsnsAddress)
     if (functionName === "symbol") return Promise.resolve(baseMetadata.symbol)
     if (functionName === "decimals") return Promise.resolve(baseMetadata.decimals)
@@ -121,21 +137,23 @@ beforeEach(() => {
     getCode: getCodeMock,
     readContract: readContractMock,
   })
-  mocks.sha256.mockImplementation((code: string) => code === "0x01" ? bridgeHash : bsnsHash)
-  mocks.getRuntimeBinding.mockImplementation(() => Promise.resolve({
-    base_chain_id: BigInt(profile.chainId),
-    bridge_contract: Array.from({ length: 20 }, () => 0x11),
-    expected_bridge_runtime_sha256: new Uint8Array(32).fill(0xaa),
-    timelock_contract: Array.from({ length: 20 }, () => 0x55),
-    deployment_instance_id: Array.from({ length: 32 }, () => 0x99),
-    minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]),
-    ledger_canister_id: Principal.fromText(configuredLedgerId),
-    index_canister_id: Principal.fromText(configuredIndexId),
-    schema_version: 35,
-    expected_bridge_signer: new Uint8Array(20).fill(0x33),
-    evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
-    rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
-  }))
+  mocks.sha256.mockImplementation((code: string) => (code === "0x01" ? bridgeHash : bsnsHash))
+  mocks.getRuntimeBinding.mockImplementation(() =>
+    Promise.resolve({
+      base_chain_id: BigInt(profile.chainId),
+      bridge_contract: Array.from({ length: 20 }, () => 0x11),
+      expected_bridge_runtime_sha256: new Uint8Array(32).fill(0xaa),
+      timelock_contract: Array.from({ length: 20 }, () => 0x55),
+      deployment_instance_id: Array.from({ length: 32 }, () => 0x99),
+      minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]),
+      ledger_canister_id: Principal.fromText(configuredLedgerId),
+      index_canister_id: Principal.fromText(configuredIndexId),
+      schema_version: 35,
+      expected_bridge_signer: new Uint8Array(20).fill(0x33),
+      evm_rpc_canister_id: Principal.fromText(profile.evmRpcCanisterId as string),
+      rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
+    }),
+  )
   mocks.getBridgeStatus.mockResolvedValue({ withdrawal_fee_guard_active: false })
   mocks.createBridgeActor.mockResolvedValue({
     get_runtime_binding: mocks.getRuntimeBinding,
@@ -156,27 +174,42 @@ describe("validateRuntime token bindings", () => {
     ["stale", BigInt(Math.floor(Date.now() / 1_000)) - 86_400n],
     ["missing", undefined],
     ["ahead of the browser clock", BigInt(Math.floor(Date.now() / 1_000)) + 86_400n],
-  ])("does not use a %s finalized timestamp as a write-readiness gate", async (_label, timestamp) => {
-    getBlockMock.mockResolvedValue({
-      number: 12n,
-      hash: finalizedHash,
-      timestamp,
-    })
+  ])(
+    "does not use a %s finalized timestamp as a write-readiness gate",
+    async (_label, timestamp) => {
+      getBlockMock.mockResolvedValue({
+        number: 12n,
+        hash: finalizedHash,
+        timestamp,
+      })
 
-    await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
-    await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
-    expect(getCodeMock).toHaveBeenCalled()
-    expect(readContractMock).toHaveBeenCalledWith(expect.objectContaining({
-      blockHash: finalizedHash,
-      requireCanonical: true,
-    }))
-  })
+      await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({
+        ready: true,
+        blockers: [],
+      })
+      await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({
+        ready: true,
+        blockers: [],
+      })
+      expect(getCodeMock).toHaveBeenCalled()
+      expect(readContractMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          blockHash: finalizedHash,
+          requireCanonical: true,
+        }),
+      )
+    },
+  )
 
   it.each([
     ["number", null, finalizedHash],
     ["hash", 12n, null],
   ])("still rejects a Finalized block without a %s", async (_label, number, hash) => {
-    getBlockMock.mockResolvedValue({ number, hash, timestamp: BigInt(Math.floor(Date.now() / 1_000)) })
+    getBlockMock.mockResolvedValue({
+      number,
+      hash,
+      timestamp: BigInt(Math.floor(Date.now() / 1_000)),
+    })
 
     await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({
       ready: false,
@@ -192,44 +225,75 @@ describe("validateRuntime token bindings", () => {
 
   it("rejects every write until runtime verification is ready", () => {
     expect(() => requireRuntimeWriteReady()).toThrow("Refresh to verify the reviewed deployment")
-    expect(() => requireRuntimeWriteReady({ ready: false, blockers: ["Bridge signer differs"], checkedAt: 1 })).toThrow("Bridge signer differs")
-    expect(() => requireRuntimeWriteReady({ ready: true, blockers: [], checkedAt: 1 }, 1)).not.toThrow()
+    expect(() =>
+      requireRuntimeWriteReady({ ready: false, blockers: ["Bridge signer differs"], checkedAt: 1 }),
+    ).toThrow("Bridge signer differs")
+    expect(() =>
+      requireRuntimeWriteReady({ ready: true, blockers: [], checkedAt: 1 }, 1),
+    ).not.toThrow()
   })
 
   it("expires a successful runtime verification after the write TTL", () => {
     const validation = { ready: true, blockers: [], checkedAt: 10_000 }
     expect(runtimeWriteBlocker(validation, 10_000 + RUNTIME_VALIDATION_TTL_MS)).toBeUndefined()
-    expect(runtimeWriteBlocker(validation, 10_001 + RUNTIME_VALIDATION_TTL_MS)).toBe("Runtime verification expired. Refresh before continuing.")
-    expect(() => requireRuntimeWriteReady(validation, 10_001 + RUNTIME_VALIDATION_TTL_MS)).toThrow("Runtime verification expired")
+    expect(runtimeWriteBlocker(validation, 10_001 + RUNTIME_VALIDATION_TTL_MS)).toBe(
+      "Runtime verification expired. Refresh before continuing.",
+    )
+    expect(() => requireRuntimeWriteReady(validation, 10_001 + RUNTIME_VALIDATION_TTL_MS)).toThrow(
+      "Runtime verification expired",
+    )
   })
 
   it("uses the action-time refetch result and rejects a rotated signer", async () => {
     const cached = { ready: true, blockers: [], checkedAt: Date.now() }
-    const rotated = { ready: false, blockers: ["Bridge signer differs from the reviewed profile"], checkedAt: Date.now() }
+    const rotated = {
+      ready: false,
+      blockers: ["Bridge signer differs from the reviewed profile"],
+      checkedAt: Date.now(),
+    }
     const refetch = vi.fn().mockResolvedValue({ data: rotated })
     expect(runtimeWriteBlocker(cached)).toBeUndefined()
-    await expect(refetchRuntimeWriteReady(refetch)).rejects.toThrow("Bridge signer differs from the reviewed profile")
+    await expect(refetchRuntimeWriteReady(refetch)).rejects.toThrow(
+      "Bridge signer differs from the reviewed profile",
+    )
     expect(refetch).toHaveBeenCalledOnce()
   })
 
   it("rejects a refetch error even when React Query retains previously ready data", async () => {
     const cached = { ready: true, blockers: [], checkedAt: Date.now() }
-    const refetch = vi.fn().mockResolvedValue({ data: cached, isError: true, error: new Error("Base RPC unavailable") })
+    const refetch = vi
+      .fn()
+      .mockResolvedValue({ data: cached, isError: true, error: new Error("Base RPC unavailable") })
 
     await expect(refetchRuntimeWriteReady(refetch)).rejects.toThrow("Base RPC unavailable")
     expect(refetch).toHaveBeenCalledOnce()
   })
 
   it("rejects an errored heartbeat after refreshing an expired attestation", async () => {
-    const expired = { ready: true, blockers: [], checkedAt: Date.now() - RUNTIME_VALIDATION_TTL_MS - 1 }
-    const refreshed = { ready: true, blockers: [], checkedAt: Date.now(), profileFingerprint: "profile" }
+    const expired = {
+      ready: true,
+      blockers: [],
+      checkedAt: Date.now() - RUNTIME_VALIDATION_TTL_MS - 1,
+    }
+    const refreshed = {
+      ready: true,
+      blockers: [],
+      checkedAt: Date.now(),
+      profileFingerprint: "profile",
+    }
     const retainedHeartbeat = { ...refreshed, snapshot: {} }
 
-    await expect(refetchRuntimeAttestedWriteReady(
-      expired,
-      vi.fn().mockResolvedValue({ data: refreshed, isError: false }),
-      vi.fn().mockResolvedValue({ data: retainedHeartbeat, isError: true, error: new Error("Heartbeat unavailable") }),
-    )).rejects.toThrow("Heartbeat unavailable")
+    await expect(
+      refetchRuntimeAttestedWriteReady(
+        expired,
+        vi.fn().mockResolvedValue({ data: refreshed, isError: false }),
+        vi.fn().mockResolvedValue({
+          data: retainedHeartbeat,
+          isError: true,
+          error: new Error("Heartbeat unavailable"),
+        }),
+      ),
+    ).rejects.toThrow("Heartbeat unavailable")
   })
 
   it("detects a signer rotation on a later runtime check", async () => {
@@ -249,11 +313,13 @@ describe("validateRuntime token bindings", () => {
     })
     expect(mocks.getBridgeStatus).toHaveBeenCalledOnce()
     expect(readContractMock).toHaveBeenCalledOnce()
-    expect(readContractMock).toHaveBeenCalledWith(expect.objectContaining({
-      functionName: "bridgeSnapshot",
-      blockHash: finalizedHash,
-      requireCanonical: true,
-    }))
+    expect(readContractMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        functionName: "bridgeSnapshot",
+        blockHash: finalizedHash,
+        requireCanonical: true,
+      }),
+    )
     expect(mocks.getRuntimeBinding).not.toHaveBeenCalled()
     expect(getChainIdMock).toHaveBeenCalledOnce()
     expect(getCodeMock).not.toHaveBeenCalled()
@@ -307,12 +373,19 @@ describe("validateRuntime token bindings", () => {
   })
 
   it("accepts the reviewed TICRC1 ledger, index, and KINIC Base token", async () => {
-    await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({ ready: true, blockers: [] })
+    await expect(validateRuntime(profile, profile.chainId)).resolves.toMatchObject({
+      ready: true,
+      blockers: [],
+    })
     expect(getChainIdMock).toHaveBeenCalledOnce()
     expect(mocks.sha256).toHaveBeenCalledWith("0x01")
     expect(mocks.sha256).toHaveBeenCalledWith("0x02")
-    expect(getCodeMock).toHaveBeenCalledWith(expect.objectContaining({ blockHash: finalizedHash, requireCanonical: true }))
-    expect(readContractMock).toHaveBeenCalledWith(expect.objectContaining({ blockHash: finalizedHash, requireCanonical: true }))
+    expect(getCodeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ blockHash: finalizedHash, requireCanonical: true }),
+    )
+    expect(readContractMock).toHaveBeenCalledWith(
+      expect.objectContaining({ blockHash: finalizedHash, requireCanonical: true }),
+    )
   })
 
   it("accepts the Gate B production Timelock delay", async () => {
@@ -327,7 +400,9 @@ describe("validateRuntime token bindings", () => {
       snsRootCanisterId: "7jkta-eyaaa-aaaaq-aaarq-cai",
     }
 
-    await expect(validateRuntime(productionProfile, productionProfile.chainId)).resolves.toMatchObject({
+    await expect(
+      validateRuntime(productionProfile, productionProfile.chainId),
+    ).resolves.toMatchObject({
       ready: true,
       blockers: [],
     })
@@ -349,8 +424,18 @@ describe("validateRuntime token bindings", () => {
 
   it("blocks a Timelock delay or Canister Timelock binding mismatch", async () => {
     readContractMock.mockImplementation(({ functionName }: { functionName: string }) => {
-      if (functionName === "bridgeSnapshot") return Promise.resolve({ bridgeSigner: contractSigner })
-      if (functionName === "eip712Domain") return Promise.resolve([0n, "KINIC Bridge", "1", BigInt(profile.chainId), bridgeAddress, "0x", []])
+      if (functionName === "bridgeSnapshot")
+        return Promise.resolve({ bridgeSigner: contractSigner })
+      if (functionName === "eip712Domain")
+        return Promise.resolve([
+          0n,
+          "KINIC Bridge",
+          "1",
+          BigInt(profile.chainId),
+          bridgeAddress,
+          "0x",
+          [],
+        ])
       if (functionName === "bsns") return Promise.resolve(bsnsAddress)
       if (functionName === "symbol") return Promise.resolve(baseMetadata.symbol)
       if (functionName === "decimals") return Promise.resolve(baseMetadata.decimals)
@@ -406,14 +491,18 @@ describe("validateRuntime token bindings", () => {
   it("blocks obsolete schema and mismatched Canister EVM RPC bindings", async () => {
     mocks.createBridgeActor.mockResolvedValue({
       get_runtime_binding: vi.fn().mockResolvedValue({
-        base_chain_id: BigInt(profile.chainId), bridge_contract: new Uint8Array(20).fill(0x11),
+        base_chain_id: BigInt(profile.chainId),
+        bridge_contract: new Uint8Array(20).fill(0x11),
         expected_bridge_runtime_sha256: new Uint8Array(32).fill(0xaa),
         timelock_contract: new Uint8Array(20).fill(0x55),
         deployment_instance_id: new Uint8Array(32).fill(0x99),
         minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]),
-        ledger_canister_id: Principal.fromText(ledgerId), index_canister_id: Principal.fromText(indexId),
-        schema_version: 18, expected_bridge_signer: new Uint8Array(20).fill(0x33),
-        evm_rpc_canister_id: Principal.managementCanister(), rpc_provider_urls_sha256: new Uint8Array(32).fill(0xdd),
+        ledger_canister_id: Principal.fromText(ledgerId),
+        index_canister_id: Principal.fromText(indexId),
+        schema_version: 18,
+        expected_bridge_signer: new Uint8Array(20).fill(0x33),
+        evm_rpc_canister_id: Principal.managementCanister(),
+        rpc_provider_urls_sha256: new Uint8Array(32).fill(0xdd),
       }),
       get_bridge_status: vi.fn().mockResolvedValue({ withdrawal_fee_guard_active: false }),
     })
@@ -424,10 +513,18 @@ describe("validateRuntime token bindings", () => {
   })
 
   it("blocks unless the profile, confirmed contract, and canister signer agree", () => {
-    expect(bridgeSignerBlockers(expectedSigner, expectedSigner, new Uint8Array(20).fill(0x33))).toEqual([])
-    expect(bridgeSignerBlockers(expectedSigner, `0x${"44".repeat(20)}`, new Uint8Array(20).fill(0x33))).toContain("Bridge signer differs from the reviewed profile")
-    expect(bridgeSignerBlockers(expectedSigner, expectedSigner, new Uint8Array(20).fill(0x44))).toContain("Canister expected Bridge signer differs from the reviewed profile")
-    expect(bridgeSignerBlockers(expectedSigner, expectedSigner)).toContain("Canister expected Bridge signer is unavailable")
+    expect(
+      bridgeSignerBlockers(expectedSigner, expectedSigner, new Uint8Array(20).fill(0x33)),
+    ).toEqual([])
+    expect(
+      bridgeSignerBlockers(expectedSigner, `0x${"44".repeat(20)}`, new Uint8Array(20).fill(0x33)),
+    ).toContain("Bridge signer differs from the reviewed profile")
+    expect(
+      bridgeSignerBlockers(expectedSigner, expectedSigner, new Uint8Array(20).fill(0x44)),
+    ).toContain("Canister expected Bridge signer differs from the reviewed profile")
+    expect(bridgeSignerBlockers(expectedSigner, expectedSigner)).toContain(
+      "Canister expected Bridge signer is unavailable",
+    )
   })
 
   it.each([
@@ -460,7 +557,9 @@ describe("validateRuntime token bindings", () => {
   })
 
   it("blocks when the Index ledger binding cannot be queried", async () => {
-    mocks.createIndexActor.mockResolvedValue({ ledger_id: vi.fn().mockRejectedValue(new Error("unavailable")) })
+    mocks.createIndexActor.mockResolvedValue({
+      ledger_id: vi.fn().mockRejectedValue(new Error("unavailable")),
+    })
     const result = await validateRuntime(profile)
     expect(result.blockers).toContain("Index ledger binding is unavailable")
   })

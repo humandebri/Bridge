@@ -1,16 +1,13 @@
-import {
-  bytesToHex,
-  hashTypedData,
-  recoverAddress,
-  type Address,
-  type Hex,
-} from "viem"
+import { bytesToHex, hashTypedData, recoverAddress, type Address, type Hex } from "viem"
 import type { DepositView, MintAuthorizationView } from "@/generated/bridge.did"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { deploymentProfile } from "@/config/profile"
 import { basePublicClient } from "@/lib/evm/client"
 import type { FinalizedRuntimeObservation } from "@/lib/runtime-validation"
-import { hasCanonicalMintAuthorizationDeadline, mintAuthorizationWindow } from "@/lib/mint-authorization-window"
+import {
+  hasCanonicalMintAuthorizationDeadline,
+  mintAuthorizationWindow,
+} from "@/lib/mint-authorization-window"
 
 export const mintAuthorizationTypes = {
   MintAuthorization: [
@@ -75,12 +72,16 @@ export function contractAuthorization(view: MintAuthorizationView): ContractMint
 
 function assertCanonicalDeposit(record: DepositView, view: MintAuthorizationView): void {
   const quote = record.quote[0]
-  if (!quote
-    || fixedHex(record.deposit_id, 32, "Canonical deposit ID") !== fixedHex(view.deposit_id, 32, "Authorization deposit ID")
-    || address(record.base_recipient, "Canonical recipient").toLowerCase() !== address(view.recipient, "Authorization recipient").toLowerCase()
-    || record.gross_amount !== view.gross_amount
-    || record.max_service_fee !== view.max_service_fee
-    || quote.service_fee !== view.charged_service_fee) {
+  if (
+    !quote ||
+    fixedHex(record.deposit_id, 32, "Canonical deposit ID") !==
+      fixedHex(view.deposit_id, 32, "Authorization deposit ID") ||
+    address(record.base_recipient, "Canonical recipient").toLowerCase() !==
+      address(view.recipient, "Authorization recipient").toLowerCase() ||
+    record.gross_amount !== view.gross_amount ||
+    record.max_service_fee !== view.max_service_fee ||
+    quote.service_fee !== view.charged_service_fee
+  ) {
     throw new Error("Mint authorization does not match the canonical deposit")
   }
 }
@@ -101,10 +102,12 @@ export async function validateMintAuthorization(
 
   const configuredContract = deploymentProfile.bridgeAddress as Address
   const domainContract = address(view.verifying_contract, "Authorization contract")
-  if (view.domain_name !== "KINIC Bridge"
-    || view.domain_version !== "1"
-    || view.chain_id !== BigInt(deploymentProfile.chainId)
-    || domainContract.toLowerCase() !== configuredContract.toLowerCase()) {
+  if (
+    view.domain_name !== "KINIC Bridge" ||
+    view.domain_version !== "1" ||
+    view.chain_id !== BigInt(deploymentProfile.chainId) ||
+    domainContract.toLowerCase() !== configuredContract.toLowerCase()
+  ) {
     throw new Error("Mint authorization domain does not match this deployment")
   }
 
@@ -134,7 +137,7 @@ export async function validateMintAuthorization(
   let processed: boolean
   let latestBlock: Awaited<ReturnType<typeof basePublicClient.getBlock>>
   try {
-    [processed, latestBlock] = await Promise.all([
+    ;[processed, latestBlock] = await Promise.all([
       basePublicClient.readContract({
         address: configuredContract,
         abi: bridgeAbi,
@@ -144,19 +147,29 @@ export async function validateMintAuthorization(
       basePublicClient.getBlock({ blockTag: "latest" }),
     ])
   } catch {
-    throw new Error("Latest Base time or processed state could not be refreshed. No Base transaction was sent.")
+    throw new Error(
+      "Latest Base time or processed state could not be refreshed. No Base transaction was sent.",
+    )
   }
 
   if (processed) {
-    throw new Error("This Deposit ID is already processed on Base. Do not submit another mint; refresh History for finalized status.")
+    throw new Error(
+      "This Deposit ID is already processed on Base. Do not submit another mint; refresh History for finalized status.",
+    )
   }
   assertMintAuthorizationContractHorizon(authorization.deadline, latestBlock.timestamp)
-  if (!mintAuthorizationWindow(authorization.deadline, latestBlock.timestamp).hasMinimumRemainingTime) {
-    throw new Error("Mint authorization has less than five minutes remaining. No Base transaction was sent.")
+  if (
+    !mintAuthorizationWindow(authorization.deadline, latestBlock.timestamp).hasMinimumRemainingTime
+  ) {
+    throw new Error(
+      "Mint authorization has less than five minutes remaining. No Base transaction was sent.",
+    )
   }
-  if (snapshot.depositsPaused
-    || snapshot.mintAuthorizationEpoch !== authorization.authorizationEpoch
-    || recovered.toLowerCase() !== snapshot.bridgeSigner.toLowerCase()) {
+  if (
+    snapshot.depositsPaused ||
+    snapshot.mintAuthorizationEpoch !== authorization.authorizationEpoch ||
+    recovered.toLowerCase() !== snapshot.bridgeSigner.toLowerCase()
+  ) {
     throw new Error("Mint authorization is no longer valid on Base")
   }
 

@@ -1,22 +1,22 @@
 [
   {
-    "match": "**/*",
-    "headers": {
+    match: "**/*",
+    headers: {
       "Content-Security-Policy": "default-src 'none'; connect-src 'self' https://icp-api.io https://*.icp0.io https://*.icp-api.io https://base-sepolia-rpc.publicnode.com https://sepolia.base.org; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
       "Permissions-Policy": "accelerometer=(), autoplay=(), camera=(), clipboard-read=(), clipboard-write=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()",
       "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff",
-      "X-Frame-Options": "DENY"
+      "X-Frame-Options": "DENY",
     },
-    "allow_raw_access": false
+    allow_raw_access: false,
   },
   {
-    "match": "index.html",
-    "cache": { "max_age": 0 },
-    "enable_aliasing": true
+    match: "index.html",
+    cache: { max_age: 0 },
+    enable_aliasing: true,
   },
   {
-    "match": "assets/**/*",
-    "cache": { "max_age": 31536000, "immutable": true }
-  }
+    match: "assets/**/*",
+    cache: { max_age: 31536000, immutable: true },
+  },
 ]

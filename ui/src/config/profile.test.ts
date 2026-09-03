@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { DEFAULT_BASE_MAINNET_RPC_URL, deploymentProfile, deploymentProfileSchema, profileCompleteness, releaseProfileSchema, resolvedBaseRpcUrl } from "./profile"
+import {
+  DEFAULT_BASE_MAINNET_RPC_URL,
+  deploymentProfile,
+  deploymentProfileSchema,
+  profileCompleteness,
+  releaseProfileSchema,
+  resolvedBaseRpcUrl,
+} from "./profile"
 
 describe("reviewed deployment profile", () => {
   it("reports every missing preflight deployment value", () => {
@@ -69,45 +76,55 @@ describe("reviewed deployment profile", () => {
   })
 
   it("rejects token metadata that does not use the Bridge-wide 8 decimal contract", () => {
-    expect(() => deploymentProfileSchema.parse({
-      ...deploymentProfile,
-      icToken: { ...deploymentProfile.icToken, decimals: 6 },
-    })).toThrow()
-    expect(() => deploymentProfileSchema.parse({
-      ...deploymentProfile,
-      baseToken: { ...deploymentProfile.baseToken, decimals: 18 },
-    })).toThrow()
+    expect(() =>
+      deploymentProfileSchema.parse({
+        ...deploymentProfile,
+        icToken: { ...deploymentProfile.icToken, decimals: 6 },
+      }),
+    ).toThrow()
+    expect(() =>
+      deploymentProfileSchema.parse({
+        ...deploymentProfile,
+        baseToken: { ...deploymentProfile.baseToken, decimals: 18 },
+      }),
+    ).toThrow()
   })
 
   it("requires reviewed history RPCs for Sepolia staging", () => {
-    expect(() => deploymentProfileSchema.parse({
-      ...deploymentProfile,
-      environment: "sepolia-staging",
-      environmentMode: "short-delay-test-only",
-      activationTimelockDelaySeconds: 300,
-      bridgeCanisterId: "aaaaa-aa",
-      deploymentInstanceId: `0x${"99".repeat(32)}`,
-      minimumWithdrawalId: `0x${"00".repeat(31)}01`,
-      ledgerCanisterId: "aaaaa-aa",
-      indexCanisterId: "aaaaa-aa",
-      evmRpcCanisterId: "7hfb6-caaaa-aaaar-qadga-cai",
-      baseHistoryRpcUrls: undefined,
-    })).toThrow("reviewed Base history RPC URLs")
+    expect(() =>
+      deploymentProfileSchema.parse({
+        ...deploymentProfile,
+        environment: "sepolia-staging",
+        environmentMode: "short-delay-test-only",
+        activationTimelockDelaySeconds: 300,
+        bridgeCanisterId: "aaaaa-aa",
+        deploymentInstanceId: `0x${"99".repeat(32)}`,
+        minimumWithdrawalId: `0x${"00".repeat(31)}01`,
+        ledgerCanisterId: "aaaaa-aa",
+        indexCanisterId: "aaaaa-aa",
+        evmRpcCanisterId: "7hfb6-caaaa-aaaar-qadga-cai",
+        baseHistoryRpcUrls: undefined,
+      }),
+    ).toThrow("reviewed Base history RPC URLs")
   })
 
   it("rejects duplicate history RPC URLs", () => {
-    expect(() => deploymentProfileSchema.parse({
-      ...deploymentProfile,
-      baseHistoryRpcUrls: ["https://history.example", "https://history.example/"],
-    })).toThrow("Base history RPC URLs must be distinct")
+    expect(() =>
+      deploymentProfileSchema.parse({
+        ...deploymentProfile,
+        baseHistoryRpcUrls: ["https://history.example", "https://history.example/"],
+      }),
+    ).toThrow("Base history RPC URLs must be distinct")
   })
 
   it("rejects a zero deployment instance ID", () => {
-    expect(() => deploymentProfileSchema.parse({
-      ...deploymentProfile,
-      deploymentInstanceId: `0x${"00".repeat(32)}`,
-      minimumWithdrawalId: `0x${"00".repeat(31)}01`,
-    })).toThrow("hash must be nonzero")
+    expect(() =>
+      deploymentProfileSchema.parse({
+        ...deploymentProfile,
+        deploymentInstanceId: `0x${"00".repeat(32)}`,
+        minimumWithdrawalId: `0x${"00".repeat(31)}01`,
+      }),
+    ).toThrow("hash must be nonzero")
   })
 
   it("requires the operational history start without exposing release management metadata", () => {

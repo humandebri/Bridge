@@ -23,7 +23,11 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("@/features/bridge/bridge-progress-provider", () => ({
-  useBridgeProgress: () => ({ progress: mocks.progress, update: mocks.update, setAction: mocks.setAction }),
+  useBridgeProgress: () => ({
+    progress: mocks.progress,
+    update: mocks.update,
+    setAction: mocks.setAction,
+  }),
 }))
 vi.mock("@/features/bridge/mint-authorization-action", () => ({
   MintAuthorizationAction: mocks.mintAuthorizationAction,
@@ -42,7 +46,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.progress.phase = "authorization-generating"
   mocks.progress.attentionPhase = undefined
-  mocks.getDeposit.mockResolvedValue([{ state: { Minted: null }, automatic_progress: [], last_settlement_stop_reason: [] }])
+  mocks.getDeposit.mockResolvedValue([
+    { state: { Minted: null }, automatic_progress: [], last_settlement_stop_reason: [] },
+  ])
 })
 
 afterEach(cleanup)
@@ -51,27 +57,33 @@ describe("DepositProgressCoordinator", () => {
   it("completes a restored deposit when the canonical record is Minted", async () => {
     render(<DepositProgressCoordinator />)
 
-    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
-      phase: "complete",
-      completionMessage: "1.5 KINIC was minted on Base.",
-    }))
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
+        phase: "complete",
+        completionMessage: "1.5 KINIC was minted on Base.",
+      }),
+    )
   })
 
   it("automatically opens the Base wallet when mint authorization becomes available", async () => {
-    mocks.getDeposit.mockResolvedValue([{
-      state: { AuthorizationAvailable: null },
-      mint_authorization: [{}],
-      automatic_progress: [],
-      last_settlement_stop_reason: [],
-    }])
+    mocks.getDeposit.mockResolvedValue([
+      {
+        state: { AuthorizationAvailable: null },
+        mint_authorization: [{}],
+        automatic_progress: [],
+        last_settlement_stop_reason: [],
+      },
+    ])
 
     render(<DepositProgressCoordinator />)
 
     await waitFor(() => expect(mocks.mintAuthorizationAction).toHaveBeenCalled())
-    expect(mocks.mintAuthorizationAction.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
-      autoPromptOwner: "aaaaa-aa",
-      headless: true,
-    }))
+    expect(mocks.mintAuthorizationAction.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        autoPromptOwner: "aaaaa-aa",
+        headless: true,
+      }),
+    )
   })
 
   it("keeps_a_restored_deposit_pending_during_an_IC_query_failure_then_resumes_after_remount", async () => {
@@ -83,54 +95,89 @@ describe("DepositProgressCoordinator", () => {
     expect(mocks.mintAuthorizationAction).not.toHaveBeenCalled()
 
     first.unmount()
-    mocks.getDeposit.mockResolvedValue([{ state: { AuthorizationPending: null }, automatic_progress: [], last_settlement_stop_reason: [] }])
+    mocks.getDeposit.mockResolvedValue([
+      {
+        state: { AuthorizationPending: null },
+        automatic_progress: [],
+        last_settlement_stop_reason: [],
+      },
+    ])
     render(<DepositProgressCoordinator />)
 
-    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
-      phase: "authorization-generating",
-    }))
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
+        phase: "authorization-generating",
+      }),
+    )
     expect(mocks.mintAuthorizationAction).not.toHaveBeenCalled()
   })
 
   it("records successful and reverted Base receipts as distinct presentation facts", async () => {
-    mocks.getDeposit.mockResolvedValue([{
-      state: { AuthorizationAvailable: null },
-      mint_authorization: [{}],
-      automatic_progress: [],
-      last_settlement_stop_reason: [],
-    }])
+    mocks.getDeposit.mockResolvedValue([
+      {
+        state: { AuthorizationAvailable: null },
+        mint_authorization: [{}],
+        automatic_progress: [],
+        last_settlement_stop_reason: [],
+      },
+    ])
     render(<DepositProgressCoordinator />)
     await waitFor(() => expect(mocks.mintAuthorizationAction).toHaveBeenCalled())
     const props = mocks.mintAuthorizationAction.mock.calls.at(-1)?.[0] as {
       onProgress: (event: unknown) => void
     }
 
-    act(() => props.onProgress({ phase: "included", transactionHash: `0x${"22".repeat(32)}`, blockNumber: 123n, outcome: "success" }))
-    expect(mocks.update).toHaveBeenLastCalledWith("deposit:1", expect.objectContaining({
-      phase: "base-mint-included",
-      baseTransactionOutcome: "success",
-    }))
+    act(() =>
+      props.onProgress({
+        phase: "included",
+        transactionHash: `0x${"22".repeat(32)}`,
+        blockNumber: 123n,
+        outcome: "success",
+      }),
+    )
+    expect(mocks.update).toHaveBeenLastCalledWith(
+      "deposit:1",
+      expect.objectContaining({
+        phase: "base-mint-included",
+        baseTransactionOutcome: "success",
+      }),
+    )
 
-    act(() => props.onProgress({ phase: "included", transactionHash: `0x${"22".repeat(32)}`, blockNumber: 123n, outcome: "reverted" }))
-    expect(mocks.update).toHaveBeenLastCalledWith("deposit:1", expect.objectContaining({
-      phase: "base-mint-included",
-      baseTransactionOutcome: "reverted",
-    }))
+    act(() =>
+      props.onProgress({
+        phase: "included",
+        transactionHash: `0x${"22".repeat(32)}`,
+        blockNumber: 123n,
+        outcome: "reverted",
+      }),
+    )
+    expect(mocks.update).toHaveBeenLastCalledWith(
+      "deposit:1",
+      expect.objectContaining({
+        phase: "base-mint-included",
+        baseTransactionOutcome: "reverted",
+      }),
+    )
   })
 
   it("turns a canonically stopped authorization into dismissible attention and notifies once", async () => {
-    mocks.getDeposit.mockResolvedValue([{
-      state: { AuthorizationPending: null },
-      automatic_progress: [],
-      last_settlement_stop_reason: [{ RpcInconsistent: null }],
-    }])
+    mocks.getDeposit.mockResolvedValue([
+      {
+        state: { AuthorizationPending: null },
+        automatic_progress: [],
+        last_settlement_stop_reason: [{ RpcInconsistent: null }],
+      },
+    ])
     const first = render(<DepositProgressCoordinator />)
 
-    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
-      phase: "attention",
-      attentionPhase: "authorization-generating",
-      attentionMessage: "Base confirmation stopped temporarily. Retrying checks the same deposit again.",
-    }))
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
+        phase: "attention",
+        attentionPhase: "authorization-generating",
+        attentionMessage:
+          "Base confirmation stopped temporarily. Retrying checks the same deposit again.",
+      }),
+    )
     expect(mocks.toastError).toHaveBeenCalledOnce()
 
     first.unmount()
@@ -140,19 +187,24 @@ describe("DepositProgressCoordinator", () => {
   })
 
   it("stops the spinner without notifying while the canonical automatic retry job exists", async () => {
-    mocks.getDeposit.mockResolvedValue([{
-      state: { AuthorizationPending: null },
-      automatic_progress: [{ Scheduled: { next_run_at_ns: 123n } }],
-      last_settlement_stop_reason: [{ SigningUnavailable: null }],
-    }])
+    mocks.getDeposit.mockResolvedValue([
+      {
+        state: { AuthorizationPending: null },
+        automatic_progress: [{ Scheduled: { next_run_at_ns: 123n } }],
+        last_settlement_stop_reason: [{ SigningUnavailable: null }],
+      },
+    ])
 
     render(<DepositProgressCoordinator />)
 
-    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
-      phase: "attention",
-      attentionPhase: "authorization-generating",
-      attentionMessage: "The previous attempt stopped temporarily. The Bridge will retry automatically.",
-    }))
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
+        phase: "attention",
+        attentionPhase: "authorization-generating",
+        attentionMessage:
+          "The previous attempt stopped temporarily. The Bridge will retry automatically.",
+      }),
+    )
     expect(mocks.toastError).not.toHaveBeenCalled()
   })
 
@@ -174,9 +226,11 @@ describe("DepositProgressCoordinator", () => {
 
     render(<DepositProgressCoordinator />)
 
-    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
-      phase: "complete",
-      completionMessage: "1.5 KINIC was minted on Base.",
-    }))
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
+        phase: "complete",
+        completionMessage: "1.5 KINIC was minted on Base.",
+      }),
+    )
   })
 })

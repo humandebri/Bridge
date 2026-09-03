@@ -24,16 +24,31 @@ const expected: ExpectedDepositMint = {
 
 function accepts_only_the_exact_finalized_DepositMinted_payload() {
   expect(depositMintEventMatches(expected, { ...expected })).toBe(true)
-  expect(depositMintEventMatches(expected, { ...expected, depositId: `0x${"44".repeat(32)}` })).toBe(false)
-  expect(depositMintEventMatches(expected, { ...expected, recipient: `0x${"44".repeat(20)}` })).toBe(false)
-  expect(depositMintEventMatches(expected, { ...expected, authorizationDigest: `0x${"44".repeat(32)}` })).toBe(false)
-  expect(depositMintEventMatches(expected, { ...expected, grossAmount: expected.grossAmount + 1n })).toBe(false)
-  expect(depositMintEventMatches(expected, { ...expected, serviceFee: expected.serviceFee + 1n })).toBe(false)
-  expect(depositMintEventMatches(expected, { ...expected, mintedAmount: expected.mintedAmount + 1n })).toBe(false)
+  expect(
+    depositMintEventMatches(expected, { ...expected, depositId: `0x${"44".repeat(32)}` }),
+  ).toBe(false)
+  expect(
+    depositMintEventMatches(expected, { ...expected, recipient: `0x${"44".repeat(20)}` }),
+  ).toBe(false)
+  expect(
+    depositMintEventMatches(expected, { ...expected, authorizationDigest: `0x${"44".repeat(32)}` }),
+  ).toBe(false)
+  expect(
+    depositMintEventMatches(expected, { ...expected, grossAmount: expected.grossAmount + 1n }),
+  ).toBe(false)
+  expect(
+    depositMintEventMatches(expected, { ...expected, serviceFee: expected.serviceFee + 1n }),
+  ).toBe(false)
+  expect(
+    depositMintEventMatches(expected, { ...expected, mintedAmount: expected.mintedAmount + 1n }),
+  ).toBe(false)
 }
 
 describe("depositMintEventMatches", () => {
-  it("accepts only the exact finalized DepositMinted payload", accepts_only_the_exact_finalized_DepositMinted_payload)
+  it(
+    "accepts only the exact finalized DepositMinted payload",
+    accepts_only_the_exact_finalized_DepositMinted_payload,
+  )
 })
 
 describe("receiptContainsExactDepositMint", () => {
@@ -57,38 +72,73 @@ describe("receiptContainsExactDepositMint", () => {
   )
 
   function accepts_only_an_exact_receipt_event_from_configured_bridge() {
-    expect(receiptContainsExactDepositMint(expected, [{
-      address: bridgeAddress,
-      topics,
-      data,
-    }], bridgeAddress)).toBe(true)
+    expect(
+      receiptContainsExactDepositMint(
+        expected,
+        [
+          {
+            address: bridgeAddress,
+            topics,
+            data,
+          },
+        ],
+        bridgeAddress,
+      ),
+    ).toBe(true)
 
-    expect(receiptContainsExactDepositMint({
-      ...expected,
-      authorizationDigest: `0x${"44".repeat(32)}`,
-    }, [{
-      address: bridgeAddress,
-      topics,
-      data,
-    }], bridgeAddress)).toBe(false)
+    expect(
+      receiptContainsExactDepositMint(
+        {
+          ...expected,
+          authorizationDigest: `0x${"44".repeat(32)}`,
+        },
+        [
+          {
+            address: bridgeAddress,
+            topics,
+            data,
+          },
+        ],
+        bridgeAddress,
+      ),
+    ).toBe(false)
 
-    expect(receiptContainsExactDepositMint({
-      ...expected,
-      mintedAmount: expected.mintedAmount + 1n,
-    }, [{
-      address: bridgeAddress,
-      topics,
-      data,
-    }], bridgeAddress)).toBe(false)
+    expect(
+      receiptContainsExactDepositMint(
+        {
+          ...expected,
+          mintedAmount: expected.mintedAmount + 1n,
+        },
+        [
+          {
+            address: bridgeAddress,
+            topics,
+            data,
+          },
+        ],
+        bridgeAddress,
+      ),
+    ).toBe(false)
 
-    expect(receiptContainsExactDepositMint(expected, [{
-      address: bridgeAddress,
-      topics,
-      data,
-    }], `0x${"88".repeat(20)}`)).toBe(false)
+    expect(
+      receiptContainsExactDepositMint(
+        expected,
+        [
+          {
+            address: bridgeAddress,
+            topics,
+            data,
+          },
+        ],
+        `0x${"88".repeat(20)}`,
+      ),
+    ).toBe(false)
   }
 
-  it("accepts only an exact event emitted by the configured bridge", accepts_only_an_exact_receipt_event_from_configured_bridge)
+  it(
+    "accepts only an exact event emitted by the configured bridge",
+    accepts_only_an_exact_receipt_event_from_configured_bridge,
+  )
 
   it("does not accept a successful receipt without DepositMinted", () => {
     expect(receiptContainsExactDepositMint(expected, [], bridgeAddress)).toBe(false)
@@ -111,22 +161,30 @@ describe("receiptContainsExactDepositMint", () => {
     }
 
     expect(exactMintReceiptFinalization(input)).toBe("finalized")
-    expect(exactMintReceiptFinalization({
-      ...input,
-      finalizedBlockNumber: 98n,
-    })).toBe("pending")
-    expect(exactMintReceiptFinalization({
-      ...input,
-      canonicalReceiptBlockHash: `0x${"bb".repeat(32)}`,
-    })).toBe("pending")
-    expect(exactMintReceiptFinalization({
-      ...input,
-      receipt: { ...receipt, logs: [] },
-    })).toBe("conflict")
-    expect(exactMintReceiptFinalization({
-      ...input,
-      receipt: { ...receipt, status: "reverted" },
-    })).toBe("reverted")
+    expect(
+      exactMintReceiptFinalization({
+        ...input,
+        finalizedBlockNumber: 98n,
+      }),
+    ).toBe("pending")
+    expect(
+      exactMintReceiptFinalization({
+        ...input,
+        canonicalReceiptBlockHash: `0x${"bb".repeat(32)}`,
+      }),
+    ).toBe("pending")
+    expect(
+      exactMintReceiptFinalization({
+        ...input,
+        receipt: { ...receipt, logs: [] },
+      }),
+    ).toBe("conflict")
+    expect(
+      exactMintReceiptFinalization({
+        ...input,
+        receipt: { ...receipt, status: "reverted" },
+      }),
+    ).toBe("reverted")
   }
 
   it(
@@ -136,7 +194,10 @@ describe("receiptContainsExactDepositMint", () => {
 })
 
 describe("depositMintFinalizationStatus", () => {
-  const scan = (olderCursor: bigint | null, logs: DepositMintLogScan["logs"] = []): DepositMintLogScan => ({
+  const scan = (
+    olderCursor: bigint | null,
+    logs: DepositMintLogScan["logs"] = [],
+  ): DepositMintLogScan => ({
     lastFinalizedBlock: 30_000n,
     lastFinalizedBlockHash: `0x${"aa".repeat(32)}`,
     observedFinalizedBlock: 30_000n,
@@ -146,48 +207,60 @@ describe("depositMintFinalizationStatus", () => {
   })
 
   it("retains an exact finalized mint even while a refresh fails", () => {
-    expect(depositMintFinalizationStatus({
-      expected,
-      authorizationBlock: 10_000n,
-      scan: scan(20_000n, [{
-        blockNumber: 29_000n,
-        transactionHash: `0x${"bb".repeat(32)}`,
-        logIndex: 0,
-        args: expected,
-      }]),
-      queryState: "unavailable",
-    })).toBe("minted")
+    expect(
+      depositMintFinalizationStatus({
+        expected,
+        authorizationBlock: 10_000n,
+        scan: scan(20_000n, [
+          {
+            blockNumber: 29_000n,
+            transactionHash: `0x${"bb".repeat(32)}`,
+            logIndex: 0,
+            args: expected,
+          },
+        ]),
+        queryState: "unavailable",
+      }),
+    ).toBe("minted")
   })
 
   it("only reports absence after the authorization origin is covered", () => {
-    expect(depositMintFinalizationStatus({
-      expected,
-      authorizationBlock: 20_001n,
-      scan: scan(20_000n),
-      queryState: "ready",
-    })).toBe("absent")
-    expect(depositMintFinalizationStatus({
-      expected,
-      authorizationBlock: 20_000n,
-      scan: scan(20_000n),
-      queryState: "ready",
-    })).toBe("checking")
+    expect(
+      depositMintFinalizationStatus({
+        expected,
+        authorizationBlock: 20_001n,
+        scan: scan(20_000n),
+        queryState: "ready",
+      }),
+    ).toBe("absent")
+    expect(
+      depositMintFinalizationStatus({
+        expected,
+        authorizationBlock: 20_000n,
+        scan: scan(20_000n),
+        queryState: "ready",
+      }),
+    ).toBe("checking")
   })
 
   it("does not reuse absence while refreshing or after an RPC failure", () => {
     const complete = scan(null)
-    expect(depositMintFinalizationStatus({
-      expected,
-      authorizationBlock: 10_000n,
-      scan: complete,
-      queryState: "checking",
-    })).toBe("checking")
-    expect(depositMintFinalizationStatus({
-      expected,
-      authorizationBlock: 10_000n,
-      scan: complete,
-      queryState: "unavailable",
-    })).toBe("unavailable")
+    expect(
+      depositMintFinalizationStatus({
+        expected,
+        authorizationBlock: 10_000n,
+        scan: complete,
+        queryState: "checking",
+      }),
+    ).toBe("checking")
+    expect(
+      depositMintFinalizationStatus({
+        expected,
+        authorizationBlock: 10_000n,
+        scan: complete,
+        queryState: "unavailable",
+      }),
+    ).toBe("unavailable")
   })
 })
 
@@ -242,12 +315,16 @@ describe("scanDepositMintLogs", () => {
       fetchBlockHash: (): Promise<`0x${string}`> =>
         Promise.resolve<`0x${string}`>(`0x${"cc".repeat(32)}`),
     })
-    expect(result.lastFinalizedBlock).toBe(30_000n + DEPOSIT_MINT_LOG_CHUNK_SIZE * BigInt(DEPOSIT_MINT_SCAN_CHUNKS_PER_STEP))
-    expect(depositMintFinalizationStatus({
-      expected,
-      authorizationBlock: 1n,
-      scan: result,
-      queryState: "ready",
-    })).toBe("checking")
+    expect(result.lastFinalizedBlock).toBe(
+      30_000n + DEPOSIT_MINT_LOG_CHUNK_SIZE * BigInt(DEPOSIT_MINT_SCAN_CHUNKS_PER_STEP),
+    )
+    expect(
+      depositMintFinalizationStatus({
+        expected,
+        authorizationBlock: 1n,
+        scan: result,
+        queryState: "ready",
+      }),
+    ).toBe("checking")
   })
 })

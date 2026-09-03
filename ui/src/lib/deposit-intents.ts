@@ -35,18 +35,23 @@ export async function saveDepositIntent(intent: DurableDepositIntent): Promise<v
   sessionIntents.set(key, cloneIntent(intent))
   await withBrowserLock(`kinic-storage:${key}`, () => {
     try {
-      window.localStorage.setItem(key, JSON.stringify({
-        owner: intent.account.owner,
-        subaccount: hex(intent.account.subaccount ?? new Uint8Array()),
-        recipient: intent.recipient,
-        ownerSequence: intent.call.ownerSequence.toString(),
-        baseRecipient: hex(intent.call.baseRecipient),
-        grossAmount: intent.call.grossAmount.toString(),
-        maxServiceFee: intent.call.maxServiceFee.toString(),
-        state: intent.state,
-      }))
+      window.localStorage.setItem(
+        key,
+        JSON.stringify({
+          owner: intent.account.owner,
+          subaccount: hex(intent.account.subaccount ?? new Uint8Array()),
+          recipient: intent.recipient,
+          ownerSequence: intent.call.ownerSequence.toString(),
+          baseRecipient: hex(intent.call.baseRecipient),
+          grossAmount: intent.call.grossAmount.toString(),
+          maxServiceFee: intent.call.maxServiceFee.toString(),
+          state: intent.state,
+        }),
+      )
       sessionIntents.delete(key)
-    } catch { /* Session memory still prevents an automatic duplicate prompt. */ }
+    } catch {
+      /* Session memory still prevents an automatic duplicate prompt. */
+    }
   })
 }
 
@@ -58,7 +63,9 @@ export async function removeDepositIntent(account: IcAccount): Promise<void> {
     try {
       window.localStorage.removeItem(key)
       removedSessionIntents.delete(key)
-    } catch { /* Already removed from session memory. */ }
+    } catch {
+      /* Already removed from session memory. */
+    }
   })
 }
 
@@ -87,14 +94,22 @@ interface StoredIntent {
 function isStoredIntent(value: unknown): value is StoredIntent {
   if (typeof value !== "object" || value === null) return false
   const item = value as Record<string, unknown>
-  return typeof item.owner === "string"
-    && typeof item.subaccount === "string" && /^0x(?:[0-9a-fA-F]{64})?$/.test(item.subaccount)
-    && typeof item.recipient === "string" && /^0x[0-9a-fA-F]{40}$/.test(item.recipient)
-    && typeof item.ownerSequence === "string" && /^\d+$/.test(item.ownerSequence)
-    && typeof item.baseRecipient === "string" && /^0x[0-9a-fA-F]{40}$/.test(item.baseRecipient)
-    && typeof item.grossAmount === "string" && /^\d+$/.test(item.grossAmount)
-    && typeof item.maxServiceFee === "string" && /^\d+$/.test(item.maxServiceFee)
-    && ["prepared", "submitted", "accepted"].includes(String(item.state))
+  return (
+    typeof item.owner === "string" &&
+    typeof item.subaccount === "string" &&
+    /^0x(?:[0-9a-fA-F]{64})?$/.test(item.subaccount) &&
+    typeof item.recipient === "string" &&
+    /^0x[0-9a-fA-F]{40}$/.test(item.recipient) &&
+    typeof item.ownerSequence === "string" &&
+    /^\d+$/.test(item.ownerSequence) &&
+    typeof item.baseRecipient === "string" &&
+    /^0x[0-9a-fA-F]{40}$/.test(item.baseRecipient) &&
+    typeof item.grossAmount === "string" &&
+    /^\d+$/.test(item.grossAmount) &&
+    typeof item.maxServiceFee === "string" &&
+    /^\d+$/.test(item.maxServiceFee) &&
+    ["prepared", "submitted", "accepted"].includes(String(item.state))
+  )
 }
 
 function fromStored(value: StoredIntent): DurableDepositIntent {

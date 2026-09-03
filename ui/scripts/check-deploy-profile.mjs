@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto"
 import { execFileSync, spawn } from "node:child_process"
-import { closeSync, constants, fstatSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs"
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
@@ -22,7 +30,9 @@ function hashGitArchive(sourceRoot) {
     child.stdout.on("data", (chunk) => digest.update(chunk))
     child.stdout.on("error", fail)
     child.stderr.setEncoding("utf8")
-    child.stderr.on("data", (chunk) => { stderr += chunk })
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk
+    })
     child.stderr.on("error", fail)
     child.on("error", fail)
     child.on("close", (code, signal) => {
@@ -52,34 +62,80 @@ try {
   const profileFile = process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE
   const inputsManifestFile = process.env.BRIDGE_RELEASE_INPUTS_MANIFEST
   const bundle = process.env.BRIDGE_RELEASE_BUNDLE
-  if (!profileFile || !inputsManifestFile || !bundle) throw new Error("Production UI deploy requires a signed Gate B bundle and reviewed release input files")
+  if (!profileFile || !inputsManifestFile || !bundle)
+    throw new Error(
+      "Production UI deploy requires a signed Gate B bundle and reviewed release input files",
+    )
   if (!/^[0-9a-f]{32}$/i.test(process.env.VITE_WALLETCONNECT_PROJECT_ID?.trim() ?? "")) {
-    throw new Error("Production UI deploy requires a 32-character hexadecimal VITE_WALLETCONNECT_PROJECT_ID")
+    throw new Error(
+      "Production UI deploy requires a 32-character hexadecimal VITE_WALLETCONNECT_PROJECT_ID",
+    )
   }
   const sourceRoot = resolve(import.meta.dirname, "../..")
   const releaseManifest = JSON.parse(readFileSync(join(bundle, "release-manifest.json"), "utf8"))
-  if (!/^[0-9a-f]{40}$/i.test(releaseManifest.source_revision)
-    || !/^[0-9a-f]{64}$/i.test(releaseManifest.source_tree_sha256)) {
+  if (
+    !/^[0-9a-f]{40}$/i.test(releaseManifest.source_revision) ||
+    !/^[0-9a-f]{64}$/i.test(releaseManifest.source_tree_sha256)
+  ) {
     throw new Error("Gate B manifest does not bind a valid UI source revision and tree")
   }
-  const dirty = execFileSync("git", ["-C", sourceRoot, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], { encoding: "utf8" })
-  if (dirty !== "") throw new Error("Production UI deploy requires the exact clean Gate B source tree")
-  const revision = execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
+  const dirty = execFileSync(
+    "git",
+    [
+      "-C",
+      sourceRoot,
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all",
+      "--ignore-submodules=none",
+    ],
+    { encoding: "utf8" },
+  )
+  if (dirty !== "")
+    throw new Error("Production UI deploy requires the exact clean Gate B source tree")
+  const revision = execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim()
   const tree = await hashGitArchive(sourceRoot)
-  if (revision !== releaseManifest.source_revision || tree !== releaseManifest.source_tree_sha256.toLowerCase()) {
+  if (
+    revision !== releaseManifest.source_revision ||
+    tree !== releaseManifest.source_tree_sha256.toLowerCase()
+  ) {
     throw new Error("Production UI checkout differs from the Gate B source revision or tree")
   }
-  const cargoArgs = ["run", "--locked", "--quiet", "--manifest-path", join(sourceRoot, "Cargo.toml"), "-p", "bridge-profile", "--"]
-  const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", "schedule", bundle], { encoding: "utf8" })
-  const verifiedManifestSha256 = /^gate_b=live-pass authorizing=schedule manifest_sha256=([0-9a-fA-F]{64})$/m.exec(gateOutput)?.[1]
-  if (!verifiedManifestSha256) throw new Error("Fixed bridge-profile did not verify the Gate B manifest")
+  const cargoArgs = [
+    "run",
+    "--locked",
+    "--quiet",
+    "--manifest-path",
+    join(sourceRoot, "Cargo.toml"),
+    "-p",
+    "bridge-profile",
+    "--",
+  ]
+  const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", "schedule", bundle], {
+    encoding: "utf8",
+  })
+  const verifiedManifestSha256 =
+    /^gate_b=live-pass authorizing=schedule manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
+      gateOutput,
+    )?.[1]
+  if (!verifiedManifestSha256)
+    throw new Error("Fixed bridge-profile did not verify the Gate B manifest")
   const rawProfileBuffer = readOrdinaryFile(profileFile)
   const inputsManifestBuffer = readOrdinaryFile(inputsManifestFile)
   const rendered = mkdtempSync(join(tmpdir(), "bridge-ui-release-inputs."))
   try {
-    execFileSync("cargo", [...cargoArgs, "render-bundle-inputs", bundle, rendered], { stdio: "pipe" })
+    execFileSync("cargo", [...cargoArgs, "render-bundle-inputs", bundle, rendered], {
+      stdio: "pipe",
+    })
     const reviewedRoot = dirname(inputsManifestFile)
-    for (const name of ["canister-init.json", "contract-constructor-args.json"]) {
+    for (const name of [
+      "canister-init.json",
+      "contract-constructor-args.json",
+      "ui-runtime-profile.json",
+      "release-inputs-manifest.json",
+    ]) {
       if (!readFileSync(join(rendered, name)).equals(readOrdinaryFile(join(reviewedRoot, name)))) {
         throw new Error(`Production release input drift: ${name}`)
       }
@@ -87,7 +143,9 @@ try {
     if (!readFileSync(join(rendered, "ui-runtime-profile.json")).equals(rawProfileBuffer)) {
       throw new Error("Production release input drift: ui-runtime-profile.json")
     }
-    if (!readFileSync(join(rendered, "release-inputs-manifest.json")).equals(inputsManifestBuffer)) {
+    if (
+      !readFileSync(join(rendered, "release-inputs-manifest.json")).equals(inputsManifestBuffer)
+    ) {
       throw new Error("Production release input drift: release-inputs-manifest.json")
     }
   } finally {

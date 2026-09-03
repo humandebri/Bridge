@@ -1,6 +1,20 @@
 import { createHash } from "node:crypto"
 import { execFileSync, spawn, spawnSync } from "node:child_process"
-import { closeSync, constants, chmodSync, copyFileSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  copyFileSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { dirname, relative, resolve, sep } from "node:path"
 import { tmpdir } from "node:os"
 
@@ -10,7 +24,8 @@ const distRoot = resolve(uiRoot, "dist")
 const profileBootstrap = "deployment-profile.js"
 const productionWranglerConfig = resolve(uiRoot, "wrangler.production.jsonc")
 
-if (process.versions.node !== "24.14.0") throw new Error("Production UI artifacts require Node.js 24.14.0")
+if (process.versions.node !== "24.14.0")
+  throw new Error("Production UI artifacts require Node.js 24.14.0")
 if (execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim() !== "11.0.8") {
   throw new Error("Production UI artifacts require pnpm 11.0.8")
 }
@@ -53,7 +68,9 @@ function hashGitArchive() {
     child.stdout.on("data", (chunk) => digest.update(chunk))
     child.stdout.on("error", fail)
     child.stderr.setEncoding("utf8")
-    child.stderr.on("data", (chunk) => { stderr += chunk })
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk
+    })
     child.stderr.on("error", fail)
     child.on("error", fail)
     child.on("close", (code, signal) => {
@@ -69,10 +86,24 @@ function hashGitArchive() {
 }
 
 async function sourceIdentity() {
-  const dirty = execFileSync("git", ["-C", sourceRoot, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], { encoding: "utf8" })
-  if (dirty !== "") throw new Error("Production UI artifact generation requires a clean source tree")
+  const dirty = execFileSync(
+    "git",
+    [
+      "-C",
+      sourceRoot,
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all",
+      "--ignore-submodules=none",
+    ],
+    { encoding: "utf8" },
+  )
+  if (dirty !== "")
+    throw new Error("Production UI artifact generation requires a clean source tree")
   return {
-    source_revision: execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+    source_revision: execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim(),
     source_tree_sha256: await hashGitArchive(),
   }
 }
@@ -88,7 +119,8 @@ function walk(root, current = root) {
     if (stat.isDirectory()) files.push(...walk(root, path))
     else if (stat.isFile()) {
       const relativePath = relative(root, path).split(sep).join("/")
-      if (relativePath !== profileBootstrap) files.push({ path: relativePath, sha256: sha256(readFileSync(path)) })
+      if (relativePath !== profileBootstrap)
+        files.push({ path: relativePath, sha256: sha256(readFileSync(path)) })
     } else throw new Error(`Production UI artifact rejects non-file: ${path}`)
   }
   return files
@@ -97,7 +129,11 @@ function walk(root, current = root) {
 function buildGenericAssets() {
   const result = spawnSync("pnpm", ["run", "build"], {
     cwd: uiRoot,
-    env: { ...process.env, KINIC_GENERIC_PRODUCTION_UI_BUILD: "1", VITE_DEPLOYMENT_PROFILE_JSON: "" },
+    env: {
+      ...process.env,
+      KINIC_GENERIC_PRODUCTION_UI_BUILD: "1",
+      VITE_DEPLOYMENT_PROFILE_JSON: "",
+    },
     stdio: "inherit",
   })
   if (result.status !== 0) throw new Error("Generic production UI build failed")
@@ -112,11 +148,13 @@ function validateReceipt(receipt, identity, built) {
   if (keys !== "artifact_set_sha256,files,schema_version,source_revision,source_tree_sha256") {
     throw new Error("UI artifact receipt has unexpected fields")
   }
-  if (receipt.schema_version !== 1
-    || receipt.source_revision !== identity.source_revision
-    || receipt.source_tree_sha256?.toLowerCase() !== identity.source_tree_sha256
-    || receipt.artifact_set_sha256?.toLowerCase() !== built.artifact_set_sha256
-    || JSON.stringify(receipt.files) !== JSON.stringify(built.files)) {
+  if (
+    receipt.schema_version !== 1 ||
+    receipt.source_revision !== identity.source_revision ||
+    receipt.source_tree_sha256?.toLowerCase() !== identity.source_tree_sha256 ||
+    receipt.artifact_set_sha256?.toLowerCase() !== built.artifact_set_sha256 ||
+    JSON.stringify(receipt.files) !== JSON.stringify(built.files)
+  ) {
     throw new Error("UI artifact receipt differs from the clean reproducible build")
   }
 }
@@ -130,7 +168,11 @@ async function installRuntimeProfile(targetRoot, raw) {
     deploymentBlock: parsedProfile.deploymentBlock?.toString() ?? null,
   }
   const publicRaw = JSON.stringify(publicProfile)
-  writeFileSync(resolve(targetRoot, profileBootstrap), `globalThis.__KINIC_DEPLOYMENT_PROFILE_JSON__ = ${JSON.stringify(publicRaw)};\n`, { flag: "wx", mode: 0o400 })
+  writeFileSync(
+    resolve(targetRoot, profileBootstrap),
+    `globalThis.__KINIC_DEPLOYMENT_PROFILE_JSON__ = ${JSON.stringify(publicRaw)};\n`,
+    { flag: "wx", mode: 0o400 },
+  )
 }
 
 /** @param {string} raw */
@@ -139,10 +181,11 @@ async function validatePreActivationProfile(raw) {
   /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
   const deploymentGlobal = globalThis
   deploymentGlobal.__KINIC_DEPLOYMENT_PROFILE_JSON__ = raw.trim()
-  const [{ deploymentProfile, profileCompleteness }, { assertPreActivationUiProfile }] = await Promise.all([
-    import("../src/config/profile.ts"),
-    import("../src/config/deploy-safety.ts"),
-  ])
+  const [{ deploymentProfile, profileCompleteness }, { assertPreActivationUiProfile }] =
+    await Promise.all([
+      import("../src/config/profile.ts"),
+      import("../src/config/deploy-safety.ts"),
+    ])
   assertPreActivationUiProfile(releaseProfile)
   const expectedBlockers = ["Deployment history start block is missing"]
   const blockers = profileCompleteness(deploymentProfile)
@@ -156,32 +199,56 @@ async function validateProductionProfile(profileFile, identity) {
   const bundle = process.env.BRIDGE_RELEASE_BUNDLE
   const inputsManifestFile = process.env.BRIDGE_RELEASE_INPUTS_MANIFEST
   if (!bundle || !inputsManifestFile) {
-    throw new Error("Production UI deploy requires a signed Gate B bundle and reviewed release inputs")
+    throw new Error(
+      "Production UI deploy requires a signed Gate B bundle and reviewed release inputs",
+    )
   }
   const releaseManifest = JSON.parse(readFileSync(resolve(bundle, "release-manifest.json"), "utf8"))
-  if (releaseManifest.source_revision !== identity.source_revision
-    || releaseManifest.source_tree_sha256?.toLowerCase() !== identity.source_tree_sha256) {
+  if (
+    releaseManifest.source_revision !== identity.source_revision ||
+    releaseManifest.source_tree_sha256?.toLowerCase() !== identity.source_tree_sha256
+  ) {
     throw new Error("Production UI checkout differs from the Gate B source revision or tree")
   }
-  const cargoArgs = ["run", "--locked", "--quiet", "--manifest-path", resolve(sourceRoot, "Cargo.toml"), "-p", "bridge-profile", "--"]
-  const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", "schedule", bundle], { encoding: "utf8" })
-  const manifestSha256 = /^gate_b=live-pass authorizing=schedule manifest_sha256=([0-9a-fA-F]{64})$/m.exec(gateOutput)?.[1]
+  const cargoArgs = [
+    "run",
+    "--locked",
+    "--quiet",
+    "--manifest-path",
+    resolve(sourceRoot, "Cargo.toml"),
+    "-p",
+    "bridge-profile",
+    "--",
+  ]
+  const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", "schedule", bundle], {
+    encoding: "utf8",
+  })
+  const manifestSha256 =
+    /^gate_b=live-pass authorizing=schedule manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
+      gateOutput,
+    )?.[1]
   if (!manifestSha256) throw new Error("Fixed bridge-profile did not verify the Gate B manifest")
   const rawBuffer = readOrdinaryFile(profileFile)
   const inputsManifestBuffer = readOrdinaryFile(inputsManifestFile)
   const rendered = mkdtempSync(resolve(tmpdir(), "bridge-ui-release-inputs."))
   try {
-    execFileSync("cargo", [...cargoArgs, "render-bundle-inputs", bundle, rendered], { stdio: "pipe" })
+    execFileSync("cargo", [...cargoArgs, "render-bundle-inputs", bundle, rendered], {
+      stdio: "pipe",
+    })
     const reviewedRoot = dirname(inputsManifestFile)
     for (const name of ["canister-init.json", "contract-constructor-args.json"]) {
-      if (!readFileSync(resolve(rendered, name)).equals(readOrdinaryFile(resolve(reviewedRoot, name)))) {
+      if (
+        !readFileSync(resolve(rendered, name)).equals(readOrdinaryFile(resolve(reviewedRoot, name)))
+      ) {
         throw new Error(`Production release input drift: ${name}`)
       }
     }
     if (!readFileSync(resolve(rendered, "ui-runtime-profile.json")).equals(rawBuffer)) {
       throw new Error("Production release input drift: ui-runtime-profile.json")
     }
-    if (!readFileSync(resolve(rendered, "release-inputs-manifest.json")).equals(inputsManifestBuffer)) {
+    if (
+      !readFileSync(resolve(rendered, "release-inputs-manifest.json")).equals(inputsManifestBuffer)
+    ) {
       throw new Error("Production release input drift: release-inputs-manifest.json")
     }
   } finally {
@@ -210,8 +277,10 @@ async function validateProductionProfile(profileFile, identity) {
 /** @param {SourceIdentity} expected */
 async function requireUnchangedSourceIdentity(expected) {
   const current = await sourceIdentity()
-  if (current.source_revision !== expected.source_revision
-    || current.source_tree_sha256 !== expected.source_tree_sha256) {
+  if (
+    current.source_revision !== expected.source_revision ||
+    current.source_tree_sha256 !== expected.source_tree_sha256
+  ) {
     throw new Error("Production UI checkout changed before publication")
   }
 }
@@ -235,15 +304,20 @@ async function deployFrozenAssets(receipt, rawProfile, identity, dryRun = false)
     }
     await installRuntimeProfile(frozen, rawProfile)
     const configBytes = readOrdinaryFile(productionWranglerConfig)
-    const reviewedConfig = execFileSync(
-      "git",
-      ["-C", sourceRoot, "show", "HEAD:ui/wrangler.production.jsonc"],
-    )
+    const reviewedConfig = execFileSync("git", [
+      "-C",
+      sourceRoot,
+      "show",
+      "HEAD:ui/wrangler.production.jsonc",
+    ])
     if (!configBytes.equals(reviewedConfig)) {
       throw new Error("Production Wrangler config differs from the reviewed HEAD")
     }
     writeFileSync(frozenConfig, configBytes, { flag: "wx", mode: 0o400 })
-    for (const path of readdirSync(frozen, { recursive: true }).map((entry) => resolve(frozen, String(entry))).sort().reverse()) {
+    for (const path of readdirSync(frozen, { recursive: true })
+      .map((entry) => resolve(frozen, String(entry)))
+      .sort()
+      .reverse()) {
       if (lstatSync(path).isDirectory()) chmodSync(path, 0o500)
     }
     chmodSync(frozen, 0o500)
@@ -258,7 +332,9 @@ async function deployFrozenAssets(receipt, rawProfile, identity, dryRun = false)
     if (deployed.status !== 0) throw new Error("Production UI deployment failed")
   } finally {
     chmodSync(frozen, 0o700)
-    for (const path of readdirSync(frozen, { recursive: true }).map((entry) => resolve(frozen, String(entry)))) {
+    for (const path of readdirSync(frozen, { recursive: true }).map((entry) =>
+      resolve(frozen, String(entry)),
+    )) {
       if (lstatSync(path).isDirectory()) chmodSync(path, 0o700)
     }
     rmSync(frozenRoot, { recursive: true, force: true })
@@ -269,21 +345,28 @@ const [, , mode, receiptPath, profileFile] = process.argv
 try {
   const modes = ["generate", "verify", "deploy", "verify-preactivation", "deploy-preactivation"]
   if (!receiptPath || !modes.includes(mode)) {
-    throw new Error("usage: production-assets.mjs {generate|verify|deploy|verify-preactivation|deploy-preactivation} RECEIPT [UI_RUNTIME_PROFILE]")
+    throw new Error(
+      "usage: production-assets.mjs {generate|verify|deploy|verify-preactivation|deploy-preactivation} RECEIPT [UI_RUNTIME_PROFILE]",
+    )
   }
   const identity = await sourceIdentity()
   const built = buildGenericAssets()
   if (mode === "generate") {
-    writeFileSync(receiptPath, `${JSON.stringify({ schema_version: 1, ...identity, ...built })}\n`, { flag: "wx" })
+    writeFileSync(
+      receiptPath,
+      `${JSON.stringify({ schema_version: 1, ...identity, ...built })}\n`,
+      { flag: "wx" },
+    )
     process.stdout.write(`ui_artifact_set_sha256=${built.artifact_set_sha256}\n`)
   } else {
     const receipt = JSON.parse(readFileSync(receiptPath, "utf8"))
     validateReceipt(receipt, identity, built)
     if (["deploy", "verify-preactivation", "deploy-preactivation"].includes(mode)) {
       if (!profileFile) throw new Error(`${mode} requires the UI runtime profile`)
-      const rawProfile = mode === "deploy"
-        ? await validateProductionProfile(profileFile, identity)
-        : readOrdinaryFile(profileFile).toString("utf8")
+      const rawProfile =
+        mode === "deploy"
+          ? await validateProductionProfile(profileFile, identity)
+          : readOrdinaryFile(profileFile).toString("utf8")
       if (mode !== "deploy") await validatePreActivationProfile(rawProfile)
       await deployFrozenAssets(receipt, rawProfile, identity, mode === "verify-preactivation")
     }

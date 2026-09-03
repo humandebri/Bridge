@@ -15,7 +15,12 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("@/features/bridge/bridge-progress-provider", () => ({
-  useBridgeProgress: () => ({ progress: mocks.progress, update: mocks.update, setAction: mocks.setAction, completeWithdrawal: mocks.completeWithdrawalProgress }),
+  useBridgeProgress: () => ({
+    progress: mocks.progress,
+    update: mocks.update,
+    setAction: mocks.setAction,
+    completeWithdrawal: mocks.completeWithdrawalProgress,
+  }),
 }))
 vi.mock("@/lib/evm/client", () => ({
   basePublicClient: { getTransactionReceipt: mocks.getReceipt, getBlock: mocks.getBlock },
@@ -32,7 +37,9 @@ vi.mock("@/lib/ic/withdrawal-notification-client", () => ({
 vi.mock("@/lib/withdrawal-notification", () => ({
   withdrawalNotificationPresentation: () => ({ tone: "info", message: "recorded" }),
 }))
-vi.mock("sonner", () => ({ toast: { info: vi.fn(), warning: vi.fn(), error: vi.fn(), success: vi.fn() } }))
+vi.mock("sonner", () => ({
+  toast: { info: vi.fn(), warning: vi.fn(), error: vi.fn(), success: vi.fn() },
+}))
 vi.mock("@/config/profile", () => ({
   deploymentProfile: {
     chainId: 84_532,
@@ -77,7 +84,9 @@ beforeEach(async () => {
   mocks.notifyWithdrawal.mockResolvedValue({
     Ingested: { finalized_checkpoint_block_number: 10n, withdrawal_id: new Uint8Array(32).fill(7) },
   })
-  mocks.continueWithdrawal.mockResolvedValue({ Complete: { state: { Withdrawal: { Paid: null } } } })
+  mocks.continueWithdrawal.mockResolvedValue({
+    Complete: { state: { Withdrawal: { Paid: null } } },
+  })
   mocks.getWithdrawal.mockResolvedValue([{ state: { ReleasePending: null } }])
 })
 
@@ -88,14 +97,18 @@ afterEach(async () => {
 
 describe("withdrawal interruption recovery", () => {
   it("reloads_a_durably_notified_withdrawal_without_repeating_notification", async () => {
-    mocks.continueWithdrawal.mockResolvedValue({ Deferred: { state: { Withdrawal: { ReleasePending: null } } } })
+    mocks.continueWithdrawal.mockResolvedValue({
+      Deferred: { state: { Withdrawal: { ReleasePending: null } } },
+    })
     await savePendingConfirmation(pending)
     const first = render(<SettlementConfirmationCoordinator />)
 
-    await waitFor(() => expect(readPendingConfirmations()[0]?.notification).toEqual({
-      status: "notified",
-      withdrawalId,
-    }))
+    await waitFor(() =>
+      expect(readPendingConfirmations()[0]?.notification).toEqual({
+        status: "notified",
+        withdrawalId,
+      }),
+    )
     expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce()
     expect(mocks.continueWithdrawal).toHaveBeenCalledOnce()
 
@@ -117,16 +130,19 @@ describe("withdrawal interruption recovery", () => {
     await savePendingConfirmation(pending)
     const originalSetItem = window.localStorage.setItem.bind(window.localStorage)
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation((key, value) => {
-      if (key.startsWith("kinic.bridge.pending-confirmations")) throw new Error("storage unavailable")
+      if (key.startsWith("kinic.bridge.pending-confirmations"))
+        throw new Error("storage unavailable")
       return originalSetItem(key, value)
     })
 
     try {
       const first = render(<SettlementConfirmationCoordinator />)
-      await waitFor(() => expect(readPendingConfirmations()[0]?.notification).toEqual({
-        status: "notified",
-        withdrawalId,
-      }))
+      await waitFor(() =>
+        expect(readPendingConfirmations()[0]?.notification).toEqual({
+          status: "notified",
+          withdrawalId,
+        }),
+      )
       expect(mocks.continueWithdrawal).not.toHaveBeenCalled()
 
       first.unmount()
@@ -148,18 +164,23 @@ describe("withdrawal interruption recovery", () => {
 
     const first = render(<SettlementConfirmationCoordinator />)
     await waitFor(() => expect(mocks.getWithdrawal).toHaveBeenCalledOnce())
-    expect(mocks.update).not.toHaveBeenCalledWith("withdraw:recovery", expect.objectContaining({ phase: "complete" }))
+    expect(mocks.update).not.toHaveBeenCalledWith(
+      "withdraw:recovery",
+      expect.objectContaining({ phase: "complete" }),
+    )
     expect(readPendingConfirmations()).toHaveLength(1)
 
     first.unmount()
     mocks.getWithdrawal.mockResolvedValue([{ state: { Paid: null } }])
     render(<SettlementConfirmationCoordinator />)
 
-    await waitFor(() => expect(mocks.completeWithdrawalProgress).toHaveBeenCalledWith({
-      transactionHash,
-      owner: "aaaaa-aa",
-      withdrawalId,
-    }))
+    await waitFor(() =>
+      expect(mocks.completeWithdrawalProgress).toHaveBeenCalledWith({
+        transactionHash,
+        owner: "aaaaa-aa",
+        withdrawalId,
+      }),
+    )
     await waitFor(() => expect(readPendingConfirmations()).toEqual([]))
     expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
   })
@@ -173,9 +194,12 @@ describe("withdrawal interruption recovery", () => {
     await waitFor(() => expect(readPendingConfirmations()).toEqual([]))
     expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
     expect(mocks.continueWithdrawal).not.toHaveBeenCalled()
-    expect(mocks.update).toHaveBeenCalledWith("withdraw:recovery", expect.objectContaining({
-      phase: "attention",
-      receiptBlockNumber: "10",
-    }))
+    expect(mocks.update).toHaveBeenCalledWith(
+      "withdraw:recovery",
+      expect.objectContaining({
+        phase: "attention",
+        receiptBlockNumber: "10",
+      }),
+    )
   })
 })

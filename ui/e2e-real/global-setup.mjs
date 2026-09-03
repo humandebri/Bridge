@@ -10,7 +10,15 @@ import { IDL } from "@icp-sdk/core/candid"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
 import { Principal } from "@icp-sdk/core/principal"
 import { PocketIc, PocketIcServer, SubnetStateType } from "@dfinity/pic"
-import { createPublicClient, hexToBytes, http, keccak256, numberToHex, recoverTransactionAddress, sha256 } from "viem"
+import {
+  createPublicClient,
+  hexToBytes,
+  http,
+  keccak256,
+  numberToHex,
+  recoverTransactionAddress,
+  sha256,
+} from "viem"
 import { publicKeyToAddress } from "viem/accounts"
 import { idlFactory as bridgeIdl, init as bridgeInitFactory } from "./generated/bridge.idl.mjs"
 import { idlFactory as mockIdl, init as mockInitFactory } from "./generated/mock-external.idl.mjs"
@@ -42,12 +50,14 @@ const feeRecipient = Principal.selfAuthenticating(new Uint8Array(32).fill(10))
 const confirmationRelayerPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(11))
 const bridgeAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/Bridge.json"), "utf8"))
 const bsnsAbi = JSON.parse(await readFile(path.join(root, "contracts/abi/BSNS.json"), "utf8"))
-const stagingFrontendProfile = JSON.parse(await readFile(
-  path.join(root, "deployments/sepolia-staging/frontend-profile.json"),
-  "utf8",
-))
+const stagingFrontendProfile = JSON.parse(
+  await readFile(path.join(root, "deployments/sepolia-staging/frontend-profile.json"), "utf8"),
+)
 const stagingDeploymentInstanceId = stagingFrontendProfile.deploymentInstanceId
-if (!/^0x[0-9a-f]{64}$/.test(stagingDeploymentInstanceId) || /^0x0+$/.test(stagingDeploymentInstanceId)) {
+if (
+  !/^0x[0-9a-f]{64}$/.test(stagingDeploymentInstanceId) ||
+  /^0x0+$/.test(stagingDeploymentInstanceId)
+) {
   throw new Error("Reviewed staging frontend profile has an invalid deployment instance ID")
 }
 const resources = {}
@@ -74,14 +84,27 @@ async function setup() {
   if (await isTcpPortOpen("127.0.0.1", 8545)) {
     throw new Error("TCP port 8545 is already in use; real E2E never reuses an existing endpoint")
   }
-  const anvilGenesisTimestamp = Math.floor(Date.now() / 1_000)
-    - ACTIVATION_DELAY_SECONDS * ACTIVATION_TIME_ADVANCES
-  const anvil = spawn("anvil", [
-    "--chain-id", "31337", "--base-fee", "1", "--silent",
-    "--timestamp", String(anvilGenesisTimestamp),
-    "--host", "127.0.0.1", "--port", "8545",
-    "--cache-path", path.join(runtimeDir, "anvil-cache"),
-  ], { stdio: ["ignore", "ignore", "inherit"] })
+  const anvilGenesisTimestamp =
+    Math.floor(Date.now() / 1_000) - ACTIVATION_DELAY_SECONDS * ACTIVATION_TIME_ADVANCES
+  const anvil = spawn(
+    "anvil",
+    [
+      "--chain-id",
+      "31337",
+      "--base-fee",
+      "1",
+      "--silent",
+      "--timestamp",
+      String(anvilGenesisTimestamp),
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8545",
+      "--cache-path",
+      path.join(runtimeDir, "anvil-cache"),
+    ],
+    { stdio: ["ignore", "ignore", "inherit"] },
+  )
   resources.anvil = anvil
   await waitForOwnedRpc(anvil)
   const publicClient = createPublicClient({ transport: http(rpcUrl) })
@@ -98,40 +121,48 @@ async function setup() {
   })
   await pic.resetTime()
   resources.pic = pic
-  const withPausedProgress = createExclusiveProgressPause(
-    stopProgressLoop,
-    () => startProgressLoop(pic),
+  const withPausedProgress = createExclusiveProgressPause(stopProgressLoop, () =>
+    startProgressLoop(pic),
   )
   const subnet = await pic.getFiduciarySubnet()
   if (!subnet) throw new Error("PocketIC fiduciary subnet is unavailable")
 
   const ledgerId = await pic.createCanister({ targetSubnetId: subnet.id })
-  const ledgerWasm = gunzipSync(await readFile(path.join(uiRoot, ".e2e-cache/ic-icrc1-ledger.wasm.gz")))
+  const ledgerWasm = gunzipSync(
+    await readFile(path.join(uiRoot, ".e2e-cache/ic-icrc1-ledger.wasm.gz")),
+  )
   await pic.installCode({
     canisterId: ledgerId,
     wasm: ledgerWasm,
-    arg: IDL.encode([ledgerInitType()], [{
-      Init: {
-        token_symbol: "TICRC1",
-        token_name: "TEST ICRC1",
-        decimals: [8],
-        minting_account: account(minter),
-        transfer_fee: 10_000n,
-        metadata: [],
-        initial_balances: [[account(testOwner), 100_000_000_000n]],
-        archive_options: {
-          num_blocks_to_archive: 1_000n,
-          trigger_threshold: 2_000n,
-          controller_id: testOwner,
+    arg: IDL.encode(
+      [ledgerInitType()],
+      [
+        {
+          Init: {
+            token_symbol: "TICRC1",
+            token_name: "TEST ICRC1",
+            decimals: [8],
+            minting_account: account(minter),
+            transfer_fee: 10_000n,
+            metadata: [],
+            initial_balances: [[account(testOwner), 100_000_000_000n]],
+            archive_options: {
+              num_blocks_to_archive: 1_000n,
+              trigger_threshold: 2_000n,
+              controller_id: testOwner,
+            },
+            feature_flags: [{ icrc2: true }],
+          },
         },
-        feature_flags: [{ icrc2: true }],
-      },
-    }]),
+      ],
+    ),
     targetSubnetId: subnet.id,
   })
 
   const indexId = await pic.createCanister({ targetSubnetId: subnet.id })
-  const indexWasm = gunzipSync(await readFile(path.join(uiRoot, ".e2e-cache/ic-icrc1-index-ng.wasm.gz")))
+  const indexWasm = gunzipSync(
+    await readFile(path.join(uiRoot, ".e2e-cache/ic-icrc1-index-ng.wasm.gz")),
+  )
   const indexInit = IDL.Record({
     ledger_id: IDL.Principal,
     retrieve_blocks_from_ledger_interval_seconds: IDL.Opt(IDL.Nat64),
@@ -147,18 +178,29 @@ async function setup() {
   await pic.installCode({
     canisterId: indexId,
     wasm: indexWasm,
-    arg: IDL.encode([IDL.Opt(IDL.Variant({ Init: indexInit, Upgrade: indexUpgrade }))], [[{ Init: {
-      ledger_id: ledgerId,
-      retrieve_blocks_from_ledger_interval_seconds: [],
-      min_retrieve_blocks_from_ledger_interval_seconds: [1n],
-      max_retrieve_blocks_from_ledger_interval_seconds: [1n],
-    } }]]),
+    arg: IDL.encode(
+      [IDL.Opt(IDL.Variant({ Init: indexInit, Upgrade: indexUpgrade }))],
+      [
+        [
+          {
+            Init: {
+              ledger_id: ledgerId,
+              retrieve_blocks_from_ledger_interval_seconds: [],
+              min_retrieve_blocks_from_ledger_interval_seconds: [1n],
+              max_retrieve_blocks_from_ledger_interval_seconds: [1n],
+            },
+          },
+        ],
+      ],
+    ),
     targetSubnetId: subnet.id,
   })
 
   const mock = await pic.setupCanister({
     idlFactory: mockIdl,
-    wasm: await readFile(path.join(root, "target/wasm32-unknown-unknown/release/mock_external.wasm")),
+    wasm: await readFile(
+      path.join(root, "target/wasm32-unknown-unknown/release/mock_external.wasm"),
+    ),
     arg: IDL.encode([mockInitType], [{ ledger_id: ledgerId }]),
     cycles: 50_000_000_000_000n,
     targetSubnetId: subnet.id,
@@ -169,7 +211,9 @@ async function setup() {
   await mock.actor.set_per_deposit_limit(1_000_000_000_000n)
   await mock.actor.set_mint_window(0n, 10_000_000_000_000n, 0n, 3_600n, 1n)
   const bridgeId = await pic.createCanister({ controllers: [testOwner], targetSubnetId: subnet.id })
-  const mockWasm = await readFile(path.join(root, "target/wasm32-unknown-unknown/release/mock_external.wasm"))
+  const mockWasm = await readFile(
+    path.join(root, "target/wasm32-unknown-unknown/release/mock_external.wasm"),
+  )
   await pic.installCode({
     canisterId: bridgeId,
     wasm: mockWasm,
@@ -182,45 +226,44 @@ async function setup() {
   const deriveControlPlaneGeneration = async (generation) => {
     const generationBytes = new Uint8Array(4)
     new DataView(generationBytes.buffer).setUint32(0, generation)
-    const suffix = generation === 0
-      ? []
-      : [
-          new TextEncoder().encode("KINIC-CONTROL-PLANE-GENERATION-V1"),
-          generationBytes,
-        ]
+    const suffix =
+      generation === 0
+        ? []
+        : [new TextEncoder().encode("KINIC-CONTROL-PLANE-GENERATION-V1"), generationBytes]
     return {
       signer: bytesHex(await signerProbe.derive_chain_key_address(bridgeId, "key_1", suffix)),
-      governanceOperator: bytesHex(await signerProbe.derive_chain_key_address(
-        bridgeId,
-        "key_1",
-        [new TextEncoder().encode("governance-operator"), ...suffix],
-      )),
-      runtimeAdministrator: bytesHex(await signerProbe.derive_chain_key_address(
-        bridgeId,
-        "key_1",
-        [
+      governanceOperator: bytesHex(
+        await signerProbe.derive_chain_key_address(bridgeId, "key_1", [
+          new TextEncoder().encode("governance-operator"),
+          ...suffix,
+        ]),
+      ),
+      runtimeAdministrator: bytesHex(
+        await signerProbe.derive_chain_key_address(bridgeId, "key_1", [
           new TextEncoder().encode("governance-operator"),
           new TextEncoder().encode("KINIC-RUNTIME-ADMINISTRATOR-V1"),
           ...suffix,
-        ],
-      )),
-      independentCanceller: bytesHex(await signerProbe.derive_chain_key_address(
-        bridgeId,
-        "key_1",
-        [
+        ]),
+      ),
+      independentCanceller: bytesHex(
+        await signerProbe.derive_chain_key_address(bridgeId, "key_1", [
           new TextEncoder().encode("governance-operator"),
           new TextEncoder().encode("KINIC-INDEPENDENT-CANCELLER-V1"),
           ...suffix,
-        ],
-      )),
+        ]),
+      ),
     }
   }
   const generationZero = await deriveControlPlaneGeneration(0)
   const generationOne = await deriveControlPlaneGeneration(1)
   const generationTwo = await deriveControlPlaneGeneration(2)
   let { signer, governanceOperator, runtimeAdministrator, independentCanceller } = generationZero
-  const configuredRoleSigners = await mock.actor.set_deployment_role_signers_for_canister(bridgeId, "key_1")
-  if (!("Ok" in configuredRoleSigners)) throw new Error(`Failed to configure deployment role signers: ${configuredRoleSigners.Err}`)
+  const configuredRoleSigners = await mock.actor.set_deployment_role_signers_for_canister(
+    bridgeId,
+    "key_1",
+  )
+  if (!("Ok" in configuredRoleSigners))
+    throw new Error(`Failed to configure deployment role signers: ${configuredRoleSigners.Err}`)
   for (const [role, address] of [
     ["bridge signer", signer],
     ["governance operator", governanceOperator],
@@ -228,7 +271,8 @@ async function setup() {
     ["independent canceller", independentCanceller],
   ]) {
     await rpc("anvil_setBalance", [address, "0x8ac7230489e80000"])
-    if (BigInt(await rpc("eth_getBalance", [address, "latest"])) === 0n) throw new Error(`Failed to fund the PocketIC ${role}`)
+    if (BigInt(await rpc("eth_getBalance", [address, "latest"])) === 0n)
+      throw new Error(`Failed to fund the PocketIC ${role}`)
   }
 
   const timelockAddress = deployTimelock(governanceOperator, independentCanceller)
@@ -240,18 +284,24 @@ async function setup() {
     timelockAddress,
     independentCanceller,
   )
-  const bsnsAddress = execFileSync("cast", ["call", bridgeAddress, "bsns()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  const bsnsAddress = execFileSync(
+    "cast",
+    ["call", bridgeAddress, "bsns()(address)", "--rpc-url", rpcUrl],
+    { encoding: "utf8" },
+  ).trim()
   const deploymentBlock = await publicClient.getBlockNumber()
   const bridgeCode = await publicClient.getCode({ address: bridgeAddress })
   const timelockCode = await publicClient.getCode({ address: timelockAddress })
   const bsnsCode = await publicClient.getCode({ address: bsnsAddress })
-  if (!bridgeCode || !timelockCode || !bsnsCode) throw new Error("Anvil contract deployment returned empty code")
+  if (!bridgeCode || !timelockCode || !bsnsCode)
+    throw new Error("Anvil contract deployment returned empty code")
   const observedMinimumServiceFee = await publicClient.readContract({
     address: bridgeAddress,
     abi: bridgeAbi,
     functionName: "MIN_SERVICE_FEE",
   })
-  if (observedMinimumServiceFee !== 10_000n) throw new Error(`Bridge minimum service fee drifted: ${observedMinimumServiceFee}`)
+  if (observedMinimumServiceFee !== 10_000n)
+    throw new Error(`Bridge minimum service fee drifted: ${observedMinimumServiceFee}`)
   await mock.actor.set_minimum_service_fee(observedMinimumServiceFee)
   await mock.actor.set_bridge_runtime_code(hexToBytes(bridgeCode))
   const operationalConfig = {
@@ -271,52 +321,59 @@ async function setup() {
 
   await pic.reinstallCode({
     canisterId: bridgeId,
-    wasm: await readFile(path.join(testTarget, "wasm32-unknown-unknown/release/bridge_canister.wasm")),
-    arg: IDL.encode([bridgeInitType], [{
-      ledger_canister_id: ledgerId,
-      index_canister_id: indexId,
-      evm_rpc_canister_id: mock.canisterId,
-      custom_evm_rpc_urls: [
-        "https://one.example",
-        "https://two.example",
-        "https://three.example",
+    wasm: await readFile(
+      path.join(testTarget, "wasm32-unknown-unknown/release/bridge_canister.wasm"),
+    ),
+    arg: IDL.encode(
+      [bridgeInitType],
+      [
+        {
+          ledger_canister_id: ledgerId,
+          index_canister_id: indexId,
+          evm_rpc_canister_id: mock.canisterId,
+          custom_evm_rpc_urls: [
+            "https://one.example",
+            "https://two.example",
+            "https://three.example",
+          ],
+          base_chain_id: 31_337n,
+          bridge_contract: hexToBytes(bridgeAddress),
+          expected_bridge_runtime_sha256: hexToBytes(sha256(bridgeCode)),
+          timelock_contract: hexToBytes(timelockAddress),
+          expected_timelock_minimum_delay_seconds: BigInt(ACTIVATION_DELAY_SECONDS),
+          expected_bsns_runtime_sha256: hexToBytes(sha256(bsnsCode)),
+          expected_bsns_decimals: 8,
+          expected_minimum_service_fee: 10_000n,
+          deployment_instance_id: hexToBytes(stagingDeploymentInstanceId),
+          minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]),
+          ecdsa_key_name: "key_1",
+          ecdsa_derivation_path: [],
+          governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")],
+          deposit_rate_limit_window_seconds: 60n,
+          deposit_rate_limit_global: 30,
+          deposit_rate_limit_per_principal: 3,
+          notification_rate_limit_window_seconds: BigInt(CONTROL_PLANE_QUOTA_WINDOW_SECONDS),
+          notification_rate_limit_global: 60,
+          notification_ingestion_rate_limit_global: 30,
+          settlement_rate_limit_window_seconds: 600n,
+          settlement_rate_limit_global: 60,
+          settlement_rate_limit_per_principal: 6,
+          settlement_rate_limit_per_record: 3,
+          settlement_retry_interval_seconds: 60n,
+          governance_evm_fee: operationalConfig.governance_evm_fee,
+          governance_replacement: {
+            max_replacements: 3,
+            fee_bump_bps: 1_250,
+          },
+          cycles_floor: operationalConfig.cycles_floor,
+          settlement_cycle_ceiling: operationalConfig.settlement_cycle_ceiling,
+          governance_principal: testOwner,
+          pause_principal: pausePrincipal,
+          confirmation_relayer_principal: confirmationRelayerPrincipal,
+          fee_recipient: { owner: feeRecipient, subaccount: [] },
+        },
       ],
-      base_chain_id: 31_337n,
-      bridge_contract: hexToBytes(bridgeAddress),
-      expected_bridge_runtime_sha256: hexToBytes(sha256(bridgeCode)),
-      timelock_contract: hexToBytes(timelockAddress),
-      expected_timelock_minimum_delay_seconds: BigInt(ACTIVATION_DELAY_SECONDS),
-      expected_bsns_runtime_sha256: hexToBytes(sha256(bsnsCode)),
-      expected_bsns_decimals: 8,
-      expected_minimum_service_fee: 10_000n,
-      deployment_instance_id: hexToBytes(stagingDeploymentInstanceId),
-      minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]),
-      ecdsa_key_name: "key_1",
-      ecdsa_derivation_path: [],
-      governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")],
-      deposit_rate_limit_window_seconds: 60n,
-      deposit_rate_limit_global: 30,
-      deposit_rate_limit_per_principal: 3,
-      notification_rate_limit_window_seconds: BigInt(CONTROL_PLANE_QUOTA_WINDOW_SECONDS),
-      notification_rate_limit_global: 60,
-      notification_ingestion_rate_limit_global: 30,
-      settlement_rate_limit_window_seconds: 600n,
-      settlement_rate_limit_global: 60,
-      settlement_rate_limit_per_principal: 6,
-      settlement_rate_limit_per_record: 3,
-      settlement_retry_interval_seconds: 60n,
-      governance_evm_fee: operationalConfig.governance_evm_fee,
-      governance_replacement: {
-        max_replacements: 3,
-        fee_bump_bps: 1_250,
-      },
-      cycles_floor: operationalConfig.cycles_floor,
-      settlement_cycle_ceiling: operationalConfig.settlement_cycle_ceiling,
-      governance_principal: testOwner,
-      pause_principal: pausePrincipal,
-      confirmation_relayer_principal: confirmationRelayerPrincipal,
-      fee_recipient: { owner: feeRecipient, subaccount: [] },
-    }]),
+    ),
     sender: testOwner,
     cycles: 500_000_000_000_000n,
     targetSubnetId: subnet.id,
@@ -326,13 +383,16 @@ async function setup() {
   bridge.actor.setIdentity(testIdentity)
   const initializedPublicConfig = await bridge.actor.initialize_public_config()
   if (!("Ok" in initializedPublicConfig)) {
-    throw new Error(`Failed to initialize public config: ${JSON.stringify(initializedPublicConfig.Err)}`)
+    throw new Error(
+      `Failed to initialize public config: ${JSON.stringify(initializedPublicConfig.Err)}`,
+    )
   }
   const pauseActor = pic.createActor(bridgeIdl, bridgeId)
   pauseActor.setIdentity(pauseIdentity)
   mock.actor.setIdentity(testIdentity)
   const configuredSigner = await mock.actor.set_bridge_signer_for_canister(bridgeId, "key_1")
-  if (!("Ok" in configuredSigner)) throw new Error(`Failed to configure the confirmed bridge signer: ${configuredSigner.Err}`)
+  if (!("Ok" in configuredSigner))
+    throw new Error(`Failed to configure the confirmed bridge signer: ${configuredSigner.Err}`)
   const confirmedSigner = bytesHex(await mock.actor.bridge_signer())
   if (confirmedSigner.toLowerCase() !== signer.toLowerCase()) {
     sendAsTimelock(bridgeAddress, "rotateBridgeSigner(address)", confirmedSigner)
@@ -341,7 +401,10 @@ async function setup() {
   await rpc("anvil_mine", ["0x40"])
   const initialSafe = await publicClient.getBlock({ blockTag: "safe" })
   if (initialSafe.number === null) throw new Error("Anvil initial safe head is unavailable")
-  const initialSafeResult = await mock.actor.set_safe_block(initialSafe.number, hexToBytes(initialSafe.hash))
+  const initialSafeResult = await mock.actor.set_safe_block(
+    initialSafe.number,
+    hexToBytes(initialSafe.hash),
+  )
   if ("Err" in initialSafeResult) throw new Error(initialSafeResult.Err)
   const ledger = pic.createActor(ledgerIdl, ledgerId)
   ledger.setIdentity(testIdentity)
@@ -350,10 +413,16 @@ async function setup() {
     bridge.actor.get_runtime_binding(),
     bridge.actor.get_operational_config(),
   ])
-  if (!("Ok" in operationalConfigResult)) throw new Error("Bridge operational configuration is unavailable to the controller")
+  if (!("Ok" in operationalConfigResult))
+    throw new Error("Bridge operational configuration is unavailable to the controller")
   const liveOperationalConfig = operationalConfigResult.Ok
-  if (bytesHex(publicConfig.expected_bridge_signer).toLowerCase() !== signer.toLowerCase()) throw new Error("Bridge mint signer derivation drifted")
-  if (bytesHex(liveOperationalConfig.governance_operator).toLowerCase() !== governanceOperator.toLowerCase()) throw new Error("Bridge governance operator derivation drifted")
+  if (bytesHex(publicConfig.expected_bridge_signer).toLowerCase() !== signer.toLowerCase())
+    throw new Error("Bridge mint signer derivation drifted")
+  if (
+    bytesHex(liveOperationalConfig.governance_operator).toLowerCase() !==
+    governanceOperator.toLowerCase()
+  )
+    throw new Error("Bridge governance operator derivation drifted")
   const deploymentPostconditions = await mock.actor.set_deployment_postconditions(
     hexToBytes(timelockAddress),
     hexToBytes(governanceOperator),
@@ -362,7 +431,10 @@ async function setup() {
     hexToBytes(timelockCode),
     hexToBytes(bsnsCode),
   )
-  if (!("Ok" in deploymentPostconditions)) throw new Error(`Failed to configure deployment postconditions: ${deploymentPostconditions.Err}`)
+  if (!("Ok" in deploymentPostconditions))
+    throw new Error(
+      `Failed to configure deployment postconditions: ${deploymentPostconditions.Err}`,
+    )
   const governanceReceiptFixture = await mock.actor.set_observed_transaction(
     new Uint8Array(32).fill(9),
     hexToBytes(timelockAddress),
@@ -409,9 +481,10 @@ async function setup() {
         pic.getTime(),
       ])
       const icTimestamp = BigInt(Math.floor(icTime / 1_000))
-      const clockSkew = latest.timestamp >= icTimestamp
-        ? latest.timestamp - icTimestamp
-        : icTimestamp - latest.timestamp
+      const clockSkew =
+        latest.timestamp >= icTimestamp
+          ? latest.timestamp - icTimestamp
+          : icTimestamp - latest.timestamp
       if (clockSkew <= MAX_FIXTURE_CLOCK_SKEW_SECONDS) return
       if (latest.timestamp > icTimestamp) {
         await pic.advanceTime(Number((latest.timestamp - icTimestamp) * 1_000n))
@@ -426,11 +499,14 @@ async function setup() {
       pic.getTime(),
     ])
     const icTimestampAfterClockSync = BigInt(Math.floor(icTimeAfterClockSync / 1_000))
-    const clockSkew = latestAfterClockSync.timestamp >= icTimestampAfterClockSync
-      ? latestAfterClockSync.timestamp - icTimestampAfterClockSync
-      : icTimestampAfterClockSync - latestAfterClockSync.timestamp
+    const clockSkew =
+      latestAfterClockSync.timestamp >= icTimestampAfterClockSync
+        ? latestAfterClockSync.timestamp - icTimestampAfterClockSync
+        : icTimestampAfterClockSync - latestAfterClockSync.timestamp
     if (clockSkew > MAX_FIXTURE_CLOCK_SKEW_SECONDS) {
-      throw new Error(`E2E clock skew exceeds ${MAX_FIXTURE_CLOCK_SKEW_SECONDS}s: Base=${latestAfterClockSync.timestamp} IC=${icTimestampAfterClockSync}`)
+      throw new Error(
+        `E2E clock skew exceeds ${MAX_FIXTURE_CLOCK_SKEW_SECONDS}s: Base=${latestAfterClockSync.timestamp} IC=${icTimestampAfterClockSync}`,
+      )
     }
   }
   const syncObservedHeads = async () => {
@@ -438,8 +514,10 @@ async function setup() {
       publicClient.getBlock({ blockTag: "safe" }),
       publicClient.getBlock({ blockTag: "finalized" }),
     ])
-    if (safe.number === null || safe.hash === null) throw new Error("Anvil safe head is unavailable")
-    if (finalized.number === null || finalized.hash === null) throw new Error("Anvil finalized head is unavailable")
+    if (safe.number === null || safe.hash === null)
+      throw new Error("Anvil safe head is unavailable")
+    if (finalized.number === null || finalized.hash === null)
+      throw new Error("Anvil finalized head is unavailable")
     const [safeResult, finalizedResult] = await Promise.all([
       mock.actor.set_safe_block(safe.number, hexToBytes(safe.hash)),
       mock.actor.set_finalized_block(finalized.number, hexToBytes(finalized.hash)),
@@ -468,15 +546,17 @@ async function setup() {
     const created = logs.at(-1)
     if (!created?.transactionHash) throw new Error("WithdrawalCommitted log is unavailable")
     const receipt = await publicClient.getTransactionReceipt({ hash: created.transactionHash })
-    await mock.actor.set_withdrawal([{
-      id: hexToBytes(numberToHex(created.args.withdrawalId, { size: 32 })),
-      owner: hexToBytes(created.args.owner),
-      subaccount: hexToBytes(created.args.subaccount),
-      amount: created.args.amount,
-      max_service_fee: created.args.maxServiceFee,
-      charged_service_fee: created.args.chargedServiceFee,
-      amount_out: created.args.amountOut,
-    }])
+    await mock.actor.set_withdrawal([
+      {
+        id: hexToBytes(numberToHex(created.args.withdrawalId, { size: 32 })),
+        owner: hexToBytes(created.args.owner),
+        subaccount: hexToBytes(created.args.subaccount),
+        amount: created.args.amount,
+        max_service_fee: created.args.maxServiceFee,
+        charged_service_fee: created.args.chargedServiceFee,
+        amount_out: created.args.amountOut,
+      },
+    ])
     const observed = await mock.actor.set_observed_transaction(
       hexToBytes(created.transactionHash),
       hexToBytes(bridgeAddress),
@@ -485,7 +565,8 @@ async function setup() {
     )
     if ("Err" in observed) throw new Error(observed.Err)
     const withdrawalId = hexToBytes(numberToHex(created.args.withdrawalId, { size: 32 }))
-    if (!knownWithdrawals.some((id) => bytesHex(id) === bytesHex(withdrawalId))) knownWithdrawals.push(withdrawalId)
+    if (!knownWithdrawals.some((id) => bytesHex(id) === bytesHex(withdrawalId)))
+      knownWithdrawals.push(withdrawalId)
     await syncObservedHeads()
     return created.transactionHash
   }
@@ -520,7 +601,8 @@ async function setup() {
       max_service_fee: 1_000_000n,
     })
     if ("Err" in admitted) throw new Error(`refund fixture deposit failed: ${json(admitted.Err)}`)
-    if (!knownDeposits.some((id) => bytesHex(id) === bytesHex(admitted.Ok.deposit_id))) knownDeposits.push(admitted.Ok.deposit_id)
+    if (!knownDeposits.some((id) => bytesHex(id) === bytesHex(admitted.Ok.deposit_id)))
+      knownDeposits.push(admitted.Ok.deposit_id)
     depositSequences.push(ownerSequence.toString())
 
     let record
@@ -531,17 +613,20 @@ async function setup() {
       await delay(250)
     }
     const authorization = record?.mint_authorization[0]
-    if (!authorization?.signature.length) throw new Error(`refund fixture did not reach a signed Mint Authorization: ${json(record)}`)
+    if (!authorization?.signature.length)
+      throw new Error(`refund fixture did not reach a signed Mint Authorization: ${json(record)}`)
     const latest = await publicClient.getBlock({ blockTag: "latest" })
-    const advanceSeconds = authorization.deadline >= latest.timestamp
-      ? authorization.deadline - latest.timestamp + 1n
-      : 1n
+    const advanceSeconds =
+      authorization.deadline >= latest.timestamp
+        ? authorization.deadline - latest.timestamp + 1n
+        : 1n
     await rpc("evm_increaseTime", [Number(advanceSeconds)])
     await rpc("evm_mine", [])
     await rpc("anvil_mine", ["0x40"])
     await syncObservedHeads()
     const finalized = await publicClient.getBlock({ blockTag: "finalized" })
-    if (finalized.timestamp <= authorization.deadline) throw new Error("refund fixture did not pass the strict finalized deadline")
+    if (finalized.timestamp <= authorization.deadline)
+      throw new Error("refund fixture did not pass the strict finalized deadline")
     await pic.advanceTime(60_001)
     return {
       depositId: bytesHex(admitted.Ok.deposit_id),
@@ -551,17 +636,22 @@ async function setup() {
   await syncObservedHeads()
   const expectedSignerForArtifact = (artifact) => {
     const kind = Object.keys(artifact.kind)[0]
-    if (["PauseDepositMints", "PauseWithdrawals", "SetServiceFee"].includes(kind)) return runtimeAdministrator
+    if (["PauseDepositMints", "PauseWithdrawals", "SetServiceFee"].includes(kind))
+      return runtimeAdministrator
     if (kind === "CancelTimelock") return independentCanceller
     return governanceOperator
   }
   const relaySigned = async (
     artifact,
-    { expectedSigner = expectedSignerForArtifact(artifact), expectedReceiptStatus = "success" } = {},
+    {
+      expectedSigner = expectedSignerForArtifact(artifact),
+      expectedReceiptStatus = "success",
+    } = {},
   ) => {
     const raw = bytesHex(artifact.raw_transaction)
     const expectedHash = keccak256(raw)
-    if (expectedHash.toLowerCase() !== bytesHex(artifact.transaction_hash).toLowerCase()) throw new Error("Canister signed hash mismatch")
+    if (expectedHash.toLowerCase() !== bytesHex(artifact.transaction_hash).toLowerCase())
+      throw new Error("Canister signed hash mismatch")
     const rawSigner = await recoverTransactionAddress({ serializedTransaction: raw })
     const kind = Object.keys(artifact.kind)[0]
     if (bytesHex(artifact.sender).toLowerCase() !== expectedSigner.toLowerCase()) {
@@ -572,7 +662,8 @@ async function setup() {
     }
     try {
       const submittedHash = await rpc("eth_sendRawTransaction", [raw])
-      if (submittedHash.toLowerCase() !== expectedHash.toLowerCase()) throw new Error("Anvil returned a different raw transaction hash")
+      if (submittedHash.toLowerCase() !== expectedHash.toLowerCase())
+        throw new Error("Anvil returned a different raw transaction hash")
     } catch (error) {
       if (!String(error).includes("already known")) throw error
     }
@@ -590,7 +681,9 @@ async function setup() {
     }
     if (succeeded !== expectedSuccess) {
       const trace = await rpc("debug_traceTransaction", [expectedHash, { tracer: "callTracer" }])
-      throw new Error(`Anvil returned the wrong ${kind} receipt status for ${expectedHash}: ${json(trace)}`)
+      throw new Error(
+        `Anvil returned the wrong ${kind} receipt status for ${expectedHash}: ${json(trace)}`,
+      )
     }
   }
   const confirmRelayed = async (artifact) => {
@@ -612,16 +705,34 @@ async function setup() {
   const rotateControlPlane = async (generation, addresses) => {
     const previousRoles = { signer, governanceOperator, runtimeAdministrator, independentCanceller }
     const previousGovernanceOperator = previousRoles.governanceOperator
-    const scheduleSubmitted = await bridge.actor.prepare_base_governance_action({ ScheduleControlPlaneRotation: null })
-    if (!("Ok" in scheduleSubmitted)) throw new Error(`Control-plane generation ${generation} schedule failed: ${json(scheduleSubmitted.Err)}`)
-    const scheduleConfirmed = await confirmSigned(scheduleSubmitted.Ok, { expectedSigner: previousGovernanceOperator })
-    if (!("Ok" in scheduleConfirmed)) throw new Error(`Control-plane generation ${generation} schedule confirmation failed: ${json(scheduleConfirmed.Err)}`)
+    const scheduleSubmitted = await bridge.actor.prepare_base_governance_action({
+      ScheduleControlPlaneRotation: null,
+    })
+    if (!("Ok" in scheduleSubmitted))
+      throw new Error(
+        `Control-plane generation ${generation} schedule failed: ${json(scheduleSubmitted.Err)}`,
+      )
+    const scheduleConfirmed = await confirmSigned(scheduleSubmitted.Ok, {
+      expectedSigner: previousGovernanceOperator,
+    })
+    if (!("Ok" in scheduleConfirmed))
+      throw new Error(
+        `Control-plane generation ${generation} schedule confirmation failed: ${json(scheduleConfirmed.Err)}`,
+      )
     await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
     await rpc("evm_mine", [])
-    const executeSubmitted = await bridge.actor.prepare_base_governance_action({ ExecuteControlPlaneRotation: null })
-    if (!("Ok" in executeSubmitted)) throw new Error(`Control-plane generation ${generation} execute failed: ${json(executeSubmitted.Err)}`)
+    const executeSubmitted = await bridge.actor.prepare_base_governance_action({
+      ExecuteControlPlaneRotation: null,
+    })
+    if (!("Ok" in executeSubmitted))
+      throw new Error(
+        `Control-plane generation ${generation} execute failed: ${json(executeSubmitted.Err)}`,
+      )
     const rotated = executeSubmitted.Ok.kind.ExecuteControlPlaneRotation
-    if (!rotated) throw new Error(`Control-plane generation ${generation} returned the wrong operation kind: ${json(executeSubmitted.Ok.kind)}`)
+    if (!rotated)
+      throw new Error(
+        `Control-plane generation ${generation} returned the wrong operation kind: ${json(executeSubmitted.Ok.kind)}`,
+      )
     const observedAddresses = {
       signer: bytesHex(rotated.bridge_signer),
       governanceOperator: bytesHex(rotated.governance_operator),
@@ -630,16 +741,34 @@ async function setup() {
     }
     for (const role of Object.keys(addresses)) {
       if (observedAddresses[role].toLowerCase() !== addresses[role].toLowerCase()) {
-        throw new Error(`Control-plane generation ${generation} ${role} did not match independent chain-key derivation`)
+        throw new Error(
+          `Control-plane generation ${generation} ${role} did not match independent chain-key derivation`,
+        )
       }
     }
     await relaySigned(executeSubmitted.Ok, { expectedSigner: previousGovernanceOperator })
-    const configuredGeneration = await mock.actor.set_deployment_role_signers_for_canister_at_generation(bridgeId, "key_1", generation)
-    if (!("Ok" in configuredGeneration)) throw new Error(`Failed to configure generation-${generation} role observations: ${configuredGeneration.Err}`)
+    const configuredGeneration =
+      await mock.actor.set_deployment_role_signers_for_canister_at_generation(
+        bridgeId,
+        "key_1",
+        generation,
+      )
+    if (!("Ok" in configuredGeneration))
+      throw new Error(
+        `Failed to configure generation-${generation} role observations: ${configuredGeneration.Err}`,
+      )
     const executeConfirmed = await confirmRelayed(executeSubmitted.Ok)
-    if (!("Ok" in executeConfirmed)) throw new Error(`Control-plane generation ${generation} execute confirmation failed: ${json(executeConfirmed.Err)}`)
+    if (!("Ok" in executeConfirmed))
+      throw new Error(
+        `Control-plane generation ${generation} execute confirmation failed: ${json(executeConfirmed.Err)}`,
+      )
     ;({ signer, governanceOperator, runtimeAdministrator, independentCanceller } = addresses)
-    for (const address of [signer, governanceOperator, runtimeAdministrator, independentCanceller]) {
+    for (const address of [
+      signer,
+      governanceOperator,
+      runtimeAdministrator,
+      independentCanceller,
+    ]) {
       await rpc("anvil_setBalance", [address, "0x8ac7230489e80000"])
     }
     assertFrozenCanisterRoles(
@@ -658,98 +787,179 @@ async function setup() {
     throw new Error(`Failed to seal operational config: ${json(sealedLifecycle)}`)
   }
   const scheduleSubmitted = await bridge.actor.schedule_activation()
-  if (!("Ok" in scheduleSubmitted)) throw new Error(`Canister schedule_activation failed: ${json(scheduleSubmitted.Err)}`)
+  if (!("Ok" in scheduleSubmitted))
+    throw new Error(`Canister schedule_activation failed: ${json(scheduleSubmitted.Err)}`)
   const scheduleConfirmed = await confirmSigned(scheduleSubmitted.Ok)
-  if (!("Ok" in scheduleConfirmed)) throw new Error(`Canister schedule confirmation failed: ${json(scheduleConfirmed.Err)}`)
+  if (!("Ok" in scheduleConfirmed))
+    throw new Error(`Canister schedule confirmation failed: ${json(scheduleConfirmed.Err)}`)
 
   const earlyExecuteSubmitted = await bridge.actor.execute_activation()
-  if (!("Ok" in earlyExecuteSubmitted)) throw new Error(`Canister early execute submission failed: ${json(earlyExecuteSubmitted.Err)}`)
+  if (!("Ok" in earlyExecuteSubmitted))
+    throw new Error(`Canister early execute submission failed: ${json(earlyExecuteSubmitted.Err)}`)
   await mock.actor.set_receipt_mode({ Reverted: null })
   const earlyExecuteConfirmed = await confirmSigned(earlyExecuteSubmitted.Ok, {
     expectedSigner: governanceOperator,
     expectedReceiptStatus: "reverted",
   })
   if (!("Err" in earlyExecuteConfirmed) || !("TransactionReverted" in earlyExecuteConfirmed.Err)) {
-    throw new Error(`Canister did not record the pre-delay execute revert: ${json(earlyExecuteConfirmed)}`)
+    throw new Error(
+      `Canister did not record the pre-delay execute revert: ${json(earlyExecuteConfirmed)}`,
+    )
   }
   await mock.actor.set_receipt_mode({ Confirmed: null })
 
   await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
   await rpc("evm_mine", [])
   const executeSubmitted = await bridge.actor.execute_activation()
-  if (!("Ok" in executeSubmitted)) throw new Error(`Canister execute_activation failed: ${json(executeSubmitted.Err)}`)
+  if (!("Ok" in executeSubmitted))
+    throw new Error(`Canister execute_activation failed: ${json(executeSubmitted.Err)}`)
   const executeConfirmed = await confirmSigned(executeSubmitted.Ok)
-  if (!("Ok" in executeConfirmed)) throw new Error(`Canister execute confirmation failed: ${json(executeConfirmed.Err)}`)
+  if (!("Ok" in executeConfirmed))
+    throw new Error(`Canister execute confirmation failed: ${json(executeConfirmed.Err)}`)
   const activeStatus = await bridge.actor.get_bridge_status()
-  if (activeStatus.deposits_paused) throw new Error("IC deposits remained paused after canonical activation")
+  if (activeStatus.deposits_paused)
+    throw new Error("IC deposits remained paused after canonical activation")
 
   const localPause = await pauseActor.pause_new_deposits()
-  if (!("Ok" in localPause)) throw new Error(`Pause principal could not pause IC deposits: ${json(localPause.Err)}`)
-  const pauseDepositSubmitted = await bridge.actor.prepare_base_governance_action({ PauseDepositMints: null })
-  if (!("Ok" in pauseDepositSubmitted)) throw new Error(`Canister deposit pause failed: ${json(pauseDepositSubmitted.Err)}`)
-  const pauseDepositConfirmed = await confirmSigned(pauseDepositSubmitted.Ok, { expectedSigner: runtimeAdministrator })
-  if (!("Ok" in pauseDepositConfirmed)) throw new Error(`Canister deposit pause confirmation failed: ${json(pauseDepositConfirmed.Err)}`)
-  const pauseWithdrawalSubmitted = await bridge.actor.prepare_base_governance_action({ PauseWithdrawals: null })
-  if (!("Ok" in pauseWithdrawalSubmitted)) throw new Error(`Canister withdrawal pause failed: ${json(pauseWithdrawalSubmitted.Err)}`)
-  const pauseWithdrawalConfirmed = await confirmSigned(pauseWithdrawalSubmitted.Ok, { expectedSigner: runtimeAdministrator })
-  if (!("Ok" in pauseWithdrawalConfirmed)) throw new Error(`Canister withdrawal pause confirmation failed: ${json(pauseWithdrawalConfirmed.Err)}`)
+  if (!("Ok" in localPause))
+    throw new Error(`Pause principal could not pause IC deposits: ${json(localPause.Err)}`)
+  const pauseDepositSubmitted = await bridge.actor.prepare_base_governance_action({
+    PauseDepositMints: null,
+  })
+  if (!("Ok" in pauseDepositSubmitted))
+    throw new Error(`Canister deposit pause failed: ${json(pauseDepositSubmitted.Err)}`)
+  const pauseDepositConfirmed = await confirmSigned(pauseDepositSubmitted.Ok, {
+    expectedSigner: runtimeAdministrator,
+  })
+  if (!("Ok" in pauseDepositConfirmed))
+    throw new Error(
+      `Canister deposit pause confirmation failed: ${json(pauseDepositConfirmed.Err)}`,
+    )
+  const pauseWithdrawalSubmitted = await bridge.actor.prepare_base_governance_action({
+    PauseWithdrawals: null,
+  })
+  if (!("Ok" in pauseWithdrawalSubmitted))
+    throw new Error(`Canister withdrawal pause failed: ${json(pauseWithdrawalSubmitted.Err)}`)
+  const pauseWithdrawalConfirmed = await confirmSigned(pauseWithdrawalSubmitted.Ok, {
+    expectedSigner: runtimeAdministrator,
+  })
+  if (!("Ok" in pauseWithdrawalConfirmed))
+    throw new Error(
+      `Canister withdrawal pause confirmation failed: ${json(pauseWithdrawalConfirmed.Err)}`,
+    )
 
   await advanceControlPlaneQuotaWindow()
   await rotateControlPlane(1, generationOne)
   const secondScheduleSubmitted = await bridge.actor.schedule_activation()
-  if (!("Ok" in secondScheduleSubmitted)) throw new Error(`Second activation schedule failed: ${json(secondScheduleSubmitted.Err)}`)
-  if (secondScheduleSubmitted.Ok.operation_id === scheduleSubmitted.Ok.operation_id) throw new Error("Activation reused its governance operation ID")
+  if (!("Ok" in secondScheduleSubmitted))
+    throw new Error(`Second activation schedule failed: ${json(secondScheduleSubmitted.Err)}`)
+  if (secondScheduleSubmitted.Ok.operation_id === scheduleSubmitted.Ok.operation_id)
+    throw new Error("Activation reused its governance operation ID")
   const secondScheduleConfirmed = await confirmSigned(secondScheduleSubmitted.Ok)
-  if (!("Ok" in secondScheduleConfirmed)) throw new Error(`Second activation schedule confirmation failed: ${json(secondScheduleConfirmed.Err)}`)
+  if (!("Ok" in secondScheduleConfirmed))
+    throw new Error(
+      `Second activation schedule confirmation failed: ${json(secondScheduleConfirmed.Err)}`,
+    )
   // The protected verification lane intentionally admits at most six calls per
   // notification window. Continue the long control-plane scenario in the next window.
   await advanceControlPlaneQuotaWindow()
   await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
   await rpc("evm_mine", [])
   const secondExecuteSubmitted = await bridge.actor.execute_activation()
-  if (!("Ok" in secondExecuteSubmitted)) throw new Error(`Second activation execute failed: ${json(secondExecuteSubmitted.Err)}`)
+  if (!("Ok" in secondExecuteSubmitted))
+    throw new Error(`Second activation execute failed: ${json(secondExecuteSubmitted.Err)}`)
   const emergencyDuringExecute = await pauseActor.emergency_pause()
-  if (!("Ok" in emergencyDuringExecute)) throw new Error(`Emergency pause failed: ${json(emergencyDuringExecute)}`)
+  if (!("Ok" in emergencyDuringExecute))
+    throw new Error(`Emergency pause failed: ${json(emergencyDuringExecute)}`)
   const secondExecuteConfirmed = await confirmSigned(secondExecuteSubmitted.Ok)
   if (!("Ok" in secondExecuteConfirmed)) {
-    const observedSnapshot = await publicClient.readContract({ address: bridgeAddress, abi: bridgeAbi, functionName: "bridgeSnapshot" })
-    throw new Error(`Second activation execute confirmation failed: ${json(secondExecuteConfirmed.Err)} snapshot=${json(observedSnapshot)}`)
+    const observedSnapshot = await publicClient.readContract({
+      address: bridgeAddress,
+      abi: bridgeAbi,
+      functionName: "bridgeSnapshot",
+    })
+    throw new Error(
+      `Second activation execute confirmation failed: ${json(secondExecuteConfirmed.Err)} snapshot=${json(observedSnapshot)}`,
+    )
   }
   const emergencyStatus = await bridge.actor.get_bridge_status()
-  if (!emergencyStatus.deposits_paused) throw new Error("Submitted activation resumed IC deposits during an emergency")
+  if (!emergencyStatus.deposits_paused)
+    throw new Error("Submitted activation resumed IC deposits during an emergency")
 
   const emergencyDepositPauseSubmitted = await bridge.actor.prepare_next_emergency_base_action()
-  if (!("Ok" in emergencyDepositPauseSubmitted)) throw new Error(`Emergency deposit pause failed: ${json(emergencyDepositPauseSubmitted.Err)}`)
-  const emergencyDepositPauseConfirmed = await confirmSigned(emergencyDepositPauseSubmitted.Ok, { expectedSigner: runtimeAdministrator })
-  if (!("Ok" in emergencyDepositPauseConfirmed)) throw new Error(`Emergency deposit pause confirmation failed: ${json(emergencyDepositPauseConfirmed.Err)}`)
+  if (!("Ok" in emergencyDepositPauseSubmitted))
+    throw new Error(`Emergency deposit pause failed: ${json(emergencyDepositPauseSubmitted.Err)}`)
+  const emergencyDepositPauseConfirmed = await confirmSigned(emergencyDepositPauseSubmitted.Ok, {
+    expectedSigner: runtimeAdministrator,
+  })
+  if (!("Ok" in emergencyDepositPauseConfirmed))
+    throw new Error(
+      `Emergency deposit pause confirmation failed: ${json(emergencyDepositPauseConfirmed.Err)}`,
+    )
   const emergencyWithdrawalPauseSubmitted = await bridge.actor.prepare_next_emergency_base_action()
-  if (!("Ok" in emergencyWithdrawalPauseSubmitted)) throw new Error(`Emergency withdrawal pause failed: ${json(emergencyWithdrawalPauseSubmitted.Err)}`)
-  const emergencyWithdrawalPauseConfirmed = await confirmSigned(emergencyWithdrawalPauseSubmitted.Ok, { expectedSigner: runtimeAdministrator })
-  if (!("Ok" in emergencyWithdrawalPauseConfirmed)) throw new Error(`Emergency withdrawal pause confirmation failed: ${json(emergencyWithdrawalPauseConfirmed.Err)}`)
+  if (!("Ok" in emergencyWithdrawalPauseSubmitted))
+    throw new Error(
+      `Emergency withdrawal pause failed: ${json(emergencyWithdrawalPauseSubmitted.Err)}`,
+    )
+  const emergencyWithdrawalPauseConfirmed = await confirmSigned(
+    emergencyWithdrawalPauseSubmitted.Ok,
+    { expectedSigner: runtimeAdministrator },
+  )
+  if (!("Ok" in emergencyWithdrawalPauseConfirmed))
+    throw new Error(
+      `Emergency withdrawal pause confirmation failed: ${json(emergencyWithdrawalPauseConfirmed.Err)}`,
+    )
 
   await advanceControlPlaneQuotaWindow()
   const cancellableScheduleSubmitted = await bridge.actor.schedule_activation()
-  if (!("Ok" in cancellableScheduleSubmitted)) throw new Error(`Cancellable activation schedule failed: ${json(cancellableScheduleSubmitted.Err)}`)
+  if (!("Ok" in cancellableScheduleSubmitted))
+    throw new Error(
+      `Cancellable activation schedule failed: ${json(cancellableScheduleSubmitted.Err)}`,
+    )
   const cancellableScheduleConfirmed = await confirmSigned(cancellableScheduleSubmitted.Ok)
-  if (!("Ok" in cancellableScheduleConfirmed)) throw new Error(`Cancellable activation schedule confirmation failed: ${json(cancellableScheduleConfirmed.Err)}`)
-  const cancellationSubmitted = await bridge.actor.prepare_base_governance_action({ CancelPendingTimelock: null })
-  if (!("Ok" in cancellationSubmitted)) throw new Error(`Canister activation cancellation failed: ${json(cancellationSubmitted.Err)}`)
-  const cancellationConfirmed = await confirmSigned(cancellationSubmitted.Ok, { expectedSigner: independentCanceller })
-  if (!("Ok" in cancellationConfirmed)) throw new Error(`Canister activation cancellation confirmation failed: ${json(cancellationConfirmed.Err)}`)
+  if (!("Ok" in cancellableScheduleConfirmed))
+    throw new Error(
+      `Cancellable activation schedule confirmation failed: ${json(cancellableScheduleConfirmed.Err)}`,
+    )
+  const cancellationSubmitted = await bridge.actor.prepare_base_governance_action({
+    CancelPendingTimelock: null,
+  })
+  if (!("Ok" in cancellationSubmitted))
+    throw new Error(`Canister activation cancellation failed: ${json(cancellationSubmitted.Err)}`)
+  const cancellationConfirmed = await confirmSigned(cancellationSubmitted.Ok, {
+    expectedSigner: independentCanceller,
+  })
+  if (!("Ok" in cancellationConfirmed))
+    throw new Error(
+      `Canister activation cancellation confirmation failed: ${json(cancellationConfirmed.Err)}`,
+    )
   await advanceControlPlaneQuotaWindow()
   await rotateControlPlane(2, generationTwo)
   const recoveryScheduleSubmitted = await bridge.actor.schedule_activation()
-  if (!("Ok" in recoveryScheduleSubmitted)) throw new Error(`Post-emergency activation schedule failed: ${json(recoveryScheduleSubmitted.Err)}`)
+  if (!("Ok" in recoveryScheduleSubmitted))
+    throw new Error(
+      `Post-emergency activation schedule failed: ${json(recoveryScheduleSubmitted.Err)}`,
+    )
   const recoveryScheduleConfirmed = await confirmSigned(recoveryScheduleSubmitted.Ok)
-  if (!("Ok" in recoveryScheduleConfirmed)) throw new Error(`Post-emergency activation schedule confirmation failed: ${json(recoveryScheduleConfirmed.Err)}`)
+  if (!("Ok" in recoveryScheduleConfirmed))
+    throw new Error(
+      `Post-emergency activation schedule confirmation failed: ${json(recoveryScheduleConfirmed.Err)}`,
+    )
   await rpc("evm_increaseTime", [ACTIVATION_DELAY_SECONDS])
   await rpc("evm_mine", [])
   const recoveryExecuteSubmitted = await bridge.actor.execute_activation()
-  if (!("Ok" in recoveryExecuteSubmitted)) throw new Error(`Post-emergency activation execute failed: ${json(recoveryExecuteSubmitted.Err)}`)
+  if (!("Ok" in recoveryExecuteSubmitted))
+    throw new Error(
+      `Post-emergency activation execute failed: ${json(recoveryExecuteSubmitted.Err)}`,
+    )
   const recoveryExecuteConfirmed = await confirmSigned(recoveryExecuteSubmitted.Ok)
-  if (!("Ok" in recoveryExecuteConfirmed)) throw new Error(`Post-emergency activation execute confirmation failed: ${json(recoveryExecuteConfirmed.Err)}`)
+  if (!("Ok" in recoveryExecuteConfirmed))
+    throw new Error(
+      `Post-emergency activation execute confirmation failed: ${json(recoveryExecuteConfirmed.Err)}`,
+    )
   const reactivatedStatus = await bridge.actor.get_bridge_status()
-  if (reactivatedStatus.deposits_paused) throw new Error("IC deposits remained paused after post-emergency activation")
+  if (reactivatedStatus.deposits_paused)
+    throw new Error("IC deposits remained paused after post-emergency activation")
   await alignFixtureClocks()
   // The mock RPC exposes one nonce response at a time. Switch its observation
   // from the governance operator lane to the independently derived mint lane.
@@ -813,12 +1023,17 @@ async function setup() {
           })
         })
         if ("Err" in result) throw new Error(`deposit rejected: ${json(result.Err)}`)
-        if (!knownDeposits.some((id) => bytesHex(id) === bytesHex(result.Ok.deposit_id))) knownDeposits.push(result.Ok.deposit_id)
+        if (!knownDeposits.some((id) => bytesHex(id) === bytesHex(result.Ok.deposit_id)))
+          knownDeposits.push(result.Ok.deposit_id)
         if (failNextDepositResponse) {
           failNextDepositResponse = false
           return send(response, 503, { error: "Injected response loss after deposit acceptance" })
         }
-        return send(response, 200, { deposit_id: bytesHex(result.Ok.deposit_id), owner_sequence: result.Ok.owner_sequence.toString(), state: result.Ok.state })
+        return send(response, 200, {
+          deposit_id: bytesHex(result.Ok.deposit_id),
+          owner_sequence: result.Ok.owner_sequence.toString(),
+          state: result.Ok.state,
+        })
       }
       if (request.url === "/ic/request-deposit-refund") {
         await syncObservedHeads()
@@ -833,7 +1048,8 @@ async function setup() {
       }
       if (request.url === "/ic/continue-withdrawal") {
         const result = await bridge.actor.continue_withdrawal(hexToBytes(body.id))
-        if ("Err" in result) throw new Error(`withdrawal continuation rejected: ${json(result.Err)}`)
+        if ("Err" in result)
+          throw new Error(`withdrawal continuation rejected: ${json(result.Err)}`)
         return send(response, 200, settlementJson(result.Ok))
       }
       if (request.url === "/test/prepare-latest-withdrawal") {
@@ -873,18 +1089,34 @@ async function setup() {
         let after
         await withPausedProgress(async () => {
           await waitForNoLeasedJobs(bridge.actor)
-          before = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
+          before = await captureUpgradeState(
+            bridge.actor,
+            testOwner,
+            knownDeposits,
+            knownWithdrawals,
+          )
           await pic.upgradeCanister({
             canisterId: bridge.canisterId,
-            wasm: await readFile(path.join(testTarget, "wasm32-unknown-unknown/release/bridge_canister.wasm")),
+            wasm: await readFile(
+              path.join(testTarget, "wasm32-unknown-unknown/release/bridge_canister.wasm"),
+            ),
             arg: IDL.encode([], []),
             sender: testOwner,
           })
-          after = await captureUpgradeState(bridge.actor, testOwner, knownDeposits, knownWithdrawals)
+          after = await captureUpgradeState(
+            bridge.actor,
+            testOwner,
+            knownDeposits,
+            knownWithdrawals,
+          )
         })
-        if (json(before) !== json(after)) throw new Error("same-Wasm upgrade changed durable bridge state")
-        if (before.deposits.length === 0) throw new Error("same-Wasm upgrade did not exercise an individual Deposit record")
-        const facts = JSON.parse(await readFile(path.join(runtimeDir, "local-e2e-facts.json"), "utf8"))
+        if (json(before) !== json(after))
+          throw new Error("same-Wasm upgrade changed durable bridge state")
+        if (before.deposits.length === 0)
+          throw new Error("same-Wasm upgrade did not exercise an individual Deposit record")
+        const facts = JSON.parse(
+          await readFile(path.join(runtimeDir, "local-e2e-facts.json"), "utf8"),
+        )
         await writeLocalFacts({
           ...facts,
           state_upgrade: {
@@ -910,9 +1142,29 @@ async function setup() {
         })
       }
       if (request.url === "/test/state") {
-        const balance = await publicClient.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "balanceOf", args: [deployer] })
-        const [allowance, ledgerBalance, ledgerFee, indexBalance, indexLedgerId, indexStatus, nextDepositSequence, bridgeStatus, receiptCalls] = await Promise.all([
-          publicClient.readContract({ address: bsnsAddress, abi: bsnsAbi, functionName: "allowance", args: [deployer, bridgeAddress] }),
+        const balance = await publicClient.readContract({
+          address: bsnsAddress,
+          abi: bsnsAbi,
+          functionName: "balanceOf",
+          args: [deployer],
+        })
+        const [
+          allowance,
+          ledgerBalance,
+          ledgerFee,
+          indexBalance,
+          indexLedgerId,
+          indexStatus,
+          nextDepositSequence,
+          bridgeStatus,
+          receiptCalls,
+        ] = await Promise.all([
+          publicClient.readContract({
+            address: bsnsAddress,
+            abi: bsnsAbi,
+            functionName: "allowance",
+            args: [deployer, bridgeAddress],
+          }),
           ledger.icrc1_balance_of(account(testOwner)),
           ledger.icrc1_fee(),
           index.icrc1_balance_of(account(testOwner)),
@@ -945,7 +1197,9 @@ async function setup() {
       return send(response, 500, { error: error instanceof Error ? error.message : String(error) })
     }
   })
-  await new Promise((resolve, reject) => control.once("error", reject).listen(controlPort, "127.0.0.1", resolve))
+  await new Promise((resolve, reject) =>
+    control.once("error", reject).listen(controlPort, "127.0.0.1", resolve),
+  )
   resources.control = control
 
   const viteEnvironment = {
@@ -957,11 +1211,25 @@ async function setup() {
     stdio: "inherit",
     env: viteEnvironment,
   })
-  const vite = spawn("pnpm", ["exec", "vite", "preview", "--config", "vite.real.config.ts", "--host", "127.0.0.1", "--port", String(uiPort)], {
-    cwd: uiRoot,
-    stdio: "inherit",
-    env: viteEnvironment,
-  })
+  const vite = spawn(
+    "pnpm",
+    [
+      "exec",
+      "vite",
+      "preview",
+      "--config",
+      "vite.real.config.ts",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(uiPort),
+    ],
+    {
+      cwd: uiRoot,
+      stdio: "inherit",
+      env: viteEnvironment,
+    },
+  )
   resources.vite = vite
   await waitForUrl(`http://127.0.0.1:${uiPort}`)
 
@@ -979,7 +1247,17 @@ async function cleanup() {
 }
 
 async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
-  const [status, runtimeBinding, operationalConfig, ownerSequence, deposits, withdrawals, auditPage, activationStatus, storageIntegrity] = await Promise.all([
+  const [
+    status,
+    runtimeBinding,
+    operationalConfig,
+    ownerSequence,
+    deposits,
+    withdrawals,
+    auditPage,
+    activationStatus,
+    storageIntegrity,
+  ] = await Promise.all([
     actor.get_bridge_status(),
     actor.get_runtime_binding(),
     actor.get_operational_config(),
@@ -993,9 +1271,14 @@ async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
   if (deposits.some((item) => item.length !== 1) || withdrawals.some((item) => item.length !== 1)) {
     throw new Error("upgrade evidence could not reopen every known settlement record")
   }
-  if (!("Ok" in operationalConfig)) throw new Error("upgrade evidence could not read operational configuration")
-  if (!("Ok" in activationStatus)) throw new Error(`upgrade evidence could not read activation status: ${json(activationStatus.Err)}`)
-  if (storageIntegrity.Ok !== "ok") throw new Error(`upgrade evidence failed storage integrity: ${json(storageIntegrity)}`)
+  if (!("Ok" in operationalConfig))
+    throw new Error("upgrade evidence could not read operational configuration")
+  if (!("Ok" in activationStatus))
+    throw new Error(
+      `upgrade evidence could not read activation status: ${json(activationStatus.Err)}`,
+    )
+  if (storageIntegrity.Ok !== "ok")
+    throw new Error(`upgrade evidence failed storage integrity: ${json(storageIntegrity)}`)
   const durableStatus = {
     schema_version: status.schema_version,
     counts: status.counts,
@@ -1020,17 +1303,19 @@ async function captureUpgradeState(actor, owner, depositIds, withdrawalIds) {
     },
     last_audit_sequence: status.last_audit_sequence,
   }
-  return JSON.parse(json({
-    status: durableStatus,
-    runtime_binding: runtimeBinding,
-    operational_config: operationalConfig.Ok,
-    owner_sequence: ownerSequence,
-    deposits: deposits.map(([item]) => item),
-    withdrawals: withdrawals.map(([item]) => item),
-    audit_events: auditPage,
-    activation_status: activationStatus.Ok,
-    storage_integrity: storageIntegrity.Ok,
-  }))
+  return JSON.parse(
+    json({
+      status: durableStatus,
+      runtime_binding: runtimeBinding,
+      operational_config: operationalConfig.Ok,
+      owner_sequence: ownerSequence,
+      deposits: deposits.map(([item]) => item),
+      withdrawals: withdrawals.map(([item]) => item),
+      audit_events: auditPage,
+      activation_status: activationStatus.Ok,
+      storage_integrity: storageIntegrity.Ok,
+    }),
+  )
 }
 
 async function waitForNoLeasedJobs(actor) {
@@ -1048,7 +1333,8 @@ async function readAllAuditEvents(actor) {
   const events = []
   for (let pageIndex = 0; pageIndex < 10_000; pageIndex += 1) {
     const result = await actor.get_audit_events(cursor, 100)
-    if (!("Ok" in result)) throw new Error(`upgrade evidence could not read audit events: ${json(result.Err)}`)
+    if (!("Ok" in result))
+      throw new Error(`upgrade evidence could not read audit events: ${json(result.Err)}`)
     const page = result.Ok
     metadata ??= {
       pruned_digest: page.pruned_digest,
@@ -1074,7 +1360,8 @@ async function terminateChild(child, label) {
     child.kill("SIGKILL")
     await exited
   }
-  if (child.exitCode === null && child.signalCode === null) throw new Error(`${label} did not terminate`)
+  if (child.exitCode === null && child.signalCode === null)
+    throw new Error(`${label} did not terminate`)
 }
 
 async function startProgressLoop(pic) {
@@ -1089,35 +1376,93 @@ async function stopProgressLoop() {
 }
 
 function buildWasm() {
-  execFileSync("cargo", ["build", "--target", "wasm32-unknown-unknown", "--release", "-p", "bridge-canister", "--features", "test-deployment"], { cwd: root, stdio: "inherit", env: { ...process.env, CARGO_TARGET_DIR: testTarget } })
-  execFileSync("cargo", ["build", "--target", "wasm32-unknown-unknown", "--release", "-p", "mock-external"], { cwd: root, stdio: "inherit" })
+  execFileSync(
+    "cargo",
+    [
+      "build",
+      "--target",
+      "wasm32-unknown-unknown",
+      "--release",
+      "-p",
+      "bridge-canister",
+      "--features",
+      "test-deployment",
+    ],
+    { cwd: root, stdio: "inherit", env: { ...process.env, CARGO_TARGET_DIR: testTarget } },
+  )
+  execFileSync(
+    "cargo",
+    ["build", "--target", "wasm32-unknown-unknown", "--release", "-p", "mock-external"],
+    { cwd: root, stdio: "inherit" },
+  )
 }
 
 function deployTimelock(governanceOperator, independentCanceller) {
-  const output = execFileSync("forge", [
-    "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
-    "--from", deployer, "--unlocked", "--broadcast",
-    "src/BridgeTimelockController.sol:BridgeTimelockController", "--constructor-args",
-    String(ACTIVATION_DELAY_SECONDS),
-    `[${governanceOperator}]`,
-    `[${independentCanceller}]`,
-    `[${governanceOperator}]`,
-  ], { encoding: "utf8", env: stagingForgeEnv })
+  const output = execFileSync(
+    "forge",
+    [
+      "create",
+      "--root",
+      path.join(root, "contracts"),
+      "--rpc-url",
+      rpcUrl,
+      "--from",
+      deployer,
+      "--unlocked",
+      "--broadcast",
+      "src/BridgeTimelockController.sol:BridgeTimelockController",
+      "--constructor-args",
+      String(ACTIVATION_DELAY_SECONDS),
+      `[${governanceOperator}]`,
+      `[${independentCanceller}]`,
+      `[${governanceOperator}]`,
+    ],
+    { encoding: "utf8", env: stagingForgeEnv },
+  )
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Timelock deployment:\n${output}`)
   return match[1]
 }
 
-function deployBridge(signer, governanceOperator, runtimeAdministrator, timelockAddress, independentCanceller) {
+function deployBridge(
+  signer,
+  governanceOperator,
+  runtimeAdministrator,
+  timelockAddress,
+  independentCanceller,
+) {
   const timelockCodeHash = execFileSync(
-    "cast", ["codehash", timelockAddress, "--rpc-url", rpcUrl], { encoding: "utf8" },
+    "cast",
+    ["codehash", timelockAddress, "--rpc-url", rpcUrl],
+    { encoding: "utf8" },
   ).trim()
-  const output = execFileSync("forge", [
-    "create", "--root", path.join(root, "contracts"), "--rpc-url", rpcUrl,
-    "--from", deployer, "--unlocked", "--broadcast", "src/Bridge.sol:Bridge", "--constructor-args",
-    signer, runtimeAdministrator, timelockAddress, timelockCodeHash,
-    "1000000000000", "10000000000000", "3600", "10000", "100000000", "1000000",
-  ], { encoding: "utf8", env: stagingForgeEnv })
+  const output = execFileSync(
+    "forge",
+    [
+      "create",
+      "--root",
+      path.join(root, "contracts"),
+      "--rpc-url",
+      rpcUrl,
+      "--from",
+      deployer,
+      "--unlocked",
+      "--broadcast",
+      "src/Bridge.sol:Bridge",
+      "--constructor-args",
+      signer,
+      runtimeAdministrator,
+      timelockAddress,
+      timelockCodeHash,
+      "1000000000000",
+      "10000000000000",
+      "3600",
+      "10000",
+      "100000000",
+      "1000000",
+    ],
+    { encoding: "utf8", env: stagingForgeEnv },
+  )
   const match = output.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/)
   if (!match) throw new Error(`Unable to parse Bridge deployment:\n${output}`)
   assertFrozenCanisterRoles(
@@ -1140,43 +1485,182 @@ function assertFrozenCanisterRoles(
   independentCanceller,
   previousRoles = undefined,
 ) {
-  const bridgeSigner = execFileSync("cast", ["call", bridgeAddress, "bridgeSigner()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-  if (bridgeSigner.toLowerCase() !== expectedSigner.toLowerCase()) throw new Error("Bridge signer does not match the independently derived generation signer")
-  const runtime = execFileSync("cast", ["call", bridgeAddress, "runtimeAdministrator()(address)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-  if (bridgeSigner.toLowerCase() === previousRoles?.signer?.toLowerCase()) throw new Error("Bridge retained the previous generation signer")
-  if (runtime.toLowerCase() !== runtimeAdministrator.toLowerCase()) throw new Error("Bridge runtime administrator is not independently derived")
-  if (runtime.toLowerCase() === previousRoles?.runtimeAdministrator?.toLowerCase()) throw new Error("Bridge retained the previous runtime administrator")
-  const proposerRole = execFileSync("cast", ["call", timelockAddress, "PROPOSER_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-  const executorRole = execFileSync("cast", ["call", timelockAddress, "EXECUTOR_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-  const cancellerRole = execFileSync("cast", ["call", timelockAddress, "CANCELLER_ROLE()(bytes32)", "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
+  const bridgeSigner = execFileSync(
+    "cast",
+    ["call", bridgeAddress, "bridgeSigner()(address)", "--rpc-url", rpcUrl],
+    { encoding: "utf8" },
+  ).trim()
+  if (bridgeSigner.toLowerCase() !== expectedSigner.toLowerCase())
+    throw new Error("Bridge signer does not match the independently derived generation signer")
+  const runtime = execFileSync(
+    "cast",
+    ["call", bridgeAddress, "runtimeAdministrator()(address)", "--rpc-url", rpcUrl],
+    { encoding: "utf8" },
+  ).trim()
+  if (bridgeSigner.toLowerCase() === previousRoles?.signer?.toLowerCase())
+    throw new Error("Bridge retained the previous generation signer")
+  if (runtime.toLowerCase() !== runtimeAdministrator.toLowerCase())
+    throw new Error("Bridge runtime administrator is not independently derived")
+  if (runtime.toLowerCase() === previousRoles?.runtimeAdministrator?.toLowerCase())
+    throw new Error("Bridge retained the previous runtime administrator")
+  const proposerRole = execFileSync(
+    "cast",
+    ["call", timelockAddress, "PROPOSER_ROLE()(bytes32)", "--rpc-url", rpcUrl],
+    { encoding: "utf8" },
+  ).trim()
+  const executorRole = execFileSync(
+    "cast",
+    ["call", timelockAddress, "EXECUTOR_ROLE()(bytes32)", "--rpc-url", rpcUrl],
+    { encoding: "utf8" },
+  ).trim()
+  const cancellerRole = execFileSync(
+    "cast",
+    ["call", timelockAddress, "CANCELLER_ROLE()(bytes32)", "--rpc-url", rpcUrl],
+    { encoding: "utf8" },
+  ).trim()
   for (const role of [proposerRole, executorRole]) {
-    const operatorHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", role, governanceOperator, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-    const deployerHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", role, deployer, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-    if (operatorHasRole !== "true" || deployerHasRole !== "false") throw new Error("Timelock operational role set is not canister-only")
+    const operatorHasRole = execFileSync(
+      "cast",
+      [
+        "call",
+        timelockAddress,
+        "hasRole(bytes32,address)(bool)",
+        role,
+        governanceOperator,
+        "--rpc-url",
+        rpcUrl,
+      ],
+      { encoding: "utf8" },
+    ).trim()
+    const deployerHasRole = execFileSync(
+      "cast",
+      [
+        "call",
+        timelockAddress,
+        "hasRole(bytes32,address)(bool)",
+        role,
+        deployer,
+        "--rpc-url",
+        rpcUrl,
+      ],
+      { encoding: "utf8" },
+    ).trim()
+    if (operatorHasRole !== "true" || deployerHasRole !== "false")
+      throw new Error("Timelock operational role set is not canister-only")
   }
-  const cancellerHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", cancellerRole, independentCanceller, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-  const operatorCanCancel = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", cancellerRole, governanceOperator, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-  const deployerCanCancel = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", cancellerRole, deployer, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-  if (cancellerHasRole !== "true" || operatorCanCancel !== "false" || deployerCanCancel !== "false") throw new Error("Timelock canceller role is not independently controlled")
+  const cancellerHasRole = execFileSync(
+    "cast",
+    [
+      "call",
+      timelockAddress,
+      "hasRole(bytes32,address)(bool)",
+      cancellerRole,
+      independentCanceller,
+      "--rpc-url",
+      rpcUrl,
+    ],
+    { encoding: "utf8" },
+  ).trim()
+  const operatorCanCancel = execFileSync(
+    "cast",
+    [
+      "call",
+      timelockAddress,
+      "hasRole(bytes32,address)(bool)",
+      cancellerRole,
+      governanceOperator,
+      "--rpc-url",
+      rpcUrl,
+    ],
+    { encoding: "utf8" },
+  ).trim()
+  const deployerCanCancel = execFileSync(
+    "cast",
+    [
+      "call",
+      timelockAddress,
+      "hasRole(bytes32,address)(bool)",
+      cancellerRole,
+      deployer,
+      "--rpc-url",
+      rpcUrl,
+    ],
+    { encoding: "utf8" },
+  ).trim()
+  if (cancellerHasRole !== "true" || operatorCanCancel !== "false" || deployerCanCancel !== "false")
+    throw new Error("Timelock canceller role is not independently controlled")
   if (previousRoles) {
     for (const role of [proposerRole, executorRole]) {
-      const previousOperatorHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", role, previousRoles.governanceOperator, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-      if (previousOperatorHasRole !== "false") throw new Error("Timelock retained the previous governance operator")
+      const previousOperatorHasRole = execFileSync(
+        "cast",
+        [
+          "call",
+          timelockAddress,
+          "hasRole(bytes32,address)(bool)",
+          role,
+          previousRoles.governanceOperator,
+          "--rpc-url",
+          rpcUrl,
+        ],
+        { encoding: "utf8" },
+      ).trim()
+      if (previousOperatorHasRole !== "false")
+        throw new Error("Timelock retained the previous governance operator")
     }
-    const previousCancellerHasRole = execFileSync("cast", ["call", timelockAddress, "hasRole(bytes32,address)(bool)", cancellerRole, previousRoles.independentCanceller, "--rpc-url", rpcUrl], { encoding: "utf8" }).trim()
-    if (previousCancellerHasRole !== "false") throw new Error("Timelock retained the previous independent canceller")
+    const previousCancellerHasRole = execFileSync(
+      "cast",
+      [
+        "call",
+        timelockAddress,
+        "hasRole(bytes32,address)(bool)",
+        cancellerRole,
+        previousRoles.independentCanceller,
+        "--rpc-url",
+        rpcUrl,
+      ],
+      { encoding: "utf8" },
+    ).trim()
+    if (previousCancellerHasRole !== "false")
+      throw new Error("Timelock retained the previous independent canceller")
   }
 }
 
 function sendAsTimelock(target, signature, ...args) {
   const timelockAddress = resources.timelockAddress
   if (!timelockAddress) throw new Error("Timelock has not been deployed")
-  execFileSync("cast", ["rpc", "anvil_setBalance", timelockAddress, "0x56BC75E2D63100000", "--rpc-url", rpcUrl])
+  execFileSync("cast", [
+    "rpc",
+    "anvil_setBalance",
+    timelockAddress,
+    "0x56BC75E2D63100000",
+    "--rpc-url",
+    rpcUrl,
+  ])
   execFileSync("cast", ["rpc", "anvil_impersonateAccount", timelockAddress, "--rpc-url", rpcUrl])
   try {
-    execFileSync("cast", ["send", target, signature, ...args, "--from", timelockAddress, "--unlocked", "--rpc-url", rpcUrl], { stdio: "inherit" })
+    execFileSync(
+      "cast",
+      [
+        "send",
+        target,
+        signature,
+        ...args,
+        "--from",
+        timelockAddress,
+        "--unlocked",
+        "--rpc-url",
+        rpcUrl,
+      ],
+      { stdio: "inherit" },
+    )
   } finally {
-    execFileSync("cast", ["rpc", "anvil_stopImpersonatingAccount", timelockAddress, "--rpc-url", rpcUrl])
+    execFileSync("cast", [
+      "rpc",
+      "anvil_stopImpersonatingAccount",
+      timelockAddress,
+      "--rpc-url",
+      rpcUrl,
+    ])
   }
 }
 
@@ -1203,14 +1687,30 @@ export function resolvedBaseRpcUrl(profile: Pick<DeploymentProfile, "baseRpcUrl"
   throw new Error("Deployment profile has no default RPC URL for chain " + profile.chainId)
 }
 export const deploymentProfile: DeploymentProfile = ${serialize({
-    environment: "local-real-e2e", label: "Local Anvil + PocketIC", testOnly: true,
-    environmentMode: "short-delay-test-only", activationTimelockDelaySeconds: ACTIVATION_DELAY_SECONDS,
+    environment: "local-real-e2e",
+    label: "Local Anvil + PocketIC",
+    testOnly: true,
+    environmentMode: "short-delay-test-only",
+    activationTimelockDelaySeconds: ACTIVATION_DELAY_SECONDS,
     icHost: `http://127.0.0.1:${uiPort}`,
-    baseRpcUrl: rpcUrl, chainId: 31337, bridgeCanisterId: values.bridgeId, deploymentInstanceId: values.deploymentInstanceId, minimumWithdrawalId: values.minimumWithdrawalId, ledgerCanisterId: values.ledgerId, indexCanisterId: values.indexId,
-    evmRpcCanisterId: values.evmRpcCanisterId, rpcProviderUrlsSha256: values.rpcProviderUrlsSha256,
-    icToken: { name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 }, baseToken: { symbol: "KINIC", decimals: 8 },
-    bridgeAddress: values.bridgeAddress, bsnsAddress: values.bsnsAddress, timelockAddress: values.timelockAddress, expected_bridge_signer: values.expected_bridge_signer, deploymentBlock: values.deploymentBlock,
-  bridgeRuntimeHash: values.bridgeHash, bsnsRuntimeHash: values.bsnsHash,
+    baseRpcUrl: rpcUrl,
+    chainId: 31337,
+    bridgeCanisterId: values.bridgeId,
+    deploymentInstanceId: values.deploymentInstanceId,
+    minimumWithdrawalId: values.minimumWithdrawalId,
+    ledgerCanisterId: values.ledgerId,
+    indexCanisterId: values.indexId,
+    evmRpcCanisterId: values.evmRpcCanisterId,
+    rpcProviderUrlsSha256: values.rpcProviderUrlsSha256,
+    icToken: { name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 },
+    baseToken: { symbol: "KINIC", decimals: 8 },
+    bridgeAddress: values.bridgeAddress,
+    bsnsAddress: values.bsnsAddress,
+    timelockAddress: values.timelockAddress,
+    expected_bridge_signer: values.expected_bridge_signer,
+    deploymentBlock: values.deploymentBlock,
+    bridgeRuntimeHash: values.bridgeHash,
+    bsnsRuntimeHash: values.bsnsHash,
   })}
 export function profileCompleteness(profile: DeploymentProfile): string[] {
   const blockers: string[] = []
@@ -1222,18 +1722,28 @@ export function profileCompleteness(profile: DeploymentProfile): string[] {
 }
 
 async function writeLocalFacts(value) {
-  await writeFile(path.join(runtimeDir, "local-e2e-facts.json"), `${JSON.stringify(value, null, 2)}\n`)
+  await writeFile(
+    path.join(runtimeDir, "local-e2e-facts.json"),
+    `${JSON.stringify(value, null, 2)}\n`,
+  )
 }
 
 function serialize(value) {
   if (typeof value === "bigint") return `${value}n`
   if (Array.isArray(value)) return `[${value.map(serialize).join(",")}]`
-  if (value && typeof value === "object") return `{${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)}:${serialize(item)}`).join(",")}}`
+  if (value && typeof value === "object")
+    return `{${Object.entries(value)
+      .map(([key, item]) => `${JSON.stringify(key)}:${serialize(item)}`)
+      .join(",")}}`
   return JSON.stringify(value)
 }
 
-function account(owner) { return { owner, subaccount: [] } }
-function bytesHex(bytes) { return `0x${Buffer.from(bytes).toString("hex")}` }
+function account(owner) {
+  return { owner, subaccount: [] }
+}
+function bytesHex(bytes) {
+  return `0x${Buffer.from(bytes).toString("hex")}`
+}
 function json(value) {
   return JSON.stringify(value, (_key, item) => {
     if (typeof item === "bigint") return item.toString()
@@ -1242,18 +1752,48 @@ function json(value) {
   })
 }
 function settlementJson(value) {
-  if ("Submitted" in value) return { Submitted: { ...value.Submitted, transaction_hash: Array.from(value.Submitted.transaction_hash) } }
-  if ("WaitingForConfirmation" in value) return { WaitingForConfirmation: { ...value.WaitingForConfirmation, transaction_hash: Array.from(value.WaitingForConfirmation.transaction_hash) } }
+  if ("Submitted" in value)
+    return {
+      Submitted: {
+        ...value.Submitted,
+        transaction_hash: Array.from(value.Submitted.transaction_hash),
+      },
+    }
+  if ("WaitingForConfirmation" in value)
+    return {
+      WaitingForConfirmation: {
+        ...value.WaitingForConfirmation,
+        transaction_hash: Array.from(value.WaitingForConfirmation.transaction_hash),
+      },
+    }
   return value
 }
-async function readJson(request) { const chunks = []; for await (const chunk of request) chunks.push(chunk); return JSON.parse(Buffer.concat(chunks).toString("utf8") || "null") }
-function send(response, status, value) { response.statusCode = status; response.setHeader("content-type", "application/json"); response.end(value === null ? "null" : json(value)); }
-async function rpc(method, params) { const response = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }); const value = await response.json(); if (value.error) throw new Error(value.error.message); return value.result }
+async function readJson(request) {
+  const chunks = []
+  for await (const chunk of request) chunks.push(chunk)
+  return JSON.parse(Buffer.concat(chunks).toString("utf8") || "null")
+}
+function send(response, status, value) {
+  response.statusCode = status
+  response.setHeader("content-type", "application/json")
+  response.end(value === null ? "null" : json(value))
+}
+async function rpc(method, params) {
+  const response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  })
+  const value = await response.json()
+  if (value.error) throw new Error(value.error.message)
+  return value.result
+}
 async function waitForOwnedRpc(child) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (child.exitCode !== null) throw new Error(`spawned Anvil exited before becoming ready (exit ${child.exitCode})`)
+    if (child.exitCode !== null)
+      throw new Error(`spawned Anvil exited before becoming ready (exit ${child.exitCode})`)
     try {
-      if (await rpc("eth_chainId", []) === "0x7a69") {
+      if ((await rpc("eth_chainId", [])) === "0x7a69") {
         process.kill(child.pid, 0)
         return
       }
@@ -1265,35 +1805,85 @@ async function waitForOwnedRpc(child) {
 async function isTcpPortOpen(host, port) {
   return await new Promise((resolve) => {
     const socket = connect({ host, port })
-    socket.once("connect", () => { socket.destroy(); resolve(true) })
-    socket.once("error", () => { socket.destroy(); resolve(false) })
-    socket.setTimeout(500, () => { socket.destroy(); resolve(false) })
+    socket.once("connect", () => {
+      socket.destroy()
+      resolve(true)
+    })
+    socket.once("error", () => {
+      socket.destroy()
+      resolve(false)
+    })
+    socket.setTimeout(500, () => {
+      socket.destroy()
+      resolve(false)
+    })
   })
 }
-async function waitForUrl(url) { for (let attempt = 0; attempt < 200; attempt += 1) { try { if ((await fetch(url)).ok) return } catch {} await delay(100) } throw new Error(`${url} did not start`) }
-function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
+async function waitForUrl(url) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      if ((await fetch(url)).ok) return
+    } catch {}
+    await delay(100)
+  }
+  throw new Error(`${url} did not start`)
+}
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 function ledgerInitType() {
   const Account = IDL.Record({ owner: IDL.Principal, subaccount: IDL.Opt(IDL.Vec(IDL.Nat8)) })
   const Value = IDL.Variant({ Nat: IDL.Nat, Int: IDL.Int, Text: IDL.Text, Blob: IDL.Vec(IDL.Nat8) })
-  return IDL.Variant({ Init: IDL.Record({
-    token_symbol: IDL.Text, token_name: IDL.Text, decimals: IDL.Opt(IDL.Nat8), minting_account: Account, transfer_fee: IDL.Nat,
-    metadata: IDL.Vec(IDL.Tuple(IDL.Text, Value)), initial_balances: IDL.Vec(IDL.Tuple(Account, IDL.Nat)),
-    archive_options: IDL.Record({ num_blocks_to_archive: IDL.Nat64, trigger_threshold: IDL.Nat64, controller_id: IDL.Principal }),
-    feature_flags: IDL.Opt(IDL.Record({ icrc2: IDL.Bool })),
-  }) })
+  return IDL.Variant({
+    Init: IDL.Record({
+      token_symbol: IDL.Text,
+      token_name: IDL.Text,
+      decimals: IDL.Opt(IDL.Nat8),
+      minting_account: Account,
+      transfer_fee: IDL.Nat,
+      metadata: IDL.Vec(IDL.Tuple(IDL.Text, Value)),
+      initial_balances: IDL.Vec(IDL.Tuple(Account, IDL.Nat)),
+      archive_options: IDL.Record({
+        num_blocks_to_archive: IDL.Nat64,
+        trigger_threshold: IDL.Nat64,
+        controller_id: IDL.Principal,
+      }),
+      feature_flags: IDL.Opt(IDL.Record({ icrc2: IDL.Bool })),
+    }),
+  })
 }
 
 const ledgerIdl = ({ IDL: I }) => {
   const Account = I.Record({ owner: I.Principal, subaccount: I.Opt(I.Vec(I.Nat8)) })
   const ApproveError = I.Variant({
-    BadFee: I.Record({ expected_fee: I.Nat }), InsufficientFunds: I.Record({ balance: I.Nat }),
-    AllowanceChanged: I.Record({ current_allowance: I.Nat }), Expired: I.Record({ ledger_time: I.Nat64 }),
-    TooOld: I.Null, CreatedInFuture: I.Record({ ledger_time: I.Nat64 }), Duplicate: I.Record({ duplicate_of: I.Nat }),
-    TemporarilyUnavailable: I.Null, GenericError: I.Record({ error_code: I.Nat, message: I.Text }),
+    BadFee: I.Record({ expected_fee: I.Nat }),
+    InsufficientFunds: I.Record({ balance: I.Nat }),
+    AllowanceChanged: I.Record({ current_allowance: I.Nat }),
+    Expired: I.Record({ ledger_time: I.Nat64 }),
+    TooOld: I.Null,
+    CreatedInFuture: I.Record({ ledger_time: I.Nat64 }),
+    Duplicate: I.Record({ duplicate_of: I.Nat }),
+    TemporarilyUnavailable: I.Null,
+    GenericError: I.Record({ error_code: I.Nat, message: I.Text }),
   })
   return I.Service({
-    icrc2_approve: I.Func([I.Record({ from_subaccount: I.Opt(I.Vec(I.Nat8)), spender: Account, amount: I.Nat, expected_allowance: I.Opt(I.Nat), expires_at: I.Opt(I.Nat64), fee: I.Opt(I.Nat), memo: I.Opt(I.Vec(I.Nat8)), created_at_time: I.Opt(I.Nat64) })], [I.Variant({ Ok: I.Nat, Err: ApproveError })], []),
+    icrc2_approve: I.Func(
+      [
+        I.Record({
+          from_subaccount: I.Opt(I.Vec(I.Nat8)),
+          spender: Account,
+          amount: I.Nat,
+          expected_allowance: I.Opt(I.Nat),
+          expires_at: I.Opt(I.Nat64),
+          fee: I.Opt(I.Nat),
+          memo: I.Opt(I.Vec(I.Nat8)),
+          created_at_time: I.Opt(I.Nat64),
+        }),
+      ],
+      [I.Variant({ Ok: I.Nat, Err: ApproveError })],
+      [],
+    ),
     icrc1_balance_of: I.Func([Account], [I.Nat], ["query"]),
     icrc1_fee: I.Func([], [I.Nat], ["query"]),
   })
