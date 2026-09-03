@@ -191,26 +191,34 @@ PY
 rg -q '^validate-bundle --offline ' "$TEST_TMP_ROOT/gate-calls"
 
 cp "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" "$TEST_TMP_ROOT/transition-valid.json"
-python3 - "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" <<'PY'
-import json,sys
-p=sys.argv[1]; value=json.load(open(p)); value['to_source_revision']='f'*40
+cp "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$TEST_TMP_ROOT/transition-manifest-valid.json"
+python3 - "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" "$TEST_TMP_ROOT/bundle-b/release-manifest.json" <<'PY'
+import hashlib,json,sys
+p,m=sys.argv[1:]; value=json.load(open(p)); value['to_source_revision']='f'*40
 json.dump(value,open(p,'w'),sort_keys=True,separators=(',',':'))
+manifest=json.load(open(m)); next(a for a in manifest['artifacts'] if a['path']=='post-gate-a-policy-transition.json')['sha256']=hashlib.sha256(open(p,'rb').read()).hexdigest()
+json.dump(manifest,open(m,'w'),sort_keys=True,separators=(',',':'))
 PY
 write_gate 0
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
   --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 mv "$TEST_TMP_ROOT/transition-valid.json" "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json"
+mv "$TEST_TMP_ROOT/transition-manifest-valid.json" "$TEST_TMP_ROOT/bundle-b/release-manifest.json"
 
 cp "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" "$TEST_TMP_ROOT/transition-valid.json"
-python3 - "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" <<'PY'
-import json,sys
-p=sys.argv[1]; value=json.load(open(p)); value['upgrade_source_revision']='f'*40
+cp "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$TEST_TMP_ROOT/transition-manifest-valid.json"
+python3 - "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" "$TEST_TMP_ROOT/bundle-b/release-manifest.json" <<'PY'
+import hashlib,json,sys
+p,m=sys.argv[1:]; value=json.load(open(p)); value['upgrade_source_revision']='f'*40
 json.dump(value,open(p,'w'),sort_keys=True,separators=(',',':'))
+manifest=json.load(open(m)); next(a for a in manifest['artifacts'] if a['path']=='post-gate-a-policy-transition.json')['sha256']=hashlib.sha256(open(p,'rb').read()).hexdigest()
+json.dump(manifest,open(m,'w'),sort_keys=True,separators=(',',':'))
 PY
 write_gate 0
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
   --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 mv "$TEST_TMP_ROOT/transition-valid.json" "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json"
+mv "$TEST_TMP_ROOT/transition-manifest-valid.json" "$TEST_TMP_ROOT/bundle-b/release-manifest.json"
 
 write_gate 1
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \

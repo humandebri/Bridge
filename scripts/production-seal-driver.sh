@@ -23,7 +23,7 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 }
 
 FROZEN_BUNDLE="$(mktemp -d "${TMPDIR:-/tmp}/bridge-seal-plan.XXXXXX")"
-trap 'chmod u+w "$FROZEN_BUNDLE" 2>/dev/null || true; rm -rf "$FROZEN_BUNDLE"' EXIT
+trap 'chmod -R u+w "$FROZEN_BUNDLE" 2>/dev/null || true; rm -rf "$FROZEN_BUNDLE"' EXIT
 production_freeze_bundle "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_BUNDLE"
 BRIDGE_RELEASE_BUNDLE="$FROZEN_BUNDLE"
 

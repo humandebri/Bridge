@@ -30,7 +30,7 @@ command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 
 FROZEN_BUNDLE="$(mktemp -d "${TMPDIR:-/tmp}/bridge-activation-plan.XXXXXX")"
 FROZEN_INPUTS="$(mktemp -d "${TMPDIR:-/tmp}/bridge-activation-inputs.XXXXXX")"
-trap 'chmod u+w "$FROZEN_BUNDLE" "$FROZEN_INPUTS" 2>/dev/null || true; rm -rf "$FROZEN_BUNDLE" "$FROZEN_INPUTS"' EXIT
+trap 'chmod -R u+w "$FROZEN_BUNDLE" "$FROZEN_INPUTS" 2>/dev/null || true; rm -rf "$FROZEN_BUNDLE" "$FROZEN_INPUTS"' EXIT
 production_freeze_bundle "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_BUNDLE"
 BRIDGE_RELEASE_BUNDLE="$FROZEN_BUNDLE"
 production_require_bundle_source_binding "$SOURCE_ROOT" "$BRIDGE_RELEASE_BUNDLE"

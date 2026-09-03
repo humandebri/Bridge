@@ -209,6 +209,9 @@ printf wasm >"$T/bundle/bridge-canister.wasm"
 printf '\0' >"$T/bundle/bsns-runtime.bin"
 printf '{"byte_length":1,"immutable_ranges":[{"length":1,"start":0}],"schema_version":1}\n' >"$T/bundle/bsns-runtime-layout.json"
 SOURCE_REVISION="$(git -C "$DRIVER_ROOT" rev-parse HEAD)"; SOURCE_TREE="$(git -C "$DRIVER_ROOT" archive HEAD | shasum -a 256 | awk '{print $1}')"
+printf '{"schema_version":3,"from_source_revision":"%s","from_source_tree_sha256":"%s","upgrade_source_revision":"%s","upgrade_source_tree_sha256":"%s","to_source_revision":"%s","to_source_tree_sha256":"%s"}\n' \
+  "$SOURCE_REVISION" "$SOURCE_TREE" "$SOURCE_REVISION" "$SOURCE_TREE" "$SOURCE_REVISION" "$SOURCE_TREE" \
+  >"$T/bundle/post-gate-a-policy-transition.json"
 printf '{"release_id":"release-test","source_revision":"%s","source_tree_sha256":"%s"}\n' "$SOURCE_REVISION" "$SOURCE_TREE" >"$T/bundle/release-manifest.json"
 printf '{"final_controllers":["aaaaa-aa"]}\n' >"$T/bundle/controller-handover.json"
 printf '{"gate_a_manifest_sha256":"%s","canister_install":{"installer_principal":"aaaaa-aa"},"bridge_deployment_transaction_hash":"0x%s","bridge_deployment_block_number":1,"bridge_deployment_block_hash":"0x%s","timelock_deployment_transaction_hash":"0x%s","timelock_deployment_block_number":1,"timelock_deployment_block_hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'c%.0s' {1..64})" >"$T/bundle/gate-a-receipt.json"
@@ -257,6 +260,25 @@ printf '{"raw":false}\n' >"$FREEZE_SOURCE/artifacts/preflight-base.json"
 mkdir "$T/freeze-rejected"
 if production_freeze_bundle "$FREEZE_SOURCE" "$T/freeze-rejected" >/dev/null 2>&1; then
   echo "bundle freeze accepted a drifted RPC rehearsal raw artifact" >&2
+  exit 1
+fi
+FREEZE_COUNT_SOURCE="$T/freeze-count-source"
+mkdir -p "$FREEZE_COUNT_SOURCE/artifacts"
+python3 - "$FREEZE_COUNT_SOURCE" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); references=[]
+for index in range(129):
+    relative=f'artifacts/raw-{index:03}.json'; payload=b'{}\n'
+    (root/relative).write_bytes(payload)
+    references.append({'path':relative,'sha256':hashlib.sha256(payload).hexdigest()})
+rpc=json.dumps({'scenarios':{'preflight':{'artifacts':references}}},separators=(',',':')).encode()+b'\n'
+(root/'rpc-e2e.json').write_bytes(rpc)
+manifest={'artifacts':[{'path':'rpc-e2e.json','sha256':hashlib.sha256(rpc).hexdigest()}]}
+(root/'release-manifest.json').write_text(json.dumps(manifest,separators=(',',':'))+'\n')
+PY
+mkdir "$T/freeze-count-rejected"
+if production_freeze_bundle "$FREEZE_COUNT_SOURCE" "$T/freeze-count-rejected" >/dev/null 2>&1; then
+  echo "bundle freeze accepted too many RPC rehearsal raw artifacts" >&2
   exit 1
 fi
 : >"$TRACE"
@@ -408,6 +430,55 @@ fi
 exit 0
 SH
 chmod +x "$T/bin/node"
+production_validate_gate_b_source_chain "$DRIVER_ROOT" "$T/bundle"
+for source_fault in missing tree; do
+  SOURCE_CHAIN_CASE="$T/source-chain-$source_fault"
+  mkdir "$SOURCE_CHAIN_CASE"
+  cp "$T/bundle/post-gate-a-policy-transition.json" "$SOURCE_CHAIN_CASE/post-gate-a-policy-transition.json"
+  python3 - "$SOURCE_CHAIN_CASE/post-gate-a-policy-transition.json" "$source_fault" <<'PY'
+import json,sys
+path,fault=sys.argv[1:]
+value=json.load(open(path,encoding='utf-8'))
+if fault == 'missing': value['upgrade_source_revision']='0'*40
+else: value['upgrade_source_tree_sha256']='f'*64
+with open(path,'w',encoding='utf-8') as output: json.dump(value,output,separators=(',',':')); output.write('\n')
+PY
+  if production_validate_gate_b_source_chain "$DRIVER_ROOT" "$SOURCE_CHAIN_CASE" >/dev/null 2>&1; then
+    echo "Gate B source-chain validation accepted $source_fault upgrade source evidence" >&2
+    exit 1
+  fi
+done
+
+NONANCESTOR_REVISION="$(git -C "$DRIVER_ROOT" commit-tree "$(git -C "$DRIVER_ROOT" rev-parse 'HEAD^{tree}')" -m 'unrelated fixture commit')"
+NONANCESTOR_TREE="$(git -C "$DRIVER_ROOT" --attr-source="$NONANCESTOR_REVISION" archive "$NONANCESTOR_REVISION" | shasum -a 256 | awk '{print $1}')"
+NONANCESTOR_BUNDLE="$T/nonancestor-bundle"
+cp -R "$T/bundle" "$NONANCESTOR_BUNDLE"
+python3 - "$NONANCESTOR_BUNDLE/post-gate-a-policy-transition.json" "$NONANCESTOR_BUNDLE/release-manifest.json" "$NONANCESTOR_REVISION" "$NONANCESTOR_TREE" <<'PY'
+import hashlib,json,sys
+transition_path,manifest_path,revision,tree=sys.argv[1:]
+transition=json.load(open(transition_path,encoding='utf-8'))
+transition['upgrade_source_revision']=revision
+transition['upgrade_source_tree_sha256']=tree
+with open(transition_path,'w',encoding='utf-8') as output: json.dump(transition,output,separators=(',',':')); output.write('\n')
+digest=hashlib.sha256(open(transition_path,'rb').read()).hexdigest()
+manifest=json.load(open(manifest_path,encoding='utf-8'))
+next(item for item in manifest['artifacts'] if item['path']=='post-gate-a-policy-transition.json')['sha256']=digest
+with open(manifest_path,'w',encoding='utf-8') as output: json.dump(manifest,output,separators=(',',':')); output.write('\n')
+PY
+NONANCESTOR_SEAL_RECEIPT="$T/nonancestor-seal-receipt.json"
+: >"$TRACE"
+if BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" \
+  BRIDGE_RELEASE_BUNDLE="$NONANCESTOR_BUNDLE" \
+  BRIDGE_PRODUCTION_CONTROLLER_PEM="$CONTROLLER_PEM_FIXTURE" \
+  BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$NONANCESTOR_SEAL_RECEIPT" \
+  BRIDGE_CONFIRM_OPERATIONAL_CONFIG_SEAL=SEAL_PRODUCTION_OPERATIONAL_CONFIG \
+  "$DRIVER_ROOT/scripts/production-seal-driver.sh" >/dev/null 2>&1; then
+  echo "seal driver accepted a nonancestor production upgrade source" >&2
+  exit 1
+fi
+! grep -q 'seal-operational-config' "$TRACE"
+[[ ! -e "$NONANCESTOR_SEAL_RECEIPT.reservation.json" ]]
+
 STALE_SEAL_RECEIPT="$T/stale-operational-config-seal-receipt.json"
 printf '{"schema_version":1}\n' >"$STALE_SEAL_RECEIPT.attempt.json"
 : >"$TRACE"

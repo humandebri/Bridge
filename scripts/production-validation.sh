@@ -175,19 +175,21 @@ try:
  manifest_bytes=read_regular('release-manifest.json',4*1024*1024,True)
  manifest=json.loads(manifest_bytes)
  artifacts=manifest.get('artifacts')
- if not isinstance(artifacts,list): raise SystemExit('release manifest artifacts are missing')
+ if not isinstance(artifacts,list) or len(artifacts)>32: raise SystemExit('release manifest artifact count is invalid')
  files={'release-manifest.json':manifest_bytes}
  for entry in artifacts:
   if not isinstance(entry,dict) or set(entry)!={'path','sha256'}: raise SystemExit('invalid release artifact entry')
   name=entry['path']; expected=entry['sha256']
   path_parts(name,True)
   if name in files or not isinstance(expected,str) or not re.fullmatch(r'[0-9a-fA-F]{64}',expected): raise SystemExit(f'invalid duplicate release artifact: {name}')
-  value=read_regular(name,256*1024*1024,True)
+  limit=256*1024*1024 if name in {'bridge-canister.wasm','bridge-runtime.bin','bsns-creation.bin','bsns-runtime.bin'} else 16*1024*1024
+  value=read_regular(name,limit,True)
   if hashlib.sha256(value).hexdigest().lower()!=expected.lower(): raise SystemExit(f'release artifact hash mismatch while freezing: {name}')
   files[name]=value
  rpc=json.loads(files.get('rpc-e2e.json',b'{}'))
  scenarios=rpc.get('scenarios',{})
- if not isinstance(scenarios,dict): raise SystemExit('invalid RPC rehearsal scenarios')
+ if not isinstance(scenarios,dict) or len(scenarios)>16: raise SystemExit('invalid RPC rehearsal scenarios')
+ raw_paths=set(); raw_count=0; raw_total=0
  for scenario in scenarios.values():
   if scenario is None: continue
   if not isinstance(scenario,dict) or not isinstance(scenario.get('artifacts'),list): raise SystemExit('invalid RPC rehearsal artifact references')
@@ -196,7 +198,12 @@ try:
    name=reference.get('path'); expected=reference.get('sha256')
    parts=path_parts(name)
    if parts[0]!='artifacts' or not isinstance(expected,str) or not re.fullmatch(r'[0-9a-f]{64}',expected): raise SystemExit(f'invalid RPC rehearsal artifact reference: {name}')
+   raw_count+=1
+   if raw_count>128 or name in raw_paths: raise SystemExit('RPC rehearsal raw artifact references exceed the safe bound or contain duplicates')
+   raw_paths.add(name)
    value=read_regular(name,16*1024*1024)
+   raw_total+=len(value)
+   if raw_total>64*1024*1024: raise SystemExit('RPC rehearsal raw artifacts exceed the cumulative size limit')
    if hashlib.sha256(value).hexdigest()!=expected: raise SystemExit(f'RPC rehearsal artifact hash mismatch while freezing: {name}')
    if name in files and files[name]!=value: raise SystemExit(f'conflicting RPC rehearsal artifact reference: {name}')
    files[name]=value
@@ -240,6 +247,50 @@ try:
  os.fsync(out)
 finally: os.close(out)
 PY
+}
+
+production_validate_gate_b_source_chain() {
+  local source_root="$1" bundle="$2"
+  local gate_a_revision gate_a_tree upgrade_revision upgrade_tree current_revision current_tree
+  local actual_gate_a_tree actual_upgrade_tree actual_current_tree
+  [[ -f "$bundle/post-gate-a-policy-transition.json" \
+    && ! -L "$bundle/post-gate-a-policy-transition.json" ]] || {
+    echo "Gate B policy transition is missing or unsafe" >&2
+    return 1
+  }
+  read -r gate_a_revision gate_a_tree upgrade_revision upgrade_tree current_revision current_tree < <(
+    python3 -c '
+import json,sys
+t=json.load(open(sys.argv[1],encoding="utf-8"))
+print(t.get("from_source_revision",""),t.get("from_source_tree_sha256",""),t.get("upgrade_source_revision",""),t.get("upgrade_source_tree_sha256",""),t.get("to_source_revision",""),t.get("to_source_tree_sha256",""))
+' "$bundle/post-gate-a-policy-transition.json"
+  )
+  [[ "$gate_a_revision" =~ ^[0-9a-f]{40}$ \
+    && "$upgrade_revision" =~ ^[0-9a-f]{40}$ \
+    && "$current_revision" =~ ^[0-9a-f]{40}$ \
+    && "$gate_a_tree" =~ ^[0-9a-fA-F]{64}$ \
+    && "$upgrade_tree" =~ ^[0-9a-fA-F]{64}$ \
+    && "$current_tree" =~ ^[0-9a-fA-F]{64}$ ]] || {
+    echo "Gate B source chain metadata is malformed" >&2
+    return 1
+  }
+  git -C "$source_root" cat-file -e "${gate_a_revision}^{commit}" 2>/dev/null \
+    && git -C "$source_root" cat-file -e "${upgrade_revision}^{commit}" 2>/dev/null \
+    && git -C "$source_root" cat-file -e "${current_revision}^{commit}" 2>/dev/null \
+    && git -C "$source_root" merge-base --is-ancestor "$gate_a_revision" "$upgrade_revision" \
+    && git -C "$source_root" merge-base --is-ancestor "$upgrade_revision" "$current_revision" || {
+      echo "Gate B source chain is not Gate A to upgrade to current" >&2
+      return 1
+    }
+  actual_gate_a_tree="$(git -C "$source_root" --attr-source="$gate_a_revision" archive --format=tar "$gate_a_revision" | shasum -a 256 | awk '{print tolower($1)}')"
+  actual_upgrade_tree="$(git -C "$source_root" --attr-source="$upgrade_revision" archive --format=tar "$upgrade_revision" | shasum -a 256 | awk '{print tolower($1)}')"
+  actual_current_tree="$(git -C "$source_root" --attr-source="$current_revision" archive --format=tar "$current_revision" | shasum -a 256 | awk '{print tolower($1)}')"
+  [[ "$actual_gate_a_tree" == "$(printf '%s' "$gate_a_tree" | tr '[:upper:]' '[:lower:]')" \
+    && "$actual_upgrade_tree" == "$(printf '%s' "$upgrade_tree" | tr '[:upper:]' '[:lower:]')" \
+    && "$actual_current_tree" == "$(printf '%s' "$current_tree" | tr '[:upper:]' '[:lower:]')" ]] || {
+    echo "Gate B source chain tree hash mismatch" >&2
+    return 1
+  }
 }
 
 production_validate_gate() {
@@ -302,6 +353,9 @@ production_validate_gate() {
     actual_hash="${BASH_REMATCH[1]}"
   fi
   [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "driver Gate manifest hash mismatch" >&2; return 1; }
+  if [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live || "$mode" == handover ]]; then
+    production_validate_gate_b_source_chain "$source_root" "$bundle" || { rm -rf "$target"; return 1; }
+  fi
   production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
   "$source_root/scripts/rebuild-release-artifacts.sh" \
     "$bundle" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
