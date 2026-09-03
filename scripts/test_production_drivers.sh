@@ -214,6 +214,8 @@ SOURCE_REVISION="$(git -C "$DRIVER_ROOT" rev-parse HEAD)"; SOURCE_TREE="$(git -C
 printf '{"schema_version":3,"from_source_revision":"%s","from_source_tree_sha256":"%s","upgrade_source_revision":"%s","upgrade_source_tree_sha256":"%s","to_source_revision":"%s","to_source_tree_sha256":"%s"}\n' \
   "$SOURCE_REVISION" "$SOURCE_TREE" "$SOURCE_REVISION" "$SOURCE_TREE" "$SOURCE_REVISION" "$SOURCE_TREE" \
   >"$T/bundle/post-gate-a-policy-transition.json"
+printf '{"kind":"production-controller-bootstrap-upgrade","source_revision":"%s","source_tree_sha256":"%s"}\n' \
+  "$SOURCE_REVISION" "$SOURCE_TREE" >"$T/bundle/production-canister-upgrade-receipt.json"
 printf '{"release_id":"release-test","source_revision":"%s","source_tree_sha256":"%s"}\n' "$SOURCE_REVISION" "$SOURCE_TREE" >"$T/bundle/release-manifest.json"
 printf '{"final_controllers":["aaaaa-aa"]}\n' >"$T/bundle/controller-handover.json"
 printf '{"gate_a_manifest_sha256":"%s","canister_install":{"installer_principal":"aaaaa-aa"},"bridge_deployment_transaction_hash":"0x%s","bridge_deployment_block_number":1,"bridge_deployment_block_hash":"0x%s","timelock_deployment_transaction_hash":"0x%s","timelock_deployment_block_number":1,"timelock_deployment_block_hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'c%.0s' {1..64})" >"$T/bundle/gate-a-receipt.json"
@@ -548,6 +550,7 @@ for source_fault in missing tree; do
   SOURCE_CHAIN_CASE="$T/source-chain-$source_fault"
   mkdir "$SOURCE_CHAIN_CASE"
   cp "$T/bundle/post-gate-a-policy-transition.json" "$SOURCE_CHAIN_CASE/post-gate-a-policy-transition.json"
+  cp "$T/bundle/production-canister-upgrade-receipt.json" "$SOURCE_CHAIN_CASE/production-canister-upgrade-receipt.json"
   python3 - "$SOURCE_CHAIN_CASE/post-gate-a-policy-transition.json" "$source_fault" <<'PY'
 import json,sys
 path,fault=sys.argv[1:]

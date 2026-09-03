@@ -356,6 +356,53 @@ assert value['recovered'] is True and isinstance(value['recovered_at_unix'],int)
 PY
 [[ "$(<"$T/submit-count")" == 1 ]]
 
+printf third-wasm >"$T/third.wasm"
+THIRD_SHA="$(shasum -a 256 "$T/third.wasm" | awk '{print $1}')"
+export TEST_NEW_SHA="$THIRD_SHA"
+cp "$T/evidence/receipt.initial.json" "$T/evidence/prior-upgrade.json"
+cp "$T/evidence/prior-upgrade.json" "$T/evidence/prior-upgrade.approved.json"
+BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
+  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" \
+  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
+  --evidence "$T/evidence/second-preflight.json" >/dev/null
+python3 -I -S - "$T/evidence/second-preflight.json" "$T/evidence/prior-upgrade.approved.json" "$NEW_SHA" <<'PY'
+import hashlib,json,sys
+value=json.load(open(sys.argv[1],encoding='utf-8'))
+assert value['before_module_sha256']==sys.argv[3]
+assert value['prior_upgrade_evidence_sha256']==hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest()
+PY
+printf ' \n' >>"$T/evidence/prior-upgrade.json"
+if BRIDGE_ICP_IDENTITY=production \
+  BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" \
+  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
+  --preflight "$T/evidence/second-preflight.json" --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/second-receipt.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted prior evidence changed after preflight" >&2
+  exit 1
+fi
+[[ "$(<"$T/submit-count")" == 1 ]]
+cp "$T/evidence/prior-upgrade.approved.json" "$T/evidence/prior-upgrade.json"
+BRIDGE_ICP_IDENTITY=production \
+BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" \
+  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
+  --preflight "$T/evidence/second-preflight.json" --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/second-receipt.json" >/dev/null
+python3 -I -S - "$T/evidence/second-receipt.json" "$NEW_SHA" "$THIRD_SHA" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1],encoding='utf-8'))
+assert value['before_module_sha256']==sys.argv[2]
+assert value['after_module_sha256']==sys.argv[3]
+assert value.get('prior_upgrade_evidence_sha256') is None
+PY
+[[ "$(<"$T/submit-count")" == 2 ]]
+
 if BRIDGE_ICP_IDENTITY=anonymous "$T/source/scripts/production-canister-upgrade.sh" preflight \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
   --gate-a-receipt "$T/gate-a-receipt.json" --evidence "$T/evidence/anonymous.json" >/dev/null 2>&1; then
@@ -373,4 +420,4 @@ if BRIDGE_ICP_IDENTITY=production \
   echo "production upgrade recovery accepted an execute-only confirmation" >&2
   exit 1
 fi
-[[ "$(<"$T/submit-count")" == 1 ]]
+[[ "$(<"$T/submit-count")" == 2 ]]

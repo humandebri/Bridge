@@ -458,13 +458,30 @@ struct ProductionCanisterUpgradeReceipt {
     response_stderr_sha256: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionCanisterUpgradeChain {
+    schema_version: u8,
+    kind: String,
+    entries: Vec<ProductionCanisterUpgradeChainEntry>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionCanisterUpgradeChainEntry {
+    sequence: u8,
+    previous_receipt_sha256: Option<String>,
+    receipt_sha256: String,
+    receipt_json_hex: String,
+}
+
 #[derive(CandidType, Deserialize)]
 enum ManagementInstallMode {
     #[serde(rename = "upgrade")]
     Upgrade,
 }
 
-#[derive(CandidType)]
+#[derive(CandidType, Deserialize)]
 struct ManagementUploadChunkArgument {
     canister_id: Principal,
     chunk: Vec<u8>,
@@ -5194,6 +5211,127 @@ fn production_upgrade_management_state(raw_hex: &str) -> Result<(Vec<String>, St
     Ok((controllers, module))
 }
 
+fn production_upgrade_chain_receipts(
+    bytes: &[u8],
+) -> Result<Vec<(ProductionCanisterUpgradeReceipt, Vec<u8>)>, String> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    if value.get("kind").and_then(Value::as_str) == Some("production-controller-bootstrap-upgrade")
+    {
+        let receipt = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        return Ok(vec![(receipt, bytes.to_vec())]);
+    }
+    let chain: ProductionCanisterUpgradeChain =
+        serde_json::from_value(value).map_err(|error| error.to_string())?;
+    if chain.schema_version != 1
+        || chain.kind != "production-controller-bootstrap-upgrade-chain"
+        || chain.entries.is_empty()
+        || chain.entries.len() > 16
+    {
+        return Err("production upgrade chain envelope is invalid".into());
+    }
+    let mut previous = None;
+    let mut total = 0usize;
+    let mut receipts = Vec::with_capacity(chain.entries.len());
+    for (index, entry) in chain.entries.into_iter().enumerate() {
+        let raw = decode_hex(&entry.receipt_json_hex)?;
+        total = total
+            .checked_add(raw.len())
+            .filter(|total| *total <= 128 * 1024 * 1024)
+            .ok_or("production upgrade chain is too large")?;
+        let digest = hex(&Sha256::digest(&raw));
+        if usize::from(entry.sequence) != index
+            || entry.previous_receipt_sha256 != previous
+            || !entry.receipt_sha256.eq_ignore_ascii_case(&digest)
+        {
+            return Err("production upgrade chain linkage is invalid".into());
+        }
+        let receipt = serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
+        previous = Some(digest);
+        receipts.push((receipt, raw));
+    }
+    Ok(receipts)
+}
+
+fn production_upgrade_wasm(receipt: &ProductionCanisterUpgradeReceipt) -> Result<Vec<u8>, String> {
+    let submission: ProductionUpgradeSubmission =
+        serde_json::from_slice(&decode_hex(&receipt.submission_json_hex)?)
+            .map_err(|error| error.to_string())?;
+    let mut wasm = Vec::new();
+    for (index, chunk) in submission.chunks.iter().enumerate() {
+        if usize::try_from(chunk.index).ok() != Some(index) {
+            return Err("production upgrade chunk sequence is invalid".into());
+        }
+        let argument = Decode!(
+            &decode_hex(&chunk.argument_hex)?,
+            ManagementUploadChunkArgument
+        )
+        .map_err(|error| error.to_string())?;
+        wasm.extend_from_slice(&argument.chunk);
+        if wasm.len() > 128 * 1024 * 1024 {
+            return Err("production upgrade Wasm chain entry is too large".into());
+        }
+    }
+    if wasm.is_empty() {
+        return Err("production upgrade chain entry has no Wasm".into());
+    }
+    Ok(wasm)
+}
+
+fn append_production_upgrade_receipt(
+    prior: Option<&Path>,
+    receipt_path: &Path,
+    output: &Path,
+) -> Result<(), String> {
+    let receipt = fs::read(receipt_path).map_err(|error| error.to_string())?;
+    let _: ProductionCanisterUpgradeReceipt =
+        serde_json::from_slice(&receipt).map_err(|error| error.to_string())?;
+    let mut raw_receipts = if let Some(prior) = prior {
+        production_upgrade_chain_receipts(&fs::read(prior).map_err(|error| error.to_string())?)?
+            .into_iter()
+            .map(|(_, raw)| raw)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    raw_receipts.push(receipt);
+    if raw_receipts.len() > 16
+        || raw_receipts
+            .iter()
+            .try_fold(0usize, |total, raw| {
+                total
+                    .checked_add(raw.len())
+                    .filter(|total| *total <= 128 * 1024 * 1024)
+            })
+            .is_none()
+    {
+        return Err("production upgrade chain is too large".into());
+    }
+    let mut previous = None;
+    let entries = raw_receipts
+        .into_iter()
+        .enumerate()
+        .map(|(index, raw)| {
+            let digest = hex(&Sha256::digest(&raw));
+            let entry = ProductionCanisterUpgradeChainEntry {
+                sequence: u8::try_from(index).expect("bounded chain"),
+                previous_receipt_sha256: previous.clone(),
+                receipt_sha256: digest.clone(),
+                receipt_json_hex: hex(&raw),
+            };
+            previous = Some(digest);
+            entry
+        })
+        .collect();
+    write_json_new(
+        output,
+        &ProductionCanisterUpgradeChain {
+            schema_version: 1,
+            kind: "production-controller-bootstrap-upgrade-chain".into(),
+            entries,
+        },
+    )
+}
+
 fn validate_post_gate_a_policy_transition(
     root: &Path,
     manifest: &ReleaseManifest,
@@ -5206,14 +5344,126 @@ fn validate_post_gate_a_policy_transition(
         read_json(&root.join("post-gate-a-policy-transition.json"))?;
     let upgrade_path = root.join("production-canister-upgrade-receipt.json");
     let upgrade_bytes = fs::read(&upgrade_path).map_err(|e| e.to_string())?;
-    let upgrade: ProductionCanisterUpgradeReceipt =
-        serde_json::from_slice(&upgrade_bytes).map_err(|e| e.to_string())?;
+    let upgrades = production_upgrade_chain_receipts(&upgrade_bytes)?;
+    let upgrade = &upgrades
+        .last()
+        .ok_or("production upgrade chain is empty")?
+        .0;
     validate_evidence_time(transition.observed_at_unix, manifest.created_at_unix, now)?;
     validate_evidence_time(upgrade.executed_at_unix, manifest.created_at_unix, now)?;
     validate_evidence_time(upgrade.verified_at_unix, manifest.created_at_unix, now)?;
     let receipt_bytes = fs::read(root.join("gate-a-receipt.json")).map_err(|e| e.to_string())?;
     let installer = &receipt.canister_install.installer_principal;
     let expected_controllers = vec![installer.clone()];
+    let canister =
+        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    let sender = Principal::from_text(installer).map_err(|error| error.to_string())?;
+    let mut expected_before_module = gate_a_profile.bridge_canister_wasm_sha256.clone();
+    for (entry, _) in &upgrades {
+        validate_evidence_time(entry.executed_at_unix, manifest.created_at_unix, now)?;
+        validate_evidence_time(entry.verified_at_unix, manifest.created_at_unix, now)?;
+        let (entry_before_controllers, entry_before_module) =
+            production_upgrade_management_state(&entry.before_management_status_json_hex)?;
+        let (entry_after_controllers, entry_after_module) =
+            production_upgrade_management_state(&entry.after_management_status_json_hex)?;
+        let (entry_before_status, entry_before_runtime, entry_before_public_state) =
+            production_upgrade_query_state(
+                &entry.before_bridge_status_response_hex,
+                &entry.before_lifecycle_response_hex,
+                &entry.before_runtime_binding_response_hex,
+                &entry.before_storage_integrity_response_hex,
+            )?;
+        let (entry_after_status, entry_after_runtime, entry_after_public_state) =
+            production_upgrade_query_state(
+                &entry.after_bridge_status_response_hex,
+                &entry.after_lifecycle_response_hex,
+                &entry.after_runtime_binding_response_hex,
+                &entry.after_storage_integrity_response_hex,
+            )?;
+        let wasm = production_upgrade_wasm(entry)?;
+        let submission_bytes = decode_hex(&entry.submission_json_hex)?;
+        let submission = validate_production_upgrade_submission_bytes(
+            &gate_a_profile.ic_host,
+            canister,
+            sender,
+            &wasm,
+            &submission_bytes,
+        )?;
+        validate_production_upgrade_upload_evidence(
+            &submission,
+            &decode_hex(&entry.chunk_upload_evidence_json_hex)?,
+        )?;
+        let wasm_sha256 = hex(&Sha256::digest(&wasm));
+        if entry.install_mode != "upgrade" {
+            return Err("production upgrade management metadata is incomplete".into());
+        }
+        if entry.schema_version != 1
+            || entry.kind != "production-controller-bootstrap-upgrade"
+            || entry.bridge_canister_id != profile.bridge_canister_id
+            || entry.executing_principal != *installer
+            || entry.executed_at_unix > entry.verified_at_unix
+            || entry.verified_at_unix > transition.observed_at_unix
+            || entry.recovered != entry.recovered_at_unix.is_some()
+            || entry.recovered_at_unix.is_some_and(|value| {
+                value < entry.executed_at_unix || value > entry.verified_at_unix
+            })
+            || entry_before_controllers != expected_controllers
+            || entry_after_controllers != expected_controllers
+            || !entry_before_module.eq_ignore_ascii_case(&expected_before_module)
+            || !entry
+                .before_module_sha256
+                .eq_ignore_ascii_case(&entry_before_module)
+            || !entry
+                .after_module_sha256
+                .eq_ignore_ascii_case(&entry_after_module)
+            || !entry_after_module.eq_ignore_ascii_case(&wasm_sha256)
+            || !entry.wasm_sha256.eq_ignore_ascii_case(&wasm_sha256)
+            || entry.before_schema_version != CURRENT_STABLE_SCHEMA_VERSION
+            || entry.after_schema_version != CURRENT_STABLE_SCHEMA_VERSION
+            || entry_before_runtime.schema_version != entry.before_schema_version
+            || entry_after_runtime.schema_version != entry.after_schema_version
+            || live_runtime_binding_from_view(&entry_before_runtime)
+                != receipt.canister_install.runtime_binding
+            || live_runtime_binding_from_view(&entry_after_runtime)
+                != receipt.canister_install.runtime_binding
+            || entry.before_lifecycle != "Bootstrap"
+            || entry.after_lifecycle != "Bootstrap"
+            || !entry.before_deposits_paused
+            || !entry.after_deposits_paused
+            || !entry_before_status.deposits_paused
+            || !entry_after_status.deposits_paused
+            || !entry.before_storage_validation_complete
+            || !entry.after_storage_validation_complete
+            || !production_upgrade_status_preserved(&entry_before_status, &entry_after_status)
+            || entry.before_lifecycle_response_hex != entry.after_lifecycle_response_hex
+            || entry.before_runtime_binding_response_hex != entry.after_runtime_binding_response_hex
+            || entry.before_storage_integrity_response_hex
+                != entry.after_storage_integrity_response_hex
+            || !entry
+                .before_public_state_sha256
+                .eq_ignore_ascii_case(&entry_before_public_state)
+            || !entry
+                .after_public_state_sha256
+                .eq_ignore_ascii_case(&entry_after_public_state)
+            || !entry_before_public_state.eq_ignore_ascii_case(&entry_after_public_state)
+            || !hex_sha256_matches(&entry.submission_json_hex, &entry.submission_json_sha256)
+            || !hex_sha256_matches(
+                &entry.chunk_upload_evidence_json_hex,
+                &entry.chunk_upload_evidence_json_sha256,
+            )
+            || submission.request_id != entry.request_id
+            || !production_upgrade_ingress_window_valid(
+                entry.executed_at_unix,
+                submission.ingress_expiry,
+            )
+        {
+            return Err("production upgrade chain entry is incomplete".into());
+        }
+        expected_before_module = entry_after_module;
+    }
+    if !expected_before_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256) {
+        return Err("production upgrade chain does not reach the current profile".into());
+    }
     let (before_controllers, before_module) =
         production_upgrade_management_state(&upgrade.before_management_status_json_hex)?;
     let (after_controllers, after_module) =
@@ -5243,7 +5493,13 @@ fn validate_post_gate_a_policy_transition(
     )?;
     let upload_evidence_bytes = decode_hex(&upgrade.chunk_upload_evidence_json_hex)?;
     validate_production_upgrade_upload_evidence(&validated_submission, &upload_evidence_bytes)?;
-    if !before_module.eq_ignore_ascii_case(&gate_a_profile.bridge_canister_wasm_sha256)
+    let expected_last_before_module = upgrades
+        .iter()
+        .rev()
+        .nth(1)
+        .map(|(receipt, _)| receipt.after_module_sha256.as_str())
+        .unwrap_or(&gate_a_profile.bridge_canister_wasm_sha256);
+    if !before_module.eq_ignore_ascii_case(expected_last_before_module)
         || !after_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
         || !hex(&Sha256::digest(&current_wasm))
             .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
@@ -9978,6 +10234,10 @@ fn run() -> Result<(), String> {
                 )?
             );
         }
+        Some("append-production-upgrade-receipt") if args.len() == 5 => {
+            let prior = (args[2] != "-").then(|| Path::new(&args[2]));
+            append_production_upgrade_receipt(prior, Path::new(&args[3]), Path::new(&args[4]))?;
+        }
         Some("verify-production-canister-predeploy") if args.len() == 4 => {
             verify_production_canister_predeploy(Path::new(&args[2]), Path::new(&args[3]))?;
         }
@@ -10311,7 +10571,7 @@ fn run() -> Result<(), String> {
             validate_production_upgrade_upload_evidence(&submission, &evidence)?;
             println!("{}", submission.request_id);
         }
-        _ => return Err("usage: bridge-profile <command> <arguments>; production upgrade commands: prepare-production-canister-upgrade, validate-production-upgrade-submission, upload-production-canister-upgrade-chunks, submit-production-canister-upgrade, verify-production-upgrade-submission".into()),
+        _ => return Err("usage: bridge-profile <command> <arguments>; production upgrade commands: prepare-production-canister-upgrade, validate-production-upgrade-submission, upload-production-canister-upgrade-chunks, submit-production-canister-upgrade, verify-production-upgrade-submission, append-production-upgrade-receipt".into()),
     }
     Ok(())
 }
@@ -13503,7 +13763,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         });
         artifacts.push(ArtifactDigest {
             path: "production-canister-upgrade-receipt.json".into(),
-            sha256: hex(&Sha256::digest(production_upgrade_bytes)),
+            sha256: hex(&Sha256::digest(&production_upgrade_bytes)),
         });
         artifacts.push(ArtifactDigest {
             path: "initial-operational-parameters.json".into(),
@@ -13548,6 +13808,64 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         );
         let bundle = validate_bundle(&root, true).unwrap();
         let baseline_manifest_bytes = fs::read(root.join("release-manifest.json")).unwrap();
+        let chain_bytes = serde_json::to_vec(&ProductionCanisterUpgradeChain {
+            schema_version: 1,
+            kind: "production-controller-bootstrap-upgrade-chain".into(),
+            entries: vec![ProductionCanisterUpgradeChainEntry {
+                sequence: 0,
+                previous_receipt_sha256: None,
+                receipt_sha256: hex(&Sha256::digest(&production_upgrade_bytes)),
+                receipt_json_hex: hex(&production_upgrade_bytes),
+            }],
+        })
+        .unwrap();
+        fs::write(
+            root.join("production-canister-upgrade-receipt.json"),
+            &chain_bytes,
+        )
+        .unwrap();
+        let mut chain_transition: PostGateAPolicyTransition =
+            serde_json::from_slice(&transition_bytes).unwrap();
+        chain_transition.production_canister_upgrade_receipt_sha256 =
+            hex(&Sha256::digest(&chain_bytes));
+        let chain_transition_bytes = serde_json::to_vec(&chain_transition).unwrap();
+        fs::write(
+            root.join("post-gate-a-policy-transition.json"),
+            &chain_transition_bytes,
+        )
+        .unwrap();
+        let mut chain_manifest: ReleaseManifest =
+            serde_json::from_slice(&baseline_manifest_bytes).unwrap();
+        for artifact in &mut chain_manifest.artifacts {
+            if artifact.path == "production-canister-upgrade-receipt.json" {
+                artifact.sha256 = hex(&Sha256::digest(&chain_bytes));
+            } else if artifact.path == "post-gate-a-policy-transition.json" {
+                artifact.sha256 = hex(&Sha256::digest(&chain_transition_bytes));
+            }
+        }
+        fs::write(
+            root.join("release-manifest.json"),
+            serde_json::to_vec(&chain_manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_bundle(&root, true).is_ok());
+        let mut broken_chain: ProductionCanisterUpgradeChain =
+            serde_json::from_slice(&chain_bytes).unwrap();
+        broken_chain.entries[0].previous_receipt_sha256 = Some("9".repeat(64));
+        assert!(
+            production_upgrade_chain_receipts(&serde_json::to_vec(&broken_chain).unwrap()).is_err()
+        );
+        fs::write(
+            root.join("production-canister-upgrade-receipt.json"),
+            &production_upgrade_bytes,
+        )
+        .unwrap();
+        fs::write(
+            root.join("post-gate-a-policy-transition.json"),
+            &transition_bytes,
+        )
+        .unwrap();
+        fs::write(root.join("release-manifest.json"), &baseline_manifest_bytes).unwrap();
         for field in [
             "deposit_and_throughput_limits",
             "mint_throughput_limit",

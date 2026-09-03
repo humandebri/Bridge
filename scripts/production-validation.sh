@@ -255,11 +255,59 @@ production_validate_gate_b_source_chain() {
   local source_root="$1" bundle="$2"
   local gate_a_revision gate_a_tree upgrade_revision upgrade_tree current_revision current_tree
   local actual_gate_a_tree actual_upgrade_tree actual_current_tree
+  local chain_source_lines first_upgrade_revision previous_upgrade_revision entry_revision entry_tree actual_entry_tree
   [[ -f "$bundle/post-gate-a-policy-transition.json" \
     && ! -L "$bundle/post-gate-a-policy-transition.json" ]] || {
     echo "Gate B policy transition is missing or unsafe" >&2
     return 1
   }
+  chain_source_lines="$(python3 - "$bundle/production-canister-upgrade-receipt.json" <<'PY'
+import hashlib,json,sys
+raw=open(sys.argv[1],'rb').read(); value=json.loads(raw)
+if value.get('kind')=='production-controller-bootstrap-upgrade':
+ receipts=[value]
+else:
+ if set(value)!={'schema_version','kind','entries'} or value.get('schema_version')!=1 or value.get('kind')!='production-controller-bootstrap-upgrade-chain':
+  raise SystemExit('invalid production upgrade chain envelope')
+ entries=value.get('entries')
+ if not isinstance(entries,list) or not 1<=len(entries)<=16: raise SystemExit('invalid production upgrade chain length')
+ receipts=[]; previous=None; total=0
+ for index,entry in enumerate(entries):
+  if set(entry)!={'sequence','previous_receipt_sha256','receipt_sha256','receipt_json_hex'} or entry.get('sequence')!=index or entry.get('previous_receipt_sha256')!=previous:
+   raise SystemExit('invalid production upgrade chain linkage')
+  receipt_raw=bytes.fromhex(entry.get('receipt_json_hex','')); total+=len(receipt_raw)
+  if total>128*1024*1024: raise SystemExit('production upgrade chain is too large')
+  digest=hashlib.sha256(receipt_raw).hexdigest()
+  if entry.get('receipt_sha256','').lower()!=digest: raise SystemExit('invalid production upgrade receipt hash')
+  receipts.append(json.loads(receipt_raw)); previous=digest
+for receipt in receipts:
+ print(receipt.get('source_revision',''),receipt.get('source_tree_sha256',''))
+PY
+)" || {
+    echo "Gate B upgrade chain source evidence is invalid" >&2
+    return 1
+  }
+  previous_upgrade_revision=""
+  while read -r entry_revision entry_tree; do
+    [[ "$entry_revision" =~ ^[0-9a-f]{40}$ && "$entry_tree" =~ ^[0-9a-fA-F]{64}$ ]] || {
+      echo "Gate B upgrade chain source metadata is malformed" >&2; return 1;
+    }
+    git -C "$source_root" cat-file -e "${entry_revision}^{commit}" 2>/dev/null || {
+      echo "Gate B upgrade chain source commit is unavailable" >&2; return 1;
+    }
+    if [[ -n "$previous_upgrade_revision" ]]; then
+      git -C "$source_root" merge-base --is-ancestor "$previous_upgrade_revision" "$entry_revision" || {
+        echo "Gate B upgrade chain source ancestry is invalid" >&2; return 1;
+      }
+    else
+      first_upgrade_revision="$entry_revision"
+    fi
+    actual_entry_tree="$(git -C "$source_root" --attr-source="$entry_revision" archive --format=tar "$entry_revision" | shasum -a 256 | awk '{print tolower($1)}')"
+    [[ "$actual_entry_tree" == "$(printf '%s' "$entry_tree" | tr '[:upper:]' '[:lower:]')" ]] || {
+      echo "Gate B upgrade chain source tree hash mismatch" >&2; return 1;
+    }
+    previous_upgrade_revision="$entry_revision"
+  done <<<"$chain_source_lines"
   read -r gate_a_revision gate_a_tree upgrade_revision upgrade_tree current_revision current_tree < <(
     python3 -c '
 import json,sys
@@ -276,10 +324,16 @@ print(t.get("from_source_revision",""),t.get("from_source_tree_sha256",""),t.get
     echo "Gate B source chain metadata is malformed" >&2
     return 1
   }
+  [[ "$first_upgrade_revision" == "$upgrade_revision" || "$previous_upgrade_revision" == "$upgrade_revision" ]] || {
+    echo "Gate B policy transition does not name an upgrade-chain source" >&2
+    return 1
+  }
   git -C "$source_root" cat-file -e "${gate_a_revision}^{commit}" 2>/dev/null \
     && git -C "$source_root" cat-file -e "${upgrade_revision}^{commit}" 2>/dev/null \
     && git -C "$source_root" cat-file -e "${current_revision}^{commit}" 2>/dev/null \
     && git -C "$source_root" merge-base --is-ancestor "$gate_a_revision" "$upgrade_revision" \
+    && git -C "$source_root" merge-base --is-ancestor "$gate_a_revision" "$first_upgrade_revision" \
+    && [[ "$previous_upgrade_revision" == "$upgrade_revision" ]] \
     && git -C "$source_root" merge-base --is-ancestor "$upgrade_revision" "$current_revision" || {
       echo "Gate B source chain is not Gate A to upgrade to current" >&2
       return 1

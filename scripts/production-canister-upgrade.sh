@@ -11,6 +11,7 @@ GATE_A_RECEIPT=""
 PREFLIGHT=""
 OUTPUT=""
 CONTROLLER_PEM=""
+PRIOR_UPGRADE_EVIDENCE=""
 RECOVERED=false
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -19,15 +20,16 @@ while [[ "$#" -gt 0 ]]; do
     --gate-a-receipt) GATE_A_RECEIPT="$2"; shift 2 ;;
     --preflight) PREFLIGHT="$2"; shift 2 ;;
     --controller-pem) CONTROLLER_PEM="$2"; shift 2 ;;
+    --prior-upgrade-evidence) PRIOR_UPGRADE_EVIDENCE="$2"; shift 2 ;;
     --evidence|--receipt) OUTPUT="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 usage() {
-  echo "usage: BRIDGE_ICP_IDENTITY=production $0 preflight --wasm ABS --gate-a-profile ABS --gate-a-receipt ABS --evidence ABS" >&2
-  echo "       BRIDGE_ICP_IDENTITY=production $0 execute --wasm ABS --gate-a-profile ABS --gate-a-receipt ABS --preflight ABS --controller-pem ABS --receipt ABS" >&2
-  echo "       BRIDGE_ICP_IDENTITY=production $0 recover --wasm ABS --gate-a-profile ABS --gate-a-receipt ABS --preflight ABS --controller-pem ABS --receipt ABS" >&2
+  echo "usage: BRIDGE_ICP_IDENTITY=production $0 preflight --wasm ABS --gate-a-profile ABS --gate-a-receipt ABS [--prior-upgrade-evidence ABS] --evidence ABS" >&2
+  echo "       BRIDGE_ICP_IDENTITY=production $0 execute --wasm ABS --gate-a-profile ABS --gate-a-receipt ABS [--prior-upgrade-evidence ABS] --preflight ABS --controller-pem ABS --receipt ABS" >&2
+  echo "       BRIDGE_ICP_IDENTITY=production $0 recover --wasm ABS --gate-a-profile ABS --gate-a-receipt ABS [--prior-upgrade-evidence ABS] --preflight ABS --controller-pem ABS --receipt ABS" >&2
   exit 2
 }
 [[ "$MODE" == preflight || "$MODE" == execute || "$MODE" == recover ]] || usage
@@ -42,6 +44,11 @@ fi
 for path in "$WASM" "$GATE_A_PROFILE" "$GATE_A_RECEIPT"; do
   [[ "$path" == /* && -f "$path" && ! -L "$path" ]] || { echo "upgrade inputs must be absolute regular files" >&2; exit 1; }
 done
+if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
+  [[ "$PRIOR_UPGRADE_EVIDENCE" == /* && -f "$PRIOR_UPGRADE_EVIDENCE" && ! -L "$PRIOR_UPGRADE_EVIDENCE" ]] || {
+    echo "prior upgrade evidence must be an absolute regular file" >&2; exit 1;
+  }
+fi
 [[ "$OUTPUT" == /* && ! -e "$OUTPUT" && ! -L "$OUTPUT" && -d "$(dirname "$OUTPUT")" ]] || {
   echo "upgrade output must be a new absolute file in an existing directory" >&2; exit 1;
 }
@@ -91,10 +98,31 @@ PY
 WASM="$PROFILE_TARGET/bridge-canister.wasm"
 GATE_A_PROFILE="$PROFILE_TARGET/gate-a-profile.json"
 GATE_A_RECEIPT="$PROFILE_TARGET/gate-a-receipt.json"
+if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
+  python3 -I -S - "$PRIOR_UPGRADE_EVIDENCE" "$PROFILE_TARGET/prior-upgrade-evidence.json" <<'PY'
+import os,stat,sys
+source,target=sys.argv[1:]
+fd=os.open(source,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
+try:
+ before=os.fstat(fd)
+ if not stat.S_ISREG(before.st_mode) or before.st_size>128*1024*1024: raise SystemExit('prior upgrade evidence is unsafe')
+ data=os.read(fd,before.st_size+1); after=os.fstat(fd)
+ if len(data)!=before.st_size or (before.st_dev,before.st_ino,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_mtime_ns,after.st_ctime_ns): raise SystemExit('prior upgrade evidence changed while frozen')
+finally: os.close(fd)
+out=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400)
+try: os.write(out,data); os.fsync(out)
+finally: os.close(out)
+PY
+  PRIOR_UPGRADE_EVIDENCE="$PROFILE_TARGET/prior-upgrade-evidence.json"
+fi
+PRIOR_UPGRADE_EVIDENCE_SHA256=""
+if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
+  PRIOR_UPGRADE_EVIDENCE_SHA256="$(shasum -a 256 "$PRIOR_UPGRADE_EVIDENCE" | awk '{print tolower($1)}')"
+fi
 SOURCE_REVISION="$(git -C "$ROOT" rev-parse HEAD)"
 SOURCE_TREE="$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')"
 WASM_SHA256="$(shasum -a 256 "$WASM" | awk '{print tolower($1)}')"
-read -r CANISTER OLD_WASM INSTALLER RECEIPT_SOURCE IC_HOST < <(python3 -I -S - "$GATE_A_PROFILE" "$GATE_A_RECEIPT" <<'PY'
+read -r CANISTER GATE_A_WASM INSTALLER RECEIPT_SOURCE IC_HOST < <(python3 -I -S - "$GATE_A_PROFILE" "$GATE_A_RECEIPT" <<'PY'
 import json,sys
 profile=json.load(open(sys.argv[1],encoding='utf-8')); receipt=json.load(open(sys.argv[2],encoding='utf-8'))
 install=receipt.get('canister_install',{})
@@ -104,8 +132,40 @@ if expected != actual: raise SystemExit('Gate A profile and receipt identity dif
 print(expected[0],expected[1],install.get('installer_principal',''),receipt.get('source_revision',''),profile.get('ic_host',''))
 PY
 )
+OLD_WASM="$GATE_A_WASM"
+if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
+  CHAIN_MODULES="$(python3 -I -S - "$PRIOR_UPGRADE_EVIDENCE" <<'PY'
+import hashlib,json,sys
+value=json.load(open(sys.argv[1],encoding='utf-8'))
+if value.get('kind')=='production-controller-bootstrap-upgrade': receipts=[value]
+else:
+ entries=value.get('entries')
+ if value.get('schema_version')!=1 or value.get('kind')!='production-controller-bootstrap-upgrade-chain' or not isinstance(entries,list) or not 1<=len(entries)<=16: raise SystemExit('invalid prior upgrade chain')
+ receipts=[]; previous=None; total=0
+ for index,entry in enumerate(entries):
+  if set(entry)!={'sequence','previous_receipt_sha256','receipt_sha256','receipt_json_hex'}: raise SystemExit('invalid prior upgrade chain entry')
+  raw=bytes.fromhex(entry.get('receipt_json_hex','')); digest=hashlib.sha256(raw).hexdigest()
+  total+=len(raw)
+  if total>128*1024*1024: raise SystemExit('prior upgrade chain is too large')
+  if entry.get('sequence')!=index or entry.get('previous_receipt_sha256')!=previous or entry.get('receipt_sha256','').lower()!=digest: raise SystemExit('invalid prior upgrade chain linkage')
+  receipts.append(json.loads(raw)); previous=digest
+expected_before=receipts[0].get('before_module_sha256','')
+for receipt in receipts:
+ if receipt.get('schema_version')!=1 or receipt.get('kind')!='production-controller-bootstrap-upgrade': raise SystemExit('invalid prior upgrade receipt')
+ before=receipt.get('before_module_sha256',''); after=receipt.get('after_module_sha256','')
+ if not isinstance(before,str) or not isinstance(after,str) or len(before)!=64 or len(after)!=64 or before.lower()!=expected_before.lower(): raise SystemExit('prior upgrade module chain is not contiguous')
+ int(before,16); int(after,16); expected_before=after
+print(receipts[0].get('before_module_sha256',''),receipts[-1].get('after_module_sha256',''))
+PY
+)" || { echo "prior upgrade evidence is invalid" >&2; exit 1; }
+  read -r CHAIN_FIRST_WASM OLD_WASM <<<"$CHAIN_MODULES"
+  [[ "$(printf '%s' "$CHAIN_FIRST_WASM" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$GATE_A_WASM" | tr '[:upper:]' '[:lower:]')" ]] || {
+    echo "prior upgrade chain does not start at the Gate A Wasm" >&2; exit 1;
+  }
+fi
 [[ "$CANISTER" == "lb5i5-ziaaa-aaaar-qcgwq-cai" && "$OLD_WASM" =~ ^[0-9a-fA-F]{64}$ \
-  && "$INSTALLER" =~ ^[a-z0-9-]+$ && "$RECEIPT_SOURCE" =~ ^[0-9a-f]{40}$ && "$IC_HOST" == https://* ]] || {
+  && "$INSTALLER" =~ ^[a-z0-9-]+$ && "$RECEIPT_SOURCE" =~ ^[0-9a-f]{40}$ \
+  && "$IC_HOST" == "https://icp-api.io" ]] || {
   echo "Gate A upgrade identity is malformed" >&2; exit 1;
 }
 [[ "$WASM_SHA256" != "$(printf '%s' "$OLD_WASM" | tr '[:upper:]' '[:lower:]')" ]] || {
@@ -211,6 +271,7 @@ write_json() {
   RESPONSE_STDOUT_FILE="$stdout_file" RESPONSE_STDERR_FILE="$stderr_file" \
   SUBMISSION_FILE="${SUBMISSION_FILE:-}" UPLOAD_EVIDENCE_FILE="${UPLOAD_EVIDENCE_FILE:-}" \
   REQUEST_ID="$request_id" RECOVERED="${RECOVERED:-false}" \
+  PRIOR_UPGRADE_EVIDENCE_SHA256="$PRIOR_UPGRADE_EVIDENCE_SHA256" \
   python3 -I -S - <<'PY'
 import hashlib,json,os,time
 def h(value): return hashlib.sha256(value).hexdigest()
@@ -231,8 +292,10 @@ value={'schema_version':1,'kind':os.environ['KIND'],'source_revision':os.environ
  'before_runtime_binding_response_hex':hx(before[2]),'before_runtime_binding_response_sha256':h(before[2]),
  'before_storage_integrity_response_hex':hx(before[3]),'before_storage_integrity_response_sha256':h(before[3]),
  'before_public_state_sha256':os.environ['BEFORE_PUBLIC_STATE'],'observed_at_unix':int(time.time())}
+value['prior_upgrade_evidence_sha256']=os.environ['PRIOR_UPGRADE_EVIDENCE_SHA256'] or None
 if os.environ['KIND']=='production-controller-bootstrap-upgrade':
  value.pop('observed_at_unix',None)
+ value.pop('prior_upgrade_evidence_sha256',None)
  after=[candid('AFTER_BRIDGE_STATUS'),candid('AFTER_LIFECYCLE'),candid('AFTER_RUNTIME'),candid('AFTER_INTEGRITY')]
  stdout=open(os.environ['RESPONSE_STDOUT_FILE'],'rb').read(); stderr=open(os.environ['RESPONSE_STDERR_FILE'],'rb').read()
  submission=open(os.environ['SUBMISSION_FILE'],'rb').read()
@@ -320,12 +383,12 @@ if [[ "$MODE" == recover ]]; then
   [[ "$RECORDED_CONTROLLERS" == "$INSTALLER" && "$RECORDED_MODULE" == "$OLD_WASM" ]] || {
     echo "reviewed preflight does not bind the sole controller and immutable Gate A Wasm" >&2; exit 1;
   }
-  python3 -I -S - "$PREFLIGHT" "$SOURCE_REVISION" "$SOURCE_TREE" "$CANISTER" "$OLD_WASM" "$WASM_SHA256" "$INSTALLER" <<'PY'
+  python3 -I -S - "$PREFLIGHT" "$SOURCE_REVISION" "$SOURCE_TREE" "$CANISTER" "$OLD_WASM" "$WASM_SHA256" "$INSTALLER" "$PRIOR_UPGRADE_EVIDENCE_SHA256" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1],encoding='utf-8'))
 actual=[p.get('source_revision'),p.get('source_tree_sha256'),p.get('bridge_canister_id'),
- p.get('before_module_sha256','').lower(),p.get('wasm_sha256'),p.get('executing_principal')]
-if actual != [sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5].lower(),sys.argv[6],sys.argv[7]]:
+ p.get('before_module_sha256','').lower(),p.get('wasm_sha256'),p.get('executing_principal'),p.get('prior_upgrade_evidence_sha256') or '']
+if actual != [sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5].lower(),sys.argv[6],sys.argv[7],sys.argv[8]]:
  raise SystemExit('recovery preflight identity differs from the reviewed source or Gate A lineage')
 PY
   EXECUTED_AT="$(verify_execution_marker "$EXECUTION_FILE" "$SUBMISSION_FILE")"
@@ -367,11 +430,11 @@ if [[ "$MODE" == preflight ]]; then
 fi
 
 python3 -I -S - "$PREFLIGHT" "$SOURCE_REVISION" "$SOURCE_TREE" "$CANISTER" "$OLD_WASM" "$WASM_SHA256" \
-  "$BEFORE_MODULE" "$BEFORE_PUBLIC_STATE" <<'PY'
+  "$BEFORE_MODULE" "$BEFORE_PUBLIC_STATE" "$PRIOR_UPGRADE_EVIDENCE_SHA256" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1],encoding='utf-8'))
-expected=[sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5].lower(),sys.argv[6],sys.argv[7],sys.argv[8]]
-actual=[p.get('source_revision'),p.get('source_tree_sha256'),p.get('bridge_canister_id'),p.get('before_module_sha256','').lower(),p.get('wasm_sha256'),sys.argv[7],p.get('before_public_state_sha256')]
+expected=[sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5].lower(),sys.argv[6],sys.argv[7],sys.argv[8],sys.argv[9]]
+actual=[p.get('source_revision'),p.get('source_tree_sha256'),p.get('bridge_canister_id'),p.get('before_module_sha256','').lower(),p.get('wasm_sha256'),sys.argv[7],p.get('before_public_state_sha256'),p.get('prior_upgrade_evidence_sha256') or '']
 if actual!=expected: raise SystemExit('live state or source differs from the reviewed production upgrade preflight')
 PY
 # Receipt recovery must be byte-for-byte deterministic. The live snapshot above
