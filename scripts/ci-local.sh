@@ -495,7 +495,7 @@ run_verus() {
           echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
           return 1
         }
-        rg -q "pub (const )?fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+        rg -q "^(pub )?(const )?fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
           [[ "$kind" == "model" ]] || {
             echo "non-model Verus kernel is missing: $kernel_name" >&2
             return 1

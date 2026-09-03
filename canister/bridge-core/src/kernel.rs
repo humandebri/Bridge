@@ -2738,7 +2738,7 @@ verus! {
         marker_unbound: bool,
         marker_is_new: bool,
         roles_distinct: bool,
-    ) -> int {
+    ) -> u8 {
         bootstrap_pause_principal_migration_body!(
             sealed,
             paused,

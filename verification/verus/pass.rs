@@ -897,15 +897,15 @@ proof fn bootstrap_pause_principal_migration_is_scoped_and_idempotent(
             marker_is_new,
             roles_distinct,
         ) == if sealed {
-            2
+            2u8
         } else if pause_is_new && marker_is_new {
-            1
+            1u8
         } else if paused && pause_is_new && marker_unbound && roles_distinct {
-            4
+            4u8
         } else if paused && pause_is_old && marker_unbound && roles_distinct {
-            0
+            0u8
         } else {
-            3
+            3u8
         }
 {}
 
