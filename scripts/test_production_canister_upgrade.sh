@@ -310,6 +310,36 @@ fi
 [[ ! -e "$T/evidence/receipt.json" ]]
 [[ "$(<"$T/submit-count")" == 1 ]]
 mv "$T/evidence/preflight.approved.json" "$T/evidence/preflight.json"
+for case_name in missing-hash changed-hash changed-submission; do
+  recovery="$T/evidence/recover-$case_name.json"
+  cp "$T/evidence/receipt.json.stdout" "$recovery.stdout"
+  cp "$T/evidence/receipt.json.stderr" "$recovery.stderr"
+  cp "$T/evidence/receipt.json.submission.json" "$recovery.submission.json"
+  cp "$T/evidence/receipt.json.execution.json" "$recovery.execution.json"
+  cp -R "$T/evidence/receipt.json.uploads" "$recovery.uploads"
+  python3 -I -S - "$recovery.execution.json" "$recovery.submission.json" "$case_name" <<'PY'
+import json,os,sys
+marker_path,submission_path,case_name=sys.argv[1:]
+if case_name=='changed-submission':
+ os.chmod(submission_path,0o600)
+ with open(submission_path,'ab') as output: output.write(b'changed\n')
+else:
+ os.chmod(marker_path,0o600)
+ marker=json.load(open(marker_path,encoding='utf-8'))
+ if case_name=='missing-hash': marker.pop('submission_sha256')
+ else: marker['submission_sha256']='0'*64
+ with open(marker_path,'w',encoding='utf-8') as output:
+  json.dump(marker,output,sort_keys=True,separators=(',',':')); output.write('\n')
+PY
+  if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" recover \
+    --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+    --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+    --controller-pem "$T/production.pem" --receipt "$recovery" >/dev/null 2>&1; then
+    echo "production upgrade recovery accepted $case_name marker/submission drift" >&2
+    exit 1
+  fi
+  [[ ! -e "$recovery" && "$(<"$T/submit-count")" == 1 ]]
+done
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" recover \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
   --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \

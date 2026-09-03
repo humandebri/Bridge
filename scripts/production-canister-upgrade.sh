@@ -269,6 +269,37 @@ print(value,end='')
 PY
 }
 
+verify_execution_marker() {
+  python3 -I -S - "$1" "$2" "$SOURCE_REVISION" "$WASM_SHA256" "$PREFLIGHT_SHA256" <<'PY'
+import hashlib,json,os,stat,sys
+def read_regular(path):
+ fd=os.open(path,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
+ try:
+  before=os.fstat(fd)
+  if not stat.S_ISREG(before.st_mode): raise SystemExit(f'unsafe regular file: {path}')
+  chunks=[]
+  while True:
+   chunk=os.read(fd,1024*1024)
+   if not chunk: break
+   chunks.append(chunk)
+  after=os.fstat(fd)
+  if (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
+   raise SystemExit(f'file changed while read: {path}')
+  return b''.join(chunks)
+ finally: os.close(fd)
+marker=json.loads(read_regular(sys.argv[1]))
+submission=read_regular(sys.argv[2])
+if (marker.get('schema_version')!=1 or marker.get('source_revision')!=sys.argv[3]
+    or marker.get('wasm_sha256')!=sys.argv[4]
+    or marker.get('preflight_sha256')!=sys.argv[5]
+    or marker.get('submission_sha256')!=hashlib.sha256(submission).hexdigest()
+    or not isinstance(marker.get('executed_at_unix'),int)
+    or marker['executed_at_unix'] < 0):
+ raise SystemExit('execution marker differs from the reviewed upgrade or signed submission')
+print(marker['executed_at_unix'])
+PY
+}
+
 if [[ "$MODE" == recover ]]; then
   STDOUT_FILE="$OUTPUT.stdout"
   STDERR_FILE="$OUTPUT.stderr"
@@ -297,15 +328,7 @@ actual=[p.get('source_revision'),p.get('source_tree_sha256'),p.get('bridge_canis
 if actual != [sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5].lower(),sys.argv[6],sys.argv[7]]:
  raise SystemExit('recovery preflight identity differs from the reviewed source or Gate A lineage')
 PY
-  EXECUTED_AT="$(python3 -I -S - "$EXECUTION_FILE" "$SOURCE_REVISION" "$WASM_SHA256" "$PREFLIGHT_SHA256" <<'PY'
-import json,sys
-v=json.load(open(sys.argv[1],encoding='utf-8'))
-if (v.get('schema_version')!=1 or v.get('source_revision')!=sys.argv[2]
-    or v.get('wasm_sha256')!=sys.argv[3] or v.get('preflight_sha256')!=sys.argv[4]):
- raise SystemExit('execution marker differs from the reviewed upgrade')
-print(v.get('executed_at_unix'))
-PY
-  )"
+  EXECUTED_AT="$(verify_execution_marker "$EXECUTION_FILE" "$SUBMISSION_FILE")"
   [[ "$EXECUTED_AT" =~ ^[0-9]+$ ]] || {
     echo "execution marker does not bind the reviewed upgrade time" >&2; exit 1;
   }
@@ -373,27 +396,7 @@ if [[ -e "$EXECUTION_FILE" ]]; then
     && -d "$UPLOAD_DIR" && ! -L "$UPLOAD_DIR" && ! -e "$STDOUT_FILE" && ! -e "$STDERR_FILE" ]] || {
     echo "production upgrade partial attempt is unsafe to resume" >&2; exit 1;
   }
-  EXECUTED_AT="$(python3 -I -S - "$EXECUTION_FILE" "$SOURCE_REVISION" "$WASM_SHA256" "$PREFLIGHT_SHA256" "$SUBMISSION_FILE" <<'PY'
-import hashlib,json,os,stat,sys
-v=json.load(open(sys.argv[1],encoding='utf-8'))
-if (v.get('schema_version')!=1 or v.get('source_revision')!=sys.argv[2]
-    or v.get('wasm_sha256')!=sys.argv[3] or v.get('preflight_sha256')!=sys.argv[4]):
- raise SystemExit('execution marker differs from the reviewed upgrade')
-fd=os.open(sys.argv[5],os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
-try:
- st=os.fstat(fd)
- if not stat.S_ISREG(st.st_mode): raise SystemExit('submission is not a regular file')
- digest=hashlib.sha256()
- while True:
-  chunk=os.read(fd,1024*1024)
-  if not chunk: break
-  digest.update(chunk)
-finally: os.close(fd)
-if v.get('submission_sha256')!=digest.hexdigest():
- raise SystemExit('execution marker does not bind the signed submission')
-print(v.get('executed_at_unix'))
-PY
-  )"
+  EXECUTED_AT="$(verify_execution_marker "$EXECUTION_FILE" "$SUBMISSION_FILE")"
 else
   for sidecar in "$STDOUT_FILE" "$STDERR_FILE" "$EXECUTION_FILE"; do
     [[ ! -e "$sidecar" && ! -L "$sidecar" ]] || { echo "upgrade sidecar already exists: $sidecar" >&2; exit 1; }
@@ -465,22 +468,9 @@ fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
 PY
 fi
 export EXECUTED_AT
-python3 -I -S - "$EXECUTION_FILE" "$SUBMISSION_FILE" <<'PY'
-import hashlib,json,os,stat,sys
-marker=json.load(open(sys.argv[1],encoding='utf-8'))
-fd=os.open(sys.argv[2],os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
-try:
- st=os.fstat(fd)
- if not stat.S_ISREG(st.st_mode): raise SystemExit('submission is not a regular file')
- digest=hashlib.sha256()
- while True:
-  chunk=os.read(fd,1024*1024)
-  if not chunk: break
-  digest.update(chunk)
-finally: os.close(fd)
-if marker.get('submission_sha256')!=digest.hexdigest():
- raise SystemExit('execution marker no longer binds the signed submission')
-PY
+[[ "$(verify_execution_marker "$EXECUTION_FILE" "$SUBMISSION_FILE")" == "$EXECUTED_AT" ]] || {
+  echo "execution marker changed before chunk upload" >&2; exit 1;
+}
 "$PROFILE_BIN" validate-production-upgrade-submission \
   "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$SUBMISSION_FILE" >/dev/null
 "$PROFILE_BIN" upload-production-canister-upgrade-chunks \
