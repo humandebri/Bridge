@@ -3322,6 +3322,25 @@ fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+fn post_deploy_profile_sha256(
+    profile_source: &[u8],
+    deployment_block: u64,
+) -> Result<String, String> {
+    let mut profile: Value = serde_json::from_slice(profile_source).map_err(|e| e.to_string())?;
+    let fields = profile
+        .as_object_mut()
+        .ok_or_else(|| "Gate A profile must be a JSON object".to_string())?;
+    match fields.get("deployment_block") {
+        Some(Value::Number(_)) => {}
+        _ => return Err("Gate A profile deployment_block must be a number".into()),
+    }
+    fields.insert("deployment_block".into(), Value::from(deployment_block));
+    let mut bytes = Vec::new();
+    canonical_json(&profile, &mut bytes)?;
+    bytes.push(b'\n');
+    Ok(hex(&Sha256::digest(bytes)))
+}
+
 fn write_generated<T: Serialize>(root: &Path, name: &str, value: &T) -> Result<String, String> {
     fs::create_dir_all(root).map_err(|e| format!("{}: {e}", root.display()))?;
     let bytes = canonical_bytes(value)?;
@@ -3646,12 +3665,13 @@ fn validate_production_canister_receipt_files(
 
 fn validate_production_upgrade_gate_a_binding(
     profile: &Profile,
+    profile_source: &[u8],
     receipt: &GateAReceipt,
 ) -> Result<(), String> {
     validate_profile(profile, true)?;
     validate_production_canister_receipt(profile, &receipt.canister_install)?;
-    let mut post_deploy_profile = profile.clone();
-    post_deploy_profile.deployment_block = receipt.bridge_deployment_block_number;
+    let expected_post_deploy_profile_sha256 =
+        post_deploy_profile_sha256(profile_source, receipt.bridge_deployment_block_number)?;
     if receipt.schema_version != 2
         || profile.deployment_block != 0
         || !receipt
@@ -3659,9 +3679,7 @@ fn validate_production_upgrade_gate_a_binding(
             .eq_ignore_ascii_case(&hex(&canonical_sha256(profile)?))
         || !receipt
             .post_deploy_profile_sha256
-            .eq_ignore_ascii_case(&hex(&Sha256::digest(canonical_bytes(
-                &post_deploy_profile,
-            )?)))
+            .eq_ignore_ascii_case(&expected_post_deploy_profile_sha256)
         || !receipt
             .bridge_canister_wasm_sha256
             .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
@@ -3675,9 +3693,11 @@ fn validate_production_upgrade_gate_a_binding_files(
     profile_path: &Path,
     receipt_path: &Path,
 ) -> Result<String, String> {
-    let profile: Profile = read_json(profile_path)?;
+    let profile_source = fs::read(profile_path).map_err(|error| error.to_string())?;
+    let profile: Profile =
+        serde_json::from_slice(&profile_source).map_err(|error| error.to_string())?;
     let receipt: GateAReceipt = read_json(receipt_path)?;
-    validate_production_upgrade_gate_a_binding(&profile, &receipt)?;
+    validate_production_upgrade_gate_a_binding(&profile, &profile_source, &receipt)?;
     Ok(hex(&Sha256::digest(
         fs::read(receipt_path).map_err(|error| error.to_string())?,
     )))
@@ -3694,9 +3714,9 @@ fn validate_completed_gate_a_receipt(
     let embedded_install_sha256 = canonical_sha256(&receipt.canister_install)?;
     let external_install_sha256 = canonical_sha256(install_receipt)?;
     let gate_a_profile_sha256 = hex(&canonical_sha256(&bundle.profile)?);
-    let mut post_deploy_profile = bundle.profile.clone();
-    post_deploy_profile.deployment_block = receipt.bridge_deployment_block_number;
-    let post_deploy_profile_sha256 = hex(&Sha256::digest(canonical_bytes(&post_deploy_profile)?));
+    let profile_source = fs::read(bundle.root.join("profile.json")).map_err(|e| e.to_string())?;
+    let post_deploy_profile_sha256 =
+        post_deploy_profile_sha256(&profile_source, receipt.bridge_deployment_block_number)?;
     if bundle.manifest.test_only
         || receipt.schema_version != 2
         || !receipt
@@ -6113,7 +6133,10 @@ fn validate_bundle_with_freshness_at(
     }
     if gate_b {
         let receipt: GateAReceipt = read_json(&root.join("gate-a-receipt.json"))?;
-        let gate_a_profile: Profile = read_json(&root.join("gate-a-profile.json"))?;
+        let gate_a_profile_source =
+            fs::read(root.join("gate-a-profile.json")).map_err(|e| e.to_string())?;
+        let gate_a_profile: Profile =
+            serde_json::from_slice(&gate_a_profile_source).map_err(|e| e.to_string())?;
         validate_profile(&gate_a_profile, !manifest.test_only)?;
         if gate_a_profile.deployment_block != 0
             || !profile_uses_production_bootstrap_operational_config(&gate_a_profile)
@@ -6124,9 +6147,8 @@ fn validate_bundle_with_freshness_at(
         let mut expected_post_deploy_profile = gate_a_profile.clone();
         expected_post_deploy_profile.deployment_block = profile.deployment_block;
         set_production_bootstrap_operational_config(&mut expected_post_deploy_profile);
-        let expected_post_deploy_profile_hash = hex(&Sha256::digest(canonical_bytes(
-            &expected_post_deploy_profile,
-        )?));
+        let expected_post_deploy_profile_hash =
+            post_deploy_profile_sha256(&gate_a_profile_source, profile.deployment_block)?;
         let mut expected_current_profile = expected_post_deploy_profile.clone();
         set_initial_operational_config(
             &mut expected_current_profile.parameters,
@@ -10735,9 +10757,16 @@ fn run() -> Result<(), String> {
             let (after, after_runtime, after_digest) = production_upgrade_query_state(
                 &args[6], &args[7], &args[8], &args[9],
             )?;
-            let gate_a_profile: Profile = read_json(Path::new(&args[10]))?;
+            let gate_a_profile_source =
+                fs::read(&args[10]).map_err(|error| error.to_string())?;
+            let gate_a_profile: Profile = serde_json::from_slice(&gate_a_profile_source)
+                .map_err(|error| error.to_string())?;
             let gate_a_receipt: GateAReceipt = read_json(Path::new(&args[11]))?;
-            validate_production_upgrade_gate_a_binding(&gate_a_profile, &gate_a_receipt)?;
+            validate_production_upgrade_gate_a_binding(
+                &gate_a_profile,
+                &gate_a_profile_source,
+                &gate_a_receipt,
+            )?;
             let unchanged = production_upgrade_status_preserved(&before, &after)
                 && args[3] == args[7]
                 && args[4] == args[8]
@@ -13505,7 +13534,12 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         )
         .is_err());
         let gate_a_profile: Profile = serde_json::from_slice(&planned_profile).unwrap();
-        assert!(validate_production_upgrade_gate_a_binding(&gate_a_profile, &receipt).is_ok());
+        assert!(validate_production_upgrade_gate_a_binding(
+            &gate_a_profile,
+            &planned_profile,
+            &receipt,
+        )
+        .is_ok());
         let mut independently_installed_receipt = receipt.clone();
         independently_installed_receipt
             .canister_install
@@ -13525,6 +13559,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             hex(&canonical_sha256(&independently_installed_receipt.canister_install.plan).unwrap());
         assert!(validate_production_upgrade_gate_a_binding(
             &gate_a_profile,
+            &planned_profile,
             &independently_installed_receipt,
         )
         .is_ok());
@@ -13542,6 +13577,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .operational_config_sha256 = "9".repeat(64);
         assert!(validate_production_upgrade_gate_a_binding(
             &gate_a_profile,
+            &planned_profile,
             &forged_gate_a_receipt,
         )
         .is_err());
