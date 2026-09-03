@@ -12,6 +12,7 @@
     "dist",
     "coverage",
     "src/generated",
+    "src/lib/generated-refinement.test.ts",
     "src/routeTree.gen.ts",
     "e2e-real/generated",
     "playwright-report",
