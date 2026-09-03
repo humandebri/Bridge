@@ -22,6 +22,28 @@ class ChangedAreaTests(unittest.TestCase):
     def test_docs_only_runs_no_component_gate(self) -> None:
         self.assert_areas(["docs/bridge-flow.md", "README.md", "LICENSE", ".gitignore"])
 
+    def test_docs_only_emits_a_nonempty_workflow_matrix(self) -> None:
+        with tempfile.NamedTemporaryFile() as output:
+            subprocess.run(
+                [
+                    sys.executable,
+                    ci_changed_areas.__file__,
+                    "--github-output",
+                    output.name,
+                    "docs/bridge-flow.md",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            output.seek(0)
+            values = dict(
+                line.rstrip().split("=", 1)
+                for line in output.read().decode("utf-8").splitlines()
+            )
+        self.assertEqual(values["any"], "false")
+        self.assertEqual(json.loads(values["matrix"]), ["none"])
+
     def test_rust_change_runs_rust_real_and_icp(self) -> None:
         self.assert_areas(
             ["canister/bridge-canister/src/api.rs"],
@@ -42,6 +64,13 @@ class ChangedAreaTests(unittest.TestCase):
 
     def test_visual_ui_change_avoids_real_integration(self) -> None:
         self.assert_areas(["ui/src/styles.css"], "ui")
+
+    def test_ui_dependency_only_change_runs_ui(self) -> None:
+        self.assert_areas(["ui/pnpm-lock.yaml"], "ui")
+        self.assert_areas(["ui/src/styles.css"], "ui")
+
+    def test_ui_real_e2e_change_runs_ui_and_real(self) -> None:
+        self.assert_areas(["ui/e2e-real/bridge-real.spec.ts"], "ui", "real")
 
     def test_integration_ui_change_runs_real(self) -> None:
         self.assert_areas(["ui/src/lib/ic/bridge.ts"], "ui", "real")
@@ -136,6 +165,13 @@ class ChangedAreaTests(unittest.TestCase):
 
     def test_proof_change_runs_proofs_only(self) -> None:
         self.assert_areas(["verification/lean/Bridge.lean"], "proofs")
+
+    def test_safety_kernel_and_proof_manifest_keep_safety_areas(self) -> None:
+        self.assert_areas(
+            ["tools/bridge-profile/src/main.rs", "verification/proof-impact.tsv"],
+            "rust",
+            "proofs",
+        )
 
     def test_certora_only_change_runs_only_advisory_checks(self) -> None:
         for path in (

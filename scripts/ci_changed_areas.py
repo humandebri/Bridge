@@ -320,10 +320,15 @@ def main() -> int:
     if args.base_sha:
         requires_review = requires_review or gitlink_changed(args.base_sha, args.head_sha)
     lines.append(f"review_required={'true' if requires_review else 'false'}")
+    enabled_areas = [area for area, enabled in result.items() if enabled]
+    # GitHub Actions rejects a dynamically expanded matrix with zero values.
+    # Keep `any=false` as the authoritative skip signal and use a sentinel so
+    # the matrix can still be evaluated; the guarded jobs never execute it.
+    workflow_areas = enabled_areas or ["none"]
     lines.append(
         "matrix="
         + json.dumps(
-            [area for area, enabled in result.items() if enabled],
+            workflow_areas,
             separators=(",", ":"),
         )
     )

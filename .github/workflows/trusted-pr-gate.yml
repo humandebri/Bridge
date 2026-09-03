@@ -92,6 +92,7 @@ jobs:
           echo "Approved trusted validation inputs for exact head $EXPECTED_HEAD_SHA"
 
   test:
+    name: test (${{ matrix.area }})
     needs: [classify, trusted-change-review]
     if: >-
       always() &&
@@ -101,6 +102,10 @@ jobs:
         (needs.classify.outputs.review_required == 'true' && needs.trusted-change-review.result == 'success') ||
         (needs.classify.outputs.review_required == 'false' && needs.trusted-change-review.result == 'skipped')
       )
+    strategy:
+      fail-fast: false
+      matrix:
+        area: ${{ fromJSON(needs.classify.outputs.matrix) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -112,30 +117,48 @@ jobs:
           path: trusted-policy
           persist-credentials: false
       - name: Install pinned Rust toolchain
+        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'icp'
         working-directory: trusted-policy
         run: rustup show
       - name: Install Node.js 24.14.0
+        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.14.0
       - name: Install pnpm 11.0.8
+        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
         uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
         with:
           version: 11.0.8
           run_install: false
+      - name: Restore Rust registry cache
+        if: matrix.area == 'rust' || matrix.area == 'icp'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            /home/runner/.cargo/registry
+            /home/runner/.cargo/git
+          key: bridge-trusted-pr-rust-${{ needs.classify.outputs.base_sha }}-${{ hashFiles('trusted-policy/Cargo.lock', 'trusted-policy/rust-toolchain.toml') }}
+      - name: Restore pnpm store cache
+        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /home/runner/.local/share/pnpm/store
+          key: bridge-trusted-pr-pnpm-${{ needs.classify.outputs.base_sha }}-${{ hashFiles('trusted-policy/pnpm-lock.yaml', 'trusted-policy/ui/pnpm-lock.yaml', 'trusted-policy/.node-version') }}
       - name: Install Foundry 1.7.1
+        if: matrix.area == 'contracts' || matrix.area == 'proofs' || matrix.area == 'certora'
         uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
         with:
           version: v1.7.1
       - name: Install uv 0.8.4
-        if: contains(fromJSON(needs.classify.outputs.matrix), 'proofs')
+        if: matrix.area == 'proofs'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: 0.8.4
           enable-cache: false
       - name: Restore cached proof toolchain
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: contains(fromJSON(needs.classify.outputs.matrix), 'proofs')
+        if: matrix.area == 'proofs'
         with:
           path: |
             /home/runner/.elan
@@ -143,10 +166,10 @@ jobs:
             /home/runner/.local/verus
             /home/runner/.local/bin
             /home/runner/.rustup/toolchains/1.96.0
-          key: bridge-trusted-pr-proof-tools-${{ hashFiles('trusted-policy/lean-toolchain', 'trusted-policy/scripts/install-ci-tools.sh') }}
+          key: bridge-trusted-pr-proof-tools-${{ needs.classify.outputs.base_sha }}-${{ hashFiles('trusted-policy/lean-toolchain', 'trusted-policy/scripts/install-ci-tools.sh') }}
       - name: Install CI toolchain
         env:
-          AREAS: ${{ needs.classify.outputs.matrix }}
+          AREAS: '["${{ matrix.area }}"]'
         run: |
           mode="ci"
           while IFS= read -r area; do
@@ -158,7 +181,7 @@ jobs:
           trusted-policy/scripts/install-ci-tools.sh "$mode"
       - name: Save cached proof toolchain
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: contains(fromJSON(needs.classify.outputs.matrix), 'proofs')
+        if: matrix.area == 'proofs'
         with:
           path: |
             /home/runner/.elan
@@ -166,15 +189,21 @@ jobs:
             /home/runner/.local/verus
             /home/runner/.local/bin
             /home/runner/.rustup/toolchains/1.96.0
-          key: bridge-trusted-pr-proof-tools-${{ hashFiles('trusted-policy/lean-toolchain', 'trusted-policy/scripts/install-ci-tools.sh') }}
+          key: bridge-trusted-pr-proof-tools-${{ needs.classify.outputs.base_sha }}-${{ hashFiles('trusted-policy/lean-toolchain', 'trusted-policy/scripts/install-ci-tools.sh') }}
       - name: Prefetch locked Rust dependencies from trusted policy
+        if: matrix.area == 'rust' || matrix.area == 'real' || matrix.area == 'icp'
         run: cargo fetch --locked --manifest-path trusted-policy/Cargo.toml
       - name: Prefetch pinned ICP recipes from trusted policy
+        if: matrix.area == 'rust' || matrix.area == 'real' || matrix.area == 'icp'
         working-directory: trusted-policy
         env:
           ICP_CLI_DISABLE_UPDATE: "1"
           ICP_TELEMETRY_DISABLED: "1"
         run: icp project show --project-root-override . >/dev/null
+      - name: Initialize candidate dependency root
+        run: |
+          mkdir -p "$RUNNER_TEMP/bridge-trusted-dependencies"
+          echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$RUNNER_TEMP/bridge-trusted-dependencies" >> "$GITHUB_ENV"
       - name: Check out exact candidate head as reviewed data input
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -185,60 +214,87 @@ jobs:
           submodules: recursive
           persist-credentials: false
       - name: Isolate reviewed candidate dependency inputs
+        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
         run: |
           dependency_root="$RUNNER_TEMP/bridge-trusted-dependencies"
           python3 trusted-policy/scripts/prepare_candidate_dependencies.py \
             --source source --destination "$dependency_root"
           echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$dependency_root" >> "$GITHUB_ENV"
       - name: Install reviewed workspace dependencies without lifecycle scripts
+        if: matrix.area == 'rust'
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts
       - name: Install reviewed UI dependencies without lifecycle scripts
+        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" install --frozen-lockfile --ignore-scripts
       - name: Install Chromium when required
-        if: contains(fromJSON(needs.classify.outputs.matrix), 'ui') || contains(fromJSON(needs.classify.outputs.matrix), 'real')
+        if: matrix.area == 'ui' || matrix.area == 'real'
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" exec playwright install --with-deps chromium
       - name: Prefetch verified real-E2E ledger artifacts
-        if: contains(fromJSON(needs.classify.outputs.matrix), 'real')
+        if: matrix.area == 'real'
         run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
-      - name: Prefetch PocketIC runtime for integration checks
-        if: contains(fromJSON(needs.classify.outputs.matrix), 'rust') || contains(fromJSON(needs.classify.outputs.matrix), 'real')
+      - name: Prefetch PocketIC runtime for Rust integration checks
+        if: matrix.area == 'rust'
         run: |
           node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic/postinstall.mjs"
           node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"
+      - name: Prefetch PocketIC runtime for real E2E checks
+        if: matrix.area == 'real'
+        run: node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"
+      - name: Restore trusted image build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/bridge-trusted-image-cache
+          key: bridge-trusted-pr-image-${{ needs.classify.outputs.base_sha }}-${{ hashFiles('trusted-policy/.github/trusted-pr/Dockerfile') }}-${{ matrix.area }}
       - name: Build the pinned isolation image from trusted policy
-        run: docker build --file trusted-policy/.github/trusted-pr/Dockerfile --tag kinic-bridge-trusted-pr:local trusted-policy
+        run: |
+          cache_dir="$RUNNER_TEMP/bridge-trusted-image-cache"
+          next_cache_dir="$RUNNER_TEMP/bridge-trusted-image-cache-new"
+          mkdir -p "$cache_dir"
+          rm -rf "$next_cache_dir"
+          docker buildx build \
+            --file trusted-policy/.github/trusted-pr/Dockerfile \
+            --tag kinic-bridge-trusted-pr:local \
+            --load \
+            --cache-from "type=local,src=$cache_dir" \
+            --cache-to "type=local,dest=$next_cache_dir,mode=max" \
+            trusted-policy
+          rm -rf "$cache_dir"
+          mv "$next_cache_dir" "$cache_dir"
+      - name: Save trusted image build cache
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/bridge-trusted-image-cache
+          key: bridge-trusted-pr-image-${{ needs.classify.outputs.base_sha }}-${{ hashFiles('trusted-policy/.github/trusted-pr/Dockerfile') }}-${{ matrix.area }}
       - name: Verify isolation mount boundaries
         run: trusted-policy/scripts/test_trusted_pr_container_mounts.sh kinic-bridge-trusted-pr:local
       - name: Run selected trusted check
         env:
-          AREAS: ${{ needs.classify.outputs.matrix }}
+          AREAS: '["${{ matrix.area }}"]'
           BRIDGE_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run_check() {
             trusted-policy/scripts/trusted-pr-container.sh \
               source trusted-policy "$1" "$BRIDGE_TRUSTED_DEPENDENCY_ROOT"
           }
-          while IFS= read -r area; do
-            case "$area" in
-              rust)
-                run_check rust-fast
-                run_check rust-integration
-                ;;
-              contracts)
-                run_check contracts-fast
-                run_check contracts-coverage
-                ;;
-              certora) run_check certora ;;
-              proofs) run_check proofs ;;
-              ui)
-                run_check ui-fast
-                run_check ui-e2e
-                ;;
-              real) run_check real ;;
-              icp) run_check icp ;;
-              *) exit 2 ;;
-            esac
-          done < <(jq -r '.[]' <<< "$AREAS")
+          case "${{ matrix.area }}" in
+            rust)
+              run_check rust-fast
+              run_check rust-integration
+              ;;
+            contracts)
+              run_check contracts-fast
+              run_check contracts-coverage
+              ;;
+            certora) run_check certora ;;
+            proofs) run_check proofs ;;
+            ui)
+              run_check ui-fast
+              run_check ui-e2e
+              ;;
+            real) run_check real ;;
+            icp) run_check icp ;;
+            *) exit 2 ;;
+          esac
 
   trusted-pr-gate:
     if: always()
