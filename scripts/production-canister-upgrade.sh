@@ -144,14 +144,14 @@ REPRO_WASM="$REPRO_TARGET/wasm32-unknown-unknown/release/bridge_canister.wasm"
   echo "upgrade Wasm is not reproducible from the current clean source" >&2; exit 1;
 }
 require_source_identity
-read -r CANISTER GATE_A_WASM INSTALLER RECEIPT_SOURCE IC_HOST < <(python3 -I -S - "$GATE_A_PROFILE" "$GATE_A_RECEIPT" <<'PY'
+read -r CANISTER GATE_A_WASM INSTALLER RECEIPT_SOURCE RECEIPT_TREE INSTALL_SOURCE INSTALL_TREE IC_HOST < <(python3 -I -S - "$GATE_A_PROFILE" "$GATE_A_RECEIPT" <<'PY'
 import json,sys
 profile=json.load(open(sys.argv[1],encoding='utf-8')); receipt=json.load(open(sys.argv[2],encoding='utf-8'))
 install=receipt.get('canister_install',{})
 expected=(profile.get('bridge_canister_id'),profile.get('bridge_canister_wasm_sha256'))
 actual=(install.get('canister_id'),receipt.get('bridge_canister_wasm_sha256'))
 if expected != actual: raise SystemExit('Gate A profile and receipt identity differ')
-print(expected[0],expected[1],install.get('installer_principal',''),receipt.get('source_revision',''),profile.get('ic_host',''))
+print(expected[0],expected[1],install.get('installer_principal',''),receipt.get('source_revision',''),receipt.get('source_tree_sha256',''),install.get('source_revision',''),install.get('source_tree_sha256',''),profile.get('ic_host',''))
 PY
 )
 OLD_WASM="$GATE_A_WASM"
@@ -187,6 +187,8 @@ PY
 fi
 [[ "$CANISTER" == "lb5i5-ziaaa-aaaar-qcgwq-cai" && "$OLD_WASM" =~ ^[0-9a-fA-F]{64}$ \
   && "$INSTALLER" =~ ^[a-z0-9-]+$ && "$RECEIPT_SOURCE" =~ ^[0-9a-f]{40}$ \
+  && "$RECEIPT_TREE" =~ ^[0-9a-fA-F]{64}$ && "$INSTALL_SOURCE" =~ ^[0-9a-f]{40}$ \
+  && "$INSTALL_TREE" =~ ^[0-9a-fA-F]{64}$ \
   && "$IC_HOST" == "https://icp-api.io" ]] || {
   echo "Gate A upgrade identity is malformed" >&2; exit 1;
 }
@@ -195,6 +197,15 @@ fi
 }
 git -C "$ROOT" merge-base --is-ancestor "$RECEIPT_SOURCE" "$SOURCE_REVISION" || {
   echo "upgrade source is not descended from the Gate A source" >&2; exit 1;
+}
+git -C "$ROOT" merge-base --is-ancestor "$INSTALL_SOURCE" "$SOURCE_REVISION" || {
+  echo "upgrade source is not descended from the production install source" >&2; exit 1;
+}
+[[ "$(git -C "$ROOT" archive "$RECEIPT_SOURCE" | shasum -a 256 | awk '{print tolower($1)}')" == "$(printf '%s' "$RECEIPT_TREE" | tr '[:upper:]' '[:lower:]')" ]] || {
+  echo "Gate A receipt source tree hash mismatch" >&2; exit 1;
+}
+[[ "$(git -C "$ROOT" archive "$INSTALL_SOURCE" | shasum -a 256 | awk '{print tolower($1)}')" == "$(printf '%s' "$INSTALL_TREE" | tr '[:upper:]' '[:lower:]')" ]] || {
+  echo "production install source tree hash mismatch" >&2; exit 1;
 }
 EXECUTING_PRINCIPAL="$(icp identity principal --identity production)"
 [[ "$EXECUTING_PRINCIPAL" == "$INSTALLER" ]] || { echo "production identity is not the Gate A installer" >&2; exit 1; }

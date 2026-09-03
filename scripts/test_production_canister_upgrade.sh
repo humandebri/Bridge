@@ -105,7 +105,13 @@ git -C "$T/source" config user.name bridge-test
 git -C "$T/source" config core.hooksPath /dev/null
 git -C "$T/source" add .
 git -C "$T/source" commit -qm 'test production upgrade source'
+INSTALL_REVISION="$(git -C "$T/source" rev-parse HEAD)"
+INSTALL_TREE="$(git -C "$T/source" archive HEAD | shasum -a 256 | awk '{print $1}')"
+printf 'gate a completed after install\n' >"$T/source/gate-a-source-marker"
+git -C "$T/source" add gate-a-source-marker
+git -C "$T/source" commit -qm 'test Gate A completion source'
 REVISION="$(git -C "$T/source" rev-parse HEAD)"
+SOURCE_TREE="$(git -C "$T/source" archive HEAD | shasum -a 256 | awk '{print $1}')"
 INSTALLER="lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe"
 CANISTER="lb5i5-ziaaa-aaaar-qcgwq-cai"
 printf old-wasm >"$T/old.wasm"
@@ -119,8 +125,8 @@ printf 'true\n' >"$T/reserve-sufficient"
 printf 'dummy production identity\n' >"$T/production.pem"
 printf '{"bridge_canister_id":"%s","bridge_canister_wasm_sha256":"%s","ic_host":"https://icp-api.io"}\n' \
   "$CANISTER" "$OLD_SHA" >"$T/gate-a-profile.json"
-printf '{"source_revision":"%s","bridge_canister_wasm_sha256":"%s","canister_install":{"canister_id":"%s","installer_principal":"%s"}}\n' \
-  "$REVISION" "$OLD_SHA" "$CANISTER" "$INSTALLER" >"$T/gate-a-receipt.json"
+printf '{"source_revision":"%s","source_tree_sha256":"%s","bridge_canister_wasm_sha256":"%s","canister_install":{"source_revision":"%s","source_tree_sha256":"%s","canister_id":"%s","installer_principal":"%s"}}\n' \
+  "$REVISION" "$SOURCE_TREE" "$OLD_SHA" "$INSTALL_REVISION" "$INSTALL_TREE" "$CANISTER" "$INSTALLER" >"$T/gate-a-receipt.json"
 
 cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
@@ -167,6 +173,26 @@ if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade
   exit 1
 fi
 [[ ! -e "$T/evidence/not-reproducible.json" ]]
+
+for field in source_tree_sha256 canister_install.source_tree_sha256; do
+  receipt="$T/gate-a-receipt-${field//./-}-drift.json"
+  python3 - "$T/gate-a-receipt.json" "$receipt" "$field" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1],encoding='utf-8'))
+target=value
+parts=sys.argv[3].split('.')
+for part in parts[:-1]: target=target[part]
+target[parts[-1]]='f'*64
+with open(sys.argv[2],'w',encoding='utf-8') as output: json.dump(value,output)
+PY
+  if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
+    --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+    --gate-a-receipt "$receipt" --evidence "$T/evidence/${field//./-}-drift.json" >/dev/null 2>&1; then
+    echo "production upgrade accepted $field drift" >&2
+    exit 1
+  fi
+  [[ ! -e "$T/evidence/${field//./-}-drift.json" ]]
+done
 
 if BRIDGE_ICP_IDENTITY=production \
   TEST_MUTATE_SOURCE_ON_VALIDATE="$T/source/canister/bridge-canister/bridge.did" \

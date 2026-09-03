@@ -3654,8 +3654,6 @@ fn validate_production_upgrade_gate_a_binding(
     post_deploy_profile.deployment_block = receipt.bridge_deployment_block_number;
     if receipt.schema_version != 2
         || profile.deployment_block != 0
-        || receipt.source_revision != receipt.canister_install.source_revision
-        || receipt.source_tree_sha256 != receipt.canister_install.source_tree_sha256
         || !receipt
             .gate_a_profile_sha256
             .eq_ignore_ascii_case(&hex(&canonical_sha256(profile)?))
@@ -13513,6 +13511,28 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         .is_err());
         let gate_a_profile: Profile = serde_json::from_slice(&planned_profile).unwrap();
         assert!(validate_production_upgrade_gate_a_binding(&gate_a_profile, &receipt).is_ok());
+        let mut independently_installed_receipt = receipt.clone();
+        independently_installed_receipt
+            .canister_install
+            .source_revision = "b".repeat(40);
+        independently_installed_receipt
+            .canister_install
+            .source_tree_sha256 = "3".repeat(64);
+        independently_installed_receipt
+            .canister_install
+            .plan
+            .source_revision = "b".repeat(40);
+        independently_installed_receipt
+            .canister_install
+            .plan
+            .source_tree_sha256 = "3".repeat(64);
+        independently_installed_receipt.canister_install.plan_sha256 =
+            hex(&canonical_sha256(&independently_installed_receipt.canister_install.plan).unwrap());
+        assert!(validate_production_upgrade_gate_a_binding(
+            &gate_a_profile,
+            &independently_installed_receipt,
+        )
+        .is_ok());
         let mut forged_gate_a_receipt = receipt.clone();
         forged_gate_a_receipt
             .canister_install
