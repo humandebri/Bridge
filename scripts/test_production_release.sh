@@ -174,8 +174,8 @@ printf '{"bridge_canister_wasm_sha256":"%s","bridge_runtime_bytecode_sha256":"%s
 GATE_A_PROFILE_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/gate-a-profile.json" | awk '{print $1}')"
 printf '{}\n' >"$TEST_TMP_ROOT/bundle-b/production-canister-upgrade-receipt.json"
 UPGRADE_RECEIPT_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/production-canister-upgrade-receipt.json" | awk '{print $1}')"
-printf '{"from_source_revision":"%s","from_source_tree_sha256":"%s","to_source_revision":"%s","to_source_tree_sha256":"%s"}\n' \
-  "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" \
+printf '{"from_source_revision":"%s","from_source_tree_sha256":"%s","upgrade_source_revision":"%s","upgrade_source_tree_sha256":"%s","to_source_revision":"%s","to_source_tree_sha256":"%s"}\n' \
+  "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" \
   >"$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json"
 TRANSITION_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" | awk '{print $1}')"
 python3 - "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$GATE_RECEIPT_SHA256" "$GATE_A_PROFILE_SHA256" "$UPGRADE_RECEIPT_SHA256" "$TRANSITION_SHA256" <<'PY'
@@ -194,6 +194,17 @@ cp "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" "$TEST_TMP_ROOT/
 python3 - "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" <<'PY'
 import json,sys
 p=sys.argv[1]; value=json.load(open(p)); value['to_source_revision']='f'*40
+json.dump(value,open(p,'w'),sort_keys=True,separators=(',',':'))
+PY
+write_gate 0
+expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+mv "$TEST_TMP_ROOT/transition-valid.json" "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json"
+
+cp "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" "$TEST_TMP_ROOT/transition-valid.json"
+python3 - "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" <<'PY'
+import json,sys
+p=sys.argv[1]; value=json.load(open(p)); value['upgrade_source_revision']='f'*40
 json.dump(value,open(p,'w'),sort_keys=True,separators=(',',':'))
 PY
 write_gate 0

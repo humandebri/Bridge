@@ -381,6 +381,8 @@ struct PostGateAPolicyTransition {
     gate_a_receipt_sha256: String,
     from_source_revision: String,
     from_source_tree_sha256: String,
+    upgrade_source_revision: String,
+    upgrade_source_tree_sha256: String,
     to_source_revision: String,
     to_source_tree_sha256: String,
     bridge_canister_id: String,
@@ -757,6 +759,19 @@ fn set_production_bootstrap_operational_config(profile: &mut Profile) {
     profile.parameters.l1_fee_multiplier_bps = fee.l1_fee_multiplier_bps;
     profile.parameters.cycles_floor = PRODUCTION_BOOTSTRAP_CYCLES_FLOOR;
     profile.parameters.settlement_cycle_ceiling = PRODUCTION_BOOTSTRAP_SETTLEMENT_CYCLE_CEILING;
+}
+
+fn set_initial_operational_config(target: &mut Parameters, source: &Parameters) {
+    target.gas_limit_ceiling = source.gas_limit_ceiling;
+    target.max_fee_per_gas_ceiling = source.max_fee_per_gas_ceiling;
+    target.max_priority_fee_per_gas_ceiling = source.max_priority_fee_per_gas_ceiling;
+    target.l1_fee_per_transaction_ceiling_wei = source.l1_fee_per_transaction_ceiling_wei;
+    target.quote_validity_seconds = source.quote_validity_seconds;
+    target.gas_limit_multiplier_bps = source.gas_limit_multiplier_bps;
+    target.base_fee_multiplier_bps = source.base_fee_multiplier_bps;
+    target.l1_fee_multiplier_bps = source.l1_fee_multiplier_bps;
+    target.cycles_floor = source.cycles_floor;
+    target.settlement_cycle_ceiling = source.settlement_cycle_ceiling;
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -5002,7 +5017,7 @@ fn validate_post_gate_a_policy_transition(
     {
         return Err("post-Gate-A Wasm upgrade chain does not reach the current profile".into());
     }
-    if transition.schema_version != 2
+    if transition.schema_version != 3
         || transition.reason != "activate-before-production-measurements"
         || !transition
             .gate_a_manifest_sha256
@@ -5014,6 +5029,10 @@ fn validate_post_gate_a_policy_transition(
         || !transition
             .from_source_tree_sha256
             .eq_ignore_ascii_case(&receipt.source_tree_sha256)
+        || transition.upgrade_source_revision != upgrade.source_revision
+        || !transition
+            .upgrade_source_tree_sha256
+            .eq_ignore_ascii_case(&upgrade.source_tree_sha256)
         || transition.to_source_revision != manifest.source_revision
         || !transition
             .to_source_tree_sha256
@@ -5054,10 +5073,6 @@ fn validate_post_gate_a_policy_transition(
     }
     if upgrade.schema_version != 1
         || upgrade.kind != "production-controller-bootstrap-upgrade"
-        || upgrade.source_revision != manifest.source_revision
-        || !upgrade
-            .source_tree_sha256
-            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
         || upgrade.bridge_canister_id != profile.bridge_canister_id
         || upgrade.install_mode != "upgrade"
         || upgrade.executing_principal != *installer
@@ -5102,7 +5117,7 @@ fn validate_post_gate_a_policy_transition(
     {
         return Err("production upgrade lifecycle or pause continuity is incomplete".into());
     }
-    if transition.schema_version != 2
+    if transition.schema_version != 3
         || transition.reason != "activate-before-production-measurements"
         || !transition
             .gate_a_manifest_sha256
@@ -5114,6 +5129,10 @@ fn validate_post_gate_a_policy_transition(
         || !transition
             .from_source_tree_sha256
             .eq_ignore_ascii_case(&receipt.source_tree_sha256)
+        || transition.upgrade_source_revision != upgrade.source_revision
+        || !transition
+            .upgrade_source_tree_sha256
+            .eq_ignore_ascii_case(&upgrade.source_tree_sha256)
         || transition.to_source_revision != manifest.source_revision
         || !transition
             .to_source_tree_sha256
@@ -5160,10 +5179,6 @@ fn validate_post_gate_a_policy_transition(
             .eq_ignore_ascii_case(&receipt.timelock_deployment_transaction_hash)
         || upgrade.schema_version != 1
         || upgrade.kind != "production-controller-bootstrap-upgrade"
-        || upgrade.source_revision != manifest.source_revision
-        || !upgrade
-            .source_tree_sha256
-            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
         || upgrade.bridge_canister_id != profile.bridge_canister_id
         || upgrade.install_mode != "upgrade"
         || upgrade.executing_principal != *installer
@@ -5453,7 +5468,10 @@ fn validate_bundle_with_freshness_at(
             &expected_post_deploy_profile,
         )?));
         let mut expected_current_profile = expected_post_deploy_profile.clone();
-        expected_current_profile.parameters = profile.parameters.clone();
+        set_initial_operational_config(
+            &mut expected_current_profile.parameters,
+            &profile.parameters,
+        );
         expected_current_profile.bridge_canister_wasm_sha256 =
             profile.bridge_canister_wasm_sha256.clone();
         if canonical_bytes(&expected_current_profile)? != canonical_bytes(&profile)? {
@@ -12976,13 +12994,15 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         )
         .unwrap();
         let transition = PostGateAPolicyTransition {
-            schema_version: 2,
+            schema_version: 3,
             reason: "activate-before-production-measurements".into(),
             observed_at_unix: manifest_created,
             gate_a_manifest_sha256: receipt.gate_a_manifest_sha256.clone(),
             gate_a_receipt_sha256: hex(&Sha256::digest(&receipt_bytes)),
             from_source_revision: receipt.source_revision.clone(),
             from_source_tree_sha256: receipt.source_tree_sha256.clone(),
+            upgrade_source_revision: "a".repeat(40),
+            upgrade_source_tree_sha256: "2".repeat(64),
             to_source_revision: "a".repeat(40),
             to_source_tree_sha256: "2".repeat(64),
             bridge_canister_id: profile.bridge_canister_id.clone(),
@@ -13022,7 +13042,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         });
         artifacts.push(ArtifactDigest {
             path: "initial-operational-parameters.json".into(),
-            sha256: hex(&Sha256::digest(initial_parameters_bytes)),
+            sha256: hex(&Sha256::digest(&initial_parameters_bytes)),
         });
         artifacts.push(ArtifactDigest {
             path: "post-gate-a-policy-transition.json".into(),
@@ -13062,6 +13082,102 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             ))
         );
         let bundle = validate_bundle(&root, true).unwrap();
+        let baseline_manifest_bytes = fs::read(root.join("release-manifest.json")).unwrap();
+        for field in [
+            "deposit_and_throughput_limits",
+            "mint_throughput_limit",
+            "mint_window_duration_seconds",
+        ] {
+            let mut drifted_profile: Profile =
+                serde_json::from_slice(&final_profile_bytes).unwrap();
+            match field {
+                "deposit_and_throughput_limits" => {
+                    drifted_profile.parameters.per_deposit_limit += 1;
+                    drifted_profile.parameters.mint_throughput_limit += 1;
+                }
+                "mint_throughput_limit" => drifted_profile.parameters.mint_throughput_limit += 1,
+                "mint_window_duration_seconds" => {
+                    drifted_profile.parameters.mint_window_duration_seconds += 1
+                }
+                _ => unreachable!(),
+            }
+            let drifted_profile_bytes = serde_json::to_vec(&drifted_profile).unwrap();
+            fs::write(root.join("profile.json"), &drifted_profile_bytes).unwrap();
+            let mut drifted_initial: InitialOperationalParameters =
+                serde_json::from_slice(&initial_parameters_bytes).unwrap();
+            drifted_initial.profile_sha256 = hex(&canonical_sha256(&drifted_profile).unwrap());
+            let drifted_initial_bytes = serde_json::to_vec(&drifted_initial).unwrap();
+            fs::write(
+                root.join("initial-operational-parameters.json"),
+                &drifted_initial_bytes,
+            )
+            .unwrap();
+            let mut drifted_manifest: ReleaseManifest =
+                serde_json::from_slice(&baseline_manifest_bytes).unwrap();
+            for artifact in &mut drifted_manifest.artifacts {
+                if artifact.path == "profile.json" {
+                    artifact.sha256 = hex(&Sha256::digest(&drifted_profile_bytes));
+                } else if artifact.path == "initial-operational-parameters.json" {
+                    artifact.sha256 = hex(&Sha256::digest(&drifted_initial_bytes));
+                }
+            }
+            fs::write(
+                root.join("release-manifest.json"),
+                serde_json::to_vec(&drifted_manifest).unwrap(),
+            )
+            .unwrap();
+            let error = match validate_bundle(&root, true) {
+                Ok(_) => panic!("Gate B accepted drift of fixed parameter {field}"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains("fields outside the reviewed operational config"),
+                "unexpected {field} drift error: {error}"
+            );
+        }
+        fs::write(root.join("profile.json"), &final_profile_bytes).unwrap();
+        fs::write(
+            root.join("initial-operational-parameters.json"),
+            &initial_parameters_bytes,
+        )
+        .unwrap();
+        fs::write(root.join("release-manifest.json"), &baseline_manifest_bytes).unwrap();
+        let mut drifted_transition: PostGateAPolicyTransition =
+            serde_json::from_slice(&transition_bytes).unwrap();
+        drifted_transition.upgrade_source_revision = "f".repeat(40);
+        let drifted_transition_bytes = serde_json::to_vec(&drifted_transition).unwrap();
+        fs::write(
+            root.join("post-gate-a-policy-transition.json"),
+            &drifted_transition_bytes,
+        )
+        .unwrap();
+        let mut drifted_manifest: ReleaseManifest =
+            serde_json::from_slice(&baseline_manifest_bytes).unwrap();
+        drifted_manifest
+            .artifacts
+            .iter_mut()
+            .find(|artifact| artifact.path == "post-gate-a-policy-transition.json")
+            .unwrap()
+            .sha256 = hex(&Sha256::digest(&drifted_transition_bytes));
+        fs::write(
+            root.join("release-manifest.json"),
+            serde_json::to_vec(&drifted_manifest).unwrap(),
+        )
+        .unwrap();
+        let transition_error = match validate_bundle(&root, true) {
+            Ok(_) => panic!("Gate B accepted an upgrade source outside its receipt"),
+            Err(error) => error,
+        };
+        assert!(
+            transition_error.contains("policy transition identity binding"),
+            "unexpected upgrade-source drift error: {transition_error}"
+        );
+        fs::write(
+            root.join("post-gate-a-policy-transition.json"),
+            &transition_bytes,
+        )
+        .unwrap();
+        fs::write(root.join("release-manifest.json"), &baseline_manifest_bytes).unwrap();
         let after_gate_b_freshness = now + MAX_EVIDENCE_AGE_SECS + 1;
         assert!(
             validate_bundle_with_freshness_at(&root, true, true, after_gate_b_freshness,).is_err()

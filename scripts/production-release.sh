@@ -347,15 +347,17 @@ raise SystemExit(0 if actual==expected else 1)
     echo "Gate B bundle is missing its policy transition artifact" >&2
     exit 1
   }
-  read -r GATE_A_SOURCE_REVISION GATE_A_SOURCE_TREE_SHA256 TRANSITION_SOURCE_REVISION TRANSITION_SOURCE_TREE_SHA256 < <(
+  read -r GATE_A_SOURCE_REVISION GATE_A_SOURCE_TREE_SHA256 UPGRADE_SOURCE_REVISION UPGRADE_SOURCE_TREE_SHA256 TRANSITION_SOURCE_REVISION TRANSITION_SOURCE_TREE_SHA256 < <(
     python3 -c '
 import json, sys
 t = json.load(open(sys.argv[1], encoding="utf-8"))
-print(t.get("from_source_revision", ""), t.get("from_source_tree_sha256", ""), t.get("to_source_revision", ""), t.get("to_source_tree_sha256", ""))
+print(t.get("from_source_revision", ""), t.get("from_source_tree_sha256", ""), t.get("upgrade_source_revision", ""), t.get("upgrade_source_tree_sha256", ""), t.get("to_source_revision", ""), t.get("to_source_tree_sha256", ""))
 ' "$BUNDLE/post-gate-a-policy-transition.json"
   )
   [[ "$GATE_A_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ \
     && "$GATE_A_SOURCE_TREE_SHA256" =~ ^[0-9a-fA-F]{64}$ \
+    && "$UPGRADE_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ \
+    && "$UPGRADE_SOURCE_TREE_SHA256" =~ ^[0-9a-fA-F]{64}$ \
     && "$TRANSITION_SOURCE_REVISION" == "$CURRENT_SOURCE_REVISION" \
     && "$(printf '%s' "$TRANSITION_SOURCE_TREE_SHA256" | tr '[:upper:]' '[:lower:]')" == "$CURRENT_SOURCE_TREE_SHA256" ]] || {
     echo "Gate B policy transition does not connect the Gate A source to the current clean source" >&2
@@ -372,6 +374,21 @@ print(t.get("from_source_revision", ""), t.get("from_source_tree_sha256", ""), t
   )"
   [[ "$GATE_A_SOURCE_TREE_ACTUAL" == "$(printf '%s' "$GATE_A_SOURCE_TREE_SHA256" | tr '[:upper:]' '[:lower:]')" ]] || {
     echo "Gate A source tree is not available from the current repository" >&2
+    exit 1
+  }
+  git -C "$SOURCE_ROOT" cat-file -e "${UPGRADE_SOURCE_REVISION}^{commit}" 2>/dev/null \
+    && git -C "$SOURCE_ROOT" merge-base --is-ancestor \
+      "$GATE_A_SOURCE_REVISION" "$UPGRADE_SOURCE_REVISION" \
+    && git -C "$SOURCE_ROOT" merge-base --is-ancestor \
+      "$UPGRADE_SOURCE_REVISION" "$CURRENT_SOURCE_REVISION" \
+    || { echo "production upgrade source is not in the Gate A-to-current source chain" >&2; exit 1; }
+  UPGRADE_SOURCE_TREE_ACTUAL="$(
+    git -C "$SOURCE_ROOT" --attr-source="$UPGRADE_SOURCE_REVISION" \
+      archive --format=tar "$UPGRADE_SOURCE_REVISION" \
+      | shasum -a 256 | awk '{print tolower($1)}'
+  )"
+  [[ "$UPGRADE_SOURCE_TREE_ACTUAL" == "$(printf '%s' "$UPGRADE_SOURCE_TREE_SHA256" | tr '[:upper:]' '[:lower:]')" ]] || {
+    echo "production upgrade source tree is not available from the current repository" >&2
     exit 1
   }
   read -r GATE_A_CANISTER_WASM_SHA256 GATE_A_BRIDGE_RUNTIME_SHA256 < <(

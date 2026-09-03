@@ -129,23 +129,50 @@ production_freeze_bundle() {
 import hashlib,json,os,re,stat,sys
 source,destination=sys.argv[1:]
 directory=os.open(source,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-def read_regular(name,limit):
- if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',name): raise SystemExit(f'unsafe release artifact path: {name}')
- fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=directory)
+def path_parts(name,top_level=False):
+ if not isinstance(name,str): raise SystemExit('release artifact path is not a string')
+ parts=name.split('/')
+ if not parts or any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',part) for part in parts): raise SystemExit(f'unsafe release artifact path: {name}')
+ if top_level and len(parts)!=1: raise SystemExit(f'unsafe top-level release artifact path: {name}')
+ return parts
+def read_regular(name,limit,top_level=False):
+ parts=path_parts(name,top_level)
+ parent_fd=os.dup(directory)
  try:
-  info=os.fstat(fd)
-  if not stat.S_ISREG(info.st_mode) or info.st_size>limit: raise SystemExit(f'invalid release artifact: {name}')
-  chunks=[]; remaining=limit+1
-  while remaining:
-   chunk=os.read(fd,min(1024*1024,remaining))
-   if not chunk: break
-   chunks.append(chunk); remaining-=len(chunk)
-  value=b''.join(chunks)
-  if len(value)>limit: raise SystemExit(f'release artifact exceeds size limit: {name}')
-  return value
+  for part in parts[:-1]:
+   next_fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent_fd)
+   os.close(parent_fd); parent_fd=next_fd
+  fd=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent_fd)
+  try:
+   info=os.fstat(fd)
+   if not stat.S_ISREG(info.st_mode) or info.st_size>limit: raise SystemExit(f'invalid release artifact: {name}')
+   chunks=[]; remaining=limit+1
+   while remaining:
+    chunk=os.read(fd,min(1024*1024,remaining))
+    if not chunk: break
+    chunks.append(chunk); remaining-=len(chunk)
+   value=b''.join(chunks)
+   if len(value)>limit: raise SystemExit(f'release artifact exceeds size limit: {name}')
+   return value
+  finally: os.close(fd)
+ finally: os.close(parent_fd)
+def write_regular(name,value):
+ parts=path_parts(name)
+ parent=destination
+ for part in parts[:-1]:
+  parent=os.path.join(parent,part)
+  os.makedirs(parent,mode=0o700,exist_ok=True)
+ fd=os.open(os.path.join(destination,*parts),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+ try:
+  view=memoryview(value)
+  while view:
+   written=os.write(fd,view)
+   if written<=0: raise SystemExit(f'short write while freezing release artifact: {name}')
+   view=view[written:]
+  os.fsync(fd)
  finally: os.close(fd)
 try:
- manifest_bytes=read_regular('release-manifest.json',4*1024*1024)
+ manifest_bytes=read_regular('release-manifest.json',4*1024*1024,True)
  manifest=json.loads(manifest_bytes)
  artifacts=manifest.get('artifacts')
  if not isinstance(artifacts,list): raise SystemExit('release manifest artifacts are missing')
@@ -153,20 +180,29 @@ try:
  for entry in artifacts:
   if not isinstance(entry,dict) or set(entry)!={'path','sha256'}: raise SystemExit('invalid release artifact entry')
   name=entry['path']; expected=entry['sha256']
+  path_parts(name,True)
   if name in files or not isinstance(expected,str) or not re.fullmatch(r'[0-9a-fA-F]{64}',expected): raise SystemExit(f'invalid duplicate release artifact: {name}')
-  value=read_regular(name,256*1024*1024)
+  value=read_regular(name,256*1024*1024,True)
   if hashlib.sha256(value).hexdigest().lower()!=expected.lower(): raise SystemExit(f'release artifact hash mismatch while freezing: {name}')
   files[name]=value
- for name,value in files.items():
-  fd=os.open(os.path.join(destination,name),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
-  try:
-   view=memoryview(value)
-   while view:
-    written=os.write(fd,view)
-    if written<=0: raise SystemExit(f'short write while freezing release artifact: {name}')
-    view=view[written:]
-   os.fsync(fd)
-  finally: os.close(fd)
+ rpc=json.loads(files.get('rpc-e2e.json',b'{}'))
+ scenarios=rpc.get('scenarios',{})
+ if not isinstance(scenarios,dict): raise SystemExit('invalid RPC rehearsal scenarios')
+ for scenario in scenarios.values():
+  if scenario is None: continue
+  if not isinstance(scenario,dict) or not isinstance(scenario.get('artifacts'),list): raise SystemExit('invalid RPC rehearsal artifact references')
+  for reference in scenario['artifacts']:
+   if not isinstance(reference,dict): raise SystemExit('invalid RPC rehearsal artifact reference')
+   name=reference.get('path'); expected=reference.get('sha256')
+   parts=path_parts(name)
+   if parts[0]!='artifacts' or not isinstance(expected,str) or not re.fullmatch(r'[0-9a-f]{64}',expected): raise SystemExit(f'invalid RPC rehearsal artifact reference: {name}')
+   value=read_regular(name,16*1024*1024)
+   if hashlib.sha256(value).hexdigest()!=expected: raise SystemExit(f'RPC rehearsal artifact hash mismatch while freezing: {name}')
+   if name in files and files[name]!=value: raise SystemExit(f'conflicting RPC rehearsal artifact reference: {name}')
+   files[name]=value
+ for name,value in files.items(): write_regular(name,value)
+ for current,dirs,_ in os.walk(destination,topdown=False):
+  for name in dirs: os.chmod(os.path.join(current,name),0o500)
  destination_fd=os.open(destination,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
  try: os.fsync(destination_fd)
  finally: os.close(destination_fd)

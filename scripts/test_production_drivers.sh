@@ -235,6 +235,30 @@ with open(os.path.join(bundle,'release-manifest.json'),'w',encoding='utf-8') as 
     json.dump(manifest,output,separators=(',',':'))
     output.write('\n')
 PY
+FREEZE_SOURCE="$T/freeze-source"
+FREEZE_TARGET="$T/freeze-target"
+mkdir -p "$FREEZE_SOURCE/artifacts" "$FREEZE_TARGET"
+printf '{"raw":true}\n' >"$FREEZE_SOURCE/artifacts/preflight-base.json"
+FREEZE_RAW_SHA="$(shasum -a 256 "$FREEZE_SOURCE/artifacts/preflight-base.json" | awk '{print $1}')"
+python3 - "$FREEZE_SOURCE/rpc-e2e.json" "$FREEZE_RAW_SHA" <<'PY'
+import json,sys
+path,digest=sys.argv[1:]
+value={'scenarios':{'preflight':{'artifacts':[{'path':'artifacts/preflight-base.json','sha256':digest}]}}}
+with open(path,'w',encoding='utf-8') as output: json.dump(value,output,separators=(',',':')); output.write('\n')
+PY
+FREEZE_RPC_SHA="$(shasum -a 256 "$FREEZE_SOURCE/rpc-e2e.json" | awk '{print $1}')"
+printf '{"artifacts":[{"path":"rpc-e2e.json","sha256":"%s"}]}\n' "$FREEZE_RPC_SHA" >"$FREEZE_SOURCE/release-manifest.json"
+# shellcheck source=production-validation.sh
+source "$DRIVER_ROOT/scripts/production-validation.sh"
+production_freeze_bundle "$FREEZE_SOURCE" "$FREEZE_TARGET"
+cmp -s "$FREEZE_SOURCE/artifacts/preflight-base.json" "$FREEZE_TARGET/artifacts/preflight-base.json"
+chmod u+w "$FREEZE_TARGET" "$FREEZE_TARGET/artifacts"
+printf '{"raw":false}\n' >"$FREEZE_SOURCE/artifacts/preflight-base.json"
+mkdir "$T/freeze-rejected"
+if production_freeze_bundle "$FREEZE_SOURCE" "$T/freeze-rejected" >/dev/null 2>&1; then
+  echo "bundle freeze accepted a drifted RPC rehearsal raw artifact" >&2
+  exit 1
+fi
 : >"$TRACE"
 BRIDGE_MONITOR_RPC_URL_1=https://one.example BRIDGE_MONITOR_RPC_URL_2=https://two.example BRIDGE_MONITOR_RPC_URL_3=https://three.example \
   "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-monitor-drill "$T/bundle" >/dev/null

@@ -69,7 +69,7 @@ production installとGate Aではschema 2 template固定のBootstrap運用値を
 
 unpause後は7日以上のBase feeとgovernance gas／settlement cycles各10件以上をGate Cで観測する。この観測結果と`fee-cycles-measurements.json`はseal済み値を自動更新せず、controller handoverの認可入力にも使わない。変更が必要なら別upgradeとレビューを行う。
 
-未確定値をzeroや任意の仮値でmainnet plan/profileへ入れてはならない。install時だけはprotocol定義済みの固定Bootstrap sentinelを使用する。production Canister install planは`schema_version: 2`、install receiptは`schema_version: 3`、release profileは`schema_version: 5`、Gate A manifestは`schema_version: 3`、Gate B manifestは`schema_version: 4`、Gate A receiptは`schema_version: 2`だけを受理する。初回controller activation receiptはschema 1、handover後のSNS proposal型Activation Receiptはschema 4として別型のまま保持し、旧versionや未知versionをmigrationせずfail closedにする。`validate-bundle --offline --gate-b`のpre-seal結果はsealだけを認可し、seal後の`verify-live schedule`だけがschedule prepareを認可する。fee cap超過またはcycles不足ではtransactionを生成・送信しない。
+未確定値をzeroや任意の仮値でmainnet plan/profileへ入れてはならない。install時だけはprotocol定義済みの固定Bootstrap sentinelを使用する。production Canister install planは`schema_version: 2`、install receiptは`schema_version: 3`、release profileは`schema_version: 5`、Gate A manifestは`schema_version: 3`、Gate B manifestは`schema_version: 4`、Gate A receiptは`schema_version: 2`、post-Gate-A policy transitionは`schema_version: 3`だけを受理する。初回controller activation receiptはschema 1、handover後のSNS proposal型Activation Receiptはschema 4として別型のまま保持し、旧versionや未知versionをmigrationせずfail closedにする。`validate-bundle --offline --gate-b`のpre-seal結果はsealだけを認可し、seal後の`verify-live schedule`だけがschedule prepareを認可する。fee cap超過またはcycles不足ではtransactionを生成・送信しない。
 
 ## timelock 遅延（Base Admin）
 
