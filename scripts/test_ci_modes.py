@@ -114,9 +114,9 @@ class CiModeTests(unittest.TestCase):
         self.assertLess(certora_manifest, certora_tests)
         self.assertLess(certora_tests, proof_impact)
 
-    def test_shared_verus_kernels_may_be_const_or_non_const(self) -> None:
+    def test_shared_verus_kernels_may_be_private_const_or_non_const(self) -> None:
         body = function_body("run_verus")
-        self.assertIn('pub (const )?fn ${kernel_name}\\b', body)
+        self.assertIn('^(pub )?(const )?fn ${kernel_name}\\b', body)
 
     def test_halmos_runs_each_manifest_obligation_individually(self) -> None:
         body = function_body("run_halmos")
