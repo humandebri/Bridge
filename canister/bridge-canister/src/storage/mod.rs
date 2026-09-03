@@ -6154,6 +6154,91 @@ impl StableStore {
         self.admin_state.set(encode(&Some(value.clone()))?)
     }
 
+    pub(crate) fn migrate_bootstrap_pause_principal(
+        &mut self,
+        old_pause_principal: Principal,
+        new_pause_principal: Principal,
+        timestamp_ns: u64,
+    ) -> Result<bridge_core::BootstrapPausePrincipalMigrationDecision, StorageError> {
+        use bridge_core::BootstrapPausePrincipalMigrationDecision::{
+            AlreadyApplied, Apply, PostBootstrapNoop, Reject,
+        };
+
+        let previous_admission = self.deposit_admission.get()?;
+        let mut admission = decode::<DepositAdmissionControl>(&previous_admission)?;
+        let previous_admin = self.admin_state.get()?;
+        let mut admin = self.admin_state()?;
+        let config = self.config()?.ok_or(StorageError::RecordNotFound)?;
+        let marker = admission.bootstrap_activation_controller;
+        let marker_unbound = marker.is_none() || marker == Some(Principal::anonymous());
+        let roles_distinct = new_pause_principal != admin.governance_principal
+            && new_pause_principal != admin.fee_recipient.owner
+            && new_pause_principal != config.confirmation_relayer_principal;
+        let decision = bridge_core::bootstrap_pause_principal_migration_decision(
+            admission.operational_config_sealed,
+            admin.deposits_paused,
+            admin.pause_principal == old_pause_principal
+                && config.pause_principal == old_pause_principal,
+            admin.pause_principal == new_pause_principal,
+            marker_unbound,
+            marker == Some(new_pause_principal),
+            roles_distinct,
+        );
+        match decision {
+            AlreadyApplied | PostBootstrapNoop => return Ok(decision),
+            Reject => return Err(StorageError::Core(CoreError::ConflictingReplay)),
+            Apply => {}
+        }
+
+        admin.pause_principal = new_pause_principal;
+        admission.bootstrap_activation_controller = Some(new_pause_principal);
+        let admin_blob = encode(&Some(admin))?;
+        let admission_blob = encode(&admission)?;
+        let mut counters = self.counters()?;
+        let previous_counters = encode(&counters)?;
+        let audit = self.prepare_audit_batch(
+            &mut counters,
+            new_pause_principal,
+            timestamp_ns,
+            vec![AuditEventKind::PausePrincipalRotated],
+        )?;
+        let counters_blob = encode(&counters)?;
+        self.handle.update(|connection| {
+            let persisted_admin = connection.query_scalar::<Vec<u8>>(
+                "SELECT admin_state FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_admission = connection.query_scalar::<Vec<u8>>(
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_counters = connection.query_scalar::<Vec<u8>>(
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted_admin != previous_admin.to_sql_bytes()
+                || persisted_admission != previous_admission.to_sql_bytes()
+                || persisted_counters != previous_counters.to_sql_bytes()
+            {
+                return Err(DbError::Constraint(
+                    "stale bootstrap pause principal migration".into(),
+                ));
+            }
+            commit_audit_batch(connection, &audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET admin_state = ?1, deposit_admission = ?2, counters = ?3, audit_retention = ?4 WHERE id = 1",
+                params![
+                    admin_blob.to_sql_bytes(),
+                    admission_blob.to_sql_bytes(),
+                    counters_blob.to_sql_bytes(),
+                    audit.retention_blob.to_sql_bytes()
+                ],
+            )?;
+            Ok(())
+        })?;
+        Ok(Apply)
+    }
+
     pub fn rotate_fee_recipient_with_audit(
         &mut self,
         next_recipient: FeeRecipientConfig,
@@ -16966,6 +17051,80 @@ mod tests {
             next
         );
         assert_eq!(reopened.accounting().expect("accounting"), before);
+    }
+
+    #[test]
+    #[serial]
+    fn bootstrap_pause_principal_migration_is_atomic_idempotent_and_reopens() {
+        use bridge_core::BootstrapPausePrincipalMigrationDecision::{AlreadyApplied, Apply};
+
+        let memory = VectorMemory::default();
+        let mut initial = config();
+        let old = initial.pause_principal;
+        let next = Principal::self_authenticating([42; 32]);
+        initial.pause_principal = old;
+        let mut store =
+            StableStore::init_configured(memory.clone(), &initial).expect("initialize configured");
+        let accounting = store.accounting().expect("accounting");
+        let counts = store.status_counts().expect("counts");
+        let admin = store.admin_state().expect("admin");
+        let marker = store.bootstrap_activation_controller().expect("marker");
+
+        assert!(store
+            .migrate_bootstrap_pause_principal(Principal::self_authenticating([41; 32]), next, 98,)
+            .is_err());
+        assert_eq!(store.admin_state().expect("admin"), admin);
+        assert_eq!(
+            store.bootstrap_activation_controller().expect("marker"),
+            marker
+        );
+        assert_eq!(store.status_counts().expect("counts"), counts);
+
+        assert_eq!(
+            store
+                .migrate_bootstrap_pause_principal(old, next, 99)
+                .expect("apply migration"),
+            Apply
+        );
+        assert_eq!(store.admin_state().expect("admin").pause_principal, next);
+        assert_eq!(
+            store.bootstrap_activation_controller().expect("marker"),
+            Some(next)
+        );
+        assert_eq!(
+            store.config().expect("config").unwrap().pause_principal,
+            next
+        );
+        assert_eq!(store.accounting().expect("accounting"), accounting);
+        assert_eq!(
+            store.status_counts().expect("counts").retained_audit_events,
+            counts.retained_audit_events + 1
+        );
+        let audit = store.audit_events(0, 10).expect("audit");
+        assert_eq!(audit.events[0].caller, next);
+        assert!(matches!(
+            audit.events[0].kind,
+            AuditEventKind::PausePrincipalRotated
+        ));
+        assert_eq!(
+            store
+                .migrate_bootstrap_pause_principal(old, next, 100)
+                .expect("idempotent migration"),
+            AlreadyApplied
+        );
+        assert_eq!(
+            store.status_counts().expect("counts").retained_audit_events,
+            counts.retained_audit_events + 1
+        );
+        drop(store);
+
+        let reopened = StableStore::reopen(memory).expect("reopen");
+        assert_eq!(reopened.admin_state().expect("admin").pause_principal, next);
+        assert_eq!(
+            reopened.bootstrap_activation_controller().expect("marker"),
+            Some(next)
+        );
+        assert_eq!(reopened.accounting().expect("accounting"), accounting);
     }
 
     #[test]

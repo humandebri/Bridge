@@ -459,6 +459,37 @@ fn reopen_store_after_upgrade() -> StableStore {
         .unwrap_or_else(|error| ic_cdk::trap(format!("stable state reopen failed: {error}")))
 }
 
+#[cfg(not(feature = "test-deployment"))]
+fn apply_production_bootstrap_pause_principal_migration(store: &mut StableStore) {
+    const PRODUCTION_BRIDGE_CANISTER: &str = "lb5i5-ziaaa-aaaar-qcgwq-cai";
+    const LEGACY_PAUSE_PRINCIPAL: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
+    const PRODUCTION_PAUSE_PRINCIPAL: &str =
+        "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe";
+
+    let production_canister = Principal::from_text(PRODUCTION_BRIDGE_CANISTER)
+        .unwrap_or_else(|error| ic_cdk::trap(format!("invalid production Canister ID: {error}")));
+    if ic_cdk::api::canister_self() != production_canister {
+        return;
+    }
+    let old_pause_principal = Principal::from_text(LEGACY_PAUSE_PRINCIPAL)
+        .unwrap_or_else(|error| ic_cdk::trap(format!("invalid legacy pause principal: {error}")));
+    let new_pause_principal =
+        Principal::from_text(PRODUCTION_PAUSE_PRINCIPAL).unwrap_or_else(|error| {
+            ic_cdk::trap(format!("invalid production pause principal: {error}"))
+        });
+    store
+        .migrate_bootstrap_pause_principal(
+            old_pause_principal,
+            new_pause_principal,
+            ic_cdk::api::time(),
+        )
+        .unwrap_or_else(|error| {
+            ic_cdk::trap(format!(
+                "production bootstrap pause principal migration failed: {error}"
+            ))
+        });
+}
+
 fn finish_post_upgrade(store: StableStore) {
     install_store(store);
     ensure_supported_schema();
@@ -481,7 +512,9 @@ fn finish_post_upgrade(store: StableStore) {
 #[cfg(not(feature = "test-deployment"))]
 #[ic_cdk::post_upgrade]
 fn post_upgrade() {
-    finish_post_upgrade(reopen_store_after_upgrade());
+    let mut store = reopen_store_after_upgrade();
+    apply_production_bootstrap_pause_principal_migration(&mut store);
+    finish_post_upgrade(store);
 }
 
 #[cfg(feature = "test-deployment")]

@@ -1,10 +1,10 @@
 use bridge_core::{
     activation_prepare_authorized, administrator_authorized, asset_operation_lifecycle_decision,
-    audit_next, authorization_commit_allowed, checked_counter_transition, checked_requirement,
-    confirmation_caller_authorized, confirmation_roles_distinct, counter_delta,
-    deposit_admission_decision, deposit_reservation_active, deposit_transition,
-    deposit_transition_decision, evidence_matches, expiry_refund_allowed,
-    fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
+    audit_next, authorization_commit_allowed, bootstrap_pause_principal_migration_decision,
+    checked_counter_transition, checked_requirement, confirmation_caller_authorized,
+    confirmation_roles_distinct, counter_delta, deposit_admission_decision,
+    deposit_reservation_active, deposit_transition, deposit_transition_decision, evidence_matches,
+    expiry_refund_allowed, fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
     funding_reconciliation_decision, hold_resolution_decision, lease_generation_next,
     lease_outcome_is_current, manual_claim_decision, mint_admission_total,
     mint_authorization_has_minimum_remaining_time, mint_finalization_allowed, next_attempt,
@@ -15,9 +15,9 @@ use bridge_core::{
     service_fee_change_allowed, settlement_decision, signature_install_allowed,
     signing_cycle_requirement, transaction_liability_wei, withdrawal_phase_allows,
     withdrawal_phase_step, withdrawal_transition_effects, AssetOperationLifecycleDecision,
-    DepositEventGuard, DepositTransitionDecision, DepositTransitionInput,
-    FeeRecipientRotationDecision, FundingReconciliationDecision, HoldResolutionDecision,
-    ManualClaimDecision, OperationalConfigSealDecision,
+    BootstrapPausePrincipalMigrationDecision, DepositEventGuard, DepositTransitionDecision,
+    DepositTransitionInput, FeeRecipientRotationDecision, FundingReconciliationDecision,
+    HoldResolutionDecision, ManualClaimDecision, OperationalConfigSealDecision,
 };
 
 #[test]
@@ -375,6 +375,49 @@ fn payout_and_authorization_tables_are_exhaustive() {
                     administrator_authorized(action, pause, governance),
                     expected
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn bootstrap_pause_principal_migration_is_exact_and_idempotent() {
+    use BootstrapPausePrincipalMigrationDecision::{
+        AlreadyApplied, Apply, PostBootstrapNoop, Reject,
+    };
+    for sealed in [false, true] {
+        for paused in [false, true] {
+            for pause_is_old in [false, true] {
+                for pause_is_new in [false, true] {
+                    for marker_unbound in [false, true] {
+                        for marker_is_new in [false, true] {
+                            for roles_distinct in [false, true] {
+                                let expected = if sealed {
+                                    PostBootstrapNoop
+                                } else if pause_is_new && marker_is_new {
+                                    AlreadyApplied
+                                } else if paused && pause_is_old && marker_unbound && roles_distinct
+                                {
+                                    Apply
+                                } else {
+                                    Reject
+                                };
+                                assert_eq!(
+                                    bootstrap_pause_principal_migration_decision(
+                                        sealed,
+                                        paused,
+                                        pause_is_old,
+                                        pause_is_new,
+                                        marker_unbound,
+                                        marker_is_new,
+                                        roles_distinct,
+                                    ),
+                                    expected
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
     }

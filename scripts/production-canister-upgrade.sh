@@ -211,6 +211,8 @@ PY
 fi
 CARGO_TARGET_DIR="$PROFILE_TARGET" cargo build --quiet --locked --manifest-path "$ROOT/Cargo.toml" -p bridge-profile
 PROFILE_BIN="$PROFILE_TARGET/debug/bridge-profile"
+"$PROFILE_BIN" validate-production-upgrade-gate-a-binding \
+  "$GATE_A_PROFILE" "$GATE_A_RECEIPT" >/dev/null
 
 status_fields() {
   python3 -I -S - "$1" <<'PY'
@@ -408,7 +410,8 @@ PY
   }
   AFTER_PUBLIC_STATE="$($PROFILE_BIN verify-production-upgrade-state-preserved \
     "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY" \
-    "$AFTER_BRIDGE_STATUS" "$AFTER_LIFECYCLE" "$AFTER_RUNTIME" "$AFTER_INTEGRITY")"
+    "$AFTER_BRIDGE_STATUS" "$AFTER_LIFECYCLE" "$AFTER_RUNTIME" "$AFTER_INTEGRITY" \
+    "$GATE_A_PROFILE" "$GATE_A_RECEIPT")"
   export EXECUTED_AT
   RECOVERED=true
   write_json "$OUTPUT" production-controller-bootstrap-upgrade "$STDOUT_FILE" "$STDERR_FILE" "$REQUEST_ID"
@@ -572,6 +575,7 @@ snapshot AFTER
 [[ "$AFTER_MODULE" == "$WASM_SHA256" ]] || { echo "post-upgrade module hash differs from the reviewed Wasm" >&2; exit 1; }
 AFTER_PUBLIC_STATE="$($PROFILE_BIN verify-production-upgrade-state-preserved \
   "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY" \
-  "$AFTER_BRIDGE_STATUS" "$AFTER_LIFECYCLE" "$AFTER_RUNTIME" "$AFTER_INTEGRITY")"
+  "$AFTER_BRIDGE_STATUS" "$AFTER_LIFECYCLE" "$AFTER_RUNTIME" "$AFTER_INTEGRITY" \
+  "$GATE_A_PROFILE" "$GATE_A_RECEIPT")"
 write_json "$OUTPUT" production-controller-bootstrap-upgrade "$STDOUT_FILE" "$STDERR_FILE" "$REQUEST_ID"
 echo "production controller-bootstrap upgrade verified: $OUTPUT"

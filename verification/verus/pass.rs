@@ -878,6 +878,35 @@ proof fn operational_config_seal_requires_the_current_bootstrap_controller(
         <==> controller && bootstrap
 {}
 
+proof fn bootstrap_pause_principal_migration_is_scoped_and_idempotent(
+    sealed: bool,
+    paused: bool,
+    pause_is_old: bool,
+    pause_is_new: bool,
+    marker_unbound: bool,
+    marker_is_new: bool,
+    roles_distinct: bool,
+)
+    ensures
+        kernel::bootstrap_pause_principal_migration_code_spec(
+            sealed,
+            paused,
+            pause_is_old,
+            pause_is_new,
+            marker_unbound,
+            marker_is_new,
+            roles_distinct,
+        ) == if sealed {
+            2
+        } else if pause_is_new && marker_is_new {
+            1
+        } else if paused && pause_is_old && marker_unbound && roles_distinct {
+            0
+        } else {
+            3
+        }
+{}
+
 proof fn activation_authority_fails_closed_until_bootstrap_consumed(
     bootstrap_controller: bool,
     governance: bool,

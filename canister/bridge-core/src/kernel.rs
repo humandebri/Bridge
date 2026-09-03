@@ -202,6 +202,20 @@ macro_rules! operational_config_seal_caller_authorized_body {
     };
 }
 
+macro_rules! bootstrap_pause_principal_migration_body {
+    ($sealed:expr, $paused:expr, $pause_is_old:expr, $pause_is_new:expr, $marker_unbound:expr, $marker_is_new:expr, $roles_distinct:expr, $post_bootstrap:expr, $already_applied:expr, $apply:expr, $reject:expr) => {{
+        if $sealed {
+            $post_bootstrap
+        } else if $pause_is_new && $marker_is_new {
+            $already_applied
+        } else if $paused && $pause_is_old && $marker_unbound && $roles_distinct {
+            $apply
+        } else {
+            $reject
+        }
+    }};
+}
+
 macro_rules! activation_prepare_authorized_body {
     ($bootstrap_controller:expr, $governance:expr, $sealed_paused:expr, $bootstrap_authority_present:expr, $phase:expr, $schedule:expr, $execute:expr) => {{
         if $phase != $schedule && $phase != $execute {
@@ -257,6 +271,15 @@ pub enum OperationalConfigSealDecision {
     Seal,
     AlreadySealed,
     InvalidCandidate,
+}
+
+#[cfg(not(verus_keep_ghost))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BootstrapPausePrincipalMigrationDecision {
+    Apply,
+    AlreadyApplied,
+    PostBootstrapNoop,
+    Reject,
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -1824,6 +1847,57 @@ pub const fn operational_config_seal_caller_authorized(
 }
 
 #[cfg(not(verus_keep_ghost))]
+const fn bootstrap_pause_principal_migration_code(
+    operational_config_sealed: bool,
+    deposits_paused: bool,
+    pause_is_old: bool,
+    pause_is_new: bool,
+    marker_unbound: bool,
+    marker_is_new: bool,
+    roles_distinct: bool,
+) -> u8 {
+    bootstrap_pause_principal_migration_body!(
+        operational_config_sealed,
+        deposits_paused,
+        pause_is_old,
+        pause_is_new,
+        marker_unbound,
+        marker_is_new,
+        roles_distinct,
+        2,
+        1,
+        0,
+        3
+    )
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn bootstrap_pause_principal_migration_decision(
+    operational_config_sealed: bool,
+    deposits_paused: bool,
+    pause_is_old: bool,
+    pause_is_new: bool,
+    marker_unbound: bool,
+    marker_is_new: bool,
+    roles_distinct: bool,
+) -> BootstrapPausePrincipalMigrationDecision {
+    match self::bootstrap_pause_principal_migration_code(
+        operational_config_sealed,
+        deposits_paused,
+        pause_is_old,
+        pause_is_new,
+        marker_unbound,
+        marker_is_new,
+        roles_distinct,
+    ) {
+        0 => BootstrapPausePrincipalMigrationDecision::Apply,
+        1 => BootstrapPausePrincipalMigrationDecision::AlreadyApplied,
+        2 => BootstrapPausePrincipalMigrationDecision::PostBootstrapNoop,
+        _ => BootstrapPausePrincipalMigrationDecision::Reject,
+    }
+}
+
+#[cfg(not(verus_keep_ghost))]
 pub const fn activation_prepare_authorized(
     is_bootstrap_controller: bool,
     is_governance: bool,
@@ -2649,6 +2723,30 @@ verus! {
         controller: bool, bootstrap: bool,
     ) -> bool {
         operational_config_seal_caller_authorized_body!(controller, bootstrap)
+    }
+
+    pub open spec fn bootstrap_pause_principal_migration_code_spec(
+        sealed: bool,
+        paused: bool,
+        pause_is_old: bool,
+        pause_is_new: bool,
+        marker_unbound: bool,
+        marker_is_new: bool,
+        roles_distinct: bool,
+    ) -> int {
+        bootstrap_pause_principal_migration_body!(
+            sealed,
+            paused,
+            pause_is_old,
+            pause_is_new,
+            marker_unbound,
+            marker_is_new,
+            roles_distinct,
+            2,
+            1,
+            0,
+            3
+        )
     }
 
     pub open spec fn activation_prepare_authorized_spec(

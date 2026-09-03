@@ -47,6 +47,7 @@ fn main() {
             }
             println!("{}", "a".repeat(64));
         }
+        Some("validate-production-upgrade-gate-a-binding") => println!("{}", "b".repeat(64)),
         Some("verify-production-upgrade-state-preserved") => println!("{}", "a".repeat(64)),
         Some("prepare-production-canister-upgrade") => {
             let mut artifact = OpenOptions::new().write(true).create_new(true).open(&args[7]).unwrap();
