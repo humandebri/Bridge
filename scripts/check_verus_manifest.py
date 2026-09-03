@@ -77,6 +77,17 @@ def _definition_body(definition: str, name: str) -> str:
             depth += 1
         elif char == "}":
             if depth == 0:
+                # A proof in the final `verus!` block is followed by that
+                # block's closing brace (and the conventional empty `main`).
+                # Accept only this exact wrapper; any other unmatched brace
+                # remains a malformed function and fails closed.
+                trailing = definition[index:]
+                if candidates and re.fullmatch(
+                    r"\s*}\s*(?:fn\s+main\s*\(\s*\)\s*\{\s*\}\s*)?",
+                    trailing,
+                ):
+                    start, end = candidates[-1]
+                    return definition[start:end]
                 raise ValueError(f"unbalanced Verus function body: {name}")
             depth -= 1
             if depth == 0:
