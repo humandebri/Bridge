@@ -13738,17 +13738,17 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 path: legacy_path.into(),
                 sha256: hex(&Sha256::digest(legacy_bytes)),
             });
-            fs::write(
-                root.join("release-manifest.json"),
-                serde_json::to_vec(&legacy_manifest).unwrap(),
-            )
-            .unwrap();
-            assert!(validate_bundle(&root, true)
-                .err()
-                .unwrap()
-                .contains("manifest must contain each required evidence artifact exactly once"));
-            legacy_manifest.artifacts.pop();
         }
+        assert_eq!(legacy_manifest.artifacts.len(), 15);
+        fs::write(
+            root.join("release-manifest.json"),
+            serde_json::to_vec(&legacy_manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_bundle(&root, true)
+            .err()
+            .unwrap()
+            .contains("manifest must contain each required evidence artifact exactly once"));
         fs::remove_dir_all(root).unwrap();
     }
 }

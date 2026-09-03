@@ -67,7 +67,7 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 
 ## 緊急pause
 
-監視目標は同一の障害起点から5分以内の検知、15分以内の担当者確認、60分以内のBaseとIC双方のpauseである。片側だけのpauseで完了扱いにしない。単一emergency pause principalの実request IDとaudit event、両transaction/callの確定時刻をevidenceへ入れる。本番ゲートはpause/cancel経路の成功、証跡、公式EVM RPC Canister IDとchain、pending Timelock cancel可能性を要求し、5/15/60の実測達成は公開後に評価する。EVM RPC Canister配下providerの運営主体・基盤・可用性は外部仮定として扱う。
+監視目標は同一の障害起点から5分以内の検知、15分以内の担当者確認、60分以内のBaseとIC双方のpauseである。片側だけのpauseで完了扱いにしない。単一emergency pause principalの実request IDとaudit event、両transaction/callの確定時刻をevidenceへ入れる。pause/cancel経路の成功、証跡、pending Timelock cancel可能性と5/15/60の実測達成はunpause後のGate C運用評価で確認し、Gate B、activation、controller handoverを認可しない。production chain bindingは公式EVM RPC Canister IDとchainをGate Bで検証する。EVM RPC Canister配下providerの運営主体・基盤・可用性は外部仮定として扱う。
 
 - 承認済みpause principal identityから`pause_new_deposits`を実行する。未期限Mint AuthorizationはBase側の`pauseDepositMints`によるepoch増加で失効するが、返金は元deadline後のFinalized未処理証拠まで待つ。各Authorizationのdeadlineと停止理由を監視する。
 - Base側の異常では単一emergency pause principalがCanisterの`emergency_pause`を呼ぶ。この呼出しの成功条件はIC側pauseとBase action queueの永続化までであり、Baseへの送信完了ではない。同じpause principal identityを使う外部CLIで`drain-emergency`を実行し、Deposit/Withdrawal pauseと記録済みTimelock cancelを順に署名・送信・確定する。
