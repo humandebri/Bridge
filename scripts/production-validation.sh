@@ -182,7 +182,9 @@ try:
   name=entry['path']; expected=entry['sha256']
   path_parts(name,True)
   if name in files or not isinstance(expected,str) or not re.fullmatch(r'[0-9a-fA-F]{64}',expected): raise SystemExit(f'invalid duplicate release artifact: {name}')
-  limit=256*1024*1024 if name in {'bridge-canister.wasm','bridge-runtime.bin','bsns-creation.bin','bsns-runtime.bin'} else 16*1024*1024
+  if name in {'bridge-canister.wasm','bridge-runtime.bin','bsns-creation.bin','bsns-runtime.bin'}: limit=256*1024*1024
+  elif name == 'production-canister-upgrade-receipt.json': limit=128*1024*1024
+  else: limit=16*1024*1024
   value=read_regular(name,limit,True)
   if hashlib.sha256(value).hexdigest().lower()!=expected.lower(): raise SystemExit(f'release artifact hash mismatch while freezing: {name}')
   files[name]=value

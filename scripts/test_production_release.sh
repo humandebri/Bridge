@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bridge-production-release.XXXXXX")"
 trap 'rm -rf "$TEST_TMP_ROOT"' EXIT
+mkdir "$TEST_TMP_ROOT/runtime-tmp"
+export TMPDIR="$TEST_TMP_ROOT/runtime-tmp"
 
 mkdir -p "$TEST_TMP_ROOT/bundle-a" "$TEST_TMP_ROOT/bundle-b" "$TEST_TMP_ROOT/source/scripts" "$TEST_TMP_ROOT/source/src" "$TEST_TMP_ROOT/source/ui/scripts" "$TEST_TMP_ROOT/release-inputs" "$TEST_TMP_ROOT/release-scratch"
 git -C "$TEST_TMP_ROOT/source" init -q
@@ -311,3 +313,4 @@ if PATH="$TEST_TMP_ROOT/failing-git:$PATH" REAL_GIT="$REAL_GIT" bash -c \
   echo "production source validation accepted a failed submodule inspection" >&2
   exit 1
 fi
+[[ -z "$(find "$TMPDIR" -maxdepth 1 -type d -name 'bridge-release-plan.*' -print -quit)" ]]

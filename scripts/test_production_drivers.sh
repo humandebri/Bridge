@@ -3,6 +3,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/bridge-driver-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
+mkdir "$T/runtime-tmp"
+export TMPDIR="$T/runtime-tmp"
 mkdir -p "$T/bin" "$T/bundle" "$T/source/contracts" "$T/source/scripts" "$T/source/src"
 cp "$ROOT/scripts/production-deploy-driver.sh" "$ROOT/scripts/production-activate-driver.sh" "$ROOT/scripts/production-seal-driver.sh" "$ROOT/scripts/production-activation-proposal.sh" "$ROOT/scripts/production-live-preflight.sh" "$ROOT/scripts/production-validation.sh" "$T/source/scripts/"
 cat >"$T/source/scripts/ci-local.sh" <<'SH'
@@ -281,6 +283,115 @@ if production_freeze_bundle "$FREEZE_COUNT_SOURCE" "$T/freeze-count-rejected" >/
   echo "bundle freeze accepted too many RPC rehearsal raw artifacts" >&2
   exit 1
 fi
+UPGRADE_LIMIT_SOURCE="$T/upgrade-limit-source"
+mkdir "$UPGRADE_LIMIT_SOURCE"
+python3 - "$UPGRADE_LIMIT_SOURCE" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); receipt=root/'production-canister-upgrade-receipt.json'
+with receipt.open('wb') as output: output.truncate(17*1024*1024)
+digest=hashlib.sha256(receipt.read_bytes()).hexdigest()
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':receipt.name,'sha256':digest}]},separators=(',',':'))+'\n')
+PY
+mkdir "$T/upgrade-limit-accepted"
+production_freeze_bundle "$UPGRADE_LIMIT_SOURCE" "$T/upgrade-limit-accepted"
+cmp -s "$UPGRADE_LIMIT_SOURCE/production-canister-upgrade-receipt.json" "$T/upgrade-limit-accepted/production-canister-upgrade-receipt.json"
+chmod -R u+w "$T/upgrade-limit-accepted"
+UPGRADE_OVERSIZE_SOURCE="$T/upgrade-oversize-source"
+mkdir "$UPGRADE_OVERSIZE_SOURCE"
+python3 - "$UPGRADE_OVERSIZE_SOURCE" <<'PY'
+import json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); receipt=root/'production-canister-upgrade-receipt.json'
+with receipt.open('wb') as output: output.truncate(128*1024*1024+1)
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':receipt.name,'sha256':'0'*64}]},separators=(',',':'))+'\n')
+PY
+mkdir "$T/upgrade-oversize-rejected"
+if production_freeze_bundle "$UPGRADE_OVERSIZE_SOURCE" "$T/upgrade-oversize-rejected" >/dev/null 2>&1; then
+  echo "bundle freeze accepted an oversized production upgrade receipt" >&2
+  exit 1
+fi
+RAW_LIMIT_SOURCE="$T/raw-limit-source"
+mkdir -p "$RAW_LIMIT_SOURCE/artifacts"
+python3 - "$RAW_LIMIT_SOURCE" exact <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); mode=sys.argv[2]; refs=[]
+for index in range(4):
+    path=root/f'artifacts/raw-{index}.json'
+    with path.open('wb') as output: output.truncate(16*1024*1024)
+    refs.append({'path':str(path.relative_to(root)),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+rpc=json.dumps({'scenarios':{'preflight':{'artifacts':refs}}},separators=(',',':')).encode()+b'\n'
+(root/'rpc-e2e.json').write_bytes(rpc)
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':'rpc-e2e.json','sha256':hashlib.sha256(rpc).hexdigest()}]},separators=(',',':'))+'\n')
+PY
+mkdir "$T/raw-limit-accepted"
+production_freeze_bundle "$RAW_LIMIT_SOURCE" "$T/raw-limit-accepted"
+chmod -R u+w "$T/raw-limit-accepted"
+python3 - "$RAW_LIMIT_SOURCE" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); extra=root/'artifacts/raw-extra.json'; extra.write_bytes(b'x')
+rpc_path=root/'rpc-e2e.json'; rpc=json.loads(rpc_path.read_text()); rpc['scenarios']['preflight']['artifacts'].append({'path':'artifacts/raw-extra.json','sha256':hashlib.sha256(b'x').hexdigest()})
+payload=json.dumps(rpc,separators=(',',':')).encode()+b'\n'; rpc_path.write_bytes(payload)
+manifest=json.loads((root/'release-manifest.json').read_text()); manifest['artifacts'][0]['sha256']=hashlib.sha256(payload).hexdigest(); (root/'release-manifest.json').write_text(json.dumps(manifest,separators=(',',':'))+'\n')
+PY
+mkdir "$T/raw-total-rejected"
+if production_freeze_bundle "$RAW_LIMIT_SOURCE" "$T/raw-total-rejected" >/dev/null 2>&1; then
+  echo "bundle freeze accepted RPC raw artifacts above the cumulative limit" >&2
+  exit 1
+fi
+python3 - "$RAW_LIMIT_SOURCE" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); raw=root/'artifacts/raw-0.json'
+with raw.open('wb') as output: output.truncate(16*1024*1024+1)
+rpc={'scenarios':{'preflight':{'artifacts':[{'path':'artifacts/raw-0.json','sha256':'0'*64}]}}}; payload=json.dumps(rpc,separators=(',',':')).encode()+b'\n'; (root/'rpc-e2e.json').write_bytes(payload)
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':'rpc-e2e.json','sha256':hashlib.sha256(payload).hexdigest()}]},separators=(',',':'))+'\n')
+PY
+mkdir "$T/raw-single-rejected"
+if production_freeze_bundle "$RAW_LIMIT_SOURCE" "$T/raw-single-rejected" >/dev/null 2>&1; then
+  echo "bundle freeze accepted an oversized RPC raw artifact" >&2
+  exit 1
+fi
+for unsafe_path in /tmp/escape.json ../escape.json; do
+  UNSAFE_SOURCE="$T/unsafe-$(printf '%s' "$unsafe_path" | shasum -a 256 | cut -c1-8)"
+  mkdir "$UNSAFE_SOURCE"
+  python3 - "$UNSAFE_SOURCE" "$unsafe_path" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); unsafe=sys.argv[2]
+rpc={'scenarios':{'preflight':{'artifacts':[{'path':unsafe,'sha256':'0'*64}]}}}; payload=json.dumps(rpc,separators=(',',':')).encode()+b'\n'; (root/'rpc-e2e.json').write_bytes(payload)
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':'rpc-e2e.json','sha256':hashlib.sha256(payload).hexdigest()}]},separators=(',',':'))+'\n')
+PY
+  mkdir "$UNSAFE_SOURCE-target"
+  if production_freeze_bundle "$UNSAFE_SOURCE" "$UNSAFE_SOURCE-target" >/dev/null 2>&1; then
+    echo "bundle freeze accepted unsafe RPC artifact path $unsafe_path" >&2
+    exit 1
+  fi
+done
+python3 - "$T" <<'PY'
+import hashlib,json,os,pathlib,sys
+root=pathlib.Path(sys.argv[1])
+def manifest(case, refs):
+    payload=json.dumps({'scenarios':{'preflight':{'artifacts':refs}}},separators=(',',':')).encode()+b'\n'
+    (case/'rpc-e2e.json').write_bytes(payload)
+    (case/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':'rpc-e2e.json','sha256':hashlib.sha256(payload).hexdigest()}]},separators=(',',':'))+'\n')
+payload=b'{}\n'; digest=hashlib.sha256(payload).hexdigest()
+case=root/'freeze-duplicate-source'; (case/'artifacts').mkdir(parents=True); (case/'artifacts/raw.json').write_bytes(payload)
+manifest(case,[{'path':'artifacts/raw.json','sha256':digest},{'path':'artifacts/raw.json','sha256':digest}])
+outside=root/'freeze-symlink-outside.json'; outside.write_bytes(payload)
+case=root/'freeze-leaf-symlink-source'; (case/'artifacts').mkdir(parents=True); os.symlink(outside,case/'artifacts/raw.json')
+manifest(case,[{'path':'artifacts/raw.json','sha256':digest}])
+outside_dir=root/'freeze-symlink-outside-dir'; outside_dir.mkdir(); (outside_dir/'raw.json').write_bytes(payload)
+case=root/'freeze-directory-symlink-source'; case.mkdir(); os.symlink(outside_dir,case/'artifacts')
+manifest(case,[{'path':'artifacts/raw.json','sha256':digest}])
+case=root/'freeze-prefix-source'; (case/'artifacts/node').mkdir(parents=True)
+manifest(case,[{'path':'artifacts/node','sha256':digest}])
+case=root/'freeze-dot-source'; (case/'artifacts').mkdir(parents=True); (case/'artifacts/raw.json').write_bytes(payload)
+manifest(case,[{'path':'artifacts/./raw.json','sha256':digest}])
+PY
+for freeze_case in duplicate leaf-symlink directory-symlink prefix dot; do
+  mkdir "$T/freeze-$freeze_case-rejected"
+  if production_freeze_bundle "$T/freeze-$freeze_case-source" "$T/freeze-$freeze_case-rejected" >/dev/null 2>&1; then
+    echo "bundle freeze accepted unsafe $freeze_case RPC artifact input" >&2
+    exit 1
+  fi
+done
 : >"$TRACE"
 BRIDGE_MONITOR_RPC_URL_1=https://one.example BRIDGE_MONITOR_RPC_URL_2=https://two.example BRIDGE_MONITOR_RPC_URL_3=https://three.example \
   "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-monitor-drill "$T/bundle" >/dev/null
@@ -686,3 +797,4 @@ fi
 ! grep -q ' confirm --artifact-file ' "$TRACE"
 ! grep -q '^cast send' "$TRACE"
 ! grep -q resume_new_deposits "$TRACE"
+[[ -z "$(find "$TMPDIR" -maxdepth 1 -type d \( -name 'bridge-seal-plan.*' -o -name 'bridge-activation-plan.*' -o -name 'bridge-activation-inputs.*' \) -print -quit)" ]]
