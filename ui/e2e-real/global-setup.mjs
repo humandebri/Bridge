@@ -1680,6 +1680,12 @@ export interface DeploymentProfile {
 export function canonicalRpcUrl(value: string): string {
   return new URL(value).href
 }
+export const DEFAULT_BASE_MAINNET_RPC_URL = "https://mainnet.base.org"
+export function resolvedBaseRpcUrl(profile: Pick<DeploymentProfile, "baseRpcUrl" | "chainId">): string {
+  if (profile.chainId === 8453) return DEFAULT_BASE_MAINNET_RPC_URL
+  if (profile.baseRpcUrl) return profile.baseRpcUrl
+  throw new Error("Deployment profile has no default RPC URL for non-Mainnet chain")
+}
 export const deploymentProfile: DeploymentProfile = ${serialize({
     environment: "local-real-e2e",
     label: "Local Anvil + PocketIC",

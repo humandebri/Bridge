@@ -2,7 +2,11 @@
 import { describe, expect, it } from "vitest"
 import vectors from "../../../verification/generated/protocol-vectors.json"
 import { decideWithdrawalFinalization } from "./withdrawal-confirmation-state"
-import { pendingConfirmationKey, upsertPendingConfirmation, type PendingConfirmation } from "./pending-confirmations"
+import {
+  pendingConfirmationKey,
+  upsertPendingConfirmation,
+  type PendingConfirmation,
+} from "./pending-confirmations"
 
 const deployment = {
   bridgeCanisterId: "aaaaa-aa",
@@ -29,12 +33,14 @@ function withdrawal(byte: string, blocked: boolean, owner: string): PendingConfi
 describe("Generated Lean refinement consumers", () => {
   it("protocol_finalization_cases_matches_production", () => {
     for (const testCase of vectors.finalization_cases) {
-      expect(decideWithdrawalFinalization(
-        testCase.receipt_succeeded ? "success" : "reverted",
-        BigInt(testCase.receipt_block),
-        testCase.finalized_block === null ? null : BigInt(testCase.finalized_block),
-        testCase.canonical,
-      )).toBe(testCase.decision)
+      expect(
+        decideWithdrawalFinalization(
+          testCase.receipt_succeeded ? "success" : "reverted",
+          BigInt(testCase.receipt_block),
+          testCase.finalized_block === null ? null : BigInt(testCase.finalized_block),
+          testCase.canonical,
+        ),
+      ).toBe(testCase.decision)
     }
   })
 
@@ -42,12 +48,17 @@ describe("Generated Lean refinement consumers", () => {
     for (const testCase of vectors.queue_cases) {
       const other = withdrawal("2", testCase.other_blocked, "other")
       const incoming = withdrawal("1", testCase.incoming_blocked, "incoming")
-      const existing = testCase.existing_blocked === null
-        ? []
-        : [withdrawal("1", testCase.existing_blocked, "existing")]
+      const existing =
+        testCase.existing_blocked === null
+          ? []
+          : [withdrawal("1", testCase.existing_blocked, "existing")]
       const restored = upsertPendingConfirmation([...existing, other], incoming, true)
-      const target = restored.find((entry) => pendingConfirmationKey(entry) === pendingConfirmationKey(incoming))
-      const preservedOther = restored.find((entry) => pendingConfirmationKey(entry) === pendingConfirmationKey(other))
+      const target = restored.find(
+        (entry) => pendingConfirmationKey(entry) === pendingConfirmationKey(incoming),
+      )
+      const preservedOther = restored.find(
+        (entry) => pendingConfirmationKey(entry) === pendingConfirmationKey(other),
+      )
       expect(target?.blocked).toBe(testCase.expected_blocked)
       expect(preservedOther?.blocked).toBe(testCase.expected_other_blocked)
     }
