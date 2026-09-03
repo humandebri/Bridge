@@ -305,10 +305,11 @@ with receipt.open('wb') as output: output.truncate(128*1024*1024+1)
 (root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':receipt.name,'sha256':'0'*64}]},separators=(',',':'))+'\n')
 PY
 mkdir "$T/upgrade-oversize-rejected"
-if production_freeze_bundle "$UPGRADE_OVERSIZE_SOURCE" "$T/upgrade-oversize-rejected" >/dev/null 2>&1; then
+if UPGRADE_OVERSIZE_ERROR="$(production_freeze_bundle "$UPGRADE_OVERSIZE_SOURCE" "$T/upgrade-oversize-rejected" 2>&1)"; then
   echo "bundle freeze accepted an oversized production upgrade receipt" >&2
   exit 1
 fi
+[[ "$UPGRADE_OVERSIZE_ERROR" == *"invalid release artifact: production-canister-upgrade-receipt.json"* ]]
 RAW_LIMIT_SOURCE="$T/raw-limit-source"
 mkdir -p "$RAW_LIMIT_SOURCE/artifacts"
 python3 - "$RAW_LIMIT_SOURCE" exact <<'PY'
@@ -345,10 +346,11 @@ rpc={'scenarios':{'preflight':{'artifacts':[{'path':'artifacts/raw-0.json','sha2
 (root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':'rpc-e2e.json','sha256':hashlib.sha256(payload).hexdigest()}]},separators=(',',':'))+'\n')
 PY
 mkdir "$T/raw-single-rejected"
-if production_freeze_bundle "$RAW_LIMIT_SOURCE" "$T/raw-single-rejected" >/dev/null 2>&1; then
+if RAW_OVERSIZE_ERROR="$(production_freeze_bundle "$RAW_LIMIT_SOURCE" "$T/raw-single-rejected" 2>&1)"; then
   echo "bundle freeze accepted an oversized RPC raw artifact" >&2
   exit 1
 fi
+[[ "$RAW_OVERSIZE_ERROR" == *"invalid release artifact: artifacts/raw-0.json"* ]]
 for unsafe_path in /tmp/escape.json ../escape.json; do
   UNSAFE_SOURCE="$T/unsafe-$(printf '%s' "$unsafe_path" | shasum -a 256 | cut -c1-8)"
   mkdir "$UNSAFE_SOURCE"
