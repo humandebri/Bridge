@@ -68,7 +68,8 @@ PROFILE_TARGET="$(mktemp -d "${TMPDIR:-/tmp}/bridge-upgrade-profile-target.XXXXX
 trap 'rm -rf "$PROFILE_TARGET"' EXIT
 python3 -I -S - "$WASM" "$PROFILE_TARGET/bridge-canister.wasm" \
   "$GATE_A_PROFILE" "$PROFILE_TARGET/gate-a-profile.json" \
-  "$GATE_A_RECEIPT" "$PROFILE_TARGET/gate-a-receipt.json" <<'PY'
+  "$GATE_A_RECEIPT" "$PROFILE_TARGET/gate-a-receipt.json" \
+  "$ROOT/canister/bridge-canister/bridge.did" "$PROFILE_TARGET/bridge.did" <<'PY'
 import os,stat,sys
 for source,target in zip(sys.argv[1::2],sys.argv[2::2]):
  flags=os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)
@@ -121,6 +122,14 @@ if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
 fi
 SOURCE_REVISION="$(git -C "$ROOT" rev-parse HEAD)"
 SOURCE_TREE="$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')"
+require_source_identity() {
+  [[ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" \
+    && "$(git -C "$ROOT" rev-parse HEAD)" == "$SOURCE_REVISION" \
+    && "$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')" == "$SOURCE_TREE" ]] || {
+    echo "source changed while the production upgrade was prepared" >&2
+    return 1
+  }
+}
 WASM_SHA256="$(shasum -a 256 "$WASM" | awk '{print tolower($1)}')"
 REPRO_TARGET="$PROFILE_TARGET/reproducible-build"
 mkdir -p "$REPRO_TARGET"
@@ -133,11 +142,7 @@ REPRO_WASM="$REPRO_TARGET/wasm32-unknown-unknown/release/bridge_canister.wasm"
 [[ "$(shasum -a 256 "$REPRO_WASM" | awk '{print tolower($1)}')" == "$WASM_SHA256" ]] || {
   echo "upgrade Wasm is not reproducible from the current clean source" >&2; exit 1;
 }
-[[ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" \
-  && "$(git -C "$ROOT" rev-parse HEAD)" == "$SOURCE_REVISION" \
-  && "$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')" == "$SOURCE_TREE" ]] || {
-  echo "source changed while the production Wasm was reproduced" >&2; exit 1;
-}
+require_source_identity
 read -r CANISTER GATE_A_WASM INSTALLER RECEIPT_SOURCE IC_HOST < <(python3 -I -S - "$GATE_A_PROFILE" "$GATE_A_RECEIPT" <<'PY'
 import json,sys
 profile=json.load(open(sys.argv[1],encoding='utf-8')); receipt=json.load(open(sys.argv[2],encoding='utf-8'))
@@ -192,7 +197,7 @@ git -C "$ROOT" merge-base --is-ancestor "$RECEIPT_SOURCE" "$SOURCE_REVISION" || 
 }
 EXECUTING_PRINCIPAL="$(icp identity principal --identity production)"
 [[ "$EXECUTING_PRINCIPAL" == "$INSTALLER" ]] || { echo "production identity is not the Gate A installer" >&2; exit 1; }
-DID="$ROOT/canister/bridge-canister/bridge.did"
+DID="$PROFILE_TARGET/bridge.did"
 if [[ "$MODE" == execute || "$MODE" == recover ]]; then
   FROZEN_PREFLIGHT="$PROFILE_TARGET/preflight.json"
   python3 -I -S - "$PREFLIGHT" "$FROZEN_PREFLIGHT" <<'PY'
@@ -227,8 +232,10 @@ PY
 fi
 CARGO_TARGET_DIR="$PROFILE_TARGET" cargo build --quiet --locked --manifest-path "$ROOT/Cargo.toml" -p bridge-profile
 PROFILE_BIN="$PROFILE_TARGET/debug/bridge-profile"
+require_source_identity
 "$PROFILE_BIN" validate-production-upgrade-gate-a-binding \
   "$GATE_A_PROFILE" "$GATE_A_RECEIPT" >/dev/null
+require_source_identity
 
 status_fields() {
   python3 -I -S - "$1" <<'PY'
@@ -495,6 +502,7 @@ else
     [[ ! -e "$PREPARING_SUBMISSION" && ! -L "$PREPARING_SUBMISSION" ]] || {
       echo "production upgrade submission preparation path already exists" >&2; exit 1;
     }
+    require_source_identity
     "$PROFILE_BIN" prepare-production-canister-upgrade "$IC_HOST" "$CANISTER" "$INSTALLER" \
       "$CONTROLLER_PEM" "$WASM" "$PREPARING_SUBMISSION" >/dev/null
     "$PROFILE_BIN" validate-production-upgrade-submission \
@@ -572,6 +580,7 @@ FINAL_PUBLIC_STATE="$($PROFILE_BIN production-upgrade-public-state-sha256 \
 [[ ! -e "$STDOUT_FILE" && ! -e "$STDERR_FILE" ]] || {
   echo "final production upgrade send was already attempted; inspect live state and use recover" >&2; exit 1;
 }
+require_source_identity
 set +e
 "$PROFILE_BIN" submit-production-canister-upgrade "$IC_HOST" "$CANISTER" "$INSTALLER" \
   "$CONTROLLER_PEM" "$WASM" "$SUBMISSION_FILE" "$UPLOAD_EVIDENCE_FILE" "$STDOUT_FILE" \

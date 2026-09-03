@@ -33,7 +33,7 @@ if (execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim() !== "11.0.8
 /** @typedef {{ path: string, sha256: string }} ArtifactFile */
 /** @typedef {{ source_revision: string, source_tree_sha256: string }} SourceIdentity */
 /** @typedef {{ files: ArtifactFile[], artifact_set_sha256: string }} BuiltAssets */
-/** @typedef {{ schema_version: number, source_revision: string, source_tree_sha256: string, artifact_set_sha256: string, files: ArtifactFile[] }} ArtifactReceipt */
+/** @typedef {{ schema_version: number, source_revision: string, source_tree_sha256: string, walletconnect_project_id: string, artifact_set_sha256: string, files: ArtifactFile[] }} ArtifactReceipt */
 
 /** @param {string | NodeJS.ArrayBufferView} value */
 function sha256(value) {
@@ -126,13 +126,26 @@ function walk(root, current = root) {
   return files
 }
 
-function buildGenericAssets() {
+/** @returns {string} */
+function walletConnectProjectId() {
+  const value = process.env.VITE_WALLETCONNECT_PROJECT_ID ?? ""
+  if (!/^[0-9a-fA-F]{32}$/.test(value)) {
+    throw new Error(
+      "Production UI artifacts require a 32-character hexadecimal VITE_WALLETCONNECT_PROJECT_ID",
+    )
+  }
+  return value.toLowerCase()
+}
+
+/** @param {string} projectId */
+function buildGenericAssets(projectId) {
   const result = spawnSync("pnpm", ["run", "build"], {
     cwd: uiRoot,
     env: {
       ...process.env,
       KINIC_GENERIC_PRODUCTION_UI_BUILD: "1",
       VITE_DEPLOYMENT_PROFILE_JSON: "",
+      VITE_WALLETCONNECT_PROJECT_ID: projectId,
     },
     stdio: "inherit",
   })
@@ -142,16 +155,20 @@ function buildGenericAssets() {
   return { files, artifact_set_sha256: sha256(JSON.stringify(files)) }
 }
 
-/** @param {ArtifactReceipt} receipt @param {SourceIdentity} identity @param {BuiltAssets} built */
-function validateReceipt(receipt, identity, built) {
+/** @param {ArtifactReceipt} receipt @param {SourceIdentity} identity @param {BuiltAssets} built @param {string} projectId */
+function validateReceipt(receipt, identity, built, projectId) {
   const keys = Object.keys(receipt).sort().join(",")
-  if (keys !== "artifact_set_sha256,files,schema_version,source_revision,source_tree_sha256") {
+  if (
+    keys !==
+    "artifact_set_sha256,files,schema_version,source_revision,source_tree_sha256,walletconnect_project_id"
+  ) {
     throw new Error("UI artifact receipt has unexpected fields")
   }
   if (
-    receipt.schema_version !== 1 ||
+    receipt.schema_version !== 2 ||
     receipt.source_revision !== identity.source_revision ||
     receipt.source_tree_sha256?.toLowerCase() !== identity.source_tree_sha256 ||
+    receipt.walletconnect_project_id?.toLowerCase() !== projectId ||
     receipt.artifact_set_sha256?.toLowerCase() !== built.artifact_set_sha256 ||
     JSON.stringify(receipt.files) !== JSON.stringify(built.files)
   ) {
@@ -350,17 +367,23 @@ try {
     )
   }
   const identity = await sourceIdentity()
-  const built = buildGenericAssets()
+  const projectId = walletConnectProjectId()
+  const built = buildGenericAssets(projectId)
   if (mode === "generate") {
     writeFileSync(
       receiptPath,
-      `${JSON.stringify({ schema_version: 1, ...identity, ...built })}\n`,
+      `${JSON.stringify({
+        schema_version: 2,
+        ...identity,
+        walletconnect_project_id: projectId,
+        ...built,
+      })}\n`,
       { flag: "wx" },
     )
     process.stdout.write(`ui_artifact_set_sha256=${built.artifact_set_sha256}\n`)
   } else {
     const receipt = JSON.parse(readFileSync(receiptPath, "utf8"))
-    validateReceipt(receipt, identity, built)
+    validateReceipt(receipt, identity, built, projectId)
     if (["deploy", "verify-preactivation", "deploy-preactivation"].includes(mode)) {
       if (!profileFile) throw new Error(`${mode} requires the UI runtime profile`)
       const rawProfile =

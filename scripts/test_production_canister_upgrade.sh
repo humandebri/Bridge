@@ -47,7 +47,15 @@ fn main() {
             }
             println!("{}", "a".repeat(64));
         }
-        Some("validate-production-upgrade-gate-a-binding") => println!("{}", "b".repeat(64)),
+        Some("validate-production-upgrade-gate-a-binding") => {
+            if let (Ok(path), Ok(marker)) = (env::var("TEST_MUTATE_SOURCE_ON_VALIDATE"), env::var("TEST_SOURCE_MUTATION_MARKER")) {
+                if !Path::new(&marker).exists() {
+                    fs::write(path, b"service : { changed : () -> (); }\n").unwrap();
+                    fs::write(marker, b"mutated\n").unwrap();
+                }
+            }
+            println!("{}", "b".repeat(64));
+        }
         Some("verify-production-upgrade-state-preserved") => println!("{}", "a".repeat(64)),
         Some("prepare-production-canister-upgrade") => {
             let mut artifact = OpenOptions::new().write(true).create_new(true).open(&args[7]).unwrap();
@@ -67,6 +75,9 @@ fn main() {
             let mut evidence = OpenOptions::new().write(true).create_new(true).open(Path::new(&args[8]).join("complete.json")).unwrap();
             evidence.write_all(b"{\"schema_version\":1,\"chunks\":[{\"index\":0}]}\n").unwrap();
             evidence.sync_all().unwrap();
+            if let Ok(path) = env::var("TEST_MUTATE_SOURCE_AFTER_UPLOAD") {
+                fs::write(path, b"service : { changed_after_upload : () -> (); }\n").unwrap();
+            }
             if let Ok(path) = env::var("TEST_DROP_RESERVE_AFTER_UPLOAD") {
                 fs::write(path, b"false\n").unwrap();
             }
@@ -156,6 +167,18 @@ if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade
   exit 1
 fi
 [[ ! -e "$T/evidence/not-reproducible.json" ]]
+
+if BRIDGE_ICP_IDENTITY=production \
+  TEST_MUTATE_SOURCE_ON_VALIDATE="$T/source/canister/bridge-canister/bridge.did" \
+  TEST_SOURCE_MUTATION_MARKER="$T/source-mutated-on-validate" \
+  "$T/source/scripts/production-canister-upgrade.sh" preflight \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --evidence "$T/evidence/source-drift.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted source drift after validator build" >&2
+  exit 1
+fi
+[[ ! -e "$T/evidence/source-drift.json" ]]
+git -C "$T/source" checkout -q -- canister/bridge-canister/bridge.did
 
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
@@ -278,6 +301,23 @@ fi
 [[ ! -e "$T/evidence/post-upload-insufficient.json.stdout" ]]
 [[ "$(<"$T/submit-count")" == 0 ]]
 printf 'true\n' >"$T/reserve-sufficient"
+if BRIDGE_ICP_IDENTITY=production TEST_MUTATE_SOURCE_AFTER_UPLOAD="$T/source/canister/bridge-canister/bridge.did" \
+  BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/source-drift-after-upload.json" >/dev/null 2>&1; then
+  echo "production upgrade sent the final install after source drift" >&2
+  exit 1
+fi
+[[ -f "$T/evidence/source-drift-after-upload.json.uploads/complete.json" ]]
+[[ ! -e "$T/evidence/source-drift-after-upload.json.stdout" ]]
+[[ "$(<"$T/submit-count")" == 0 ]]
+git -C "$T/source" checkout -q -- canister/bridge-canister/bridge.did
+printf '%s\n' "$OLD_SHA" >"$T/live-module"
+printf '0\n' >"$T/status-call-count"
+
 cp "$T/evidence/preflight.json" "$T/evidence/preflight.approved.json"
 BRIDGE_ICP_IDENTITY=production TEST_MUTATE_PREFLIGHT_PATH="$T/evidence/preflight.json" \
 TEST_MUTATION_MARKER="$T/preflight-mutated" \

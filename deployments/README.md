@@ -31,7 +31,7 @@ Gate AとBaseのpause配置まではprofileにも同じBootstrap運用値を要�
 
 `initial-operational-parameters.json`の`governance_operation_id`は初回固定値`0`であり、driverがseal送信前に検証する。`seal_operational_config`の公開引数は`OperationalConfigArgs`一つだけとし、Canisterは内部固定値`0`をawait前、await後、stable commit内で次のstable governance operation IDと照合する。不一致ならsealせずBootstrapを維持する。
 
-Gate B前にUIを先行公開する場合は、clean sourceから`production-assets.mjs generate`でasset receiptを作り、review済みGate A release inputsのpre-activation profileを使って`deploy:preactivation:check`を通した後、承認済みの同一入力で`deploy:preactivation`する。このprofileはGate B hash未設定かつdeployment block 0なので、全writeはfail closedになる。Gate B合格後は、検証済みbundleからrenderしたGate-B-bound profileと同じasset receiptを通常production deployへ渡して差し替える。
+Gate B前にUIを先行公開する場合は、clean sourceとreview済みWalletConnect project IDから`production-assets.mjs generate`でschema 2 asset receiptを作り、review済みGate A release inputsのpre-activation profileを使って、同じproject IDで`deploy:preactivation:check`を通した後、承認済みの同一入力で`deploy:preactivation`する。このprofileはGate B hash未設定かつdeployment block 0なので、全writeはfail closedになる。Gate B合格後は、検証済みbundleからrenderしたGate-B-bound profile、同じasset receipt、同じproject IDを通常production deployへ渡して差し替える。
 
 ```sh
 COMMON=(--phase schedule --bundle evidence/release-id \

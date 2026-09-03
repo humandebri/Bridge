@@ -120,13 +120,17 @@ profile and release-input manifest must be the files rendered from that same ver
 Before Gate B exists, a separately reviewed fail-closed UI may be published with:
 
 ```sh
+VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id> \
 node scripts/production-assets.mjs generate <clean-build-receipt>
 BRIDGE_UI_PREACTIVATION_RECEIPT=<clean-build-receipt> \
 BRIDGE_UI_RUNTIME_PROFILE_FILE=<pre-activation-profile> \
+VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id> \
 pnpm run deploy:preactivation
 ```
 
-Generate the receipt from the pinned Node/pnpm environment in a clean checkout. Use the reviewed
+Generate the receipt from the pinned Node/pnpm environment in a clean checkout. The public
+WalletConnect project ID is part of the schema 2 receipt and must remain identical for every
+verify and deploy. Use the reviewed
 Gate A release inputs' `ui-runtime-profile.json` as the pre-activation profile, verify its hash,
 and keep the receipt and profile unchanged between the check and deploy commands.
 
@@ -141,8 +145,9 @@ Production profiles intentionally omit a custom browser RPC. The UI derives Base
 standard `https://mainnet.base.org` endpoint from chain ID 8453; this is separate from the
 Canister's built-in `BaseMainnet` EVM RPC provider selection.
 
-The WalletConnect project ID is public client configuration but must be injected through the
-environment rather than committed. The normal deploy command fails unless it is present and the
+The WalletConnect project ID is public client configuration. It is injected through the
+environment rather than committed to source, and is recorded in the reviewed asset receipt so the
+same build can be reproduced. The normal deploy command fails unless it is present and the
 checked-in UI profile explicitly sets
 `testOnly: false`. Test-only profiles require the deliberately separate `pnpm run deploy:test`
 command, which targets the `kinic-bridge-ui-test` Worker, and must not be used for a production release.

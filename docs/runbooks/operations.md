@@ -149,7 +149,7 @@ unpause後は7日以上かつ各10件以上の本番計測、keeper drill、moni
 
 Gate Bにはcleanなmanifest sourceからprofile非依存で生成したUI code/assetsの全file digestとaggregate digestを持つ`ui-assets.json`を必須登録する。activation driverは同じsourceから再buildしてreceipt一致を確認する。production UI deployはこのartifact集合だけを再生成し、検証済みGate Bからrenderした`ui-runtime-profile.json`を`deployment-profile.js`へ直前合成して公開する。dirty checkout、asset追加・欠落・hash drift、bundle外profileはすべて拒否する。
 
-Gate B前のUI先行公開は、clean checkoutで`node ui/scripts/production-assets.mjs generate <receipt>`を実行し、review済みGate A release inputsの`ui-runtime-profile.json`をpre-activation profileとしてhash reviewする。同じreceipt/profileで`pnpm --dir ui run deploy:preactivation:check`を通し、remote mutation承認後に`deploy:preactivation`する。Gate B hash未設定・deployment block 0のため全writeは無効である。Gate B合格後は、bundle、render済みrelease inputs、release-inputs manifest、Gate-B-bound runtime profile、WalletConnect project IDを同じclean sourceへ固定して通常production deployで差し替える。
+Gate B前のUI先行公開は、clean checkoutでreview済みの`VITE_WALLETCONNECT_PROJECT_ID`を指定して`node ui/scripts/production-assets.mjs generate <receipt>`を実行し、review済みGate A release inputsの`ui-runtime-profile.json`をpre-activation profileとしてhash reviewする。WalletConnect project IDはschema 2 receiptへ保存され、以後のverify/deployでも同じ値を必須とする。同じreceipt/profile/project IDで`pnpm --dir ui run deploy:preactivation:check`を通し、remote mutation承認後に`deploy:preactivation`する。Gate B hash未設定・deployment block 0のため全writeは無効である。Gate B合格後は、bundle、render済みrelease inputs、release-inputs manifest、Gate-B-bound runtime profile、同じWalletConnect project IDを同じclean sourceへ固定して通常production deployで差し替える。
 
 BaseScanのsource verification、contract-created BSNSのownership確認、Token Update申請は[`token-publication.md`](token-publication.md)に従う。この外部申請と審査はGate A、Gate B、activationの認可条件ではない。
 

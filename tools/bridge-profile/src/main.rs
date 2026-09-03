@@ -635,6 +635,7 @@ struct UiAssetsReceipt {
     schema_version: u8,
     source_revision: String,
     source_tree_sha256: String,
+    walletconnect_project_id: String,
     files: Vec<UiAssetDigest>,
     artifact_set_sha256: String,
 }
@@ -5125,12 +5126,17 @@ fn validate_plan006_evidence(
 
 fn validate_ui_assets_receipt(root: &Path, manifest: &ReleaseManifest) -> Result<(), String> {
     let receipt: UiAssetsReceipt = read_json(&root.join("ui-assets.json"))?;
-    if receipt.schema_version != 1
+    if receipt.schema_version != 2
         || receipt.source_revision != manifest.source_revision
         || !receipt
             .source_tree_sha256
             .eq_ignore_ascii_case(&manifest.source_tree_sha256)
         || receipt.files.is_empty()
+        || receipt.walletconnect_project_id.len() != 32
+        || !receipt
+            .walletconnect_project_id
+            .bytes()
+            .all(|value| value.is_ascii_hexdigit())
         || !valid_sha256(&receipt.artifact_set_sha256)
     {
         return Err("UI artifact receipt is not bound to the release source".into());
@@ -13090,9 +13096,10 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             sha256: hex(&Sha256::digest(b"ui")),
         }];
         let ui_assets = UiAssetsReceipt {
-            schema_version: 1,
+            schema_version: 2,
             source_revision: "a".repeat(40),
             source_tree_sha256: "2".repeat(64),
+            walletconnect_project_id: "3".repeat(32),
             artifact_set_sha256: hex(&Sha256::digest(serde_json::to_vec(&ui_files).unwrap())),
             files: ui_files,
         };
