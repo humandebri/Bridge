@@ -1039,18 +1039,31 @@ struct WithdrawalView {
     amount: Nat,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct ProviderIndependenceReceipt {
     schema_version: u8,
-    observed_at_unix: u64,
-    proposal_id: u64,
-    provider_review_sha256: String,
-    dns_monitoring_enabled: bool,
-    endpoint_monitoring_enabled: bool,
-    drift_action: String,
-    governance_query_response_hex: String,
-    governance_query_response_sha256: String,
+    reviewed_at_unix: u64,
+    release_id: String,
+    source_revision: String,
+    source_tree_sha256: String,
+    profile_sha256: String,
+    bridge_canister_wasm_sha256: String,
+    evm_rpc_canister_id: String,
+    base_chain_id: u64,
+    rpc_service: String,
+    provider_selection: String,
+    custom_evm_rpc_urls_sha256: String,
+    consensus_strategy: RpcConsensusStrategyBinding,
+    guarantee_boundary: String,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+struct RpcConsensusStrategyBinding {
+    kind: String,
+    total: u8,
+    min: u8,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1994,7 +2007,7 @@ fn derive_initial_operational_parameters(
         || evidence.chain_id != 8_453
         || evidence.gas_estimates.len() < 2
         || evidence.fee_samples.len() < 10
-        || evidence.governance_operation_id == u64::MAX
+        || evidence.governance_operation_id != 0
         || evidence.idle_cycles_burned_per_day == 0
         || evidence.expected_daily_settlements != 1
         || evidence.settlement_cycle_ceiling != 5_000_000_000
@@ -2701,26 +2714,131 @@ fn validate_provider_independence_receipt(
     now: u64,
 ) -> Result<(), String> {
     let receipt: ProviderIndependenceReceipt = read_json(&root.join("provider-independence.json"))?;
-    validate_evidence_time(receipt.observed_at_unix, manifest.created_at_unix, now)?;
-    let expected_review = hex(&canonical_sha256(&profile.rpc_providers)?);
-    if receipt.schema_version != 1
-        || receipt.proposal_id == 0
+    validate_evidence_time(receipt.reviewed_at_unix, manifest.created_at_unix, now)?;
+    validate_provider_independence_binding(&receipt, manifest, profile)
+}
+
+fn validate_provider_independence_binding(
+    receipt: &ProviderIndependenceReceipt,
+    manifest: &ReleaseManifest,
+    profile: &Profile,
+) -> Result<(), String> {
+    validate_production_rpc_profile(profile)?;
+    let artifacts = manifest
+        .artifacts
+        .iter()
+        .map(|artifact| (artifact.path.as_str(), artifact.sha256.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let profile_sha256 = artifacts
+        .get("profile.json")
+        .ok_or("provider binding manifest has no profile artifact")?;
+    let wasm_sha256 = artifacts
+        .get("bridge-canister.wasm")
+        .ok_or("provider binding manifest has no Wasm artifact")?;
+    let empty_custom_urls_sha256 = hex(&canonical_sha256(&profile.rpc_providers)?);
+    if receipt.schema_version != 2
+        || receipt.release_id != manifest.release_id
+        || receipt.source_revision != manifest.source_revision
         || !receipt
-            .provider_review_sha256
-            .eq_ignore_ascii_case(&expected_review)
-        || !receipt.dns_monitoring_enabled
-        || !receipt.endpoint_monitoring_enabled
-        || receipt.drift_action != "pause-and-require-reactivation"
-        || !activation_raw_digest_matches(
-            &receipt.governance_query_response_hex,
-            &receipt.governance_query_response_sha256,
-        )?
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
+        || !receipt.profile_sha256.eq_ignore_ascii_case(profile_sha256)
+        || !receipt
+            .bridge_canister_wasm_sha256
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || !receipt
+            .bridge_canister_wasm_sha256
+            .eq_ignore_ascii_case(wasm_sha256)
+        || receipt.evm_rpc_canister_id != OFFICIAL_EVM_RPC_CANISTER
+        || receipt.base_chain_id != 8_453
+        || receipt.rpc_service != "BaseMainnet"
+        || receipt.provider_selection != "default-pool"
+        || !receipt
+            .custom_evm_rpc_urls_sha256
+            .eq_ignore_ascii_case(&empty_custom_urls_sha256)
+        || receipt.consensus_strategy.kind != "Threshold"
+        || receipt.consensus_strategy.total != 3
+        || receipt.consensus_strategy.min != 2
+        || receipt.guarantee_boundary
+            != "evm-rpc-default-provider-registry-and-upstream-chain-are-external"
     {
         return Err(
-            "provider independence receipt is incomplete or not bound to the RPC profile".into(),
+            "provider independence receipt is not bound to the immutable production RPC service"
+                .into(),
         );
     }
     Ok(())
+}
+
+fn validate_production_rpc_profile(profile: &Profile) -> Result<(), String> {
+    if profile.environment != "mainnet-candidate"
+        || profile.chain_id != 8_453
+        || profile.evm_rpc_canister_id != OFFICIAL_EVM_RPC_CANISTER
+        || profile.base_rpc_url.is_some()
+        || !profile.rpc_providers.is_empty()
+    {
+        return Err("production RPC binding requires the official BaseMainnet defaults".into());
+    }
+    Ok(())
+}
+
+fn write_provider_independence_receipt(
+    profile_path: &Path,
+    release_id: &str,
+    source_revision: &str,
+    source_tree_sha256: &str,
+    output_path: &Path,
+) -> Result<(), String> {
+    let profile: Profile = read_json(profile_path)?;
+    validate_profile(&profile, true)?;
+    if !valid_release_id(release_id)
+        || source_revision.trim().is_empty()
+        || !valid_sha256(source_tree_sha256)
+    {
+        return Err("invalid provider binding release identity".into());
+    }
+    let profile_bytes = fs::read(profile_path).map_err(|error| error.to_string())?;
+    let receipt = provider_independence_receipt(
+        &profile,
+        now_unix()?,
+        release_id,
+        source_revision,
+        source_tree_sha256,
+        &hex(&Sha256::digest(profile_bytes)),
+    )?;
+    write_json_new(output_path, &receipt)
+}
+
+fn provider_independence_receipt(
+    profile: &Profile,
+    reviewed_at_unix: u64,
+    release_id: &str,
+    source_revision: &str,
+    source_tree_sha256: &str,
+    profile_sha256: &str,
+) -> Result<ProviderIndependenceReceipt, String> {
+    validate_production_rpc_profile(profile)?;
+    Ok(ProviderIndependenceReceipt {
+        schema_version: 2,
+        reviewed_at_unix,
+        release_id: release_id.into(),
+        source_revision: source_revision.into(),
+        source_tree_sha256: source_tree_sha256.into(),
+        profile_sha256: profile_sha256.into(),
+        bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
+        evm_rpc_canister_id: profile.evm_rpc_canister_id.clone(),
+        base_chain_id: profile.chain_id,
+        rpc_service: "BaseMainnet".into(),
+        provider_selection: "default-pool".into(),
+        custom_evm_rpc_urls_sha256: hex(&canonical_sha256(&profile.rpc_providers)?),
+        consensus_strategy: RpcConsensusStrategyBinding {
+            kind: "Threshold".into(),
+            total: 3,
+            min: 2,
+        },
+        guarantee_boundary: "evm-rpc-default-provider-registry-and-upstream-chain-are-external"
+            .into(),
+    })
 }
 
 fn hex_sha256_matches(value: &str, expected: &str) -> bool {
@@ -6473,51 +6591,13 @@ fn verify_sns_upgrade_authenticity(bundle: &ValidatedBundle) -> Result<(), Strin
     Ok(())
 }
 
-fn verify_provider_independence_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
-    let receipt: ProviderIndependenceReceipt =
-        read_json(&bundle.root.join("provider-independence.json"))?;
-    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|e| e.to_string())?;
-    let arg = Encode!(&GetProposalRequest {
-        proposal_id: Some(ProposalId {
-            id: receipt.proposal_id,
-        }),
-    })
-    .map_err(|error| error.to_string())?;
-    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
-    let response = async_runtime()?.block_on(async {
-        agent
-            .query(&governance, "get_proposal")
-            .with_arg(arg)
-            .call_with_verification()
-            .await
-            .map_err(|error| error.to_string())
-    })?;
-    if response != decode_hex(&receipt.governance_query_response_hex)? {
-        return Err("authenticated provider review response differs from the receipt".into());
-    }
-    let decoded = Decode!(&response, GetProposalResponse).map_err(|error| error.to_string())?;
-    let proposal = match decoded.result {
-        Some(GetProposalResult::Proposal(proposal)) => proposal,
-        _ => return Err("SNS provider independence proposal is unavailable".into()),
-    };
-    let proposal_id = proposal.id.as_ref().map(|id| id.id);
-    let content = proposal
-        .proposal
-        .ok_or("provider review proposal has no content")?;
-    if proposal_id != Some(receipt.proposal_id)
-        || proposal.executed_timestamp_seconds == 0
-        || proposal.failed_timestamp_seconds != 0
-        || proposal.failure_reason.is_some()
-        || proposal.decided_timestamp_seconds == 0
-        || !matches!(content.action, Some(SnsProposalAction::Motion(_)))
-        || !content
-            .summary
-            .to_ascii_lowercase()
-            .contains(&receipt.provider_review_sha256.to_ascii_lowercase())
-    {
-        return Err("SNS Governance did not execute the exact provider independence review".into());
-    }
-    Ok(())
+fn verify_production_rpc_binding(bundle: &ValidatedBundle) -> Result<(), String> {
+    validate_provider_independence_receipt(
+        &bundle.root,
+        &bundle.manifest,
+        &bundle.profile,
+        now_unix()?,
+    )
 }
 
 fn gate_b_controller(bundle: &ValidatedBundle) -> Result<Principal, String> {
@@ -6603,7 +6683,7 @@ fn verify_live(bundle: &ValidatedBundle, expected_deposits_paused: bool) -> Resu
     verify_gate_b_management_state(bundle)?;
     verify_activation_attestation_authenticity(bundle)?;
     verify_monitor_drill_authenticity(bundle)?;
-    verify_provider_independence_authenticity(bundle)
+    verify_production_rpc_binding(bundle)
 }
 
 fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -9712,6 +9792,15 @@ fn run() -> Result<(), String> {
             validate_profile(&profile, args[1] == "validate")?;
             println!("{}", hex(&canonical_sha256(&profile)?));
         }
+        Some("write-provider-independence-receipt") if args.len() == 7 => {
+            write_provider_independence_receipt(
+                Path::new(&args[2]),
+                &args[3],
+                &args[4],
+                &args[5],
+                Path::new(&args[6]),
+            )?;
+        }
         Some("render-release-inputs") if args.len() == 4 => {
             render_release_inputs(Path::new(&args[2]), Path::new(&args[3]), true, None)?;
         }
@@ -11409,6 +11498,127 @@ mod tests {
     }
 
     #[test]
+    fn provider_independence_binds_the_immutable_base_mainnet_service() {
+        let profile = valid_profile();
+        let release_id = "release-123";
+        let source_revision = "a".repeat(40);
+        let source_tree = "b".repeat(64);
+        let profile_sha = "c".repeat(64);
+        let manifest = ReleaseManifest {
+            schema_version: 4,
+            release_id: release_id.into(),
+            test_only: false,
+            source_revision: source_revision.clone(),
+            source_tree_sha256: source_tree.clone(),
+            created_at_unix: 2,
+            expires_at_unix: 3,
+            parent_gate_a_manifest_sha256: Some("d".repeat(64)),
+            artifacts: vec![
+                ArtifactDigest {
+                    path: "profile.json".into(),
+                    sha256: profile_sha.clone(),
+                },
+                ArtifactDigest {
+                    path: "bridge-canister.wasm".into(),
+                    sha256: profile.bridge_canister_wasm_sha256.clone(),
+                },
+            ],
+        };
+        let receipt = provider_independence_receipt(
+            &profile,
+            1,
+            release_id,
+            &source_revision,
+            &source_tree,
+            &profile_sha,
+        )
+        .unwrap();
+        assert!(validate_provider_independence_binding(&receipt, &manifest, &profile).is_ok());
+
+        let mut wrong_service = receipt.clone();
+        wrong_service.rpc_service = "EthMainnet".into();
+        assert!(
+            validate_provider_independence_binding(&wrong_service, &manifest, &profile).is_err()
+        );
+
+        let mut wrong_threshold = receipt.clone();
+        wrong_threshold.consensus_strategy.min = 1;
+        assert!(
+            validate_provider_independence_binding(&wrong_threshold, &manifest, &profile).is_err()
+        );
+
+        let mut wrong_source = receipt.clone();
+        wrong_source.source_revision = "e".repeat(40);
+        assert!(
+            validate_provider_independence_binding(&wrong_source, &manifest, &profile).is_err()
+        );
+
+        for invalid in [
+            {
+                let mut value = receipt.clone();
+                value.release_id = "release-999".into();
+                value
+            },
+            {
+                let mut value = receipt.clone();
+                value.source_tree_sha256 = "e".repeat(64);
+                value
+            },
+            {
+                let mut value = receipt.clone();
+                value.profile_sha256 = "e".repeat(64);
+                value
+            },
+            {
+                let mut value = receipt.clone();
+                value.bridge_canister_wasm_sha256 = "e".repeat(64);
+                value
+            },
+            {
+                let mut value = receipt.clone();
+                value.evm_rpc_canister_id = test_principal(30);
+                value
+            },
+            {
+                let mut value = receipt.clone();
+                value.base_chain_id = 1;
+                value
+            },
+            {
+                let mut value = receipt.clone();
+                value.provider_selection = "all".into();
+                value
+            },
+            {
+                let mut value = receipt.clone();
+                value.custom_evm_rpc_urls_sha256 = "e".repeat(64);
+                value
+            },
+            {
+                let mut value = receipt.clone();
+                value.consensus_strategy.total = 2;
+                value
+            },
+            {
+                let mut value = receipt.clone();
+                value.guarantee_boundary = "none".into();
+                value
+            },
+        ] {
+            assert!(validate_provider_independence_binding(&invalid, &manifest, &profile).is_err());
+        }
+
+        let mut legacy = serde_json::to_value(&receipt).unwrap();
+        legacy["schema_version"] = Value::from(1);
+        let legacy: ProviderIndependenceReceipt = serde_json::from_value(legacy).unwrap();
+        assert!(validate_provider_independence_binding(&legacy, &manifest, &profile).is_err());
+
+        let mut custom = valid_profile();
+        custom.base_rpc_url = Some("https://rpc.example".into());
+        assert!(validate_production_rpc_profile(&custom).is_err());
+    }
+
+    #[test]
     fn profile_rejects_credentials_duplicate_urls_and_role_overlap() {
         let mut profile = valid_profile();
         profile.rpc_providers.push(RpcProvider {
@@ -12104,17 +12314,15 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             monitoring_receipt_sha256: hex(&Sha256::digest(&monitoring_receipt_bytes)),
             manual_fallback_drilled: true,
         };
-        let provider_independence = ProviderIndependenceReceipt {
-            schema_version: 1,
-            observed_at_unix: now - 30,
-            proposal_id: 2,
-            provider_review_sha256: hex(&canonical_sha256(&profile.rpc_providers).unwrap()),
-            dns_monitoring_enabled: true,
-            endpoint_monitoring_enabled: true,
-            drift_action: "pause-and-require-reactivation".into(),
-            governance_query_response_hex: hex(b"provider governance raw"),
-            governance_query_response_sha256: hex(&Sha256::digest(b"provider governance raw")),
-        };
+        let provider_independence = provider_independence_receipt(
+            &profile,
+            now - 30,
+            "release-1",
+            &"a".repeat(40),
+            &"2".repeat(64),
+            &hex(&Sha256::digest(serde_json::to_vec(&profile).unwrap())),
+        )
+        .unwrap();
         let ui_files = vec![UiAssetDigest {
             path: "assets/index.js".into(),
             sha256: hex(&Sha256::digest(b"ui")),
@@ -12135,7 +12343,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         measurements.baseline_cycles_sample.value = 1;
         measurements.expected_daily_settlements = 1;
         let initial_observed_at = now - 6_000;
-        let governance_operation_id = 7;
+        let governance_operation_id = 0;
         let deployment_instance_id: [u8; 32] = decode_hex(&profile.deployment_instance_id)
             .unwrap()
             .try_into()
@@ -12577,6 +12785,26 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .find(|artifact| artifact.path == "profile.json")
             .unwrap()
             .sha256 = hex(&Sha256::digest(&final_profile_bytes));
+        let provider_independence = provider_independence_receipt(
+            &profile,
+            now - 30,
+            "release-1",
+            &"a".repeat(40),
+            &"2".repeat(64),
+            &hex(&Sha256::digest(&final_profile_bytes)),
+        )
+        .unwrap();
+        let provider_independence_bytes = serde_json::to_vec(&provider_independence).unwrap();
+        fs::write(
+            root.join("provider-independence.json"),
+            &provider_independence_bytes,
+        )
+        .unwrap();
+        artifacts
+            .iter_mut()
+            .find(|artifact| artifact.path == "provider-independence.json")
+            .unwrap()
+            .sha256 = hex(&Sha256::digest(&provider_independence_bytes));
         let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
         fs::write(root.join("gate-a-receipt.json"), &receipt_bytes).unwrap();
         let gate_a_profile_bytes = canonical_bytes(&gate_a_profile).unwrap();

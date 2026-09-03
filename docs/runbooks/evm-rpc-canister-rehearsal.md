@@ -137,6 +137,8 @@ AWAITING_PREFLIGHT
      └─ 追加5件 -> final_pause -> EXTENDED_COMPLETE
 ```
 
+このstaging rehearsalはreview済みCustom RPC 3件のchain bindingとfault behaviorを検証する。本番の`provider-independence.json`は別の証跡であり、公式EVM RPC Canisterの`BaseMainnet`既定poolとBridge Wasm内の3-provider/2-thresholdをsource/profileへ束縛する。stagingのCustom RPC演習を、本番既定providerの組織的独立性を証明するものとして扱わない。
+
 asset flowとして次の4件を実行し、各transactionをFinalized headまで待つ。
 
 1. `authorization_mint`: Deposit ID、Ledger block、Authorization digest、Base walletのmint transaction、exact event、Finalized block/hash
