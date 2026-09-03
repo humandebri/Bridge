@@ -16,15 +16,16 @@ Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operato
 
 1. clean revisionでCI、Verus、ABI/Candid、current schema reopenと未知schema fail-closedを完了する。
 2. 同一Wasmのtest canisterで実データ相当stateのupgrade、PocketIC、proofのpre-activation安全証拠を完了する。10回計測、launch-ready RPC 5 scenario、pause/cancel経路演習はunpause後のGate Cへ分離する。
-3. 配置済みGate A profile／receiptと、そこに記録されたproduction Canisterの初回install Wasmを不変の起点として固定する。Gate A artifactは再生成・再installしない。
+3. production Canisterへpause状態で初回Wasmをinstallし、最終pre-deploy profileとBridge／BSNSの5 build artifact、合計6 artifactのoffline Gate A bundleを固定する。
 4. 一時deployerでTimelockとBridgeをpause状態で配置する。constructorは導出済みMint Signer、Governance Operator、Timelockだけをroleへ設定し、deployerへroleを残さない。
-5. production controllerからcontroller-bootstrap Wasmへ通常upgradeする。clean sourceからの再現Wasm一致、Gate Aから連続するschema 1 upgrade receipt、pause-principal migrationまたはcurrent-template fresh-install no-op、schema 3 post-Gate-A policy transitionを保存する。既存Candid method／argument ABIを維持し、承認済みの`ActivationConfirmationView` 2 field以外に公開APIを増やさない。
-6. この端末のproduction preflightでcanonical receipt、current module hash、source／upgrade chain、runtime hash、role集合、deployer roleゼロ、pause状態を検証する。
-7. current upgrade chainとpolicy transitionを含む13 artifactのpre-seal Gate B後、production controllerが初期運用値を一度だけsealする。
-8. fresh live Gate B後、production controllerが`schedule_activation`をprepareし、匿名relayと固定confirmation relayer confirmで24時間Timelock operationをscheduleする。
-9. 24時間後に別のfresh live Gate Bを作り、production controllerが`execute_activation`をprepareし、同じ役割分離で記録済みoperationだけをexecuteする。
-10. Base両flowのcanonical Finalized成功後だけIC Depositを自動resumeし、内部bootstrap activation authorityを永久に消費する。失敗、曖昧結果、driftではpauseを維持する。
-11. unpause後の7日・各10件以上の本番計測／Gate Cとcontroller handoverは独立に扱う。handoverは自動実行せず、運用者が時期を別途承認した場合だけSNS Root一件へ変更してSNS proposal upgradeを実証する。
+5. post-deploy profile、deployment transaction／blockを含むGate A receiptを確定する。配置済みGate A profile／receiptと初回install Wasmは以後の不変起点とし、再生成・再installしない。
+6. production controllerからcontroller-bootstrap Wasmへ通常upgradeする。clean sourceからの再現Wasm一致、Gate Aから連続するschema 1 upgrade receipt、pause-principal migrationまたはcurrent-template fresh-install no-op、schema 3 post-Gate-A policy transitionを保存する。既存Candid method／argument ABIを維持し、承認済みの`ActivationConfirmationView` 2 field以外に公開APIを増やさない。
+7. この端末のproduction preflightでcanonical receipt、current module hash、source／upgrade chain、runtime hash、role集合、deployer roleゼロ、pause状態を検証する。
+8. current upgrade chainとpolicy transitionを含む13 artifactのpre-seal Gate B後、production controllerが初期運用値を一度だけsealする。
+9. fresh live Gate B後、production controllerが`schedule_activation`をprepareし、匿名relayと固定confirmation relayer confirmで24時間Timelock operationをscheduleする。
+10. 24時間後に別のfresh live Gate Bを作り、production controllerが`execute_activation`をprepareし、同じ役割分離で記録済みoperationだけをexecuteする。
+11. Base両flowのcanonical Finalized成功後だけIC Depositを自動resumeし、内部bootstrap activation authorityを永久に消費する。失敗、曖昧結果、driftではpauseを維持する。
+12. unpause後の7日・各10件以上の本番計測／Gate Cとcontroller handoverは独立に扱う。handoverは自動実行せず、運用者が時期を別途承認した場合だけSNS Root一件へ変更してSNS proposal upgradeを実証する。
 
 ## Evidence契約
 

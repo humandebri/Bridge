@@ -64,6 +64,16 @@ for tool in cargo git icp python3 shasum; do command -v "$tool" >/dev/null || { 
 [[ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" ]] || {
   echo "production upgrade requires a clean source tree" >&2; exit 1;
 }
+SOURCE_REVISION="$(git -C "$ROOT" rev-parse HEAD)"
+SOURCE_TREE="$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')"
+require_source_identity() {
+  [[ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" \
+    && "$(git -C "$ROOT" rev-parse HEAD)" == "$SOURCE_REVISION" \
+    && "$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')" == "$SOURCE_TREE" ]] || {
+    echo "source changed while the production upgrade was prepared" >&2
+    return 1
+  }
+}
 PROFILE_TARGET="$(mktemp -d "${TMPDIR:-/tmp}/bridge-upgrade-profile-target.XXXXXX")"
 trap 'rm -rf "$PROFILE_TARGET"' EXIT
 python3 -I -S - "$WASM" "$PROFILE_TARGET/bridge-canister.wasm" \
@@ -96,6 +106,7 @@ for source,target in zip(sys.argv[1::2],sys.argv[2::2]):
   os.fsync(out)
  finally: os.close(out)
 PY
+require_source_identity
 WASM="$PROFILE_TARGET/bridge-canister.wasm"
 GATE_A_PROFILE="$PROFILE_TARGET/gate-a-profile.json"
 GATE_A_RECEIPT="$PROFILE_TARGET/gate-a-receipt.json"
@@ -120,16 +131,6 @@ PRIOR_UPGRADE_EVIDENCE_SHA256=""
 if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
   PRIOR_UPGRADE_EVIDENCE_SHA256="$(shasum -a 256 "$PRIOR_UPGRADE_EVIDENCE" | awk '{print tolower($1)}')"
 fi
-SOURCE_REVISION="$(git -C "$ROOT" rev-parse HEAD)"
-SOURCE_TREE="$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')"
-require_source_identity() {
-  [[ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" \
-    && "$(git -C "$ROOT" rev-parse HEAD)" == "$SOURCE_REVISION" \
-    && "$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')" == "$SOURCE_TREE" ]] || {
-    echo "source changed while the production upgrade was prepared" >&2
-    return 1
-  }
-}
 WASM_SHA256="$(shasum -a 256 "$WASM" | awk '{print tolower($1)}')"
 REPRO_TARGET="$PROFILE_TARGET/reproducible-build"
 mkdir -p "$REPRO_TARGET"

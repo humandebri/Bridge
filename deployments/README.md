@@ -34,6 +34,7 @@ Gate AとBaseのpause配置まではprofileにも同じBootstrap運用値を要�
 Gate B前にUIを先行公開する場合は、clean sourceとreview済みWalletConnect project IDから`production-assets.mjs generate`でschema 2 asset receiptを作り、review済みGate A release inputsのpre-activation profileを使って、同じproject IDで`deploy:preactivation:check`を通した後、承認済みの同一入力で`deploy:preactivation`する。このprofileはGate B hash未設定かつdeployment block 0なので、全writeはfail closedになる。Gate B合格後は、検証済みbundleからrenderしたGate-B-bound profile、同じasset receipt、同じproject IDを通常production deployへ渡して差し替える。
 
 ```sh
+export VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id-from-ui-assets-receipt>
 COMMON=(--phase schedule --bundle evidence/release-id \
   --release-inputs deployments/generated/release-id \
   --receipt evidence/release-id/gate-a-receipt.json \
@@ -54,6 +55,8 @@ scripts/production-release.sh activate "${COMMON[@]}" --step confirm \
   --activation-receipt evidence/activation/schedule-receipt.json \
   -- scripts/production-activate-driver.sh
 ```
+
+`VITE_WALLETCONNECT_PROJECT_ID`はschema 2 `ui-assets.json`に記録された値と一致させる。scheduleと24時間後のexecuteを別shellで実行する場合も、各shellで同じ値を設定する。
 
 24時間後の`execute`はfresh Gate Bを要求し、全stepで`--prior-schedule-receipt`と`UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE`を必須とする。release wrapperはprepare前に`verify-controller-schedule-receipt-live`を実行し、receipt内部digest、installer単独controller、module hash、canonical Finalized Base Timelock pending状態が一致しなければ停止する。confirm後も`verify-controller-activation execute`がcontroller activation receiptを発行するまで資産受付開始を完了扱いにしない。pending transactionのfee replacementはrelay前に`--step replace`をproduction controllerで実行し、元artifact、authorization、binding、profileの回数・fee上限へ束縛した新しいartifactを使用する。署名前に停止してCanisterの`Prepared`だけが残った場合、5分のauthorization期限内なら同じprepareを冪等再開する。期限切れなら古いauthorizationを再利用せず、fresh live Gate Bから新しいauthorization artifactを耐久化してから同じstable operationを再開する。
 
