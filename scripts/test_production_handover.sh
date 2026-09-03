@@ -55,7 +55,12 @@ cat >"$T/bundle/profile.json" <<'JSON'
 {"bridge_canister_id":"2vxsx-fae","root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","bridge_canister_wasm_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parameters":{"cycles_floor":"1000"}}
 JSON
 PROFILE_SHA="$(shasum -a 256 "$T/bundle/profile.json" | awk '{print $1}')"
-printf '{"source_revision":"%s","source_tree_sha256":"%s","artifacts":[{"path":"profile.json","sha256":"%s"}]}\n' "$REVISION" "$TREE" "$PROFILE_SHA" >"$T/bundle/release-manifest.json"
+printf '{"schema_version":3,"from_source_revision":"%s","from_source_tree_sha256":"%s","upgrade_source_revision":"%s","upgrade_source_tree_sha256":"%s","to_source_revision":"%s","to_source_tree_sha256":"%s"}\n' \
+  "$REVISION" "$TREE" "$REVISION" "$TREE" "$REVISION" "$TREE" \
+  >"$T/bundle/post-gate-a-policy-transition.json"
+TRANSITION_SHA="$(shasum -a 256 "$T/bundle/post-gate-a-policy-transition.json" | awk '{print $1}')"
+printf '{"source_revision":"%s","source_tree_sha256":"%s","artifacts":[{"path":"profile.json","sha256":"%s"},{"path":"post-gate-a-policy-transition.json","sha256":"%s"}]}\n' \
+  "$REVISION" "$TREE" "$PROFILE_SHA" "$TRANSITION_SHA" >"$T/bundle/release-manifest.json"
 GATE_B_HASH="$(printf 'a%.0s' {1..64})"
 RAW_MANIFEST_SHA="$(shasum -a 256 "$T/bundle/release-manifest.json" | awk '{print $1}')"
 [[ "$RAW_MANIFEST_SHA" != "$GATE_B_HASH" ]]
