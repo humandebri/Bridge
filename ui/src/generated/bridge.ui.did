@@ -710,7 +710,7 @@ service : {
   rotate_fee_recipient : (FeeRecipientConfig) -> (Result_17);
   rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_17);
   schedule_activation : () -> (Result_5);
-  seal_operational_config : (OperationalConfigArgs, nat64) -> (Result_22);
+  seal_operational_config : (OperationalConfigArgs) -> (Result_22);
   start_storage_validation : () -> (Result_3);
   storage_integrity_check : () -> (Result_23) query;
 }

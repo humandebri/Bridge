@@ -34,10 +34,11 @@ import {
   writeOrMatchConfirmationEvidence,
 } from "./cli.ts"
 
-test("parses only an allocatable exact governance operation ID", () => {
+test("accepts only the fixed initial governance operation ID", () => {
   assert.equal(parseExpectedGovernanceOperationId(0), 0n)
-  assert.equal(parseExpectedGovernanceOperationId("9007199254740992"), 9_007_199_254_740_992n)
   for (const invalid of [
+    1,
+    "9007199254740992",
     9_007_199_254_740_992,
     "18446744073709551615",
     -1,

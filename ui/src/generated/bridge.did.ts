@@ -713,10 +713,7 @@ export interface _SERVICE {
   'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_17>,
   'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_17>,
   'schedule_activation' : ActorMethod<[], Result_5>,
-  'seal_operational_config' : ActorMethod<
-    [OperationalConfigArgs, bigint],
-    Result_22
-  >,
+  'seal_operational_config' : ActorMethod<[OperationalConfigArgs], Result_22>,
   'start_storage_validation' : ActorMethod<[], Result_3>,
   'storage_integrity_check' : ActorMethod<[], Result_23>,
 }

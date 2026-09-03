@@ -1306,6 +1306,8 @@ struct ControllerActivationReceipt {
     timelock_operation_id: String,
     operation_salt: String,
     transaction_hash: String,
+    confirmed_generation: u8,
+    confirmed_signed_at_ns: String,
     finalized_block_number: String,
     deposits_paused: bool,
     activation_status_response_hex: String,
@@ -1313,6 +1315,21 @@ struct ControllerActivationReceipt {
     prior_schedule_receipt_sha256: Option<String>,
     confirmed_at_unix: u64,
     verified_at_unix: u64,
+}
+
+fn controller_activation_confirmation_fields_match(
+    confirmed_generation: u8,
+    confirmed_signed_at_ns: &str,
+    confirmation: &ActivationConfirmationStatusView,
+) -> bool {
+    let Ok(signed_at_ns) = parse_decimal_u128(confirmed_signed_at_ns, "confirmed signed timestamp")
+        .and_then(|value| {
+            u64::try_from(value).map_err(|_| "confirmed signed timestamp exceeds nat64".into())
+        })
+    else {
+        return false;
+    };
+    confirmed_generation == confirmation.generation && signed_at_ns == confirmation.signed_at_ns
 }
 
 #[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
@@ -6069,6 +6086,8 @@ struct ProductionHandoverActivationBinding<'a> {
     finalized_block_number: u64,
     timelock_operation_id: &'a str,
     transaction_hash: &'a str,
+    confirmed_generation: u8,
+    confirmed_signed_at_ns: &'a str,
 }
 
 fn validate_production_handover_canister_state(
@@ -6119,6 +6138,11 @@ fn validate_production_handover_canister_state(
         .last_confirmed_activation
         .as_ref()
         .ok_or("active handover has no confirmed execute activation")?;
+    let confirmed_signed_at_ns = u64::try_from(parse_decimal_u128(
+        activation.confirmed_signed_at_ns,
+        "confirmed signed timestamp",
+    )?)
+    .map_err(|_| "confirmed signed timestamp exceeds nat64")?;
     if observation.activation_status.deposits_paused
         || observation
             .activation_status
@@ -6127,6 +6151,8 @@ fn validate_production_handover_canister_state(
         || last.phase != "execute"
         || last.governance_operation_id != activation.governance_operation_id
         || last.receipt_block_number != activation.finalized_block_number
+        || last.generation != activation.confirmed_generation
+        || last.signed_at_ns != confirmed_signed_at_ns
         || !format!("0x{}", hex(&last.timelock_operation_id))
             .eq_ignore_ascii_case(activation.timelock_operation_id)
         || !format!("0x{}", hex(&last.transaction_hash))
@@ -6277,6 +6303,8 @@ fn verify_production_canister_handover(
             .map_err(|_| "invalid execute Finalized block")?,
         timelock_operation_id: &execute_receipt.timelock_operation_id,
         transaction_hash: &execute_receipt.transaction_hash,
+        confirmed_generation: execute_receipt.confirmed_generation,
+        confirmed_signed_at_ns: &execute_receipt.confirmed_signed_at_ns,
     };
     let installer = gate_b_controller(&bundle)?;
     validate_production_handover_canister_state(
@@ -8177,6 +8205,8 @@ fn verify_controller_activation(
         timelock_operation_id: timelock_operation_id.into(),
         operation_salt: operation_salt.into(),
         transaction_hash: artifact.transaction_hash,
+        confirmed_generation: last.generation,
+        confirmed_signed_at_ns: last.signed_at_ns.to_string(),
         finalized_block_number: finalized_block_number.to_string(),
         deposits_paused: activation.deposits_paused,
         activation_status_response_hex: hex(&activation_raw),
@@ -8304,6 +8334,11 @@ fn validate_controller_schedule_receipt(
         || last.phase != "schedule"
         || last.governance_operation_id != governance_operation_id
         || last.receipt_block_number != finalized_block
+        || !controller_activation_confirmation_fields_match(
+            receipt.confirmed_generation,
+            &receipt.confirmed_signed_at_ns,
+            last,
+        )
         || !format!("0x{}", hex(&pending.operation_id))
             .eq_ignore_ascii_case(&receipt.timelock_operation_id)
         || !format!("0x{}", hex(&pending.salt)).eq_ignore_ascii_case(&receipt.operation_salt)
@@ -8435,6 +8470,11 @@ fn validate_controller_execute_receipt(
         || last.phase != "execute"
         || last.governance_operation_id != governance_operation_id
         || last.receipt_block_number != finalized_block
+        || !controller_activation_confirmation_fields_match(
+            receipt.confirmed_generation,
+            &receipt.confirmed_signed_at_ns,
+            last,
+        )
         || !format!("0x{}", hex(&last.timelock_operation_id))
             .eq_ignore_ascii_case(&receipt.timelock_operation_id)
         || !format!("0x{}", hex(&last.transaction_hash))
@@ -8544,6 +8584,11 @@ fn verify_controller_schedule_receipt_live(
         || last.phase != "schedule"
         || last.governance_operation_id != governance_operation_id
         || last.receipt_block_number != finalized_block
+        || !controller_activation_confirmation_fields_match(
+            receipt.confirmed_generation,
+            &receipt.confirmed_signed_at_ns,
+            last,
+        )
         || !format!("0x{}", hex(&pending.operation_id))
             .eq_ignore_ascii_case(&receipt.timelock_operation_id)
         || !format!("0x{}", hex(&pending.salt)).eq_ignore_ascii_case(&receipt.operation_salt)
@@ -11077,6 +11122,8 @@ mod tests {
             finalized_block_number: 102,
             timelock_operation_id: &timelock_operation_id,
             transaction_hash: &transaction_hash,
+            confirmed_generation: 0,
+            confirmed_signed_at_ns: "123",
         };
         let validate = |lifecycle: &ProductionLifecycleView,
                         attestation: Option<&ActivationAttestationView>,
@@ -11109,6 +11156,62 @@ mod tests {
             &module_hash,
         )
         .is_ok());
+        let confirmed = activation_status
+            .last_confirmed_activation
+            .as_ref()
+            .unwrap();
+        assert!(controller_activation_confirmation_fields_match(
+            0, "123", confirmed,
+        ));
+        for (generation, signed_at_ns) in [
+            (1, "123"),
+            (0, "124"),
+            (0, "0123"),
+            (0, "+123"),
+            (0, "18446744073709551616"),
+        ] {
+            assert!(!controller_activation_confirmation_fields_match(
+                generation,
+                signed_at_ns,
+                confirmed,
+            ));
+        }
+        for (generation, signed_at_ns) in [
+            (1, "123"),
+            (0, "124"),
+            (0, "0123"),
+            (0, "+123"),
+            (0, "18446744073709551616"),
+        ] {
+            let drifted_activation = ProductionHandoverActivationBinding {
+                governance_operation_id: 8,
+                finalized_block_number: 102,
+                timelock_operation_id: &timelock_operation_id,
+                transaction_hash: &transaction_hash,
+                confirmed_generation: generation,
+                confirmed_signed_at_ns: signed_at_ns,
+            };
+            let observation = ProductionHandoverCanisterObservation {
+                lifecycle: &ProductionLifecycleView::Activated,
+                attestation: Some(&attestation),
+                activation_status: &activation_status,
+                runtime: &runtime,
+                status: &status,
+                storage_integrity: &storage_integrity,
+                controllers: &controllers,
+                module_hash: &module_hash,
+            };
+            assert!(validate_production_handover_canister_state(
+                &profile,
+                installer,
+                &gate_a_receipt,
+                &drifted_activation,
+                &observation,
+                created,
+                now,
+            )
+            .is_err());
+        }
         assert!(validate(
             &ProductionLifecycleView::Bootstrap,
             Some(&attestation),

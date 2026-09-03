@@ -653,7 +653,7 @@ async function setup() {
     )
   }
   await syncObservedHeads()
-  const sealedLifecycle = await bridge.actor.seal_operational_config(operationalConfig, 0n)
+  const sealedLifecycle = await bridge.actor.seal_operational_config(operationalConfig)
   if (!("Ok" in sealedLifecycle) || !("OperationalConfigSealed" in sealedLifecycle.Ok.lifecycle)) {
     throw new Error(`Failed to seal operational config: ${json(sealedLifecycle)}`)
   }

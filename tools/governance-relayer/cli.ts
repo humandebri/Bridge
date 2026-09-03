@@ -78,9 +78,7 @@ async function main(): Promise<void> {
         }
         return BigInt(value)
       }
-      const expectedGovernanceOperationId = parseExpectedGovernanceOperationId(
-        parsed.governance_operation_id,
-      )
+      parseExpectedGovernanceOperationId(parsed.governance_operation_id)
       const receipt = unwrap(await actor.seal_operational_config({
         governance_evm_fee: {
           gas_limit_ceiling: natural("gas_limit_ceiling"),
@@ -94,7 +92,7 @@ async function main(): Promise<void> {
         },
         cycles_floor: natural("cycles_floor"),
         settlement_cycle_ceiling: natural("settlement_cycle_ceiling"),
-      }, expectedGovernanceOperationId))
+      }))
       const evidence = {
         schema_version: 1,
         parameters_sha256: createHash("sha256").update(parametersBytes).digest("hex"),
@@ -342,8 +340,8 @@ export function parseExpectedGovernanceOperationId(value: unknown): bigint {
     throw new Error("Invalid expected governance operation ID")
   }
   const operationId = BigInt(value)
-  if (operationId >= 18_446_744_073_709_551_615n) {
-    throw new Error("Expected governance operation ID cannot be allocated")
+  if (operationId !== 0n) {
+    throw new Error("Initial governance operation ID must be 0")
   }
   return operationId
 }

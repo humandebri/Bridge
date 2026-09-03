@@ -824,7 +824,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       ),
     'schedule_activation' : IDL.Func([], [Result_5], []),
     'seal_operational_config' : IDL.Func(
-        [OperationalConfigArgs, IDL.Nat64],
+        [OperationalConfigArgs],
         [Result_22],
         [],
       ),

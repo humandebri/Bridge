@@ -279,11 +279,11 @@ fn attestation_refresh_expected_paused() -> Result<bool, BaseGovernanceError> {
 pub async fn seal_operational_config(
     caller: Principal,
     value: crate::config::OperationalConfigArgs,
-    expected_governance_operation_id: u64,
 ) -> Result<OperationalConfigSealReceipt, BaseGovernanceError> {
+    const INITIAL_GOVERNANCE_OPERATION_ID: u64 = 0;
     require_operational_config_seal_caller(caller)?;
     require_operational_config_unsealed()?;
-    require_next_governance_operation_id(expected_governance_operation_id)?;
+    require_next_governance_operation_id(INITIAL_GOVERNANCE_OPERATION_ID)?;
     value
         .validate_seal_candidate()
         .map_err(|_| BaseGovernanceError::InvalidArgument)?;
@@ -296,13 +296,13 @@ pub async fn seal_operational_config(
     require_operational_config_seal_caller(caller)?;
     require_unchanged_controller_authority(&controller_snapshot).await?;
     require_operational_config_unsealed()?;
-    require_next_governance_operation_id(expected_governance_operation_id)?;
+    require_next_governance_operation_id(INITIAL_GOVERNANCE_OPERATION_ID)?;
     STORE.with(|store| {
         store
             .borrow_mut()
             .seal_operational_config(
                 &next,
-                expected_governance_operation_id,
+                INITIAL_GOVERNANCE_OPERATION_ID,
                 caller,
                 evidence.attestation.clone(),
                 evidence.finalized_observation,

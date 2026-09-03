@@ -1961,17 +1961,11 @@ async fn prepare_base_governance_action(
 #[ic_cdk::update]
 async fn seal_operational_config(
     args: config::OperationalConfigArgs,
-    expected_governance_operation_id: u64,
 ) -> Result<base_governance::OperationalConfigSealReceipt, base_governance::BaseGovernanceError> {
     let Some(_guard) = InFlightGuard::acquire(ActionKey::BaseGovernance) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
-    base_governance::seal_operational_config(
-        ic_cdk::api::msg_caller(),
-        args,
-        expected_governance_operation_id,
-    )
-    .await
+    base_governance::seal_operational_config(ic_cdk::api::msg_caller(), args).await
 }
 
 #[ic_cdk::update]
