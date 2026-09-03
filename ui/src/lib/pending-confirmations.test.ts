@@ -81,15 +81,19 @@ describe("pending finalized confirmations", () => {
 
   it("does not associate a saved mint with another authorization digest", async () => {
     await savePendingMint({ ...mintExpectation, transactionHash: `0x${"22".repeat(32)}` })
-    expect(readPendingMint({
-      ...mintExpectation,
-      authorizationDigest: `0x${"55".repeat(32)}`,
-    })).toBeUndefined()
+    expect(
+      readPendingMint({
+        ...mintExpectation,
+        authorizationDigest: `0x${"55".repeat(32)}`,
+      }),
+    ).toBeUndefined()
   })
 
   it("persists, updates, blocks, and removes a settlement", async () => {
     await savePendingConfirmation(entry)
-    expect(readPendingConfirmations()).toEqual([{ ...entry, ...scope, blocked: false, notification: awaitingNotification }])
+    expect(readPendingConfirmations()).toEqual([
+      { ...entry, ...scope, blocked: false, notification: awaitingNotification },
+    ])
 
     await setPendingConfirmationBlocked(entry, true)
     expect(readPendingConfirmations()[0]?.blocked).toBe(true)
@@ -110,22 +114,35 @@ describe("pending finalized confirmations", () => {
 
   it("fails closed for malformed storage", () => {
     const key = `kinic.bridge.pending-confirmations.v7:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`
-    window.localStorage.setItem(key, JSON.stringify([{ ...entry, ...scope, blocked: false, transactionHash: "0x12" }]))
+    window.localStorage.setItem(
+      key,
+      JSON.stringify([{ ...entry, ...scope, blocked: false, transactionHash: "0x12" }]),
+    )
     expect(readPendingConfirmations()).toEqual([])
   })
 
   it("ignores withdrawals from another deployment", async () => {
     await savePendingConfirmation(entry)
-    expect(readPendingConfirmations()).toEqual([{ ...entry, ...scope, blocked: false, notification: awaitingNotification }])
+    expect(readPendingConfirmations()).toEqual([
+      { ...entry, ...scope, blocked: false, notification: awaitingNotification },
+    ])
 
     const key = `kinic.bridge.pending-confirmations.v7:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`
-    window.localStorage.setItem(key, JSON.stringify({ version: 7, entries: [{
-      ...entry,
-      ...scope,
-      chainId: scope.chainId + 1,
-      blocked: false,
-      notification: awaitingNotification,
-    }] }))
+    window.localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 7,
+        entries: [
+          {
+            ...entry,
+            ...scope,
+            chainId: scope.chainId + 1,
+            blocked: false,
+            notification: awaitingNotification,
+          },
+        ],
+      }),
+    )
     expect(readPendingConfirmations()).toEqual([])
     await savePendingConfirmation(entry)
     const stored = JSON.parse(window.localStorage.getItem(key) ?? "null") as { entries: unknown[] }
@@ -133,7 +150,10 @@ describe("pending finalized confirmations", () => {
   })
 
   it("does not migrate obsolete queue versions", () => {
-    window.localStorage.setItem("kinic.bridge.pending-confirmations.v1", JSON.stringify([{ ...entry, blocked: false }]))
+    window.localStorage.setItem(
+      "kinic.bridge.pending-confirmations.v1",
+      JSON.stringify([{ ...entry, blocked: false }]),
+    )
     window.localStorage.setItem(
       `kinic.bridge.pending-confirmations.v4:${scope.chainId}:${scope.bridgeAddress}:${scope.bridgeCanisterId}`,
       JSON.stringify({ version: 4, entries: [{ ...entry, ...scope, blocked: false }] }),
@@ -168,7 +188,9 @@ describe("pending finalized confirmations", () => {
   it("rejects_a_conflicting_History_destination_before_notification", async () => {
     await savePendingConfirmation({ ...entry, owner: "2vxsx-fae", blocked: true })
 
-    await expect(ensurePendingWithdrawalConfirmation(entry)).rejects.toThrow("destination owner conflict")
+    await expect(ensurePendingWithdrawalConfirmation(entry)).rejects.toThrow(
+      "destination owner conflict",
+    )
 
     expect(readPendingConfirmations()[0]).toMatchObject({ owner: "2vxsx-fae", blocked: true })
   })
@@ -185,7 +207,11 @@ describe("pending finalized confirmations", () => {
     const saved = upsertPendingConfirmation([first], second, false)
     expect(saved).toEqual([first, second])
 
-    const restored = upsertPendingConfirmation(saved, { ...first, owner: "canonical-owner", blocked: false }, true)
+    const restored = upsertPendingConfirmation(
+      saved,
+      { ...first, owner: "canonical-owner", blocked: false },
+      true,
+    )
     expect(restored).toEqual([{ ...first, owner: "canonical-owner", blocked: true }, second])
   })
 
@@ -194,7 +220,9 @@ describe("pending finalized confirmations", () => {
       throw new Error("storage unavailable")
     })
     await expect(savePendingConfirmation(entry)).rejects.toThrow("storage unavailable")
-    expect(readPendingConfirmations()).toEqual([{ ...entry, ...scope, blocked: false, notification: awaitingNotification }])
+    expect(readPendingConfirmations()).toEqual([
+      { ...entry, ...scope, blocked: false, notification: awaitingNotification },
+    ])
     setItem.mockRestore()
     await removePendingConfirmation(entry)
   })
@@ -205,9 +233,15 @@ describe("pending finalized confirmations", () => {
 
     await markPendingConfirmationNotified(entry, withdrawalId)
 
-    expect(readPendingConfirmations()[0]?.notification).toEqual({ status: "notified", withdrawalId })
+    expect(readPendingConfirmations()[0]?.notification).toEqual({
+      status: "notified",
+      withdrawalId,
+    })
     await restorePendingConfirmation(entry)
-    expect(readPendingConfirmations()[0]?.notification).toEqual({ status: "notified", withdrawalId })
+    expect(readPendingConfirmations()[0]?.notification).toEqual({
+      status: "notified",
+      withdrawalId,
+    })
   })
 
   it("refuses_a_conflicting_notified_withdrawal_ID_without_losing_the_saved_ID", async () => {
@@ -233,8 +267,13 @@ describe("pending finalized confirmations", () => {
       throw new Error("storage unavailable")
     })
 
-    await expect(markPendingConfirmationNotified(entry, withdrawalId)).rejects.toThrow("storage unavailable")
-    expect(readPendingConfirmations()[0]?.notification).toEqual({ status: "notified", withdrawalId })
+    await expect(markPendingConfirmationNotified(entry, withdrawalId)).rejects.toThrow(
+      "storage unavailable",
+    )
+    expect(readPendingConfirmations()[0]?.notification).toEqual({
+      status: "notified",
+      withdrawalId,
+    })
 
     setItem.mockRestore()
     await removePendingConfirmation(entry)
@@ -244,7 +283,8 @@ describe("pending finalized confirmations", () => {
     await savePendingConfirmation(entry)
     const originalSetItem = window.localStorage.setItem.bind(window.localStorage)
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation((key, value) => {
-      if (key.startsWith("kinic.bridge.pending-confirmations")) throw new Error("storage unavailable")
+      if (key.startsWith("kinic.bridge.pending-confirmations"))
+        throw new Error("storage unavailable")
       return originalSetItem(key, value)
     })
 

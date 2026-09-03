@@ -1,5 +1,10 @@
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
-import type { NotifyWithdrawalError, NotifyWithdrawalReceipt, SettlementActionError, SettlementActionResult } from "@/generated/bridge.did"
+import type {
+  NotifyWithdrawalError,
+  NotifyWithdrawalReceipt,
+  SettlementActionError,
+  SettlementActionResult,
+} from "@/generated/bridge.did"
 import { deploymentProfile, type DeploymentProfile } from "@/config/profile"
 import { browserLocalStorage, withBrowserLock } from "@/lib/browser-lock"
 import { createBridgeActor } from "@/lib/ic/bridge"
@@ -8,13 +13,20 @@ import { isSettlementActionResult } from "@/lib/settlement-phase"
 const IDENTITY_STORAGE_PREFIX = "kinic.bridge.withdrawal-notification-identity.v1"
 const sessionIdentities = new Map<string, Ed25519KeyIdentity>()
 
-type NotificationDeployment = Pick<DeploymentProfile, "chainId" | "bridgeCanisterId" | "deploymentInstanceId" | "icHost">
+type NotificationDeployment = Pick<
+  DeploymentProfile,
+  "chainId" | "bridgeCanisterId" | "deploymentInstanceId" | "icHost"
+>
 
 export type NotifyWithdrawalErrorCode = NotifyWithdrawalError extends infer Variant
-  ? Variant extends Record<string, unknown> ? keyof Variant : never
+  ? Variant extends Record<string, unknown>
+    ? keyof Variant
+    : never
   : never
 export type ContinueWithdrawalErrorCode = SettlementActionError extends infer Variant
-  ? Variant extends Record<string, unknown> ? keyof Variant : never
+  ? Variant extends Record<string, unknown>
+    ? keyof Variant
+    : never
   : never
 
 export class NotifyWithdrawalCallError extends Error {
@@ -28,7 +40,10 @@ export class NotifyWithdrawalCallError extends Error {
 }
 
 export class ContinueWithdrawalCallError extends Error {
-  constructor(readonly code: ContinueWithdrawalErrorCode, message: string) {
+  constructor(
+    readonly code: ContinueWithdrawalErrorCode,
+    message: string,
+  ) {
     super(message)
     this.name = "ContinueWithdrawalCallError"
   }
@@ -71,12 +86,20 @@ export async function notifyWithdrawalWithBrowserIdentity(
 ): Promise<NotifyWithdrawalReceipt> {
   if (!profile.bridgeCanisterId) throw new Error("Bridge canister ID is unavailable")
   const identity = await getWithdrawalNotificationIdentity(profile)
-  const transactionKey = Array.from(transactionHash, (value) => value.toString(16).padStart(2, "0")).join("")
+  const transactionKey = Array.from(transactionHash, (value) =>
+    value.toString(16).padStart(2, "0"),
+  ).join("")
   return withBrowserLock(
     `kinic-withdrawal-notification:${profile.bridgeCanisterId}:${transactionKey}`,
     async () => {
-      const actor = await createBridgeActor(profile.icHost, profile.bridgeCanisterId as string, identity)
-      return unwrapNotifyWithdrawalResult(await actor.notify_withdrawal({ transaction_hash: transactionHash }))
+      const actor = await createBridgeActor(
+        profile.icHost,
+        profile.bridgeCanisterId as string,
+        identity,
+      )
+      return unwrapNotifyWithdrawalResult(
+        await actor.notify_withdrawal({ transaction_hash: transactionHash }),
+      )
     },
   )
 }
@@ -87,11 +110,17 @@ export async function continueWithdrawalWithBrowserIdentity(
 ): Promise<SettlementActionResult> {
   if (!profile.bridgeCanisterId) throw new Error("Bridge canister ID is unavailable")
   const identity = await getWithdrawalNotificationIdentity(profile)
-  const withdrawalKey = Array.from(withdrawalId, (value) => value.toString(16).padStart(2, "0")).join("")
+  const withdrawalKey = Array.from(withdrawalId, (value) =>
+    value.toString(16).padStart(2, "0"),
+  ).join("")
   return withBrowserLock(
     `kinic-withdrawal-continuation:${profile.bridgeCanisterId}:${withdrawalKey}`,
     async () => {
-      const actor = await createBridgeActor(profile.icHost, profile.bridgeCanisterId as string, identity)
+      const actor = await createBridgeActor(
+        profile.icHost,
+        profile.bridgeCanisterId as string,
+        identity,
+      )
       return unwrapContinueWithdrawalResult(await actor.continue_withdrawal(withdrawalId))
     },
   )
@@ -113,7 +142,10 @@ export function unwrapNotifyWithdrawalResult(result: unknown): NotifyWithdrawalR
     const error = decoded.Err
     const code = notifyWithdrawalErrorCode(error)
     if (!code) throw new Error("Bridge returned an invalid withdrawal notification error")
-    throw new NotifyWithdrawalCallError(code, notifyWithdrawalErrorMessage(error as NotifyWithdrawalError))
+    throw new NotifyWithdrawalCallError(
+      code,
+      notifyWithdrawalErrorMessage(error as NotifyWithdrawalError),
+    )
   }
   const receipt: unknown = decoded.Ok
   if (!isObject(receipt)) throw new Error("Bridge returned an invalid notification receipt")
@@ -129,31 +161,40 @@ export function unwrapNotifyWithdrawalResult(result: unknown): NotifyWithdrawalR
   if (!(withdrawalId instanceof Uint8Array) && !Array.isArray(withdrawalId)) {
     throw new Error("Bridge returned an invalid withdrawal ID")
   }
-  if (receiptKey === "Ingested" && typeof payloadRecord.finalized_checkpoint_block_number !== "bigint") {
+  if (
+    receiptKey === "Ingested" &&
+    typeof payloadRecord.finalized_checkpoint_block_number !== "bigint"
+  ) {
     throw new Error("Bridge returned an invalid finalized block")
   }
   return receipt as NotifyWithdrawalReceipt
 }
 
 export function unwrapContinueWithdrawalResult(result: unknown): SettlementActionResult {
-  if (!isObject(result)) throw new Error("Bridge returned an invalid withdrawal continuation result")
+  if (!isObject(result))
+    throw new Error("Bridge returned an invalid withdrawal continuation result")
   const decoded = result as Record<string, unknown>
   if (decoded.Err !== undefined) {
     const error = decoded.Err
-    if (!isObject(error)) throw new Error("Bridge returned an invalid withdrawal continuation error")
+    if (!isObject(error))
+      throw new Error("Bridge returned an invalid withdrawal continuation error")
     const key = Object.keys(error)[0]
-    const code = key && [
-      "AnonymousCaller",
-      "InvalidId",
-      "NotFound",
-      "Unauthorized",
-      "Busy",
-      "StorageFailure",
-      "WrongState",
-      "AutomaticProgressPending",
-      "RateLimited",
-      "InsufficientCycles",
-    ].includes(key) ? key as ContinueWithdrawalErrorCode : undefined
+    const code =
+      key &&
+      [
+        "AnonymousCaller",
+        "InvalidId",
+        "NotFound",
+        "Unauthorized",
+        "Busy",
+        "StorageFailure",
+        "WrongState",
+        "AutomaticProgressPending",
+        "RateLimited",
+        "InsufficientCycles",
+      ].includes(key)
+        ? (key as ContinueWithdrawalErrorCode)
+        : undefined
     if (!code) throw new Error("Bridge returned an invalid withdrawal continuation error")
     throw new ContinueWithdrawalCallError(code, continueWithdrawalErrorMessage(error))
   }
@@ -164,7 +205,8 @@ export function unwrapContinueWithdrawalResult(result: unknown): SettlementActio
 }
 
 function continueWithdrawalErrorMessage(error: object): string {
-  if ("InsufficientCycles" in error) return "The Bridge Canister does not have enough cycles to continue this payout."
+  if ("InsufficientCycles" in error)
+    return "The Bridge Canister does not have enough cycles to continue this payout."
   if ("RateLimited" in error) return "This payout was continued too recently. Try again later."
   if ("Busy" in error) return "This payout is already being continued."
   if ("AnonymousCaller" in error) return "The browser continuation identity was not accepted."
@@ -174,23 +216,29 @@ function continueWithdrawalErrorMessage(error: object): string {
 export function notifyWithdrawalErrorMessage(error: NotifyWithdrawalError): string {
   const key = Object.keys(error)[0]
   const messages: Record<string, string> = {
-    LedgerFeeExceedsServiceFee: "Withdrawals were stopped because the ledger fee exceeded the charged service fee. Contact the bridge operator before resuming from History.",
+    LedgerFeeExceedsServiceFee:
+      "Withdrawals were stopped because the ledger fee exceeded the charged service fee. Contact the bridge operator before resuming from History.",
     RpcUnavailable: "Base RPC is unavailable. Retry the IC notification when the service recovers.",
     RpcInconsistent: "Base RPC providers disagreed. Automatic notification retries have stopped.",
     InvalidBaseResponse: "Base returned an invalid withdrawal response.",
     TransactionNotFound: "The Base withdrawal transaction was not found.",
-    TransactionNotConfirmed: "The Base withdrawal transaction has not reached the finalized head yet.",
+    TransactionNotConfirmed:
+      "The Base withdrawal transaction has not reached the finalized head yet.",
     TransactionReverted: "The Base withdrawal transaction reverted.",
     BaseStateMismatch: "The finalized Bridge withdrawal state does not match its creation event.",
-    BridgeSignerMismatch: "The finalized Bridge signer does not match the configured canister signer.",
-    WithdrawalBeforeAdmissionBoundary: "This withdrawal predates the Bridge Canister admission boundary and cannot be notified.",
+    BridgeSignerMismatch:
+      "The finalized Bridge signer does not match the configured canister signer.",
+    WithdrawalBeforeAdmissionBoundary:
+      "This withdrawal predates the Bridge Canister admission boundary and cannot be notified.",
     WithdrawalConflict: "A different withdrawal payload already uses this withdrawal ID.",
     InvalidTransactionHash: "The withdrawal transaction hash is invalid.",
     StorageFailure: "The Bridge could not save the withdrawal.",
     AnonymousCaller: "The browser notification identity was not accepted.",
     Busy: "This withdrawal notification or withdrawal record is already being processed.",
-    RateLimited: "Withdrawal notifications are temporarily rate limited. Retry the IC notification later.",
-    InsufficientCycles: "The Bridge Canister does not have enough cycles to process this notification.",
+    RateLimited:
+      "Withdrawal notifications are temporarily rate limited. Retry the IC notification later.",
+    InsufficientCycles:
+      "The Bridge Canister does not have enough cycles to process this notification.",
   }
   const message = key === undefined ? undefined : messages[key]
   return message ?? `Bridge rejected withdrawal notification: ${stringify(error)}`
@@ -199,14 +247,29 @@ export function notifyWithdrawalErrorMessage(error: NotifyWithdrawalError): stri
 function notifyWithdrawalErrorCode(error: unknown): NotifyWithdrawalErrorCode | undefined {
   if (!isObject(error)) return undefined
   const code = Object.keys(error)[0]
-  if (code && [
-    "LedgerFeeExceedsServiceFee", "Busy", "RpcUnavailable", "TransactionNotConfirmed",
-    "WithdrawalConflict", "RpcInconsistent", "InvalidTransactionHash",
-    "TransactionReverted", "StorageFailure", "BaseStateMismatch",
-    "TransactionNotFound", "BridgeSignerMismatch", "WithdrawalBeforeAdmissionBoundary",
-    "AnonymousCaller", "InvalidBaseResponse",
-    "RateLimited", "InsufficientCycles",
-  ].includes(code)) return code as NotifyWithdrawalErrorCode
+  if (
+    code &&
+    [
+      "LedgerFeeExceedsServiceFee",
+      "Busy",
+      "RpcUnavailable",
+      "TransactionNotConfirmed",
+      "WithdrawalConflict",
+      "RpcInconsistent",
+      "InvalidTransactionHash",
+      "TransactionReverted",
+      "StorageFailure",
+      "BaseStateMismatch",
+      "TransactionNotFound",
+      "BridgeSignerMismatch",
+      "WithdrawalBeforeAdmissionBoundary",
+      "AnonymousCaller",
+      "InvalidBaseResponse",
+      "RateLimited",
+      "InsufficientCycles",
+    ].includes(code)
+  )
+    return code as NotifyWithdrawalErrorCode
   return undefined
 }
 
@@ -215,5 +278,7 @@ function isObject(value: unknown): value is object {
 }
 
 function stringify(value: unknown): string {
-  return JSON.stringify(value, (_key, item: unknown) => typeof item === "bigint" ? item.toString() : item)
+  return JSON.stringify(value, (_key, item: unknown) =>
+    typeof item === "bigint" ? item.toString() : item,
+  )
 }

@@ -5,10 +5,14 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./dialog"
 
 function DismissibleDialog() {
   const [open, setOpen] = useState(true)
-  return <Dialog open={open} onOpenChange={setOpen}><DialogContent>
-    <DialogTitle>Existing dialog</DialogTitle>
-    <DialogDescription>Existing dialogs remain dismissible.</DialogDescription>
-  </DialogContent></Dialog>
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent>
+        <DialogTitle>Existing dialog</DialogTitle>
+        <DialogDescription>Existing dialogs remain dismissible.</DialogDescription>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 describe("DialogContent", () => {

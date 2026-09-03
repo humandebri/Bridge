@@ -13,18 +13,51 @@ const [rawProfile, builtDigest] = await Promise.all([
 ])
 const profile = JSON.parse(rawProfile)
 const expected = createHash("sha256").update(JSON.stringify(profile)).digest("hex")
-if (builtDigest.trim() !== expected) throw new Error("Test deploy rejected: dist was not built from the current completed Sepolia profile")
-for (const key of ["environmentMode", "activationTimelockDelaySeconds", "bridgeCanisterId", "deploymentInstanceId", "minimumWithdrawalId", "ledgerCanisterId", "indexCanisterId", "bridgeAddress", "bsnsAddress", "timelockAddress", "expected_bridge_signer", "bridgeRuntimeHash", "bsnsRuntimeHash", "rpcProviderUrlsSha256", "deploymentBlock"]) {
-  if (profile[key] === null || profile[key] === undefined || profile[key] === "" || String(profile[key]).startsWith("REPLACE_")) {
+if (builtDigest.trim() !== expected)
+  throw new Error(
+    "Test deploy rejected: dist was not built from the current completed Sepolia profile",
+  )
+for (const key of [
+  "environmentMode",
+  "activationTimelockDelaySeconds",
+  "bridgeCanisterId",
+  "deploymentInstanceId",
+  "minimumWithdrawalId",
+  "ledgerCanisterId",
+  "indexCanisterId",
+  "bridgeAddress",
+  "bsnsAddress",
+  "timelockAddress",
+  "expected_bridge_signer",
+  "bridgeRuntimeHash",
+  "bsnsRuntimeHash",
+  "rpcProviderUrlsSha256",
+  "deploymentBlock",
+]) {
+  if (
+    profile[key] === null ||
+    profile[key] === undefined ||
+    profile[key] === "" ||
+    String(profile[key]).startsWith("REPLACE_")
+  ) {
     throw new Error(`Test deploy rejected incomplete profile field: ${key}`)
   }
 }
-if (!/^0x[0-9a-fA-F]{64}$/.test(profile.deploymentInstanceId) || /^0x0+$/.test(profile.deploymentInstanceId)) {
+if (
+  !/^0x[0-9a-fA-F]{64}$/.test(profile.deploymentInstanceId) ||
+  /^0x0+$/.test(profile.deploymentInstanceId)
+) {
   throw new Error("Test deploy rejected invalid deploymentInstanceId")
 }
-if (!/^0x[0-9a-fA-F]{64}$/.test(profile.minimumWithdrawalId) || /^0x0+$/.test(profile.minimumWithdrawalId)) {
+if (
+  !/^0x[0-9a-fA-F]{64}$/.test(profile.minimumWithdrawalId) ||
+  /^0x0+$/.test(profile.minimumWithdrawalId)
+) {
   throw new Error("Test deploy rejected invalid minimumWithdrawalId")
 }
-if (profile.environmentMode !== "short-delay-test-only" || profile.activationTimelockDelaySeconds !== 300) {
+if (
+  profile.environmentMode !== "short-delay-test-only" ||
+  profile.activationTimelockDelaySeconds !== 300
+) {
   throw new Error("Test deploy rejected non-staging Timelock policy")
 }

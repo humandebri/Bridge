@@ -41,11 +41,17 @@ export interface ActivityBoundaries {
   withdrawal: ActivityBoundary
 }
 
-export function activityAutoRefreshEnabled(pageVisible: boolean, hasAutomaticProgress: boolean): boolean {
+export function activityAutoRefreshEnabled(
+  pageVisible: boolean,
+  hasAutomaticProgress: boolean,
+): boolean {
   return pageVisible && hasAutomaticProgress
 }
 
-export function mergeActivityItems(deposits: DepositView[], withdrawals: WithdrawalHistoryItem[]): ActivityItem[] {
+export function mergeActivityItems(
+  deposits: DepositView[],
+  withdrawals: WithdrawalHistoryItem[],
+): ActivityItem[] {
   const unique = new Map<string, ActivityItem>()
   for (const deposit of deposits) {
     const key = `deposit:${bytesKey(deposit.deposit_id)}`
@@ -61,7 +67,11 @@ export function mergeActivityItems(deposits: DepositView[], withdrawals: Withdra
   })
 }
 
-export function visibleActivityItems(items: ActivityItem[], filter: ActivityFilter, boundaries: ActivityBoundaries): ActivityItem[] {
+export function visibleActivityItems(
+  items: ActivityItem[],
+  filter: ActivityFilter,
+  boundaries: ActivityBoundaries,
+): ActivityItem[] {
   const filtered = filter === "all" ? items : items.filter((item) => item.direction === filter)
   if (filter !== "all") return filtered
   const enabled = enabledBoundaries(boundaries)
@@ -69,32 +79,50 @@ export function visibleActivityItems(items: ActivityItem[], filter: ActivityFilt
   const unfinished = enabled.filter((entry) => entry.boundary.hasMore)
   if (!unfinished.length) return filtered
   if (unfinished.some((entry) => entry.boundary.unseenBeforeNs === undefined)) return []
-  const cutoff = unfinished.reduce((latest, entry) => {
-    const value = entry.boundary.unseenBeforeNs as bigint
-    return latest === undefined || value > latest ? value : latest
-  }, undefined as bigint | undefined)
+  const cutoff = unfinished.reduce(
+    (latest, entry) => {
+      const value = entry.boundary.unseenBeforeNs as bigint
+      return latest === undefined || value > latest ? value : latest
+    },
+    undefined as bigint | undefined,
+  )
   return cutoff === undefined ? filtered : filtered.filter((item) => item.createdAtNs > cutoff)
 }
 
-export function olderActivitySources(filter: ActivityFilter, boundaries: ActivityBoundaries): ActivityDirection[] {
-  if (filter === "to-base") return boundaries.deposit.enabled && boundaries.deposit.hasMore ? ["to-base"] : []
-  if (filter === "to-ic") return boundaries.withdrawal.enabled && boundaries.withdrawal.hasMore ? ["to-ic"] : []
+export function olderActivitySources(
+  filter: ActivityFilter,
+  boundaries: ActivityBoundaries,
+): ActivityDirection[] {
+  if (filter === "to-base")
+    return boundaries.deposit.enabled && boundaries.deposit.hasMore ? ["to-base"] : []
+  if (filter === "to-ic")
+    return boundaries.withdrawal.enabled && boundaries.withdrawal.hasMore ? ["to-ic"] : []
   const unfinished = enabledBoundaries(boundaries).filter((entry) => entry.boundary.hasMore)
   if (unfinished.length <= 1) return unfinished.map((entry) => entry.direction)
   const unknown = unfinished.filter((entry) => entry.boundary.unseenBeforeNs === undefined)
   if (unknown.length) return unknown.map((entry) => entry.direction)
-  const latest = unfinished.reduce((value, entry) => {
-    const boundary = entry.boundary.unseenBeforeNs as bigint
-    return value === undefined || boundary > value ? boundary : value
-  }, undefined as bigint | undefined)
-  return unfinished.filter((entry) => entry.boundary.unseenBeforeNs === latest).map((entry) => entry.direction)
+  const latest = unfinished.reduce(
+    (value, entry) => {
+      const boundary = entry.boundary.unseenBeforeNs as bigint
+      return value === undefined || boundary > value ? boundary : value
+    },
+    undefined as bigint | undefined,
+  )
+  return unfinished
+    .filter((entry) => entry.boundary.unseenBeforeNs === latest)
+    .map((entry) => entry.direction)
 }
 
-function enabledBoundaries(boundaries: ActivityBoundaries): Array<{ direction: ActivityDirection; boundary: ActivityBoundary }> {
+function enabledBoundaries(
+  boundaries: ActivityBoundaries,
+): Array<{ direction: ActivityDirection; boundary: ActivityBoundary }> {
   return [
     { direction: "to-base", boundary: boundaries.deposit },
     { direction: "to-ic", boundary: boundaries.withdrawal },
-  ].filter((entry) => entry.boundary.enabled) as Array<{ direction: ActivityDirection; boundary: ActivityBoundary }>
+  ].filter((entry) => entry.boundary.enabled) as Array<{
+    direction: ActivityDirection
+    boundary: ActivityBoundary
+  }>
 }
 
 function bytesKey(value: Uint8Array | number[]): string {

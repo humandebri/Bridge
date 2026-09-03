@@ -36,9 +36,8 @@ export async function withBrowserLock<T>(name: string, action: () => Promise<T> 
 
 async function withLocalStorageLock<T>(name: string, action: () => Promise<T> | T): Promise<T> {
   const key = `${LOCK_PREFIX}:${name}`
-  const ownerId = typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random()}`
+  const ownerId =
+    typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
   let lease: BrowserLease | undefined
 
   try {
@@ -113,11 +112,11 @@ function readLease(key: string): BrowserLease | undefined | null {
     const value: unknown = JSON.parse(raw)
     if (typeof value !== "object" || value === null) return null
     const item = value as Record<string, unknown>
-    return typeof item.ownerId === "string"
-      && typeof item.expiresAt === "number"
-      && Number.isSafeInteger(item.expiresAt)
-      && typeof item.fencingToken === "number"
-      && Number.isSafeInteger(item.fencingToken)
+    return typeof item.ownerId === "string" &&
+      typeof item.expiresAt === "number" &&
+      Number.isSafeInteger(item.expiresAt) &&
+      typeof item.fencingToken === "number" &&
+      Number.isSafeInteger(item.fencingToken)
       ? { ownerId: item.ownerId, expiresAt: item.expiresAt, fencingToken: item.fencingToken }
       : null
   } catch {
@@ -126,11 +125,13 @@ function readLease(key: string): BrowserLease | undefined | null {
 }
 
 function ownsLease(current: BrowserLease | undefined | null, expected: BrowserLease): boolean {
-  return current !== undefined
-    && current !== null
-    && current.ownerId === expected.ownerId
-    && current.fencingToken === expected.fencingToken
-    && current.expiresAt > Date.now()
+  return (
+    current !== undefined &&
+    current !== null &&
+    current.ownerId === expected.ownerId &&
+    current.fencingToken === expected.fencingToken &&
+    current.expiresAt > Date.now()
+  )
 }
 
 function setLease(key: string, lease: BrowserLease): void {
@@ -157,7 +158,9 @@ async function withLocalQueue<T>(name: string, action: () => Promise<T> | T): Pr
   const previous = localQueues.get(name)
   if (!previous) {
     let release!: () => void
-    const current = new Promise<void>((resolve) => { release = resolve })
+    const current = new Promise<void>((resolve) => {
+      release = resolve
+    })
     localQueues.set(name, current)
     try {
       return await action()
@@ -167,7 +170,9 @@ async function withLocalQueue<T>(name: string, action: () => Promise<T> | T): Pr
     }
   }
   let release!: () => void
-  const current = new Promise<void>((resolve) => { release = resolve })
+  const current = new Promise<void>((resolve) => {
+    release = resolve
+  })
   const queued = previous.then(() => current)
   localQueues.set(name, queued)
   await previous

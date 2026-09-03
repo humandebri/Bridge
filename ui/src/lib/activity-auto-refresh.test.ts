@@ -13,10 +13,9 @@ describe("activity auto refresh", () => {
   it("keeps the original interval while renders replace the refresh callback", async () => {
     const first = vi.fn()
     const latest = vi.fn()
-    const view = renderHook(
-      ({ enabled, refresh }) => useActivityAutoRefresh(enabled, refresh),
-      { initialProps: { enabled: true, refresh: first } },
-    )
+    const view = renderHook(({ enabled, refresh }) => useActivityAutoRefresh(enabled, refresh), {
+      initialProps: { enabled: true, refresh: first },
+    })
 
     await act(() => vi.advanceTimersByTimeAsync(45_000))
     view.rerender({ enabled: true, refresh: latest })

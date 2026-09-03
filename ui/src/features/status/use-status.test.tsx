@@ -1,5 +1,10 @@
 import { StrictMode, type ReactNode } from "react"
-import { focusManager, onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import {
+  focusManager,
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query"
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { deploymentProfile } from "@/config/profile"
@@ -28,7 +33,11 @@ vi.mock("@/lib/evm/client", () => ({
 function wrapper() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } })
   return function Wrapper({ children }: { children: ReactNode }) {
-    return <StrictMode><QueryClientProvider client={client}>{children}</QueryClientProvider></StrictMode>
+    return (
+      <StrictMode>
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      </StrictMode>
+    )
   }
 }
 
@@ -38,8 +47,12 @@ describe("automatic status queries", () => {
   beforeEach(() => {
     focusManager.setFocused(true)
     onlineManager.setOnline(true)
-    mocks.validateRuntime.mockReset().mockResolvedValue({ ready: true, blockers: [], checkedAt: Date.now() })
-    mocks.validateRuntimeHeartbeat.mockReset().mockResolvedValue({ ready: true, blockers: [], checkedAt: Date.now() })
+    mocks.validateRuntime
+      .mockReset()
+      .mockResolvedValue({ ready: true, blockers: [], checkedAt: Date.now() })
+    mocks.validateRuntimeHeartbeat
+      .mockReset()
+      .mockResolvedValue({ ready: true, blockers: [], checkedAt: Date.now() })
     mocks.readContract.mockReset().mockResolvedValue({
       serviceFee: 50_000_000n,
       maxServiceFee: 50_000_000n,
@@ -56,10 +69,9 @@ describe("automatic status queries", () => {
   })
 
   it("starts validation on mount and deduplicates Strict Mode", async () => {
-    const view = renderHook(
-      () => useRuntimeValidation(undefined, { enabled: true }),
-      { wrapper: wrapper() },
-    )
+    const view = renderHook(() => useRuntimeValidation(undefined, { enabled: true }), {
+      wrapper: wrapper(),
+    })
 
     await waitFor(() => expect(view.result.current.isSuccess).toBe(true))
     expect(mocks.validateRuntime).toHaveBeenCalledOnce()
@@ -103,11 +115,16 @@ describe("automatic status queries", () => {
       },
     }
     mocks.validateRuntime.mockResolvedValue(validation)
-    const view = renderHook(() => {
-      const full = useRuntimeValidation(undefined, { enabled: true })
-      const heartbeat = useRuntimeHeartbeat(undefined, full.data, { enabled: full.data?.ready === true })
-      return { full, heartbeat }
-    }, { wrapper: wrapper() })
+    const view = renderHook(
+      () => {
+        const full = useRuntimeValidation(undefined, { enabled: true })
+        const heartbeat = useRuntimeHeartbeat(undefined, full.data, {
+          enabled: full.data?.ready === true,
+        })
+        return { full, heartbeat }
+      },
+      { wrapper: wrapper() },
+    )
 
     await waitFor(() => expect(view.result.current.heartbeat.data?.snapshot).toBeDefined())
     expect(mocks.validateRuntimeHeartbeat).not.toHaveBeenCalled()
@@ -126,13 +143,14 @@ describe("automatic status queries", () => {
     const TestWrapper = ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     )
-    const view = renderHook(
-      () => useRuntimeHeartbeat(undefined, undefined, { enabled: true }),
-      { wrapper: TestWrapper },
-    )
+    const view = renderHook(() => useRuntimeHeartbeat(undefined, undefined, { enabled: true }), {
+      wrapper: TestWrapper,
+    })
 
     await waitFor(() => expect(view.result.current.isSuccess).toBe(true))
-    expect(client.getQueryData(["bridge-status", deploymentProfile.bridgeCanisterId])).toEqual(status)
+    expect(client.getQueryData(["bridge-status", deploymentProfile.bridgeCanisterId])).toEqual(
+      status,
+    )
   })
 
   it("keeps the last successful heartbeat when a refresh raises a communication error", async () => {
@@ -172,7 +190,9 @@ describe("automatic status queries", () => {
     )
 
     await waitFor(() => expect(view.result.current.data).toEqual(validation))
-    await act(async () => { await view.result.current.refetch() })
+    await act(async () => {
+      await view.result.current.refetch()
+    })
 
     await waitFor(() => expect(view.result.current.isError).toBe(true))
     expect(view.result.current.error).toEqual(new Error("Base RPC unavailable"))
@@ -182,10 +202,9 @@ describe("automatic status queries", () => {
   it("keeps confirmed safety blockers as successful heartbeat data", async () => {
     const blocker = { ready: false, blockers: ["Deposit minting is paused"], checkedAt: Date.now() }
     mocks.validateRuntimeHeartbeat.mockResolvedValue(blocker)
-    const view = renderHook(
-      () => useRuntimeHeartbeat(undefined, undefined, { enabled: true }),
-      { wrapper: wrapper() },
-    )
+    const view = renderHook(() => useRuntimeHeartbeat(undefined, undefined, { enabled: true }), {
+      wrapper: wrapper(),
+    })
 
     await waitFor(() => expect(view.result.current.isSuccess).toBe(true))
     expect(view.result.current.isError).toBe(false)
@@ -194,10 +213,9 @@ describe("automatic status queries", () => {
 
   it("does not poll and refreshes only after focus and reconnect events", async () => {
     focusManager.setFocused(false)
-    const view = renderHook(
-      () => useRuntimeHeartbeat(undefined, undefined, { enabled: true }),
-      { wrapper: wrapper() },
-    )
+    const view = renderHook(() => useRuntimeHeartbeat(undefined, undefined, { enabled: true }), {
+      wrapper: wrapper(),
+    })
 
     await waitFor(() => expect(view.result.current.isSuccess).toBe(true))
     await act(async () => new Promise((resolve) => setTimeout(resolve, 60)))
@@ -205,24 +223,31 @@ describe("automatic status queries", () => {
 
     const callsBeforeFocus = mocks.validateRuntimeHeartbeat.mock.calls.length
     focusManager.setFocused(true)
-    await waitFor(() => expect(mocks.validateRuntimeHeartbeat.mock.calls.length).toBeGreaterThan(callsBeforeFocus))
+    await waitFor(() =>
+      expect(mocks.validateRuntimeHeartbeat.mock.calls.length).toBeGreaterThan(callsBeforeFocus),
+    )
 
     onlineManager.setOnline(false)
     await act(async () => new Promise((resolve) => setTimeout(resolve, 30)))
     const callsBeforeReconnect = mocks.validateRuntimeHeartbeat.mock.calls.length
     onlineManager.setOnline(true)
-    await waitFor(() => expect(mocks.validateRuntimeHeartbeat.mock.calls.length).toBeGreaterThan(callsBeforeReconnect))
+    await waitFor(() =>
+      expect(mocks.validateRuntimeHeartbeat.mock.calls.length).toBeGreaterThan(
+        callsBeforeReconnect,
+      ),
+    )
     view.unmount()
   })
 
   it("can disable focus and reconnect refreshes", async () => {
     focusManager.setFocused(false)
     const view = renderHook(
-      () => useRuntimeHeartbeat(undefined, undefined, {
-        enabled: true,
-        refetchOnWindowFocus: false,
-        refetchOnReconnect: false,
-      }),
+      () =>
+        useRuntimeHeartbeat(undefined, undefined, {
+          enabled: true,
+          refetchOnWindowFocus: false,
+          refetchOnReconnect: false,
+        }),
       { wrapper: wrapper() },
     )
 
@@ -246,10 +271,10 @@ describe("automatic status queries", () => {
   })
 
   it("loads the Base quote when runtime readiness enables it", async () => {
-    const view = renderHook(
-      ({ enabled }) => useCurrentBaseQuote({ enabled }),
-      { wrapper: wrapper(), initialProps: { enabled: false } },
-    )
+    const view = renderHook(({ enabled }) => useCurrentBaseQuote({ enabled }), {
+      wrapper: wrapper(),
+      initialProps: { enabled: false },
+    })
     expect(mocks.readContract).not.toHaveBeenCalled()
 
     view.rerender({ enabled: true })
@@ -258,10 +283,9 @@ describe("automatic status queries", () => {
   })
 
   it("honors the requested stale window for the Base quote", async () => {
-    const view = renderHook(
-      () => useCurrentBaseQuote({ enabled: true, staleTime: 60_000 }),
-      { wrapper: wrapper() },
-    )
+    const view = renderHook(() => useCurrentBaseQuote({ enabled: true, staleTime: 60_000 }), {
+      wrapper: wrapper(),
+    })
 
     await waitFor(() => expect(view.result.current.data).toBeDefined())
     expect(view.result.current.isStale).toBe(false)

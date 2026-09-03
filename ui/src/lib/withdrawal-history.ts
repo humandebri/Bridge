@@ -1,7 +1,10 @@
 import { Principal } from "@icp-sdk/core/principal"
 import { bytesToHex, hexToBytes, type Hex } from "viem"
 import type { NotifyWithdrawalReceipt } from "@/generated/bridge.did"
-import { NotifyWithdrawalCallError, notifyWithdrawalWithBrowserIdentity } from "@/lib/ic/withdrawal-notification-client"
+import {
+  NotifyWithdrawalCallError,
+  notifyWithdrawalWithBrowserIdentity,
+} from "@/lib/ic/withdrawal-notification-client"
 import {
   ensurePendingWithdrawalConfirmation,
   markPendingConfirmationNotificationAttempt,
@@ -19,15 +22,21 @@ export interface WithdrawalDestinationAccount {
   subaccount: Uint8Array
 }
 
-export function decodeWithdrawalDestination(owner: Hex, subaccount: Hex): WithdrawalDestinationAccount {
+export function decodeWithdrawalDestination(
+  owner: Hex,
+  subaccount: Hex,
+): WithdrawalDestinationAccount {
   const ownerBytes = hexToBytes(owner)
-  if (ownerBytes.length === 0
-    || ownerBytes.length > 29
-    || ownerBytes.length === 1 && ownerBytes[0] === 0x04) {
+  if (
+    ownerBytes.length === 0 ||
+    ownerBytes.length > 29 ||
+    (ownerBytes.length === 1 && ownerBytes[0] === 0x04)
+  ) {
     throw new Error("Finalized withdrawal destination owner is invalid")
   }
   const subaccountBytes = hexToBytes(subaccount)
-  if (subaccountBytes.length !== 32) throw new Error("Finalized withdrawal destination subaccount must be 32 bytes")
+  if (subaccountBytes.length !== 32)
+    throw new Error("Finalized withdrawal destination subaccount must be 32 bytes")
   return {
     owner: Principal.fromUint8Array(ownerBytes).toText(),
     subaccount: subaccountBytes,
@@ -56,7 +65,11 @@ export async function notifyHistoryWithdrawal(
     markNotified: markPendingConfirmationNotified,
   },
   finalizedBlock = 0n,
-): Promise<{ pending: PendingConfirmationInput; receipt: NotifyWithdrawalReceipt; withdrawalId: Uint8Array }> {
+): Promise<{
+  pending: PendingConfirmationInput
+  receipt: NotifyWithdrawalReceipt
+  withdrawalId: Uint8Array
+}> {
   const pending: PendingConfirmationInput = {
     kind: "withdrawal",
     transactionHash: target.hash,
@@ -65,7 +78,10 @@ export async function notifyHistoryWithdrawal(
   await dependencies.ensurePending(pending)
   const markAttempt = dependencies.markAttempt ?? markPendingConfirmationNotificationAttempt
   const setFailure = dependencies.setFailure ?? setPendingConfirmationNotificationFailure
-  const wait = dependencies.delay ?? ((milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds)))
+  const wait =
+    dependencies.delay ??
+    ((milliseconds: number) =>
+      new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds)))
   await markAttempt(pending, "manual", finalizedBlock).catch(() => undefined)
   let receipt: NotifyWithdrawalReceipt
   try {
@@ -85,7 +101,8 @@ export async function notifyHistoryWithdrawal(
       throw error
     }
   }
-  const withdrawalId = "Duplicate" in receipt ? receipt.Duplicate.withdrawal_id : receipt.Ingested.withdrawal_id
+  const withdrawalId =
+    "Duplicate" in receipt ? receipt.Duplicate.withdrawal_id : receipt.Ingested.withdrawal_id
   const withdrawalIdBytes = Uint8Array.from(withdrawalId)
   await dependencies.markNotified(pending, bytesToHex(withdrawalIdBytes))
   return { pending, receipt, withdrawalId: withdrawalIdBytes }
@@ -103,16 +120,19 @@ function historyNotificationFailure(error: unknown): PendingNotificationFailure 
   if (error.code === "TransactionNotConfirmed") {
     return { code: error.code, message, disposition: "manual-retry" }
   }
-  if ([
-    "AnonymousCaller",
-    "BaseStateMismatch",
-    "BridgeSignerMismatch",
-    "InvalidTransactionHash",
-    "LedgerFeeExceedsServiceFee",
-    "TransactionReverted",
-    "WithdrawalBeforeAdmissionBoundary",
-    "WithdrawalConflict",
-  ].includes(error.code)) return { code: error.code, message, disposition: "terminal" }
+  if (
+    [
+      "AnonymousCaller",
+      "BaseStateMismatch",
+      "BridgeSignerMismatch",
+      "InvalidTransactionHash",
+      "LedgerFeeExceedsServiceFee",
+      "TransactionReverted",
+      "WithdrawalBeforeAdmissionBoundary",
+      "WithdrawalConflict",
+    ].includes(error.code)
+  )
+    return { code: error.code, message, disposition: "terminal" }
   return { code: error.code, message, disposition: "manual-retry" }
 }
 
@@ -130,21 +150,34 @@ export interface WithdrawalLogScan<T extends FinalizedEventLog> {
   logs: T[]
 }
 
-export async function fetchInBatches<T, U>(items: T[], batchSize: number, fetchBatch: (batch: T[]) => Promise<U[]>): Promise<U[]> {
-  if (!Number.isSafeInteger(batchSize) || batchSize <= 0) throw new Error("Batch size must be a positive integer")
+export async function fetchInBatches<T, U>(
+  items: T[],
+  batchSize: number,
+  fetchBatch: (batch: T[]) => Promise<U[]>,
+): Promise<U[]> {
+  if (!Number.isSafeInteger(batchSize) || batchSize <= 0)
+    throw new Error("Batch size must be a positive integer")
   const results: U[] = []
   for (let offset = 0; offset < items.length; offset += batchSize) {
     const batch = items.slice(offset, offset + batchSize)
     const fetched = await fetchBatch(batch)
-    if (fetched.length !== batch.length) throw new Error("Withdrawal batch response length does not match the request")
+    if (fetched.length !== batch.length)
+      throw new Error("Withdrawal batch response length does not match the request")
     results.push(...fetched)
   }
   return results
 }
 
-export async function fetchUniqueBlockTimestamps(blockNumbers: bigint[], fetchTimestamp: (blockNumber: bigint) => Promise<bigint>): Promise<Map<bigint, bigint>> {
+export async function fetchUniqueBlockTimestamps(
+  blockNumbers: bigint[],
+  fetchTimestamp: (blockNumber: bigint) => Promise<bigint>,
+): Promise<Map<bigint, bigint>> {
   const unique = [...new Set(blockNumbers)]
-  return new Map(await Promise.all(unique.map(async (blockNumber) => [blockNumber, await fetchTimestamp(blockNumber)] as const)))
+  return new Map(
+    await Promise.all(
+      unique.map(async (blockNumber) => [blockNumber, await fetchTimestamp(blockNumber)] as const),
+    ),
+  )
 }
 
 interface ScanOptions<T extends FinalizedEventLog> {
@@ -157,16 +190,41 @@ interface ScanOptions<T extends FinalizedEventLog> {
   fetchBlockHash?: (blockNumber: bigint) => Promise<`0x${string}`>
 }
 
-export async function scanWithdrawalLogs<T extends FinalizedEventLog>({ deploymentBlock, finalizedBlock, finalizedBlockHash, previous, mode = "refresh", fetchLogs, fetchBlockHash }: ScanOptions<T>): Promise<WithdrawalLogScan<T>> {
-  if (finalizedBlock < deploymentBlock) return { lastFinalizedBlock: finalizedBlock, lastFinalizedBlockHash: finalizedBlockHash, olderCursor: null, reachedDeploymentBlock: true, logs: [] }
+export async function scanWithdrawalLogs<T extends FinalizedEventLog>({
+  deploymentBlock,
+  finalizedBlock,
+  finalizedBlockHash,
+  previous,
+  mode = "refresh",
+  fetchLogs,
+  fetchBlockHash,
+}: ScanOptions<T>): Promise<WithdrawalLogScan<T>> {
+  if (finalizedBlock < deploymentBlock)
+    return {
+      lastFinalizedBlock: finalizedBlock,
+      lastFinalizedBlockHash: finalizedBlockHash,
+      olderCursor: null,
+      reachedDeploymentBlock: true,
+      logs: [],
+    }
 
   if (mode === "older" && previous) {
     if (previous.olderCursor === null) return previous
-    const scanned = await scanBackwards(previous.olderCursor, deploymentBlock, previous.logs, fetchLogs)
+    const scanned = await scanBackwards(
+      previous.olderCursor,
+      deploymentBlock,
+      previous.logs,
+      fetchLogs,
+    )
     return { ...previous, ...scanned }
   }
 
-  if (previous && finalizedBlock === previous.lastFinalizedBlock && finalizedBlockHash === previous.lastFinalizedBlockHash) return previous
+  if (
+    previous &&
+    finalizedBlock === previous.lastFinalizedBlock &&
+    finalizedBlockHash === previous.lastFinalizedBlockHash
+  )
+    return previous
 
   if (previous && finalizedBlock > previous.lastFinalizedBlock) {
     const additions: T[] = []
@@ -174,7 +232,7 @@ export async function scanWithdrawalLogs<T extends FinalizedEventLog>({ deployme
     let calls = 0
     while (fromBlock <= finalizedBlock && calls < WITHDRAWAL_SCAN_CHUNKS_PER_STEP) {
       const toBlock = minBigInt(fromBlock + WITHDRAWAL_LOG_CHUNK_SIZE - 1n, finalizedBlock)
-      additions.push(...await fetchLogs(fromBlock, toBlock))
+      additions.push(...(await fetchLogs(fromBlock, toBlock)))
       fromBlock = toBlock + 1n
       calls += 1
     }
@@ -183,24 +241,36 @@ export async function scanWithdrawalLogs<T extends FinalizedEventLog>({ deployme
     return {
       ...previous,
       lastFinalizedBlock: checkpoint,
-      lastFinalizedBlockHash: checkpoint === finalizedBlock ? finalizedBlockHash : await fetchBlockHash?.(checkpoint) ?? previous.lastFinalizedBlockHash,
+      lastFinalizedBlockHash:
+        checkpoint === finalizedBlock
+          ? finalizedBlockHash
+          : ((await fetchBlockHash?.(checkpoint)) ?? previous.lastFinalizedBlockHash),
       olderCursor: previous.olderCursor,
       logs,
     }
   }
 
   const scanned = await scanBackwards(finalizedBlock, deploymentBlock, [], fetchLogs)
-  return { lastFinalizedBlock: finalizedBlock, lastFinalizedBlockHash: finalizedBlockHash, ...scanned }
+  return {
+    lastFinalizedBlock: finalizedBlock,
+    lastFinalizedBlockHash: finalizedBlockHash,
+    ...scanned,
+  }
 }
 
-async function scanBackwards<T extends FinalizedEventLog>(startBlock: bigint, deploymentBlock: bigint, existing: T[], fetchLogs: ScanOptions<T>["fetchLogs"]) {
+async function scanBackwards<T extends FinalizedEventLog>(
+  startBlock: bigint,
+  deploymentBlock: bigint,
+  existing: T[],
+  fetchLogs: ScanOptions<T>["fetchLogs"],
+) {
   const logs = [...existing]
   let toBlock = startBlock
   let calls = 0
   let reachedDeploymentBlock = false
   while (toBlock >= deploymentBlock && calls < WITHDRAWAL_SCAN_CHUNKS_PER_STEP) {
     const fromBlock = maxBigInt(deploymentBlock, toBlock - WITHDRAWAL_LOG_CHUNK_SIZE + 1n)
-    logs.push(...await fetchLogs(fromBlock, toBlock))
+    logs.push(...(await fetchLogs(fromBlock, toBlock)))
     calls += 1
     if (fromBlock === deploymentBlock) {
       reachedDeploymentBlock = true
@@ -216,15 +286,20 @@ async function scanBackwards<T extends FinalizedEventLog>(startBlock: bigint, de
 function newestUnique<T extends FinalizedEventLog>(logs: T[]): T[] {
   const unique = new Map<string, T>()
   for (const log of logs) {
-    if (log.blockNumber === null || log.transactionHash === null || log.logIndex === null) throw new Error("Finalized withdrawal log metadata is incomplete")
+    if (log.blockNumber === null || log.transactionHash === null || log.logIndex === null)
+      throw new Error("Finalized withdrawal log metadata is incomplete")
     unique.set(`${log.transactionHash}:${log.logIndex}`, log)
   }
-  return [...unique.values()]
-    .sort((left, right) => {
-      if (right.blockNumber !== left.blockNumber) return (right.blockNumber as bigint) > (left.blockNumber as bigint) ? 1 : -1
-      return (right.logIndex as number) - (left.logIndex as number)
-    })
+  return [...unique.values()].sort((left, right) => {
+    if (right.blockNumber !== left.blockNumber)
+      return (right.blockNumber as bigint) > (left.blockNumber as bigint) ? 1 : -1
+    return (right.logIndex as number) - (left.logIndex as number)
+  })
 }
 
-function minBigInt(left: bigint, right: bigint) { return left < right ? left : right }
-function maxBigInt(left: bigint, right: bigint) { return left > right ? left : right }
+function minBigInt(left: bigint, right: bigint) {
+  return left < right ? left : right
+}
+function maxBigInt(left: bigint, right: bigint) {
+  return left > right ? left : right
+}

@@ -15,12 +15,23 @@ interface DepositPage {
   pendingFunding?: NonterminalDepositRef[]
 }
 
-export function mergeDepositHistoryPage(previous: DepositHistoryData | undefined, additions: DepositView[], page: DepositPage, mode: "refresh" | "older"): DepositHistoryData {
+export function mergeDepositHistoryPage(
+  previous: DepositHistoryData | undefined,
+  additions: DepositView[],
+  page: DepositPage,
+  mode: "refresh" | "older",
+): DepositHistoryData {
   // Map keeps the last value for a duplicate deposit ID. Newly fetched records
   // must follow the cache so state transitions replace stale entries.
   const records = [...(previous?.items ?? []), ...additions]
   const unique = new Map(records.map((record) => [depositKey(record), record]))
-  const items = [...unique.values()].sort((left, right) => left.owner_sequence === right.owner_sequence ? 0 : left.owner_sequence > right.owner_sequence ? -1 : 1)
+  const items = [...unique.values()].sort((left, right) =>
+    left.owner_sequence === right.owner_sequence
+      ? 0
+      : left.owner_sequence > right.owner_sequence
+        ? -1
+        : 1,
+  )
   return {
     items,
     nextCursor: mode === "refresh" && previous ? previous.nextCursor : page.nextCursor,
@@ -30,8 +41,15 @@ export function mergeDepositHistoryPage(previous: DepositHistoryData | undefined
   }
 }
 
-export function depositIdsForRefresh(previous: DepositHistoryData | undefined, latestIds: Array<Uint8Array | number[]>, refreshCached: (record: DepositView) => boolean = () => false): Array<Uint8Array | number[]> {
-  const ids = [...latestIds, ...(previous?.items.filter(refreshCached).map((record) => record.deposit_id) ?? [])]
+export function depositIdsForRefresh(
+  previous: DepositHistoryData | undefined,
+  latestIds: Array<Uint8Array | number[]>,
+  refreshCached: (record: DepositView) => boolean = () => false,
+): Array<Uint8Array | number[]> {
+  const ids = [
+    ...latestIds,
+    ...(previous?.items.filter(refreshCached).map((record) => record.deposit_id) ?? []),
+  ]
   const unique = new Map(ids.map((id) => [bytesKey(id), id]))
   return [...unique.values()]
 }

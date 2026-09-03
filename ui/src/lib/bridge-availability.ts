@@ -14,15 +14,21 @@ export function bridgeAvailability(input: {
   cyclesSufficient?: boolean
 }): BridgeAvailability {
   const { baseStatus, icDepositsPaused, cyclesSufficient } = input
-  if (!input.observationsAccepted || baseStatus === undefined || icDepositsPaused === undefined || cyclesSufficient === undefined) {
+  if (
+    !input.observationsAccepted ||
+    baseStatus === undefined ||
+    icDepositsPaused === undefined ||
+    cyclesSufficient === undefined
+  ) {
     return { status: "Unknown", available: false, toBase: "Unknown", toIc: "Unknown" }
   }
 
-  const toBase = baseStatus.depositsPaused || icDepositsPaused
-    ? "Paused"
-    : cyclesSufficient
-      ? "Available"
-      : "Unavailable"
+  const toBase =
+    baseStatus.depositsPaused || icDepositsPaused
+      ? "Paused"
+      : cyclesSufficient
+        ? "Available"
+        : "Unavailable"
   const toIc = baseStatus.withdrawalsPaused
     ? "Paused"
     : cyclesSufficient
@@ -46,7 +52,11 @@ export function statusDataIsFresh(input: {
 }): boolean {
   const now = input.now ?? Date.now()
   return [input.baseUpdatedAt, input.canisterUpdatedAt].every(
-    (timestamp) => timestamp !== undefined && timestamp > 0 && timestamp <= now && now - timestamp <= STATUS_FRESHNESS_MS,
+    (timestamp) =>
+      timestamp !== undefined &&
+      timestamp > 0 &&
+      timestamp <= now &&
+      now - timestamp <= STATUS_FRESHNESS_MS,
   )
 }
 

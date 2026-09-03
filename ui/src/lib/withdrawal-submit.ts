@@ -33,8 +33,16 @@ export async function createWithdrawalAfterRevalidation<R extends RuntimeValidat
   onBroadcast: (transactionHash: `0x${string}`) => Promise<void> | void
 }): Promise<WithdrawalBroadcastResult> {
   const runtime = await refetchRuntimeWriteReady(refetchRuntime)
-  const [evm, icAccount, quote] = await Promise.all([currentEvmWallet(), currentIcAccount(), refetchFinancials(runtime)])
-  requireWalletSnapshot(expectedWallets, { ...evm, icAccount }, "after approval or runtime verification")
+  const [evm, icAccount, quote] = await Promise.all([
+    currentEvmWallet(),
+    currentIcAccount(),
+    refetchFinancials(runtime),
+  ])
+  requireWalletSnapshot(
+    expectedWallets,
+    { ...evm, icAccount },
+    "after approval or runtime verification",
+  )
   validateFinancials(quote)
   const transactionHash = await createWithdrawal(quote)
   try {
