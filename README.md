@@ -9,10 +9,10 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 | 対象 | 状態 | 残作業 |
 |---|---|---|
 | Plan 001〜004 | 完了 | 履歴資料として保持 |
-| Plan 005 | 進行中 | 10回・7日外部計測、固定limit承認、pause/cancel経路演習 |
-| Plan 006 | リポジトリ実装済み | SNS handover、本番preflight、mainnet evidence |
+| Plan 005 | 進行中 | 初期運用値と固定limitの確定。10回・7日計測とpause/cancel経路演習はunpause後のGate C |
+| Plan 006 | リポジトリ実装済み | 13 artifact Gate B、本番activation、mainnet evidence。SNS handover時期は別判断 |
 | Plan 007 | Local完了 / External待ち | 非blockingのwallet互換性・追加障害シナリオ |
-| Production | 未デプロイ | 最小Gate A/Bと本番activation完了まで資産受付禁止 |
+| Production | Base／ICともpause配置済み | 13 artifact Gate Bと本番activation完了まで資産受付禁止 |
 
 `bridge-core`はDeposit、Withdrawal、Mint Authorization、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
 `bridge-canister`はstable schema v35・record wire v30の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
@@ -23,7 +23,7 @@ Base側はKINICを表すERC-20（`name = "KINIC"`、`symbol = "KINIC"`）、EIP-
 
 Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その同一transactionでbSNSの`transferFrom`、burn、固定受取額を持つ`Committed`化を原子的に実行する。Canisterは同じcanonical Finalized block hashへ束縛したreceipt、event、Withdrawal state、Bridge snapshotをquorumで検証し、固定IC Accountへの債務とtransfer identityを保存する。通知成功後にUIがbrowser identityで`continue_withdrawal`を1回実行し、未完了ならHistoryの明示操作ごとにLedger送金または照合を最大1 external step進める。Canister timerによるWithdrawal再試行、Base refund、release acknowledgementはない。Finalized headまたはcanonical hashが2-of-3で収束しない場合はfail closedとし、Safeへfallbackしない。
 
-本番Bridgeは未デプロイであり、Plan 005の10回・7日外部計測と単一emergency pause経路演習、Plan 006の主要5 scenario、SNS handover、Canister操作型production preflightが完了するまで本番資産を受け付けない。Plan 007の追加wallet互換性と追加5 scenarioは非blockingで継続する。
+本番BridgeはBase／ICともpause状態で配置済みである。初期運用値を含む13 artifact Gate B、Canister操作型production preflight、schedule／execute activationが完了するまで本番資産を受け付けない。10回・7日計測、pause/cancel経路演習、主要5 scenarioはunpause後のGate C運用証跡であり、Gate B、activation、controller handoverを認可しない。SNS handoverの時期は運用者が別途判断し、Plan 007の追加wallet互換性と追加5 scenarioは非blockingで継続する。
 
 Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実行フローは[docs/bridge-flow.md](docs/bridge-flow.md)、実装計画は[docs/implementation-plan.md](docs/implementation-plan.md)、用語は[docs/glossary.md](docs/glossary.md)、安全上の決定は[docs/adr](docs/adr)を参照する。RPC providerのchain bindingとruntime quorumの保証境界は[ADR 0024](docs/adr/0024-validate-rpc-chain-binding-before-runtime.md)を正本とする。
 
