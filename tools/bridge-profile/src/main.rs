@@ -3758,11 +3758,6 @@ fn validate_completed_gate_a_receipt(
             .block_hash
             .eq_ignore_ascii_case(&receipt.bridge_deployment_block_hash)
         || embedded_install_sha256 != external_install_sha256
-        || receipt.canister_install.source_revision != bundle.manifest.source_revision
-        || !receipt
-            .canister_install
-            .source_tree_sha256
-            .eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
     {
         return Err(
             "completed Gate A receipt is not strictly bound to the deployment and Canister install"
@@ -13531,6 +13526,13 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         assert!(validate_production_upgrade_gate_a_binding(
             &gate_a_profile,
             &independently_installed_receipt,
+        )
+        .is_ok());
+        assert!(validate_completed_gate_a_receipt(
+            &gate_a,
+            &independently_installed_receipt,
+            &independently_installed_receipt.canister_install,
+            &deployment_binding,
         )
         .is_ok());
         let mut forged_gate_a_receipt = receipt.clone();
