@@ -373,34 +373,114 @@ if [[ -e "$EXECUTION_FILE" ]]; then
     && -d "$UPLOAD_DIR" && ! -L "$UPLOAD_DIR" && ! -e "$STDOUT_FILE" && ! -e "$STDERR_FILE" ]] || {
     echo "production upgrade partial attempt is unsafe to resume" >&2; exit 1;
   }
-  EXECUTED_AT="$(python3 -I -S - "$EXECUTION_FILE" "$SOURCE_REVISION" "$WASM_SHA256" "$PREFLIGHT_SHA256" <<'PY'
-import json,sys
+  EXECUTED_AT="$(python3 -I -S - "$EXECUTION_FILE" "$SOURCE_REVISION" "$WASM_SHA256" "$PREFLIGHT_SHA256" "$SUBMISSION_FILE" <<'PY'
+import hashlib,json,os,stat,sys
 v=json.load(open(sys.argv[1],encoding='utf-8'))
 if (v.get('schema_version')!=1 or v.get('source_revision')!=sys.argv[2]
     or v.get('wasm_sha256')!=sys.argv[3] or v.get('preflight_sha256')!=sys.argv[4]):
  raise SystemExit('execution marker differs from the reviewed upgrade')
+fd=os.open(sys.argv[5],os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
+try:
+ st=os.fstat(fd)
+ if not stat.S_ISREG(st.st_mode): raise SystemExit('submission is not a regular file')
+ digest=hashlib.sha256()
+ while True:
+  chunk=os.read(fd,1024*1024)
+  if not chunk: break
+  digest.update(chunk)
+finally: os.close(fd)
+if v.get('submission_sha256')!=digest.hexdigest():
+ raise SystemExit('execution marker does not bind the signed submission')
 print(v.get('executed_at_unix'))
 PY
   )"
 else
-  for sidecar in "$STDOUT_FILE" "$STDERR_FILE" "$SUBMISSION_FILE" "$UPLOAD_DIR" "$EXECUTION_FILE"; do
+  for sidecar in "$STDOUT_FILE" "$STDERR_FILE" "$EXECUTION_FILE"; do
     [[ ! -e "$sidecar" && ! -L "$sidecar" ]] || { echo "upgrade sidecar already exists: $sidecar" >&2; exit 1; }
   done
+  if [[ -e "$SUBMISSION_FILE" ]]; then
+    [[ -f "$SUBMISSION_FILE" && ! -L "$SUBMISSION_FILE" ]] || {
+      echo "production upgrade submission candidate is unsafe" >&2; exit 1;
+    }
+  else
+    [[ ! -e "$UPLOAD_DIR" && ! -L "$UPLOAD_DIR" ]] || {
+      echo "upload directory exists without a signed submission" >&2; exit 1;
+    }
+    PREPARING_SUBMISSION="$SUBMISSION_FILE.preparing.$$"
+    [[ ! -e "$PREPARING_SUBMISSION" && ! -L "$PREPARING_SUBMISSION" ]] || {
+      echo "production upgrade submission preparation path already exists" >&2; exit 1;
+    }
+    "$PROFILE_BIN" prepare-production-canister-upgrade "$IC_HOST" "$CANISTER" "$INSTALLER" \
+      "$CONTROLLER_PEM" "$WASM" "$PREPARING_SUBMISSION" >/dev/null
+    "$PROFILE_BIN" validate-production-upgrade-submission \
+      "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$PREPARING_SUBMISSION" >/dev/null
+    chmod 400 "$PREPARING_SUBMISSION"
+    python3 -I -S - "$PREPARING_SUBMISSION" "$SUBMISSION_FILE" <<'PY'
+import os,sys
+source,target=sys.argv[1:]
+os.link(source,target)
+parent=os.path.dirname(target)
+fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
+os.unlink(source)
+fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
+PY
+  fi
+  "$PROFILE_BIN" validate-production-upgrade-submission \
+    "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$SUBMISSION_FILE" >/dev/null
+  if [[ -e "$UPLOAD_DIR" ]]; then
+    [[ -d "$UPLOAD_DIR" && ! -L "$UPLOAD_DIR" ]] || {
+      echo "production upgrade upload directory candidate is unsafe" >&2; exit 1;
+    }
+  else
+    mkdir -m 700 "$UPLOAD_DIR"
+  fi
+  python3 -I -S - "$UPLOAD_DIR" <<'PY'
+import os,sys
+if os.listdir(sys.argv[1]):
+ raise SystemExit('upload directory must be empty before the execution marker is published')
+fd=os.open(sys.argv[1],os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
+PY
   EXECUTED_AT="$(date +%s)"
-  TARGET="$EXECUTION_FILE" EXECUTED_AT="$EXECUTED_AT" SOURCE_REVISION="$SOURCE_REVISION" \
-  WASM_SHA256="$WASM_SHA256" PREFLIGHT_SHA256="$PREFLIGHT_SHA256" python3 -I -S - <<'PY'
-import json,os
+  PREPARING_EXECUTION="$EXECUTION_FILE.preparing.$$"
+  TARGET="$PREPARING_EXECUTION" EXECUTED_AT="$EXECUTED_AT" SOURCE_REVISION="$SOURCE_REVISION" \
+  WASM_SHA256="$WASM_SHA256" PREFLIGHT_SHA256="$PREFLIGHT_SHA256" SUBMISSION_FILE="$SUBMISSION_FILE" python3 -I -S - <<'PY'
+import hashlib,json,os
+submission=open(os.environ['SUBMISSION_FILE'],'rb').read()
 value={'schema_version':1,'executed_at_unix':int(os.environ['EXECUTED_AT']),
  'source_revision':os.environ['SOURCE_REVISION'],'wasm_sha256':os.environ['WASM_SHA256'],
- 'preflight_sha256':os.environ['PREFLIGHT_SHA256']}
+ 'preflight_sha256':os.environ['PREFLIGHT_SHA256'],
+ 'submission_sha256':hashlib.sha256(submission).hexdigest()}
 fd=os.open(os.environ['TARGET'],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400)
 with os.fdopen(fd,'w') as f: json.dump(value,f,sort_keys=True,separators=(',',':')); f.write('\n'); f.flush(); os.fsync(f.fileno())
 fd=os.open(os.path.dirname(os.environ['TARGET']),os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
 PY
-  "$PROFILE_BIN" prepare-production-canister-upgrade "$IC_HOST" "$CANISTER" "$INSTALLER" \
-    "$CONTROLLER_PEM" "$WASM" "$SUBMISSION_FILE" >/dev/null
+  python3 -I -S - "$PREPARING_EXECUTION" "$EXECUTION_FILE" <<'PY'
+import os,sys
+source,target=sys.argv[1:]
+os.link(source,target)
+parent=os.path.dirname(target)
+fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
+os.unlink(source)
+fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
+PY
 fi
 export EXECUTED_AT
+python3 -I -S - "$EXECUTION_FILE" "$SUBMISSION_FILE" <<'PY'
+import hashlib,json,os,stat,sys
+marker=json.load(open(sys.argv[1],encoding='utf-8'))
+fd=os.open(sys.argv[2],os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
+try:
+ st=os.fstat(fd)
+ if not stat.S_ISREG(st.st_mode): raise SystemExit('submission is not a regular file')
+ digest=hashlib.sha256()
+ while True:
+  chunk=os.read(fd,1024*1024)
+  if not chunk: break
+  digest.update(chunk)
+finally: os.close(fd)
+if marker.get('submission_sha256')!=digest.hexdigest():
+ raise SystemExit('execution marker no longer binds the signed submission')
+PY
 "$PROFILE_BIN" validate-production-upgrade-submission \
   "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$SUBMISSION_FILE" >/dev/null
 "$PROFILE_BIN" upload-production-canister-upgrade-chunks \

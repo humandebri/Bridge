@@ -180,6 +180,35 @@ fi
 [[ ! -e "$T/evidence/insufficient-receipt.json.execution.json" ]]
 [[ "$(<"$T/submit-count")" == 0 ]]
 printf 'true\n' >"$T/reserve-sufficient"
+printf 'partial signed submission\n' >"$T/evidence/preparing-receipt.json.submission.json.preparing.dead"
+BRIDGE_ICP_IDENTITY=production \
+BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/preparing-receipt.json" >/dev/null
+[[ -f "$T/evidence/preparing-receipt.json" && "$(<"$T/submit-count")" == 1 ]]
+printf '%s\n' "$OLD_SHA" >"$T/live-module"
+printf '0\n' >"$T/submit-count"
+printf '{"schema_version":2}\n' >"$T/evidence/submission-candidate.json.submission.json"
+BRIDGE_ICP_IDENTITY=production \
+BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/submission-candidate.json" >/dev/null
+python3 -I -S - "$T/evidence/submission-candidate.json.execution.json" "$T/evidence/submission-candidate.json.submission.json" <<'PY'
+import hashlib,json,sys
+marker=json.load(open(sys.argv[1],encoding='utf-8'))
+assert marker['submission_sha256']==hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest()
+PY
+[[ -f "$T/evidence/submission-candidate.json" && "$(<"$T/submit-count")" == 1 ]]
+printf '%s\n' "$OLD_SHA" >"$T/live-module"
+printf '0\n' >"$T/submit-count"
+printf '{"schema_version":2}\n' >"$T/evidence/resume-receipt.json.submission.json"
+mkdir -m 700 "$T/evidence/resume-receipt.json.uploads"
 if BRIDGE_ICP_IDENTITY=production TEST_UPLOAD_FAIL_ONCE="$T/upload-failed-once" \
   BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
@@ -195,6 +224,20 @@ fi
 [[ -d "$T/evidence/resume-receipt.json.uploads" ]]
 [[ ! -e "$T/evidence/resume-receipt.json.stdout" ]]
 [[ "$(<"$T/submit-count")" == 0 ]]
+cp "$T/evidence/resume-receipt.json.submission.json" "$T/resume-submission.approved"
+printf 'tampered\n' >>"$T/evidence/resume-receipt.json.submission.json"
+if BRIDGE_ICP_IDENTITY=production TEST_UPLOAD_FAIL_ONCE="$T/upload-failed-once" \
+  BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/resume-receipt.json" >/dev/null 2>&1; then
+  echo "production upgrade resumed with a submission not bound by its marker" >&2
+  exit 1
+fi
+[[ "$(<"$T/submit-count")" == 0 ]]
+cp "$T/resume-submission.approved" "$T/evidence/resume-receipt.json.submission.json"
 BRIDGE_ICP_IDENTITY=production TEST_UPLOAD_FAIL_ONCE="$T/upload-failed-once" \
 BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
