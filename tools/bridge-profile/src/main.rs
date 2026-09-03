@@ -43,10 +43,8 @@ const GATE_A_ARTIFACTS: [&str; 6] = [
     "bsns-runtime.bin",
     "bsns-runtime-layout.json",
 ];
-const GATE_B_ARTIFACTS: [&str; 15] = [
+const GATE_B_ARTIFACTS: [&str; 13] = [
     "profile.json",
-    "rpc-e2e.json",
-    "monitor-drill.json",
     "initial-operational-parameters.json",
     "provider-independence.json",
     "ui-assets.json",
@@ -1787,6 +1785,7 @@ enum ProductionLifecycleResultView {
 }
 
 #[derive(CandidType, Deserialize)]
+#[allow(dead_code)]
 struct EmergencyPauseReceiptView {
     caller: Principal,
     local_deposits_paused: bool,
@@ -1798,6 +1797,7 @@ struct EmergencyPauseReceiptView {
 }
 
 #[derive(CandidType, Deserialize)]
+#[allow(dead_code)]
 enum EmergencyPauseResultView {
     Ok(EmergencyPauseReceiptView),
     Err(Reserved),
@@ -2486,6 +2486,7 @@ fn evm_topic(signature: &str) -> String {
     format!("0x{}", hex(&hash))
 }
 
+#[allow(dead_code)]
 fn validate_monitor_drill(
     drill: &MonitorDrill,
     manifest: &ReleaseManifest,
@@ -5642,18 +5643,6 @@ fn validate_bundle_with_freshness_at(
         return Err("manifest/profile test-only mismatch".into());
     }
     if gate_b {
-        let drill: MonitorDrill = read_json(&root.join("monitor-drill.json"))?;
-        let transition: PostGateAPolicyTransition =
-            read_json(&root.join("post-gate-a-policy-transition.json"))?;
-        validate_monitor_drill(
-            &drill,
-            &manifest,
-            &profile,
-            &transition.to_source_revision,
-            &transition.to_source_tree_sha256,
-            &transition.to_bridge_canister_wasm_sha256,
-            now,
-        )?;
         validate_provider_independence_receipt(root, &manifest, &profile, now)?;
         validate_ui_assets_receipt(root, &manifest)?;
     }
@@ -5901,7 +5890,6 @@ fn verify_live_inputs(
     {
         return Err("authenticated live Canister state does not satisfy Gate B".into());
     }
-    validate_rpc_rehearsal(bundle)?;
     Ok(())
 }
 
@@ -6325,6 +6313,7 @@ fn async_runtime() -> Result<tokio::runtime::Runtime, String> {
         .map_err(|error| error.to_string())
 }
 
+#[allow(dead_code)]
 fn verify_monitor_ic_certificate(bundle: &ValidatedBundle) -> Result<(), String> {
     let drill: MonitorDrill = read_json(&bundle.root.join("monitor-drill.json"))?;
     let certificate_bytes = decode_hex(&drill.ic_pause.certificate_hex)?;
@@ -6682,7 +6671,6 @@ fn verify_live(bundle: &ValidatedBundle, expected_deposits_paused: bool) -> Resu
     verify_live_inputs(bundle, expected_deposits_paused)?;
     verify_gate_b_management_state(bundle)?;
     verify_activation_attestation_authenticity(bundle)?;
-    verify_monitor_drill_authenticity(bundle)?;
     verify_production_rpc_binding(bundle)
 }
 
@@ -9050,6 +9038,7 @@ fn verify_schedule_receipt_live(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn verify_monitor_drill_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
     verify_monitor_ic_certificate(bundle)?;
     let verifier =
@@ -13740,11 +13729,26 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         .unwrap();
         assert!(validate_rpc_rehearsal(&bundle).is_err());
         fs::write(root.join("rpc-e2e.json"), valid_rehearsal).unwrap();
-        fs::write(root.join("rpc-e2e.json"), b"{}").unwrap();
-        assert!(validate_bundle(&root, true)
-            .err()
-            .unwrap()
-            .contains("artifact hash mismatch"));
+        let mut legacy_manifest: ReleaseManifest =
+            serde_json::from_slice(&baseline_manifest_bytes).unwrap();
+        assert_eq!(legacy_manifest.artifacts.len(), 13);
+        for legacy_path in ["rpc-e2e.json", "monitor-drill.json"] {
+            let legacy_bytes = fs::read(root.join(legacy_path)).unwrap();
+            legacy_manifest.artifacts.push(ArtifactDigest {
+                path: legacy_path.into(),
+                sha256: hex(&Sha256::digest(legacy_bytes)),
+            });
+            fs::write(
+                root.join("release-manifest.json"),
+                serde_json::to_vec(&legacy_manifest).unwrap(),
+            )
+            .unwrap();
+            assert!(validate_bundle(&root, true)
+                .err()
+                .unwrap()
+                .contains("manifest must contain each required evidence artifact exactly once"));
+            legacy_manifest.artifacts.pop();
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }

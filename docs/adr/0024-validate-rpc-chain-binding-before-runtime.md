@@ -30,3 +30,5 @@ runtimeの`BaseMainnet(None)`は公式EVM RPC Canisterの既定provider poolか�
 今回固定したstagingの一方向置換を超えてRPC URL、configured chain ID、または各URLの接続先chainを稼働中に変更可能にする場合は、この決定を再検討する。その変更では、attestationの失効条件、stable install-domain binding、audit意味論、既存recordの扱い、runtime quorumの責務を新しい脅威モデルに基づいて設計し直す。
 
 claimが依存する外部仮定とfail-closed動作の機械可読な正本は`verification/assumptions.tsv`の`rpc_provider_chain_configuration`とする。operator手順は`docs/runbooks/operations.md`、rehearsal条件は`docs/runbooks/evm-rpc-canister-rehearsal.md`、証跡要件は`deployments/evidence-v1/README.md`に従う。
+
+stagingの直接Custom RPC rehearsalとmonitor drillはunpause後のGate C運用証跡であり、Gate B、activation、controller handoverを認可しない。Gate Bのproduction chain bindingは、`provider-independence.json`、公式EVM RPC Canisterの`BaseMainnet`既定pool、およびfresh activation attestationを正本とする。

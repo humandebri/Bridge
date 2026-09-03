@@ -13,7 +13,7 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
 Bridge canisterはstable schema v35、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
-Plan 005の7日・各10件の本番計測はunpause後のGate Cへ移動した。Plan 006のBase管理、主要5 scenarioのGate B真正性検証、SNS proposal型activation receiptはhandover後の再activation用として保持する。初回activationはseal時に固定したproduction controllerによるseal／schedule／execute、匿名relay、固定confirmation relayerの役割分離経路を使い、Confirmed executeで内部bootstrap authorityを永久に消費する。外部controllerを外す時期は自動化せず運用者が別途決定し、変更前でも初回execute後のactivation権限は既存Governance principalだけに限定する。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、追加wallet互換性と追加5 scenarioの外部実行は明示承認待ちだがproduction activationをblockしない。
+Plan 005の7日・各10件の本番計測とPlan 006のRPC rehearsal／monitor drillはunpause後のGate Cへ移動した。これらはGate Bまたはcontroller handoverを認可しない。SNS proposal型activation receiptはhandover後の再activation用として保持する。初回activationはseal時に固定したproduction controllerによるseal／schedule／execute、匿名relay、固定confirmation relayerの役割分離経路を使い、Confirmed executeで内部bootstrap authorityを永久に消費する。外部controllerを外す時期は自動化せず運用者が別途決定し、変更前でも初回execute後のactivation権限は既存Governance principalだけに限定する。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、追加wallet互換性と追加5 scenarioの外部実行は明示承認待ちだがproduction activationをblockしない。
 
 ## 全体構成
 
@@ -230,7 +230,7 @@ Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みで�
 
 ## 未完了事項
 
-Plan 005の初回activation前条件は、承認済み初期運用値、単一pause principal、固定limit、pause/cancel経路演習、pre-seal／live Gate Bである。7日以上のBase feeと各10件以上の本番governance gas／settlement cyclesはunpause後のGate Cで収集し、設定を自動変更しない。5/15/60は本番ゲートではなく公開後の監視目標とする。
+Plan 005の初回activation前条件は、承認済み初期運用値、単一pause principal、固定limit、pre-seal／live Gate Bである。RPC rehearsal、monitor drill、7日以上のBase feeと各10件以上の本番governance gas／settlement cyclesはunpause後のGate Cで収集し、設定を自動変更しない。5/15/60は本番ゲートではなく公開後の監視目標とする。
 初回activationのmainnet candidateは認証済みGate A／Gate Bとschedule／execute activation receiptが揃うまで`validated`にしない。
 Plan 006のrepository実装は完了している。SNS Rootへの実controller handoverとSNS proposal upgradeは、運用者が時期を別途承認した後の完了条件として分離する。
 
