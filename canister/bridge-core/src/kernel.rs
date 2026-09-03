@@ -203,10 +203,10 @@ macro_rules! operational_config_seal_caller_authorized_body {
 }
 
 macro_rules! activation_prepare_authorized_body {
-    ($bootstrap_controller:expr, $governance:expr, $sealed_paused:expr, $bootstrap_active:expr, $phase:expr, $schedule:expr, $execute:expr) => {{
+    ($bootstrap_controller:expr, $governance:expr, $sealed_paused:expr, $bootstrap_authority_present:expr, $phase:expr, $schedule:expr, $execute:expr) => {{
         if $phase != $schedule && $phase != $execute {
             false
-        } else if $bootstrap_active {
+        } else if $bootstrap_authority_present {
             $bootstrap_controller && $sealed_paused
         } else {
             $governance && $sealed_paused
@@ -1828,14 +1828,14 @@ pub const fn activation_prepare_authorized(
     is_bootstrap_controller: bool,
     is_governance: bool,
     lifecycle_is_operational_config_sealed: bool,
-    bootstrap_controller_is_active: bool,
+    bootstrap_authority_present: bool,
     phase: u8,
 ) -> bool {
     activation_prepare_authorized_body!(
         is_bootstrap_controller,
         is_governance,
         lifecycle_is_operational_config_sealed,
-        bootstrap_controller_is_active,
+        bootstrap_authority_present,
         phase,
         0u8,
         1u8
@@ -2655,7 +2655,7 @@ verus! {
         bootstrap_controller: bool,
         governance: bool,
         sealed_paused: bool,
-        bootstrap_active: bool,
+        bootstrap_authority_present: bool,
         phase: int,
     ) -> bool {
         let schedule: int = 0;
@@ -2664,7 +2664,7 @@ verus! {
             bootstrap_controller,
             governance,
             sealed_paused,
-            bootstrap_active,
+            bootstrap_authority_present,
             phase,
             schedule,
             execute

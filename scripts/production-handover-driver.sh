@@ -81,11 +81,15 @@ def values(value,key):
   for v in value: out.extend(values(v,key))
  return out
 def number(value):
- if isinstance(value,int): return value
- text=str(value).strip().strip('"').replace('_','')
- return int(text,16) if text.startswith('0x') else int(re.sub(r'[^0-9]','',text) or '0')
+ if type(value) is int and value >= 0: return value
+ if not isinstance(value,str): raise SystemExit('canister status integer is malformed')
+ text=value.strip()
+ if re.fullmatch(r'0x[0-9a-fA-F]+',text): return int(text,16)
+ if re.fullmatch(r'[0-9]+(?:_[0-9]+)*',text): return int(text.replace('_',''))
+ raise SystemExit('canister status integer is malformed')
 controllers=values(status,'controllers')
-controllers=controllers[0] if controllers and isinstance(controllers[0],list) else controllers
+if len(controllers)!=1 or not isinstance(controllers[0],list): raise SystemExit('canister status lacks one controller list')
+controllers=controllers[0]
 if [str(v) for v in controllers] != [caller]: raise SystemExit('handover requires the production identity as sole controller')
 module_values=values(status,'module_hash') or values(status,'module')
 if len(module_values)!=1: raise SystemExit('canister status lacks one module hash')
@@ -94,7 +98,7 @@ if module != expected_wasm.lower().removeprefix('0x'): raise SystemExit('live mo
 cycles_values=values(status,'cycles') or values(status,'cycles_balance')
 threshold_values=values(status,'freezing_threshold') or values(status,'freezing_threshold_seconds')
 burn_values=values(status,'idle_cycles_burned_per_day')
-if not cycles_values or not threshold_values or not burn_values: raise SystemExit('canister status lacks cycles/freezing inputs')
+if len(cycles_values)!=1 or len(threshold_values)!=1 or len(burn_values)!=1: raise SystemExit('canister status lacks one cycles/freezing input')
 cycles=number(cycles_values[0]); threshold=number(threshold_values[0]); burn=number(burn_values[0])
 freeze_required=(burn*threshold+86399)//86400
 if cycles < floor or cycles < freeze_required: raise SystemExit('cycles do not satisfy floor and freezing requirement')
@@ -190,9 +194,9 @@ RESPONSE_SHA256="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys
 REQUEST_ID="$(python3 -c '
 import re,sys
 text=open(sys.argv[1],errors="replace").read()+open(sys.argv[2],errors="replace").read()
-m=re.search(r"request[_ -]?id[^0-9a-fA-F]*(?:0x)?([0-9a-fA-F]{64})",text,re.I)
-if not m: raise SystemExit(1)
-print(m.group(1).lower())
+matches={value.lower() for value in re.findall(r"request[_ -]?id[^0-9a-fA-F]*(?:0x)?([0-9a-fA-F]{64})",text,re.I)}
+if len(matches)!=1: raise SystemExit(1)
+print(matches.pop())
 ' "$TMP/response.stdout" "$TMP/response.stderr")" || {
   python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$STATUS" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
 import json,os,sys,tempfile
@@ -265,7 +269,7 @@ def scalar(item,key):
  return found[0]
 if scalar(bridge,'deposits_paused') is not False or scalar(bridge,'sufficient') is not True:
  raise SystemExit('INCIDENT: IC deposit admission or reserve changed during handover')
-if 'Activated' not in json.dumps(lifecycle,separators=(',',':')):
+if lifecycle != {'Ok':{'Activated':None}}:
  raise SystemExit('INCIDENT: production lifecycle is not Activated after handover')
 if scalar(integrity,'Ok') != 'ok':
  raise SystemExit('INCIDENT: storage integrity is not ok after handover')

@@ -1148,7 +1148,7 @@ pub struct DepositAdmissionControl {
     pub next_independent_canceller_nonce: u64,
     pub next_governance_operation_id: u64,
     pub operational_config_sealed: bool,
-    #[serde(default)]
+    #[serde(default = "unbound_bootstrap_activation_controller")]
     pub bootstrap_activation_controller: Option<Principal>,
     pub pending_governance_transaction: Option<GovernanceTransaction>,
     pub pending_runtime_administrator_transaction: Option<GovernanceTransaction>,
@@ -1166,6 +1166,10 @@ pub struct DepositAdmissionControl {
     pub refresh_generation: u64,
     pub refresh_owner: Option<u64>,
     pub next_refresh_allowed_at_ns: u64,
+}
+
+fn unbound_bootstrap_activation_controller() -> Option<Principal> {
+    Some(Principal::anonymous())
 }
 
 impl DepositAdmissionControl {
@@ -12843,8 +12847,12 @@ mod tests {
             "bootstrap_activation_controller",
         ))
         .expect("decode admission written before controller binding existed");
-        assert_eq!(decoded_admission.bootstrap_activation_controller, None);
+        assert_eq!(
+            decoded_admission.bootstrap_activation_controller,
+            Some(Principal::anonymous())
+        );
         assert!(decoded_admission.operational_config_sealed);
+        assert!(decoded_admission.bootstrap_activation_controller.is_some());
 
         let transaction = GovernanceTransaction {
             id: 4,

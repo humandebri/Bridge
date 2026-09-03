@@ -106,7 +106,7 @@ fn boolean_decisions_are_exhaustive() {
 }
 
 #[test]
-fn activation_authorization_follows_bootstrap_controller_removal() {
+fn activation_authorization_fails_closed_until_bootstrap_is_consumed() {
     for controller in [false, true] {
         for bootstrap in [false, true] {
             assert_eq!(
@@ -118,11 +118,11 @@ fn activation_authorization_follows_bootstrap_controller_removal() {
     for controller in [false, true] {
         for governance in [false, true] {
             for sealed_paused in [false, true] {
-                for bootstrap_active in [false, true] {
+                for bootstrap_authority_present in [false, true] {
                     for phase in 0..=2 {
                         let expected = if phase > 1 {
                             false
-                        } else if bootstrap_active {
+                        } else if bootstrap_authority_present {
                             controller && sealed_paused
                         } else {
                             governance && sealed_paused
@@ -132,11 +132,11 @@ fn activation_authorization_follows_bootstrap_controller_removal() {
                                 controller,
                                 governance,
                                 sealed_paused,
-                                bootstrap_active,
+                                bootstrap_authority_present,
                                 phase,
                             ),
                             expected,
-                            "controller={controller} governance={governance} sealed_paused={sealed_paused} bootstrap_active={bootstrap_active} phase={phase}"
+                            "controller={controller} governance={governance} sealed_paused={sealed_paused} bootstrap_authority_present={bootstrap_authority_present} phase={phase}"
                         );
                     }
                 }

@@ -35,6 +35,7 @@ PARAMETERS="$BRIDGE_RELEASE_BUNDLE/initial-operational-parameters.json"
 
 production_validate_gate \
   gate-b-pre-seal "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256"
+production_require_bundle_source_binding "$SOURCE_ROOT" "$BRIDGE_RELEASE_BUNDLE"
 
 read -r BRIDGE_CANISTER_ID IC_HOST < <(
   python3 -c '
@@ -67,14 +68,17 @@ if [[ ! -e "$RESERVATION" && -e "$ATTEMPT" ]]; then
   exit 1
 fi
 
+production_require_bundle_source_binding "$SOURCE_ROOT" "$BRIDGE_RELEASE_BUNDLE"
 RESERVATION_STATE="$("${PROFILE[@]}" reserve-operational-config-seal \
   "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" "$RESERVATION")"
+production_require_bundle_source_binding "$SOURCE_ROOT" "$BRIDGE_RELEASE_BUNDLE"
 [[ "$RESERVATION_STATE" == created || "$RESERVATION_STATE" == existing ]] || {
   echo "unexpected operational config seal reservation result" >&2
   exit 1
 }
 
 if [[ "$RESERVATION_STATE" == created ]]; then
+  production_require_bundle_source_binding "$SOURCE_ROOT" "$BRIDGE_RELEASE_BUNDLE"
   set +e
   node --no-warnings --experimental-strip-types \
     "$SOURCE_ROOT/tools/governance-relayer/cli.ts" seal-operational-config \
@@ -82,12 +86,14 @@ if [[ "$RESERVATION_STATE" == created ]]; then
     --receipt-file "$ATTEMPT"
   SEAL_STATUS=$?
   set -e
+  production_require_bundle_source_binding "$SOURCE_ROOT" "$BRIDGE_RELEASE_BUNDLE"
 else
   SEAL_STATUS=0
 fi
 
 ATTEMPT_ARG=-
 if [[ -f "$ATTEMPT" ]]; then ATTEMPT_ARG="$ATTEMPT"; fi
+production_require_bundle_source_binding "$SOURCE_ROOT" "$BRIDGE_RELEASE_BUNDLE"
 if ! "${PROFILE[@]}" write-operational-config-seal-receipt \
   "$BRIDGE_RELEASE_BUNDLE" "$RESERVATION" "$ATTEMPT_ARG" \
   "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT"; then
@@ -98,5 +104,6 @@ if ! "${PROFILE[@]}" write-operational-config-seal-receipt \
   fi
   exit 1
 fi
+production_require_bundle_source_binding "$SOURCE_ROOT" "$BRIDGE_RELEASE_BUNDLE"
 
 echo "production operational config seal verified: $BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT"

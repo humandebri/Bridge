@@ -1329,7 +1329,12 @@ fn controller_activation_confirmation_fields_match(
     else {
         return false;
     };
-    confirmed_generation == confirmation.generation && signed_at_ns == confirmation.signed_at_ns
+    bridge_core::kernel::confirmed_activation_metadata_matches(
+        confirmed_generation,
+        signed_at_ns,
+        confirmation.generation,
+        confirmation.signed_at_ns,
+    )
 }
 
 #[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
@@ -4561,6 +4566,80 @@ fn json_u128(value: &Value, key: &str) -> Result<u128, String> {
         .ok_or_else(|| format!("controller handover {key} is not an integer"))
 }
 
+fn handover_json_text(value: &Value, key: &str) -> Result<String, String> {
+    single_json_key(value, key)?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("controller handover {key} is not text"))
+}
+
+fn handover_json_blob(value: &Value, key: &str) -> Result<Vec<u8>, String> {
+    let value = single_json_key(value, key)?;
+    if let Some(text) = value.as_str() {
+        return decode_hex(text);
+    }
+    value
+        .as_array()
+        .ok_or_else(|| format!("controller handover {key} is not a blob"))?
+        .iter()
+        .map(|byte| {
+            byte.as_u64()
+                .and_then(|byte| u8::try_from(byte).ok())
+                .ok_or_else(|| format!("controller handover {key} has an invalid byte"))
+        })
+        .collect()
+}
+
+fn handover_runtime_binding(value: &Value) -> Result<(LiveRuntimeBinding, Vec<u8>), String> {
+    let principal = |key| -> Result<String, String> {
+        Principal::from_text(handover_json_text(value, key)?)
+            .map(|principal| principal.to_text())
+            .map_err(|error| error.to_string())
+    };
+    let blob_hex = |key| handover_json_blob(value, key).map(|bytes| hex(&bytes));
+    Ok((
+        LiveRuntimeBinding {
+            base_chain_id: u64::try_from(json_u128(value, "base_chain_id")?)
+                .map_err(|_| "controller handover base_chain_id exceeds nat64")?,
+            bridge_contract: format!("0x{}", blob_hex("bridge_contract")?),
+            timelock_contract: format!("0x{}", blob_hex("timelock_contract")?),
+            deployment_instance_id: format!("0x{}", blob_hex("deployment_instance_id")?),
+            minimum_withdrawal_id: format!("0x{}", blob_hex("minimum_withdrawal_id")?),
+            ledger_canister_id: principal("ledger_canister_id")?,
+            index_canister_id: principal("index_canister_id")?,
+            schema_version: u16::try_from(json_u128(value, "schema_version")?)
+                .map_err(|_| "controller handover schema_version exceeds nat16")?,
+            expected_bridge_signer: format!("0x{}", blob_hex("expected_bridge_signer")?),
+            evm_rpc_canister_id: principal("evm_rpc_canister_id")?,
+            rpc_provider_urls_sha256: blob_hex("rpc_provider_urls_sha256")?,
+            operational_config_sha256: blob_hex("operational_config_sha256")?,
+        },
+        handover_json_blob(value, "expected_bridge_runtime_sha256")?,
+    ))
+}
+
+fn handover_request_ids(response: &str) -> Result<BTreeSet<String>, String> {
+    let response = response.to_ascii_lowercase();
+    let mut ids = BTreeSet::new();
+    for label in ["request_id", "request-id", "request id"] {
+        let mut rest = response.as_str();
+        while let Some(index) = rest.find(label) {
+            let tail = rest[index + label.len()..]
+                .trim_start_matches([' ', '\t', '\r', '\n', '=', ':', '"', '\'']);
+            let tail = tail.strip_prefix("0x").unwrap_or(tail);
+            let candidate = tail.get(..64).ok_or("handover request ID is truncated")?;
+            if !candidate.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || tail.as_bytes().get(64).is_some_and(u8::is_ascii_hexdigit)
+            {
+                return Err("handover request ID is malformed".into());
+            }
+            ids.insert(candidate.to_owned());
+            rest = &tail[64..];
+        }
+    }
+    Ok(ids)
+}
+
 fn validate_controller_handover_lineage(
     handover: &ControllerHandover,
     bundle: &ValidatedBundle,
@@ -4731,14 +4810,31 @@ fn validate_controller_handover_continuity(
         &handover.after_activation_attestation_response_json_hex,
         &handover.after_activation_attestation_response_sha256,
     )?;
-    let contains = |value: &Value, expected: &str| {
-        serde_json::to_string(value)
-            .is_ok_and(|value| value.to_ascii_lowercase().contains(expected))
-    };
+    let expected_operational_config_sha256 = expected_operational_config_sha256(
+        profile,
+        u64::try_from(json_u128(&before_bridge, "mint_authorization_ttl_seconds")?)
+            .map_err(|_| "controller handover mint authorization TTL exceeds nat64")?,
+        u64::try_from(json_u128(&before_bridge, "mint_authorization_epoch")?)
+            .map_err(|_| "controller handover mint authorization epoch exceeds nat64")?,
+    )?;
+    let rpc_provider_urls_sha256 = hex(&canonical_sha256(&Vec::<String>::new())?);
+    let expected_bridge_runtime_sha256 = decode_hex(&profile.bridge_runtime_bytecode_sha256)?;
+    for runtime in [&before_runtime, &after_runtime] {
+        let (runtime, bridge_runtime_sha256) = handover_runtime_binding(runtime)?;
+        validate_live_runtime_binding(
+            &runtime,
+            profile,
+            &rpc_provider_urls_sha256,
+            &expected_operational_config_sha256,
+        )?;
+        if bridge_runtime_sha256 != expected_bridge_runtime_sha256 {
+            return Err("controller handover runtime code binding differs from the profile".into());
+        }
+    }
     if before_runtime != after_runtime
         || before_lifecycle != after_lifecycle
         || before_activation != after_activation
-        || !contains(&before_lifecycle, "activated")
+        || before_lifecycle != serde_json::json!({"Ok":{"Activated":null}})
         || single_json_key(&before_integrity, "Ok")? != &Value::String("ok".into())
         || single_json_key(&after_integrity, "Ok")? != &Value::String("ok".into())
         || single_json_key(&before_bridge, "deposits_paused")? != &Value::Bool(false)
@@ -4814,6 +4910,7 @@ fn validate_controller_handover_completion(
         .request_id
         .trim_start_matches("0x")
         .to_ascii_lowercase();
+    let response_request_ids = handover_request_ids(&response_text)?;
     if handover.schema_version != 3
         || handover.stage != "complete"
         || handover.bridge_canister_id != profile.bridge_canister_id
@@ -4837,7 +4934,7 @@ fn validate_controller_handover_completion(
         || !(valid_sha256(&handover.request_id) || valid_hash32(&handover.request_id))
         || handover.response_exit_code != 0
         || !response_digest.eq_ignore_ascii_case(&handover.response_sha256)
-        || !response_text.contains(&request_id_text)
+        || response_request_ids != BTreeSet::from([request_id_text])
         || !valid_sha256(&handover.response_sha256)
         || handover.final_controllers != [KINIC_ROOT.to_string()]
         || handover.freezing_threshold_seconds == 0
@@ -12140,9 +12237,22 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             "counts": {"deposits": 2,"withdrawals": 3,"retained_audit_events": 8,"pruned_audit_events": 5}
         }));
         let lifecycle = json_bytes(serde_json::json!({"Ok":{"Activated":null}}));
+        let operational_config_sha256 = hex(&expected_operational_config_sha256(&profile, 900, 7)
+            .expect("derive operational config binding"));
         let runtime = json_bytes(serde_json::json!({
+            "base_chain_id": profile.chain_id,
+            "bridge_contract": profile.bridge_contract,
+            "expected_bridge_runtime_sha256": profile.bridge_runtime_bytecode_sha256,
+            "timelock_contract": profile.timelock.address,
+            "deployment_instance_id": profile.deployment_instance_id,
+            "minimum_withdrawal_id": profile.minimum_withdrawal_id,
+            "ledger_canister_id": profile.ledger_canister_id,
+            "index_canister_id": profile.index_canister_id,
             "schema_version": profile.canister_schema_version,
-            "operational_config_sha256": "7".repeat(64)
+            "expected_bridge_signer": profile.expected_bridge_signer,
+            "evm_rpc_canister_id": profile.evm_rpc_canister_id,
+            "rpc_provider_urls_sha256": hex(&canonical_sha256(&Vec::<String>::new()).unwrap()),
+            "operational_config_sha256": operational_config_sha256,
         }));
         let integrity = json_bytes(serde_json::json!({"Ok":"ok"}));
         let activation_status = json_bytes(serde_json::json!({
@@ -12308,6 +12418,41 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         runtime_drift.after_runtime_binding_response_sha256 = hex(&Sha256::digest(&after_runtime));
         assert!(
             validate_controller_handover_continuity(&runtime_drift, &profile, &installer).is_err()
+        );
+        let mut wrong_runtime = handover.clone();
+        let wrong_runtime_bytes = json_bytes(serde_json::json!({
+            "base_chain_id": profile.chain_id,
+            "bridge_contract": profile.bridge_contract,
+            "expected_bridge_runtime_sha256": profile.bridge_runtime_bytecode_sha256,
+            "timelock_contract": profile.timelock.address,
+            "deployment_instance_id": profile.deployment_instance_id,
+            "minimum_withdrawal_id": profile.minimum_withdrawal_id,
+            "ledger_canister_id": profile.ledger_canister_id,
+            "index_canister_id": profile.index_canister_id,
+            "schema_version": profile.canister_schema_version,
+            "expected_bridge_signer": profile.expected_bridge_signer,
+            "evm_rpc_canister_id": profile.evm_rpc_canister_id,
+            "rpc_provider_urls_sha256": hex(&canonical_sha256(&Vec::<String>::new()).unwrap()),
+            "operational_config_sha256": "8".repeat(64),
+        }));
+        wrong_runtime.before_runtime_binding_response_json_hex = hex(&wrong_runtime_bytes);
+        wrong_runtime.before_runtime_binding_response_sha256 =
+            hex(&Sha256::digest(&wrong_runtime_bytes));
+        wrong_runtime.after_runtime_binding_response_json_hex = hex(&wrong_runtime_bytes);
+        wrong_runtime.after_runtime_binding_response_sha256 =
+            hex(&Sha256::digest(&wrong_runtime_bytes));
+        assert!(
+            validate_controller_handover_continuity(&wrong_runtime, &profile, &installer).is_err()
+        );
+        let mut wrong_lifecycle = handover.clone();
+        let not_activated = json_bytes(serde_json::json!({"Err":"not activated"}));
+        wrong_lifecycle.before_lifecycle_response_json_hex = hex(&not_activated);
+        wrong_lifecycle.before_lifecycle_response_sha256 = hex(&Sha256::digest(&not_activated));
+        wrong_lifecycle.after_lifecycle_response_json_hex = hex(&not_activated);
+        wrong_lifecycle.after_lifecycle_response_sha256 = hex(&Sha256::digest(&not_activated));
+        assert!(
+            validate_controller_handover_continuity(&wrong_lifecycle, &profile, &installer)
+                .is_err()
         );
         let mut base_pause_drift = handover.clone();
         let paused_attestation = json_bytes(serde_json::json!({

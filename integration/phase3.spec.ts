@@ -961,7 +961,7 @@ describe("Phase 3 PocketIC saga", () => {
     keeps_signing_privileged_while_restricting_confirmation_callers,
   );
 
-  async function switches_activation_authority_only_after_bootstrap_controller_removal() {
+  async function fails_closed_when_bootstrap_controller_is_removed() {
     const { bridge, controller, runtimePrincipal } = await setup(
       false,
       {},
@@ -980,12 +980,12 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
     expect(await (bridge.actor as any).schedule_activation())
-      .toHaveProperty("Ok.kind.ScheduleActivation");
+      .toEqual({ Err: { Unauthorized: null } });
   }
 
   it(
-    "switches activation authority only after bootstrap controller removal",
-    switches_activation_authority_only_after_bootstrap_controller_removal,
+    "fails closed when the bootstrap controller is removed",
+    fails_closed_when_bootstrap_controller_is_removed,
   );
 
   async function rejects_confirmation_when_controller_settings_change_across_an_await() {

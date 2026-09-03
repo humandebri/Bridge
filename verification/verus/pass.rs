@@ -878,20 +878,20 @@ proof fn operational_config_seal_requires_the_current_bootstrap_controller(
         <==> controller && bootstrap
 {}
 
-proof fn activation_authority_switches_on_bootstrap_controller_removal(
+proof fn activation_authority_fails_closed_until_bootstrap_consumed(
     bootstrap_controller: bool,
     governance: bool,
     sealed_paused: bool,
-    bootstrap_active: bool,
+    bootstrap_authority_present: bool,
     phase: int,
 )
     requires phase == 0 || phase == 1
     ensures
-        bootstrap_active ==> (kernel::activation_prepare_authorized_spec(
-                bootstrap_controller, governance, sealed_paused, bootstrap_active, phase)
+        bootstrap_authority_present ==> (kernel::activation_prepare_authorized_spec(
+                bootstrap_controller, governance, sealed_paused, bootstrap_authority_present, phase)
             <==> bootstrap_controller && sealed_paused),
-        !bootstrap_active ==> (kernel::activation_prepare_authorized_spec(
-                bootstrap_controller, governance, sealed_paused, bootstrap_active, phase)
+        !bootstrap_authority_present ==> (kernel::activation_prepare_authorized_spec(
+                bootstrap_controller, governance, sealed_paused, bootstrap_authority_present, phase)
             <==> governance && sealed_paused),
 {}
 

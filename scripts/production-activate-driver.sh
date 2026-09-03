@@ -17,6 +17,14 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
   echo "invalid activation phase" >&2
   exit 1
 }
+EXPECTED_CONFIRMATION=SCHEDULE_PRODUCTION_ASSET_ACTIVATION
+if [[ "$BRIDGE_ACTIVATION_PHASE" == execute ]]; then
+  EXPECTED_CONFIRMATION=UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE
+fi
+[[ "${BRIDGE_CONFIRM_ASSET_ACCEPTANCE:-}" == "$EXPECTED_CONFIRMATION" ]] || {
+  echo "activation requires the phase-specific exact explicit confirmation token" >&2
+  exit 1
+}
 [[ "$BRIDGE_ACTIVATION_STEP" == prepare || "$BRIDGE_ACTIVATION_STEP" == replace || "$BRIDGE_ACTIVATION_STEP" == relay || "$BRIDGE_ACTIVATION_STEP" == confirm ]] || {
   echo "invalid activation step" >&2
   exit 1
@@ -34,6 +42,19 @@ trap 'chmod -R u+w "$FROZEN_BUNDLE" "$FROZEN_INPUTS" 2>/dev/null || true; rm -rf
 production_freeze_bundle "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_BUNDLE"
 BRIDGE_RELEASE_BUNDLE="$FROZEN_BUNDLE"
 production_require_bundle_source_binding "$SOURCE_ROOT" "$BRIDGE_RELEASE_BUNDLE"
+production_freeze_receipt "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
+  "$FROZEN_INPUTS/seal-receipt.json" "operational config seal receipt"
+BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$FROZEN_INPUTS/seal-receipt.json"
+if [[ "$BRIDGE_ACTIVATION_PHASE" == execute ]]; then
+  : "${BRIDGE_PRIOR_SCHEDULE_RECEIPT:?execute requires the prior schedule receipt}"
+  production_freeze_receipt "$BRIDGE_PRIOR_SCHEDULE_RECEIPT" \
+    "$FROZEN_INPUTS/prior-schedule-receipt.json" "prior schedule receipt"
+  BRIDGE_PRIOR_SCHEDULE_RECEIPT="$FROZEN_INPUTS/prior-schedule-receipt.json"
+fi
+
+require_fixed_source() {
+  production_require_bundle_source_binding "$SOURCE_ROOT" "$BRIDGE_RELEASE_BUNDLE"
+}
 
 read -r BRIDGE_CANISTER_ID IC_HOST < <(
   python3 -c '
@@ -171,6 +192,7 @@ case "$BRIDGE_ACTIVATION_STEP" in
     if [[ ! -e "$AUTHORIZATION_RECEIPT" ]]; then
       [[ ! -e "$BRIDGE_ACTIVATION_ARTIFACT" && ! -e "$PREPARE_RECEIPT" ]] || { echo "activation outputs exist without their authorization receipt" >&2; exit 1; }
       production_validate_gate gate-b-live "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256"
+      require_fixed_source
       "${PROFILE[@]}" authorize-controller-activation "$BRIDGE_ACTIVATION_PHASE" \
         "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
         "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$AUTHORIZATION_RECEIPT"
@@ -178,8 +200,10 @@ case "$BRIDGE_ACTIVATION_STEP" in
         "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
         "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$AUTHORIZATION_RECEIPT"
       export IC_IDENTITY_PEM="$BRIDGE_PRODUCTION_CONTROLLER_PEM"
+      require_fixed_source
       "${CLI[@]}" "prepare-${BRIDGE_ACTIVATION_PHASE}-activation" \
         --artifact-file "$BRIDGE_ACTIVATION_ARTIFACT"
+      require_fixed_source
     else
       verify_authorization
       unset IC_IDENTITY_PEM
@@ -190,12 +214,15 @@ case "$BRIDGE_ACTIVATION_STEP" in
         # A fresh live gate plus the same controller call resumes it idempotently; if
         # the first call never reached the Canister, this creates the one allowed record.
         production_validate_gate gate-b-live "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256"
+        require_fixed_source
         "${PROFILE[@]}" verify-controller-activation-authorization-fresh "$BRIDGE_ACTIVATION_PHASE" \
           "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
           "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$AUTHORIZATION_RECEIPT"
         export IC_IDENTITY_PEM="$BRIDGE_PRODUCTION_CONTROLLER_PEM"
+        require_fixed_source
         "${CLI[@]}" "prepare-${BRIDGE_ACTIVATION_PHASE}-activation" \
           --artifact-file "$BRIDGE_ACTIVATION_ARTIFACT"
+        require_fixed_source
       fi
     fi
     if [[ ! -e "$PREPARE_RECEIPT" ]]; then write_prepare_receipt; else verify_prepare_receipt; fi
@@ -221,6 +248,7 @@ case "$BRIDGE_ACTIVATION_STEP" in
       "$PRIOR_RECEIPT"
     copy_replacement_authorization
     export IC_IDENTITY_PEM="$BRIDGE_PRODUCTION_CONTROLLER_PEM"
+    require_fixed_source
     "${CLI[@]}" replace-activation \
       --artifact-file "$FROZEN_INPUTS/artifact.json" \
       --authorization-file "$FROZEN_INPUTS/authorization.json" \
@@ -229,6 +257,7 @@ case "$BRIDGE_ACTIVATION_STEP" in
       --output-binding-file "${BRIDGE_ACTIVATION_REPLACEMENT_ARTIFACT}.prepare-receipt.json" \
       --max-fee "$BRIDGE_ACTIVATION_REPLACEMENT_MAX_FEE" \
       --priority-fee "$BRIDGE_ACTIVATION_REPLACEMENT_PRIORITY_FEE"
+    require_fixed_source
     ;;
   relay)
     : "${BASE_RPC_URL:?missing Base RPC URL for raw relay}"
@@ -245,9 +274,11 @@ case "$BRIDGE_ACTIVATION_STEP" in
       "$FROZEN_INPUTS/authorization.json" "$FROZEN_INPUTS/binding.json" \
       "$PRIOR_RECEIPT"
     unset IC_IDENTITY_PEM
+    require_fixed_source
     "${CLI[@]}" relay --artifact-file "$FROZEN_INPUTS/artifact.json" \
       --authorization-file "$FROZEN_INPUTS/authorization.json" \
       --binding-file "$FROZEN_INPUTS/binding.json"
+    require_fixed_source
     ;;
   confirm)
     : "${BRIDGE_CONFIRMATION_RELAYER_PEM:?missing confirmation relayer identity PEM}"
@@ -267,15 +298,18 @@ case "$BRIDGE_ACTIVATION_STEP" in
       "$FROZEN_INPUTS/authorization.json" "$FROZEN_INPUTS/binding.json" \
       "$PRIOR_RECEIPT"
     export IC_IDENTITY_PEM="$BRIDGE_CONFIRMATION_RELAYER_PEM"
+    require_fixed_source
     "${CLI[@]}" confirm --artifact-file "$FROZEN_INPUTS/artifact.json" \
       --authorization-file "$FROZEN_INPUTS/authorization.json" \
       --binding-file "$FROZEN_INPUTS/binding.json" \
       --receipt-file "$BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT"
+    require_fixed_source
     "${PROFILE[@]}" verify-controller-activation "$BRIDGE_ACTIVATION_PHASE" \
       "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_INPUTS/artifact.json" \
       "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
       "$FROZEN_INPUTS/authorization.json" "$FROZEN_INPUTS/binding.json" \
       "$BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT" "$PRIOR_RECEIPT" \
       "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT"
+    require_fixed_source
     ;;
 esac

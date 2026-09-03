@@ -211,7 +211,6 @@ struct ActivationPreflightEvidence {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ControllerAuthoritySnapshot {
     bootstrap_controller: Principal,
-    controller_must_be_present: bool,
 }
 
 pub fn production_lifecycle() -> Result<ProductionLifecycle, BaseGovernanceError> {
@@ -1645,7 +1644,6 @@ const INITIAL_ACTIVATION_PHASE_EXECUTE: u8 = 1;
 
 async fn current_controller_authority(
     expected: Principal,
-    controller_must_be_present: bool,
 ) -> Result<ControllerAuthoritySnapshot, BaseGovernanceError> {
     let status = ic_cdk_management_canister::canister_status(
         &ic_cdk_management_canister::CanisterStatusArgs {
@@ -1654,15 +1652,9 @@ async fn current_controller_authority(
     )
     .await
     .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let authority_matches = if controller_must_be_present {
-        status.settings.controllers.as_slice() == [expected]
-    } else {
-        !status.settings.controllers.contains(&expected)
-    };
-    if authority_matches {
+    if status.settings.controllers.as_slice() == [expected] {
         Ok(ControllerAuthoritySnapshot {
             bootstrap_controller: expected,
-            controller_must_be_present,
         })
     } else {
         Err(BaseGovernanceError::Unauthorized)
@@ -1672,7 +1664,7 @@ async fn current_controller_authority(
 async fn capture_controller_authority(
     expected: Principal,
 ) -> Result<ControllerAuthoritySnapshot, BaseGovernanceError> {
-    current_controller_authority(expected, true).await
+    current_controller_authority(expected).await
 }
 
 async fn capture_action_controller_authority(
@@ -1680,7 +1672,7 @@ async fn capture_action_controller_authority(
     authority: Option<&storage::ActivationControllerAuthority>,
 ) -> Result<Option<ControllerAuthoritySnapshot>, BaseGovernanceError> {
     match authority {
-        Some(authority) => current_controller_authority(authority.controller, true)
+        Some(authority) => current_controller_authority(authority.controller)
             .await
             .map(Some),
         None if activation_action_phase(action).is_some() => {
@@ -1691,9 +1683,7 @@ async fn capture_action_controller_authority(
                     .map_err(|_| BaseGovernanceError::StorageFailure)
             })?;
             match bootstrap_controller {
-                Some(controller) => current_controller_authority(controller, false)
-                    .await
-                    .map(Some),
+                Some(_) => Err(BaseGovernanceError::Unauthorized),
                 None => Ok(None),
             }
         }
@@ -1722,14 +1712,12 @@ async fn capture_transaction_controller_authority(
     })?;
     match transaction.activation_controller_authority.as_ref() {
         Some(authority) if bootstrap_controller.as_ref() == Some(&authority.controller) => {
-            current_controller_authority(authority.controller, true)
+            current_controller_authority(authority.controller)
                 .await
                 .map(Some)
         }
         None => match bootstrap_controller {
-            Some(controller) => current_controller_authority(controller, false)
-                .await
-                .map(Some),
+            Some(_) => Err(BaseGovernanceError::Unauthorized),
             None => Ok(None),
         },
         _ => Err(BaseGovernanceError::Unauthorized),
@@ -1739,12 +1727,9 @@ async fn capture_transaction_controller_authority(
 async fn require_unchanged_controller_authority(
     expected: &ControllerAuthoritySnapshot,
 ) -> Result<(), BaseGovernanceError> {
-    current_controller_authority(
-        expected.bootstrap_controller,
-        expected.controller_must_be_present,
-    )
-    .await
-    .map(|_| ())
+    current_controller_authority(expected.bootstrap_controller)
+        .await
+        .map(|_| ())
 }
 
 fn activation_action_phase(action: &GovernanceAction) -> Option<u8> {
@@ -1778,14 +1763,14 @@ fn activation_caller_authorized(
             .bootstrap_activation_controller()
             .map_err(|_| BaseGovernanceError::StorageFailure)
     })?;
-    let bootstrap_active = bootstrap_controller
+    let bootstrap_controller_current = bootstrap_controller
         .as_ref()
         .is_some_and(ic_cdk::api::is_controller);
     Ok(::bridge_core::kernel::activation_prepare_authorized(
-        bootstrap_controller.as_ref() == Some(&caller) && bootstrap_active,
+        bootstrap_controller.as_ref() == Some(&caller) && bootstrap_controller_current,
         governance,
         activation_admission_open()?,
-        bootstrap_active,
+        bootstrap_controller.is_some(),
         phase,
     ))
 }
@@ -1827,14 +1812,7 @@ async fn revalidate_action_authorization(
     }
     match (expected, controller_snapshot) {
         (Some(authority), Some(snapshot))
-            if snapshot.controller_must_be_present
-                && authority.controller == snapshot.bootstrap_controller =>
-        {
-            require_unchanged_controller_authority(snapshot).await?;
-        }
-        (None, Some(snapshot))
-            if activation_action_phase(action).is_some()
-                && !snapshot.controller_must_be_present =>
+            if authority.controller == snapshot.bootstrap_controller =>
         {
             require_unchanged_controller_authority(snapshot).await?;
         }
@@ -1893,18 +1871,8 @@ async fn require_transaction_controller_authority(
         Some(authority)
             if bootstrap_controller.as_ref() == Some(&authority.controller)
                 && controller_snapshot.is_some_and(|snapshot| {
-                    snapshot.controller_must_be_present
-                        && snapshot.bootstrap_controller == authority.controller
+                    snapshot.bootstrap_controller == authority.controller
                 }) =>
-        {
-            require_unchanged_controller_authority(controller_snapshot.expect("checked above"))
-                .await
-        }
-        None if bootstrap_controller.as_ref().is_some_and(|controller| {
-            controller_snapshot.is_some_and(|snapshot| {
-                !snapshot.controller_must_be_present && snapshot.bootstrap_controller == *controller
-            })
-        }) =>
         {
             require_unchanged_controller_authority(controller_snapshot.expect("checked above"))
                 .await

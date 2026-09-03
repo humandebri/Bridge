@@ -625,11 +625,22 @@ COMMON_ACTIVATION_ENV=(
   BRIDGE_RELEASE_BUNDLE="$T/bundle"
   BRIDGE_ACTIVATION_PHASE=schedule
   BRIDGE_ACTIVATION_STEP=prepare
+  BRIDGE_CONFIRM_ASSET_ACCEPTANCE=SCHEDULE_PRODUCTION_ASSET_ACTIVATION
   BRIDGE_ACTIVATION_ARTIFACT="$ACTIVATION_ARTIFACT_FIXTURE"
   BRIDGE_PRODUCTION_CONTROLLER_PEM="$CONTROLLER_PEM_FIXTURE"
   BRIDGE_CONFIRMATION_RELAYER_IDENTITY="$CONFIRMATION_RELAYER_IDENTITY_FIXTURE"
   BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$SEAL_RECEIPT_FIXTURE"
 )
+for invalid_confirmation in "" WRONG_CONFIRMATION; do
+  : >"$TRACE"
+  if env "${COMMON_ACTIVATION_ENV[@]}" \
+    BRIDGE_CONFIRM_ASSET_ACCEPTANCE="$invalid_confirmation" \
+    "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+    echo "activation driver accepted a missing or incorrect direct confirmation token" >&2
+    exit 1
+  fi
+  ! grep -q 'prepare-schedule-activation' "$TRACE"
+done
 : >"$TRACE"
 if env CONFIRMATION_RELAYER_DRIFT=true "${COMMON_ACTIVATION_ENV[@]}" \
   "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
