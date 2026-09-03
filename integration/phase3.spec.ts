@@ -1090,12 +1090,7 @@ describe("Phase 3 PocketIC saga", () => {
       confirmationRelayerPrincipal,
     } = await setup(false, {}, bridgeWasm, true, true);
     const replacementController = Principal.selfAuthenticating(new Uint8Array(32).fill(69));
-    await pic!.updateCanisterSettings({
-      canisterId: bridge.canisterId,
-      controllers: [replacementController],
-      sender: controller,
-    });
-    bridge.actor.setPrincipal(runtimePrincipal);
+    bridge.actor.setPrincipal(controller);
     const scheduled: any = await (bridge.actor as any).schedule_activation();
     expect(scheduled).toHaveProperty("Ok.kind.ScheduleActivation");
     await (evm.actor as any).set_receipt_mode({ DelayedConfirmed: null });
@@ -1116,6 +1111,11 @@ describe("Phase 3 PocketIC saga", () => {
     expect(receiptBarrier).toBeDefined();
     await pic!.updateCanisterSettings({
       canisterId: bridge.canisterId,
+      controllers: [replacementController],
+      sender: controller,
+    });
+    await pic!.updateCanisterSettings({
+      canisterId: bridge.canisterId,
       controllers: [replacementController, controller],
       sender: replacementController,
     });
@@ -1130,7 +1130,7 @@ describe("Phase 3 PocketIC saga", () => {
   }
 
   it(
-    "rejects governance confirmation if bootstrap controller is restored",
+    "rejects confirmation if bootstrap controller authority is restored after await",
     rejects_governance_confirmation_if_bootstrap_controller_is_restored,
   );
 

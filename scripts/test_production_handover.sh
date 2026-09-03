@@ -51,6 +51,8 @@ git -C "$T/source" add .
 git -C "$T/source" commit -qm 'handover fixture'
 REVISION="$(git -C "$T/source" rev-parse HEAD)"
 TREE="$(git -C "$T/source" archive HEAD | shasum -a 256 | awk '{print $1}')"
+printf '{"kind":"production-controller-bootstrap-upgrade","source_revision":"%s","source_tree_sha256":"%s"}\n' \
+  "$REVISION" "$TREE" >"$T/bundle/production-canister-upgrade-receipt.json"
 cat >"$T/bundle/profile.json" <<'JSON'
 {"bridge_canister_id":"2vxsx-fae","root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","bridge_canister_wasm_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parameters":{"cycles_floor":"1000"}}
 JSON
@@ -59,8 +61,9 @@ printf '{"schema_version":3,"from_source_revision":"%s","from_source_tree_sha256
   "$REVISION" "$TREE" "$REVISION" "$TREE" "$REVISION" "$TREE" \
   >"$T/bundle/post-gate-a-policy-transition.json"
 TRANSITION_SHA="$(shasum -a 256 "$T/bundle/post-gate-a-policy-transition.json" | awk '{print $1}')"
-printf '{"source_revision":"%s","source_tree_sha256":"%s","artifacts":[{"path":"profile.json","sha256":"%s"},{"path":"post-gate-a-policy-transition.json","sha256":"%s"}]}\n' \
-  "$REVISION" "$TREE" "$PROFILE_SHA" "$TRANSITION_SHA" >"$T/bundle/release-manifest.json"
+UPGRADE_SHA="$(shasum -a 256 "$T/bundle/production-canister-upgrade-receipt.json" | awk '{print $1}')"
+printf '{"source_revision":"%s","source_tree_sha256":"%s","artifacts":[{"path":"profile.json","sha256":"%s"},{"path":"post-gate-a-policy-transition.json","sha256":"%s"},{"path":"production-canister-upgrade-receipt.json","sha256":"%s"}]}\n' \
+  "$REVISION" "$TREE" "$PROFILE_SHA" "$TRANSITION_SHA" "$UPGRADE_SHA" >"$T/bundle/release-manifest.json"
 GATE_B_HASH="$(printf 'a%.0s' {1..64})"
 RAW_MANIFEST_SHA="$(shasum -a 256 "$T/bundle/release-manifest.json" | awk '{print $1}')"
 [[ "$RAW_MANIFEST_SHA" != "$GATE_B_HASH" ]]
@@ -72,16 +75,31 @@ cat >"$T/bin/icp" <<'SH'
 echo "icp $*" >>"$TRACE"
 if [[ "$*" == *'identity principal'* ]]; then echo 'aaaaa-aa'
 elif [[ "$*" == *'status bridge-canister -e production -i'* ]]; then echo "${HANDOVER_CANISTER_ID:-2vxsx-fae}"
-elif [[ "$*" == *get_bridge_status* ]]; then printf '{"reserve":{"sufficient":%s},"deposits_paused":%s,"mint_authorization_ttl_seconds":900,"mint_authorization_epoch":7,"counts":{"deposits":2,"withdrawals":3,"retained_audit_events":8,"pruned_audit_events":5}}\n' "${HANDOVER_RESERVE_SUFFICIENT:-true}" "${HANDOVER_PAUSED:-false}"
-elif [[ "$*" == *get_production_lifecycle* ]]; then printf '{"Ok":{"%s":null}}\n' "${HANDOVER_LIFECYCLE:-Activated}"
+elif [[ "$*" == *get_bridge_status* ]]; then
+  calls="$(cat "$TRACE.bridge-calls" 2>/dev/null || printf 0)"; printf '%s\n' "$((calls+1))" >"$TRACE.bridge-calls"; reserve="${HANDOVER_RESERVE_SUFFICIENT:-true}"; paused="${HANDOVER_PAUSED:-false}"
+  [[ "$calls" -lt 1 || "${HANDOVER_PRE_SEND_RESERVE_DRIFT:-false}" != true ]] || reserve=false
+  [[ "$calls" -lt 1 || "${HANDOVER_PRE_SEND_IC_PAUSE_DRIFT:-false}" != true ]] || paused=true
+  printf '{"reserve":{"sufficient":%s},"deposits_paused":%s,"mint_authorization_ttl_seconds":900,"mint_authorization_epoch":7,"counts":{"deposits":2,"withdrawals":3,"retained_audit_events":8,"pruned_audit_events":5}}\n' "$reserve" "$paused"
+elif [[ "$*" == *get_production_lifecycle* ]]; then
+  calls="$(cat "$TRACE.lifecycle-calls" 2>/dev/null || printf 0)"; printf '%s\n' "$((calls+1))" >"$TRACE.lifecycle-calls"; lifecycle="${HANDOVER_LIFECYCLE:-Activated}"
+  [[ "$calls" -lt 1 || "${HANDOVER_PRE_SEND_LIFECYCLE_DRIFT:-false}" != true ]] || lifecycle=Bootstrap
+  printf '{"Ok":{"%s":null}}\n' "$lifecycle"
 elif [[ "$*" == *get_runtime_binding* ]]; then
   runtime="stable"; [[ -e "$TRACE.updated" ]] && runtime="${HANDOVER_POST_RUNTIME:-stable}"
+  calls="$(cat "$TRACE.runtime-calls" 2>/dev/null || printf 0)"; printf '%s\n' "$((calls+1))" >"$TRACE.runtime-calls"; [[ "$calls" -lt 1 || "${HANDOVER_PRE_SEND_RUNTIME_DRIFT:-false}" != true ]] || runtime=drifted
   printf '{"schema_version":5,"binding":"%s"}\n' "$runtime"
 elif [[ "$*" == *storage_integrity_check* ]]; then
   integrity="${HANDOVER_STORAGE_RESULT:-ok}"; [[ -e "$TRACE.updated" ]] && integrity="${HANDOVER_POST_STORAGE_RESULT:-$integrity}"
+  calls="$(cat "$TRACE.integrity-calls" 2>/dev/null || printf 0)"; printf '%s\n' "$((calls+1))" >"$TRACE.integrity-calls"; [[ "$calls" -lt 1 || "${HANDOVER_PRE_SEND_STORAGE_DRIFT:-false}" != true ]] || integrity=corrupt
   printf '{"Ok":"%s"}\n' "$integrity"
-elif [[ "$*" == *get_activation_status* ]]; then printf '{"Ok":{"deposits_paused":false,"pending_timelock_operation":[],"last_confirmed_activation":[{"phase":"execute"}]}}\n'
-elif [[ "$*" == *get_activation_attestation* ]]; then printf '{"Ok":{"deposits_paused":%s,"withdrawals_paused":%s}}\n' "${HANDOVER_BASE_DEPOSITS_PAUSED:-false}" "${HANDOVER_BASE_WITHDRAWALS_PAUSED:-false}"
+elif [[ "$*" == *get_activation_status* ]]; then
+  calls="$(cat "$TRACE.activation-calls" 2>/dev/null || printf 0)"; printf '%s\n' "$((calls+1))" >"$TRACE.activation-calls"; paused=false
+  [[ "$calls" -lt 1 || "${HANDOVER_PRE_SEND_ACTIVATION_DRIFT:-false}" != true ]] || paused=true
+  printf '{"Ok":{"deposits_paused":%s,"pending_timelock_operation":[],"last_confirmed_activation":[{"phase":"execute"}]}}\n' "$paused"
+elif [[ "$*" == *get_activation_attestation* ]]; then
+  calls="$(cat "$TRACE.attestation-calls" 2>/dev/null || printf 0)"; printf '%s\n' "$((calls+1))" >"$TRACE.attestation-calls"; deposits="${HANDOVER_BASE_DEPOSITS_PAUSED:-false}"; withdrawals="${HANDOVER_BASE_WITHDRAWALS_PAUSED:-false}"
+  [[ "$calls" -lt 1 || "${HANDOVER_PRE_SEND_BASE_PAUSE_DRIFT:-false}" != true ]] || deposits=true
+  printf '{"Ok":{"deposits_paused":%s,"withdrawals_paused":%s}}\n' "$deposits" "$withdrawals"
 elif [[ "$*" == *'status bridge-canister -e production --identity'* ]]; then
   controller="${HANDOVER_CONTROLLER:-aaaaa-aa}"
   calls="$(grep -c 'status bridge-canister -e production --identity' "$TRACE")"
@@ -108,6 +126,8 @@ run_handover() {
   shift
   rm -f "$TRACE.updated"
   rm -f "$TRACE.verify"
+  rm -f "$TRACE.bridge-calls" "$TRACE.lifecycle-calls" "$TRACE.runtime-calls" \
+    "$TRACE.integrity-calls" "$TRACE.activation-calls" "$TRACE.attestation-calls"
   BRIDGE_GATE_B_MANIFEST_SHA256="$GATE_B_HASH" \
   BRIDGE_RELEASE_BUNDLE="$T/bundle" \
   BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$T/operational-config-seal-receipt.json" \
@@ -133,6 +153,9 @@ assert v['controller_schedule_receipt_sha256']==hashlib.sha256(open(sys.argv[1].
 assert v['controller_execute_receipt_sha256']==hashlib.sha256(open(sys.argv[1].replace('handover.json','controller-execute-receipt.json'),'rb').read()).hexdigest()
 assert not any('fee_cycles' in key for key in v)
 assert v['cycles_balance']==1000000 and v['required_freezing_cycles']==100
+assert v['pre_send_cycles_balance']==1000000 and v['pre_send_required_freezing_cycles']==100
+for prefix in ('management_status','bridge_status','lifecycle','runtime_binding','storage_integrity','activation_status','activation_attestation'):
+ assert len(v['pre_send_'+prefix+'_response_sha256'])==64
 transcript=bytes.fromhex(v['response_stdout_hex'])+bytes.fromhex(v['response_stderr_hex'])
 assert v['response_exit_code']==0 and hashlib.sha256(transcript).hexdigest()==v['response_sha256']
 assert v['request_id'].encode() in transcript
@@ -217,6 +240,18 @@ fi
 updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
 [[ "$updates_before" == "$updates_after" ]]
 [[ -f "$T/pre-send-active-drift.json" && ! -s "$T/pre-send-active-drift.json" ]]
+
+for scenario in RESERVE_DRIFT IC_PAUSE_DRIFT LIFECYCLE_DRIFT RUNTIME_DRIFT STORAGE_DRIFT ACTIVATION_DRIFT BASE_PAUSE_DRIFT; do
+  evidence="$T/pre-send-$(printf '%s' "$scenario" | tr '[:upper:]_' '[:lower:]-').json"
+  export "HANDOVER_PRE_SEND_${scenario}=true"
+  updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+  if run_handover "$evidence" >/dev/null 2>&1; then
+    echo "handover accepted pre-send live-state drift: $scenario" >&2; exit 1
+  fi
+  updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+  unset "HANDOVER_PRE_SEND_${scenario}"
+  [[ "$updates_before" == "$updates_after" && -f "$evidence" && ! -s "$evidence" ]]
+done
 
 if HANDOVER_CANISTER_ID=rrkah-fqaaa-aaaaa-aaaaq-cai run_handover "$T/wrong-canister.json" >/dev/null 2>&1; then
   echo "handover accepted a production mapping drift" >&2; exit 1

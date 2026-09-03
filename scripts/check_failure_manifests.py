@@ -47,6 +47,8 @@ REQUIRED_LEAN_FAILURE_SHA256 = {
     "TerminalAuthorizationReopen.lean": "c7ba272a6f81dfcd0c4333bd325bcea1f41c1ce618cd1a645cd3dddea5daa29f",
     "TerminalDepositIndexed.lean": "5a740f2449b4ebd506b9d3095378f2226f253b9fd4ec96442422a0adbcbd91d7",
     "UnauthorizedConfirmationCaller.lean": "ebb7016ca30fe6b8c28c6dc6533da01331be76d3cc479a886866213d52ce80d0",
+    "UnauthorizedOperationalConfigSeal.lean": "8d45c7d35059439e55d1e8b7eaec11c842f9918084a8d4410c70dc986f43423e",
+    "UnsafeBootstrapPausePrincipalMigration.lean": "ddd05423bdf6e17a1ca3f0be7a2eae1694f5e331b638d5939fef44dafaf485eb",
     "UnfairLiveness.lean": "e346efb2083754bc8793d27a176243cc79c29f55a54eed0af4778e85faff6eca",
 }
 

@@ -383,7 +383,7 @@ fn payout_and_authorization_tables_are_exhaustive() {
 #[test]
 fn bootstrap_pause_principal_migration_is_exact_and_idempotent() {
     use BootstrapPausePrincipalMigrationDecision::{
-        AlreadyApplied, Apply, PostBootstrapNoop, Reject,
+        AlreadyApplied, Apply, FreshInstallNoop, PostBootstrapNoop, Reject,
     };
     for sealed in [false, true] {
         for paused in [false, true] {
@@ -396,6 +396,9 @@ fn bootstrap_pause_principal_migration_is_exact_and_idempotent() {
                                     PostBootstrapNoop
                                 } else if pause_is_new && marker_is_new {
                                     AlreadyApplied
+                                } else if paused && pause_is_new && marker_unbound && roles_distinct
+                                {
+                                    FreshInstallNoop
                                 } else if paused && pause_is_old && marker_unbound && roles_distinct
                                 {
                                     Apply

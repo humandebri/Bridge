@@ -126,21 +126,16 @@ PY
 # replacement before changing the controller set.
 production_reserve_output "$BRIDGE_HANDOVER_EVIDENCE_FILE" "handover evidence"
 
-# Re-run the complete authenticated active-state verifier after the final
-# filesystem preparation. Only the sole-controller/module read below may occur
-# between this check and the irreversible settings update.
-"$BRIDGE_HANDOVER_VALIDATOR_BIN" verify-production-canister-handover \
-  "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
-  "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT" \
-  >/dev/null
-
-# Re-read management state after every pre-send preparation step. This is the
-# controller/module snapshot that authorizes the irreversible settings update.
+# Re-read and persist the complete live state after every filesystem preparation
+# step. This is the snapshot that authorizes the irreversible settings update.
 icp canister status bridge-canister -e production --identity "$BRIDGE_ICP_IDENTITY" --json >"$TMP/pre-send-management-status.json"
-python3 - "$TMP/preflight.json" "$TMP/pre-send-management-status.json" "$EXECUTING_PRINCIPAL" "$EXPECTED_WASM" >"$TMP/preflight-final.json" <<'PY'
+for method in get_bridge_status get_production_lifecycle get_runtime_binding storage_integrity_check get_activation_status get_activation_attestation; do
+  icp canister call bridge-canister "$method" '()' -e production --json >"$TMP/pre-send-$method.json"
+done
+python3 - "$TMP/preflight.json" "$TMP/pre-send-management-status.json" "$EXECUTING_PRINCIPAL" "$EXPECTED_WASM" "$CYCLES_FLOOR" "$TMP/pre-send-get_bridge_status.json" "$TMP/pre-send-get_production_lifecycle.json" "$TMP/pre-send-get_runtime_binding.json" "$TMP/pre-send-storage_integrity_check.json" "$TMP/pre-send-get_activation_status.json" "$TMP/pre-send-get_activation_attestation.json" >"$TMP/preflight-final.json" <<'PY'
 import hashlib,json,sys
-preflight_path,status_path,caller,expected_wasm=sys.argv[1:]
-value=json.load(open(preflight_path)); status=json.load(open(status_path))
+preflight_path,status_path,caller,expected_wasm,floor,bridge_path,lifecycle_path,runtime_path,integrity_path,activation_path,attestation_path=sys.argv[1:]
+value=json.load(open(preflight_path)); status=json.load(open(status_path)); floor=int(floor)
 def values(item,key):
  out=[]
  if isinstance(item,dict):
@@ -157,13 +152,56 @@ modules=values(status,'module_hash') or values(status,'module')
 if len(modules)!=1: raise SystemExit('pre-send status lacks one module hash')
 module=str(modules[0]).strip().strip('"').lower().removeprefix('0x')
 if module != expected_wasm.lower().removeprefix('0x'): raise SystemExit('pre-send module differs from the current profile Wasm')
-raw=open(status_path,'rb').read()
+def number(item,key):
+ found=values(item,key)
+ if len(found)!=1: raise SystemExit(f'pre-send status lacks one {key}')
+ raw=found[0]
+ if type(raw) is int and raw>=0: return raw
+ if isinstance(raw,str) and raw.replace('_','').isdigit(): return int(raw.replace('_',''))
+ raise SystemExit(f'pre-send {key} is malformed')
+cycles=number(status,'cycles') if values(status,'cycles') else number(status,'cycles_balance')
+threshold=number(status,'freezing_threshold') if values(status,'freezing_threshold') else number(status,'freezing_threshold_seconds')
+burn=number(status,'idle_cycles_burned_per_day')
+freeze_required=(burn*threshold+86399)//86400
+if cycles < floor or cycles < freeze_required: raise SystemExit('pre-send cycles do not satisfy the approved floor')
+def load(path): return json.load(open(path))
+bridge,lifecycle,runtime,integrity,activation,attestation=map(load,[bridge_path,lifecycle_path,runtime_path,integrity_path,activation_path,attestation_path])
+def scalar(item,key):
+ found=values(item,key)
+ if len(found)!=1: raise SystemExit(f'pre-send snapshot lacks one {key}')
+ return found[0]
+if scalar(bridge,'deposits_paused') is not False or scalar(bridge,'sufficient') is not True:
+ raise SystemExit('pre-send IC deposit admission or reserve is invalid')
+if lifecycle != {'Ok':{'Activated':None}}: raise SystemExit('pre-send lifecycle is not Activated')
+if scalar(integrity,'Ok') != 'ok': raise SystemExit('pre-send storage integrity is not ok')
+if scalar(activation,'deposits_paused') is not False: raise SystemExit('pre-send activation status is paused')
+if scalar(attestation,'deposits_paused') is not False or scalar(attestation,'withdrawals_paused') is not False:
+ raise SystemExit('pre-send Base admission is paused')
+def prior(prefix):
+ raw=bytes.fromhex(value[prefix+'_response_json_hex'])
+ if hashlib.sha256(raw).hexdigest()!=value[prefix+'_response_sha256']: raise SystemExit(f'prior {prefix} digest mismatch')
+ return json.loads(raw)
+if prior('before_runtime_binding') != runtime: raise SystemExit('pre-send RuntimeBinding drifted')
+if prior('before_lifecycle') != lifecycle: raise SystemExit('pre-send lifecycle drifted')
+if prior('before_activation_status') != activation: raise SystemExit('pre-send activation lineage drifted')
+if prior('before_activation_attestation') != attestation: raise SystemExit('pre-send activation attestation drifted')
+def evidence(path,prefix):
+ raw=open(path,'rb').read()
+ return {prefix+'_response_json_hex':raw.hex(),prefix+'_response_sha256':hashlib.sha256(raw).hexdigest()}
 value.update({'pre_send_controllers':[caller],'pre_send_module_sha256':module,
-              'pre_send_management_status_response_json_hex':raw.hex(),
-              'pre_send_management_status_response_sha256':hashlib.sha256(raw).hexdigest()})
+              'pre_send_cycles_balance':cycles,'pre_send_required_freezing_cycles':freeze_required})
+for path,prefix in [(status_path,'pre_send_management_status'),(bridge_path,'pre_send_bridge_status'),
+                    (lifecycle_path,'pre_send_lifecycle'),(runtime_path,'pre_send_runtime_binding'),
+                    (integrity_path,'pre_send_storage_integrity'),(activation_path,'pre_send_activation_status'),
+                    (attestation_path,'pre_send_activation_attestation')]: value.update(evidence(path,prefix))
 print(json.dumps(value,sort_keys=True,separators=(',',':')))
 PY
 mv "$TMP/preflight-final.json" "$TMP/preflight.json"
+# Close the remaining query-to-send window with the authenticated validator.
+"$BRIDGE_HANDOVER_VALIDATOR_BIN" verify-production-canister-handover \
+  "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
+  "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT" \
+  >/dev/null
 
 COMMAND=(icp canister settings update bridge-canister -e production --remove-all-controllers --add-controller "$ROOT" --force --identity "$BRIDGE_ICP_IDENTITY" --debug)
 set +e

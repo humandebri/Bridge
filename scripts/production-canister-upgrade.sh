@@ -122,6 +122,22 @@ fi
 SOURCE_REVISION="$(git -C "$ROOT" rev-parse HEAD)"
 SOURCE_TREE="$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')"
 WASM_SHA256="$(shasum -a 256 "$WASM" | awk '{print tolower($1)}')"
+REPRO_TARGET="$PROFILE_TARGET/reproducible-build"
+mkdir -p "$REPRO_TARGET"
+CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$REPRO_TARGET" \
+  icp build bridge-canister -e production --project-root-override "$ROOT" >/dev/null
+REPRO_WASM="$REPRO_TARGET/wasm32-unknown-unknown/release/bridge_canister.wasm"
+[[ -f "$REPRO_WASM" && ! -L "$REPRO_WASM" ]] || {
+  echo "production build did not produce the Bridge Canister Wasm" >&2; exit 1;
+}
+[[ "$(shasum -a 256 "$REPRO_WASM" | awk '{print tolower($1)}')" == "$WASM_SHA256" ]] || {
+  echo "upgrade Wasm is not reproducible from the current clean source" >&2; exit 1;
+}
+[[ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" \
+  && "$(git -C "$ROOT" rev-parse HEAD)" == "$SOURCE_REVISION" \
+  && "$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')" == "$SOURCE_TREE" ]] || {
+  echo "source changed while the production Wasm was reproduced" >&2; exit 1;
+}
 read -r CANISTER GATE_A_WASM INSTALLER RECEIPT_SOURCE IC_HOST < <(python3 -I -S - "$GATE_A_PROFILE" "$GATE_A_RECEIPT" <<'PY'
 import json,sys
 profile=json.load(open(sys.argv[1],encoding='utf-8')); receipt=json.load(open(sys.argv[2],encoding='utf-8'))

@@ -115,6 +115,11 @@ cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "$1 $2" == "identity principal" ]]; then printf '%s\n' "$TEST_INSTALLER"; exit 0; fi
+if [[ "$1 $2" == "build bridge-canister" ]]; then
+  mkdir -p "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release"
+  cp "$TEST_REPRO_WASM" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/bridge_canister.wasm"
+  exit 0
+fi
 if [[ "$1 $2 $3" == "canister status $TEST_CANISTER" ]]; then
   printf '{"status":{"settings":{"controllers":["%s"]},"module_hash":"%s"}}\n' "$TEST_INSTALLER" "$(<"$TEST_LIVE_MODULE")"
   exit 0
@@ -141,7 +146,16 @@ chmod +x "$T/bin/icp"
 export PATH="$T/bin:$PATH"
 export TEST_INSTALLER="$INSTALLER" TEST_CANISTER="$CANISTER" TEST_LIVE_MODULE="$T/live-module" \
   TEST_NEW_SHA="$NEW_SHA" TEST_SUBMIT_COUNT="$T/submit-count" TEST_STATUS_CALL_COUNT="$T/status-call-count" \
-  TEST_RESERVE_SUFFICIENT="$T/reserve-sufficient"
+  TEST_RESERVE_SUFFICIENT="$T/reserve-sufficient" TEST_REPRO_WASM="$T/new.wasm"
+
+printf wrong-wasm >"$T/not-reproducible.wasm"
+if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
+  --wasm "$T/not-reproducible.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" --evidence "$T/evidence/not-reproducible.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted a Wasm not built from the current source" >&2
+  exit 1
+fi
+[[ ! -e "$T/evidence/not-reproducible.json" ]]
 
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
   --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
@@ -360,6 +374,7 @@ PY
 printf third-wasm >"$T/third.wasm"
 THIRD_SHA="$(shasum -a 256 "$T/third.wasm" | awk '{print $1}')"
 export TEST_NEW_SHA="$THIRD_SHA"
+export TEST_REPRO_WASM="$T/third.wasm"
 cp "$T/evidence/receipt.initial.json" "$T/evidence/prior-upgrade.json"
 cp "$T/evidence/prior-upgrade.json" "$T/evidence/prior-upgrade.approved.json"
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \

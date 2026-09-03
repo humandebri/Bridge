@@ -237,6 +237,9 @@ try:
   chunk=os.read(fd,1024*1024)
   if not chunk: break
   chunks.append(chunk)
+ after=os.fstat(fd)
+ if (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
+  raise SystemExit(f'{label} changed while it was frozen')
  data=b''.join(chunks)
 finally: os.close(fd)
 out=os.open(destination,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)

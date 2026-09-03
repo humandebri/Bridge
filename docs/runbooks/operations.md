@@ -158,6 +158,12 @@ proof失敗、実行前後のsource/tree/submodule drift、またはobsoleteな`
 
 `execute` prepare前はproofと再build後のattestation更新・`verify-live`に続けて`verify-controller-schedule-receipt-live`を実行し、schedule receipt内部のdigest、sole production controller、module hash、Canisterのpending Timelock operationを再照合する。その後、Base両flowのunpause確定後にCanisterがICをresumeする。ProductionのBase状態は公式EVM RPC Canisterの`BaseMainnet`観測を保存したactivation attestationと認証済みCanister queryで確認し、直接Custom RPC URLは使用しない。3-provider直接照合はstaging monitor drillだけに限定する。
 - Holdの強制解除、nonce操作、任意transaction送信は行わない。
+preflight、execute、recoverはいずれも固定clean HEADからproduction Wasmを隔離targetへ再buildし、入力WasmのSHA-256と一致しなければnetwork送信前に拒否する。
+
+現行production install templateのようにunsealed・pausedでpause principalが既にproduction identity、bootstrap markerが未束縛、role分離済みの場合、upgrade hookはstateとauditを変更しないfresh-install no-opとして扱う。旧SNS Rootからの実移行だけがpause principal、marker、auditを更新する。
+
+handover driverは全live responseを再取得してpre-send evidenceへ保存した後、認証済みlive verifierをもう一度通し、直後にsettings updateを送る。この最終検証から送信までの短い区間は、pause・activation・runtime・reserve・storage・module・controllerを書き換える別operatorが存在しないことを外部仮定とする。
+
 ## Mint証拠不一致
 
 ownerのRefund請求で`isDepositProcessed(depositId) == true`なのに、`DepositMinted` eventがない、複数ある、Authorization digest・recipient・amount・feeが異なる、またはcanonical成功receiptへ束縛できない場合、Canisterは資金を動かさずfail closedにする。返金や別Authorization発行へfallbackしない。

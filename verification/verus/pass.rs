@@ -900,6 +900,8 @@ proof fn bootstrap_pause_principal_migration_is_scoped_and_idempotent(
             2
         } else if pause_is_new && marker_is_new {
             1
+        } else if paused && pause_is_new && marker_unbound && roles_distinct {
+            4
         } else if paused && pause_is_old && marker_unbound && roles_distinct {
             0
         } else {

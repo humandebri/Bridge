@@ -128,6 +128,17 @@ def bootstrapActivationAuthorityAfterTransition
     (authorityPresent confirmedExecute : Bool) : Bool :=
   authorityPresent && !confirmedExecute
 
+def operationalConfigSealCallerAuthorized (controller bootstrap : Bool) : Bool :=
+  controller && bootstrap
+
+def bootstrapPausePrincipalMigrationCode
+    (sealed paused pauseIsOld pauseIsNew markerUnbound markerIsNew rolesDistinct : Bool) : Nat :=
+  if sealed then 2
+  else if pauseIsNew && markerIsNew then 1
+  else if paused && pauseIsNew && markerUnbound && rolesDistinct then 4
+  else if paused && pauseIsOld && markerUnbound && rolesDistinct then 0
+  else 3
+
 def InitialActivationAuthorization : Prop :=
   (∀ bootstrapController governance sealed bootstrapActive validPhase : Bool,
       initialActivationAuthorized bootstrapController governance sealed bootstrapActive validPhase = true ↔
@@ -135,16 +146,33 @@ def InitialActivationAuthorization : Prop :=
           (if bootstrapActive then bootstrapController = true else governance = true)) ∧
   (∀ authorityPresent confirmedExecute : Bool,
       bootstrapActivationAuthorityAfterTransition authorityPresent confirmedExecute = true ↔
-        authorityPresent = true ∧ confirmedExecute = false)
+        authorityPresent = true ∧ confirmedExecute = false) ∧
+  (∀ controller bootstrap : Bool,
+      operationalConfigSealCallerAuthorized controller bootstrap = true ↔
+        controller = true ∧ bootstrap = true) ∧
+  (∀ sealed paused pauseIsOld pauseIsNew markerUnbound markerIsNew rolesDistinct : Bool,
+      bootstrapPausePrincipalMigrationCode sealed paused pauseIsOld pauseIsNew markerUnbound markerIsNew rolesDistinct =
+        if sealed then 2
+        else if pauseIsNew && markerIsNew then 1
+        else if paused && pauseIsNew && markerUnbound && rolesDistinct then 4
+        else if paused && pauseIsOld && markerUnbound && rolesDistinct then 0
+        else 3)
 
 theorem initial_activation_authorization_witness : InitialActivationAuthorization := by
   constructor
   · intro bootstrapController governance sealed bootstrapActive validPhase
     cases bootstrapController <;> cases governance <;> cases sealed <;> cases bootstrapActive <;>
       cases validPhase <;> simp [initialActivationAuthorized]
-  · intro authorityPresent confirmedExecute
-    cases authorityPresent <;> cases confirmedExecute <;>
-      simp [bootstrapActivationAuthorityAfterTransition]
+  · constructor
+    · intro authorityPresent confirmedExecute
+      cases authorityPresent <;> cases confirmedExecute <;>
+        simp [bootstrapActivationAuthorityAfterTransition]
+    · constructor
+      · intro controller bootstrap
+        cases controller <;> cases bootstrap <;>
+          simp [operationalConfigSealCallerAuthorized]
+      · intro sealed paused pauseIsOld pauseIsNew markerUnbound markerIsNew rolesDistinct
+        rfl
 
 def confirmedActivationAttemptIsUnique
     (foundMatch foundAdditionalMatch : Bool) : Bool :=

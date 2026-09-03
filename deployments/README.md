@@ -7,14 +7,16 @@ cargo run -p bridge-profile -- derive measurements.json
 cargo run -p bridge-profile -- validate profile.json
 cargo run -p bridge-profile -- validate-test rehearsal-profile.json
 cargo run -p bridge-profile -- validate-bundle --offline evidence/release-id
-cargo run -p bridge-profile -- verify-live evidence/release-id
+cargo run -p bridge-profile -- verify-live schedule evidence/release-id
 ```
+
+24時間後のexecute認可では同じ位置のphaseを`execute`に替える。
 
 `derive`と`fee-cycles-measurements.template.json`はunpause後のGate C計測用である。schema v3のgovernance gas、settlement cycles、fee系列を各10件以上要求し、Base fee sampleは最初と最後の観測が7日以上離れていなければ失敗する。この7日計測をGate B、初期seal、schedule、executeの前提にしてはならない。Gate Bの初期値は別の`initial-operational-parameters.json`から導出する。通常デプロイ前に使う`validate`は`test_assets_only = true`を必ず拒否し、Sepolia rehearsalだけが明示的な`validate-test`を使える。
 
 本番配置と資産受付開始は、必ず`production-release.sh`を経由する。`deploy`のGate Aはoffline artifact、profile、constructor条件だけを検証する。Bridge contractとBridge Canisterはいずれも初期pause状態で配置され、この段階では資産を受け付けない。配置後のruntime、role、pause、chain bindingは、Canisterが公式EVM RPC Canisterの組み込み`BaseMainnet`から取得して保存するactivation attestationをGate Bで検証する。
 
-production CanisterはBase contract用release profileとは独立したschema 1の`production-canister-plan.json`から一度だけinstallする。`deployments/production-canister-plan.template.json`をrepo外へ複製し、bootstrapで確定したCanister ID、clean source、Wasm、初期設定を埋める。`scripts/production-canister-install.sh`だけがtyped planをCandid binaryへ変換し、`--mode install --args-format bin`でinstallする。`reinstall`、`auto`、暗黙buildは使用しない。public config初期化、全storage検査、checksum、Bootstrap lifecycle、空state、pause、cycles reserve、RuntimeBinding、controller/module hashの全postconditionを満たしたschema 1 receiptだけを後続profileの根拠にする。
+production CanisterはBase contract用release profileとは独立したschema 2の`production-canister-plan.json`から一度だけinstallする。`deployments/production-canister-plan.template.json`をrepo外へ複製し、bootstrapで確定したCanister ID、clean source、Wasm、初期設定を埋める。`scripts/production-canister-install.sh`だけがtyped planをCandid binaryへ変換し、`--mode install --args-format bin`でinstallする。`reinstall`、`auto`、暗黙buildは使用しない。public config初期化、全storage検査、checksum、Bootstrap lifecycle、空state、pause、cycles reserve、RuntimeBinding、controller/module hashの全postconditionを満たしたschema 3 receiptだけを後続profileの根拠にする。
 
 ```sh
 scripts/production-release.sh deploy --bundle evidence/release-id \

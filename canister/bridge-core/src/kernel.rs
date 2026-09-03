@@ -203,11 +203,13 @@ macro_rules! operational_config_seal_caller_authorized_body {
 }
 
 macro_rules! bootstrap_pause_principal_migration_body {
-    ($sealed:expr, $paused:expr, $pause_is_old:expr, $pause_is_new:expr, $marker_unbound:expr, $marker_is_new:expr, $roles_distinct:expr, $post_bootstrap:expr, $already_applied:expr, $apply:expr, $reject:expr) => {{
+    ($sealed:expr, $paused:expr, $pause_is_old:expr, $pause_is_new:expr, $marker_unbound:expr, $marker_is_new:expr, $roles_distinct:expr, $post_bootstrap:expr, $already_applied:expr, $fresh_install:expr, $apply:expr, $reject:expr) => {{
         if $sealed {
             $post_bootstrap
         } else if $pause_is_new && $marker_is_new {
             $already_applied
+        } else if $paused && $pause_is_new && $marker_unbound && $roles_distinct {
+            $fresh_install
         } else if $paused && $pause_is_old && $marker_unbound && $roles_distinct {
             $apply
         } else {
@@ -278,6 +280,7 @@ pub enum OperationalConfigSealDecision {
 pub enum BootstrapPausePrincipalMigrationDecision {
     Apply,
     AlreadyApplied,
+    FreshInstallNoop,
     PostBootstrapNoop,
     Reject,
 }
@@ -1866,6 +1869,7 @@ const fn bootstrap_pause_principal_migration_code(
         roles_distinct,
         2,
         1,
+        4,
         0,
         3
     )
@@ -1893,6 +1897,7 @@ pub const fn bootstrap_pause_principal_migration_decision(
         0 => BootstrapPausePrincipalMigrationDecision::Apply,
         1 => BootstrapPausePrincipalMigrationDecision::AlreadyApplied,
         2 => BootstrapPausePrincipalMigrationDecision::PostBootstrapNoop,
+        4 => BootstrapPausePrincipalMigrationDecision::FreshInstallNoop,
         _ => BootstrapPausePrincipalMigrationDecision::Reject,
     }
 }
@@ -2744,6 +2749,7 @@ verus! {
             roles_distinct,
             2,
             1,
+            4,
             0,
             3
         )

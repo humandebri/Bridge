@@ -223,23 +223,9 @@ export BRIDGE_SOURCE_ROOT="$SOURCE_ROOT"
 
 GATE_OUTPUT=""
 if [[ "$MODE" == "deploy" ]]; then
-  [[ -f "$CANISTER_INSTALL_RECEIPT" && ! -L "$CANISTER_INSTALL_RECEIPT" ]] || {
-    echo "deploy requires the verified production Canister install receipt" >&2
-    exit 1
-  }
   FROZEN_CANISTER_INSTALL_RECEIPT="$RENDERED_INPUTS/production-canister-install-receipt.json"
-  python3 - "$CANISTER_INSTALL_RECEIPT" "$FROZEN_CANISTER_INSTALL_RECEIPT" <<'PY'
-import os, sys
-source, target = sys.argv[1:]
-with open(source, "rb") as input_file:
-    value = input_file.read()
-fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
-try:
-    os.write(fd, value)
-    os.fsync(fd)
-finally:
-    os.close(fd)
-PY
+  production_freeze_receipt "$CANISTER_INSTALL_RECEIPT" \
+    "$FROZEN_CANISTER_INSTALL_RECEIPT" "production Canister install receipt"
   CANISTER_INSTALL_RECEIPT="$FROZEN_CANISTER_INSTALL_RECEIPT"
   run_profile_gate validate-production-canister-receipt \
     "$BUNDLE/profile.json" "$CANISTER_INSTALL_RECEIPT" >/dev/null

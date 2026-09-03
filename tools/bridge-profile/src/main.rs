@@ -1115,6 +1115,18 @@ struct ControllerHandover {
     before_management_status_response_sha256: String,
     pre_send_management_status_response_json_hex: String,
     pre_send_management_status_response_sha256: String,
+    pre_send_bridge_status_response_json_hex: String,
+    pre_send_bridge_status_response_sha256: String,
+    pre_send_lifecycle_response_json_hex: String,
+    pre_send_lifecycle_response_sha256: String,
+    pre_send_runtime_binding_response_json_hex: String,
+    pre_send_runtime_binding_response_sha256: String,
+    pre_send_storage_integrity_response_json_hex: String,
+    pre_send_storage_integrity_response_sha256: String,
+    pre_send_activation_status_response_json_hex: String,
+    pre_send_activation_status_response_sha256: String,
+    pre_send_activation_attestation_response_json_hex: String,
+    pre_send_activation_attestation_response_sha256: String,
     after_management_status_response_json_hex: String,
     after_management_status_response_sha256: String,
     before_bridge_status_response_json_hex: String,
@@ -1145,6 +1157,8 @@ struct ControllerHandover {
     freezing_threshold_seconds: u64,
     idle_cycles_burned_per_day: u128,
     required_freezing_cycles: u128,
+    pre_send_cycles_balance: u128,
+    pre_send_required_freezing_cycles: u128,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -4826,6 +4840,10 @@ fn validate_controller_handover_continuity(
         &handover.before_bridge_status_response_json_hex,
         &handover.before_bridge_status_response_sha256,
     )?;
+    let pre_send_bridge = handover_json_evidence(
+        &handover.pre_send_bridge_status_response_json_hex,
+        &handover.pre_send_bridge_status_response_sha256,
+    )?;
     let after_bridge = handover_json_evidence(
         &handover.after_bridge_status_response_json_hex,
         &handover.after_bridge_status_response_sha256,
@@ -4833,6 +4851,10 @@ fn validate_controller_handover_continuity(
     let before_lifecycle = handover_json_evidence(
         &handover.before_lifecycle_response_json_hex,
         &handover.before_lifecycle_response_sha256,
+    )?;
+    let pre_send_lifecycle = handover_json_evidence(
+        &handover.pre_send_lifecycle_response_json_hex,
+        &handover.pre_send_lifecycle_response_sha256,
     )?;
     let after_lifecycle = handover_json_evidence(
         &handover.after_lifecycle_response_json_hex,
@@ -4842,6 +4864,10 @@ fn validate_controller_handover_continuity(
         &handover.before_runtime_binding_response_json_hex,
         &handover.before_runtime_binding_response_sha256,
     )?;
+    let pre_send_runtime = handover_json_evidence(
+        &handover.pre_send_runtime_binding_response_json_hex,
+        &handover.pre_send_runtime_binding_response_sha256,
+    )?;
     let after_runtime = handover_json_evidence(
         &handover.after_runtime_binding_response_json_hex,
         &handover.after_runtime_binding_response_sha256,
@@ -4849,6 +4875,10 @@ fn validate_controller_handover_continuity(
     let before_integrity = handover_json_evidence(
         &handover.before_storage_integrity_response_json_hex,
         &handover.before_storage_integrity_response_sha256,
+    )?;
+    let pre_send_integrity = handover_json_evidence(
+        &handover.pre_send_storage_integrity_response_json_hex,
+        &handover.pre_send_storage_integrity_response_sha256,
     )?;
     let after_integrity = handover_json_evidence(
         &handover.after_storage_integrity_response_json_hex,
@@ -4858,6 +4888,10 @@ fn validate_controller_handover_continuity(
         &handover.before_activation_status_response_json_hex,
         &handover.before_activation_status_response_sha256,
     )?;
+    let pre_send_activation = handover_json_evidence(
+        &handover.pre_send_activation_status_response_json_hex,
+        &handover.pre_send_activation_status_response_sha256,
+    )?;
     let after_activation = handover_json_evidence(
         &handover.after_activation_status_response_json_hex,
         &handover.after_activation_status_response_sha256,
@@ -4865,6 +4899,10 @@ fn validate_controller_handover_continuity(
     let before_attestation = handover_json_evidence(
         &handover.before_activation_attestation_response_json_hex,
         &handover.before_activation_attestation_response_sha256,
+    )?;
+    let pre_send_attestation = handover_json_evidence(
+        &handover.pre_send_activation_attestation_response_json_hex,
+        &handover.pre_send_activation_attestation_response_sha256,
     )?;
     let after_attestation = handover_json_evidence(
         &handover.after_activation_attestation_response_json_hex,
@@ -4879,7 +4917,7 @@ fn validate_controller_handover_continuity(
     )?;
     let rpc_provider_urls_sha256 = hex(&canonical_sha256(&Vec::<String>::new())?);
     let expected_bridge_runtime_sha256 = decode_hex(&profile.bridge_runtime_bytecode_sha256)?;
-    for runtime in [&before_runtime, &after_runtime] {
+    for runtime in [&before_runtime, &pre_send_runtime, &after_runtime] {
         let (runtime, bridge_runtime_sha256) = handover_runtime_binding(runtime)?;
         validate_live_runtime_binding(
             &runtime,
@@ -4891,28 +4929,44 @@ fn validate_controller_handover_continuity(
             return Err("controller handover runtime code binding differs from the profile".into());
         }
     }
-    if before_runtime != after_runtime
+    if before_runtime != pre_send_runtime
+        || before_runtime != after_runtime
+        || before_lifecycle != pre_send_lifecycle
         || before_lifecycle != after_lifecycle
+        || before_activation != pre_send_activation
         || before_activation != after_activation
+        || before_attestation != pre_send_attestation
         || before_lifecycle != serde_json::json!({"Ok":{"Activated":null}})
         || single_json_key(&before_integrity, "Ok")? != &Value::String("ok".into())
+        || single_json_key(&pre_send_integrity, "Ok")? != &Value::String("ok".into())
         || single_json_key(&after_integrity, "Ok")? != &Value::String("ok".into())
         || single_json_key(&before_bridge, "deposits_paused")? != &Value::Bool(false)
+        || single_json_key(&pre_send_bridge, "deposits_paused")? != &Value::Bool(false)
         || single_json_key(&after_bridge, "deposits_paused")? != &Value::Bool(false)
         || single_json_key(&before_activation, "deposits_paused")? != &Value::Bool(false)
+        || single_json_key(&pre_send_activation, "deposits_paused")? != &Value::Bool(false)
         || single_json_key(&after_activation, "deposits_paused")? != &Value::Bool(false)
         || single_json_key(&before_attestation, "deposits_paused")? != &Value::Bool(false)
         || single_json_key(&before_attestation, "withdrawals_paused")? != &Value::Bool(false)
+        || single_json_key(&pre_send_attestation, "deposits_paused")? != &Value::Bool(false)
+        || single_json_key(&pre_send_attestation, "withdrawals_paused")? != &Value::Bool(false)
         || single_json_key(&after_attestation, "deposits_paused")? != &Value::Bool(false)
         || single_json_key(&after_attestation, "withdrawals_paused")? != &Value::Bool(false)
         || single_json_key(&before_bridge, "sufficient")? != &Value::Bool(true)
+        || single_json_key(&pre_send_bridge, "sufficient")? != &Value::Bool(true)
         || single_json_key(&after_bridge, "sufficient")? != &Value::Bool(true)
+        || json_u128(&before_bridge, "mint_authorization_ttl_seconds")?
+            != json_u128(&pre_send_bridge, "mint_authorization_ttl_seconds")?
         || json_u128(&before_bridge, "mint_authorization_ttl_seconds")?
             != json_u128(&after_bridge, "mint_authorization_ttl_seconds")?
         || json_u128(&before_bridge, "mint_authorization_epoch")?
+            != json_u128(&pre_send_bridge, "mint_authorization_epoch")?
+        || json_u128(&before_bridge, "mint_authorization_epoch")?
             != json_u128(&after_bridge, "mint_authorization_epoch")?
         || json_u128(&after_bridge, "deposits")? < json_u128(&before_bridge, "deposits")?
+        || json_u128(&pre_send_bridge, "deposits")? < json_u128(&before_bridge, "deposits")?
         || json_u128(&after_bridge, "withdrawals")? < json_u128(&before_bridge, "withdrawals")?
+        || json_u128(&pre_send_bridge, "withdrawals")? < json_u128(&before_bridge, "withdrawals")?
         || json_u128(&after_bridge, "retained_audit_events")?
             .checked_add(json_u128(&after_bridge, "pruned_audit_events")?)
             .ok_or("controller handover audit sequence overflow")?
@@ -5002,6 +5056,8 @@ fn validate_controller_handover_completion(
         || handover.required_freezing_cycles != expected_freezing_cycles
         || handover.cycles_balance < profile.parameters.cycles_floor
         || handover.cycles_balance < handover.required_freezing_cycles
+        || handover.pre_send_cycles_balance < profile.parameters.cycles_floor
+        || handover.pre_send_cycles_balance < handover.pre_send_required_freezing_cycles
     {
         return Err("controller handover evidence is not an atomic SNS Root-only transfer".into());
     }
@@ -12764,6 +12820,18 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             before_management_status_response_sha256: hex(&Sha256::digest(&before_management)),
             pre_send_management_status_response_json_hex: hex(&before_management),
             pre_send_management_status_response_sha256: hex(&Sha256::digest(&before_management)),
+            pre_send_bridge_status_response_json_hex: hex(&bridge_status),
+            pre_send_bridge_status_response_sha256: hex(&Sha256::digest(&bridge_status)),
+            pre_send_lifecycle_response_json_hex: hex(&lifecycle),
+            pre_send_lifecycle_response_sha256: hex(&Sha256::digest(&lifecycle)),
+            pre_send_runtime_binding_response_json_hex: hex(&runtime),
+            pre_send_runtime_binding_response_sha256: hex(&Sha256::digest(&runtime)),
+            pre_send_storage_integrity_response_json_hex: hex(&integrity),
+            pre_send_storage_integrity_response_sha256: hex(&Sha256::digest(&integrity)),
+            pre_send_activation_status_response_json_hex: hex(&activation_status),
+            pre_send_activation_status_response_sha256: hex(&Sha256::digest(&activation_status)),
+            pre_send_activation_attestation_response_json_hex: hex(&attestation),
+            pre_send_activation_attestation_response_sha256: hex(&Sha256::digest(&attestation)),
             after_management_status_response_json_hex: hex(&after_management),
             after_management_status_response_sha256: hex(&Sha256::digest(&after_management)),
             before_bridge_status_response_json_hex: hex(&bridge_status),
@@ -12794,6 +12862,8 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             freezing_threshold_seconds: 86_400,
             idle_cycles_burned_per_day: 1_000,
             required_freezing_cycles: 1_000,
+            pre_send_cycles_balance: 10_000_000,
+            pre_send_required_freezing_cycles: 1_000,
         };
         assert!(validate_controller_handover_continuity(&handover, &profile, &installer).is_ok());
         assert!(validate_controller_handover_completion(

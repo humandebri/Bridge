@@ -120,6 +120,9 @@ expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TES
 [[ ! -e "$TEST_TMP_ROOT/deployed" ]]
 
 write_gate 0
+ln -s "$TEST_TMP_ROOT/canister-install-receipt.json" "$TEST_TMP_ROOT/canister-install-receipt.link.json"
+expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --canister-install-receipt "$TEST_TMP_ROOT/canister-install-receipt.link.json" --receipt "$TEST_TMP_ROOT/symlink-receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-deploy-driver.sh"
+[[ ! -e "$TEST_TMP_ROOT/symlink-receipt.json" ]]
 expect_rejected deploy --bundle "$TEST_TMP_ROOT/bundle-a" --release-inputs "$TEST_TMP_ROOT/release-inputs" --canister-install-receipt "$TEST_TMP_ROOT/canister-install-receipt.json" --receipt "$TEST_TMP_ROOT/receipt.json" -- touch extra-argument
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --release-inputs "$TEST_TMP_ROOT/release-inputs" --receipt "$TEST_TMP_ROOT/receipt.json" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
 [[ ! -e "$TEST_TMP_ROOT/activated" ]]
@@ -174,7 +177,8 @@ GATE_RECEIPT_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/gate-a-receipt.jso
 printf '{"bridge_canister_wasm_sha256":"%s","bridge_runtime_bytecode_sha256":"%s"}\n' \
   "$WASM_SHA256" "$RUNTIME_SHA256" >"$TEST_TMP_ROOT/bundle-b/gate-a-profile.json"
 GATE_A_PROFILE_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/gate-a-profile.json" | awk '{print $1}')"
-printf '{}\n' >"$TEST_TMP_ROOT/bundle-b/production-canister-upgrade-receipt.json"
+printf '{"kind":"production-controller-bootstrap-upgrade","source_revision":"%s","source_tree_sha256":"%s"}\n' \
+  "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" >"$TEST_TMP_ROOT/bundle-b/production-canister-upgrade-receipt.json"
 UPGRADE_RECEIPT_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/production-canister-upgrade-receipt.json" | awk '{print $1}')"
 printf '{"from_source_revision":"%s","from_source_tree_sha256":"%s","upgrade_source_revision":"%s","upgrade_source_tree_sha256":"%s","to_source_revision":"%s","to_source_tree_sha256":"%s"}\n' \
   "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" \

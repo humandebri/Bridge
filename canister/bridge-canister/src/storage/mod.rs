@@ -6161,7 +6161,7 @@ impl StableStore {
         timestamp_ns: u64,
     ) -> Result<bridge_core::BootstrapPausePrincipalMigrationDecision, StorageError> {
         use bridge_core::BootstrapPausePrincipalMigrationDecision::{
-            AlreadyApplied, Apply, PostBootstrapNoop, Reject,
+            AlreadyApplied, Apply, FreshInstallNoop, PostBootstrapNoop, Reject,
         };
 
         let previous_admission = self.deposit_admission.get()?;
@@ -6185,7 +6185,7 @@ impl StableStore {
             roles_distinct,
         );
         match decision {
-            AlreadyApplied | PostBootstrapNoop => return Ok(decision),
+            AlreadyApplied | FreshInstallNoop | PostBootstrapNoop => return Ok(decision),
             Reject => return Err(StorageError::Core(CoreError::ConflictingReplay)),
             Apply => {}
         }
@@ -17056,7 +17056,9 @@ mod tests {
     #[test]
     #[serial]
     fn bootstrap_pause_principal_migration_is_atomic_idempotent_and_reopens() {
-        use bridge_core::BootstrapPausePrincipalMigrationDecision::{AlreadyApplied, Apply};
+        use bridge_core::BootstrapPausePrincipalMigrationDecision::{
+            AlreadyApplied, Apply, FreshInstallNoop,
+        };
 
         let memory = VectorMemory::default();
         let mut initial = config();
@@ -17125,6 +17127,54 @@ mod tests {
             Some(next)
         );
         assert_eq!(reopened.accounting().expect("accounting"), accounting);
+
+        let fresh_memory = VectorMemory::default();
+        let mut fresh = config();
+        fresh.pause_principal = next;
+        let mut fresh_store = StableStore::init_configured(fresh_memory.clone(), &fresh)
+            .expect("initialize current production template");
+        let fresh_counts = fresh_store.status_counts().expect("fresh counts");
+        let fresh_revision = storage_revision(&fresh_store);
+        assert_eq!(
+            fresh_store
+                .migrate_bootstrap_pause_principal(old, next, 101)
+                .expect("current template is already configured"),
+            FreshInstallNoop
+        );
+        assert_eq!(storage_revision(&fresh_store), fresh_revision);
+        assert_eq!(
+            fresh_store.status_counts().expect("fresh counts unchanged"),
+            fresh_counts
+        );
+        assert_eq!(
+            fresh_store
+                .bootstrap_activation_controller()
+                .expect("fresh marker remains unbound"),
+            None
+        );
+        fresh_store
+            .seal_operational_config(
+                &fresh,
+                0,
+                next,
+                activation_attestation(),
+                activation_finalized_observation(),
+            )
+            .expect("fresh template seals under its controller");
+        assert_eq!(
+            fresh_store
+                .bootstrap_activation_controller()
+                .expect("sealed marker"),
+            Some(next)
+        );
+        drop(fresh_store);
+        let fresh_reopened = StableStore::reopen(fresh_memory).expect("reopen fresh template");
+        assert_eq!(
+            fresh_reopened
+                .bootstrap_activation_controller()
+                .expect("reopened sealed marker"),
+            Some(next)
+        );
     }
 
     #[test]
