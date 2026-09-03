@@ -1,6 +1,6 @@
 #![recursion_limit = "256"]
 
-use candid::{CandidType, Decode, Encode, Principal, Reserved};
+use candid::{CandidType, Decode, Encode, Nat, Principal, Reserved};
 use ic_agent::Agent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -743,6 +743,87 @@ struct MonitorIcPause {
     audit_raw_hex: String,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct KeeperDrill {
+    schema_version: u8,
+    source_revision: String,
+    source_tree_sha256: String,
+    bridge_canister_id: String,
+    withdrawal_id: String,
+    burn_transaction_hash: String,
+    burned_at_unix: u64,
+    paid_at_unix: u64,
+    maximum_unprocessed_seconds: u64,
+    keeper_ids: Vec<String>,
+    keeper_failure_domains: Vec<String>,
+    monitoring_receipt_sha256: String,
+    manual_fallback_drilled: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MonitoringReceipt {
+    schema_version: u8,
+    source_revision: String,
+    source_tree_sha256: String,
+    bridge_canister_id: String,
+    withdrawal_id: String,
+    burn_transaction_hash: String,
+    burn: MonitoringBurnReceipt,
+    paid: MonitoringPaidObservation,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MonitoringBurnReceipt {
+    base_chain_id: u64,
+    bridge_contract: String,
+    block_number: u64,
+    block_hash: String,
+    receipt_status: u8,
+    withdrawal_committed_topic: String,
+    withdrawal_id_topic: String,
+    canonical_finalized: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MonitoringPaidObservation {
+    observed_at_unix: u64,
+    state: String,
+    response_hex: String,
+    response_sha256: String,
+    authenticated_query: bool,
+}
+
+#[allow(dead_code)]
+#[derive(CandidType, Deserialize, Serialize, Debug, Eq, PartialEq)]
+enum WithdrawalPhaseView {
+    Paid,
+    ReleasePending,
+    ReconciliationHold,
+    Observed,
+}
+
+#[allow(dead_code)]
+#[derive(CandidType, Deserialize, Serialize, Debug, Eq, PartialEq)]
+struct WithdrawalView {
+    charged_service_fee: Nat,
+    withdrawal_id: Vec<u8>,
+    max_service_fee: Nat,
+    release_ledger_block_index: Option<Nat>,
+    last_settlement_stop_reason: Option<String>,
+    amount_out: Nat,
+    state: WithdrawalPhaseView,
+    ledger_fee: Nat,
+    amount: Nat,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderIndependenceReceipt {
@@ -753,6 +834,54 @@ struct ProviderIndependenceReceipt {
     dns_monitoring_enabled: bool,
     endpoint_monitoring_enabled: bool,
     drift_action: String,
+    governance_query_response_hex: String,
+    governance_query_response_sha256: String,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ControllerHandover {
+    schema_version: u8,
+    stage: String,
+    observed_at_unix: u64,
+    bridge_canister_id: String,
+    sns_root_canister_id: String,
+    executing_principal: String,
+    command_argv: Vec<String>,
+    request_id: String,
+    response_exit_code: i32,
+    response_stdout_hex: String,
+    response_stderr_hex: String,
+    response_sha256: String,
+    final_controllers: Vec<String>,
+    cycles_balance: u128,
+    freezing_threshold_seconds: u64,
+    idle_cycles_burned_per_day: u128,
+    required_freezing_cycles: u128,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SnsUpgrade {
+    schema_version: u8,
+    observed_at_unix: u64,
+    executed_at_unix: u64,
+    proposal_id: u64,
+    governance_canister_id: String,
+    root_canister_id: String,
+    bridge_canister_id: String,
+    wasm_sha256: String,
+    status: String,
+    before_module_sha256: String,
+    after_module_sha256: String,
+    before_public_state_sha256: String,
+    after_public_state_sha256: String,
+    proposal_action: String,
+    install_mode: String,
+    proposal_target_canister_id: String,
+    proposal_wasm_sha256: String,
     governance_query_response_hex: String,
     governance_query_response_sha256: String,
 }
@@ -1720,6 +1849,15 @@ fn evm_selector(signature: &str) -> String {
     format!("0x{}", hex(&hash[..4]))
 }
 
+#[allow(dead_code)]
+fn evm_topic(signature: &str) -> String {
+    let mut hash = [0u8; 32];
+    let mut keccak = Keccak::v256();
+    keccak.update(signature.as_bytes());
+    keccak.finalize(&mut hash);
+    format!("0x{}", hex(&hash))
+}
+
 fn validate_monitor_drill(
     drill: &MonitorDrill,
     manifest: &ReleaseManifest,
@@ -1824,6 +1962,119 @@ fn validate_monitor_drill(
             .eq_ignore_ascii_case(&profile.monitoring.routing_sha256)
     {
         return Err("monitor drill does not prove the authenticated pause/cancel path".into());
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn validate_keeper_drill(
+    root: &Path,
+    manifest: &ReleaseManifest,
+    profile: &Profile,
+    now: u64,
+) -> Result<(), String> {
+    let drill: KeeperDrill = read_json(&root.join("keeper-drill.json"))?;
+    let monitoring_path = root.join("monitoring-receipt.json");
+    let monitoring_bytes = fs::read(&monitoring_path)
+        .map_err(|error| format!("{}: {error}", monitoring_path.display()))?;
+    let monitoring: MonitoringReceipt = serde_json::from_slice(&monitoring_bytes)
+        .map_err(|error| format!("{}: {error}", monitoring_path.display()))?;
+    let monitoring_sha256 = hex(&Sha256::digest(&monitoring_bytes));
+    let withdrawal_id = decode_hex(&monitoring.withdrawal_id)?;
+    let paid_response = decode_hex(&monitoring.paid.response_hex)?;
+    let withdrawal: Option<WithdrawalView> = Decode!(&paid_response, Option<WithdrawalView>)
+        .map_err(|error| format!("invalid monitoring withdrawal response: {error}"))?;
+    let paid_withdrawal = withdrawal
+        .as_ref()
+        .filter(|view| view.state == WithdrawalPhaseView::Paid)
+        .ok_or("monitoring receipt does not contain a Paid withdrawal")?;
+    let withdrawal_committed_topic = evm_topic(
+        "WithdrawalCommitted(uint256,address,uint256,uint256,uint256,uint256,bytes,bytes32)",
+    );
+    let elapsed = drill
+        .paid_at_unix
+        .checked_sub(drill.burned_at_unix)
+        .ok_or("keeper drill Paid time precedes burn")?;
+    validate_evidence_time(drill.burned_at_unix, manifest.created_at_unix, now)?;
+    validate_evidence_time(drill.paid_at_unix, manifest.created_at_unix, now)?;
+    let keeper_ids = drill
+        .keeper_ids
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let failure_domains = drill
+        .keeper_failure_domains
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    if drill.schema_version != 1
+        || drill.source_revision != manifest.source_revision
+        || !drill
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
+        || drill.bridge_canister_id != profile.bridge_canister_id
+        || !valid_hash32(&drill.withdrawal_id)
+        || !valid_hash32(&drill.burn_transaction_hash)
+        || drill.maximum_unprocessed_seconds == 0
+        || elapsed > drill.maximum_unprocessed_seconds
+        || drill.keeper_ids.len() != 2
+        || keeper_ids.len() != 2
+        || keeper_ids
+            .iter()
+            .any(|value| value.is_empty() || value.len() > 128)
+        || drill.keeper_failure_domains.len() != 2
+        || failure_domains.len() != 2
+        || failure_domains
+            .iter()
+            .any(|value| value.is_empty() || value.len() > 128)
+        || !valid_sha256(&drill.monitoring_receipt_sha256)
+        || !drill
+            .monitoring_receipt_sha256
+            .eq_ignore_ascii_case(&monitoring_sha256)
+        || !drill.manual_fallback_drilled
+        || monitoring.schema_version != 1
+        || monitoring.source_revision != manifest.source_revision
+        || !monitoring
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
+        || monitoring.bridge_canister_id != profile.bridge_canister_id
+        || !monitoring
+            .withdrawal_id
+            .eq_ignore_ascii_case(&drill.withdrawal_id)
+        || !monitoring
+            .burn_transaction_hash
+            .eq_ignore_ascii_case(&drill.burn_transaction_hash)
+        || monitoring.burn.base_chain_id != profile.chain_id
+        || !monitoring
+            .burn
+            .bridge_contract
+            .eq_ignore_ascii_case(&profile.bridge_contract)
+        || monitoring.burn.block_number == 0
+        || !valid_hash32(&monitoring.burn.block_hash)
+        || monitoring.burn.receipt_status != 1
+        || !monitoring
+            .burn
+            .withdrawal_committed_topic
+            .eq_ignore_ascii_case(&withdrawal_committed_topic)
+        || !monitoring
+            .burn
+            .withdrawal_id_topic
+            .eq_ignore_ascii_case(&monitoring.withdrawal_id)
+        || !monitoring.burn.canonical_finalized
+        || monitoring.paid.observed_at_unix != drill.paid_at_unix
+        || monitoring.paid.state != "Paid"
+        || !monitoring.paid.authenticated_query
+        || !valid_nonempty_hex(&monitoring.paid.response_hex)
+        || !hex_sha256_matches(
+            &monitoring.paid.response_hex,
+            &monitoring.paid.response_sha256,
+        )
+        || paid_withdrawal.withdrawal_id != withdrawal_id
+    {
+        return Err(
+            "Gate B keeper drill does not prove two independent settlement paths through Paid"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -3483,6 +3734,129 @@ fn validate_activation_attestation_time(
     Ok(())
 }
 
+#[allow(dead_code)]
+fn validate_plan006_evidence(
+    root: &Path,
+    manifest: &ReleaseManifest,
+    profile: &Profile,
+    now: u64,
+) -> Result<(), String> {
+    let handover: ControllerHandover = read_json(&root.join("controller-handover.json"))?;
+    validate_evidence_time(handover.observed_at_unix, manifest.created_at_unix, now)?;
+    let required_prefix = ["icp", "canister", "settings", "update", "bridge-canister"];
+    let add_controller_positions = handover
+        .command_argv
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| (value == "--add-controller").then_some(index))
+        .collect::<Vec<_>>();
+    let remove_all_count = handover
+        .command_argv
+        .iter()
+        .filter(|value| value.as_str() == "--remove-all-controllers")
+        .count();
+    let environment_is_production = handover
+        .command_argv
+        .windows(2)
+        .any(|pair| pair == ["-e", "production"] || pair == ["--environment", "production"]);
+    let identity_is_explicit = handover
+        .command_argv
+        .windows(2)
+        .any(|pair| (pair[0] == "--identity") && !pair[1].is_empty() && !pair[1].starts_with('-'));
+    let expected_freezing_cycles = handover
+        .idle_cycles_burned_per_day
+        .checked_mul(u128::from(handover.freezing_threshold_seconds))
+        .and_then(|value| value.checked_add(86_399))
+        .map(|value| value / 86_400)
+        .ok_or("freezing cycles requirement overflow")?;
+    let response_stdout = decode_hex(&handover.response_stdout_hex)?;
+    let response_stderr = decode_hex(&handover.response_stderr_hex)?;
+    let mut response_transcript = response_stdout;
+    response_transcript.extend_from_slice(&response_stderr);
+    let response_digest = hex(&Sha256::digest(&response_transcript));
+    let response_text = String::from_utf8_lossy(&response_transcript).to_ascii_lowercase();
+    let request_id_text = handover
+        .request_id
+        .trim_start_matches("0x")
+        .to_ascii_lowercase();
+    if handover.schema_version != 2
+        || handover.stage != "complete"
+        || handover.bridge_canister_id != profile.bridge_canister_id
+        || handover.sns_root_canister_id != KINIC_ROOT
+        || !principal(&handover.executing_principal)
+        || handover.command_argv.len() < required_prefix.len()
+        || handover.command_argv[..required_prefix.len()] != required_prefix
+        || remove_all_count != 1
+        || add_controller_positions.len() != 1
+        || handover
+            .command_argv
+            .get(add_controller_positions[0] + 1)
+            .is_none_or(|value| value != KINIC_ROOT)
+        || !environment_is_production
+        || !identity_is_explicit
+        || !handover.command_argv.iter().any(|value| value == "--force")
+        || handover
+            .command_argv
+            .iter()
+            .any(|value| value == "--network" || value == "-n")
+        || !(valid_sha256(&handover.request_id) || valid_hash32(&handover.request_id))
+        || handover.response_exit_code != 0
+        || !response_digest.eq_ignore_ascii_case(&handover.response_sha256)
+        || !response_text.contains(&request_id_text)
+        || !valid_sha256(&handover.response_sha256)
+        || handover.final_controllers != [KINIC_ROOT.to_string()]
+        || handover.freezing_threshold_seconds == 0
+        || handover.idle_cycles_burned_per_day == 0
+        || handover.required_freezing_cycles != expected_freezing_cycles
+        || handover.cycles_balance < profile.parameters.cycles_floor
+        || handover.cycles_balance < handover.required_freezing_cycles
+    {
+        return Err("controller handover evidence is not an atomic SNS Root-only transfer".into());
+    }
+
+    let upgrade: SnsUpgrade = read_json(&root.join("sns-upgrade.json"))?;
+    validate_evidence_time(upgrade.observed_at_unix, manifest.created_at_unix, now)?;
+    validate_evidence_time(upgrade.executed_at_unix, manifest.created_at_unix, now)?;
+    if upgrade.schema_version != 3
+        || upgrade.proposal_id == 0
+        || upgrade.governance_canister_id != KINIC_GOVERNANCE
+        || upgrade.root_canister_id != KINIC_ROOT
+        || upgrade.bridge_canister_id != profile.bridge_canister_id
+        || upgrade.status != "Executed"
+        || upgrade.executed_at_unix < handover.observed_at_unix
+        || upgrade.executed_at_unix > upgrade.observed_at_unix
+        || !upgrade
+            .wasm_sha256
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || !upgrade
+            .before_module_sha256
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || !upgrade
+            .after_module_sha256
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || !valid_sha256(&upgrade.before_public_state_sha256)
+        || !upgrade
+            .before_public_state_sha256
+            .eq_ignore_ascii_case(&upgrade.after_public_state_sha256)
+        || upgrade.proposal_action != "UpgradeSnsControlledCanister"
+        || upgrade.install_mode != "upgrade"
+        || upgrade.proposal_target_canister_id != profile.bridge_canister_id
+        || !upgrade
+            .proposal_wasm_sha256
+            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+        || !valid_nonempty_hex(&upgrade.governance_query_response_hex)
+        || !valid_sha256(&upgrade.governance_query_response_sha256)
+        || !hex_sha256_matches(
+            &upgrade.governance_query_response_hex,
+            &upgrade.governance_query_response_sha256,
+        )
+    {
+        return Err("SNS upgrade evidence is incomplete or not bound to the release Wasm".into());
+    }
+
+    Ok(())
+}
+
 fn validate_ui_assets_receipt(root: &Path, manifest: &ReleaseManifest) -> Result<(), String> {
     let receipt: UiAssetsReceipt = read_json(&root.join("ui-assets.json"))?;
     if receipt.schema_version != 1
@@ -4396,6 +4770,38 @@ fn verify_monitor_ic_certificate(bundle: &ValidatedBundle) -> Result<(), String>
     Ok(())
 }
 
+#[allow(dead_code)]
+fn verify_keeper_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
+    let monitoring: MonitoringReceipt = read_json(&bundle.root.join("monitoring-receipt.json"))?;
+    let withdrawal_id = decode_hex(&monitoring.withdrawal_id)?;
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let arg = Encode!(&withdrawal_id).map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let response = async_runtime()?
+        .block_on(async {
+            agent
+                .query(&bridge, "get_withdrawal")
+                .with_arg(arg)
+                .call()
+                .await
+        })
+        .map_err(|error| format!("authenticated get_withdrawal query failed: {error}"))?;
+    let expected = decode_hex(&monitoring.paid.response_hex)?;
+    if response != expected
+        || !hex(&Sha256::digest(&response)).eq_ignore_ascii_case(&monitoring.paid.response_sha256)
+    {
+        return Err("live get_withdrawal response differs from monitoring evidence".into());
+    }
+    let withdrawal = Decode!(&response, Option<WithdrawalView>)
+        .map_err(|error| format!("invalid live get_withdrawal response: {error}"))?
+        .ok_or("live monitoring withdrawal is missing")?;
+    if withdrawal.withdrawal_id != withdrawal_id || withdrawal.state != WithdrawalPhaseView::Paid {
+        return Err("live monitoring withdrawal is not the bound Paid record".into());
+    }
+    Ok(())
+}
+
 fn validate_activation_attestation(
     profile: &Profile,
     attestation: &ActivationAttestationView,
@@ -4469,6 +4875,78 @@ fn verify_activation_attestation_authenticity(bundle: &ValidatedBundle) -> Resul
         1,
         now_unix()?,
     )
+}
+
+#[allow(dead_code)]
+fn verify_sns_upgrade_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
+    let upgrade: SnsUpgrade = read_json(&bundle.root.join("sns-upgrade.json"))?;
+    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|e| e.to_string())?;
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let arg = Encode!(&GetProposalRequest {
+        proposal_id: Some(ProposalId {
+            id: upgrade.proposal_id,
+        }),
+    })
+    .map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let (response, controllers, module_hash) = async_runtime()?.block_on(async {
+        let response = agent
+            .query(&governance, "get_proposal")
+            .with_arg(arg)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let controllers = agent
+            .read_state_canister_controllers(bridge)
+            .await
+            .map_err(|error| error.to_string())?;
+        let module_hash = agent
+            .read_state_canister_module_hash(bridge)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((response, controllers, module_hash))
+    })?;
+    if response != decode_hex(&upgrade.governance_query_response_hex)? {
+        return Err("authenticated SNS proposal response differs from the evidence".into());
+    }
+    let decoded = Decode!(&response, GetProposalResponse).map_err(|error| error.to_string())?;
+    let proposal = match decoded.result {
+        Some(GetProposalResult::Proposal(proposal)) => proposal,
+        Some(GetProposalResult::Error(error)) => {
+            return Err(format!(
+                "SNS get_proposal returned {}: {}",
+                error.error_type, error.error_message
+            ));
+        }
+        None => return Err("SNS get_proposal returned no result".into()),
+    };
+    let proposal_id = proposal.id.as_ref().map(|id| id.id);
+    let action = proposal
+        .proposal
+        .and_then(|proposal| proposal.action)
+        .ok_or("SNS proposal has no action")?;
+    let SnsProposalAction::UpgradeSnsControlledCanister(action) = action else {
+        return Err("SNS proposal is not UpgradeSnsControlledCanister".into());
+    };
+    let wasm_hash = hex(&Sha256::digest(&action.new_canister_wasm));
+    if proposal_id != Some(upgrade.proposal_id)
+        || proposal.executed_timestamp_seconds == 0
+        || proposal.executed_timestamp_seconds != upgrade.executed_at_unix
+        || proposal.failed_timestamp_seconds != 0
+        || proposal.failure_reason.is_some()
+        || proposal.decided_timestamp_seconds == 0
+        || action.canister_id != Some(bridge)
+        || !wasm_hash.eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+        || controllers != [Principal::from_text(KINIC_ROOT).map_err(|e| e.to_string())?]
+        || !hex(&module_hash).eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+    {
+        return Err(
+            "authenticated SNS upgrade or live controller/module state does not match the release"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 fn verify_provider_independence_authenticity(bundle: &ValidatedBundle) -> Result<(), String> {
@@ -6465,6 +6943,122 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
                 audit_raw_hex: hex(&[0x13; 32]),
             },
         };
+        let handover = ControllerHandover {
+            schema_version: 2,
+            stage: "complete".into(),
+            observed_at_unix: now - 95,
+            bridge_canister_id: profile.bridge_canister_id.clone(),
+            sns_root_canister_id: profile.root_canister_id.clone(),
+            executing_principal: test_principal(31),
+            command_argv: vec![
+                "icp",
+                "canister",
+                "settings",
+                "update",
+                "bridge-canister",
+                "-e",
+                "production",
+                "--remove-all-controllers",
+                "--add-controller",
+                KINIC_ROOT,
+                "--force",
+                "--identity",
+                "production",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            request_id: "3".repeat(64),
+            response_exit_code: 0,
+            response_stdout_hex: String::new(),
+            response_stderr_hex: hex(format!("request_id={}\n", "3".repeat(64)).as_bytes()),
+            response_sha256: hex(&Sha256::digest(
+                format!("request_id={}\n", "3".repeat(64)).as_bytes(),
+            )),
+            final_controllers: vec![profile.root_canister_id.clone()],
+            cycles_balance: 10_000_000,
+            freezing_threshold_seconds: 86_400,
+            idle_cycles_burned_per_day: 1_000,
+            required_freezing_cycles: 1_000,
+        };
+        let upgrade = SnsUpgrade {
+            schema_version: 3,
+            observed_at_unix: now - 90,
+            executed_at_unix: now - 91,
+            proposal_id: 1,
+            governance_canister_id: KINIC_GOVERNANCE.into(),
+            root_canister_id: profile.root_canister_id.clone(),
+            bridge_canister_id: profile.bridge_canister_id.clone(),
+            wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            status: "Executed".into(),
+            before_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            after_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            before_public_state_sha256: "5".repeat(64),
+            after_public_state_sha256: "5".repeat(64),
+            proposal_action: "UpgradeSnsControlledCanister".into(),
+            install_mode: "upgrade".into(),
+            proposal_target_canister_id: profile.bridge_canister_id.clone(),
+            proposal_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
+            governance_query_response_hex: hex(b"governance raw"),
+            governance_query_response_sha256: hex(&Sha256::digest(b"governance raw")),
+        };
+        let withdrawal_id = format!("0x{}", "7".repeat(64));
+        let burn_transaction_hash = format!("0x{}", "8".repeat(64));
+        let paid_response = Encode!(&Some(WithdrawalView {
+            charged_service_fee: Nat::from(10u64),
+            withdrawal_id: vec![0x77; 32],
+            max_service_fee: Nat::from(10u64),
+            release_ledger_block_index: Some(Nat::from(7u64)),
+            last_settlement_stop_reason: None,
+            amount_out: Nat::from(90u64),
+            state: WithdrawalPhaseView::Paid,
+            ledger_fee: Nat::from(1u64),
+            amount: Nat::from(100u64),
+        }))
+        .unwrap();
+        let monitoring_receipt = MonitoringReceipt {
+            schema_version: 1,
+            source_revision: "a".repeat(40),
+            source_tree_sha256: "2".repeat(64),
+            bridge_canister_id: profile.bridge_canister_id.clone(),
+            withdrawal_id: withdrawal_id.clone(),
+            burn_transaction_hash: burn_transaction_hash.clone(),
+            burn: MonitoringBurnReceipt {
+                base_chain_id: profile.chain_id,
+                bridge_contract: profile.bridge_contract.clone(),
+                block_number: 3,
+                block_hash: format!("0x{}", "16".repeat(32)),
+                receipt_status: 1,
+                withdrawal_committed_topic: evm_topic(
+                    "WithdrawalCommitted(uint256,address,uint256,uint256,uint256,uint256,bytes,bytes32)",
+                ),
+                withdrawal_id_topic: withdrawal_id.clone(),
+                canonical_finalized: true,
+            },
+            paid: MonitoringPaidObservation {
+                observed_at_unix: now - 40,
+                state: "Paid".into(),
+                response_hex: hex(&paid_response),
+                response_sha256: hex(&Sha256::digest(&paid_response)),
+                authenticated_query: true,
+            },
+        };
+        let monitoring_receipt_bytes = serde_json::to_vec(&monitoring_receipt).unwrap();
+        let keeper_drill = KeeperDrill {
+            schema_version: 1,
+            source_revision: "a".repeat(40),
+            source_tree_sha256: "2".repeat(64),
+            bridge_canister_id: profile.bridge_canister_id.clone(),
+            withdrawal_id,
+            burn_transaction_hash,
+            burned_at_unix: now - 80,
+            paid_at_unix: now - 40,
+            maximum_unprocessed_seconds: 300,
+            keeper_ids: vec!["keeper-primary".into(), "keeper-secondary".into()],
+            keeper_failure_domains: vec!["operator-a".into(), "operator-b".into()],
+            monitoring_receipt_sha256: hex(&Sha256::digest(&monitoring_receipt_bytes)),
+            manual_fallback_drilled: true,
+        };
         let provider_independence = ProviderIndependenceReceipt {
             schema_version: 1,
             observed_at_unix: now - 30,
@@ -6579,7 +7173,17 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         let mut docs = vec![
             ("profile.json", serde_json::to_vec(&profile).unwrap()),
             ("rpc-e2e.json", fs::read(root.join("rpc-e2e.json")).unwrap()),
+            (
+                "controller-handover.json",
+                serde_json::to_vec(&handover).unwrap(),
+            ),
+            ("sns-upgrade.json", serde_json::to_vec(&upgrade).unwrap()),
             ("monitor-drill.json", serde_json::to_vec(&drill).unwrap()),
+            (
+                "keeper-drill.json",
+                serde_json::to_vec(&keeper_drill).unwrap(),
+            ),
+            ("monitoring-receipt.json", monitoring_receipt_bytes),
             (
                 "fee-cycles-measurements.json",
                 serde_json::to_vec(&measurements).unwrap(),
@@ -6921,6 +7525,52 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         .is_err());
         assert!(validate_gate_b_management_snapshot(&bundle, &[installer], &[0; 32]).is_err());
 
+        let valid_monitoring_bytes = fs::read(root.join("monitoring-receipt.json")).unwrap();
+        let valid_keeper_bytes = fs::read(root.join("keeper-drill.json")).unwrap();
+        let mut mismatched_withdrawal: Value =
+            serde_json::from_slice(&valid_monitoring_bytes).unwrap();
+        mismatched_withdrawal["withdrawal_id"] = Value::String(format!("0x{}", "9".repeat(64)));
+        fs::write(
+            root.join("monitoring-receipt.json"),
+            serde_json::to_vec(&mismatched_withdrawal).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_keeper_drill(&root, &bundle.manifest, &bundle.profile, now).is_err());
+
+        let mut noncanonical_burn: Value = serde_json::from_slice(&valid_monitoring_bytes).unwrap();
+        noncanonical_burn["burn"]["canonical_finalized"] = Value::Bool(false);
+        fs::write(
+            root.join("monitoring-receipt.json"),
+            serde_json::to_vec(&noncanonical_burn).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_keeper_drill(&root, &bundle.manifest, &bundle.profile, now).is_err());
+
+        let mut unpaid_observation: Value =
+            serde_json::from_slice(&valid_monitoring_bytes).unwrap();
+        unpaid_observation["paid"]["state"] = Value::String("ReleasePending".into());
+        fs::write(
+            root.join("monitoring-receipt.json"),
+            serde_json::to_vec(&unpaid_observation).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_keeper_drill(&root, &bundle.manifest, &bundle.profile, now).is_err());
+        fs::write(
+            root.join("monitoring-receipt.json"),
+            &valid_monitoring_bytes,
+        )
+        .unwrap();
+
+        let mut arbitrary_digest: Value = serde_json::from_slice(&valid_keeper_bytes).unwrap();
+        arbitrary_digest["monitoring_receipt_sha256"] = Value::String("9".repeat(64));
+        fs::write(
+            root.join("keeper-drill.json"),
+            serde_json::to_vec(&arbitrary_digest).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_keeper_drill(&root, &bundle.manifest, &bundle.profile, now).is_err());
+        fs::write(root.join("keeper-drill.json"), &valid_keeper_bytes).unwrap();
+
         let payload_sha256 = hex(&Sha256::digest([0x44, 0x49, 0x44, 0x4c, 0x00, 0x00]));
         let mut schedule_receipt = ActivationReceipt {
             schema_version: 4,
@@ -6960,6 +7610,91 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         schedule_receipt.activation_status_response_sha256 = "4".repeat(64);
         assert!(validate_schedule_receipt_binding(&schedule_receipt, &bundle).is_err());
 
+        let valid_handover_bytes = fs::read(root.join("controller-handover.json")).unwrap();
+        let mut tampered_response: Value = serde_json::from_slice(&valid_handover_bytes).unwrap();
+        tampered_response["response_sha256"] = Value::String("0".repeat(64));
+        fs::write(
+            root.join("controller-handover.json"),
+            serde_json::to_vec(&tampered_response).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
+                .is_err()
+        );
+
+        let mut mismatched_request: Value = serde_json::from_slice(&valid_handover_bytes).unwrap();
+        mismatched_request["request_id"] = Value::String("4".repeat(64));
+        fs::write(
+            root.join("controller-handover.json"),
+            serde_json::to_vec(&mismatched_request).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
+                .is_err()
+        );
+
+        let mut extra_controller: Value = serde_json::from_slice(&valid_handover_bytes).unwrap();
+        extra_controller["final_controllers"] =
+            serde_json::json!([profile.root_canister_id.clone(), test_principal(32)]);
+        fs::write(
+            root.join("controller-handover.json"),
+            serde_json::to_vec(&extra_controller).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
+                .is_err()
+        );
+        fs::write(root.join("controller-handover.json"), &valid_handover_bytes).unwrap();
+
+        let valid_upgrade_bytes = fs::read(root.join("sns-upgrade.json")).unwrap();
+        let mut pending_upgrade: Value = serde_json::from_slice(&valid_upgrade_bytes).unwrap();
+        pending_upgrade["status"] = Value::String("Pending".into());
+        fs::write(
+            root.join("sns-upgrade.json"),
+            serde_json::to_vec(&pending_upgrade).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
+                .is_err()
+        );
+        let mut reinstall_upgrade: Value = serde_json::from_slice(&valid_upgrade_bytes).unwrap();
+        reinstall_upgrade["install_mode"] = Value::String("reinstall".into());
+        fs::write(
+            root.join("sns-upgrade.json"),
+            serde_json::to_vec(&reinstall_upgrade).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
+                .is_err()
+        );
+        let mut forged_upgrade: Value = serde_json::from_slice(&valid_upgrade_bytes).unwrap();
+        forged_upgrade["governance_query_response_hex"] = Value::String(hex(b"forged"));
+        fs::write(
+            root.join("sns-upgrade.json"),
+            serde_json::to_vec(&forged_upgrade).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
+                .is_err()
+        );
+        fs::write(root.join("sns-upgrade.json"), &valid_upgrade_bytes).unwrap();
+
+        fs::remove_file(root.join("controller-handover.json")).unwrap();
+        assert!(
+            validate_plan006_evidence(&bundle.root, &bundle.manifest, &bundle.profile, now)
+                .is_err()
+        );
+        fs::write(
+            root.join("controller-handover.json"),
+            serde_json::to_vec(&handover).unwrap(),
+        )
+        .unwrap();
         let valid_profile_bytes = fs::read(root.join("profile.json")).unwrap();
         let valid_receipt_bytes = fs::read(root.join("gate-a-receipt.json")).unwrap();
         let valid_manifest_bytes = fs::read(root.join("release-manifest.json")).unwrap();
