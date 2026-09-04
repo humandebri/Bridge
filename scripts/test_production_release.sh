@@ -317,4 +317,12 @@ if PATH="$TEST_TMP_ROOT/failing-git:$PATH" REAL_GIT="$REAL_GIT" bash -c \
   echo "production source validation accepted a failed submodule inspection" >&2
   exit 1
 fi
+git -C "$TEST_TMP_ROOT/source" worktree add --detach -q "$TEST_TMP_ROOT/source-worktree" HEAD
+bash -c 'source "$1"; production_require_clean_source "$2"' _ \
+  "$TEST_TMP_ROOT/source/scripts/production-validation.sh" "$TEST_TMP_ROOT/source-worktree"
+if bash -c 'source "$1"; production_require_clean_source "$2"' _ \
+  "$TEST_TMP_ROOT/source/scripts/production-validation.sh" "$TEST_TMP_ROOT/source-worktree/scripts" >/dev/null 2>&1; then
+  echo "production source validation accepted a Git worktree subdirectory as its root" >&2
+  exit 1
+fi
 [[ -z "$(find "$TMPDIR" -maxdepth 1 -type d -name 'bridge-release-plan.*' -print -quit)" ]]

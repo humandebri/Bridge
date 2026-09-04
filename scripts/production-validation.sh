@@ -2,8 +2,17 @@
 # Shared fail-closed evidence validation for fixed production drivers.
 
 production_require_clean_source() {
-  local source_root="$1" dirty submodule_status
-  [[ -d "$source_root/.git" ]] || { echo "production source root is not a Git worktree" >&2; return 1; }
+  local source_root="$1" dirty submodule_status top_level source_physical top_physical
+  top_level="$(git -C "$source_root" rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "production source root is not a Git worktree" >&2
+    return 1
+  }
+  source_physical="$(cd "$source_root" && pwd -P)" || return 1
+  top_physical="$(cd "$top_level" && pwd -P)" || return 1
+  [[ "$source_physical" == "$top_physical" ]] || {
+    echo "production source root is not the Git worktree root" >&2
+    return 1
+  }
   dirty="$(git -C "$source_root" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" || return 1
   [[ -z "$dirty" ]] || { echo "release source or a nested submodule is dirty" >&2; return 1; }
   submodule_status="$(git -C "$source_root" submodule status --recursive 2>/dev/null)" || {
