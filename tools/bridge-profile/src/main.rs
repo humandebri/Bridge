@@ -5368,12 +5368,23 @@ fn production_upgrade_management_state(raw_hex: &str) -> Result<(Vec<String>, St
     Ok((controllers, module))
 }
 
+const MAX_PRODUCTION_UPGRADE_RECEIPT_BYTES: usize = 128 * 1024 * 1024;
+const MAX_PRODUCTION_UPGRADE_CHAIN_BYTES: usize = 256 * 1024 * 1024;
+
+fn validate_production_upgrade_receipt_size(size: usize) -> Result<(), String> {
+    if size > MAX_PRODUCTION_UPGRADE_RECEIPT_BYTES {
+        return Err("production upgrade receipt is too large".into());
+    }
+    Ok(())
+}
+
 fn production_upgrade_chain_receipts(
     bytes: &[u8],
 ) -> Result<Vec<(ProductionCanisterUpgradeReceipt, Vec<u8>)>, String> {
     let value: Value = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     if value.get("kind").and_then(Value::as_str) == Some("production-controller-bootstrap-upgrade")
     {
+        validate_production_upgrade_receipt_size(bytes.len())?;
         let receipt = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         return Ok(vec![(receipt, bytes.to_vec())]);
     }
@@ -5391,9 +5402,10 @@ fn production_upgrade_chain_receipts(
     let mut receipts = Vec::with_capacity(chain.entries.len());
     for (index, entry) in chain.entries.into_iter().enumerate() {
         let raw = decode_hex(&entry.receipt_json_hex)?;
+        validate_production_upgrade_receipt_size(raw.len())?;
         total = total
             .checked_add(raw.len())
-            .filter(|total| *total <= 256 * 1024 * 1024)
+            .filter(|total| *total <= MAX_PRODUCTION_UPGRADE_CHAIN_BYTES)
             .ok_or("production upgrade chain is too large")?;
         let digest = hex(&Sha256::digest(&raw));
         if usize::from(entry.sequence) != index
@@ -5440,6 +5452,7 @@ fn append_production_upgrade_receipt(
     output: &Path,
 ) -> Result<(), String> {
     let receipt = fs::read(receipt_path).map_err(|error| error.to_string())?;
+    validate_production_upgrade_receipt_size(receipt.len())?;
     let _: ProductionCanisterUpgradeReceipt =
         serde_json::from_slice(&receipt).map_err(|error| error.to_string())?;
     let mut raw_receipts = if let Some(prior) = prior {
@@ -5457,7 +5470,7 @@ fn append_production_upgrade_receipt(
             .try_fold(0usize, |total, raw| {
                 total
                     .checked_add(raw.len())
-                    .filter(|total| *total <= 256 * 1024 * 1024)
+                    .filter(|total| *total <= MAX_PRODUCTION_UPGRADE_CHAIN_BYTES)
             })
             .is_none()
     {
@@ -14240,6 +14253,13 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         broken_chain.entries[0].previous_receipt_sha256 = Some("9".repeat(64));
         assert!(
             production_upgrade_chain_receipts(&serde_json::to_vec(&broken_chain).unwrap()).is_err()
+        );
+        assert!(
+            validate_production_upgrade_receipt_size(MAX_PRODUCTION_UPGRADE_RECEIPT_BYTES).is_ok()
+        );
+        assert!(
+            validate_production_upgrade_receipt_size(MAX_PRODUCTION_UPGRADE_RECEIPT_BYTES + 1)
+                .is_err()
         );
         fs::write(
             root.join("production-canister-upgrade-receipt.json"),

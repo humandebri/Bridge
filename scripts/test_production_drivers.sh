@@ -331,6 +331,26 @@ if RAW_UPGRADE_OVERSIZE_ERROR="$(production_freeze_bundle "$RAW_UPGRADE_OVERSIZE
   exit 1
 fi
 [[ "$RAW_UPGRADE_OVERSIZE_ERROR" == *"raw production upgrade receipt is too large"* ]]
+CHAIN_ENTRY_OVERSIZE_SOURCE="$T/chain-entry-oversize-source"
+mkdir "$CHAIN_ENTRY_OVERSIZE_SOURCE"
+python3 - "$CHAIN_ENTRY_OVERSIZE_SOURCE" <<'PY'
+import json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); receipt=root/'production-canister-upgrade-receipt.json'
+size=128*1024*1024+1
+prefix='{"schema_version":1,"kind":"production-controller-bootstrap-upgrade-chain","entries":[{"sequence":0,"previous_receipt_sha256":null,"receipt_sha256":"'+'0'*64+'","receipt_json_hex":"'
+with receipt.open('w',encoding='utf-8') as output:
+ output.write(prefix)
+ remaining=size
+ while remaining:
+  chunk=min(1024*1024,remaining); output.write('00'*chunk); remaining-=chunk
+ output.write('"}]}\n')
+(root/'post-gate-a-policy-transition.json').write_text('{}\n')
+PY
+if CHAIN_ENTRY_OVERSIZE_ERROR="$(production_validate_gate_b_source_chain "$DRIVER_ROOT" "$CHAIN_ENTRY_OVERSIZE_SOURCE" 2>&1)"; then
+  echo "Gate B source validation accepted an oversized receipt inside the upgrade chain" >&2
+  exit 1
+fi
+[[ "$CHAIN_ENTRY_OVERSIZE_ERROR" == *"production upgrade receipt is too large"* ]]
 UPGRADE_OVERSIZE_SOURCE="$T/upgrade-oversize-source"
 mkdir "$UPGRADE_OVERSIZE_SOURCE"
 python3 - "$UPGRADE_OVERSIZE_SOURCE" <<'PY'

@@ -295,6 +295,7 @@ else:
   if set(entry)!={'sequence','previous_receipt_sha256','receipt_sha256','receipt_json_hex'} or entry.get('sequence')!=index or entry.get('previous_receipt_sha256')!=previous:
    raise SystemExit('invalid production upgrade chain linkage')
   receipt_raw=bytes.fromhex(entry.get('receipt_json_hex','')); total+=len(receipt_raw)
+  if len(receipt_raw)>128*1024*1024: raise SystemExit('production upgrade receipt is too large')
   if total>256*1024*1024: raise SystemExit('production upgrade chain is too large')
   digest=hashlib.sha256(receipt_raw).hexdigest()
   if entry.get('receipt_sha256','').lower()!=digest: raise SystemExit('invalid production upgrade receipt hash')

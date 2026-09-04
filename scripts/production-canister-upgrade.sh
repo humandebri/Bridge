@@ -171,6 +171,7 @@ else:
  for index,entry in enumerate(entries):
   if set(entry)!={'sequence','previous_receipt_sha256','receipt_sha256','receipt_json_hex'}: raise SystemExit('invalid prior upgrade chain entry')
   raw=bytes.fromhex(entry.get('receipt_json_hex','')); digest=hashlib.sha256(raw).hexdigest()
+  if len(raw)>128*1024*1024: raise SystemExit('prior upgrade receipt is too large')
   total+=len(raw)
   if total>256*1024*1024: raise SystemExit('prior upgrade chain is too large')
   if entry.get('sequence')!=index or entry.get('previous_receipt_sha256')!=previous or entry.get('receipt_sha256','').lower()!=digest: raise SystemExit('invalid prior upgrade chain linkage')
