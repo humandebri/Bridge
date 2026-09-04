@@ -46,19 +46,15 @@ service_fee初期値 = 0.5 KINIC
 - `MAX_SERVICE_FEE`: `1000000000` raw（10 KINIC、ledger feeの10000倍）
 - `service_fee`運用初期値: `50000000` raw（0.5 KINIC、ledger feeの500倍）
 
-## Settlement Reserve
+## Base control-plane transaction affordability
 
-固定 floor に未完了 Settlement の保守的最大費用を加算する（ADR 0005）。
-
-```
-必要 Settlement Reserve =
-    送信候補transactionの最大liability
-  + Σ (未完了 Settlement ごとの gas limit × max fee per gas 上限)
-  + cycles の N 日分の運用費
-```
-
-- Governance Operator ETH残高: 別の固定floorは設けず、FinalizedとSafeの保守的なlive残高がcandidate transaction liabilityを満たさない、または観測できない場合は署名・送信しない。
+- 送信対象actionが選択したGovernance Operator、Runtime Administrator、またはIndependent CancellerのETH残高を使う。別の固定floorは設けず、FinalizedとSafeの保守的なlive残高がcandidate transaction liabilityを満たさない、または観測できない場合は署名・送信しない。
 - governance fee上限: exact schedule／execute calldataのgas estimateと10件以上の異なるFinalized fee blockから導出する。gas limitは最大estimateの130%を1,000単位で切り上げ、max feeはbase fee p99×20、priority feeはp95×4、L1 ceilingはp99×10とする。quote validityは90秒、13,000／60,000／15,000 bps multiplierを維持する。
+
+## Settlement cycles reserve
+
+新規処理が既存の非終端operationの完了用cyclesを侵食しないよう、基礎floorに非終端liabilityごとの保守的上限を加えて検査する（ADR 0005）。
+
 - settlement cycle ceiling: `5000000000` cyclesに固定する。
 - cycles floor: pause状態の`idle_cycles_burned_per_day`から次式で設定する。
 
