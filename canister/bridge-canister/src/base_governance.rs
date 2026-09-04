@@ -1167,23 +1167,41 @@ async fn activation_preflight(
     config: &crate::config::BridgeInitArgs,
     expected_paused: bool,
 ) -> Result<ActivationPreflightEvidence, BaseGovernanceError> {
-    let expected_bridge_signer = signer::ethereum_address(config)
-        .await
-        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let governance_operator = signer::governance_operator_address(config)
-        .await
-        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+    let expected_bridge_signer = signer::ethereum_address(config).await.map_err(|error| {
+        ic_cdk::println!("activation preflight failed: stage=bridge_signer error={error:?}");
+        BaseGovernanceError::ObservationUnavailable
+    })?;
+    let governance_operator =
+        signer::governance_operator_address(config)
+            .await
+            .map_err(|error| {
+                ic_cdk::println!(
+                    "activation preflight failed: stage=governance_operator error={error:?}"
+                );
+                BaseGovernanceError::ObservationUnavailable
+            })?;
     let runtime_administrator = signer::runtime_administrator_address(config)
         .await
-        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
-    let independent_canceller = signer::canceller_address(config)
-        .await
-        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        .map_err(|error| {
+            ic_cdk::println!(
+                "activation preflight failed: stage=runtime_administrator error={error:?}"
+            );
+            BaseGovernanceError::ObservationUnavailable
+        })?;
+    let independent_canceller = signer::canceller_address(config).await.map_err(|error| {
+        ic_cdk::println!(
+            "activation preflight failed: stage=independent_canceller error={error:?}"
+        );
+        BaseGovernanceError::ObservationUnavailable
+    })?;
     let runtime_attested =
         crate::api::runtime_attested(config).map_err(|_| BaseGovernanceError::StorageFailure)?;
     let observed = evm_rpc::bridge_snapshot(config, runtime_attested)
         .await
-        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        .map_err(|error| {
+            ic_cdk::println!("activation preflight failed: stage=bridge_snapshot error={error:?}");
+            BaseGovernanceError::ObservationUnavailable
+        })?;
     if !activation_base_preflight_matches(
         observed.snapshot.bridge_signer,
         expected_bridge_signer,
@@ -1191,11 +1209,17 @@ async fn activation_preflight(
         observed.snapshot.withdrawals_paused,
         expected_paused,
     ) {
+        ic_cdk::println!("activation preflight failed: stage=base_pause_or_signer_binding");
         return Err(BaseGovernanceError::ObservationUnavailable);
     }
     let deployment = evm_rpc::deployment_postconditions_at(config, observed.finalized)
         .await
-        .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        .map_err(|error| {
+            ic_cdk::println!(
+                "activation preflight failed: stage=deployment_postconditions error={error:?}"
+            );
+            BaseGovernanceError::ObservationUnavailable
+        })?;
     let timelock: [u8; 20] = config
         .timelock_contract
         .as_slice()
@@ -1223,6 +1247,7 @@ async fn activation_preflight(
         || deployment.bsns_name != "KINIC"
         || deployment.bsns_symbol != "KINIC"
     {
+        ic_cdk::println!("activation preflight failed: stage=deployment_binding");
         return Err(BaseGovernanceError::ObservationUnavailable);
     }
     STORE.with(|store| {
@@ -1232,6 +1257,7 @@ async fn activation_preflight(
             .map_err(|_| BaseGovernanceError::StorageFailure)?
             .deposits_paused;
         if locally_paused != expected_paused {
+            ic_cdk::println!("activation preflight failed: stage=local_pause_binding");
             return Err(BaseGovernanceError::ObservationUnavailable);
         }
         Ok(())
