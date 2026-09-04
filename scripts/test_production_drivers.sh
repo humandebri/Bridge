@@ -291,7 +291,7 @@ python3 - "$UPGRADE_LIMIT_SOURCE" <<'PY'
 import hashlib,json,pathlib,sys
 root=pathlib.Path(sys.argv[1]); receipt=root/'production-canister-upgrade-receipt.json'
 prefix=b'{"schema_version":1,"kind":"production-controller-bootstrap-upgrade-chain","entries":[],"padding":"'
-target=256*1024*1024+64*1024
+target=512*1024*1024+64*1024
 with receipt.open('wb') as output:
  output.write(prefix)
  remaining=target-len(prefix)-2
@@ -336,7 +336,7 @@ mkdir "$UPGRADE_OVERSIZE_SOURCE"
 python3 - "$UPGRADE_OVERSIZE_SOURCE" <<'PY'
 import json,pathlib,sys
 root=pathlib.Path(sys.argv[1]); receipt=root/'production-canister-upgrade-receipt.json'
-with receipt.open('wb') as output: output.truncate(257*1024*1024+1)
+with receipt.open('wb') as output: output.truncate(513*1024*1024+1)
 (root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':receipt.name,'sha256':'0'*64}]},separators=(',',':'))+'\n')
 PY
 mkdir "$T/upgrade-oversize-rejected"

@@ -192,9 +192,9 @@ try:
   path_parts(name,True)
   if name in files or not isinstance(expected,str) or not re.fullmatch(r'[0-9a-fA-F]{64}',expected): raise SystemExit(f'invalid duplicate release artifact: {name}')
   if name in {'bridge-canister.wasm','bridge-runtime.bin','bsns-creation.bin','bsns-runtime.bin'}: limit=256*1024*1024
-  # The chain bounds decoded receipt bytes to 128 MiB, but stores those bytes as
+  # The chain bounds decoded receipt bytes to 256 MiB, but stores those bytes as
   # hex. Allow that encoded envelope plus bounded per-entry JSON metadata.
-  elif name == 'production-canister-upgrade-receipt.json': limit=257*1024*1024
+  elif name == 'production-canister-upgrade-receipt.json': limit=513*1024*1024
   else: limit=16*1024*1024
   value=read_regular(name,limit,True)
   if name == 'production-canister-upgrade-receipt.json':
@@ -295,7 +295,7 @@ else:
   if set(entry)!={'sequence','previous_receipt_sha256','receipt_sha256','receipt_json_hex'} or entry.get('sequence')!=index or entry.get('previous_receipt_sha256')!=previous:
    raise SystemExit('invalid production upgrade chain linkage')
   receipt_raw=bytes.fromhex(entry.get('receipt_json_hex','')); total+=len(receipt_raw)
-  if total>128*1024*1024: raise SystemExit('production upgrade chain is too large')
+  if total>256*1024*1024: raise SystemExit('production upgrade chain is too large')
   digest=hashlib.sha256(receipt_raw).hexdigest()
   if entry.get('receipt_sha256','').lower()!=digest: raise SystemExit('invalid production upgrade receipt hash')
   receipts.append(json.loads(receipt_raw)); previous=digest

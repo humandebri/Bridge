@@ -5393,7 +5393,7 @@ fn production_upgrade_chain_receipts(
         let raw = decode_hex(&entry.receipt_json_hex)?;
         total = total
             .checked_add(raw.len())
-            .filter(|total| *total <= 128 * 1024 * 1024)
+            .filter(|total| *total <= 256 * 1024 * 1024)
             .ok_or("production upgrade chain is too large")?;
         let digest = hex(&Sha256::digest(&raw));
         if usize::from(entry.sequence) != index
@@ -5457,7 +5457,7 @@ fn append_production_upgrade_receipt(
             .try_fold(0usize, |total, raw| {
                 total
                     .checked_add(raw.len())
-                    .filter(|total| *total <= 128 * 1024 * 1024)
+                    .filter(|total| *total <= 256 * 1024 * 1024)
             })
             .is_none()
     {

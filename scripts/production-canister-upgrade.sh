@@ -117,7 +117,7 @@ source,target=sys.argv[1:]
 fd=os.open(source,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
 try:
  before=os.fstat(fd)
- if not stat.S_ISREG(before.st_mode) or before.st_size>257*1024*1024: raise SystemExit('prior upgrade evidence is unsafe')
+ if not stat.S_ISREG(before.st_mode) or before.st_size>513*1024*1024: raise SystemExit('prior upgrade evidence is unsafe')
  data=os.read(fd,before.st_size+1); after=os.fstat(fd)
  if len(data)!=before.st_size or (before.st_dev,before.st_ino,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_mtime_ns,after.st_ctime_ns): raise SystemExit('prior upgrade evidence changed while frozen')
 finally: os.close(fd)
@@ -172,7 +172,7 @@ else:
   if set(entry)!={'sequence','previous_receipt_sha256','receipt_sha256','receipt_json_hex'}: raise SystemExit('invalid prior upgrade chain entry')
   raw=bytes.fromhex(entry.get('receipt_json_hex','')); digest=hashlib.sha256(raw).hexdigest()
   total+=len(raw)
-  if total>128*1024*1024: raise SystemExit('prior upgrade chain is too large')
+  if total>256*1024*1024: raise SystemExit('prior upgrade chain is too large')
   if entry.get('sequence')!=index or entry.get('previous_receipt_sha256')!=previous or entry.get('receipt_sha256','').lower()!=digest: raise SystemExit('invalid prior upgrade chain linkage')
   receipts.append(json.loads(raw)); previous=digest
 expected_before=receipts[0].get('before_module_sha256','')
