@@ -52,12 +52,12 @@ service_fee初期値 = 0.5 KINIC
 
 ```
 必要 Settlement Reserve =
-    固定 floor
+    送信候補transactionの最大liability
   + Σ (未完了 Settlement ごとの gas limit × max fee per gas 上限)
   + cycles の N 日分の運用費
 ```
 
-- ETH固定floor: Gate A profileで明示承認した固定値を維持する。`initial-operational-parameters.json`はこの値を変更せず、live残高が固定floorとcandidate transaction liabilityを満たさない場合は署名・送信しない。
+- Governance Operator ETH残高: 別の固定floorは設けず、FinalizedとSafeの保守的なlive残高がcandidate transaction liabilityを満たさない、または観測できない場合は署名・送信しない。
 - governance fee上限: exact schedule／execute calldataのgas estimateと10件以上の異なるFinalized fee blockから導出する。gas limitは最大estimateの130%を1,000単位で切り上げ、max feeはbase fee p99×20、priority feeはp95×4、L1 ceilingはp99×10とする。quote validityは90秒、13,000／60,000／15,000 bps multiplierを維持する。
 - settlement cycle ceiling: `5000000000` cyclesに固定する。
 - cycles floor: pause状態の`idle_cycles_burned_per_day`から次式で設定する。
