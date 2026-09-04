@@ -183,9 +183,16 @@ try:
   path_parts(name,True)
   if name in files or not isinstance(expected,str) or not re.fullmatch(r'[0-9a-fA-F]{64}',expected): raise SystemExit(f'invalid duplicate release artifact: {name}')
   if name in {'bridge-canister.wasm','bridge-runtime.bin','bsns-creation.bin','bsns-runtime.bin'}: limit=256*1024*1024
-  elif name == 'production-canister-upgrade-receipt.json': limit=128*1024*1024
+  # The chain bounds decoded receipt bytes to 128 MiB, but stores those bytes as
+  # hex. Allow that encoded envelope plus bounded per-entry JSON metadata.
+  elif name == 'production-canister-upgrade-receipt.json': limit=257*1024*1024
   else: limit=16*1024*1024
   value=read_regular(name,limit,True)
+  if name == 'production-canister-upgrade-receipt.json':
+   try: upgrade_evidence=json.loads(value)
+   except Exception as error: raise SystemExit(f'invalid production upgrade evidence JSON: {error}')
+   if upgrade_evidence.get('kind')=='production-controller-bootstrap-upgrade' and len(value)>128*1024*1024:
+    raise SystemExit('raw production upgrade receipt is too large')
   if hashlib.sha256(value).hexdigest().lower()!=expected.lower(): raise SystemExit(f'release artifact hash mismatch while freezing: {name}')
   files[name]=value
  rpc=json.loads(files.get('rpc-e2e.json',b'{}'))

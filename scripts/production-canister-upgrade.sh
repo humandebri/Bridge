@@ -112,15 +112,19 @@ GATE_A_PROFILE="$PROFILE_TARGET/gate-a-profile.json"
 GATE_A_RECEIPT="$PROFILE_TARGET/gate-a-receipt.json"
 if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
   python3 -I -S - "$PRIOR_UPGRADE_EVIDENCE" "$PROFILE_TARGET/prior-upgrade-evidence.json" <<'PY'
-import os,stat,sys
+import json,os,stat,sys
 source,target=sys.argv[1:]
 fd=os.open(source,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
 try:
  before=os.fstat(fd)
- if not stat.S_ISREG(before.st_mode) or before.st_size>128*1024*1024: raise SystemExit('prior upgrade evidence is unsafe')
+ if not stat.S_ISREG(before.st_mode) or before.st_size>257*1024*1024: raise SystemExit('prior upgrade evidence is unsafe')
  data=os.read(fd,before.st_size+1); after=os.fstat(fd)
  if len(data)!=before.st_size or (before.st_dev,before.st_ino,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_mtime_ns,after.st_ctime_ns): raise SystemExit('prior upgrade evidence changed while frozen')
 finally: os.close(fd)
+try: evidence=json.loads(data)
+except Exception as error: raise SystemExit(f'prior upgrade evidence JSON is invalid: {error}')
+if evidence.get('kind')=='production-controller-bootstrap-upgrade' and len(data)>128*1024*1024:
+ raise SystemExit('raw prior upgrade receipt is too large')
 out=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400)
 try: os.write(out,data); os.fsync(out)
 finally: os.close(out)

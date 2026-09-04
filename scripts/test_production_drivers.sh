@@ -290,20 +290,53 @@ mkdir "$UPGRADE_LIMIT_SOURCE"
 python3 - "$UPGRADE_LIMIT_SOURCE" <<'PY'
 import hashlib,json,pathlib,sys
 root=pathlib.Path(sys.argv[1]); receipt=root/'production-canister-upgrade-receipt.json'
-with receipt.open('wb') as output: output.truncate(17*1024*1024)
-digest=hashlib.sha256(receipt.read_bytes()).hexdigest()
-(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':receipt.name,'sha256':digest}]},separators=(',',':'))+'\n')
+prefix=b'{"schema_version":1,"kind":"production-controller-bootstrap-upgrade-chain","entries":[],"padding":"'
+target=256*1024*1024+64*1024
+with receipt.open('wb') as output:
+ output.write(prefix)
+ remaining=target-len(prefix)-2
+ while remaining:
+  chunk=b'0'*min(1024*1024,remaining); output.write(chunk); remaining-=len(chunk)
+ output.write(b'"}')
+digest=hashlib.sha256()
+with receipt.open('rb') as source:
+ for chunk in iter(lambda:source.read(1024*1024),b''): digest.update(chunk)
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':receipt.name,'sha256':digest.hexdigest()}]},separators=(',',':'))+'\n')
 PY
 mkdir "$T/upgrade-limit-accepted"
 production_freeze_bundle "$UPGRADE_LIMIT_SOURCE" "$T/upgrade-limit-accepted"
 cmp -s "$UPGRADE_LIMIT_SOURCE/production-canister-upgrade-receipt.json" "$T/upgrade-limit-accepted/production-canister-upgrade-receipt.json"
 chmod -R u+w "$T/upgrade-limit-accepted"
+RAW_UPGRADE_OVERSIZE_SOURCE="$T/raw-upgrade-oversize-source"
+mkdir "$RAW_UPGRADE_OVERSIZE_SOURCE"
+python3 - "$RAW_UPGRADE_OVERSIZE_SOURCE" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); receipt=root/'production-canister-upgrade-receipt.json'
+prefix=b'{"schema_version":1,"kind":"production-controller-bootstrap-upgrade","padding":"'
+target=128*1024*1024+1
+with receipt.open('wb') as output:
+ output.write(prefix)
+ remaining=target-len(prefix)-2
+ while remaining:
+  chunk=b'0'*min(1024*1024,remaining); output.write(chunk); remaining-=len(chunk)
+ output.write(b'"}')
+digest=hashlib.sha256()
+with receipt.open('rb') as source:
+ for chunk in iter(lambda:source.read(1024*1024),b''): digest.update(chunk)
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':receipt.name,'sha256':digest.hexdigest()}]},separators=(',',':'))+'\n')
+PY
+mkdir "$T/raw-upgrade-oversize-rejected"
+if RAW_UPGRADE_OVERSIZE_ERROR="$(production_freeze_bundle "$RAW_UPGRADE_OVERSIZE_SOURCE" "$T/raw-upgrade-oversize-rejected" 2>&1)"; then
+  echo "bundle freeze accepted an oversized raw production upgrade receipt" >&2
+  exit 1
+fi
+[[ "$RAW_UPGRADE_OVERSIZE_ERROR" == *"raw production upgrade receipt is too large"* ]]
 UPGRADE_OVERSIZE_SOURCE="$T/upgrade-oversize-source"
 mkdir "$UPGRADE_OVERSIZE_SOURCE"
 python3 - "$UPGRADE_OVERSIZE_SOURCE" <<'PY'
 import json,pathlib,sys
 root=pathlib.Path(sys.argv[1]); receipt=root/'production-canister-upgrade-receipt.json'
-with receipt.open('wb') as output: output.truncate(128*1024*1024+1)
+with receipt.open('wb') as output: output.truncate(257*1024*1024+1)
 (root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':receipt.name,'sha256':'0'*64}]},separators=(',',':'))+'\n')
 PY
 mkdir "$T/upgrade-oversize-rejected"

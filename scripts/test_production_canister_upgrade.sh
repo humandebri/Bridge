@@ -441,6 +441,42 @@ printf third-wasm >"$T/third.wasm"
 THIRD_SHA="$(shasum -a 256 "$T/third.wasm" | awk '{print $1}')"
 export TEST_NEW_SHA="$THIRD_SHA"
 export TEST_REPRO_WASM="$T/third.wasm"
+python3 - "$T/evidence/receipt.initial.json" "$T/evidence/prior-upgrade-large-chain.json" "$T/evidence/prior-upgrade-large-raw.json" <<'PY'
+import hashlib,json,sys
+source,chain_path,raw_path=sys.argv[1:]
+receipt=json.load(open(source,encoding='utf-8'))
+large_chain_receipt={**receipt,'padding':'0'*(65*1024*1024)}
+raw=json.dumps(large_chain_receipt,sort_keys=True,separators=(',',':')).encode()
+digest=hashlib.sha256(raw).hexdigest()
+chain={
+ 'schema_version':1,
+ 'kind':'production-controller-bootstrap-upgrade-chain',
+ 'entries':[{
+  'sequence':0,
+  'previous_receipt_sha256':None,
+  'receipt_sha256':digest,
+  'receipt_json_hex':raw.hex(),
+ }],
+}
+with open(chain_path,'w',encoding='utf-8') as output:
+ json.dump(chain,output,sort_keys=True,separators=(',',':')); output.write('\n')
+large_raw={**receipt,'padding':'0'*(129*1024*1024)}
+with open(raw_path,'w',encoding='utf-8') as output:
+ json.dump(large_raw,output,sort_keys=True,separators=(',',':')); output.write('\n')
+PY
+BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
+  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" \
+  --prior-upgrade-evidence "$T/evidence/prior-upgrade-large-chain.json" \
+  --evidence "$T/evidence/large-chain-preflight.json" >/dev/null
+if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
+  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" \
+  --prior-upgrade-evidence "$T/evidence/prior-upgrade-large-raw.json" \
+  --evidence "$T/evidence/large-raw-preflight.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted oversized raw prior evidence" >&2
+  exit 1
+fi
 cp "$T/evidence/receipt.initial.json" "$T/evidence/prior-upgrade.json"
 cp "$T/evidence/prior-upgrade.json" "$T/evidence/prior-upgrade.approved.json"
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
