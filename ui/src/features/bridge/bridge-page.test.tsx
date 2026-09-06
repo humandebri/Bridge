@@ -28,7 +28,7 @@ function Harness({
         phase: "ready",
         checks: [
           { id: "wallets", label: "Wallets connected", status: "passed" },
-          { id: "runtime", label: "Bridge configuration verified", status: "passed" },
+          { id: "runtime", label: "Bridge configuration check", status: "passed" },
           { id: "financials", label: "Balance and fees checked", status: "passed" },
           { id: "availability", label: "Transfer availability checked", status: "passed" },
         ],
@@ -60,7 +60,7 @@ describe("BridgeConfirmationDialog", () => {
           phase: "checking",
           checks: [
             { id: "wallets", label: "Wallets connected", status: "passed" },
-            { id: "runtime", label: "Bridge configuration verified", status: "checking" },
+            { id: "runtime", label: "Bridge configuration check", status: "checking" },
             { id: "financials", label: "Balance and fees checked", status: "waiting" },
             { id: "availability", label: "Transfer availability checked", status: "waiting" },
           ],
@@ -87,47 +87,52 @@ describe("BridgeConfirmationDialog", () => {
     expect(screen.queryByRole("button", { name: "Continue to IC wallet" })).not.toBeInTheDocument()
   })
 
-  it("keeps a failed check visible and offers a retry", () => {
-    const onRetry = vi.fn()
-    render(
-      <BridgeConfirmationDialog
-        direction="withdraw"
-        open
-        setOpen={() => undefined}
-        preflight={{
-          runId: 1,
-          direction: "withdraw",
-          phase: "failed",
-          checks: [
-            { id: "wallets", label: "Wallets connected", status: "passed" },
-            {
-              id: "runtime",
-              label: "Bridge configuration verified",
-              status: "failed",
-              error: "Bridge signer differs from the reviewed profile",
-            },
-            { id: "financials", label: "Balance and fees checked", status: "waiting" },
-            { id: "availability", label: "Transfer availability checked", status: "waiting" },
-          ],
-        }}
-        source="source-wallet"
-        destination="destination-wallet"
-        amount="10"
-        receive={9n}
-        sendSymbol="KINIC"
-        receiveSymbol="TICRC1"
-        pending={false}
-        onRetry={onRetry}
-        onConfirm={vi.fn()}
-      />,
-    )
+  it.each(["deposit", "withdraw"] as const)(
+    "keeps a failed %s check visible to assistive technology and offers a retry",
+    (direction) => {
+      const onRetry = vi.fn()
+      render(
+        <BridgeConfirmationDialog
+          direction={direction}
+          open
+          setOpen={() => undefined}
+          preflight={{
+            runId: 1,
+            direction,
+            phase: "failed",
+            checks: [
+              { id: "wallets", label: "Wallets connected", status: "passed" },
+              {
+                id: "runtime",
+                label: "Bridge configuration check",
+                status: "failed",
+                error: "Bridge signer differs from the reviewed profile",
+              },
+              { id: "financials", label: "Balance and fees checked", status: "waiting" },
+              { id: "availability", label: "Transfer availability checked", status: "waiting" },
+            ],
+          }}
+          source="source-wallet"
+          destination="destination-wallet"
+          amount="10"
+          receive={9n}
+          sendSymbol="KINIC"
+          receiveSymbol="TICRC1"
+          pending={false}
+          onRetry={onRetry}
+          onConfirm={vi.fn()}
+        />,
+      )
 
-    expect(screen.getByText("No transaction was sent.")).toBeVisible()
-    expect(screen.getByText("Bridge signer differs from the reviewed profile")).toBeVisible()
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }))
-    expect(onRetry).toHaveBeenCalledOnce()
-    expect(screen.getByRole("button", { name: "Close" })).toBeVisible()
-  })
+      expect(screen.getByText("No transaction was sent.")).toBeVisible()
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Bridge configuration checkBridge signer differs from the reviewed profile",
+      )
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+      expect(onRetry).toHaveBeenCalledOnce()
+      expect(screen.getByRole("button", { name: "Close" })).toBeVisible()
+    },
+  )
 
   it("lets a deposit continue after reviewing its wallets and amount", () => {
     render(<Harness direction="deposit" />)

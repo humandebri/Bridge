@@ -31,8 +31,6 @@ Gate AとBaseのpause配置まではprofileにも同じBootstrap運用値を要�
 
 `initial-operational-parameters.json`の`governance_operation_id`は初回固定値`0`であり、driverがseal送信前に検証する。`seal_operational_config`の公開引数は`OperationalConfigArgs`一つだけとし、Canisterは内部固定値`0`をawait前、await後、stable commit内で次のstable governance operation IDと照合する。不一致ならsealせずBootstrapを維持する。
 
-Gate B前にUIを先行公開する場合は、clean sourceとreview済みWalletConnect project IDから`production-assets.mjs generate`でschema 2 asset receiptを作り、review済みGate A release inputsのpre-activation profileを使って、同じproject IDで`deploy:preactivation:check`を通した後、承認済みの同一入力で`deploy:preactivation`する。このprofileはGate B hash未設定かつdeployment block 0なので、全writeはfail closedになる。Gate B合格後は、検証済みbundleからrenderしたGate-B-bound profile、同じasset receipt、同じproject IDを通常production deployへ渡して差し替える。
-
 ```sh
 export VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id-from-ui-assets-receipt>
 COMMON=(--phase schedule --bundle evidence/release-id \
@@ -73,6 +71,8 @@ profileはCanisterから導出してBaseのFinalized attestationと照合するM
 Gate Aはpre-deploy profileとBridge/BSNSの5 build artifact、合計6 artifactを束縛する。Canister install receiptは7番目のartifactへ追加せず、schema 2 Gate A receipt内へ完全に埋め込み、Gate Bへ推移的に継承する。Gate Bはcurrent releaseの6 build artifactに、初期運用値、provider independence、UI、Gate A receipt、不変Gate A profile、production controller upgrade receipt、post-Gate-A policy transitionを加えた正確に13 artifactである。provider independenceはSNS Motionではなく、release source/profile/current Wasm、公式EVM RPC Canister、`BaseMainnet`既定pool、空custom URL、runtime固定3-provider/2-thresholdをschema 2 receiptへ束縛する。既定provider registryと各upstream chainは外部仮定として残す。Gate AでinstallしたWasmとcontroller-bootstrap Wasmが異なる場合は、typed upgrade receiptがsole controller、通常upgrade、前後module、schema、pause、storage/public-state continuityを証明し、policy transitionがそのreceipt hashを固定する。RPC rehearsal、monitor drill、keeper drill、monitoring receipt、7日計測はGate Bに含めず、稼働後のGate Cで要求するが、controller handoverの認可入力にはしない。controller handoverとSNS upgradeもGate Bには含めず、Gate Cが実施時期を決定するものではない。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、認証済みCanister公開設定、freshなFinalized Base attestationの三者一致で検証する。x402はBridgeの配置・activation条件ではない。
 
 `validate-bundle --offline`はGate Aの正式なoffline認可判定として`gate_a=pass authorizing=true`だけを成功出力する。`verify-live`はGate Bの構造に加え、5分以内のactivation attestation、公開RuntimeBinding、reserve、production installer identity単独controller、live module hashを認証済みCanister応答で照合する。schedule/execute receiptの検証も初回activationでは同じcontroller条件を使用する。SNS Root単独controllerと同一Wasm SNS upgradeは、ユーザーが時期を別途判断した場合の独立したhandover検証へ分離する。権限principal、rate/cycles policy、Governance fee、固定Ledger feeは、公開RuntimeBindingの`operational_config_sha256`をrelease profileから再構成した値と照合する。実値の確認はcontroller/governance限定`get_operational_config`を使う。認証またはpostconditionが欠ければ非ゼロ終了する。
+
+production Bridge Canisterはstable schema v35で配置・activation済みで、sourceのcurrent schema v36は未配置である。通常のcurrent Gate Bはv36限定のまま維持する。post-activation UI公開に限り、`verify-production-ui-live`がhistorical Gate Bをv35へ明示固定し、seal、schedule、execute、Activated live stateとの完全なlineageを検証する。UI code/assetsはGate B内の旧receiptを再利用せず、今回のclean sourceとreview済みWalletConnect project IDから生成したstandalone schema 2 receiptで独立に束縛する。この公開は完了済みactivation proposalを再送せず、Canister upgrade、controller handover、資産受付状態の変更も行わない。
 
 credential、seed、private key、hardware wallet backup、credential入りRPC URLはprofileやevidenceへ記録しない。
 

@@ -152,7 +152,7 @@ interface PreflightState {
 
 const PREFLIGHT_CHECKS: ReadonlyArray<Pick<PreflightCheck, "id" | "label">> = [
   { id: "wallets", label: "Wallets connected" },
-  { id: "runtime", label: "Bridge configuration verified" },
+  { id: "runtime", label: "Bridge configuration check" },
   { id: "financials", label: "Balance and fees checked" },
   { id: "availability", label: "Transfer availability checked" },
 ]

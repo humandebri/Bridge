@@ -15,39 +15,6 @@ export interface UiDeploymentMode {
   timelockAddress?: string | null
 }
 
-export function assertPreActivationUiProfile(profile: UiDeploymentMode): void {
-  if (profile.testOnly !== false)
-    throw new Error("Pre-activation UI deploy requires a production profile")
-  if (profile.environmentMode !== null)
-    throw new Error("Pre-activation UI deploy rejects test-only environment modes")
-  if (profile.chainId !== BASE_MAINNET_CHAIN_ID)
-    throw new Error("Pre-activation UI deploy requires Base Mainnet")
-  const timelockDelay = profile.activationTimelockDelaySeconds
-  if (
-    typeof timelockDelay !== "number" ||
-    !Number.isSafeInteger(timelockDelay) ||
-    timelockDelay < MINIMUM_PRODUCTION_TIMELOCK_DELAY_SECONDS
-  ) {
-    throw new Error("Pre-activation UI deploy requires a Timelock delay of at least 24 hours")
-  }
-  if (!/^0x[0-9a-fA-F]{40}$/.test(profile.timelockAddress ?? "")) {
-    throw new Error("Pre-activation UI deploy requires a Timelock contract address")
-  }
-  if (profile.gateBManifestSha256 !== null) {
-    throw new Error("Pre-activation UI deploy requires an unset Gate B manifest hash")
-  }
-  if (BigInt(profile.deploymentBlock ?? -1) !== 0n) {
-    throw new Error("Pre-activation UI deploy requires deployment block zero")
-  }
-  if (
-    ![profile.profileFileSha256, profile.profileCanonicalSha256].every(
-      (value) => /^[0-9a-f]{64}$/i.test(value ?? "") && !/^0+$/.test(value ?? ""),
-    )
-  ) {
-    throw new Error("Pre-activation UI deploy requires nonzero source profile hashes")
-  }
-}
-
 export const BASE_MAINNET_CHAIN_ID = 8453
 export const BASE_SEPOLIA_CHAIN_ID = 84532
 export const OFFICIAL_EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
@@ -112,6 +79,15 @@ export function assertProductionUiProfile(
   }
   if (profile.gateBManifestSha256?.toLowerCase() !== verifiedManifestSha256?.toLowerCase()) {
     throw new Error("Production UI profile does not match the verified Gate B manifest")
+  }
+  let deploymentBlock: bigint
+  try {
+    deploymentBlock = BigInt(profile.deploymentBlock ?? 0)
+  } catch {
+    throw new Error("Production UI deploy requires a positive deployment block")
+  }
+  if (deploymentBlock <= 0n) {
+    throw new Error("Production UI deploy requires a positive deployment block")
   }
   if (
     ![profile.profileFileSha256, profile.profileCanonicalSha256].every(

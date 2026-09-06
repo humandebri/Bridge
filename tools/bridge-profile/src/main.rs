@@ -2961,7 +2961,17 @@ fn credential_free_https(url: &str) -> bool {
             .all(|segment| PUBLIC_PATH_SEGMENTS.contains(&segment.to_ascii_lowercase().as_str()))
 }
 
-fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
+#[derive(Clone, Copy)]
+enum ProfileSchemaPolicy {
+    Current,
+    Historical,
+}
+
+fn validate_profile_with_schema_policy(
+    profile: &Profile,
+    production: bool,
+    schema_policy: ProfileSchemaPolicy,
+) -> Result<(), String> {
     if profile.schema_version != RELEASE_PROFILE_SCHEMA_VERSION {
         return Err("obsolete or unknown release profile schema".into());
     }
@@ -2976,8 +2986,24 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
     if profile.chain_id != expected_chain || profile.decimals != 8 {
         return Err("KINIC or chain identity mismatch".into());
     }
-    if profile.canister_schema_version != CURRENT_STABLE_SCHEMA_VERSION {
-        return Err("profile must bind the current stable schema version".into());
+    let schema_version_valid = match schema_policy {
+        ProfileSchemaPolicy::Current => {
+            profile.canister_schema_version == CURRENT_STABLE_SCHEMA_VERSION
+        }
+        ProfileSchemaPolicy::Historical => matches!(
+            profile.canister_schema_version,
+            PREVIOUS_STABLE_SCHEMA_VERSION | CURRENT_STABLE_SCHEMA_VERSION
+        ),
+    };
+    if !schema_version_valid {
+        return Err(match schema_policy {
+            ProfileSchemaPolicy::Current => {
+                "profile must bind the current stable schema version".into()
+            }
+            ProfileSchemaPolicy::Historical => {
+                "historical profile must bind stable schema version 35 or 36".into()
+            }
+        });
     }
     if !principal(&profile.bridge_canister_id) || !credential_free_https(&profile.ic_host) {
         return Err("invalid release endpoint".into());
@@ -3255,6 +3281,20 @@ fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
         || p.settlement_cycle_ceiling == 0
     {
         return Err("unsafe or inconsistent parameter set".into());
+    }
+    Ok(())
+}
+
+fn validate_profile(profile: &Profile, production: bool) -> Result<(), String> {
+    validate_profile_with_schema_policy(profile, production, ProfileSchemaPolicy::Current)
+}
+
+fn validate_gate_b_profile_schema_convergence(
+    profile: &Profile,
+    gate_a_profile: &Profile,
+) -> Result<(), String> {
+    if gate_a_profile.canister_schema_version != profile.canister_schema_version {
+        return Err("Gate A and Gate B profiles must bind the same stable schema version".into());
     }
     Ok(())
 }
@@ -4147,6 +4187,68 @@ fn write_production_canister_install_receipt(
     Ok(())
 }
 
+fn ui_runtime_profile(
+    profile: &Profile,
+    profile_bytes: &[u8],
+    production: bool,
+    gate_b_manifest_sha256: Option<&str>,
+) -> Result<Value, String> {
+    let canister_rpc_urls = if production {
+        Vec::new()
+    } else {
+        profile
+            .rpc_providers
+            .iter()
+            .map(|provider| provider.url.trim().to_string())
+            .collect::<Vec<_>>()
+    };
+    let rpc_url_value = Value::Array(
+        canister_rpc_urls
+            .iter()
+            .cloned()
+            .map(Value::String)
+            .collect(),
+    );
+    let mut rpc_url_bytes = Vec::new();
+    canonical_json(&rpc_url_value, &mut rpc_url_bytes)?;
+    let rpc_provider_urls_sha256 = hex(&Sha256::digest(rpc_url_bytes));
+    let mut ui = serde_json::json!({
+        "environment": profile.environment,
+        "label": if profile.test_assets_only { "Base Sepolia" } else { "Base" },
+        "testOnly": profile.test_assets_only,
+        "environmentMode": null,
+        "activationTimelockDelaySeconds": profile.timelock.minimum_delay_seconds,
+        "gateBManifestSha256": gate_b_manifest_sha256,
+        "profileFileSha256": hex(&Sha256::digest(profile_bytes)),
+        "profileCanonicalSha256": hex(&canonical_sha256(profile)?),
+        "icHost": profile.ic_host,
+        "chainId": profile.chain_id,
+        "bridgeCanisterId": profile.bridge_canister_id,
+        "deploymentInstanceId": profile.deployment_instance_id,
+        "minimumWithdrawalId": profile.minimum_withdrawal_id,
+        "ledgerCanisterId": profile.ledger_canister_id,
+        "indexCanisterId": profile.index_canister_id,
+        "snsRootCanisterId": profile.root_canister_id,
+        "icToken": { "name": "KINIC", "symbol": "KINIC", "decimals": profile.decimals },
+        "baseToken": { "symbol": "KINIC", "decimals": profile.decimals },
+        "bridgeAddress": profile.bridge_contract,
+        "bsnsAddress": profile.bsns_contract,
+        "timelockAddress": profile.timelock.address,
+        "expected_bridge_signer": profile.expected_bridge_signer,
+        "evmRpcCanisterId": profile.evm_rpc_canister_id,
+        "rpcProviderUrlsSha256": format!("0x{rpc_provider_urls_sha256}"),
+        "deploymentBlock": profile.deployment_block.to_string(),
+        "bridgeRuntimeHash": format!("0x{}", profile.bridge_runtime_bytecode_sha256),
+        "bsnsRuntimeHash": format!("0x{}", profile.bsns_runtime_bytecode_sha256)
+    });
+    if let Some(base_rpc_url) = &profile.base_rpc_url {
+        ui.as_object_mut()
+            .ok_or("UI runtime profile must be an object")?
+            .insert("baseRpcUrl".into(), serde_json::json!(base_rpc_url));
+    }
+    Ok(ui)
+}
+
 fn render_release_inputs(
     profile_path: &Path,
     output: &Path,
@@ -4169,16 +4271,6 @@ fn render_release_inputs(
             .map(|provider| provider.url.trim().to_string())
             .collect::<Vec<_>>()
     };
-    let rpc_url_value = Value::Array(
-        canister_rpc_urls
-            .iter()
-            .cloned()
-            .map(Value::String)
-            .collect(),
-    );
-    let mut rpc_url_bytes = Vec::new();
-    canonical_json(&rpc_url_value, &mut rpc_url_bytes)?;
-    let rpc_provider_urls_sha256 = hex(&Sha256::digest(rpc_url_bytes));
     let contract_hex = profile.bridge_contract.trim_start_matches("0x");
     let canister = serde_json::json!({
         "ledger_canister_id": profile.ledger_canister_id,
@@ -4252,40 +4344,7 @@ fn render_release_inputs(
             "max_priority_fee_per_gas": profile.initial_base_deployment.max_priority_fee_per_gas.to_string()
         }
     });
-    let mut ui = serde_json::json!({
-        "environment": profile.environment,
-        "label": if profile.test_assets_only { "Base Sepolia" } else { "Base" },
-        "testOnly": profile.test_assets_only,
-        "environmentMode": null,
-        "activationTimelockDelaySeconds": profile.timelock.minimum_delay_seconds,
-        "gateBManifestSha256": gate_b_manifest_sha256,
-        "profileFileSha256": profile_file_sha256,
-        "profileCanonicalSha256": profile_canonical_sha256,
-        "icHost": profile.ic_host,
-        "chainId": profile.chain_id,
-        "bridgeCanisterId": profile.bridge_canister_id,
-        "deploymentInstanceId": profile.deployment_instance_id,
-        "minimumWithdrawalId": profile.minimum_withdrawal_id,
-        "ledgerCanisterId": profile.ledger_canister_id,
-        "indexCanisterId": profile.index_canister_id,
-        "snsRootCanisterId": profile.root_canister_id,
-        "icToken": { "name": "KINIC", "symbol": "KINIC", "decimals": profile.decimals },
-        "baseToken": { "symbol": "KINIC", "decimals": profile.decimals },
-        "bridgeAddress": profile.bridge_contract,
-        "bsnsAddress": profile.bsns_contract,
-        "timelockAddress": profile.timelock.address,
-        "expected_bridge_signer": profile.expected_bridge_signer,
-        "evmRpcCanisterId": profile.evm_rpc_canister_id,
-        "rpcProviderUrlsSha256": format!("0x{rpc_provider_urls_sha256}"),
-        "deploymentBlock": profile.deployment_block.to_string(),
-        "bridgeRuntimeHash": format!("0x{}", profile.bridge_runtime_bytecode_sha256),
-        "bsnsRuntimeHash": format!("0x{}", profile.bsns_runtime_bytecode_sha256)
-    });
-    if let Some(base_rpc_url) = &profile.base_rpc_url {
-        ui.as_object_mut()
-            .ok_or("UI runtime profile must be an object")?
-            .insert("baseRpcUrl".into(), serde_json::json!(base_rpc_url));
-    }
+    let ui = ui_runtime_profile(&profile, &profile_bytes, production, gate_b_manifest_sha256)?;
     let mut artifacts = BTreeMap::new();
     artifacts.insert(
         "canister-init.json",
@@ -6254,6 +6313,7 @@ fn validate_post_gate_a_policy_transition(
     profile: &Profile,
     gate_a_profile: &Profile,
     receipt: &GateAReceipt,
+    expected_terminal_schema: u16,
     now: u64,
 ) -> Result<(), String> {
     let transition: PostGateAPolicyTransition =
@@ -6266,7 +6326,7 @@ fn validate_post_gate_a_policy_transition(
         receipt,
         &upgrade_bytes,
         &profile.bridge_canister_wasm_sha256,
-        CURRENT_STABLE_SCHEMA_VERSION,
+        expected_terminal_schema,
     )?;
     let upgrade = &upgrades
         .last()
@@ -6474,7 +6534,7 @@ fn validate_post_gate_a_policy_transition(
         terminal_deposits_paused = entry_after_status.deposits_paused;
     }
     if migration_seen != migration_required
-        || expected_schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || expected_schema_version != expected_terminal_schema
         || !expected_before_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
     {
         return Err("production upgrade chain does not reach the current profile".into());
@@ -6649,7 +6709,7 @@ fn validate_post_gate_a_policy_transition(
         upgrade.after_schema_version,
     )
     .is_none()
-        || upgrade.after_schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || upgrade.after_schema_version != expected_terminal_schema
         || before_runtime.schema_version != upgrade.before_schema_version
         || after_runtime.schema_version != upgrade.after_schema_version
         || !last_runtime_transition_valid
@@ -6761,7 +6821,7 @@ fn validate_post_gate_a_policy_transition(
             upgrade.after_schema_version,
         )
         .is_none()
-        || upgrade.after_schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || upgrade.after_schema_version != expected_terminal_schema
         || before_runtime.schema_version != upgrade.before_schema_version
         || after_runtime.schema_version != upgrade.after_schema_version
         || !last_runtime_transition_valid
@@ -6891,6 +6951,11 @@ fn validate_bundle_with_freshness_at(
     require_current: bool,
     wall_now: u64,
 ) -> Result<ValidatedBundle, String> {
+    let schema_policy = if gate_b && !require_current {
+        ProfileSchemaPolicy::Historical
+    } else {
+        ProfileSchemaPolicy::Current
+    };
     if root.join("proof-attestation.json").exists() {
         return Err(
             "obsolete self-asserted proof attestation is forbidden; release drivers rerun proofs"
@@ -6962,7 +7027,7 @@ fn validate_bundle_with_freshness_at(
         }
     }
     let profile: Profile = read_json(&root.join("profile.json"))?;
-    validate_profile(&profile, !manifest.test_only)?;
+    validate_profile_with_schema_policy(&profile, !manifest.test_only, schema_policy)?;
     if gate_b {
         let initial: InitialOperationalParameters =
             read_json(&root.join("initial-operational-parameters.json"))?;
@@ -7010,7 +7075,8 @@ fn validate_bundle_with_freshness_at(
             fs::read(root.join("gate-a-profile.json")).map_err(|e| e.to_string())?;
         let gate_a_profile: Profile =
             serde_json::from_slice(&gate_a_profile_source).map_err(|e| e.to_string())?;
-        validate_profile(&gate_a_profile, !manifest.test_only)?;
+        validate_profile_with_schema_policy(&gate_a_profile, !manifest.test_only, schema_policy)?;
+        validate_gate_b_profile_schema_convergence(&profile, &gate_a_profile)?;
         if gate_a_profile.deployment_block != 0
             || !profile_uses_production_bootstrap_operational_config(&gate_a_profile)
         {
@@ -7077,6 +7143,7 @@ fn validate_bundle_with_freshness_at(
             &profile,
             &gate_a_profile,
             &receipt,
+            profile.canister_schema_version,
             now,
         )?;
     }
@@ -7599,18 +7666,27 @@ fn validate_production_handover_canister_state(
     )
 }
 
-fn verify_production_canister_handover(
+fn verify_production_canister_handover_state(
     bundle_path: &Path,
     seal_receipt_path: &Path,
     schedule_receipt_path: &Path,
     execute_receipt_path: &Path,
-) -> Result<(), String> {
+    production_ui_runtime_profile: Option<&Path>,
+) -> Result<ValidatedBundle, String> {
     let (bundle, gate_a_receipt, execute_receipt) = validate_production_handover_candidate_files(
         bundle_path,
         seal_receipt_path,
         schedule_receipt_path,
         execute_receipt_path,
     )?;
+    if let Some(runtime_profile_path) = production_ui_runtime_profile {
+        validate_production_ui_runtime_profile(
+            &bundle.profile,
+            &bundle.root.join("profile.json"),
+            &bundle.manifest_sha256,
+            runtime_profile_path,
+        )?;
+    }
     let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
     let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
@@ -7740,9 +7816,77 @@ fn verify_production_canister_handover(
         bundle.manifest.created_at_unix,
         now_unix()?,
     )?;
+    Ok(bundle)
+}
+
+fn verify_production_canister_handover(
+    bundle_path: &Path,
+    seal_receipt_path: &Path,
+    schedule_receipt_path: &Path,
+    execute_receipt_path: &Path,
+) -> Result<(), String> {
+    let bundle = verify_production_canister_handover_state(
+        bundle_path,
+        seal_receipt_path,
+        schedule_receipt_path,
+        execute_receipt_path,
+        None,
+    )?;
     println!(
         "production_canister_handover=verified canister={}",
         bundle.profile.bridge_canister_id
+    );
+    Ok(())
+}
+
+fn validate_production_ui_runtime_profile(
+    profile: &Profile,
+    gate_b_profile_path: &Path,
+    manifest_sha256: &str,
+    runtime_profile_path: &Path,
+) -> Result<(), String> {
+    if profile.canister_schema_version != PREVIOUS_STABLE_SCHEMA_VERSION {
+        return Err(
+            "production UI authorization currently requires deployed stable schema version 35"
+                .into(),
+        );
+    }
+    let profile_bytes = fs::read(gate_b_profile_path)
+        .map_err(|e| format!("{}: {e}", gate_b_profile_path.display()))?;
+    let expected = canonical_bytes(&ui_runtime_profile(
+        profile,
+        &profile_bytes,
+        true,
+        Some(manifest_sha256),
+    )?)?;
+    let supplied = fs::read(runtime_profile_path)
+        .map_err(|e| format!("{}: {e}", runtime_profile_path.display()))?;
+    if supplied != expected {
+        return Err(
+            "supplied UI runtime profile is not the deterministic historical Gate B rendering"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn verify_production_ui_live(
+    bundle_path: &Path,
+    seal_receipt_path: &Path,
+    schedule_receipt_path: &Path,
+    execute_receipt_path: &Path,
+    runtime_profile_path: &Path,
+) -> Result<(), String> {
+    let bundle = verify_production_canister_handover_state(
+        bundle_path,
+        seal_receipt_path,
+        schedule_receipt_path,
+        execute_receipt_path,
+        Some(runtime_profile_path),
+    )?;
+    println!(
+        "production_ui=live-pass schema={} activation=execute manifest_sha256={}",
+        bundle.profile.canister_schema_version, bundle.manifest_sha256
     );
     Ok(())
 }
@@ -11429,6 +11573,15 @@ fn run() -> Result<(), String> {
                 Path::new(&args[5]),
             )?;
         }
+        Some("verify-production-ui-live") if args.len() == 7 => {
+            verify_production_ui_live(
+                Path::new(&args[2]),
+                Path::new(&args[3]),
+                Path::new(&args[4]),
+                Path::new(&args[5]),
+                Path::new(&args[6]),
+            )?;
+        }
         Some("storage-validation-complete") if args.len() == 3 => {
             println!("{}", storage_validation_complete(&args[2])?);
         }
@@ -12304,6 +12457,118 @@ mod tests {
                 fee_bump_bps: 1_250,
             },
         }
+    }
+
+    #[test]
+    fn historical_profile_schema_policy_is_bounded_to_v35_and_v36() {
+        let mut profile = valid_profile();
+        assert!(validate_profile(&profile, true).is_ok());
+        assert!(validate_profile_with_schema_policy(
+            &profile,
+            true,
+            ProfileSchemaPolicy::Historical,
+        )
+        .is_ok());
+
+        profile.canister_schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
+        assert!(validate_profile(&profile, true).is_err());
+        assert!(validate_profile_with_schema_policy(
+            &profile,
+            true,
+            ProfileSchemaPolicy::Historical,
+        )
+        .is_ok());
+
+        for unknown in [
+            PREVIOUS_STABLE_SCHEMA_VERSION - 1,
+            CURRENT_STABLE_SCHEMA_VERSION + 1,
+        ] {
+            profile.canister_schema_version = unknown;
+            assert!(validate_profile_with_schema_policy(
+                &profile,
+                true,
+                ProfileSchemaPolicy::Historical,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn historical_gate_b_rejects_mixed_profile_schema_versions() {
+        let mut profile = valid_profile();
+        let mut gate_a_profile = profile.clone();
+        assert!(validate_gate_b_profile_schema_convergence(&profile, &gate_a_profile).is_ok());
+
+        profile.canister_schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
+        assert!(validate_gate_b_profile_schema_convergence(&profile, &gate_a_profile).is_err());
+        gate_a_profile.canister_schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
+        assert!(validate_gate_b_profile_schema_convergence(&profile, &gate_a_profile).is_ok());
+    }
+
+    #[test]
+    fn production_ui_runtime_profile_rendering_is_byte_stable() {
+        let profile = valid_profile();
+        let profile_bytes = canonical_bytes(&profile).unwrap();
+        let manifest_sha256 = "a".repeat(64);
+        let first = canonical_bytes(
+            &ui_runtime_profile(&profile, &profile_bytes, true, Some(&manifest_sha256)).unwrap(),
+        )
+        .unwrap();
+        let second = canonical_bytes(
+            &ui_runtime_profile(&profile, &profile_bytes, true, Some(&manifest_sha256)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first, second);
+        assert!(String::from_utf8(first)
+            .unwrap()
+            .contains(&format!("\"gateBManifestSha256\":\"{manifest_sha256}\"")));
+    }
+
+    #[test]
+    fn production_ui_runtime_profile_requires_exact_v35_rendering() {
+        let root = env::temp_dir().join(format!("bridge-ui-runtime-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut profile = valid_profile();
+        profile.canister_schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
+        let gate_b_profile = root.join("profile.json");
+        let runtime_profile = root.join("ui-runtime-profile.json");
+        let profile_bytes = canonical_bytes(&profile).unwrap();
+        fs::write(&gate_b_profile, &profile_bytes).unwrap();
+        let manifest_sha256 = "a".repeat(64);
+        let expected = canonical_bytes(
+            &ui_runtime_profile(&profile, &profile_bytes, true, Some(&manifest_sha256)).unwrap(),
+        )
+        .unwrap();
+        fs::write(&runtime_profile, &expected).unwrap();
+        assert!(validate_production_ui_runtime_profile(
+            &profile,
+            &gate_b_profile,
+            &manifest_sha256,
+            &runtime_profile,
+        )
+        .is_ok());
+
+        let mut drifted = expected;
+        drifted.push(b' ');
+        fs::write(&runtime_profile, drifted).unwrap();
+        assert!(validate_production_ui_runtime_profile(
+            &profile,
+            &gate_b_profile,
+            &manifest_sha256,
+            &runtime_profile,
+        )
+        .is_err());
+
+        profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
+        assert!(validate_production_ui_runtime_profile(
+            &profile,
+            &gate_b_profile,
+            &manifest_sha256,
+            &runtime_profile,
+        )
+        .is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn live_runtime_binding(profile: &Profile) -> LiveRuntimeBinding {

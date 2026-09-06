@@ -1,5 +1,4 @@
 // @vitest-environment node
-import { createHash } from "node:crypto"
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -23,9 +22,6 @@ function fixture(profileOverrides = {}) {
   mkdirSync(bundle)
   mkdirSync(bin)
   const gate = "a".repeat(64)
-  const revision = "b".repeat(40)
-  const archive = "x".repeat(2 * 1024 * 1024)
-  const tree = createHash("sha256").update(archive).digest("hex")
   const profile =
     JSON.stringify({
       environment: "mainnet-candidate",
@@ -57,46 +53,26 @@ function fixture(profileOverrides = {}) {
       bsnsRuntimeHash: `0x${"66".repeat(32)}`,
       ...profileOverrides,
     }) + "\n"
-  for (const name of ["canister-init.json", "contract-constructor-args.json"])
-    writeFileSync(join(inputs, name), "{}\n")
-  writeFileSync(join(inputs, "ui-runtime-profile.json"), profile)
-  const uiHash = createHash("sha256").update(profile).digest("hex")
-  writeFileSync(
-    join(inputs, "release-inputs-manifest.json"),
-    JSON.stringify({ artifacts: { "ui-runtime-profile.json": uiHash } }) + "\n",
-  )
-  writeFileSync(
-    join(bundle, "release-manifest.json"),
-    JSON.stringify({ source_revision: revision, source_tree_sha256: tree }) + "\n",
-  )
+  const paths = {
+    profile: join(inputs, "ui-runtime-profile.json"),
+    asset: join(inputs, "ui-assets.json"),
+    seal: join(inputs, "seal.json"),
+    schedule: join(inputs, "schedule.json"),
+    execute: join(inputs, "execute.json"),
+  }
+  writeFileSync(paths.profile, profile)
+  for (const path of Object.values(paths).slice(1)) writeFileSync(path, "{}\n")
   const cargo = join(bin, "cargo")
   writeFileSync(
     cargo,
     `#!/usr/bin/env node
-const fs=require('node:fs'); const a=process.argv.slice(2);
-if(a.includes('verify-live')) {
-  const i=a.indexOf('verify-live');
-  if(a[i+1]!=='schedule'||a[i+2]!==process.env.BRIDGE_RELEASE_BUNDLE||process.env.FAKE_VERIFY_FAIL) process.exit(1);
-  console.log('gate_b=live-pass authorizing=schedule manifest_sha256=${gate}');
-}
-else if(a.includes('render-bundle-inputs')) fs.cpSync(process.env.FAKE_INPUTS,a.at(-1),{recursive:true});
-else process.exit(2);
+const a=process.argv.slice(2); const i=a.indexOf('verify-production-ui-live');
+if(i<0 || a[i+1]!==process.env.BRIDGE_RELEASE_BUNDLE || a[i+2]!==process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT || a[i+3]!==process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT || a[i+4]!==process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT || a[i+5]!==process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE || process.env.FAKE_VERIFY_FAIL) process.exit(1);
+console.log('production_ui=live-pass schema=35 activation=execute manifest_sha256=${gate}');
 `,
   )
   chmodSync(cargo, 0o755)
-  const git = join(bin, "git")
-  writeFileSync(
-    git,
-    `#!/usr/bin/env node
-const a=process.argv.slice(2);
-if(a.includes('status')) process.stdout.write(process.env.FAKE_GIT_DIRTY ? ' M ui/src/config.ts\\n' : '');
-else if(a.includes('rev-parse')) console.log('${revision}');
-else if(a.includes('archive')) process.stdout.write('${archive}');
-else process.exit(2);
-`,
-  )
-  chmodSync(git, 0o755)
-  return { bundle, inputs, bin, gate, profile }
+  return { bundle, bin, paths, profile }
 }
 
 /** @param {NodeJS.ProcessEnv} env */
@@ -109,152 +85,80 @@ function run(env) {
 
 const walletConnectProjectId = "0123456789abcdef0123456789abcdef"
 
-describe("production UI Gate B binding", () => {
-  it("rejects an arbitrary manifest environment value without a signed bundle", () => {
+/** @param {ReturnType<typeof fixture>} f @param {NodeJS.ProcessEnv} [overrides] */
+function validEnv(f, overrides = {}) {
+  return {
+    PATH: `${f.bin}:${process.env.PATH}`,
+    BRIDGE_RELEASE_BUNDLE: f.bundle,
+    BRIDGE_UI_RUNTIME_PROFILE_FILE: f.paths.profile,
+    BRIDGE_UI_ASSET_RECEIPT: f.paths.asset,
+    BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT: f.paths.seal,
+    BRIDGE_CONTROLLER_SCHEDULE_RECEIPT: f.paths.schedule,
+    BRIDGE_CONTROLLER_EXECUTE_RECEIPT: f.paths.execute,
+    VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
+    VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
+    ...overrides,
+  }
+}
+
+describe("production UI live binding", () => {
+  it("rejects an arbitrary environment value without the required evidence", () => {
     const result = run({ BRIDGE_GATE_B_MANIFEST_SHA256: "f".repeat(64) })
     expect(result.status).not.toBe(0)
-    expect(result.stderr).toContain("requires a signed Gate B bundle")
+    expect(result.stderr).toContain("requires the UI asset receipt")
   })
 
   it("rejects when the fixed bridge-profile verifier fails", () => {
-    const f = fixture()
-    const result = run({
-      PATH: `${f.bin}:${process.env.PATH}`,
-      FAKE_VERIFY_FAIL: "1",
-      FAKE_INPUTS: f.inputs,
-      BRIDGE_RELEASE_BUNDLE: f.bundle,
-      BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
-      BRIDGE_RELEASE_INPUTS_MANIFEST: join(f.inputs, "release-inputs-manifest.json"),
-      VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
-      BRIDGE_GATE_B_MANIFEST_SHA256: "f".repeat(64),
-      VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
-    })
+    const result = run(validEnv(fixture(), { FAKE_VERIFY_FAIL: "1" }))
     expect(result.status).not.toBe(0)
   })
 
   it("rejects a production deploy without a WalletConnect project ID", () => {
-    const f = fixture()
-    const result = run({
-      PATH: `${f.bin}:${process.env.PATH}`,
-      FAKE_INPUTS: f.inputs,
-      BRIDGE_RELEASE_BUNDLE: f.bundle,
-      BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
-      BRIDGE_RELEASE_INPUTS_MANIFEST: join(f.inputs, "release-inputs-manifest.json"),
-      VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
-      VITE_WALLETCONNECT_PROJECT_ID: "",
-    })
+    const result = run(validEnv(fixture(), { VITE_WALLETCONNECT_PROJECT_ID: "" }))
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain(
       "requires a 32-character hexadecimal VITE_WALLETCONNECT_PROJECT_ID",
     )
   })
 
-  it("derives approval from the verified bundle rather than the environment value", () => {
-    const f = fixture()
-    const result = run({
-      PATH: `${f.bin}:${process.env.PATH}`,
-      FAKE_INPUTS: f.inputs,
-      BRIDGE_RELEASE_BUNDLE: f.bundle,
-      BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
-      BRIDGE_RELEASE_INPUTS_MANIFEST: join(f.inputs, "release-inputs-manifest.json"),
-      VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
-      BRIDGE_GATE_B_MANIFEST_SHA256: "f".repeat(64),
-      VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
-    })
+  it("derives approval from the live verifier rather than an environment hash", () => {
+    const result = run(validEnv(fixture(), { BRIDGE_GATE_B_MANIFEST_SHA256: "f".repeat(64) }))
     expect(result.status, result.stderr).toBe(0)
   })
 
-  it("rejects an alternate manifest basename even when its profile hash is valid", () => {
-    const f = fixture()
-    const alternateManifest = join(f.inputs, "alternate-manifest.json")
-    const profileHash = createHash("sha256").update(f.profile).digest("hex")
-    writeFileSync(
-      alternateManifest,
-      JSON.stringify({
-        artifacts: { "ui-runtime-profile.json": profileHash },
-        unreviewed: true,
-      }) + "\n",
-    )
-    const result = run({
-      PATH: `${f.bin}:${process.env.PATH}`,
-      FAKE_INPUTS: f.inputs,
-      BRIDGE_RELEASE_BUNDLE: f.bundle,
-      BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
-      BRIDGE_RELEASE_INPUTS_MANIFEST: alternateManifest,
-      VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
-      VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
-    })
+  it("requires the standalone UI asset receipt", () => {
+    const result = run(validEnv(fixture(), { BRIDGE_UI_ASSET_RECEIPT: "" }))
     expect(result.status).not.toBe(0)
-    expect(result.stderr).toContain("Production release input drift: release-inputs-manifest.json")
+    expect(result.stderr).toContain("requires the UI asset receipt")
   })
 
-  it("rejects a self-consistent alternate profile and manifest pair", () => {
+  it("rejects a runtime profile that the live verifier does not authorize", () => {
     const f = fixture()
-    const drifted =
-      JSON.stringify({
-        ...JSON.parse(f.profile),
-        bridgeAddress: `0x${"88".repeat(20)}`,
-      }) + "\n"
-    const alternateProfile = join(f.inputs, "alternate-profile.json")
-    const alternateManifest = join(f.inputs, "alternate-manifest.json")
-    writeFileSync(alternateProfile, drifted)
-    writeFileSync(
-      alternateManifest,
-      JSON.stringify({
-        artifacts: {
-          "ui-runtime-profile.json": createHash("sha256").update(drifted).digest("hex"),
-        },
-      }) + "\n",
+    const alternate = join(root, "alternate-profile.json")
+    const drifted = JSON.stringify({
+      ...JSON.parse(f.profile),
+      bridgeAddress: `0x${"88".repeat(20)}`,
+    })
+    writeFileSync(alternate, `${drifted}\n`)
+    const result = run(
+      validEnv(f, {
+        BRIDGE_UI_RUNTIME_PROFILE_FILE: alternate,
+        VITE_DEPLOYMENT_PROFILE_JSON: drifted,
+        FAKE_VERIFY_FAIL: "1",
+      }),
     )
-    const result = run({
-      PATH: `${f.bin}:${process.env.PATH}`,
-      FAKE_INPUTS: f.inputs,
-      BRIDGE_RELEASE_BUNDLE: f.bundle,
-      BRIDGE_UI_RUNTIME_PROFILE_FILE: alternateProfile,
-      BRIDGE_RELEASE_INPUTS_MANIFEST: alternateManifest,
-      VITE_DEPLOYMENT_PROFILE_JSON: drifted,
-      VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
-    })
     expect(result.status).not.toBe(0)
-    expect(result.stderr).toContain("Production release input drift: ui-runtime-profile.json")
-  })
-
-  it("rejects a dirty UI checkout before build or deploy", () => {
-    const f = fixture()
-    const result = run({
-      PATH: `${f.bin}:${process.env.PATH}`,
-      FAKE_INPUTS: f.inputs,
-      FAKE_GIT_DIRTY: "1",
-      BRIDGE_RELEASE_BUNDLE: f.bundle,
-      BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
-      BRIDGE_RELEASE_INPUTS_MANIFEST: join(f.inputs, "release-inputs-manifest.json"),
-      VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
-      VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
-    })
-    expect(result.status).not.toBe(0)
-    expect(result.stderr).toContain("exact clean Gate B source tree")
   })
 
   it.each([
     [{ activationTimelockDelaySeconds: null }, "at least 24 hours"],
     [{ activationTimelockDelaySeconds: 300 }, "at least 24 hours"],
     [{ environmentMode: "short-delay-test-only" }, "environment modes"],
-  ])(
-    "rejects an unsafe production Timelock profile",
-    (overrides, message) => {
-      const f = fixture(overrides)
-      const result = run({
-        PATH: `${f.bin}:${process.env.PATH}`,
-        FAKE_INPUTS: f.inputs,
-        BRIDGE_RELEASE_BUNDLE: f.bundle,
-        BRIDGE_UI_RUNTIME_PROFILE_FILE: join(f.inputs, "ui-runtime-profile.json"),
-        BRIDGE_RELEASE_INPUTS_MANIFEST: join(f.inputs, "release-inputs-manifest.json"),
-        VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
-        VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
-      })
-      expect(result.status).not.toBe(0)
-      expect(result.stderr).toContain(message)
-    },
-    30_000,
-  )
+    [{ deploymentBlock: "0" }, "positive deployment block"],
+    [{ deploymentBlock: null }, "positive deployment block"],
+  ])("rejects an unsafe production profile", (overrides, message) => {
+    const result = run(validEnv(fixture(overrides)))
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain(message)
+  })
 })

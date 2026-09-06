@@ -1,11 +1,12 @@
 # AGENTS.md
 
-## Pre-deployment compatibility policy
+## Production compatibility policy
 
-- This repository has not been deployed to production yet. Until the first production deployment, do not preserve backward compatibility for obsolete public APIs, configuration shapes, stable-memory schemas, fixtures, or upgrade paths.
-- Prefer replacing pre-deployment formats directly and updating all callers, tests, fixtures, and documentation in the same change. Do not add legacy migrations, compatibility shims, dual-read paths, or fallbacks unless the user explicitly requests them.
-- Unknown or obsolete stable schema versions must fail closed. Test upgrades and stable-memory reopen behavior only for the current schema unless an earlier schema has actually been deployed.
-- Revisit and explicitly tighten this policy when the first production deployment is approved.
+- The production Bridge Canister is deployed and activated at stable schema v35. The source tree's current schema v36 has not yet been deployed to production.
+- Normal current-release Gate B validation must accept only v36. Historical verification may accept exactly the deployed v35 or current v36 only when every profile, Gate A receipt, upgrade-chain terminal, Wasm binding, and live RuntimeBinding converges on the same version.
+- The post-activation production UI authorization is temporarily restricted to the deployed v35 evidence lineage. This is not a general legacy fallback; v34, v37, mixed-version evidence, aliases, shims, and dual-read paths must fail closed.
+- For formats and APIs that have not been deployed, replace obsolete shapes directly and update all callers, tests, fixtures, and documentation in the same change. Do not add compatibility shims or fallbacks unless the user explicitly requests them.
+- Revisit the v35-only UI authorization when the production Canister is upgraded to v36.
 
 ## RPC chain binding review policy
 
