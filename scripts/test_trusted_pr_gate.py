@@ -190,6 +190,22 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("ICP_TELEMETRY_DISABLED: \"1\"", workflow)
         self.assertIn("prepare_candidate_dependencies.py", workflow)
         self.assertIn("BRIDGE_TRUSTED_DEPENDENCY_ROOT", workflow)
+        rust_toolchain_step = workflow[
+            workflow.index("Install pinned Rust toolchain") : workflow.index(
+                "Install Node.js 24.14.0"
+            )
+        ]
+        rust_cache_step = workflow[
+            workflow.index("Restore Rust registry cache") : workflow.index(
+                "Restore pnpm store cache"
+            )
+        ]
+        foundry_step = workflow[
+            workflow.index("Install Foundry 1.7.1") : workflow.index("Install uv 0.8.4")
+        ]
+        self.assertIn("matrix.area == 'real'", rust_toolchain_step)
+        self.assertIn("matrix.area == 'real'", rust_cache_step)
+        self.assertIn("matrix.area == 'real'", foundry_step)
         self.assertIn('case "${{ matrix.area }}" in', workflow)
         self.assertIn('rust|proofs|ui|real) ;;', workflow)
         self.assertIn('*) mkdir "$dependency_root" ;;', workflow)
@@ -344,6 +360,14 @@ class TrustedPrGateTests(unittest.TestCase):
             wrapper,
         )
         self.assertIn("NEEDS_ICP_PACKAGE_CACHE=false", wrapper)
+        self.assertIn(
+            "rust-fast|rust-integration|proofs|real|icp) NEEDS_RUST_TOOLCHAIN=true",
+            wrapper,
+        )
+        self.assertIn(
+            "contracts-fast|contracts-coverage|proofs|certora|real) NEEDS_FOUNDRY=true",
+            wrapper,
+        )
         self.assertIn('if [[ "$MODE" == "icp" ]]', wrapper)
         self.assertIn("NEEDS_ICP_PACKAGE_CACHE=true", wrapper)
         self.assertIn('if [[ "$NEEDS_ICP_PACKAGE_CACHE" == true ]]', wrapper)
