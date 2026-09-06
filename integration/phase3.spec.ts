@@ -518,6 +518,7 @@ describe("Phase 3 PocketIC saga", () => {
   }
 
   beforeAll(async () => {
+    buildSchema35Predecessor();
     const probe = createServer();
     const port = await new Promise<number>((resolvePort, reject) => {
       probe.once("error", reject);
@@ -1023,7 +1024,6 @@ describe("Phase 3 PocketIC saga", () => {
   );
 
   async function migrates_the_exact_confirmed_old_generation_from_schema_35() {
-    buildSchema35Predecessor();
     const {
       bridge,
       evm,
