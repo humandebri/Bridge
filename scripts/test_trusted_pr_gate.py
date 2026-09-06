@@ -207,7 +207,12 @@ class TrustedPrGateTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "matrix.area == 'rust' || matrix.area == 'real' || matrix.area == 'icp'",
+            "contains(fromJSON(needs.classify.outputs.matrix), 'rust') || "
+            "contains(fromJSON(needs.classify.outputs.matrix), 'real')",
+            workflow,
+        )
+        self.assertIn(
+            "matrix.area == 'rust' || matrix.area == 'real'",
             workflow,
         )
         self.assertIn(

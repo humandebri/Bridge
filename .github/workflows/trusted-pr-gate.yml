@@ -191,10 +191,17 @@ jobs:
             /home/runner/.rustup/toolchains/1.96.0
           key: bridge-trusted-pr-proof-tools-${{ needs.classify.outputs.base_sha }}-${{ hashFiles('trusted-policy/lean-toolchain', 'trusted-policy/scripts/install-ci-tools.sh') }}
       - name: Prefetch locked Rust dependencies from trusted policy
-        if: matrix.area == 'rust' || matrix.area == 'real' || matrix.area == 'icp'
+        # Keep the trusted base's aggregate rust/real guard while limiting work to the active shard.
+        if: >-
+          matrix.area == 'icp' ||
+          ((contains(fromJSON(needs.classify.outputs.matrix), 'rust') || contains(fromJSON(needs.classify.outputs.matrix), 'real')) &&
+          (matrix.area == 'rust' || matrix.area == 'real'))
         run: cargo fetch --locked --manifest-path trusted-policy/Cargo.toml
       - name: Prefetch pinned ICP recipes from trusted policy
-        if: matrix.area == 'rust' || matrix.area == 'real' || matrix.area == 'icp'
+        if: >-
+          matrix.area == 'icp' ||
+          ((contains(fromJSON(needs.classify.outputs.matrix), 'rust') || contains(fromJSON(needs.classify.outputs.matrix), 'real')) &&
+          (matrix.area == 'rust' || matrix.area == 'real'))
         working-directory: trusted-policy
         env:
           ICP_CLI_DISABLE_UPDATE: "1"
