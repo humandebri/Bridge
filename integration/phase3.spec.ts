@@ -1076,6 +1076,7 @@ describe("Phase 3 PocketIC saga", () => {
       controllers: [replacementController],
       sender: controller,
     });
+    bridge.actor.setPrincipal(replacementController);
     expect(await (bridge.actor as any).schedule_activation())
       .toEqual({ Err: { Unauthorized: null } });
   }
