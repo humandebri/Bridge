@@ -15509,15 +15509,77 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         );
         let bundle = validate_bundle(&root, true).unwrap();
         let baseline_manifest_bytes = fs::read(root.join("release-manifest.json")).unwrap();
+        let mut sealed_upgrade: ProductionCanisterUpgradeReceipt =
+            serde_json::from_slice(&production_upgrade_bytes).unwrap();
+        sealed_upgrade.before_module_sha256 = profile.bridge_canister_wasm_sha256.clone();
+        sealed_upgrade.before_management_status_json_hex =
+            production_upgrade.after_management_status_json_hex.clone();
+        sealed_upgrade.before_management_status_json_sha256 = production_upgrade
+            .after_management_status_json_sha256
+            .clone();
+        sealed_upgrade.after_management_status_json_hex =
+            production_upgrade.after_management_status_json_hex.clone();
+        sealed_upgrade.after_management_status_json_sha256 = production_upgrade
+            .after_management_status_json_sha256
+            .clone();
+        sealed_upgrade.before_bridge_status_response_hex = hex(&migrated_status_raw);
+        sealed_upgrade.before_bridge_status_response_sha256 =
+            hex(&Sha256::digest(&migrated_status_raw));
+        sealed_upgrade.after_bridge_status_response_hex = hex(&migrated_status_raw);
+        sealed_upgrade.after_bridge_status_response_sha256 =
+            hex(&Sha256::digest(&migrated_status_raw));
+        let sealed_lifecycle_raw = Encode!(&ProductionLifecycleResultView::Ok(
+            ProductionLifecycleView::OperationalConfigSealed,
+        ))
+        .unwrap();
+        sealed_upgrade.before_lifecycle = "OperationalConfigSealed".into();
+        sealed_upgrade.after_lifecycle = "OperationalConfigSealed".into();
+        sealed_upgrade.before_lifecycle_response_hex = hex(&sealed_lifecycle_raw);
+        sealed_upgrade.before_lifecycle_response_sha256 =
+            hex(&Sha256::digest(&sealed_lifecycle_raw));
+        sealed_upgrade.after_lifecycle_response_hex = hex(&sealed_lifecycle_raw);
+        sealed_upgrade.after_lifecycle_response_sha256 =
+            hex(&Sha256::digest(&sealed_lifecycle_raw));
+        let mut sealed_runtime_view = after_runtime_view.clone();
+        sealed_runtime_view.operational_config_sha256 = vec![0x91; 32];
+        let sealed_runtime_raw = Encode!(&sealed_runtime_view).unwrap();
+        sealed_upgrade.before_runtime_binding_response_hex = hex(&sealed_runtime_raw);
+        sealed_upgrade.before_runtime_binding_response_sha256 =
+            hex(&Sha256::digest(&sealed_runtime_raw));
+        sealed_upgrade.after_runtime_binding_response_hex = hex(&sealed_runtime_raw);
+        sealed_upgrade.after_runtime_binding_response_sha256 =
+            hex(&Sha256::digest(&sealed_runtime_raw));
+        sealed_upgrade.before_public_state_sha256 = production_upgrade_public_state_sha256(
+            &migrated_upgrade_status,
+            &[
+                &sealed_upgrade.before_lifecycle_response_hex,
+                &sealed_upgrade.before_runtime_binding_response_hex,
+                &sealed_upgrade.before_storage_integrity_response_hex,
+            ],
+        )
+        .unwrap();
+        sealed_upgrade.after_public_state_sha256 =
+            sealed_upgrade.before_public_state_sha256.clone();
+        let sealed_upgrade_bytes = serde_json::to_vec(&sealed_upgrade).unwrap();
+        let first_receipt_sha256 = hex(&Sha256::digest(&production_upgrade_bytes));
+        let sealed_receipt_sha256 = hex(&Sha256::digest(&sealed_upgrade_bytes));
         let chain_bytes = serde_json::to_vec(&ProductionCanisterUpgradeChain {
             schema_version: 1,
             kind: "production-controller-bootstrap-upgrade-chain".into(),
-            entries: vec![ProductionCanisterUpgradeChainEntry {
-                sequence: 0,
-                previous_receipt_sha256: None,
-                receipt_sha256: hex(&Sha256::digest(&production_upgrade_bytes)),
-                receipt_json_hex: hex(&production_upgrade_bytes),
-            }],
+            entries: vec![
+                ProductionCanisterUpgradeChainEntry {
+                    sequence: 0,
+                    previous_receipt_sha256: None,
+                    receipt_sha256: first_receipt_sha256.clone(),
+                    receipt_json_hex: hex(&production_upgrade_bytes),
+                },
+                ProductionCanisterUpgradeChainEntry {
+                    sequence: 1,
+                    previous_receipt_sha256: Some(first_receipt_sha256.clone()),
+                    receipt_sha256: sealed_receipt_sha256.clone(),
+                    receipt_json_hex: hex(&sealed_upgrade_bytes),
+                },
+            ],
         })
         .unwrap();
         fs::write(
@@ -15550,6 +15612,62 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         )
         .unwrap();
         assert!(validate_bundle(&root, true).is_ok());
+        let mut drifted_upgrade: ProductionCanisterUpgradeReceipt =
+            serde_json::from_slice(&sealed_upgrade_bytes).unwrap();
+        let mut drifted_runtime_view = sealed_runtime_view;
+        drifted_runtime_view.operational_config_sha256 = vec![0x92; 32];
+        let drifted_runtime_raw = Encode!(&drifted_runtime_view).unwrap();
+        drifted_upgrade.before_runtime_binding_response_hex = hex(&drifted_runtime_raw);
+        drifted_upgrade.before_runtime_binding_response_sha256 =
+            hex(&Sha256::digest(&drifted_runtime_raw));
+        drifted_upgrade.after_runtime_binding_response_hex = hex(&drifted_runtime_raw);
+        drifted_upgrade.after_runtime_binding_response_sha256 =
+            hex(&Sha256::digest(&drifted_runtime_raw));
+        drifted_upgrade.before_public_state_sha256 = production_upgrade_public_state_sha256(
+            &migrated_upgrade_status,
+            &[
+                &drifted_upgrade.before_lifecycle_response_hex,
+                &drifted_upgrade.before_runtime_binding_response_hex,
+                &drifted_upgrade.before_storage_integrity_response_hex,
+            ],
+        )
+        .unwrap();
+        drifted_upgrade.after_public_state_sha256 =
+            drifted_upgrade.before_public_state_sha256.clone();
+        let drifted_upgrade_bytes = serde_json::to_vec(&drifted_upgrade).unwrap();
+        let drifted_chain_bytes = serde_json::to_vec(&ProductionCanisterUpgradeChain {
+            schema_version: 1,
+            kind: "production-controller-bootstrap-upgrade-chain".into(),
+            entries: vec![
+                ProductionCanisterUpgradeChainEntry {
+                    sequence: 0,
+                    previous_receipt_sha256: None,
+                    receipt_sha256: first_receipt_sha256,
+                    receipt_json_hex: hex(&production_upgrade_bytes),
+                },
+                ProductionCanisterUpgradeChainEntry {
+                    sequence: 1,
+                    previous_receipt_sha256: Some(hex(&Sha256::digest(&production_upgrade_bytes))),
+                    receipt_sha256: sealed_receipt_sha256.clone(),
+                    receipt_json_hex: hex(&sealed_upgrade_bytes),
+                },
+                ProductionCanisterUpgradeChainEntry {
+                    sequence: 2,
+                    previous_receipt_sha256: Some(sealed_receipt_sha256),
+                    receipt_sha256: hex(&Sha256::digest(&drifted_upgrade_bytes)),
+                    receipt_json_hex: hex(&drifted_upgrade_bytes),
+                },
+            ],
+        })
+        .unwrap();
+        assert!(validate_production_upgrade_history_bytes(
+            &gate_a_profile,
+            &receipt,
+            &drifted_chain_bytes,
+            &profile.bridge_canister_wasm_sha256,
+            CURRENT_STABLE_SCHEMA_VERSION,
+        )
+        .is_err());
         let mut broken_chain: ProductionCanisterUpgradeChain =
             serde_json::from_slice(&chain_bytes).unwrap();
         broken_chain.entries[0].previous_receipt_sha256 = Some("9".repeat(64));
