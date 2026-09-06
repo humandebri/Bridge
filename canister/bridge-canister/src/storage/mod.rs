@@ -26,9 +26,9 @@ use bridge_core::{
     resolve_deposit_hold, resolve_withdrawal_hold, AccountingState, Amount, ApplyResult,
     BaseMintSnapshot, CoreError, DepositHoldResolution, DepositId, DepositRecord, ExternalProgress,
     FeeKind, FinalizedObservationRecord, HoldId, LedgerFailure, LedgerTransferIdentity,
-    ReconciliationHoldRecord, ReconciliationHoldState, ReconciliationScanProgress,
-    ReconciliationTarget, WithdrawalEvent, WithdrawalHoldResolution, WithdrawalId,
-    WithdrawalRecord, WithdrawalState,
+    LegacyActivationEvidenceRequirement, ReconciliationHoldRecord, ReconciliationHoldState,
+    ReconciliationScanProgress, ReconciliationTarget, WithdrawalEvent, WithdrawalHoldResolution,
+    WithdrawalId, WithdrawalRecord, WithdrawalState,
 };
 use candid::{CandidType, Principal};
 use ic_sqlite_vfs::db::migrate::Migration;
@@ -409,6 +409,12 @@ const MIGRATIONS: &[Migration] = &[Migration {
 }];
 
 const PREVIOUS_SCHEMA_VERSION: u16 = 35;
+
+#[derive(Clone, Copy)]
+enum SchemaMigrationMode {
+    Production,
+    Staging,
+}
 
 #[cfg(test)]
 const OBSOLETE_SCHEMA_VERSION_V32: u16 = 32;
@@ -2411,7 +2417,10 @@ fn verify_metadata(handle: DbHandle) -> Result<(), StorageError> {
     Ok(())
 }
 
-fn migrate_previous_schema(handle: DbHandle) -> Result<(), StorageError> {
+fn migrate_previous_schema(
+    handle: DbHandle,
+    mode: SchemaMigrationMode,
+) -> Result<(), StorageError> {
     let (schema, wire) = stored_metadata(handle)?;
     if (schema, wire) != (PREVIOUS_SCHEMA_VERSION, WIRE_VERSION) {
         return Err(if schema != PREVIOUS_SCHEMA_VERSION {
@@ -2430,22 +2439,74 @@ fn migrate_previous_schema(handle: DbHandle) -> Result<(), StorageError> {
     })?;
     let mut admission =
         decode::<DepositAdmissionControl>(&StableBlob::new(previous_admission.clone())?)?;
+    let admin = handle.query(|connection| {
+        connection.query_scalar::<Vec<u8>>(
+            "SELECT admin_state FROM singleton_state WHERE id = 1",
+            params![],
+        )
+    })?;
+    let deposits_paused = decode::<Option<AdminState>>(&StableBlob::new(admin)?)?
+        .map(|admin| admin.deposits_paused)
+        .unwrap_or(true);
+    let last_completed = admission.last_completed_governance_transaction.as_ref();
+    let derived = last_completed
+        .map(confirmed_activation_record)
+        .transpose()?
+        .flatten();
     if admission.last_confirmed_activation.is_none() {
-        admission.last_confirmed_activation = admission
-            .last_completed_governance_transaction
-            .as_ref()
-            .map(confirmed_activation_record)
-            .transpose()?
-            .flatten();
+        admission.last_confirmed_activation = derived;
     }
-    if admission.operational_config_sealed
-        && admission.bootstrap_activation_controller.is_none()
-        && admission
-            .last_confirmed_activation
-            .as_ref()
-            .is_none_or(|record| record.phase != "execute")
-    {
-        return Err(StorageError::DecodeFailed);
+    let pending_activation = admission
+        .pending_timelock_operation
+        .filter(|_| admission.pending_control_plane_rotation.is_none());
+    let legacy_staging_controller = matches!(mode, SchemaMigrationMode::Staging)
+        && admission.bootstrap_activation_controller == Some(Principal::anonymous());
+    match ::bridge_core::kernel::legacy_activation_evidence_requirement(
+        admission.operational_config_sealed,
+        pending_activation.is_some(),
+        admission.bootstrap_activation_controller.is_some(),
+        legacy_staging_controller,
+        deposits_paused,
+    ) {
+        LegacyActivationEvidenceRequirement::Schedule => {
+            let pending = pending_activation.ok_or(StorageError::DecodeFailed)?;
+            let schedule_matches = matches!(
+                last_completed.map(|transaction| &transaction.kind),
+                Some(GovernanceTransactionKind::ScheduleActivation { operation_id, salt })
+                    if *operation_id == pending.operation_id && *salt == pending.salt
+            ) && admission.last_confirmed_activation.as_ref().is_some_and(
+                |record| {
+                    record.phase == "schedule"
+                        && record.timelock_operation_id == pending.operation_id
+                },
+            );
+            let pending_execute_matches = admission
+                .pending_governance_transaction
+                .as_ref()
+                .is_none_or(|transaction| {
+                    matches!(
+                        transaction.kind,
+                        GovernanceTransactionKind::ExecuteActivation { operation_id, salt }
+                            if operation_id == pending.operation_id && salt == pending.salt
+                    )
+                });
+            if !schedule_matches || !pending_execute_matches {
+                return Err(StorageError::DecodeFailed);
+            }
+        }
+        LegacyActivationEvidenceRequirement::Execute => {
+            if admission
+                .last_confirmed_activation
+                .as_ref()
+                .is_none_or(|record| record.phase != "execute")
+            {
+                return Err(StorageError::DecodeFailed);
+            }
+            if legacy_staging_controller {
+                admission.bootstrap_activation_controller = None;
+            }
+        }
+        LegacyActivationEvidenceRequirement::NotRequired => {}
     }
     let next_admission = encode(&admission)?;
     handle.update(|connection| {
@@ -3160,7 +3221,7 @@ impl StableStore {
         reset_sqlite_test_runtime();
         let handle = open_database(memory)?;
         if stored_metadata(handle)?.0 == PREVIOUS_SCHEMA_VERSION {
-            migrate_previous_schema(handle)?;
+            migrate_previous_schema(handle, SchemaMigrationMode::Production)?;
         }
         Self::reopen_handle(handle)
     }
@@ -3174,7 +3235,7 @@ impl StableStore {
         reset_sqlite_test_runtime();
         let handle = open_database(memory)?;
         if stored_metadata(handle)?.0 == PREVIOUS_SCHEMA_VERSION {
-            migrate_previous_schema(handle)?;
+            migrate_previous_schema(handle, SchemaMigrationMode::Staging)?;
         }
         let (schema, wire) = stored_metadata(handle)?;
         if (schema, wire) != (SCHEMA_VERSION, WIRE_VERSION) {
@@ -13343,7 +13404,7 @@ mod tests {
         assert_eq!(store.schema_version(), SCHEMA_VERSION);
     }
 
-    fn without_field<T: Serialize>(value: &T, field: &str) -> StableBlob {
+    fn without_fields<T: Serialize>(value: &T, fields: &[&str]) -> StableBlob {
         let encoded = encode(value).expect("encode current value");
         let mut cbor: ciborium::value::Value =
             ciborium::from_reader(&encoded.as_slice()[1..]).expect("decode CBOR value");
@@ -13351,11 +13412,23 @@ mod tests {
             panic!("serialized struct must be a CBOR map");
         };
         let before = entries.len();
-        entries.retain(|(key, _)| key != &ciborium::value::Value::Text(field.to_string()));
-        assert_eq!(entries.len() + 1, before, "field must exist before removal");
+        entries.retain(|(key, _)| {
+            !fields
+                .iter()
+                .any(|field| key == &ciborium::value::Value::Text((*field).to_string()))
+        });
+        assert_eq!(
+            entries.len() + fields.len(),
+            before,
+            "fields must exist before removal"
+        );
         let mut bytes = vec![WIRE_VERSION];
         ciborium::into_writer(&cbor, &mut bytes).expect("encode legacy CBOR value");
         StableBlob::new(bytes).expect("bounded legacy value")
+    }
+
+    fn without_field<T: Serialize>(value: &T, field: &str) -> StableBlob {
+        without_fields(value, &[field])
     }
 
     #[test]
@@ -13509,6 +13582,33 @@ mod tests {
             .expect("write schema 35 admission");
     }
 
+    fn write_v35_admission_without_controller(
+        store: &StableStore,
+        admission: &DepositAdmissionControl,
+    ) {
+        let legacy = without_fields(
+            admission,
+            &[
+                "last_confirmed_activation",
+                "bootstrap_activation_controller",
+            ],
+        );
+        store
+            .handle
+            .0
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
+                    params![legacy.to_sql_bytes()],
+                )?;
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
+                    params![i64::from(PREVIOUS_SCHEMA_VERSION)],
+                )
+            })
+            .expect("write legacy staging admission");
+    }
+
     #[test]
     #[serial]
     fn schema_v35_is_migrated_only_by_upgrade_reopen() {
@@ -13585,6 +13685,120 @@ mod tests {
                 })
                 .expect("unchanged admission"),
             before
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn schema_v35_pending_activation_requires_its_exact_confirmed_schedule() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        store.initialize_governance_nonce(7).expect("nonce");
+        let operation_id = [0x81; 32];
+        let salt = [0x82; 32];
+        let mut schedule = GovernanceTransaction {
+            id: 0,
+            kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
+            envelope: governance_intent(GovernanceOperationId::new(0), [0x83; 32]).assign_nonce(7),
+            activation_controller_authority: None,
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(schedule.clone())
+            .expect("prepare schedule");
+        record_confirmed_attempt(&mut store, &mut schedule, [0x84; 32], 10, 2);
+        store
+            .complete_governance_transaction(schedule)
+            .expect("complete schedule");
+        let mut admission = store.deposit_admission().expect("admission");
+        admission.operational_config_sealed = true;
+        admission.bootstrap_activation_controller = Some(Principal::self_authenticating([9; 32]));
+        write_v35_admission(&store, &admission);
+        drop(store);
+
+        let reopened = StableStore::reopen_after_upgrade(memory).expect("migrate schedule");
+        let record = reopened
+            .last_confirmed_activation()
+            .expect("schedule record")
+            .expect("confirmed schedule");
+        assert_eq!(record.phase, "schedule");
+        assert_eq!(record.timelock_operation_id, operation_id);
+        assert_eq!(record.generation, 2);
+
+        let memory = VectorMemory::default();
+        let store = StableStore::init_configured(memory.clone(), &config()).expect("store");
+        let mut admission = admission;
+        admission.last_completed_governance_transaction = Some(GovernanceTransaction {
+            id: 1,
+            kind: GovernanceTransactionKind::SetServiceFee { value: 1 },
+            envelope: governance_intent(GovernanceOperationId::new(1), [0x85; 32]).assign_nonce(8),
+            activation_controller_authority: None,
+            state: GovernanceTransactionState::Confirmed {
+                transaction_hash: [0x86; 32],
+                receipt_block_number: 11,
+            },
+        });
+        write_v35_admission(&store, &admission);
+        drop(store);
+        assert_eq!(
+            StableStore::reopen_after_upgrade(memory).err(),
+            Some(StorageError::DecodeFailed)
+        );
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
+    fn schema_v35_staging_consumes_only_an_executed_unpaused_sentinel() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let (execute, _) = confirmed_activation_transaction(&mut store);
+        store
+            .complete_governance_transaction(execute)
+            .expect("complete activation");
+        let mut admin = store.admin_state().expect("admin");
+        admin.deposits_paused = false;
+        store.set_admin_state(&admin).expect("unpause");
+        let mut admission = store.deposit_admission().expect("admission");
+        admission.operational_config_sealed = true;
+        write_v35_admission_without_controller(&store, &admission);
+        drop(store);
+
+        let reopened = StableStore::reopen_after_staging_upgrade(
+            memory,
+            Some(config().confirmation_relayer_principal),
+        )
+        .expect("migrate activated staging");
+        assert_eq!(reopened.bootstrap_activation_controller().unwrap(), None);
+        assert_eq!(
+            reopened
+                .last_confirmed_activation()
+                .unwrap()
+                .expect("execute record")
+                .phase,
+            "execute"
+        );
+
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let mut admin = store.admin_state().expect("admin");
+        admin.deposits_paused = false;
+        store.set_admin_state(&admin).expect("unpause");
+        let mut admission = store.deposit_admission().expect("admission");
+        admission.operational_config_sealed = true;
+        admission.last_completed_governance_transaction = None;
+        write_v35_admission_without_controller(&store, &admission);
+        drop(store);
+        assert_eq!(
+            StableStore::reopen_after_staging_upgrade(
+                memory,
+                Some(config().confirmation_relayer_principal)
+            )
+            .err(),
+            Some(StorageError::DecodeFailed)
         );
     }
 

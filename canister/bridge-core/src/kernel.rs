@@ -249,6 +249,20 @@ macro_rules! confirmed_activation_metadata_matches_body {
     };
 }
 
+macro_rules! legacy_activation_evidence_requirement_body {
+    ($sealed:expr, $pending:expr, $controller_present:expr, $staging_sentinel:expr, $paused:expr, $none:expr, $schedule:expr, $execute:expr) => {
+        if !$sealed {
+            $none
+        } else if $pending {
+            $schedule
+        } else if !$controller_present || ($staging_sentinel && !$paused) {
+            $execute
+        } else {
+            $none
+        }
+    };
+}
+
 #[cfg(not(verus_keep_ghost))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetOperationLifecycleDecision {
@@ -283,6 +297,38 @@ pub enum BootstrapPausePrincipalMigrationDecision {
     FreshInstallNoop,
     PostBootstrapNoop,
     Reject,
+}
+
+#[cfg(not(verus_keep_ghost))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegacyActivationEvidenceRequirement {
+    NotRequired,
+    Schedule,
+    Execute,
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn legacy_activation_evidence_requirement(
+    operational_config_sealed: bool,
+    pending_activation: bool,
+    bootstrap_controller_present: bool,
+    legacy_staging_controller: bool,
+    deposits_paused: bool,
+) -> LegacyActivationEvidenceRequirement {
+    match legacy_activation_evidence_requirement_body!(
+        operational_config_sealed,
+        pending_activation,
+        bootstrap_controller_present,
+        legacy_staging_controller,
+        deposits_paused,
+        0,
+        1,
+        2
+    ) {
+        1 => LegacyActivationEvidenceRequirement::Schedule,
+        2 => LegacyActivationEvidenceRequirement::Execute,
+        _ => LegacyActivationEvidenceRequirement::NotRequired,
+    }
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -2790,6 +2836,28 @@ verus! {
         found_additional_match: bool,
     ) -> bool {
         confirmed_activation_attempt_is_unique_body!(found_match, found_additional_match)
+    }
+
+    pub open spec fn legacy_activation_evidence_requirement_spec(
+        sealed: bool,
+        pending: bool,
+        controller_present: bool,
+        staging_sentinel: bool,
+        paused: bool,
+    ) -> int {
+        let none: int = 0;
+        let schedule: int = 1;
+        let execute: int = 2;
+        legacy_activation_evidence_requirement_body!(
+            sealed,
+            pending,
+            controller_present,
+            staging_sentinel,
+            paused,
+            none,
+            schedule,
+            execute
+        )
     }
 
     pub open spec fn confirmed_activation_metadata_matches_spec(

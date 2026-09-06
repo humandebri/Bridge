@@ -5584,6 +5584,51 @@ fn production_upgrade_pause_migration_matches(
     before_runtime: &RuntimeBindingView,
     after_runtime: &RuntimeBindingView,
 ) -> Result<bool, String> {
+    production_upgrade_pause_migration_matches_schema(
+        gate_a_profile,
+        gate_a_runtime,
+        before_status,
+        after_status,
+        before_runtime,
+        after_runtime,
+        gate_a_runtime.schema_version,
+    )
+}
+
+fn production_upgrade_pause_and_schema_migration_matches(
+    gate_a_profile: &Profile,
+    gate_a_runtime: &LiveRuntimeBinding,
+    before_status: &BridgeStatusLiveView,
+    after_status: &BridgeStatusLiveView,
+    before_runtime: &RuntimeBindingView,
+    after_runtime: &RuntimeBindingView,
+) -> Result<bool, String> {
+    if before_runtime.schema_version != PREVIOUS_STABLE_SCHEMA_VERSION
+        || after_runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
+    {
+        return Ok(false);
+    }
+    production_upgrade_pause_migration_matches_schema(
+        gate_a_profile,
+        gate_a_runtime,
+        before_status,
+        after_status,
+        before_runtime,
+        after_runtime,
+        CURRENT_STABLE_SCHEMA_VERSION,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn production_upgrade_pause_migration_matches_schema(
+    gate_a_profile: &Profile,
+    gate_a_runtime: &LiveRuntimeBinding,
+    before_status: &BridgeStatusLiveView,
+    after_status: &BridgeStatusLiveView,
+    before_runtime: &RuntimeBindingView,
+    after_runtime: &RuntimeBindingView,
+    expected_after_schema: u16,
+) -> Result<bool, String> {
     if gate_a_profile.pause_principal != KINIC_ROOT
         || live_runtime_binding_from_view(before_runtime) != *gate_a_runtime
     {
@@ -5592,6 +5637,7 @@ fn production_upgrade_pause_migration_matches(
     let mut migrated_profile = gate_a_profile.clone();
     migrated_profile.pause_principal = PRODUCTION_PAUSE_PRINCIPAL.into();
     let mut expected_after_runtime = gate_a_runtime.clone();
+    expected_after_runtime.schema_version = expected_after_schema;
     expected_after_runtime.operational_config_sha256 = hex(&expected_operational_config_sha256(
         &migrated_profile,
         after_status.mint_authorization_ttl_seconds,
@@ -5601,6 +5647,26 @@ fn production_upgrade_pause_migration_matches(
         live_runtime_binding_from_view(after_runtime) == expected_after_runtime
             && production_upgrade_status_matches_pause_migration(before_status, after_status),
     )
+}
+
+fn production_upgrade_post_pause_runtime_matches(
+    gate_a_profile: &Profile,
+    gate_a_runtime: &LiveRuntimeBinding,
+    status: &BridgeStatusLiveView,
+    runtime: &RuntimeBindingView,
+) -> Result<bool, String> {
+    if gate_a_profile.pause_principal != KINIC_ROOT {
+        return Ok(false);
+    }
+    let mut migrated_profile = gate_a_profile.clone();
+    migrated_profile.pause_principal = PRODUCTION_PAUSE_PRINCIPAL.into();
+    let mut expected = gate_a_runtime.clone();
+    expected.operational_config_sha256 = hex(&expected_operational_config_sha256(
+        &migrated_profile,
+        status.mint_authorization_ttl_seconds,
+        status.mint_authorization_epoch,
+    )?);
+    Ok(live_runtime_binding_from_view(runtime) == expected)
 }
 
 fn collect_json_key<'a>(value: &'a Value, key: &str, output: &mut Vec<&'a Value>) {
@@ -5756,6 +5822,233 @@ fn production_upgrade_wasm(receipt: &ProductionCanisterUpgradeReceipt) -> Result
     Ok(wasm)
 }
 
+fn validate_production_upgrade_history_bytes(
+    gate_a_profile: &Profile,
+    gate_a_receipt: &GateAReceipt,
+    bytes: &[u8],
+    expected_terminal_module: &str,
+    expected_terminal_schema: u16,
+) -> Result<LiveRuntimeBinding, String> {
+    if !valid_sha256(expected_terminal_module)
+        || !matches!(
+            expected_terminal_schema,
+            PREVIOUS_STABLE_SCHEMA_VERSION | CURRENT_STABLE_SCHEMA_VERSION
+        )
+    {
+        return Err("production upgrade history terminal is malformed".into());
+    }
+    let upgrades = production_upgrade_chain_receipts(bytes)?;
+    let installer = &gate_a_receipt.canister_install.installer_principal;
+    let expected_controllers = vec![installer.clone()];
+    let canister = Principal::from_text(&gate_a_profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let sender = Principal::from_text(installer).map_err(|error| error.to_string())?;
+    let mut expected_before_module = gate_a_profile.bridge_canister_wasm_sha256.clone();
+    let mut expected_runtime = gate_a_receipt.canister_install.runtime_binding.clone();
+    let mut expected_schema = expected_runtime.schema_version;
+    let migration_required = gate_a_profile.pause_principal == KINIC_ROOT;
+    let mut pause_migration_seen = false;
+
+    for (entry, _) in upgrades {
+        let (before_controllers, before_module) =
+            production_upgrade_management_state(&entry.before_management_status_json_hex)?;
+        let (after_controllers, after_module) =
+            production_upgrade_management_state(&entry.after_management_status_json_hex)?;
+        let (before_status, before_runtime, before_public_state) = production_upgrade_query_state(
+            &entry.before_bridge_status_response_hex,
+            &entry.before_lifecycle_response_hex,
+            &entry.before_runtime_binding_response_hex,
+            &entry.before_storage_integrity_response_hex,
+        )?;
+        let (after_status, after_runtime, after_public_state) = production_upgrade_query_state(
+            &entry.after_bridge_status_response_hex,
+            &entry.after_lifecycle_response_hex,
+            &entry.after_runtime_binding_response_hex,
+            &entry.after_storage_integrity_response_hex,
+        )?;
+        let wasm = production_upgrade_wasm(&entry)?;
+        let submission_bytes = decode_hex(&entry.submission_json_hex)?;
+        let submission = validate_production_upgrade_submission_bytes(
+            &gate_a_profile.ic_host,
+            canister,
+            sender,
+            &wasm,
+            &submission_bytes,
+        )?;
+        validate_production_upgrade_upload_evidence(
+            &submission,
+            &decode_hex(&entry.chunk_upload_evidence_json_hex)?,
+        )?;
+        let wasm_sha256 = hex(&Sha256::digest(&wasm));
+        let before_binding = live_runtime_binding_from_view(&before_runtime);
+        let after_binding = live_runtime_binding_from_view(&after_runtime);
+        let unchanged = before_binding == expected_runtime
+            && after_binding == expected_runtime
+            && production_upgrade_status_preserved(&before_status, &after_status)
+            && entry.before_runtime_binding_response_hex
+                == entry.after_runtime_binding_response_hex
+            && before_public_state.eq_ignore_ascii_case(&after_public_state);
+        let pause_migration = migration_required
+            && !pause_migration_seen
+            && before_binding == expected_runtime
+            && expected_runtime == gate_a_receipt.canister_install.runtime_binding
+            && production_upgrade_pause_migration_matches(
+                gate_a_profile,
+                &gate_a_receipt.canister_install.runtime_binding,
+                &before_status,
+                &after_status,
+                &before_runtime,
+                &after_runtime,
+            )?;
+        let schema_migration = before_binding == expected_runtime
+            && production_upgrade_schema_migration_matches(
+                &before_status,
+                &after_status,
+                &before_runtime,
+                &after_runtime,
+            );
+        let combined_migration = migration_required
+            && !pause_migration_seen
+            && before_binding == expected_runtime
+            && production_upgrade_pause_and_schema_migration_matches(
+                gate_a_profile,
+                &gate_a_receipt.canister_install.runtime_binding,
+                &before_status,
+                &after_status,
+                &before_runtime,
+                &after_runtime,
+            )?;
+        let next_schema = production_upgrade_schema_transition(
+            expected_schema,
+            entry.before_schema_version,
+            entry.after_schema_version,
+        )
+        .ok_or("production upgrade history schema transition is invalid")?;
+        let evidence_hashes_match = [
+            (
+                &entry.before_management_status_json_hex,
+                &entry.before_management_status_json_sha256,
+            ),
+            (
+                &entry.after_management_status_json_hex,
+                &entry.after_management_status_json_sha256,
+            ),
+            (
+                &entry.before_bridge_status_response_hex,
+                &entry.before_bridge_status_response_sha256,
+            ),
+            (
+                &entry.after_bridge_status_response_hex,
+                &entry.after_bridge_status_response_sha256,
+            ),
+            (
+                &entry.before_lifecycle_response_hex,
+                &entry.before_lifecycle_response_sha256,
+            ),
+            (
+                &entry.after_lifecycle_response_hex,
+                &entry.after_lifecycle_response_sha256,
+            ),
+            (
+                &entry.before_runtime_binding_response_hex,
+                &entry.before_runtime_binding_response_sha256,
+            ),
+            (
+                &entry.after_runtime_binding_response_hex,
+                &entry.after_runtime_binding_response_sha256,
+            ),
+            (
+                &entry.before_storage_integrity_response_hex,
+                &entry.before_storage_integrity_response_sha256,
+            ),
+            (
+                &entry.after_storage_integrity_response_hex,
+                &entry.after_storage_integrity_response_sha256,
+            ),
+            (
+                &entry.chunk_upload_evidence_json_hex,
+                &entry.chunk_upload_evidence_json_sha256,
+            ),
+            (&entry.submission_json_hex, &entry.submission_json_sha256),
+            (&entry.response_stdout_hex, &entry.response_stdout_sha256),
+            (&entry.response_stderr_hex, &entry.response_stderr_sha256),
+        ]
+        .into_iter()
+        .all(|(raw, digest)| hex_sha256_matches(raw, digest));
+        if entry.schema_version != 1
+            || entry.kind != "production-controller-bootstrap-upgrade"
+            || entry.bridge_canister_id != gate_a_profile.bridge_canister_id
+            || entry.install_mode != "upgrade"
+            || entry.executing_principal != *installer
+            || entry.source_revision.len() != 40
+            || !entry
+                .source_revision
+                .bytes()
+                .all(|value| value.is_ascii_hexdigit())
+            || !valid_sha256(&entry.source_tree_sha256)
+            || entry.executed_at_unix > entry.verified_at_unix
+            || entry.recovered != entry.recovered_at_unix.is_some()
+            || entry.recovered_at_unix.is_some_and(|value| {
+                value < entry.executed_at_unix || value > entry.verified_at_unix
+            })
+            || before_controllers != expected_controllers
+            || after_controllers != expected_controllers
+            || entry.before_controllers != before_controllers
+            || entry.after_controllers != after_controllers
+            || !before_module.eq_ignore_ascii_case(&expected_before_module)
+            || !entry
+                .before_module_sha256
+                .eq_ignore_ascii_case(&before_module)
+            || !entry
+                .after_module_sha256
+                .eq_ignore_ascii_case(&after_module)
+            || !after_module.eq_ignore_ascii_case(&wasm_sha256)
+            || !entry.wasm_sha256.eq_ignore_ascii_case(&wasm_sha256)
+            || before_runtime.schema_version != entry.before_schema_version
+            || after_runtime.schema_version != entry.after_schema_version
+            || entry.before_lifecycle != "Bootstrap"
+            || entry.after_lifecycle != "Bootstrap"
+            || !entry.before_deposits_paused
+            || !entry.after_deposits_paused
+            || !before_status.deposits_paused
+            || !after_status.deposits_paused
+            || !entry.before_storage_validation_complete
+            || !entry.after_storage_validation_complete
+            || (!unchanged && !pause_migration && !schema_migration && !combined_migration)
+            || entry.before_lifecycle_response_hex != entry.after_lifecycle_response_hex
+            || entry.before_storage_integrity_response_hex
+                != entry.after_storage_integrity_response_hex
+            || !entry
+                .before_public_state_sha256
+                .eq_ignore_ascii_case(&before_public_state)
+            || !entry
+                .after_public_state_sha256
+                .eq_ignore_ascii_case(&after_public_state)
+            || !evidence_hashes_match
+            || submission.request_id != entry.request_id
+            || !production_upgrade_ingress_window_valid(
+                entry.executed_at_unix,
+                submission.ingress_expiry,
+            )
+        {
+            return Err("production upgrade history entry is incomplete".into());
+        }
+        pause_migration_seen |= pause_migration || combined_migration;
+        expected_before_module = after_module;
+        expected_runtime = after_binding;
+        expected_schema = next_schema;
+    }
+    if !expected_before_module.eq_ignore_ascii_case(expected_terminal_module)
+        || expected_schema != expected_terminal_schema
+        || (migration_required
+            && !pause_migration_seen
+            && expected_runtime != gate_a_receipt.canister_install.runtime_binding)
+    {
+        return Err("production upgrade history does not reach the live predecessor".into());
+    }
+    Ok(expected_runtime)
+}
+
 fn append_production_upgrade_receipt(
     prior: Option<&Path>,
     receipt_path: &Path,
@@ -5899,12 +6192,24 @@ fn validate_post_gate_a_policy_transition(
                 &entry_before_runtime,
                 &entry_after_runtime,
             )?;
-        let schema_migration = production_upgrade_schema_migration_matches(
-            &entry_before_status,
-            &entry_after_status,
-            &entry_before_runtime,
-            &entry_after_runtime,
-        );
+        let schema_migration = entry_before_binding == expected_runtime
+            && production_upgrade_schema_migration_matches(
+                &entry_before_status,
+                &entry_after_status,
+                &entry_before_runtime,
+                &entry_after_runtime,
+            );
+        let combined_migration = migration_required
+            && !migration_seen
+            && entry_before_binding == expected_runtime
+            && production_upgrade_pause_and_schema_migration_matches(
+                gate_a_profile,
+                &receipt.canister_install.runtime_binding,
+                &entry_before_status,
+                &entry_after_status,
+                &entry_before_runtime,
+                &entry_after_runtime,
+            )?;
         let Some(next_schema_version) = production_upgrade_schema_transition(
             expected_schema_version,
             entry.before_schema_version,
@@ -5946,7 +6251,7 @@ fn validate_post_gate_a_policy_transition(
             || !entry_after_status.deposits_paused
             || !entry.before_storage_validation_complete
             || !entry.after_storage_validation_complete
-            || (!unchanged_runtime && !pause_migration && !schema_migration)
+            || (!unchanged_runtime && !pause_migration && !schema_migration && !combined_migration)
             || entry.before_lifecycle_response_hex != entry.after_lifecycle_response_hex
             || entry.before_storage_integrity_response_hex
                 != entry.after_storage_integrity_response_hex
@@ -5969,7 +6274,7 @@ fn validate_post_gate_a_policy_transition(
         {
             return Err("production upgrade chain entry is incomplete".into());
         }
-        migration_seen |= pause_migration;
+        migration_seen |= pause_migration || combined_migration;
         expected_runtime = entry_after_binding;
         expected_schema_version = next_schema_version;
         expected_before_module = entry_after_module;
@@ -6018,6 +6323,14 @@ fn validate_post_gate_a_policy_transition(
         )?;
     let last_runtime_transition_valid = last_unchanged_transition
         || last_pause_migration_transition
+        || production_upgrade_pause_and_schema_migration_matches(
+            gate_a_profile,
+            &receipt.canister_install.runtime_binding,
+            &before_status,
+            &after_status,
+            &before_runtime,
+            &after_runtime,
+        )?
         || production_upgrade_schema_migration_matches(
             &before_status,
             &after_status,
@@ -10788,6 +11101,21 @@ fn run() -> Result<(), String> {
                 )?
             );
         }
+        Some("validate-production-upgrade-history") if args.len() == 7 => {
+            let gate_a_profile: Profile = read_json(Path::new(&args[2]))?;
+            let gate_a_receipt: GateAReceipt = read_json(Path::new(&args[3]))?;
+            let expected_schema = args[6]
+                .parse::<u16>()
+                .map_err(|_| "production upgrade history schema is malformed")?;
+            let terminal = validate_production_upgrade_history_bytes(
+                &gate_a_profile,
+                &gate_a_receipt,
+                &fs::read(&args[4]).map_err(|error| error.to_string())?,
+                &args[5],
+                expected_schema,
+            )?;
+            println!("{}", hex(&canonical_sha256(&terminal)?));
+        }
         Some("validate-production-handover-receipt") if args.len() == 6 => {
             println!(
                 "{}",
@@ -11180,7 +11508,36 @@ fn run() -> Result<(), String> {
                 )?
                 && args[3] == args[7]
                 && args[5] == args[9];
-            if !unchanged && !pause_migration {
+            let schema_before_is_bound = gate_a_receipt.canister_install.runtime_binding
+                == live_runtime_binding_from_view(&before_runtime)
+                || production_upgrade_post_pause_runtime_matches(
+                    &gate_a_profile,
+                    &gate_a_receipt.canister_install.runtime_binding,
+                    &before,
+                    &before_runtime,
+                )?;
+            let schema_migration = schema_before_is_bound
+                && production_upgrade_schema_migration_matches(
+                    &before,
+                    &after,
+                    &before_runtime,
+                    &after_runtime,
+                )
+                && args[3] == args[7]
+                && args[5] == args[9];
+            let combined_migration = gate_a_receipt.canister_install.runtime_binding
+                == live_runtime_binding_from_view(&before_runtime)
+                && production_upgrade_pause_and_schema_migration_matches(
+                    &gate_a_profile,
+                    &gate_a_receipt.canister_install.runtime_binding,
+                    &before,
+                    &after,
+                    &before_runtime,
+                    &after_runtime,
+                )?
+                && args[3] == args[7]
+                && args[5] == args[9];
+            if !unchanged && !pause_migration && !schema_migration && !combined_migration {
                 return Err("production public state was not preserved across upgrade".into());
             }
             println!("{after_digest}");
@@ -12058,6 +12415,49 @@ mod tests {
             &after_runtime,
         )
         .unwrap());
+
+        let mut previous_runtime = before_runtime.clone();
+        previous_runtime.schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
+        let previous_gate_a_runtime = live_runtime_binding_from_view(&previous_runtime);
+        let mut combined_after_runtime = after_runtime.clone();
+        combined_after_runtime.schema_version = CURRENT_STABLE_SCHEMA_VERSION;
+        assert!(production_upgrade_pause_and_schema_migration_matches(
+            &gate_a_profile,
+            &previous_gate_a_runtime,
+            &before_status,
+            &after_status,
+            &previous_runtime,
+            &combined_after_runtime,
+        )
+        .unwrap());
+        combined_after_runtime.schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
+        assert!(!production_upgrade_pause_and_schema_migration_matches(
+            &gate_a_profile,
+            &previous_gate_a_runtime,
+            &before_status,
+            &after_status,
+            &previous_runtime,
+            &combined_after_runtime,
+        )
+        .unwrap());
+
+        let mut post_pause_schema35 = after_runtime.clone();
+        post_pause_schema35.schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
+        assert!(production_upgrade_post_pause_runtime_matches(
+            &gate_a_profile,
+            &previous_gate_a_runtime,
+            &after_status,
+            &post_pause_schema35,
+        )
+        .unwrap());
+        let mut post_pause_schema36 = post_pause_schema35.clone();
+        post_pause_schema36.schema_version = CURRENT_STABLE_SCHEMA_VERSION;
+        assert!(production_upgrade_schema_migration_matches(
+            &after_status,
+            &after_status,
+            &post_pause_schema35,
+            &post_pause_schema36,
+        ));
     }
 
     fn matching_handover_runtime(
@@ -14625,6 +15025,36 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         production_upgrade.response_stdout_sha256 =
             hex(&Sha256::digest(response_stdout.as_bytes()));
         let production_upgrade_bytes = serde_json::to_vec(&production_upgrade).unwrap();
+        assert!(validate_production_upgrade_history_bytes(
+            &gate_a_profile,
+            &receipt,
+            &production_upgrade_bytes,
+            &profile.bridge_canister_wasm_sha256,
+            CURRENT_STABLE_SCHEMA_VERSION,
+        )
+        .is_ok());
+        let mut forged_history: ProductionCanisterUpgradeReceipt =
+            serde_json::from_slice(&production_upgrade_bytes).unwrap();
+        let forged_controller = Principal::self_authenticating(&[0x91; 32]).to_text();
+        let forged_management = serde_json::to_vec(&serde_json::json!({
+            "status": {
+                "settings": {"controllers": [forged_controller.clone()]},
+                "module_hash": profile.bridge_canister_wasm_sha256.clone(),
+            }
+        }))
+        .unwrap();
+        forged_history.after_controllers = vec![forged_controller];
+        forged_history.after_management_status_json_hex = hex(&forged_management);
+        forged_history.after_management_status_json_sha256 =
+            hex(&Sha256::digest(&forged_management));
+        assert!(validate_production_upgrade_history_bytes(
+            &gate_a_profile,
+            &receipt,
+            &serde_json::to_vec(&forged_history).unwrap(),
+            &profile.bridge_canister_wasm_sha256,
+            CURRENT_STABLE_SCHEMA_VERSION,
+        )
+        .is_err());
         fs::write(
             root.join("production-canister-upgrade-receipt.json"),
             &production_upgrade_bytes,

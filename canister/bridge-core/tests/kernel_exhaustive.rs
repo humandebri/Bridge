@@ -6,9 +6,9 @@ use bridge_core::{
     deposit_reservation_active, deposit_transition, deposit_transition_decision, evidence_matches,
     expiry_refund_allowed, fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
     funding_reconciliation_decision, hold_resolution_decision, lease_generation_next,
-    lease_outcome_is_current, manual_claim_decision, mint_admission_total,
-    mint_authorization_has_minimum_remaining_time, mint_finalization_allowed, next_attempt,
-    notification_failure_cooldown_active, operational_config_seal_caller_authorized,
+    lease_outcome_is_current, legacy_activation_evidence_requirement, manual_claim_decision,
+    mint_admission_total, mint_authorization_has_minimum_remaining_time, mint_finalization_allowed,
+    next_attempt, notification_failure_cooldown_active, operational_config_seal_caller_authorized,
     operational_config_seal_decision, outbound_settlement, payout_allowed, payout_debit,
     refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
     reservation_decision, reserve_admission_preserves_requirement, scan_complete,
@@ -17,7 +17,8 @@ use bridge_core::{
     withdrawal_phase_step, withdrawal_transition_effects, AssetOperationLifecycleDecision,
     BootstrapPausePrincipalMigrationDecision, DepositEventGuard, DepositTransitionDecision,
     DepositTransitionInput, FeeRecipientRotationDecision, FundingReconciliationDecision,
-    HoldResolutionDecision, ManualClaimDecision, OperationalConfigSealDecision,
+    HoldResolutionDecision, LegacyActivationEvidenceRequirement, ManualClaimDecision,
+    OperationalConfigSealDecision,
 };
 
 #[test]
@@ -419,6 +420,40 @@ fn bootstrap_pause_principal_migration_is_exact_and_idempotent() {
                                 );
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_activation_migration_requires_only_the_exact_recoverable_phase() {
+    use LegacyActivationEvidenceRequirement::{Execute, NotRequired, Schedule};
+    for sealed in [false, true] {
+        for pending in [false, true] {
+            for controller_present in [false, true] {
+                for staging_sentinel in [false, true] {
+                    for paused in [false, true] {
+                        let expected = if !sealed {
+                            NotRequired
+                        } else if pending {
+                            Schedule
+                        } else if !controller_present || (staging_sentinel && !paused) {
+                            Execute
+                        } else {
+                            NotRequired
+                        };
+                        assert_eq!(
+                            legacy_activation_evidence_requirement(
+                                sealed,
+                                pending,
+                                controller_present,
+                                staging_sentinel,
+                                paused,
+                            ),
+                            expected
+                        );
                     }
                 }
             }

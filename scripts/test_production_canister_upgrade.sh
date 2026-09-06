@@ -56,6 +56,13 @@ fn main() {
             }
             println!("{}", "b".repeat(64));
         }
+        Some("validate-production-upgrade-history") => {
+            if env::var("TEST_REJECT_PRIOR_HISTORY").is_ok() {
+                eprintln!("production upgrade history entry is incomplete");
+                std::process::exit(1);
+            }
+            println!("{}", "c".repeat(64));
+        }
         Some("verify-production-upgrade-state-preserved") => println!("{}", "a".repeat(64)),
         Some("prepare-production-canister-upgrade") => {
             let mut artifact = OpenOptions::new().write(true).create_new(true).open(&args[7]).unwrap();
@@ -503,6 +510,16 @@ if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade
 fi
 cp "$T/evidence/receipt.initial.json" "$T/evidence/prior-upgrade.json"
 cp "$T/evidence/prior-upgrade.json" "$T/evidence/prior-upgrade.approved.json"
+if TEST_REJECT_PRIOR_HISTORY=1 BRIDGE_ICP_IDENTITY=production \
+  "$T/source/scripts/production-canister-upgrade.sh" preflight \
+  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" \
+  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
+  --evidence "$T/evidence/rejected-prior-history.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted semantically invalid prior evidence" >&2
+  exit 1
+fi
+[[ ! -e "$T/evidence/rejected-prior-history.json" && "$(<"$T/submit-count")" == 1 ]]
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
   --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
   --gate-a-receipt "$T/gate-a-receipt.json" \

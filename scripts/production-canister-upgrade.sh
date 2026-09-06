@@ -261,6 +261,11 @@ PROFILE_BIN="$PROFILE_TARGET/debug/bridge-profile"
 require_source_identity
 "$PROFILE_BIN" validate-production-upgrade-gate-a-binding \
   "$GATE_A_PROFILE" "$GATE_A_RECEIPT" >/dev/null
+if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
+  "$PROFILE_BIN" validate-production-upgrade-history \
+    "$GATE_A_PROFILE" "$GATE_A_RECEIPT" "$PRIOR_UPGRADE_EVIDENCE" \
+    "$OLD_WASM" "$OLD_SCHEMA" >/dev/null
+fi
 require_source_identity
 
 status_fields() {

@@ -168,6 +168,11 @@ def prepare_test_dependencies(
         runner,
     )
     run_command(
+        [str(root / "scripts/plan007/build-schema35-predecessor-wasm.sh")],
+        root,
+        runner,
+    )
+    run_command(
         [
             "cargo",
             "build",

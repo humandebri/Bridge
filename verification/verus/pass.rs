@@ -947,6 +947,30 @@ proof fn confirmed_activation_attempt_requires_exactly_one_hash(
     ) == (found_match && !found_additional_match),
 {}
 
+proof fn legacy_activation_migration_requires_recoverable_evidence(
+    sealed: bool,
+    pending: bool,
+    controller_present: bool,
+    staging_sentinel: bool,
+    paused: bool,
+)
+    ensures kernel::legacy_activation_evidence_requirement_spec(
+        sealed,
+        pending,
+        controller_present,
+        staging_sentinel,
+        paused,
+    ) == if !sealed {
+        0
+    } else if pending {
+        1
+    } else if !controller_present || (staging_sentinel && !paused) {
+        2
+    } else {
+        0
+    },
+{}
+
 proof fn confirmed_activation_metadata_requires_exact_match(
     confirmed_generation: int,
     confirmed_signed_at_ns: int,

@@ -11,6 +11,7 @@ import { PocketIc, SubnetStateType } from "@dfinity/pic";
 
 const root = resolve(__dirname, "..");
 const bridgeWasm = resolve(root, "target/test-deployment/staging/bridge_canister.wasm");
+const schema35BridgeWasm = resolve(root, "target/test-deployment/predecessor-v35/bridge_canister.wasm");
 const mockWasm = resolve(root, "target/wasm32-unknown-unknown/release/mock_external.wasm");
 const testLedgerFee = 10_000n;
 
@@ -971,6 +972,47 @@ describe("Phase 3 PocketIC saga", () => {
   it(
     "keeps signing privileged while restricting confirmation callers",
     keeps_signing_privileged_while_restricting_confirmation_callers,
+  );
+
+  async function migrates_the_exact_confirmed_old_generation_from_schema_35() {
+    const {
+      bridge,
+      evm,
+      controller,
+      confirmationRelayerPrincipal,
+    } = await setup(false, {}, schema35BridgeWasm, true, true);
+    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
+    bridge.actor.setPrincipal(controller);
+    const original: any = await (bridge.actor as any).schedule_activation();
+    expect(original).toHaveProperty("Ok.kind.ScheduleActivation");
+    const bumped = (value: bigint) => (value * 11_250n + 9_999n) / 10_000n;
+    const replacement: any = await (bridge.actor as any).prepare_base_governance_replacement({
+      operation_id: original.Ok.operation_id,
+      expected_transaction_hash: original.Ok.transaction_hash,
+      max_fee_per_gas: bumped(original.Ok.max_fee_per_gas),
+      max_priority_fee_per_gas: bumped(original.Ok.max_priority_fee_per_gas),
+    });
+    expect(replacement).toHaveProperty("Ok.generation", 1);
+    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
+    expect(await (bridge.actor as any).confirm_base_governance_transaction({
+      operation_id: original.Ok.operation_id,
+      transaction_hash: original.Ok.transaction_hash,
+    })).toHaveProperty("Ok.succeeded", true);
+
+    await upgradeBridge(bridge);
+    const activation: any = await (bridge.actor as any).get_activation_status();
+    expect(activation).toHaveProperty("Ok.last_confirmed_activation.0.generation", 0);
+    expect(activation.Ok.last_confirmed_activation[0].signed_at_ns)
+      .toBe(original.Ok.signed_at_ns);
+    expect(activation.Ok.last_confirmed_activation[0].transaction_hash)
+      .toEqual(original.Ok.transaction_hash);
+    expect(await (bridge.actor as any).get_production_lifecycle())
+      .toEqual({ Ok: { OperationalConfigSealed: null } });
+  }
+
+  it(
+    "migrates the exact confirmed old generation from the deployed schema 35 Wasm",
+    migrates_the_exact_confirmed_old_generation_from_schema_35,
   );
 
   async function fails_closed_when_bootstrap_controller_is_removed() {
