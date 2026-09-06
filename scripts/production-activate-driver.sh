@@ -38,7 +38,14 @@ command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 
 FROZEN_BUNDLE="$(mktemp -d "${TMPDIR:-/tmp}/bridge-activation-plan.XXXXXX")"
 FROZEN_INPUTS="$(mktemp -d "${TMPDIR:-/tmp}/bridge-activation-inputs.XXXXXX")"
-trap 'chmod -R u+w "$FROZEN_BUNDLE" "$FROZEN_INPUTS" 2>/dev/null || true; rm -rf "$FROZEN_BUNDLE" "$FROZEN_INPUTS"' EXIT
+cleanup() {
+  local status=$?
+  trap - EXIT
+  chmod -R u+w "$FROZEN_BUNDLE" "$FROZEN_INPUTS" 2>/dev/null || true
+  rm -rf "$FROZEN_BUNDLE" "$FROZEN_INPUTS"
+  exit "$status"
+}
+trap cleanup EXIT
 production_freeze_bundle "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_BUNDLE"
 BRIDGE_RELEASE_BUNDLE="$FROZEN_BUNDLE"
 production_require_bundle_source_binding "$SOURCE_ROOT" "$BRIDGE_RELEASE_BUNDLE"
@@ -46,7 +53,10 @@ production_freeze_receipt "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
   "$FROZEN_INPUTS/seal-receipt.json" "operational config seal receipt"
 BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$FROZEN_INPUTS/seal-receipt.json"
 if [[ "$BRIDGE_ACTIVATION_PHASE" == execute ]]; then
-  : "${BRIDGE_PRIOR_SCHEDULE_RECEIPT:?execute requires the prior schedule receipt}"
+  [[ -n "${BRIDGE_PRIOR_SCHEDULE_RECEIPT:-}" ]] || {
+    echo "execute requires the prior schedule receipt" >&2
+    exit 1
+  }
   production_freeze_receipt "$BRIDGE_PRIOR_SCHEDULE_RECEIPT" \
     "$FROZEN_INPUTS/prior-schedule-receipt.json" "prior schedule receipt"
   BRIDGE_PRIOR_SCHEDULE_RECEIPT="$FROZEN_INPUTS/prior-schedule-receipt.json"
@@ -186,8 +196,8 @@ PY
 CLI=(node --no-warnings --experimental-strip-types "$SOURCE_ROOT/tools/governance-relayer/cli.ts")
 case "$BRIDGE_ACTIVATION_STEP" in
   prepare)
-    : "${BRIDGE_PRODUCTION_CONTROLLER_PEM:?missing production controller identity PEM}"
-    : "${BRIDGE_CONFIRMATION_RELAYER_IDENTITY:?missing confirmation relayer ICP identity name}"
+    [[ -n "${BRIDGE_PRODUCTION_CONTROLLER_PEM:-}" ]] || { echo "missing production controller identity PEM" >&2; exit 1; }
+    [[ -n "${BRIDGE_CONFIRMATION_RELAYER_IDENTITY:-}" ]] || { echo "missing confirmation relayer ICP identity name" >&2; exit 1; }
     [[ -f "$BRIDGE_PRODUCTION_CONTROLLER_PEM" && ! -L "$BRIDGE_PRODUCTION_CONTROLLER_PEM" ]] || { echo "production controller PEM must be an ordinary file" >&2; exit 1; }
     if [[ ! -e "$AUTHORIZATION_RECEIPT" ]]; then
       [[ ! -e "$BRIDGE_ACTIVATION_ARTIFACT" && ! -e "$PREPARE_RECEIPT" ]] || { echo "activation outputs exist without their authorization receipt" >&2; exit 1; }
@@ -228,10 +238,10 @@ case "$BRIDGE_ACTIVATION_STEP" in
     if [[ ! -e "$PREPARE_RECEIPT" ]]; then write_prepare_receipt; else verify_prepare_receipt; fi
     ;;
   replace)
-    : "${BRIDGE_PRODUCTION_CONTROLLER_PEM:?missing production controller identity PEM}"
-    : "${BRIDGE_ACTIVATION_REPLACEMENT_ARTIFACT:?missing replacement artifact output path}"
-    : "${BRIDGE_ACTIVATION_REPLACEMENT_MAX_FEE:?missing replacement max fee}"
-    : "${BRIDGE_ACTIVATION_REPLACEMENT_PRIORITY_FEE:?missing replacement priority fee}"
+    [[ -n "${BRIDGE_PRODUCTION_CONTROLLER_PEM:-}" ]] || { echo "missing production controller identity PEM" >&2; exit 1; }
+    [[ -n "${BRIDGE_ACTIVATION_REPLACEMENT_ARTIFACT:-}" ]] || { echo "missing replacement artifact output path" >&2; exit 1; }
+    [[ -n "${BRIDGE_ACTIVATION_REPLACEMENT_MAX_FEE:-}" ]] || { echo "missing replacement max fee" >&2; exit 1; }
+    [[ -n "${BRIDGE_ACTIVATION_REPLACEMENT_PRIORITY_FEE:-}" ]] || { echo "missing replacement priority fee" >&2; exit 1; }
     [[ -f "$BRIDGE_PRODUCTION_CONTROLLER_PEM" && ! -L "$BRIDGE_PRODUCTION_CONTROLLER_PEM" ]] || { echo "production controller PEM must be an ordinary file" >&2; exit 1; }
     [[ "$BRIDGE_ACTIVATION_REPLACEMENT_ARTIFACT" != "$BRIDGE_ACTIVATION_ARTIFACT" ]] || { echo "replacement artifact must use a new path" >&2; exit 1; }
     verify_prepare_receipt
@@ -260,7 +270,7 @@ case "$BRIDGE_ACTIVATION_STEP" in
     require_fixed_source
     ;;
   relay)
-    : "${BASE_RPC_URL:?missing Base RPC URL for raw relay}"
+    [[ -n "${BASE_RPC_URL:-}" ]] || { echo "missing Base RPC URL for raw relay" >&2; exit 1; }
     verify_prepare_receipt
     freeze_activation_inputs
     "${PROFILE[@]}" verify-controller-activation-authorization "$BRIDGE_ACTIVATION_PHASE" \
@@ -281,9 +291,9 @@ case "$BRIDGE_ACTIVATION_STEP" in
     require_fixed_source
     ;;
   confirm)
-    : "${BRIDGE_CONFIRMATION_RELAYER_PEM:?missing confirmation relayer identity PEM}"
-    : "${BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT:?missing confirmation receipt output}"
-    : "${BRIDGE_CONTROLLER_ACTIVATION_RECEIPT:?missing verified controller activation receipt output}"
+    [[ -n "${BRIDGE_CONFIRMATION_RELAYER_PEM:-}" ]] || { echo "missing confirmation relayer identity PEM" >&2; exit 1; }
+    [[ -n "${BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT:-}" ]] || { echo "missing confirmation receipt output" >&2; exit 1; }
+    [[ -n "${BRIDGE_CONTROLLER_ACTIVATION_RECEIPT:-}" ]] || { echo "missing verified controller activation receipt output" >&2; exit 1; }
     [[ -f "$BRIDGE_CONFIRMATION_RELAYER_PEM" && ! -L "$BRIDGE_CONFIRMATION_RELAYER_PEM" ]] || { echo "confirmation relayer PEM must be an ordinary file" >&2; exit 1; }
     verify_prepare_receipt
     freeze_activation_inputs
