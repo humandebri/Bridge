@@ -3,6 +3,7 @@ use bridge_core::{
     GovernanceOperationId, GovernanceTransactionEnvelope, SignedGovernanceTransaction,
 };
 use candid::{CandidType, Deserialize, Nat, Principal};
+use ic_cdk::call::Call;
 use sha2::{Digest, Sha256};
 use tiny_keccak::{Hasher, Keccak};
 
@@ -1668,16 +1669,34 @@ fn require_operational_config_seal_caller(caller: Principal) -> Result<(), BaseG
 const INITIAL_ACTIVATION_PHASE_SCHEDULE: u8 = 0;
 const INITIAL_ACTIVATION_PHASE_EXECUTE: u8 = 1;
 
+#[derive(CandidType, Deserialize)]
+struct ControllerSettingsView {
+    controllers: Vec<Principal>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct CanisterControllerStatusView {
+    settings: ControllerSettingsView,
+}
+
 async fn current_controller_authority(
     expected: Principal,
 ) -> Result<ControllerAuthoritySnapshot, BaseGovernanceError> {
-    let status = ic_cdk_management_canister::canister_status(
-        &ic_cdk_management_canister::CanisterStatusArgs {
+    // Decode only the authority-bearing field. This remains compatible with replicas
+    // that implement different revisions of the additive canister_status response.
+    let response = Call::bounded_wait(Principal::management_canister(), "canister_status")
+        .with_arg(&ic_cdk_management_canister::CanisterStatusArgs {
             canister_id: ic_cdk::api::canister_self(),
-        },
-    )
-    .await
-    .map_err(|_| BaseGovernanceError::ObservationUnavailable)?;
+        })
+        .await
+        .map_err(|error| {
+            ic_cdk::println!("controller authority observation failed: stage=call error={error:?}");
+            BaseGovernanceError::ObservationUnavailable
+        })?;
+    let status: CanisterControllerStatusView = response.candid().map_err(|error| {
+        ic_cdk::println!("controller authority observation failed: stage=decode error={error:?}");
+        BaseGovernanceError::ObservationUnavailable
+    })?;
     if status.settings.controllers.as_slice() == [expected] {
         Ok(ControllerAuthoritySnapshot {
             bootstrap_controller: expected,
@@ -2392,8 +2411,8 @@ mod tests {
         execute_activation_calldata, initial_fee, minimum_fee_bump,
         operational_config_lifecycle_result, pending_signature_action,
         schedule_activation_calldata, selector, transaction_authorized, word_u128,
-        BaseGovernanceError, GovernanceAction, PendingSignatureAction,
-        ACTIVATION_TIMELOCK_DELAY_SECONDS,
+        BaseGovernanceError, CanisterControllerStatusView, GovernanceAction,
+        PendingSignatureAction, ACTIVATION_TIMELOCK_DELAY_SECONDS,
     };
     use crate::storage::{
         GovernanceTransaction, GovernanceTransactionKind, GovernanceTransactionState,
@@ -2403,6 +2422,34 @@ mod tests {
     };
     use candid::Nat;
     use candid::Principal;
+
+    #[test]
+    fn controller_status_view_accepts_additive_management_response_fields() {
+        #[derive(candid::CandidType)]
+        struct ExtendedControllerSettings {
+            controllers: Vec<Principal>,
+            compute_allocation: Nat,
+        }
+
+        #[derive(candid::CandidType)]
+        struct ExtendedCanisterStatus {
+            settings: ExtendedControllerSettings,
+            version: u64,
+        }
+
+        let controller = Principal::from_slice(&[1]);
+        let encoded = candid::encode_one(ExtendedCanisterStatus {
+            settings: ExtendedControllerSettings {
+                controllers: vec![controller],
+                compute_allocation: Nat::from(0u8),
+            },
+            version: 7,
+        })
+        .unwrap();
+        let decoded: CanisterControllerStatusView = candid::decode_one(&encoded).unwrap();
+
+        assert_eq!(decoded.settings.controllers, vec![controller]);
+    }
 
     #[test]
     fn base_governance_rejects_bootstrap_and_allows_sealed_lifecycle() {
