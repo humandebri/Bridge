@@ -117,7 +117,7 @@ jobs:
           path: trusted-policy
           persist-credentials: false
       - name: Install pinned Rust toolchain
-        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'icp'
+        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'real' || matrix.area == 'icp'
         working-directory: trusted-policy
         run: rustup show
       - name: Install Node.js 24.14.0
@@ -132,7 +132,7 @@ jobs:
           version: 11.0.8
           run_install: false
       - name: Restore Rust registry cache
-        if: matrix.area == 'rust' || matrix.area == 'icp'
+        if: matrix.area == 'rust' || matrix.area == 'real' || matrix.area == 'icp'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -146,7 +146,7 @@ jobs:
           path: /home/runner/.local/share/pnpm/store
           key: bridge-trusted-pr-pnpm-${{ needs.classify.outputs.base_sha }}-${{ hashFiles('trusted-policy/pnpm-lock.yaml', 'trusted-policy/ui/pnpm-lock.yaml', 'trusted-policy/.node-version') }}
       - name: Install Foundry 1.7.1
-        if: matrix.area == 'contracts' || matrix.area == 'proofs' || matrix.area == 'certora'
+        if: matrix.area == 'contracts' || matrix.area == 'proofs' || matrix.area == 'certora' || matrix.area == 'real'
         uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
         with:
           version: v1.7.1
@@ -232,7 +232,7 @@ jobs:
             --source source --destination "$dependency_root"
           echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$dependency_root" >> "$GITHUB_ENV"
       - name: Install reviewed workspace dependencies without lifecycle scripts
-        if: matrix.area == 'rust'
+        if: matrix.area == 'rust' || matrix.area == 'proofs'
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts
       - name: Install reviewed UI dependencies without lifecycle scripts
         if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
