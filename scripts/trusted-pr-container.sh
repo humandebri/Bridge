@@ -17,6 +17,7 @@ NEEDS_WORKSPACE_DEPS=false
 NEEDS_UI_DEPS=false
 NEEDS_RUST_TOOLCHAIN=false
 NEEDS_FOUNDRY=false
+NEEDS_ICP_PACKAGE_CACHE=false
 case "$MODE" in
   rust-fast|rust-integration|proofs|icp) NEEDS_RUST_TOOLCHAIN=true ;;
 esac
@@ -27,6 +28,9 @@ case "$MODE" in
   rust-integration) NEEDS_WORKSPACE_DEPS=true; NEEDS_UI_DEPS=true ;;
   proofs|ui-fast|ui-e2e|real) NEEDS_UI_DEPS=true ;;
 esac
+if [[ "$MODE" == "icp" ]]; then
+  NEEDS_ICP_PACKAGE_CACHE=true
+fi
 
 [[ -d "$SOURCE_ROOT/.git" && ! -L "$SOURCE_ROOT" ]] || { echo "candidate source must be a checkout" >&2; exit 1; }
 [[ -d "$POLICY_ROOT/scripts" && ! -L "$POLICY_ROOT/scripts" ]] || { echo "trusted policy is invalid" >&2; exit 1; }
@@ -172,9 +176,11 @@ if [[ "$MODE" == "proofs" ]]; then
     || { echo "trusted Lean toolchains are missing" >&2; exit 1; }
   TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.elan/toolchains,dst=/scratch/home/.elan/toolchains,readonly")
 fi
-[[ -d /home/runner/.local/share/icp-cli/pkg && ! -L /home/runner/.local/share/icp-cli/pkg ]] \
-  || { echo "trusted ICP package cache is missing" >&2; exit 1; }
-cp -R /home/runner/.local/share/icp-cli/pkg/. "$SCRATCH/home/.local/share/icp-cli/pkg/"
+if [[ "$NEEDS_ICP_PACKAGE_CACHE" == true ]]; then
+  [[ -d /home/runner/.local/share/icp-cli/pkg && ! -L /home/runner/.local/share/icp-cli/pkg ]] \
+    || { echo "trusted ICP package cache is missing" >&2; exit 1; }
+  cp -R /home/runner/.local/share/icp-cli/pkg/. "$SCRATCH/home/.local/share/icp-cli/pkg/"
+fi
 if [[ -d /home/runner/.cache/ms-playwright ]]; then
   TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.cache/ms-playwright,dst=/home/runner/.cache/ms-playwright,readonly")
 fi
