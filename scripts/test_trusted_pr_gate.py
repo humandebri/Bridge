@@ -29,7 +29,7 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertLess(root_install, repository_gate)
 
     def test_main_push_caches_are_reusable_across_commits(self) -> None:
-        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        workflow = (ROOT / ".github" / "workflows" / "main-push.yml").read_text(
             encoding="utf-8"
         )
         self.assertIn("bridge-main-rust-${{ github.ref_name }}-", workflow)
@@ -171,9 +171,7 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("trusted-policy/scripts/install-ci-tools.sh \"$mode\"", workflow)
         self.assertIn("proofs) mode=\"all\"", workflow)
         self.assertIn("*) mode=\"ci\"", workflow)
-        self.assertEqual(workflow.count("docker buildx build"), 1)
-        self.assertIn("Restore trusted image build cache", workflow)
-        self.assertIn("Save trusted image build cache", workflow)
+        self.assertEqual(workflow.count("docker build --file"), 1)
         self.assertIn("actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
         self.assertIn("actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
         self.assertIn(
@@ -221,9 +219,9 @@ class TrustedPrGateTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         rust_start = workflow.index("Prefetch PocketIC runtime for Rust integration checks")
         real_start = workflow.index("Prefetch PocketIC runtime for real E2E checks")
-        cache_start = workflow.index("Restore trusted image build cache", real_start)
+        image_start = workflow.index("Build the pinned isolation image", real_start)
         rust_step = workflow[rust_start:real_start]
-        real_step = workflow[real_start:cache_start]
+        real_step = workflow[real_start:image_start]
         self.assertIn("matrix.area == 'rust'", rust_step)
         self.assertIn("$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic", rust_step)
         self.assertIn("matrix.area == 'real'", real_step)
@@ -549,9 +547,15 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("pr-gate:", workflow)
-        self.assertIn("push-classify:", workflow)
-        self.assertIn("scripts/ci_changed_areas.py", workflow)
-        self.assertIn("needs.push-classify.outputs.any == 'true'", workflow)
+        self.assertNotIn("ci_changed_areas.py", workflow)
+
+        main_push = (ROOT / ".github" / "workflows" / "main-push.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("pull_request:", main_push)
+        self.assertIn("push-classify:", main_push)
+        self.assertIn("scripts/ci_changed_areas.py", main_push)
+        self.assertIn("needs.push-classify.outputs.any == 'true'", main_push)
 
 
 if __name__ == "__main__":
