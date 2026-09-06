@@ -478,7 +478,7 @@ run_verus() {
   fi
 
   verus --no-cheating "$ROOT/verification/verus/pass.rs" -o "$TMP_ROOT/verus-pass" || return
-  python3 "$ROOT/scripts/check_verus_manifest.py"
+  python3 "$ROOT/scripts/check_verus_manifest.py" || return
 
   while IFS=$'\t' read -r obligation_id kind kernel_name proof_name expected_fixture _binding _derived_bindings _production_calls _claim_ids; do
     [[ "$obligation_id" == "schema" ]] && continue
@@ -701,10 +701,7 @@ run_proof_stage() {
       echo "proof source fingerprint changed before stage: $stage" >&2
       exit 1
     }
-    if ! "$@"; then
-      echo "proof stage command failed: $stage" >&2
-      exit 1
-    fi
+    "$@"
     python3 "$PROOF_FINGERPRINT" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
       echo "proof source fingerprint changed during stage: $stage" >&2
       exit 1

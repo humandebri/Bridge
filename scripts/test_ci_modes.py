@@ -118,11 +118,15 @@ class CiModeTests(unittest.TestCase):
         body = function_body("run_verus")
         self.assertIn('^(pub )?(const )?fn ${kernel_name}\\b', body)
 
-    def test_verus_pass_failure_is_propagated(self) -> None:
+    def test_verus_positive_checks_propagate_failures(self) -> None:
         body = function_body("run_verus")
         self.assertIn(
             'verus --no-cheating "$ROOT/verification/verus/pass.rs" '
             '-o "$TMP_ROOT/verus-pass" || return',
+            body,
+        )
+        self.assertIn(
+            'python3 "$ROOT/scripts/check_verus_manifest.py" || return',
             body,
         )
 
@@ -153,15 +157,51 @@ class CiModeTests(unittest.TestCase):
         body = function_body("run_proof_stage")
         marker = '"$PROOF_FINGERPRINT" --check "$PROOF_SOURCE_BASELINE"'
         before = body.index(marker)
-        command = body.index('    if ! "$@"; then')
+        command = body.index('    "$@"')
         after = body.index(marker, before + 1)
         pass_record = body.index("    stage_status=pass")
         self.assertLess(before, command)
         self.assertLess(command, after)
         self.assertLess(after, pass_record)
+        self.assertNotIn('if ! "$@"', body)
         refinement = function_body("run_refinement_gate")
         commands = [line.strip() for line in refinement.splitlines() if line.strip()]
         self.assertTrue(all(command.endswith("|| return") for command in commands[:-1]))
+
+    def test_proof_stage_function_failure_cannot_be_overwritten(self) -> None:
+        body = function_body("run_proof_stage")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            baseline = root / "baseline.json"
+            stages = root / "stages.tsv"
+            receipt = root / "receipt.json"
+            baseline.write_text("{}\n", encoding="utf-8")
+            script = f"""
+set -uo pipefail
+run_proof_stage() {{
+{body}
+}}
+python3() {{ return 0; }}
+fail_then_succeed() {{ false; :; }}
+PROOF_FINGERPRINT=ignored
+PROOF_RECEIPT_WRITER=ignored
+PROOF_SOURCE_BASELINE={shlex.quote(str(baseline))}
+PROOF_STAGE_RECEIPT={shlex.quote(str(stages))}
+PROOF_RECEIPT={shlex.quote(str(receipt))}
+set +e
+( run_proof_stage sample fail_then_succeed )
+status=$?
+set -e
+test "$status" -ne 0
+grep -q $'^sample\\tfail\\t' "$PROOF_STAGE_RECEIPT"
+"""
+            result = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_halmos_prerequisite_checks_fail_closed(self) -> None:
         body = function_body("run_halmos")
