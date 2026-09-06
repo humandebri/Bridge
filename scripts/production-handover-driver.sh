@@ -361,6 +361,9 @@ with open(env_path,'w') as out:
   if any(ch in item for ch in "\n\r'"): raise SystemExit(f'invalid recovery {key}')
   out.write(f"{key}='{item}'\n")
 PY
+  executing_principal=""
+  request_id=""
+  response_sha256=""
   # shellcheck disable=SC1090
   source "$TMP/recovery.env"
   EXECUTING_PRINCIPAL="$executing_principal"
