@@ -147,6 +147,7 @@ run_versions() {
     "$ROOT/scripts/production-activate-driver.sh" \
     "$ROOT/scripts/production-seal-driver.sh" \
     "$ROOT/scripts/production-handover-driver.sh" \
+    "$ROOT/scripts/production-canister-upgrade.sh" \
     "$ROOT/scripts/base-sepolia-experiment/experiment.sh" \
     "$ROOT/scripts/test_base_sepolia_experiment.sh" \
     "$ROOT/scripts/install-certora-solc.sh" \

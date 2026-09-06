@@ -6154,6 +6154,7 @@ impl StableStore {
         self.admin_state.set(encode(&Some(value.clone()))?)
     }
 
+    #[cfg(any(not(feature = "test-deployment"), test))]
     pub(crate) fn migrate_bootstrap_pause_principal(
         &mut self,
         old_pause_principal: Principal,

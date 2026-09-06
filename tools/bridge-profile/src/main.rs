@@ -4367,8 +4367,10 @@ fn valid_release_id(release_id: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
+#[cfg(test)]
 const REHEARSAL_VALIDATOR: &str = include_str!("../../../scripts/evm-rpc-rehearsal/rehearsal.py");
 
+#[cfg(test)]
 fn validate_rpc_rehearsal(bundle: &ValidatedBundle) -> Result<(), String> {
     let path = bundle.root.join("rpc-e2e.json");
     let output = Command::new("python3")
@@ -4508,6 +4510,7 @@ fn now_unix() -> Result<u64, String> {
         .map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
 fn rfc3339_utc_unix(value: &str) -> Result<u64, String> {
     if value.len() != 20
         || &value[4..5] != "-"

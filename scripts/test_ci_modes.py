@@ -371,6 +371,20 @@ class CiModeTests(unittest.TestCase):
         ):
             self.assertIn(relative_path, guard)
 
+    def test_versions_shellchecks_every_production_release_driver(self) -> None:
+        body = function_body("run_versions")
+        for relative_path in (
+            "production-release.sh",
+            "production-validation.sh",
+            "production-deploy-driver.sh",
+            "production-activate-driver.sh",
+            "production-seal-driver.sh",
+            "production-handover-driver.sh",
+            "production-canister-upgrade.sh",
+        ):
+            with self.subTest(relative_path=relative_path):
+                self.assertIn(f'"$ROOT/scripts/{relative_path}"', body)
+
 
 if __name__ == "__main__":
     unittest.main()

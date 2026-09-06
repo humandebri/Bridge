@@ -52,6 +52,19 @@ class ProofImpactTests(unittest.TestCase):
         self.assertIn("epoch_invalidation", impact["claims"])
         self.assertNotIn("payment_identity", impact["claims"])
 
+    def test_production_ui_deploy_precheck_routes_to_complete_proofs(self) -> None:
+        for path in (
+            "ui/scripts/check-deploy-profile.mjs",
+            "ui/scripts/check-deploy-profile.test.mjs",
+        ):
+            with self.subTest(path=path):
+                impact = check_proof_impact.classify_paths([path], self.manifest)
+                self.assertEqual(impact["areas"], ["production_ui_deployment"])
+                self.assertIn("activation_preflight", impact["claims"])
+                self.assertEqual(
+                    impact["stages"], list(check_proof_impact.REQUIRED_STAGES)
+                )
+
     def test_new_safety_source_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "unregistered"):
             check_proof_impact.classify_paths(
