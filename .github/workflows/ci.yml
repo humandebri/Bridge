@@ -1,10 +1,7 @@
-# GitHub Actions: complete main, nightly, and manually dispatched repository gate.
-name: bridge-ci
+# GitHub Actions: complete nightly and manually dispatched repository gate.
+name: bridge-full-ci
 
 on:
-  push:
-    branches:
-      - main
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:

@@ -13,12 +13,31 @@ case "$MODE" in
   *) echo "unapproved trusted PR mode: $MODE" >&2; exit 2 ;;
 esac
 
+NEEDS_WORKSPACE_DEPS=false
+NEEDS_UI_DEPS=false
+NEEDS_RUST_TOOLCHAIN=false
+NEEDS_FOUNDRY=false
+case "$MODE" in
+  rust-fast|rust-integration|proofs|icp) NEEDS_RUST_TOOLCHAIN=true ;;
+esac
+case "$MODE" in
+  contracts-fast|contracts-coverage|proofs|certora) NEEDS_FOUNDRY=true ;;
+esac
+case "$MODE" in
+  rust-integration) NEEDS_WORKSPACE_DEPS=true; NEEDS_UI_DEPS=true ;;
+  proofs|ui-fast|ui-e2e|real) NEEDS_UI_DEPS=true ;;
+esac
+
 [[ -d "$SOURCE_ROOT/.git" && ! -L "$SOURCE_ROOT" ]] || { echo "candidate source must be a checkout" >&2; exit 1; }
 [[ -d "$POLICY_ROOT/scripts" && ! -L "$POLICY_ROOT/scripts" ]] || { echo "trusted policy is invalid" >&2; exit 1; }
-[[ -d "$DEPENDENCY_ROOT/node_modules" && ! -L "$DEPENDENCY_ROOT/node_modules" ]] \
-  || { echo "trusted workspace dependencies are missing" >&2; exit 1; }
-[[ -d "$DEPENDENCY_ROOT/ui/node_modules" && ! -L "$DEPENDENCY_ROOT/ui/node_modules" ]] \
-  || { echo "trusted UI dependencies are missing" >&2; exit 1; }
+if [[ "$NEEDS_WORKSPACE_DEPS" == true ]]; then
+  [[ -d "$DEPENDENCY_ROOT/node_modules" && ! -L "$DEPENDENCY_ROOT/node_modules" ]] \
+    || { echo "trusted workspace dependencies are missing" >&2; exit 1; }
+fi
+if [[ "$NEEDS_UI_DEPS" == true ]]; then
+  [[ -d "$DEPENDENCY_ROOT/ui/node_modules" && ! -L "$DEPENDENCY_ROOT/ui/node_modules" ]] \
+    || { echo "trusted UI dependencies are missing" >&2; exit 1; }
+fi
 [[ "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" == "${BRIDGE_EXPECTED_HEAD_SHA:?missing expected head SHA}" ]] \
   || { echo "candidate checkout SHA mismatch" >&2; exit 1; }
 # shellcheck source=/dev/null
@@ -81,6 +100,14 @@ if [[ "$MODE" == "real" ]]; then
   fi
 fi
 
+DEPENDENCY_MOUNTS=()
+if [[ "$NEEDS_WORKSPACE_DEPS" == true ]]; then
+  DEPENDENCY_MOUNTS+=(--mount "type=bind,src=$DEPENDENCY_ROOT/node_modules,dst=/workspace/node_modules,readonly")
+fi
+if [[ "$NEEDS_UI_DEPS" == true ]]; then
+  DEPENDENCY_MOUNTS+=(--mount "type=bind,src=$DEPENDENCY_ROOT/ui/node_modules,dst=/workspace/ui/node_modules,readonly")
+fi
+
 WRITABLE_BUILD_MOUNTS=()
 if [[ "$MODE" == "proofs" ]]; then
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/output
@@ -118,13 +145,28 @@ if [[ "$MODE" == "real" ]]; then
 fi
 
 TOOL_MOUNTS=()
-for tool_path in .cargo .rustup .local .elan .foundry setup-pnpm; do
+TOOL_PATHS=(.local)
+if [[ "$NEEDS_RUST_TOOLCHAIN" == true ]]; then
+  TOOL_PATHS+=(.cargo .rustup)
+fi
+if [[ "$MODE" == "proofs" ]]; then
+  TOOL_PATHS+=(.elan)
+fi
+if [[ "$NEEDS_FOUNDRY" == true ]]; then
+  TOOL_PATHS+=(.foundry)
+fi
+if [[ "$NEEDS_WORKSPACE_DEPS" == true || "$NEEDS_UI_DEPS" == true ]]; then
+  TOOL_PATHS+=(setup-pnpm)
+fi
+for tool_path in "${TOOL_PATHS[@]}"; do
   [[ -d "/home/runner/$tool_path" ]] || { echo "trusted tool path is missing: $tool_path" >&2; exit 1; }
   TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/$tool_path,dst=/home/runner/$tool_path,readonly")
 done
-[[ -x /home/runner/.svm/0.8.36/solc-0.8.36 ]] \
-  || { echo "trusted Solidity compiler is missing" >&2; exit 1; }
-TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.svm,dst=/scratch/home/.svm,readonly")
+if [[ "$NEEDS_FOUNDRY" == true ]]; then
+  [[ -x /home/runner/.svm/0.8.36/solc-0.8.36 ]] \
+    || { echo "trusted Solidity compiler is missing" >&2; exit 1; }
+  TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.svm,dst=/scratch/home/.svm,readonly")
+fi
 if [[ "$MODE" == "proofs" ]]; then
   [[ -d /home/runner/.elan/toolchains && ! -L /home/runner/.elan/toolchains ]] \
     || { echo "trusted Lean toolchains are missing" >&2; exit 1; }
@@ -149,8 +191,7 @@ docker run --rm \
   --mount "type=bind,src=$SCRATCH/candidate-scripts/plan007/generate-local-e2e.mjs,dst=/workspace/scripts/plan007/generate-local-e2e.mjs,readonly" \
   --mount "type=bind,src=$SCRATCH/candidate-scripts/plan007/test-generate-local-e2e.mjs,dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly" \
   --mount "type=bind,src=$SCRATCH/candidate-scripts,dst=/scratch/candidate-scripts,readonly" \
-  --mount "type=bind,src=$DEPENDENCY_ROOT/node_modules,dst=/workspace/node_modules,readonly" \
-  --mount "type=bind,src=$DEPENDENCY_ROOT/ui/node_modules,dst=/workspace/ui/node_modules,readonly" \
+  "${DEPENDENCY_MOUNTS[@]}" \
   "${WRITABLE_UI_MOUNTS[@]}" \
   --mount "type=bind,src=$SCRATCH/target,dst=/workspace/target" \
   --mount "type=bind,src=$SCRATCH/contracts-out,dst=/workspace/contracts/out" \
