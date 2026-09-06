@@ -413,6 +413,7 @@ const PREVIOUS_SCHEMA_VERSION: u16 = 35;
 #[derive(Clone, Copy)]
 enum SchemaMigrationMode {
     Production,
+    #[cfg(feature = "test-deployment")]
     Staging,
 }
 
@@ -2419,7 +2420,7 @@ fn verify_metadata(handle: DbHandle) -> Result<(), StorageError> {
 
 fn migrate_previous_schema(
     handle: DbHandle,
-    mode: SchemaMigrationMode,
+    _mode: SchemaMigrationMode,
 ) -> Result<(), StorageError> {
     let (schema, wire) = stored_metadata(handle)?;
     if (schema, wire) != (PREVIOUS_SCHEMA_VERSION, WIRE_VERSION) {
@@ -2463,8 +2464,11 @@ fn migrate_previous_schema(
     let pending_activation = admission
         .pending_timelock_operation
         .filter(|_| admission.pending_control_plane_rotation.is_none());
-    let legacy_staging_controller = matches!(mode, SchemaMigrationMode::Staging)
+    #[cfg(feature = "test-deployment")]
+    let legacy_staging_controller = matches!(_mode, SchemaMigrationMode::Staging)
         && admission.bootstrap_activation_controller == Some(Principal::anonymous());
+    #[cfg(not(feature = "test-deployment"))]
+    let legacy_staging_controller = false;
     match ::bridge_core::kernel::legacy_activation_evidence_requirement(
         admission.operational_config_sealed,
         pending_activation.is_some(),
@@ -13589,6 +13593,7 @@ mod tests {
             .expect("write schema 35 admission");
     }
 
+    #[cfg(feature = "test-deployment")]
     fn write_v35_admission_without_controller(
         store: &StableStore,
         admission: &DepositAdmissionControl,
@@ -13735,7 +13740,6 @@ mod tests {
 
         let memory = VectorMemory::default();
         let store = StableStore::init_configured(memory.clone(), &config()).expect("store");
-        let mut admission = admission;
         admission.last_completed_governance_transaction = Some(GovernanceTransaction {
             id: 1,
             kind: GovernanceTransactionKind::SetServiceFee { value: 1 },

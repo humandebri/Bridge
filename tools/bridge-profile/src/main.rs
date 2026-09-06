@@ -5481,6 +5481,7 @@ fn production_upgrade_public_state_sha256(
     Ok(hex(&digest.finalize()))
 }
 
+#[cfg(test)]
 fn production_upgrade_query_state(
     status_hex: &str,
     lifecycle_hex: &str,
@@ -15401,7 +15402,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         .is_ok());
         let mut forged_history: ProductionCanisterUpgradeReceipt =
             serde_json::from_slice(&production_upgrade_bytes).unwrap();
-        let forged_controller = Principal::self_authenticating(&[0x91; 32]).to_text();
+        let forged_controller = Principal::self_authenticating([0x91; 32]).to_text();
         let forged_management = serde_json::to_vec(&serde_json::json!({
             "status": {
                 "settings": {"controllers": [forged_controller.clone()]},
