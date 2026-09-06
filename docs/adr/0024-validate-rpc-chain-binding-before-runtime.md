@@ -8,7 +8,7 @@ Bridgeのconfigured chain IDはinstall domainを構成する設定値であり�
 
 本番Base MainnetのCanister outcallは公式EVM RPC Canisterの組み込み`BaseMainnet` provider群を使用し、`custom_evm_rpc_urls`は空配列に固定する。Gate Aはoffline artifactとconstructor条件だけを検証し、配置後のruntime、role、pause、chain bindingはCanisterが公式経路から取得するactivation attestationを正本とする。直接Custom RPC 3件の照合はstaging monitor drillだけに限定し、本番profile、release bundle、UIへURLを注入しない。Base Sepolia stagingと`test-deployment` buildでは、review済みのCustom RPC 3件を使用する。staging Wasmの一方向provider置換例外は、現在review済みのOnFinality集合からreview済みのdRPC集合への置換だけを許可する。旧・新URL配列、順序、両digest、Base Sepolia chain ID、公式EVM RPC Canister IDをすべて固定し、新集合への同値再実行以外の変更はtrapする。production Wasmはこの型・decoder・置換経路をコンパイルしない。置換理由とIC経由の診断証拠は[ADR 0026](0026-replace-staging-onfinality-with-drpc.md)を正本とする。
 
-runtimeの2-of-3 quorumは、Finalized観測、canonical block hash、receipt、contract stateなどの応答不一致とprovider障害を扱う。`notify_withdrawal`のFinalized観測だけは最新headの完全一致ではなく、2 provider以上が証言する最大checkpointを選び、その高さのcanonical block hashをexact 2-of-3で再取得する。他のruntime snapshot、deposit、refundのFinalized head取得は変更しない。provider URLまたはその接続先chainが稼働中に切り替わる脅威への検知手段ではない。stagingの固定置換時は保存済みFinalized水位を保持しつつruntime attestation cacheを失効させ、次のEVM観測で新provider集合からruntime codeを再確認する。この設計では稼働中の`eth_chainId`反復検証も、期限付きchain attestationも行わない。
+runtimeの`BaseMainnet(None)`は公式EVM RPC Canisterの既定provider poolから3 providerを選択し、2 responseの一致を要求する。この2-of-3 quorumは、Finalized観測、canonical block hash、receipt、contract stateなどの応答不一致と1 provider障害を扱う。`notify_withdrawal`のFinalized観測だけは最新headの完全一致ではなく、2 provider以上が証言する最大checkpointを選び、その高さのcanonical block hashをexact 2-of-3で再取得する。他のruntime snapshot、deposit、refundのFinalized head取得は変更しない。既定provider registryの変更、correlated compromise、provider URLまたはその接続先chainが稼働中に切り替わる脅威への検知手段ではなく、これらは外部仮定として残る。stagingの固定置換時は保存済みFinalized水位を保持しつつruntime attestation cacheを失効させ、次のEVM観測で新provider集合からruntime codeを再確認する。この設計では稼働中の`eth_chainId`反復検証も、期限付きchain attestationも行わない。
 
 ## 記録の意味
 
@@ -30,3 +30,5 @@ runtimeの2-of-3 quorumは、Finalized観測、canonical block hash、receipt、
 今回固定したstagingの一方向置換を超えてRPC URL、configured chain ID、または各URLの接続先chainを稼働中に変更可能にする場合は、この決定を再検討する。その変更では、attestationの失効条件、stable install-domain binding、audit意味論、既存recordの扱い、runtime quorumの責務を新しい脅威モデルに基づいて設計し直す。
 
 claimが依存する外部仮定とfail-closed動作の機械可読な正本は`verification/assumptions.tsv`の`rpc_provider_chain_configuration`とする。operator手順は`docs/runbooks/operations.md`、rehearsal条件は`docs/runbooks/evm-rpc-canister-rehearsal.md`、証跡要件は`deployments/evidence-v1/README.md`に従う。
+
+stagingの直接Custom RPC rehearsalとmonitor drillはunpause後のGate C運用証跡であり、Gate B、activation、controller handoverを認可しない。Gate Bのproduction chain bindingは、`provider-independence.json`、公式EVM RPC Canisterの`BaseMainnet`既定pool、およびfresh activation attestationを正本とする。

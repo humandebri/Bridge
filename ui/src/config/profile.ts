@@ -120,7 +120,7 @@ export type DeploymentProfile = z.infer<typeof deploymentProfileSchema>
 
 // Release inputs retain the evidence needed by deploy-time verification. This schema is
 // intentionally separate from the browser contract so release metadata cannot enter runtime.
-export const releaseProfileSchema = deploymentProfileSchema.extend({
+export const releaseProfileSchema = deploymentProfileSchema.safeExtend({
   gateBManifestSha256: releaseSha256.nullable(),
   profileFileSha256: releaseSha256,
   profileCanonicalSha256: releaseSha256,

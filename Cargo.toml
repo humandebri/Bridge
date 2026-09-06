@@ -28,9 +28,12 @@ futures = "=0.3.32"
 ic-canister-runtime = "=0.2.3"
 ic-cdk-management-canister = "=0.1.1"
 ic-agent = "=0.47.3"
+ic-transport-types = "=0.47.3"
 k256 = { version = "=0.13.4", default-features = false, features = ["alloc", "ecdsa"] }
+ring = "=0.17.14"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.145"
+serde_cbor = "=0.11.2"
 sha2 = "=0.10.9"
 tiny-keccak = { version = "=2.0.2", features = ["keccak"] }
 tokio = { version = "=1.52.3", features = ["rt-multi-thread"] }

@@ -26,6 +26,7 @@ KERNEL = ROOT / "canister" / "bridge-core" / "src" / "kernel.rs"
 PRODUCTION_ROOTS = (
     (ROOT / "canister" / "bridge-core" / "src").resolve(),
     (ROOT / "canister" / "bridge-canister" / "src").resolve(),
+    (ROOT / "tools" / "bridge-profile" / "src").resolve(),
 )
 
 

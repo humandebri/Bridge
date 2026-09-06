@@ -2,8 +2,17 @@
 # Shared fail-closed evidence validation for fixed production drivers.
 
 production_require_clean_source() {
-  local source_root="$1" dirty submodule_status
-  [[ -d "$source_root/.git" ]] || { echo "production source root is not a Git worktree" >&2; return 1; }
+  local source_root="$1" dirty submodule_status top_level source_physical top_physical
+  top_level="$(git -C "$source_root" rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "production source root is not a Git worktree" >&2
+    return 1
+  }
+  source_physical="$(cd "$source_root" && pwd -P)" || return 1
+  top_physical="$(cd "$top_level" && pwd -P)" || return 1
+  [[ "$source_physical" == "$top_physical" ]] || {
+    echo "production source root is not the Git worktree root" >&2
+    return 1
+  }
   dirty="$(git -C "$source_root" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)" || return 1
   [[ -z "$dirty" ]] || { echo "release source or a nested submodule is dirty" >&2; return 1; }
   submodule_status="$(git -C "$source_root" submodule status --recursive 2>/dev/null)" || {
@@ -14,6 +23,23 @@ production_require_clean_source() {
     echo "release source has an uninitialized or non-recorded submodule revision" >&2
     return 1
   fi
+}
+
+production_require_bundle_source_binding() {
+  local source_root="$1" bundle="$2" revision tree manifest_revision manifest_tree
+  production_require_clean_source "$source_root" || return 1
+  [[ -f "$bundle/release-manifest.json" && ! -L "$bundle/release-manifest.json" ]] || {
+    echo "release manifest is missing or unsafe" >&2; return 1;
+  }
+  revision="$(git -C "$source_root" rev-parse HEAD)" || return 1
+  tree="$(git -C "$source_root" archive HEAD | shasum -a 256 | awk '{print $1}')" || return 1
+  read -r manifest_revision manifest_tree < <(
+    python3 -c 'import json,sys;m=json.load(open(sys.argv[1]));print(m.get("source_revision",""),m.get("source_tree_sha256",""))' "$bundle/release-manifest.json"
+  )
+  [[ "$revision" == "$manifest_revision" \
+    && "$tree" == "$(printf '%s' "$manifest_tree" | tr '[:upper:]' '[:lower:]')" ]] || {
+    echo "release bundle is not bound to the fixed clean source" >&2; return 1;
+  }
 }
 
 production_run_proof_gate() {
@@ -112,44 +138,96 @@ production_freeze_bundle() {
 import hashlib,json,os,re,stat,sys
 source,destination=sys.argv[1:]
 directory=os.open(source,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-def read_regular(name,limit):
- if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',name): raise SystemExit(f'unsafe release artifact path: {name}')
- fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=directory)
+def path_parts(name,top_level=False):
+ if not isinstance(name,str): raise SystemExit('release artifact path is not a string')
+ parts=name.split('/')
+ if not parts or any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',part) for part in parts): raise SystemExit(f'unsafe release artifact path: {name}')
+ if top_level and len(parts)!=1: raise SystemExit(f'unsafe top-level release artifact path: {name}')
+ return parts
+def read_regular(name,limit,top_level=False):
+ parts=path_parts(name,top_level)
+ parent_fd=os.dup(directory)
  try:
-  info=os.fstat(fd)
-  if not stat.S_ISREG(info.st_mode) or info.st_size>limit: raise SystemExit(f'invalid release artifact: {name}')
-  chunks=[]; remaining=limit+1
-  while remaining:
-   chunk=os.read(fd,min(1024*1024,remaining))
-   if not chunk: break
-   chunks.append(chunk); remaining-=len(chunk)
-  value=b''.join(chunks)
-  if len(value)>limit: raise SystemExit(f'release artifact exceeds size limit: {name}')
-  return value
+  for part in parts[:-1]:
+   next_fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent_fd)
+   os.close(parent_fd); parent_fd=next_fd
+  fd=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent_fd)
+  try:
+   info=os.fstat(fd)
+   if not stat.S_ISREG(info.st_mode) or info.st_size>limit: raise SystemExit(f'invalid release artifact: {name}')
+   chunks=[]; remaining=limit+1
+   while remaining:
+    chunk=os.read(fd,min(1024*1024,remaining))
+    if not chunk: break
+    chunks.append(chunk); remaining-=len(chunk)
+   value=b''.join(chunks)
+   if len(value)>limit: raise SystemExit(f'release artifact exceeds size limit: {name}')
+   return value
+  finally: os.close(fd)
+ finally: os.close(parent_fd)
+def write_regular(name,value):
+ parts=path_parts(name)
+ parent=destination
+ for part in parts[:-1]:
+  parent=os.path.join(parent,part)
+  os.makedirs(parent,mode=0o700,exist_ok=True)
+ fd=os.open(os.path.join(destination,*parts),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+ try:
+  view=memoryview(value)
+  while view:
+   written=os.write(fd,view)
+   if written<=0: raise SystemExit(f'short write while freezing release artifact: {name}')
+   view=view[written:]
+  os.fsync(fd)
  finally: os.close(fd)
 try:
- manifest_bytes=read_regular('release-manifest.json',4*1024*1024)
+ manifest_bytes=read_regular('release-manifest.json',4*1024*1024,True)
  manifest=json.loads(manifest_bytes)
  artifacts=manifest.get('artifacts')
- if not isinstance(artifacts,list): raise SystemExit('release manifest artifacts are missing')
+ if not isinstance(artifacts,list) or len(artifacts)>32: raise SystemExit('release manifest artifact count is invalid')
  files={'release-manifest.json':manifest_bytes}
  for entry in artifacts:
   if not isinstance(entry,dict) or set(entry)!={'path','sha256'}: raise SystemExit('invalid release artifact entry')
   name=entry['path']; expected=entry['sha256']
+  path_parts(name,True)
   if name in files or not isinstance(expected,str) or not re.fullmatch(r'[0-9a-fA-F]{64}',expected): raise SystemExit(f'invalid duplicate release artifact: {name}')
-  value=read_regular(name,256*1024*1024)
+  if name in {'bridge-canister.wasm','bridge-runtime.bin','bsns-creation.bin','bsns-runtime.bin'}: limit=256*1024*1024
+  # The chain bounds decoded receipt bytes to 256 MiB, but stores those bytes as
+  # hex. Allow that encoded envelope plus bounded per-entry JSON metadata.
+  elif name == 'production-canister-upgrade-receipt.json': limit=513*1024*1024
+  else: limit=16*1024*1024
+  value=read_regular(name,limit,True)
+  if name == 'production-canister-upgrade-receipt.json':
+   try: upgrade_evidence=json.loads(value)
+   except Exception as error: raise SystemExit(f'invalid production upgrade evidence JSON: {error}')
+   if upgrade_evidence.get('kind')=='production-controller-bootstrap-upgrade' and len(value)>128*1024*1024:
+    raise SystemExit('raw production upgrade receipt is too large')
   if hashlib.sha256(value).hexdigest().lower()!=expected.lower(): raise SystemExit(f'release artifact hash mismatch while freezing: {name}')
   files[name]=value
- for name,value in files.items():
-  fd=os.open(os.path.join(destination,name),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
-  try:
-   view=memoryview(value)
-   while view:
-    written=os.write(fd,view)
-    if written<=0: raise SystemExit(f'short write while freezing release artifact: {name}')
-    view=view[written:]
-   os.fsync(fd)
-  finally: os.close(fd)
+ rpc=json.loads(files.get('rpc-e2e.json',b'{}'))
+ scenarios=rpc.get('scenarios',{})
+ if not isinstance(scenarios,dict) or len(scenarios)>16: raise SystemExit('invalid RPC rehearsal scenarios')
+ raw_paths=set(); raw_count=0; raw_total=0
+ for scenario in scenarios.values():
+  if scenario is None: continue
+  if not isinstance(scenario,dict) or not isinstance(scenario.get('artifacts'),list): raise SystemExit('invalid RPC rehearsal artifact references')
+  for reference in scenario['artifacts']:
+   if not isinstance(reference,dict): raise SystemExit('invalid RPC rehearsal artifact reference')
+   name=reference.get('path'); expected=reference.get('sha256')
+   parts=path_parts(name)
+   if parts[0]!='artifacts' or not isinstance(expected,str) or not re.fullmatch(r'[0-9a-f]{64}',expected): raise SystemExit(f'invalid RPC rehearsal artifact reference: {name}')
+   raw_count+=1
+   if raw_count>128 or name in raw_paths: raise SystemExit('RPC rehearsal raw artifact references exceed the safe bound or contain duplicates')
+   raw_paths.add(name)
+   value=read_regular(name,16*1024*1024)
+   raw_total+=len(value)
+   if raw_total>64*1024*1024: raise SystemExit('RPC rehearsal raw artifacts exceed the cumulative size limit')
+   if hashlib.sha256(value).hexdigest()!=expected: raise SystemExit(f'RPC rehearsal artifact hash mismatch while freezing: {name}')
+   if name in files and files[name]!=value: raise SystemExit(f'conflicting RPC rehearsal artifact reference: {name}')
+   files[name]=value
+ for name,value in files.items(): write_regular(name,value)
+ for current,dirs,_ in os.walk(destination,topdown=False):
+  for name in dirs: os.chmod(os.path.join(current,name),0o500)
  destination_fd=os.open(destination,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
  try: os.fsync(destination_fd)
  finally: os.close(destination_fd)
@@ -158,12 +236,149 @@ finally: os.close(directory)
 PY
 }
 
+# Freeze one externally supplied receipt through a no-follow descriptor before
+# validation so a later path swap cannot change the bytes authorized for use.
+production_freeze_receipt() {
+  local source="$1" destination="$2" label="${3:-receipt}"
+  python3 - "$source" "$destination" "$label" <<'PY'
+import os,stat,sys
+source,destination,label=sys.argv[1:]
+fd=os.open(source,os.O_RDONLY|os.O_NOFOLLOW)
+try:
+ info=os.fstat(fd)
+ if not stat.S_ISREG(info.st_mode) or info.st_size>16*1024*1024:
+  raise SystemExit(f'{label} is not a bounded regular file')
+ chunks=[]
+ while True:
+  chunk=os.read(fd,1024*1024)
+  if not chunk: break
+  chunks.append(chunk)
+ after=os.fstat(fd)
+ if (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
+  raise SystemExit(f'{label} changed while it was frozen')
+ data=b''.join(chunks)
+finally: os.close(fd)
+out=os.open(destination,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+try:
+ view=memoryview(data)
+ while view:
+  written=os.write(out,view)
+  if written<=0: raise SystemExit(f'short write while freezing {label}')
+  view=view[written:]
+ os.fsync(out)
+finally: os.close(out)
+PY
+}
+
+production_validate_gate_b_source_chain() {
+  local source_root="$1" bundle="$2"
+  local gate_a_revision gate_a_tree upgrade_revision upgrade_tree current_revision current_tree
+  local actual_gate_a_tree actual_upgrade_tree actual_current_tree
+  local chain_source_lines first_upgrade_revision previous_upgrade_revision entry_revision entry_tree actual_entry_tree
+  [[ -f "$bundle/post-gate-a-policy-transition.json" \
+    && ! -L "$bundle/post-gate-a-policy-transition.json" ]] || {
+    echo "Gate B policy transition is missing or unsafe" >&2
+    return 1
+  }
+  chain_source_lines="$(python3 - "$bundle/production-canister-upgrade-receipt.json" <<'PY'
+import hashlib,json,sys
+raw=open(sys.argv[1],'rb').read(); value=json.loads(raw)
+if value.get('kind')=='production-controller-bootstrap-upgrade':
+ receipts=[value]
+else:
+ if set(value)!={'schema_version','kind','entries'} or value.get('schema_version')!=1 or value.get('kind')!='production-controller-bootstrap-upgrade-chain':
+  raise SystemExit('invalid production upgrade chain envelope')
+ entries=value.get('entries')
+ if not isinstance(entries,list) or not 1<=len(entries)<=16: raise SystemExit('invalid production upgrade chain length')
+ receipts=[]; previous=None; total=0
+ for index,entry in enumerate(entries):
+  if set(entry)!={'sequence','previous_receipt_sha256','receipt_sha256','receipt_json_hex'} or entry.get('sequence')!=index or entry.get('previous_receipt_sha256')!=previous:
+   raise SystemExit('invalid production upgrade chain linkage')
+  receipt_raw=bytes.fromhex(entry.get('receipt_json_hex','')); total+=len(receipt_raw)
+  if len(receipt_raw)>128*1024*1024: raise SystemExit('production upgrade receipt is too large')
+  if total>256*1024*1024: raise SystemExit('production upgrade chain is too large')
+  digest=hashlib.sha256(receipt_raw).hexdigest()
+  if entry.get('receipt_sha256','').lower()!=digest: raise SystemExit('invalid production upgrade receipt hash')
+  receipts.append(json.loads(receipt_raw)); previous=digest
+for receipt in receipts:
+ print(receipt.get('source_revision',''),receipt.get('source_tree_sha256',''))
+PY
+)" || {
+    echo "Gate B upgrade chain source evidence is invalid" >&2
+    return 1
+  }
+  previous_upgrade_revision=""
+  while read -r entry_revision entry_tree; do
+    [[ "$entry_revision" =~ ^[0-9a-f]{40}$ && "$entry_tree" =~ ^[0-9a-fA-F]{64}$ ]] || {
+      echo "Gate B upgrade chain source metadata is malformed" >&2; return 1;
+    }
+    git -C "$source_root" cat-file -e "${entry_revision}^{commit}" 2>/dev/null || {
+      echo "Gate B upgrade chain source commit is unavailable" >&2; return 1;
+    }
+    if [[ -n "$previous_upgrade_revision" ]]; then
+      git -C "$source_root" merge-base --is-ancestor "$previous_upgrade_revision" "$entry_revision" || {
+        echo "Gate B upgrade chain source ancestry is invalid" >&2; return 1;
+      }
+    else
+      first_upgrade_revision="$entry_revision"
+    fi
+    actual_entry_tree="$(git -C "$source_root" --attr-source="$entry_revision" archive --format=tar "$entry_revision" | shasum -a 256 | awk '{print tolower($1)}')"
+    [[ "$actual_entry_tree" == "$(printf '%s' "$entry_tree" | tr '[:upper:]' '[:lower:]')" ]] || {
+      echo "Gate B upgrade chain source tree hash mismatch" >&2; return 1;
+    }
+    previous_upgrade_revision="$entry_revision"
+  done <<<"$chain_source_lines"
+  read -r gate_a_revision gate_a_tree upgrade_revision upgrade_tree current_revision current_tree < <(
+    python3 -c '
+import json,sys
+t=json.load(open(sys.argv[1],encoding="utf-8"))
+print(t.get("from_source_revision",""),t.get("from_source_tree_sha256",""),t.get("upgrade_source_revision",""),t.get("upgrade_source_tree_sha256",""),t.get("to_source_revision",""),t.get("to_source_tree_sha256",""))
+' "$bundle/post-gate-a-policy-transition.json"
+  )
+  [[ "$gate_a_revision" =~ ^[0-9a-f]{40}$ \
+    && "$upgrade_revision" =~ ^[0-9a-f]{40}$ \
+    && "$current_revision" =~ ^[0-9a-f]{40}$ \
+    && "$gate_a_tree" =~ ^[0-9a-fA-F]{64}$ \
+    && "$upgrade_tree" =~ ^[0-9a-fA-F]{64}$ \
+    && "$current_tree" =~ ^[0-9a-fA-F]{64}$ ]] || {
+    echo "Gate B source chain metadata is malformed" >&2
+    return 1
+  }
+  [[ "$first_upgrade_revision" == "$upgrade_revision" || "$previous_upgrade_revision" == "$upgrade_revision" ]] || {
+    echo "Gate B policy transition does not name an upgrade-chain source" >&2
+    return 1
+  }
+  git -C "$source_root" cat-file -e "${gate_a_revision}^{commit}" 2>/dev/null \
+    && git -C "$source_root" cat-file -e "${upgrade_revision}^{commit}" 2>/dev/null \
+    && git -C "$source_root" cat-file -e "${current_revision}^{commit}" 2>/dev/null \
+    && git -C "$source_root" merge-base --is-ancestor "$gate_a_revision" "$upgrade_revision" \
+    && git -C "$source_root" merge-base --is-ancestor "$gate_a_revision" "$first_upgrade_revision" \
+    && [[ "$previous_upgrade_revision" == "$upgrade_revision" ]] \
+    && git -C "$source_root" merge-base --is-ancestor "$upgrade_revision" "$current_revision" || {
+      echo "Gate B source chain is not Gate A to upgrade to current" >&2
+      return 1
+    }
+  actual_gate_a_tree="$(git -C "$source_root" --attr-source="$gate_a_revision" archive --format=tar "$gate_a_revision" | shasum -a 256 | awk '{print tolower($1)}')"
+  actual_upgrade_tree="$(git -C "$source_root" --attr-source="$upgrade_revision" archive --format=tar "$upgrade_revision" | shasum -a 256 | awk '{print tolower($1)}')"
+  actual_current_tree="$(git -C "$source_root" --attr-source="$current_revision" archive --format=tar "$current_revision" | shasum -a 256 | awk '{print tolower($1)}')"
+  [[ "$actual_gate_a_tree" == "$(printf '%s' "$gate_a_tree" | tr '[:upper:]' '[:lower:]')" \
+    && "$actual_upgrade_tree" == "$(printf '%s' "$upgrade_tree" | tr '[:upper:]' '[:lower:]')" \
+    && "$actual_current_tree" == "$(printf '%s' "$current_tree" | tr '[:upper:]' '[:lower:]')" ]] || {
+    echo "Gate B source chain tree hash mismatch" >&2
+    return 1
+  }
+}
+
 production_validate_gate() {
   local mode="$1" bundle="$2" expected_hash="$3" canister_install_receipt="${4:-}"
   local completed_gate_a_receipt="${5:-}"
   local deployment_binding="${6:-}"
   local final_profile="${7:-}"
   local fee_cycles_measurements="${8:-}"
+  local handover_seal_receipt="${5:-}"
+  local handover_schedule_receipt="${6:-}"
+  local handover_execute_receipt="${7:-}"
+  local handover_checkpoint="${4:-}"
   local source_root target profile_bin output actual_hash revision tree manifest_revision manifest_tree
   local expected_relayer resolved_relayer bridge_canister refresh_output final_output
   source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -178,70 +393,121 @@ production_validate_gate() {
   CARGO_TARGET_DIR="$target" cargo build --locked --quiet --release --manifest-path "$source_root/Cargo.toml" -p bridge-profile || { rm -rf "$target"; return 1; }
   profile_bin="$target/release/bridge-profile"
   if [[ "$mode" == gate-a ]]; then output="$("$profile_bin" validate-bundle --offline "$bundle")" || { rm -rf "$target"; return 1; }
-  elif [[ "$mode" == gate-b ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }
+  elif [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }
+  elif [[ "$mode" == handover || "$mode" == handover-recover ]]; then
+    [[ "$mode" == handover-recover || -z "$canister_install_receipt" ]] || {
+      rm -rf "$target"
+      echo "handover mode does not accept an install receipt" >&2
+      return 1
+    }
+    for receipt in "$handover_seal_receipt" "$handover_schedule_receipt" "$handover_execute_receipt"; do
+      [[ -f "$receipt" && ! -L "$receipt" ]] || {
+        rm -rf "$target"
+        echo "controller handover requires seal, schedule, and execute receipts" >&2
+        return 1
+      }
+    done
+    if [[ "$mode" == handover-recover ]]; then
+      [[ -f "$handover_checkpoint" && ! -L "$handover_checkpoint" ]] || {
+        rm -rf "$target"; echo "handover recovery requires a regular checkpoint" >&2; return 1;
+      }
+      output="$("$profile_bin" validate-controller-handover-recovery \
+        "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
+        "$handover_execute_receipt" "$handover_checkpoint")" || {
+          rm -rf "$target"; echo "controller handover recovery checkpoint is invalid" >&2; return 1;
+        }
+      [[ "$output" =~ ^controller_handover_recovery=pass[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || {
+        rm -rf "$target"
+        echo "controller handover recovery result is malformed" >&2
+        return 1
+      }
+    else
+      output="$("$profile_bin" validate-production-handover-candidate \
+        "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
+        "$handover_execute_receipt")" || {
+        rm -rf "$target"
+        echo "controller handover activation lineage is invalid" >&2
+        return 1
+      }
+      [[ "$output" =~ ^production_handover_candidate=pass[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || {
+        rm -rf "$target"
+        echo "controller handover candidate result is malformed" >&2
+        return 1
+      }
+    fi
+    [[ -n "${BASH_REMATCH[1]:-}" ]] || {
+      rm -rf "$target"
+      echo "controller handover validation omitted the manifest hash" >&2
+      return 1
+    }
+    actual_hash="${BASH_REMATCH[1]}"
   else rm -rf "$target"; echo "invalid production gate mode" >&2; return 1
   fi
   if [[ "$mode" == gate-a ]]; then
     [[ "$output" =~ ^gate_a=pass[[:space:]]authorizing=true[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver Gate A result is not authorizing" >&2; return 1; }
     actual_hash="${BASH_REMATCH[1]}"
-  else
-    [[ "$output" =~ ^gate_b=structural-pass[[:space:]]authorizing=false[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver Gate B structural result is malformed" >&2; return 1; }
+  elif [[ "$mode" != handover && "$mode" != handover-recover ]]; then
+    [[ "$output" =~ ^gate_b=pre_seal-pass[[:space:]]authorizing=seal[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver pre-seal Gate B result is malformed" >&2; return 1; }
     actual_hash="${BASH_REMATCH[1]}"
   fi
   [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "driver Gate manifest hash mismatch" >&2; return 1; }
+  if [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live || "$mode" == handover || "$mode" == handover-recover ]]; then
+    production_validate_gate_b_source_chain "$source_root" "$bundle" || { rm -rf "$target"; return 1; }
+  fi
   production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
   "$source_root/scripts/rebuild-release-artifacts.sh" \
     "$bundle" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
+  if [[ "$mode" == gate-b-pre-seal ]]; then
+    rm -rf "$target"
+    return 0
+  fi
+  if [[ "$mode" == handover || "$mode" == handover-recover ]]; then
+    if [[ "$mode" == handover-recover ]]; then
+      if [[ -n "${BRIDGE_HANDOVER_VALIDATOR_BIN:-}" ]]; then
+        [[ ! -e "$BRIDGE_HANDOVER_VALIDATOR_BIN" && ! -L "$BRIDGE_HANDOVER_VALIDATOR_BIN" ]] || {
+          rm -rf "$target"; echo "handover validator output already exists or is a symlink" >&2; return 1;
+        }
+        cp "$profile_bin" "$BRIDGE_HANDOVER_VALIDATOR_BIN" || { rm -rf "$target"; return 1; }
+        chmod 500 "$BRIDGE_HANDOVER_VALIDATOR_BIN" || { rm -rf "$target"; return 1; }
+      fi
+      rm -rf "$target"
+      return 0
+    fi
+    "$profile_bin" verify-production-canister-handover \
+      "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
+      "$handover_execute_receipt" >/dev/null || {
+      rm -rf "$target"
+      echo "production Canister is not active, integral, and bound to the activation lineage" >&2
+      return 1
+    }
+    if [[ -n "${BRIDGE_HANDOVER_VALIDATOR_BIN:-}" ]]; then
+      [[ ! -e "$BRIDGE_HANDOVER_VALIDATOR_BIN" && ! -L "$BRIDGE_HANDOVER_VALIDATOR_BIN" ]] || {
+        rm -rf "$target"; echo "handover validator output already exists or is a symlink" >&2; return 1;
+      }
+      cp "$profile_bin" "$BRIDGE_HANDOVER_VALIDATOR_BIN" || { rm -rf "$target"; return 1; }
+      chmod 500 "$BRIDGE_HANDOVER_VALIDATOR_BIN" || { rm -rf "$target"; return 1; }
+    fi
+    rm -rf "$target"
+    return 0
+  fi
   if [[ "$mode" == gate-a ]]; then
     [[ -f "$canister_install_receipt" && ! -L "$canister_install_receipt" ]] || {
       rm -rf "$target"
       echo "Gate A requires the verified production Canister install receipt" >&2
       return 1
     }
-    if [[ -n "$completed_gate_a_receipt" ]]; then
-      [[ -f "$completed_gate_a_receipt" && ! -L "$completed_gate_a_receipt" ]] || {
-        rm -rf "$target"
-        echo "controller handover requires the completed schema-2 Gate A receipt" >&2
-        return 1
-      }
-      [[ -f "$deployment_binding" && ! -L "$deployment_binding" ]] || {
-        rm -rf "$target"
-        echo "controller handover requires the canonical deployment binding" >&2
-        return 1
-      }
-      [[ -f "$final_profile" && ! -L "$final_profile" ]] || {
-        rm -rf "$target"
-        echo "controller handover requires the measurement-derived final profile" >&2
-        return 1
-      }
-      [[ -f "$fee_cycles_measurements" && ! -L "$fee_cycles_measurements" ]] || {
-        rm -rf "$target"
-        echo "controller handover requires the raw fee/cycles measurements" >&2
-        return 1
-      }
-      "$profile_bin" validate-production-handover-receipt \
-        "$bundle" "$completed_gate_a_receipt" "$canister_install_receipt" \
-        "$deployment_binding" >/dev/null || {
-        rm -rf "$target"
-        echo "completed Gate A receipt is not valid for controller handover" >&2
-        return 1
-      }
-      "$profile_bin" verify-production-canister-handover \
-        "$bundle" "$final_profile" "$fee_cycles_measurements" \
-        "$completed_gate_a_receipt" "$canister_install_receipt" \
-        "$deployment_binding" >/dev/null || {
-        rm -rf "$target"
-        echo "production Canister is not sealed and attested for controller handover" >&2
-        return 1
-      }
-    else
-      "$profile_bin" verify-production-canister-predeploy \
-        "$bundle/profile.json" "$canister_install_receipt" >/dev/null || {
-        rm -rf "$target"
-        echo "live production Canister no longer matches the paused predeploy profile" >&2
-        return 1
-      }
-    fi
+    [[ -z "$completed_gate_a_receipt" && -z "$deployment_binding" \
+      && -z "$final_profile" && -z "$fee_cycles_measurements" ]] || {
+      rm -rf "$target"
+      echo "Gate A mode rejects legacy controller handover inputs" >&2
+      return 1
+    }
+    "$profile_bin" verify-production-canister-predeploy \
+      "$bundle/profile.json" "$canister_install_receipt" >/dev/null || {
+      rm -rf "$target"
+      echo "live production Canister no longer matches the paused predeploy profile" >&2
+      return 1
+    }
     rm -rf "$target"
     return 0
   fi
@@ -264,13 +530,16 @@ production_validate_gate() {
     echo "activation attestation refresh returned an ambiguous failure; checking the authenticated live postcondition" >&2
   fi
   rm -f "$refresh_output"
-  final_output="$("$profile_bin" verify-live "$bundle")" || { rm -rf "$target"; return 1; }
-  [[ "$final_output" =~ ^gate_b=pass[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "final Gate B live result is malformed" >&2; return 1; }
+  final_output="$("$profile_bin" verify-live "$BRIDGE_ACTIVATION_PHASE" "$bundle")" || { rm -rf "$target"; return 1; }
+  [[ "$final_output" =~ ^gate_b=live-pass[[:space:]]authorizing=${BRIDGE_ACTIVATION_PHASE}[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "final live Gate B result is malformed" >&2; return 1; }
   actual_hash="${BASH_REMATCH[1]}"
   [[ "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "final Gate B manifest hash mismatch" >&2; return 1; }
   if [[ "$BRIDGE_ACTIVATION_PHASE" == execute ]]; then
     : "${BRIDGE_PRIOR_SCHEDULE_RECEIPT:?missing prior schedule receipt}"
-    "$profile_bin" verify-schedule-receipt-live "$bundle" "$BRIDGE_PRIOR_SCHEDULE_RECEIPT" >/dev/null || { rm -rf "$target"; return 1; }
+    : "${BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT:?missing operational config seal receipt}"
+    "$profile_bin" verify-controller-schedule-receipt-live "$bundle" \
+      "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$BRIDGE_PRIOR_SCHEDULE_RECEIPT" \
+      >/dev/null || { rm -rf "$target"; return 1; }
   elif [[ "$BRIDGE_ACTIVATION_PHASE" != schedule ]]; then
     rm -rf "$target"
     echo "invalid activation phase" >&2

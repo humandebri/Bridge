@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto"
 import { execFileSync, spawn } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
@@ -37,6 +45,17 @@ function hashGitArchive(sourceRoot) {
       resolvePromise(digest.digest("hex"))
     })
   })
+}
+
+/** @param {string} path */
+function readOrdinaryFile(path) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error(`Expected an ordinary file: ${path}`)
+    return readFileSync(fd)
+  } finally {
+    closeSync(fd)
+  }
 }
 
 try {
@@ -94,12 +113,17 @@ try {
     "bridge-profile",
     "--",
   ]
-  const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", bundle], {
+  const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", "schedule", bundle], {
     encoding: "utf8",
   })
-  const verifiedManifestSha256 = /manifest_sha256=([0-9a-fA-F]{64})/.exec(gateOutput)?.[1]
+  const verifiedManifestSha256 =
+    /^gate_b=live-pass authorizing=schedule manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
+      gateOutput,
+    )?.[1]
   if (!verifiedManifestSha256)
     throw new Error("Fixed bridge-profile did not verify the Gate B manifest")
+  const rawProfileBuffer = readOrdinaryFile(profileFile)
+  const inputsManifestBuffer = readOrdinaryFile(inputsManifestFile)
   const rendered = mkdtempSync(join(tmpdir(), "bridge-ui-release-inputs."))
   try {
     execFileSync("cargo", [...cargoArgs, "render-bundle-inputs", bundle, rendered], {
@@ -112,18 +136,26 @@ try {
       "ui-runtime-profile.json",
       "release-inputs-manifest.json",
     ]) {
-      if (!readFileSync(join(rendered, name)).equals(readFileSync(join(reviewedRoot, name)))) {
+      if (!readFileSync(join(rendered, name)).equals(readOrdinaryFile(join(reviewedRoot, name)))) {
         throw new Error(`Production release input drift: ${name}`)
       }
+    }
+    if (!readFileSync(join(rendered, "ui-runtime-profile.json")).equals(rawProfileBuffer)) {
+      throw new Error("Production release input drift: ui-runtime-profile.json")
+    }
+    if (
+      !readFileSync(join(rendered, "release-inputs-manifest.json")).equals(inputsManifestBuffer)
+    ) {
+      throw new Error("Production release input drift: release-inputs-manifest.json")
     }
   } finally {
     rmSync(rendered, { recursive: true, force: true })
   }
-  const rawProfile = readFileSync(profileFile, "utf8")
+  const rawProfile = rawProfileBuffer.toString("utf8")
   const { releaseProfileSchema } = await import("../src/config/profile.ts")
   const releaseProfile = releaseProfileSchema.parse(JSON.parse(rawProfile))
-  const manifest = JSON.parse(readFileSync(inputsManifestFile, "utf8"))
-  const actualHash = createHash("sha256").update(rawProfile).digest("hex")
+  const manifest = JSON.parse(inputsManifestBuffer.toString("utf8"))
+  const actualHash = createHash("sha256").update(rawProfileBuffer).digest("hex")
   if (manifest.artifacts?.["ui-runtime-profile.json"] !== actualHash) {
     throw new Error("Production UI profile hash differs from the reviewed release inputs")
   }

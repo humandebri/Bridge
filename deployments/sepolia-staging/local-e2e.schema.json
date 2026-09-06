@@ -7,7 +7,7 @@
     "schema_version": { "const": 8 },
     "environment_mode": { "const": "short-delay-test-only" },
     "activation_timelock_delay_seconds": { "const": 300 },
-    "stable_schema_version": { "const": 35 },
+    "stable_schema_version": { "const": 36 },
     "record_wire_version": { "const": 30 },
     "deployment_instance_id": { "$ref": "#/$defs/evmHash" },
     "created_at": { "type": "string", "format": "date-time" },

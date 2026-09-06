@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { createPrivateKey } from "node:crypto"
-import { readFile } from "node:fs/promises"
+import { createHash, createPrivateKey, randomUUID } from "node:crypto"
+import { link, lstat, open, readFile, unlink } from "node:fs/promises"
+import { basename, dirname, join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { Actor, HttpAgent } from "@icp-sdk/core/agent"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
@@ -59,6 +60,50 @@ async function main(): Promise<void> {
       printArtifact(unwrap(result))
       return
     }
+    case "seal-operational-config": {
+      const parametersPath = requiredOption(options, "parameters-file")
+      const parametersBytes = await readFile(parametersPath)
+      const parsed = JSON.parse(parametersBytes.toString("utf8")) as {
+        derived?: Record<string, unknown>
+        governance_operation_id?: unknown
+      }
+      const derived = parsed.derived
+      if (!derived || typeof derived !== "object") {
+        throw new Error("Initial operational parameters have no derived values")
+      }
+      const natural = (name: string): bigint => {
+        const value = derived[name]
+        if ((typeof value !== "string" && typeof value !== "number")
+          || !/^(0|[1-9][0-9]*)$/.test(String(value))) {
+          throw new Error(`Invalid derived operational parameter: ${name}`)
+        }
+        return BigInt(value)
+      }
+      parseExpectedGovernanceOperationId(parsed.governance_operation_id)
+      const receipt = unwrap(await actor.seal_operational_config({
+        governance_evm_fee: {
+          gas_limit_ceiling: natural("gas_limit_ceiling"),
+          max_fee_per_gas_ceiling: natural("max_fee_per_gas_ceiling"),
+          max_priority_fee_per_gas_ceiling: natural("max_priority_fee_per_gas_ceiling"),
+          l1_fee_per_transaction_ceiling_wei: natural("l1_fee_per_transaction_ceiling_wei"),
+          quote_validity_seconds: natural("quote_validity_seconds"),
+          gas_limit_multiplier_bps: Number(natural("gas_limit_multiplier_bps")),
+          base_fee_multiplier_bps: Number(natural("base_fee_multiplier_bps")),
+          l1_fee_multiplier_bps: Number(natural("l1_fee_multiplier_bps")),
+        },
+        cycles_floor: natural("cycles_floor"),
+        settlement_cycle_ceiling: natural("settlement_cycle_ceiling"),
+      }))
+      const evidence = {
+        schema_version: 1,
+        parameters_sha256: createHash("sha256").update(parametersBytes).digest("hex"),
+        sealed_at_unix: Math.floor(Date.now() / 1_000),
+        response: jsonValue(receipt),
+      }
+      await writeJsonNew(evidence, requiredOption(options, "receipt-file"))
+      process.stdout.write(`${JSON.stringify(evidence)}\n`)
+      return
+    }
     case "status": {
       const artifact = selectPendingArtifact(
         unwrap(await actor.get_pending_base_governance_transaction()),
@@ -71,32 +116,156 @@ async function main(): Promise<void> {
       printArtifact(artifact)
       return
     }
+    case "recover-activation": {
+      const phase = requiredOption(options, "phase")
+      if (phase !== "schedule" && phase !== "execute") {
+        throw new Error("--phase must be schedule or execute")
+      }
+      const pending = unwrap(await actor.get_pending_base_governance_transaction())
+      const artifact = selectPendingActivationArtifact(pending, phase)
+      const authorization = JSON.parse(
+        (await readFile(requiredOption(options, "authorization-file"))).toString("utf8"),
+      ) as Record<string, unknown>
+      const expectedGate = requiredEnv("BRIDGE_GATE_B_MANIFEST_SHA256").toLowerCase()
+      if (authorization.schema_version !== 1
+        || authorization.phase !== phase
+        || authorization.gate_b_manifest_sha256 !== expectedGate
+        || typeof authorization.authorized_at_unix !== "number"
+        || !Number.isSafeInteger(authorization.authorized_at_unix)
+        || authorization.authorized_at_unix <= 0
+        || artifact.signed_at_ns < BigInt(authorization.authorized_at_unix) * 1_000_000_000n) {
+        throw new Error("Live activation pending transaction predates or differs from its authorization")
+      }
+      await writeOrMatchArtifact(artifact, requiredOption(options, "artifact-file"))
+      printArtifact(artifact)
+      return
+    }
     case "relay": {
       const rpc = rpcClient()
       const artifact = await pendingArtifact(actor, options)
+      const artifactBytes = await requireMatchingArtifactFile(artifact, options)
+      await requireMatchingActivationBinding(artifact, artifactBytes, options)
       await validateArtifact(artifact)
       await relay(rpc, artifact)
       return
     }
     case "confirm": {
-      const artifact = await pendingArtifact(actor, options)
-      const hash = confirmationHash(options) ?? bytesHex(artifact.transaction_hash)
-      const receipt = unwrap(await actor.confirm_base_governance_transaction({
-        operation_id: artifact.operation_id,
-        transaction_hash: hexToBytes(hash),
-      }))
-      process.stdout.write(`${JSON.stringify(jsonValue(receipt))}\n`)
+      const artifactPath = requiredOption(options, "artifact-file")
+      const artifactBytes = await readFile(artifactPath)
+      const stored = JSON.parse(artifactBytes.toString("utf8"))
+      const storedIsActivation = isActivationArtifact(stored as { kind: unknown })
+      const storedIdentity = storedIsActivation
+        ? storedActivationConfirmationIdentity(stored)
+        : undefined
+      if (storedIdentity && options["operation-id"] !== undefined
+        && options["operation-id"] !== storedIdentity.operationId.toString()) {
+        throw new Error("--operation-id differs from the fixed activation artifact")
+      }
+      const pending = selectPendingArtifact(
+        unwrap(await actor.get_pending_base_governance_transaction()),
+        storedIdentity?.operationId.toString() ?? options["operation-id"],
+      )
+      let operationId: bigint
+      let expectedHash: Hex
+      let artifactToValidate: unknown
+      if (pending && storedIdentity && activationAttemptMatchesPendingLineage(stored, pending)) {
+        await requireActivationBindingBytes(artifactBytes, options)
+        operationId = storedIdentity.operationId
+        expectedHash = storedIdentity.transactionHash
+        artifactToValidate = stored
+      } else if (pending && storedArtifactMatches(stored, pending)) {
+        await requireMatchingActivationBinding(pending, artifactBytes, options)
+        operationId = pending.operation_id
+        expectedHash = bytesHex(pending.transaction_hash)
+        artifactToValidate = jsonValue(pending)
+      } else if (!pending && storedIdentity) {
+        await requireActivationBindingBytes(artifactBytes, options)
+        operationId = storedIdentity.operationId
+        expectedHash = storedIdentity.transactionHash
+        artifactToValidate = stored
+      } else {
+        throw new Error("Fixed governance artifact differs from the live pending transaction")
+      }
+      const hash = storedIsActivation
+        ? activationConfirmationHash(options, expectedHash)
+        : confirmationHash(options) ?? expectedHash
+      const receipt = unwrap(await afterValidatingStoredArtifacts(
+        [artifactToValidate],
+        () => actor.confirm_base_governance_transaction({
+          operation_id: operationId,
+          transaction_hash: hexToBytes(hash),
+        }),
+      ))
+      const evidence = {
+        schema_version: 1,
+        confirmed_at_unix: Math.floor(Date.now() / 1_000),
+        artifact_sha256: createHash("sha256").update(artifactBytes).digest("hex"),
+        operation_id: operationId.toString(),
+        transaction_hash: hash,
+        response: jsonValue(receipt),
+      }
+      await writeOrMatchConfirmationEvidence(
+        evidence,
+        requiredOption(options, "receipt-file"),
+      )
+      process.stdout.write(`${JSON.stringify(evidence)}\n`)
       return
     }
     case "replace": {
       const artifact = await pendingArtifact(actor, options)
+      if (isActivationArtifact(artifact)) {
+        throw new Error("Activation replacement requires the production activation driver")
+      }
+      await requireMatchingArtifactFile(artifact, options)
       const result = await actor.prepare_base_governance_replacement({
         operation_id: artifact.operation_id,
         expected_transaction_hash: artifact.transaction_hash,
         max_fee_per_gas: BigInt(requiredOption(options, "max-fee")),
         max_priority_fee_per_gas: BigInt(requiredOption(options, "priority-fee")),
       })
-      printArtifact(unwrap(result))
+      const replacement = unwrap(result)
+      await writeArtifactNew(replacement, requiredOption(options, "output-artifact-file"))
+      printArtifact(replacement)
+      return
+    }
+    case "replace-activation": {
+      const artifact = await pendingArtifact(actor, options)
+      const oldPath = requiredOption(options, "artifact-file")
+      const oldBytes = await readFile(oldPath)
+      const stored = JSON.parse(oldBytes.toString("utf8"))
+      if (!isActivationArtifact(stored as { kind: unknown })) {
+        throw new Error("replace-activation requires an activation artifact")
+      }
+      await requireActivationBindingBytes(oldBytes, options)
+      const maxFee = BigInt(requiredOption(options, "max-fee"))
+      const priorityFee = BigInt(requiredOption(options, "priority-fee"))
+      const replacement = await afterValidatingStoredArtifacts(
+        [stored, jsonValue(artifact)],
+        async (): Promise<SignedBaseGovernanceTransaction> => {
+          if (storedArtifactMatches(stored, artifact)) {
+            return unwrap(await actor.prepare_base_governance_replacement({
+              operation_id: artifact.operation_id,
+              expected_transaction_hash: artifact.transaction_hash,
+              max_fee_per_gas: maxFee,
+              max_priority_fee_per_gas: priorityFee,
+            }))
+          }
+          if (activationReplacementMatches(stored, artifact, maxFee, priorityFee)) {
+            return artifact
+          }
+          throw new Error("Live activation pending transaction is not the authorized replacement")
+        },
+      )
+      const outputArtifact = requiredOption(options, "output-artifact-file")
+      await writeOrMatchArtifact(replacement, outputArtifact)
+      const replacementBytes = await readFile(outputArtifact)
+      await writeOrMatchActivationBinding(
+        replacement,
+        replacementBytes,
+        options,
+        requiredOption(options, "output-binding-file"),
+      )
+      printArtifact(replacement)
       return
     }
     case "run": {
@@ -105,6 +274,9 @@ async function main(): Promise<void> {
       }
       const rpc = rpcClient()
       const artifact = await pendingArtifact(actor, options)
+      if (isActivationArtifact(artifact)) {
+        throw new Error("run cannot relay or confirm an activation transaction")
+      }
       await validateArtifact(artifact)
       await relay(rpc, artifact)
       const outcome = await waitForFinalized(rpc, bytesHex(artifact.transaction_hash))
@@ -123,12 +295,16 @@ async function main(): Promise<void> {
       process.stdout.write(`${JSON.stringify(jsonValue(attestation))}\n`)
       return
     }
-    case "schedule-activation": {
-      await runActivation(actor, rpcClient(), "schedule")
+    case "prepare-schedule-activation": {
+      const artifact = unwrap(await actor.schedule_activation())
+      await writeOrMatchArtifact(artifact, requiredOption(options, "artifact-file"))
+      printArtifact(artifact)
       return
     }
-    case "execute-activation": {
-      await runActivation(actor, rpcClient(), "execute")
+    case "prepare-execute-activation": {
+      const artifact = unwrap(await actor.execute_activation())
+      await writeOrMatchArtifact(artifact, requiredOption(options, "artifact-file"))
+      printArtifact(artifact)
       return
     }
     case "drain-emergency": {
@@ -158,31 +334,40 @@ async function main(): Promise<void> {
   }
 }
 
-export function commandRequiresIdentity(command: string): boolean {
-  return !new Set(["status", "relay"]).has(command)
+export function parseExpectedGovernanceOperationId(value: unknown): bigint {
+  if ((typeof value !== "string" && typeof value !== "number")
+    || (typeof value === "number" && !Number.isSafeInteger(value))
+    || !/^(0|[1-9][0-9]*)$/.test(String(value))) {
+    throw new Error("Invalid expected governance operation ID")
+  }
+  const operationId = BigInt(value)
+  if (operationId !== 0n) {
+    throw new Error("Initial governance operation ID must be 0")
+  }
+  return operationId
 }
 
-async function runActivation(
-  actor: _SERVICE,
-  rpc: RelayerRpc,
-  phase: "schedule" | "execute",
-): Promise<void> {
-  const result = phase === "schedule"
-    ? await actor.schedule_activation()
-    : await actor.execute_activation()
-  const artifact = unwrap(result)
-  await validateArtifact(artifact)
-  await relay(rpc, artifact)
-  const outcome = await waitForFinalized(rpc, bytesHex(artifact.transaction_hash))
-  if (outcome.status === "reverted") {
-    throw new Error(`Activation transaction reverted; stopped before finality polling. Confirm it after finalization: ${bytesHex(artifact.transaction_hash)}`)
+export function storedActivationConfirmationIdentity(value: unknown): {
+  operationId: bigint
+  transactionHash: Hex
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Fixed activation artifact is malformed")
   }
-  const confirmationResult = await actor.confirm_base_governance_transaction({
-    operation_id: artifact.operation_id,
-    transaction_hash: artifact.transaction_hash,
-  })
-  const confirmation = unwrap(confirmationResult)
-  process.stdout.write(`${JSON.stringify(jsonValue(confirmation))}\n`)
+  const artifact = value as Record<string, unknown>
+  if (typeof artifact.operation_id !== "string" || !/^(0|[1-9][0-9]*)$/.test(artifact.operation_id)
+    || typeof artifact.transaction_hash !== "string"
+    || !/^0x[0-9a-fA-F]{64}$/.test(artifact.transaction_hash)) {
+    throw new Error("Fixed activation artifact has an invalid operation ID or transaction hash")
+  }
+  return {
+    operationId: BigInt(artifact.operation_id),
+    transactionHash: artifact.transaction_hash as Hex,
+  }
+}
+
+export function commandRequiresIdentity(command: string): boolean {
+  return !new Set(["status", "relay", "recover-activation"]).has(command)
 }
 
 function rpcClient(): RelayerRpc {
@@ -236,6 +421,356 @@ async function pendingArtifact(
   return artifact
 }
 
+async function writeArtifactNew(
+  artifact: SignedBaseGovernanceTransaction,
+  path: string,
+): Promise<void> {
+  await validateArtifact(artifact)
+  await writeJsonExclusiveAtomic(jsonValue(artifact), path)
+}
+
+type AtomicWriteCheckpoint = "temporary-synced" | "published"
+
+export async function writeJsonExclusiveAtomic(
+  value: unknown,
+  path: string,
+  checkpoint: (stage: AtomicWriteCheckpoint) => Promise<void> = async () => {},
+  removeTemporary: (path: string) => Promise<void> = unlink,
+): Promise<void> {
+  const serialized = JSON.stringify(value, null, 2)
+  if (serialized === undefined) throw new Error("Evidence is not JSON serializable")
+  const body = `${serialized}\n`
+  const parent = dirname(path)
+  const temporary = join(parent, `.${basename(path)}.tmp-${process.pid}-${randomUUID()}`)
+  let handle: Awaited<ReturnType<typeof open>> | undefined
+  let primaryError: unknown
+  try {
+    handle = await open(temporary, "wx", 0o400)
+    await handle.writeFile(body, { encoding: "utf8" })
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await checkpoint("temporary-synced")
+    await link(temporary, path)
+    await checkpoint("published")
+    await syncDirectory(parent)
+  } catch (error) {
+    primaryError = error
+    throw error
+  } finally {
+    let cleanupError: unknown
+    try {
+      await handle?.close()
+    } catch (error) {
+      cleanupError = error
+    }
+    try {
+      await removeTemporary(temporary)
+    } catch (error) {
+      if (!hasErrorCode(error, "ENOENT")) cleanupError ??= error
+    }
+    if (cleanupError !== undefined) {
+      if (primaryError !== undefined) attachCleanupError(primaryError, cleanupError)
+      else throw cleanupError
+    }
+  }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const directory = await open(path, "r")
+  let primaryError: unknown
+  try {
+    await directory.sync()
+  } catch (error) {
+    primaryError = error
+    throw error
+  } finally {
+    try {
+      await directory.close()
+    } catch (error) {
+      if (primaryError !== undefined) attachCleanupError(primaryError, error)
+      else throw error
+    }
+  }
+}
+
+function attachCleanupError(primary: unknown, cleanup: unknown): void {
+  if (primary && typeof primary === "object" && !("cleanupError" in primary)) {
+    try {
+      Object.defineProperty(primary, "cleanupError", { value: cleanup, enumerable: false })
+    } catch {
+      // Preserve the primary failure even when a foreign error object is non-extensible.
+    }
+  }
+}
+
+function hasCleanupError(error: unknown): boolean {
+  return !!error && typeof error === "object" && "cleanupError" in error
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return !!error && typeof error === "object" && "code" in error
+    && (error as { code?: unknown }).code === code
+}
+
+async function readExistingJson(path: string): Promise<unknown> {
+  const status = await lstat(path)
+  if (!status.isFile() || status.isSymbolicLink()) {
+    throw new Error("Fixed evidence path is not a regular file")
+  }
+  return JSON.parse((await readFile(path)).toString("utf8"))
+}
+
+async function writeOrMatchArtifact(
+  artifact: SignedBaseGovernanceTransaction,
+  path: string,
+): Promise<void> {
+  await validateArtifact(artifact)
+  try {
+    await writeArtifactNew(artifact, path)
+  } catch (error) {
+    if (!hasErrorCode(error, "EEXIST") || hasCleanupError(error)) throw error
+    const stored = await readExistingJson(path)
+    if (!storedArtifactMatches(stored, artifact)) throw error
+  }
+}
+
+async function writeJsonNew(value: unknown, path: string): Promise<void> {
+  await writeJsonExclusiveAtomic(value, path)
+}
+
+export function confirmationEvidenceMatches(stored: unknown, candidate: unknown): boolean {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)
+    || !candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false
+  const previous = stored as Record<string, unknown>
+  const current = candidate as Record<string, unknown>
+  const previousKeys = Object.keys(previous).sort().join(",")
+  if (previousKeys !== Object.keys(current).sort().join(",")) return false
+  if (typeof previous.confirmed_at_unix !== "number"
+    || !Number.isSafeInteger(previous.confirmed_at_unix)
+    || previous.confirmed_at_unix <= 0
+    || typeof current.confirmed_at_unix !== "number"
+    || previous.confirmed_at_unix > current.confirmed_at_unix) return false
+  const normalizedPrevious = { ...previous, confirmed_at_unix: current.confirmed_at_unix }
+  return JSON.stringify(normalizedPrevious) === JSON.stringify(current)
+}
+
+export async function writeOrMatchConfirmationEvidence(
+  value: unknown,
+  path: string,
+): Promise<void> {
+  try {
+    await writeJsonNew(value, path)
+  } catch (error) {
+    if (!hasErrorCode(error, "EEXIST") || hasCleanupError(error)) throw error
+    const stored = await readExistingJson(path)
+    if (!confirmationEvidenceMatches(stored, value)) throw error
+  }
+}
+
+async function requireMatchingArtifactFile(
+  artifact: SignedBaseGovernanceTransaction,
+  options: Options,
+): Promise<Buffer> {
+  const path = requiredOption(options, "artifact-file")
+  let bytes: Buffer
+  let stored: unknown
+  try {
+    bytes = await readFile(path)
+    stored = JSON.parse(bytes.toString("utf8"))
+  } catch (error) {
+    throw new Error(`Cannot read the fixed governance artifact: ${String(error)}`)
+  }
+  if (!storedArtifactMatches(stored, artifact)) {
+    throw new Error("Fixed governance artifact differs from the live pending transaction")
+  }
+  return bytes
+}
+
+async function requireMatchingActivationBinding(
+  artifact: SignedBaseGovernanceTransaction,
+  artifactBytes: Buffer,
+  options: Options,
+): Promise<void> {
+  const path = options["binding-file"]
+  if (path === undefined) {
+    if (isActivationArtifact(artifact)) {
+      throw new Error("Activation relay and confirmation require --binding-file")
+    }
+    return
+  }
+  if (typeof path !== "string") throw new Error("--binding-file requires a path")
+  const authorizationPath = requiredOption(options, "authorization-file")
+  const authorizationBytes = await readFile(authorizationPath)
+  const authorization = JSON.parse(authorizationBytes.toString("utf8")) as Record<string, unknown>
+  const expectedGate = requiredEnv("BRIDGE_GATE_B_MANIFEST_SHA256").toLowerCase()
+  const artifactSha256 = createHash("sha256").update(artifactBytes).digest("hex")
+  let value: unknown
+  try {
+    value = JSON.parse((await readFile(path)).toString("utf8"))
+  } catch (error) {
+    throw new Error(`Cannot read the activation binding: ${String(error)}`)
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Activation binding is malformed")
+  }
+  const binding = value as Record<string, unknown>
+  const authorizationSha256 = createHash("sha256").update(authorizationBytes).digest("hex")
+  if (!activationBindingMatches(binding, artifactSha256, expectedGate)
+    || binding.authorization_receipt_sha256 !== authorizationSha256
+    || binding.phase !== activationPhase(artifact)
+    || authorization.schema_version !== 1
+    || authorization.phase !== binding.phase
+    || authorization.gate_b_manifest_sha256 !== expectedGate) {
+    throw new Error("Activation binding differs from the fixed Gate B artifact")
+  }
+}
+
+async function requireActivationBindingBytes(
+  artifactBytes: Buffer,
+  options: Options,
+): Promise<Record<string, unknown>> {
+  const path = requiredOption(options, "binding-file")
+  const authorizationPath = requiredOption(options, "authorization-file")
+  const expectedGate = requiredEnv("BRIDGE_GATE_B_MANIFEST_SHA256").toLowerCase()
+  const artifactSha256 = createHash("sha256").update(artifactBytes).digest("hex")
+  const authorizationBytes = await readFile(authorizationPath)
+  const authorization = JSON.parse(authorizationBytes.toString("utf8")) as Record<string, unknown>
+  const authorizationSha256 = createHash("sha256").update(authorizationBytes).digest("hex")
+  const binding = JSON.parse((await readFile(path)).toString("utf8")) as Record<string, unknown>
+  const storedArtifact = JSON.parse(artifactBytes.toString("utf8")) as { kind: unknown }
+  if (!activationBindingMatches(binding, artifactSha256, expectedGate)
+    || binding.authorization_receipt_sha256 !== authorizationSha256
+    || binding.phase !== activationPhase(storedArtifact)
+    || authorization.schema_version !== 1
+    || authorization.phase !== binding.phase
+    || authorization.gate_b_manifest_sha256 !== expectedGate) {
+    throw new Error("Activation binding differs from the fixed Gate B artifact")
+  }
+  return binding
+}
+
+async function writeOrMatchActivationBinding(
+  artifact: SignedBaseGovernanceTransaction,
+  artifactBytes: Buffer,
+  options: Options,
+  path: string,
+): Promise<void> {
+  const source = await requireActivationBindingBytes(
+    await readFile(requiredOption(options, "artifact-file")),
+    options,
+  )
+  const value = {
+    schema_version: 1,
+    phase: activationPhase(artifact),
+    gate_b_manifest_sha256: source.gate_b_manifest_sha256,
+    artifact_sha256: createHash("sha256").update(artifactBytes).digest("hex"),
+    authorization_receipt_sha256: source.authorization_receipt_sha256,
+    bound_at_unix: Math.floor(Date.now() / 1_000),
+  }
+  try {
+    await writeJsonNew(value, path)
+  } catch (error) {
+    if (!hasErrorCode(error, "EEXIST") || hasCleanupError(error)) throw error
+    const existing = await readExistingJson(path) as Record<string, unknown>
+    if (!activationBindingMatches(
+      existing,
+      value.artifact_sha256,
+      String(value.gate_b_manifest_sha256),
+    ) || existing.authorization_receipt_sha256 !== value.authorization_receipt_sha256
+      || existing.phase !== value.phase) throw error
+  }
+}
+
+function activationPhase(artifact: { kind: unknown }): "schedule" | "execute" {
+  if (artifact.kind && typeof artifact.kind === "object" && "ScheduleActivation" in artifact.kind) return "schedule"
+  if (artifact.kind && typeof artifact.kind === "object" && "ExecuteActivation" in artifact.kind) return "execute"
+  throw new Error("Artifact is not an activation transaction")
+}
+
+export function activationReplacementMatches(
+  stored: unknown,
+  live: SignedBaseGovernanceTransaction,
+  maxFee: bigint,
+  priorityFee: bigint,
+): boolean {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return false
+  const old = stored as Record<string, unknown>
+  const current = jsonValue(live) as Record<string, unknown>
+  const same = ["operation_id", "kind", "chain_id", "nonce", "sender", "target", "calldata", "gas_limit"]
+    .every((field) => JSON.stringify(old[field]) === JSON.stringify(current[field]))
+  const oldGeneration = Number(old.generation)
+  return same
+    && Number.isSafeInteger(oldGeneration)
+    && live.generation === oldGeneration + 1
+    && live.max_fee_per_gas === maxFee
+    && live.max_priority_fee_per_gas === priorityFee
+}
+
+export function activationAttemptMatchesPendingLineage(
+  stored: unknown,
+  live: SignedBaseGovernanceTransaction,
+): boolean {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)
+    || !isActivationArtifact(live)) return false
+  const old = stored as Record<string, unknown>
+  if (!isActivationArtifact(old as { kind: unknown })) return false
+  const current = jsonValue(live) as Record<string, unknown>
+  const invariantFields = [
+    "operation_id", "kind", "chain_id", "nonce", "sender", "target", "calldata", "gas_limit",
+  ]
+  if (!invariantFields.every(
+    (field) => JSON.stringify(old[field]) === JSON.stringify(current[field]),
+  )) return false
+  const oldGeneration = old.generation
+  const oldSignedAt = old.signed_at_ns
+  const oldMaxFee = old.max_fee_per_gas
+  const oldPriorityFee = old.max_priority_fee_per_gas
+  if (typeof oldGeneration !== "number" || !Number.isInteger(oldGeneration)
+    || oldGeneration < 0 || oldGeneration > live.generation
+    || typeof oldSignedAt !== "string" || !/^(0|[1-9][0-9]*)$/.test(oldSignedAt)
+    || typeof oldMaxFee !== "string" || !/^(0|[1-9][0-9]*)$/.test(oldMaxFee)
+    || typeof oldPriorityFee !== "string" || !/^(0|[1-9][0-9]*)$/.test(oldPriorityFee)) return false
+  const signedAt = BigInt(oldSignedAt)
+  const maxFee = BigInt(oldMaxFee)
+  const priorityFee = BigInt(oldPriorityFee)
+  if (signedAt === 0n || signedAt > live.signed_at_ns
+    || maxFee > live.max_fee_per_gas
+    || priorityFee > live.max_priority_fee_per_gas) return false
+  return oldGeneration < live.generation || storedArtifactMatches(stored, live)
+}
+
+export function isActivationArtifact(artifact: { kind: unknown }): boolean {
+  if (!artifact.kind || typeof artifact.kind !== "object" || Array.isArray(artifact.kind)) return false
+  return "ScheduleActivation" in artifact.kind || "ExecuteActivation" in artifact.kind
+}
+
+export function activationBindingMatches(
+  binding: Record<string, unknown>,
+  artifactSha256: string,
+  expectedGate: string,
+): boolean {
+  const fields = Object.keys(binding).sort().join(",")
+  const expectedFields = [
+    "artifact_sha256", "authorization_receipt_sha256", "bound_at_unix",
+    "gate_b_manifest_sha256", "phase", "schema_version",
+  ].sort().join(",")
+  return !(fields !== expectedFields
+    || binding.schema_version !== 1
+    || binding.gate_b_manifest_sha256 !== expectedGate
+    || binding.artifact_sha256 !== artifactSha256
+    || (binding.phase !== "schedule" && binding.phase !== "execute")
+    || typeof binding.authorization_receipt_sha256 !== "string"
+    || !/^[0-9a-f]{64}$/.test(binding.authorization_receipt_sha256)
+    || typeof binding.bound_at_unix !== "number"
+    || !Number.isSafeInteger(binding.bound_at_unix)
+    || binding.bound_at_unix <= 0)
+}
+
+export function storedArtifactMatches(stored: unknown, live: unknown): boolean {
+  return JSON.stringify(stored) === JSON.stringify(jsonValue(live))
+}
+
 export function selectPendingArtifact<T extends { operation_id: bigint }>(
   artifacts: readonly T[],
   operationId: string | boolean | undefined,
@@ -253,24 +788,113 @@ export function selectPendingArtifact<T extends { operation_id: bigint }>(
   return artifacts[0]
 }
 
+export function selectPendingActivationArtifact(
+  artifacts: readonly SignedBaseGovernanceTransaction[],
+  phase: "schedule" | "execute",
+): SignedBaseGovernanceTransaction {
+  const matching = artifacts.filter(
+    (artifact) => isActivationArtifact(artifact) && activationPhase(artifact) === phase,
+  )
+  if (matching.length !== 1) {
+    throw new Error(`Expected exactly one pending ${phase} activation transaction`)
+  }
+  return matching[0]!
+}
+
 export async function validateArtifact(
   artifact: SignedBaseGovernanceTransaction,
 ): Promise<void> {
-  const raw = bytesHex(artifact.raw_transaction)
-  const expectedHash = bytesHex(artifact.transaction_hash)
+  await validateStoredArtifact(jsonValue(artifact))
+}
+
+export async function validateStoredArtifact(value: unknown): Promise<void> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Signed governance artifact is malformed")
+  }
+  const artifact = value as Record<string, unknown>
+  const hexField = (name: string): Hex => {
+    const field = artifact[name]
+    if (typeof field !== "string" || !/^0x[0-9a-fA-F]*$/.test(field)) {
+      throw new Error(`Signed governance artifact has invalid ${name}`)
+    }
+    return field as Hex
+  }
+  const natural = (name: string): bigint => {
+    const field = artifact[name]
+    if (typeof field !== "string" || !/^(0|[1-9][0-9]*)$/.test(field)) {
+      throw new Error(`Signed governance artifact has invalid ${name}`)
+    }
+    return BigInt(field)
+  }
+  const expectedFields = [
+    "operation_id", "kind", "chain_id", "sender", "nonce", "target", "calldata",
+    "gas_limit", "max_fee_per_gas", "max_priority_fee_per_gas", "raw_transaction",
+    "transaction_hash", "generation", "signed_at_ns",
+  ].sort().join(",")
+  if (Object.keys(artifact).sort().join(",") !== expectedFields) {
+    throw new Error("Signed governance artifact has unexpected fields")
+  }
+  const maxU64 = 18_446_744_073_709_551_615n
+  if (natural("operation_id") > maxU64 || natural("chain_id") > maxU64
+    || natural("nonce") > maxU64 || natural("signed_at_ns") === 0n
+    || natural("signed_at_ns") > maxU64) {
+    throw new Error("Signed governance artifact has an out-of-range nat64 field")
+  }
+  if (typeof artifact.generation !== "number" || !Number.isInteger(artifact.generation)
+    || artifact.generation < 0 || artifact.generation > 255) {
+    throw new Error("Signed governance artifact has an invalid generation")
+  }
+  if (!artifact.kind || typeof artifact.kind !== "object" || Array.isArray(artifact.kind)) {
+    throw new Error("Signed governance artifact has an invalid operation kind")
+  }
+  const kind = artifact.kind as Record<string, unknown>
+  const kindKeys = Object.keys(kind)
+  if (kindKeys.length !== 1) {
+    throw new Error("Signed governance artifact must have exactly one operation kind")
+  }
+  if (kindKeys[0] === "ScheduleActivation" || kindKeys[0] === "ExecuteActivation") {
+    const operation = kind[kindKeys[0]]
+    if (!operation || typeof operation !== "object" || Array.isArray(operation)
+      || Object.keys(operation).sort().join(",") !== "operation_id,salt") {
+      throw new Error("Signed governance artifact has invalid activation kind fields")
+    }
+    const activation = operation as Record<string, unknown>
+    for (const field of ["operation_id", "salt"]) {
+      if (typeof activation[field] !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(activation[field])) {
+        throw new Error(`Signed governance artifact has invalid activation ${field}`)
+      }
+    }
+  }
+  const raw = hexField("raw_transaction")
+  const expectedHash = hexField("transaction_hash")
   if (keccak256(raw) !== expectedHash) throw new Error("Canister transaction hash does not match raw transaction")
   const transaction = parseTransaction(raw as TransactionSerialized)
   const sender = await recoverTransactionAddress({
     serializedTransaction: raw as TransactionSerialized,
   })
-  if (sender.toLowerCase() !== bytesHex(artifact.sender).toLowerCase()) throw new Error("Signed transaction sender mismatch")
-  if (transaction.chainId !== Number(artifact.chain_id)) throw new Error("Signed transaction chain mismatch")
-  if (transaction.nonce !== Number(artifact.nonce)) throw new Error("Signed transaction nonce mismatch")
-  if (transaction.to?.toLowerCase() !== bytesHex(artifact.target).toLowerCase()) throw new Error("Signed transaction target mismatch")
-  if ((transaction.data ?? "0x").toLowerCase() !== bytesHex(artifact.calldata).toLowerCase()) throw new Error("Signed transaction calldata mismatch")
-  if (transaction.gas !== artifact.gas_limit) throw new Error("Signed transaction gas limit mismatch")
-  if (transaction.maxFeePerGas !== artifact.max_fee_per_gas) throw new Error("Signed transaction max fee mismatch")
-  if (transaction.maxPriorityFeePerGas !== artifact.max_priority_fee_per_gas) throw new Error("Signed transaction priority fee mismatch")
+  if (sender.toLowerCase() !== hexField("sender").toLowerCase()) throw new Error("Signed transaction sender mismatch")
+  if (transaction.chainId === undefined || transaction.nonce === undefined) {
+    throw new Error("Signed governance transaction must bind chain ID and nonce")
+  }
+  if (BigInt(transaction.chainId) !== natural("chain_id")) throw new Error("Signed transaction chain mismatch")
+  if (BigInt(transaction.nonce) !== natural("nonce")) throw new Error("Signed transaction nonce mismatch")
+  if (transaction.to?.toLowerCase() !== hexField("target").toLowerCase()) throw new Error("Signed transaction target mismatch")
+  if ((transaction.data ?? "0x").toLowerCase() !== hexField("calldata").toLowerCase()) throw new Error("Signed transaction calldata mismatch")
+  if (transaction.gas !== natural("gas_limit")) throw new Error("Signed transaction gas limit mismatch")
+  if (transaction.maxFeePerGas !== natural("max_fee_per_gas")) throw new Error("Signed transaction max fee mismatch")
+  if (transaction.maxPriorityFeePerGas !== natural("max_priority_fee_per_gas")) throw new Error("Signed transaction priority fee mismatch")
+  if ((transaction.value ?? 0n) !== 0n
+    || ("accessList" in transaction && (transaction.accessList?.length ?? 0) !== 0)) {
+    throw new Error("Signed governance transaction must have zero value and an empty access list")
+  }
+}
+
+export async function afterValidatingStoredArtifacts<T>(
+  values: readonly unknown[],
+  effect: () => Promise<T>,
+): Promise<T> {
+  for (const value of values) await validateStoredArtifact(value)
+  return effect()
 }
 
 export async function relay(
@@ -361,14 +985,17 @@ export function parseOptions(args: string[]): Options {
 const COMMAND_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   help: ["help"],
   prepare: ["help", "action", "value"],
+  "seal-operational-config": ["help", "parameters-file", "receipt-file"],
   status: ["help", "operation-id"],
-  relay: ["help", "operation-id"],
-  confirm: ["help", "operation-id", "transaction-hash", "hash"],
-  replace: ["help", "operation-id", "max-fee", "priority-fee"],
+  "recover-activation": ["help", "phase", "artifact-file", "authorization-file"],
+  relay: ["help", "operation-id", "artifact-file", "authorization-file", "binding-file"],
+  confirm: ["help", "operation-id", "transaction-hash", "hash", "artifact-file", "authorization-file", "binding-file", "receipt-file"],
+  replace: ["help", "operation-id", "max-fee", "priority-fee", "artifact-file", "output-artifact-file"],
+  "replace-activation": ["help", "operation-id", "max-fee", "priority-fee", "artifact-file", "authorization-file", "binding-file", "output-artifact-file", "output-binding-file"],
   run: ["help", "operation-id"],
   "refresh-attestation": ["help"],
-  "schedule-activation": ["help"],
-  "execute-activation": ["help"],
+  "prepare-schedule-activation": ["help", "artifact-file"],
+  "prepare-execute-activation": ["help", "artifact-file"],
   "drain-emergency": ["help"],
 }
 
@@ -433,6 +1060,14 @@ export function confirmationHash(options: Options): Hex | undefined {
   return optionHash(options["transaction-hash"] ?? options.hash)
 }
 
+export function activationConfirmationHash(options: Options, expectedHash: Hex): Hex {
+  const explicit = confirmationHash(options)
+  if (explicit !== undefined && explicit.toLowerCase() !== expectedHash.toLowerCase()) {
+    throw new Error("Explicit transaction hash differs from the fixed activation artifact")
+  }
+  return expectedHash
+}
+
 function bytesHex(value: Uint8Array | number[]): Hex {
   return `0x${Array.from(value, (byte) => Number(byte).toString(16).padStart(2, "0")).join("")}`
 }
@@ -477,20 +1112,23 @@ function printHelp(): void {
   process.stdout.write(`Usage: npm run governance-relayer -- <command> [options]
 
 Commands:
+  seal-operational-config --parameters-file FILE --receipt-file NEW_FILE
   prepare --action pause-deposits|pause-withdrawals|cancel-timelock|set-service-fee [--value N]
   status [--operation-id N]
-  relay [--operation-id N]
-  confirm [--operation-id N] [--hash 0x...]
+  recover-activation --phase schedule|execute --authorization-file FILE --artifact-file FILE
+  relay --artifact-file FILE [--authorization-file FILE --binding-file FILE] [--operation-id N]
+  confirm --artifact-file FILE [--authorization-file FILE --binding-file FILE] --receipt-file NEW_FILE [--operation-id N] [--hash 0x...]
   run [--operation-id N]
-  schedule-activation
-  execute-activation
+  prepare-schedule-activation --artifact-file NEW_FILE
+  prepare-execute-activation --artifact-file NEW_FILE
   refresh-attestation
-  replace --operation-id N --max-fee N --priority-fee N
+  replace --artifact-file FILE --output-artifact-file NEW_FILE --operation-id N --max-fee N --priority-fee N
+  replace-activation --artifact-file FILE --authorization-file FILE --binding-file FILE --output-artifact-file NEW_FILE --output-binding-file NEW_FILE --operation-id N --max-fee N --priority-fee N
   drain-emergency
 
 Environment:
   BRIDGE_CANISTER_ID  Bridge Canister principal
-  IC_IDENTITY_PEM    Required for confirm, run, prepare, replace, activation, attestation, and emergency commands
+  IC_IDENTITY_PEM    Required for confirm, run, prepare, replace, activation prepare, attestation, and emergency commands
   BASE_RPC_URL       Base JSON-RPC URL
   IC_HOST            Optional IC API host (defaults to https://icp-api.io)
 `)

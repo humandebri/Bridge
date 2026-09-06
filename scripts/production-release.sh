@@ -15,12 +15,18 @@ RECEIPT=""
 RELEASE_INPUTS=""
 CANISTER_INSTALL_RECEIPT=""
 ACTIVATION_PHASE=""
-ACTIVATION_SUBMISSION=""
-SNS_IDENTITY=""
+ACTIVATION_STEP=""
+ACTIVATION_ARTIFACT=""
+ACTIVATION_CONFIRMATION_RECEIPT=""
+CONTROLLER_ACTIVATION_RECEIPT=""
+ACTIVATION_REPLACEMENT_ARTIFACT=""
+ACTIVATION_REPLACEMENT_MAX_FEE=""
+ACTIVATION_REPLACEMENT_PRIORITY_FEE=""
+PRODUCTION_CONTROLLER_PEM=""
+CONFIRMATION_RELAYER_PEM=""
 CONFIRMATION_RELAYER_IDENTITY=""
-SNS_NEURON_SUBACCOUNT=""
-SNS_PROPOSER_PRINCIPAL=""
 PRIOR_SCHEDULE_RECEIPT=""
+OPERATIONAL_CONFIG_SEAL_RECEIPT=""
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --bundle)
@@ -53,14 +59,14 @@ while [[ "$#" -gt 0 ]]; do
       ACTIVATION_PHASE="$2"
       shift 2
       ;;
-    --submission)
-      [[ "$#" -ge 2 ]] || { echo "--submission requires a path" >&2; exit 2; }
-      ACTIVATION_SUBMISSION="$2"
+    --step)
+      [[ "$#" -ge 2 ]] || { echo "--step requires prepare, replace, relay, or confirm" >&2; exit 2; }
+      ACTIVATION_STEP="$2"
       shift 2
       ;;
-    --sns-identity)
-      [[ "$#" -ge 2 ]] || { echo "--sns-identity requires a name" >&2; exit 2; }
-      SNS_IDENTITY="$2"
+    --artifact)
+      [[ "$#" -ge 2 ]] || { echo "--artifact requires a path" >&2; exit 2; }
+      ACTIVATION_ARTIFACT="$2"
       shift 2
       ;;
     --confirmation-relayer-identity)
@@ -68,19 +74,49 @@ while [[ "$#" -gt 0 ]]; do
       CONFIRMATION_RELAYER_IDENTITY="$2"
       shift 2
       ;;
-    --sns-neuron-subaccount)
-      [[ "$#" -ge 2 ]] || { echo "--sns-neuron-subaccount requires 32-byte hex" >&2; exit 2; }
-      SNS_NEURON_SUBACCOUNT="$2"
+    --controller-pem)
+      [[ "$#" -ge 2 ]] || { echo "--controller-pem requires a path" >&2; exit 2; }
+      PRODUCTION_CONTROLLER_PEM="$2"
       shift 2
       ;;
-    --sns-proposer-principal)
-      [[ "$#" -ge 2 ]] || { echo "--sns-proposer-principal requires a principal" >&2; exit 2; }
-      SNS_PROPOSER_PRINCIPAL="$2"
+    --confirmation-relayer-pem)
+      [[ "$#" -ge 2 ]] || { echo "--confirmation-relayer-pem requires a path" >&2; exit 2; }
+      CONFIRMATION_RELAYER_PEM="$2"
+      shift 2
+      ;;
+    --confirmation-receipt)
+      [[ "$#" -ge 2 ]] || { echo "--confirmation-receipt requires a path" >&2; exit 2; }
+      ACTIVATION_CONFIRMATION_RECEIPT="$2"
+      shift 2
+      ;;
+    --activation-receipt)
+      [[ "$#" -ge 2 ]] || { echo "--activation-receipt requires a path" >&2; exit 2; }
+      CONTROLLER_ACTIVATION_RECEIPT="$2"
+      shift 2
+      ;;
+    --replacement-artifact)
+      [[ "$#" -ge 2 ]] || { echo "--replacement-artifact requires a path" >&2; exit 2; }
+      ACTIVATION_REPLACEMENT_ARTIFACT="$2"
+      shift 2
+      ;;
+    --replacement-max-fee)
+      [[ "$#" -ge 2 ]] || { echo "--replacement-max-fee requires a value" >&2; exit 2; }
+      ACTIVATION_REPLACEMENT_MAX_FEE="$2"
+      shift 2
+      ;;
+    --replacement-priority-fee)
+      [[ "$#" -ge 2 ]] || { echo "--replacement-priority-fee requires a value" >&2; exit 2; }
+      ACTIVATION_REPLACEMENT_PRIORITY_FEE="$2"
       shift 2
       ;;
     --prior-schedule-receipt)
       [[ "$#" -ge 2 ]] || { echo "--prior-schedule-receipt requires a path" >&2; exit 2; }
       PRIOR_SCHEDULE_RECEIPT="$2"
+      shift 2
+      ;;
+    --operational-config-seal-receipt)
+      [[ "$#" -ge 2 ]] || { echo "--operational-config-seal-receipt requires a path" >&2; exit 2; }
+      OPERATIONAL_CONFIG_SEAL_RECEIPT="$2"
       shift 2
       ;;
     --)
@@ -96,8 +132,7 @@ done
 
 usage() {
   echo "usage: $0 deploy --bundle DIR --release-inputs DIR --canister-install-receipt FILE --receipt FILE -- DEPLOY_DRIVER" >&2
-  echo "       $0 activate --phase schedule --bundle DIR --release-inputs DIR --receipt FILE --submission FILE --sns-identity NAME --confirmation-relayer-identity NAME --sns-neuron-subaccount HEX --sns-proposer-principal PRINCIPAL --confirm-asset-acceptance SCHEDULE_PRODUCTION_ASSET_ACTIVATION -- scripts/production-activate-driver.sh" >&2
-  echo "       $0 activate --phase execute [same options] --prior-schedule-receipt FILE --confirm-asset-acceptance UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE -- scripts/production-activate-driver.sh" >&2
+  echo "       $0 activate --phase schedule|execute --step prepare|replace|relay|confirm --artifact FILE --bundle DIR --release-inputs DIR --receipt FILE --operational-config-seal-receipt FILE [--controller-pem FILE --confirmation-relayer-identity NAME] [--replacement-artifact NEW_FILE --replacement-max-fee WEI --replacement-priority-fee WEI] [--confirmation-relayer-pem FILE --confirmation-receipt NEW_FILE --activation-receipt NEW_FILE] [--prior-schedule-receipt FILE] --confirm-asset-acceptance TOKEN -- scripts/production-activate-driver.sh" >&2
   exit 2
 }
 
@@ -111,7 +146,7 @@ SOURCE_ROOT="$ROOT"
 SOURCE_ROOT="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SOURCE_ROOT")"
 production_require_clean_source "$SOURCE_ROOT"
 FROZEN_BUNDLE="$(mktemp -d "${TMPDIR:-/tmp}/bridge-release-plan.XXXXXX")"
-trap 'rm -rf "$FROZEN_BUNDLE"' EXIT
+trap 'chmod -R u+w "$FROZEN_BUNDLE" 2>/dev/null || true; rm -rf "$FROZEN_BUNDLE"' EXIT
 production_freeze_bundle "$BUNDLE" "$FROZEN_BUNDLE"
 BUNDLE="$FROZEN_BUNDLE"
 DRIVER_PATH="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1")"
@@ -157,7 +192,7 @@ RECEIPT_TMP=""
 POST_DEPLOY_PROFILE_TMP=""
 DEPLOYMENT_BINDING=""
 DEPLOYMENT_RESERVATION=""
-trap 'chmod u+w "$FROZEN_BUNDLE" 2>/dev/null || true; rm -rf "$FROZEN_BUNDLE" "$RENDERED_INPUTS" "$PROFILE_TARGET"; [[ -z "$RECEIPT_TMP" ]] || rm -f "$RECEIPT_TMP"; [[ -z "$POST_DEPLOY_PROFILE_TMP" ]] || rm -f "$POST_DEPLOY_PROFILE_TMP"' EXIT
+trap 'chmod -R u+w "$FROZEN_BUNDLE" 2>/dev/null || true; rm -rf "$FROZEN_BUNDLE" "$RENDERED_INPUTS" "$PROFILE_TARGET"; [[ -z "$RECEIPT_TMP" ]] || rm -f "$RECEIPT_TMP"; [[ -z "$POST_DEPLOY_PROFILE_TMP" ]] || rm -f "$POST_DEPLOY_PROFILE_TMP"' EXIT
 CARGO_TARGET_DIR="$PROFILE_TARGET" cargo build --locked --quiet --release \
   --manifest-path "$SOURCE_ROOT/Cargo.toml" -p bridge-profile
 PROFILE_BIN="$PROFILE_TARGET/release/bridge-profile"
@@ -188,23 +223,9 @@ export BRIDGE_SOURCE_ROOT="$SOURCE_ROOT"
 
 GATE_OUTPUT=""
 if [[ "$MODE" == "deploy" ]]; then
-  [[ -f "$CANISTER_INSTALL_RECEIPT" && ! -L "$CANISTER_INSTALL_RECEIPT" ]] || {
-    echo "deploy requires the verified production Canister install receipt" >&2
-    exit 1
-  }
   FROZEN_CANISTER_INSTALL_RECEIPT="$RENDERED_INPUTS/production-canister-install-receipt.json"
-  python3 - "$CANISTER_INSTALL_RECEIPT" "$FROZEN_CANISTER_INSTALL_RECEIPT" <<'PY'
-import os, sys
-source, target = sys.argv[1:]
-with open(source, "rb") as input_file:
-    value = input_file.read()
-fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
-try:
-    os.write(fd, value)
-    os.fsync(fd)
-finally:
-    os.close(fd)
-PY
+  production_freeze_receipt "$CANISTER_INSTALL_RECEIPT" \
+    "$FROZEN_CANISTER_INSTALL_RECEIPT" "production Canister install receipt"
   CANISTER_INSTALL_RECEIPT="$FROZEN_CANISTER_INSTALL_RECEIPT"
   run_profile_gate validate-production-canister-receipt \
     "$BUNDLE/profile.json" "$CANISTER_INSTALL_RECEIPT" >/dev/null
@@ -253,10 +274,33 @@ else
     echo "activation phase requires its exact explicit confirmation" >&2
     exit 1
   }
-  [[ -n "$ACTIVATION_SUBMISSION" && -n "$SNS_IDENTITY" && -n "$CONFIRMATION_RELAYER_IDENTITY" && -n "$SNS_NEURON_SUBACCOUNT" && -n "$SNS_PROPOSER_PRINCIPAL" ]] || {
-    echo "activation requires submission output, fixed SNS proposer inputs, and a confirmation relayer ICP identity" >&2
+  [[ "$ACTIVATION_STEP" == prepare || "$ACTIVATION_STEP" == replace || "$ACTIVATION_STEP" == relay || "$ACTIVATION_STEP" == confirm ]] || {
+    echo "activation requires --step prepare, replace, relay, or confirm" >&2
     exit 1
   }
+  [[ -n "$ACTIVATION_ARTIFACT" ]] || {
+    echo "activation requires a fixed artifact path" >&2
+    exit 1
+  }
+  [[ -f "$OPERATIONAL_CONFIG_SEAL_RECEIPT" && ! -L "$OPERATIONAL_CONFIG_SEAL_RECEIPT" ]] || {
+    echo "activation requires the verified operational config seal receipt" >&2
+    exit 1
+  }
+  if [[ "$ACTIVATION_STEP" == prepare ]]; then
+    [[ -n "$PRODUCTION_CONTROLLER_PEM" && -n "$CONFIRMATION_RELAYER_IDENTITY" ]] || { echo "activation prepare requires controller PEM and confirmation relayer identity" >&2; exit 1; }
+  elif [[ "$ACTIVATION_STEP" == replace ]]; then
+    [[ -f "$ACTIVATION_ARTIFACT" && ! -L "$ACTIVATION_ARTIFACT" ]] || { echo "activation replacement requires the fixed activation artifact" >&2; exit 1; }
+    [[ -n "$PRODUCTION_CONTROLLER_PEM" && -n "$ACTIVATION_REPLACEMENT_ARTIFACT" \
+      && -n "$ACTIVATION_REPLACEMENT_MAX_FEE" && -n "$ACTIVATION_REPLACEMENT_PRIORITY_FEE" ]] || {
+      echo "activation replacement requires controller PEM, a new artifact, max fee, and priority fee" >&2
+      exit 1
+    }
+  else
+    [[ -f "$ACTIVATION_ARTIFACT" && ! -L "$ACTIVATION_ARTIFACT" ]] || { echo "relay/confirm require the fixed activation artifact" >&2; exit 1; }
+  fi
+  if [[ "$ACTIVATION_STEP" == confirm ]]; then
+    [[ -n "$CONFIRMATION_RELAYER_PEM" && -n "$ACTIVATION_CONFIRMATION_RECEIPT" && -n "$CONTROLLER_ACTIVATION_RECEIPT" ]] || { echo "activation confirm requires relayer PEM, raw confirmation output, and a verified receipt path" >&2; exit 1; }
+  fi
   if [[ "$ACTIVATION_PHASE" == schedule ]]; then
     [[ -z "$PRIOR_SCHEDULE_RECEIPT" ]] || { echo "schedule forbids a prior schedule receipt" >&2; exit 1; }
   else
@@ -274,6 +318,8 @@ raise SystemExit(0 if actual==expected else 1)
   fi
   [[ -f "$RECEIPT" ]] || { echo "Gate B requires the matching Gate A receipt" >&2; exit 1; }
   [[ -f "$BUNDLE/gate-a-receipt.json" ]] || { echo "Gate B bundle is missing its Gate A receipt artifact" >&2; exit 1; }
+  [[ -f "$BUNDLE/gate-a-profile.json" ]] || { echo "Gate B bundle is missing its immutable Gate A profile artifact" >&2; exit 1; }
+  [[ -f "$BUNDLE/production-canister-upgrade-receipt.json" ]] || { echo "Gate B bundle is missing its production upgrade receipt artifact" >&2; exit 1; }
   cmp -s "$RECEIPT" "$BUNDLE/gate-a-receipt.json" || {
     echo "external Gate A receipt differs from the Gate B receipt artifact" >&2
     exit 1
@@ -287,33 +333,17 @@ raise SystemExit(0 if actual==expected else 1)
     echo "Gate B bundle is missing its policy transition artifact" >&2
     exit 1
   }
-  read -r GATE_A_SOURCE_REVISION GATE_A_SOURCE_TREE_SHA256 TRANSITION_SOURCE_REVISION TRANSITION_SOURCE_TREE_SHA256 < <(
-    python3 -c '
-import json, sys
-t = json.load(open(sys.argv[1], encoding="utf-8"))
-print(t.get("from_source_revision", ""), t.get("from_source_tree_sha256", ""), t.get("to_source_revision", ""), t.get("to_source_tree_sha256", ""))
-' "$BUNDLE/post-gate-a-policy-transition.json"
+  read -r GATE_A_SOURCE_REVISION GATE_A_SOURCE_TREE_SHA256 < <(
+    python3 -c 'import json,sys;r=json.load(open(sys.argv[1],encoding="utf-8"));print(r.get("source_revision",""),r.get("source_tree_sha256",""))' "$RECEIPT"
   )
-  [[ "$GATE_A_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ \
-    && "$GATE_A_SOURCE_TREE_SHA256" =~ ^[0-9a-fA-F]{64}$ \
-    && "$TRANSITION_SOURCE_REVISION" == "$CURRENT_SOURCE_REVISION" \
-    && "$(printf '%s' "$TRANSITION_SOURCE_TREE_SHA256" | tr '[:upper:]' '[:lower:]')" == "$CURRENT_SOURCE_TREE_SHA256" ]] || {
-    echo "Gate B policy transition does not connect the Gate A source to the current clean source" >&2
-    exit 1
-  }
-  git -C "$SOURCE_ROOT" cat-file -e "${GATE_A_SOURCE_REVISION}^{commit}" 2>/dev/null \
-    && git -C "$SOURCE_ROOT" merge-base --is-ancestor \
-      "$GATE_A_SOURCE_REVISION" "$CURRENT_SOURCE_REVISION" \
-    || { echo "Gate A source is not an ancestor of the current clean source" >&2; exit 1; }
-  GATE_A_SOURCE_TREE_ACTUAL="$(
-    git -C "$SOURCE_ROOT" --attr-source="$GATE_A_SOURCE_REVISION" \
-      archive --format=tar "$GATE_A_SOURCE_REVISION" \
-      | shasum -a 256 | awk '{print tolower($1)}'
-  )"
-  [[ "$GATE_A_SOURCE_TREE_ACTUAL" == "$(printf '%s' "$GATE_A_SOURCE_TREE_SHA256" | tr '[:upper:]' '[:lower:]')" ]] || {
-    echo "Gate A source tree is not available from the current repository" >&2
-    exit 1
-  }
+  production_validate_gate_b_source_chain "$SOURCE_ROOT" "$BUNDLE"
+  read -r GATE_A_CANISTER_WASM_SHA256 GATE_A_BRIDGE_RUNTIME_SHA256 < <(
+    python3 -c '
+import json,sys
+p=json.load(open(sys.argv[1],encoding="utf-8"))
+print(p.get("bridge_canister_wasm_sha256", ""), p.get("bridge_runtime_bytecode_sha256", ""))
+' "$BUNDLE/gate-a-profile.json"
+  )
   python3 -c '
 import json, sys
 r = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -321,8 +351,8 @@ expected = sys.argv[2:8]
 actual = [r.get("gate_a_manifest_sha256"), r.get("release_id"), r.get("source_revision"), r.get("source_tree_sha256"), r.get("bridge_canister_wasm_sha256"), r.get("bridge_runtime_bytecode_sha256")]
 raise SystemExit(0 if [str(v).lower() for v in actual] == [v.lower() for v in expected] else 1)
 ' "$RECEIPT" "$RECEIPT_MANIFEST_SHA256" "$RELEASE_ID" \
-    "$GATE_A_SOURCE_REVISION" "$GATE_A_SOURCE_TREE_SHA256" "$CANISTER_WASM_SHA256" "$BRIDGE_RUNTIME_SHA256" || {
-    echo "Gate A receipt does not match the current release" >&2
+    "$GATE_A_SOURCE_REVISION" "$GATE_A_SOURCE_TREE_SHA256" "$GATE_A_CANISTER_WASM_SHA256" "$GATE_A_BRIDGE_RUNTIME_SHA256" || {
+    echo "Gate A receipt does not match the immutable Gate A profile" >&2
     exit 1
   }
   GATE_OUTPUT="$(run_profile_gate validate-bundle --offline --gate-b "$BUNDLE")"
@@ -384,11 +414,18 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
 else
   export BRIDGE_GATE_B_MANIFEST_SHA256="$GATE_MANIFEST_SHA256"
   export BRIDGE_ACTIVATION_PHASE="$ACTIVATION_PHASE"
-  export BRIDGE_ACTIVATION_SUBMISSION_OUT="$ACTIVATION_SUBMISSION"
-  export BRIDGE_SNS_IDENTITY="$SNS_IDENTITY"
+  export BRIDGE_ACTIVATION_STEP="$ACTIVATION_STEP"
+  export BRIDGE_ACTIVATION_ARTIFACT="$ACTIVATION_ARTIFACT"
+  export BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$ACTIVATION_CONFIRMATION_RECEIPT"
+  export BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$CONTROLLER_ACTIVATION_RECEIPT"
+  export BRIDGE_ACTIVATION_REPLACEMENT_ARTIFACT="$ACTIVATION_REPLACEMENT_ARTIFACT"
+  export BRIDGE_ACTIVATION_REPLACEMENT_MAX_FEE="$ACTIVATION_REPLACEMENT_MAX_FEE"
+  export BRIDGE_ACTIVATION_REPLACEMENT_PRIORITY_FEE="$ACTIVATION_REPLACEMENT_PRIORITY_FEE"
+  export BRIDGE_PRODUCTION_CONTROLLER_PEM="$PRODUCTION_CONTROLLER_PEM"
+  export BRIDGE_CONFIRMATION_RELAYER_PEM="$CONFIRMATION_RELAYER_PEM"
   export BRIDGE_CONFIRMATION_RELAYER_IDENTITY="$CONFIRMATION_RELAYER_IDENTITY"
-  export BRIDGE_SNS_NEURON_SUBACCOUNT="$SNS_NEURON_SUBACCOUNT"
-  export BRIDGE_SNS_PROPOSER_PRINCIPAL="$SNS_PROPOSER_PRINCIPAL"
   export BRIDGE_PRIOR_SCHEDULE_RECEIPT="$PRIOR_SCHEDULE_RECEIPT"
+  export BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$OPERATIONAL_CONFIG_SEAL_RECEIPT"
+  export BRIDGE_CONFIRM_ASSET_ACCEPTANCE="$CONFIRMATION"
   "$DRIVER_PATH"
 fi

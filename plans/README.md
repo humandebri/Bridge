@@ -31,4 +31,4 @@ Plan 007のlocal gateをclean commitから再実行してpromotion evidenceを�
 
 ## 残作業の完了条件
 
-production開始には、Base contractの検証成功だけでは足りない。少なくとも、001〜006、`docs/parameters.md`のTBD解消、対象SNSの確定、SNS Root単独controllerへのhandover、Sepoliaでの主要5 scenario、SNS proposal upgrade、pause/cancel経路、鍵と監視の運用runbookが必要である。Plan 007の追加wallet互換性と追加5 scenarioは非blockingで継続する。
+production開始には、Base contractの検証成功だけでは足りない。少なくとも、001〜006の初回activation範囲、初期運用値、対象SNS、認証済みGate A／Gate B、鍵と監視の運用runbookが必要である。Sepoliaでの主要5 scenarioとpause/cancel経路演習はunpause後のGate Cへ分離し、初回activationまたはcontroller handoverを認可しない。SNS Root単独controllerへのhandoverとSNS proposal upgradeは初回activationとは独立し、実施時期は運用者が別途承認する。Plan 007の追加wallet互換性と追加5 scenarioはnonblockingで継続する。

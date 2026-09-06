@@ -26,9 +26,9 @@ use bridge_core::{
     resolve_deposit_hold, resolve_withdrawal_hold, AccountingState, Amount, ApplyResult,
     BaseMintSnapshot, CoreError, DepositHoldResolution, DepositId, DepositRecord, ExternalProgress,
     FeeKind, FinalizedObservationRecord, HoldId, LedgerFailure, LedgerTransferIdentity,
-    ReconciliationHoldRecord, ReconciliationHoldState, ReconciliationScanProgress,
-    ReconciliationTarget, WithdrawalEvent, WithdrawalHoldResolution, WithdrawalId,
-    WithdrawalRecord, WithdrawalState,
+    LegacyActivationEvidenceRequirement, ReconciliationHoldRecord, ReconciliationHoldState,
+    ReconciliationScanProgress, ReconciliationTarget, WithdrawalEvent, WithdrawalHoldResolution,
+    WithdrawalId, WithdrawalRecord, WithdrawalState,
 };
 use candid::{CandidType, Principal};
 use ic_sqlite_vfs::db::migrate::Migration;
@@ -267,7 +267,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 35, 30);
+INSERT INTO bridge_metadata VALUES (1, 36, 30);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -407,6 +407,15 @@ const MIGRATIONS: &[Migration] = &[Migration {
     version: SCHEMA_VERSION as u64,
     sql: SQLITE_SCHEMA,
 }];
+
+const PREVIOUS_SCHEMA_VERSION: u16 = 35;
+
+#[derive(Clone, Copy)]
+enum SchemaMigrationMode {
+    Production,
+    #[cfg(feature = "test-deployment")]
+    Staging,
+}
 
 #[cfg(test)]
 const OBSOLETE_SCHEMA_VERSION_V32: u16 = 32;
@@ -1148,12 +1157,16 @@ pub struct DepositAdmissionControl {
     pub next_independent_canceller_nonce: u64,
     pub next_governance_operation_id: u64,
     pub operational_config_sealed: bool,
+    #[serde(default = "unbound_bootstrap_activation_controller")]
+    pub bootstrap_activation_controller: Option<Principal>,
     pub pending_governance_transaction: Option<GovernanceTransaction>,
     pub pending_runtime_administrator_transaction: Option<GovernanceTransaction>,
     pub pending_independent_canceller_transaction: Option<GovernanceTransaction>,
     pub last_completed_governance_transaction: Option<GovernanceTransaction>,
     pub last_completed_runtime_administrator_transaction: Option<GovernanceTransaction>,
     pub last_completed_independent_canceller_transaction: Option<GovernanceTransaction>,
+    #[serde(default)]
+    pub last_confirmed_activation: Option<ConfirmedActivationRecord>,
     pub pending_timelock_operation: Option<PendingTimelockOperation>,
     pub pending_control_plane_rotation: Option<ControlPlaneRotation>,
     pub emergency_pause_deposit_required: bool,
@@ -1164,6 +1177,10 @@ pub struct DepositAdmissionControl {
     pub refresh_generation: u64,
     pub refresh_owner: Option<u64>,
     pub next_refresh_allowed_at_ns: u64,
+}
+
+fn unbound_bootstrap_activation_controller() -> Option<Principal> {
+    Some(Principal::anonymous())
 }
 
 impl DepositAdmissionControl {
@@ -1395,11 +1412,61 @@ pub enum GovernanceTransactionState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivationControllerAuthority {
+    pub controller: Principal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernanceTransaction {
     pub id: u64,
     pub kind: GovernanceTransactionKind,
     pub envelope: bridge_core::GovernanceTransactionEnvelope,
     pub state: GovernanceTransactionState,
+    #[serde(default)]
+    pub activation_controller_authority: Option<ActivationControllerAuthority>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfirmedActivationRecord {
+    pub phase: String,
+    pub governance_operation_id: u64,
+    pub timelock_operation_id: [u8; 32],
+    pub transaction_hash: [u8; 32],
+    pub receipt_block_number: u64,
+    pub generation: u8,
+    pub signed_at_ns: u64,
+}
+
+fn confirmed_activation_record(
+    transaction: &GovernanceTransaction,
+) -> Result<Option<ConfirmedActivationRecord>, StorageError> {
+    let (phase, timelock_operation_id) = match transaction.kind {
+        GovernanceTransactionKind::ScheduleActivation { operation_id, .. } => {
+            ("schedule", operation_id)
+        }
+        GovernanceTransactionKind::ExecuteActivation { operation_id, .. } => {
+            ("execute", operation_id)
+        }
+        _ => return Ok(None),
+    };
+    let GovernanceTransactionState::Confirmed {
+        transaction_hash,
+        receipt_block_number,
+    } = transaction.state
+    else {
+        return Ok(None);
+    };
+    let view = crate::base_governance::activation_confirmation_view(transaction)
+        .ok_or(StorageError::DecodeFailed)?;
+    Ok(Some(ConfirmedActivationRecord {
+        phase: phase.into(),
+        governance_operation_id: transaction.id,
+        timelock_operation_id,
+        transaction_hash,
+        receipt_block_number,
+        generation: view.generation,
+        signed_at_ns: view.signed_at_ns,
+    }))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2351,6 +2418,138 @@ fn verify_metadata(handle: DbHandle) -> Result<(), StorageError> {
     Ok(())
 }
 
+fn migrate_previous_schema(
+    handle: DbHandle,
+    _mode: SchemaMigrationMode,
+) -> Result<(), StorageError> {
+    let (schema, wire) = stored_metadata(handle)?;
+    if (schema, wire) != (PREVIOUS_SCHEMA_VERSION, WIRE_VERSION) {
+        return Err(if schema != PREVIOUS_SCHEMA_VERSION {
+            StorageError::UnsupportedSchemaVersion(schema)
+        } else {
+            StorageError::UnsupportedWireVersion(wire)
+        });
+    }
+    verify_current_schema_shape(handle)?;
+    StableStore::attach_handle(handle)?.validate_singletons()?;
+    let previous_admission = handle.query(|connection| {
+        connection.query_scalar::<Vec<u8>>(
+            "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+            params![],
+        )
+    })?;
+    let mut admission =
+        decode::<DepositAdmissionControl>(&StableBlob::new(previous_admission.clone())?)?;
+    let admin = handle.query(|connection| {
+        connection.query_scalar::<Vec<u8>>(
+            "SELECT admin_state FROM singleton_state WHERE id = 1",
+            params![],
+        )
+    })?;
+    let deposits_paused = decode::<Option<AdminState>>(&StableBlob::new(admin)?)?
+        .map(|admin| admin.deposits_paused)
+        .unwrap_or(true);
+    let last_completed = admission.last_completed_governance_transaction.as_ref();
+    let derived = last_completed
+        .map(confirmed_activation_record)
+        .transpose()?
+        .flatten();
+    if let (Some(stored), Some(derived)) = (&admission.last_confirmed_activation, &derived) {
+        if stored != derived {
+            return Err(StorageError::DecodeFailed);
+        }
+    } else if admission.last_confirmed_activation.is_none() {
+        admission.last_confirmed_activation = derived.clone();
+    }
+    let pending_activation = admission
+        .pending_timelock_operation
+        .filter(|_| admission.pending_control_plane_rotation.is_none());
+    #[cfg(feature = "test-deployment")]
+    let legacy_staging_controller = matches!(_mode, SchemaMigrationMode::Staging)
+        && admission.bootstrap_activation_controller == Some(Principal::anonymous());
+    #[cfg(not(feature = "test-deployment"))]
+    let legacy_staging_controller = false;
+    match ::bridge_core::kernel::legacy_activation_evidence_requirement(
+        admission.operational_config_sealed,
+        pending_activation.is_some(),
+        admission.bootstrap_activation_controller.is_some(),
+        legacy_staging_controller,
+        deposits_paused,
+        derived
+            .as_ref()
+            .is_some_and(|record| record.phase == "execute"),
+    ) {
+        LegacyActivationEvidenceRequirement::Schedule => {
+            let pending = pending_activation.ok_or(StorageError::DecodeFailed)?;
+            let schedule_matches = matches!(
+                last_completed.map(|transaction| &transaction.kind),
+                Some(GovernanceTransactionKind::ScheduleActivation { operation_id, salt })
+                    if *operation_id == pending.operation_id && *salt == pending.salt
+            ) && admission.last_confirmed_activation.as_ref().is_some_and(
+                |record| {
+                    record.phase == "schedule"
+                        && record.timelock_operation_id == pending.operation_id
+                },
+            );
+            let pending_execute_matches = admission
+                .pending_governance_transaction
+                .as_ref()
+                .is_none_or(|transaction| {
+                    matches!(
+                        transaction.kind,
+                        GovernanceTransactionKind::ExecuteActivation { operation_id, salt }
+                            if operation_id == pending.operation_id && salt == pending.salt
+                    )
+                });
+            if !schedule_matches || !pending_execute_matches {
+                return Err(StorageError::DecodeFailed);
+            }
+        }
+        LegacyActivationEvidenceRequirement::Execute => {
+            if admission
+                .last_confirmed_activation
+                .as_ref()
+                .is_none_or(|record| record.phase != "execute")
+            {
+                return Err(StorageError::DecodeFailed);
+            }
+            if legacy_staging_controller {
+                admission.bootstrap_activation_controller = None;
+            }
+        }
+        LegacyActivationEvidenceRequirement::NotRequired => {}
+    }
+    let next_admission = encode(&admission)?;
+    handle.update(|connection| {
+        let (persisted_schema, persisted_wire): (i64, i64) = connection.query_one(
+            "SELECT application_schema_version, record_wire_version FROM bridge_metadata WHERE id = 1",
+            params![],
+            |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
+        )?;
+        let persisted_admission = connection.query_scalar::<Vec<u8>>(
+            "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+            params![],
+        )?;
+        if persisted_schema != i64::from(PREVIOUS_SCHEMA_VERSION)
+            || persisted_wire != i64::from(WIRE_VERSION)
+            || persisted_admission != previous_admission
+        {
+            return Err(DbError::Constraint(
+                "stale stable schema migration input".into(),
+            ));
+        }
+        connection.execute(
+            "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
+            params![next_admission.to_sql_bytes()],
+        )?;
+        connection.execute(
+            "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
+            params![i64::from(SCHEMA_VERSION)],
+        )
+    })?;
+    Ok(())
+}
+
 fn verify_current_schema_shape(handle: DbHandle) -> Result<(), StorageError> {
     handle
         .query(|connection| {
@@ -3032,6 +3231,9 @@ impl StableStore {
         #[cfg(test)]
         reset_sqlite_test_runtime();
         let handle = open_database(memory)?;
+        if stored_metadata(handle)?.0 == PREVIOUS_SCHEMA_VERSION {
+            migrate_previous_schema(handle, SchemaMigrationMode::Production)?;
+        }
         Self::reopen_handle(handle)
     }
 
@@ -3043,6 +3245,9 @@ impl StableStore {
         #[cfg(test)]
         reset_sqlite_test_runtime();
         let handle = open_database(memory)?;
+        if stored_metadata(handle)?.0 == PREVIOUS_SCHEMA_VERSION {
+            migrate_previous_schema(handle, SchemaMigrationMode::Staging)?;
+        }
         let (schema, wire) = stored_metadata(handle)?;
         if (schema, wire) != (SCHEMA_VERSION, WIRE_VERSION) {
             return Err(if schema != SCHEMA_VERSION {
@@ -5315,6 +5520,12 @@ impl StableStore {
             .last_completed_governance_transaction)
     }
 
+    pub fn last_confirmed_activation(
+        &self,
+    ) -> Result<Option<ConfirmedActivationRecord>, StorageError> {
+        Ok(self.deposit_admission()?.last_confirmed_activation)
+    }
+
     pub fn completed_governance_transactions(
         &self,
     ) -> Result<Vec<GovernanceTransaction>, StorageError> {
@@ -5333,9 +5544,15 @@ impl StableStore {
         Ok(self.deposit_admission()?.operational_config_sealed)
     }
 
+    pub fn bootstrap_activation_controller(&self) -> Result<Option<Principal>, StorageError> {
+        Ok(self.deposit_admission()?.bootstrap_activation_controller)
+    }
+
     pub fn seal_operational_config(
         &mut self,
         value: &BridgeInitArgs,
+        expected_governance_operation_id: u64,
+        bootstrap_activation_controller: Principal,
         attestation: crate::config::ActivationAttestation,
         finalized_observation: FinalizedObservationRecord,
     ) -> Result<(), StorageError> {
@@ -5347,6 +5564,11 @@ impl StableStore {
         let previous_progress = self.external_progress.get()?;
         let mut admission = decode::<DepositAdmissionControl>(&previous_admission)?;
         let mut progress = decode::<ExternalProgress>(&previous_progress)?;
+        if expected_governance_operation_id == u64::MAX
+            || admission.next_governance_operation_id != expected_governance_operation_id
+        {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
         match ::bridge_core::kernel::operational_config_seal_decision(
             admission.operational_config_sealed,
             crate::config::OperationalConfigArgs {
@@ -5365,6 +5587,7 @@ impl StableStore {
         }
         progress.observe_finalized(finalized_observation)?;
         admission.operational_config_sealed = true;
+        admission.bootstrap_activation_controller = Some(bootstrap_activation_controller);
         let next_config = encode(&Some(
             ImmutableBridgeConfig::from_init(value).with_activation_attestation(attestation),
         ))?;
@@ -5423,7 +5646,15 @@ impl StableStore {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
         let admin = self.admin_state()?;
-        if !admin.deposits_paused {
+        let expected_paused = self.bootstrap_activation_controller()?.is_some();
+        if admin.deposits_paused != expected_paused
+            || !::bridge_core::kernel::activation_base_preflight_matches(
+                true,
+                attestation.deposits_paused,
+                attestation.withdrawals_paused,
+                expected_paused,
+            )
+        {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
         let current = decode::<Option<ImmutableBridgeConfig>>(&previous_config)?
@@ -5756,7 +5987,12 @@ impl StableStore {
         let previous_admission = self.deposit_admission.get()?;
         let mut admission = self.deposit_admission()?;
         Self::apply_governance_completion(&mut admission, &transaction)?;
-
+        if !::bridge_core::kernel::bootstrap_activation_authority_after_transition(
+            admission.bootstrap_activation_controller.is_some(),
+            true,
+        ) {
+            admission.bootstrap_activation_controller = None;
+        }
         let previous_admin = self.admin_state.get()?;
         let mut admin = self.admin_state()?;
         if !admin.deposits_paused
@@ -5903,7 +6139,11 @@ impl StableStore {
             }
             _ => {}
         }
+        let confirmed_activation = confirmed_activation_record(transaction)?;
         admission.set_completed_transaction(lane, transaction.clone());
+        if let Some(record) = confirmed_activation {
+            admission.last_confirmed_activation = Some(record);
+        }
         admission.set_pending_transaction(lane, None);
         match transaction.kind {
             GovernanceTransactionKind::PauseDepositMints if confirmed => {
@@ -6114,6 +6354,139 @@ impl StableStore {
     }
     pub fn set_admin_state(&mut self, value: &AdminState) -> Result<(), StorageError> {
         self.admin_state.set(encode(&Some(value.clone()))?)
+    }
+
+    #[cfg(any(not(feature = "test-deployment"), test))]
+    pub(crate) fn migrate_bootstrap_pause_principal(
+        &mut self,
+        old_pause_principal: Principal,
+        new_pause_principal: Principal,
+        timestamp_ns: u64,
+    ) -> Result<bridge_core::BootstrapPausePrincipalMigrationDecision, StorageError> {
+        use bridge_core::BootstrapPausePrincipalMigrationDecision::{
+            AlreadyApplied, Apply, FreshInstallNoop, PostBootstrapNoop, Reject,
+        };
+
+        let previous_admission = self.deposit_admission.get()?;
+        let mut admission = decode::<DepositAdmissionControl>(&previous_admission)?;
+        let previous_admin = self.admin_state.get()?;
+        let mut admin = self.admin_state()?;
+        let config = self.config()?.ok_or(StorageError::RecordNotFound)?;
+        let marker = admission.bootstrap_activation_controller;
+        let marker_unbound = marker.is_none() || marker == Some(Principal::anonymous());
+        let roles_distinct = new_pause_principal != admin.governance_principal
+            && new_pause_principal != admin.fee_recipient.owner
+            && new_pause_principal != config.confirmation_relayer_principal;
+        let decision = bridge_core::bootstrap_pause_principal_migration_decision(
+            admission.operational_config_sealed,
+            admin.deposits_paused,
+            admin.pause_principal == old_pause_principal
+                && config.pause_principal == old_pause_principal,
+            admin.pause_principal == new_pause_principal,
+            marker_unbound,
+            marker == Some(new_pause_principal),
+            roles_distinct,
+        );
+        match decision {
+            AlreadyApplied | FreshInstallNoop | PostBootstrapNoop => return Ok(decision),
+            Reject => return Err(StorageError::Core(CoreError::ConflictingReplay)),
+            Apply => {}
+        }
+
+        admin.pause_principal = new_pause_principal;
+        admission.bootstrap_activation_controller = Some(new_pause_principal);
+        let admin_blob = encode(&Some(admin))?;
+        let admission_blob = encode(&admission)?;
+        let mut counters = self.counters()?;
+        let previous_counters = encode(&counters)?;
+        let audit = self.prepare_audit_batch(
+            &mut counters,
+            new_pause_principal,
+            timestamp_ns,
+            vec![AuditEventKind::PausePrincipalRotated],
+        )?;
+        let counters_blob = encode(&counters)?;
+        self.handle.update(|connection| {
+            let persisted_admin = connection.query_scalar::<Vec<u8>>(
+                "SELECT admin_state FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_admission = connection.query_scalar::<Vec<u8>>(
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            let persisted_counters = connection.query_scalar::<Vec<u8>>(
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted_admin != previous_admin.to_sql_bytes()
+                || persisted_admission != previous_admission.to_sql_bytes()
+                || persisted_counters != previous_counters.to_sql_bytes()
+            {
+                return Err(DbError::Constraint(
+                    "stale bootstrap pause principal migration".into(),
+                ));
+            }
+            commit_audit_batch(connection, &audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET admin_state = ?1, deposit_admission = ?2, counters = ?3, audit_retention = ?4 WHERE id = 1",
+                params![
+                    admin_blob.to_sql_bytes(),
+                    admission_blob.to_sql_bytes(),
+                    counters_blob.to_sql_bytes(),
+                    audit.retention_blob.to_sql_bytes()
+                ],
+            )?;
+            Ok(())
+        })?;
+        Ok(Apply)
+    }
+
+    pub(crate) fn migrate_confirmed_activation_history(&mut self) -> Result<bool, StorageError> {
+        let previous = self.deposit_admission.get()?;
+        let mut admission = decode::<DepositAdmissionControl>(&previous)?;
+        if admission.last_confirmed_activation.is_some() {
+            return Ok(false);
+        }
+        let Some(transaction) = admission.last_completed_governance_transaction.clone() else {
+            if admission.operational_config_sealed
+                && admission.bootstrap_activation_controller.is_none()
+            {
+                return Err(StorageError::DecodeFailed);
+            }
+            return Ok(false);
+        };
+        let Some(record) = confirmed_activation_record(&transaction)? else {
+            if admission.operational_config_sealed
+                && admission.bootstrap_activation_controller.is_none()
+            {
+                return Err(StorageError::DecodeFailed);
+            }
+            return Ok(false);
+        };
+        admission.last_confirmed_activation = Some(record);
+        self.set_deposit_admission(&admission)?;
+        Ok(true)
+    }
+
+    #[cfg(any(feature = "test-deployment", test))]
+    pub(crate) fn migrate_staging_bootstrap_activation_controller(
+        &mut self,
+    ) -> Result<bool, StorageError> {
+        let mut admission = self.deposit_admission()?;
+        if admission.bootstrap_activation_controller != Some(Principal::anonymous()) {
+            return Ok(false);
+        }
+        if admission
+            .last_confirmed_activation
+            .as_ref()
+            .is_none_or(|record| record.phase != "execute")
+        {
+            return Ok(false);
+        }
+        admission.bootstrap_activation_controller = None;
+        self.set_deposit_admission(&admission)?;
+        Ok(true)
     }
 
     pub fn rotate_fee_recipient_with_audit(
@@ -9380,8 +9753,8 @@ mod tests {
         MintAuthorizationOrigin, MintAuthorizationRecord, ReconciliationArchiveRange,
         ReconciliationHoldRecord, ReconciliationHoldState, ReconciliationLedgerPage,
         ReconciliationScanPhase, ReconciliationScanProgress, ReconciliationTarget,
-        RequestReference, Settlement, TransferAttempt, WithdrawalEvent, WithdrawalHoldResolution,
-        WithdrawalId,
+        RequestReference, Settlement, SignedGovernanceTransaction, TransferAttempt,
+        WithdrawalEvent, WithdrawalHoldResolution, WithdrawalId,
     };
     use ic_sqlite_vfs::DefaultMemoryImpl as VectorMemory;
 
@@ -9724,6 +10097,37 @@ mod tests {
         }
     }
 
+    fn signed_attempt(transaction_hash: [u8; 32], generation: u8) -> SignedGovernanceTransaction {
+        SignedGovernanceTransaction {
+            raw_transaction: vec![generation; 32],
+            transaction_hash,
+            max_fee_per_gas: 2,
+            max_priority_fee_per_gas: 1,
+            generation,
+            signed_at_ns: 100 + u64::from(generation),
+        }
+    }
+
+    fn record_confirmed_attempt(
+        store: &mut StableStore,
+        transaction: &mut GovernanceTransaction,
+        transaction_hash: [u8; 32],
+        receipt_block_number: u64,
+        generation: u8,
+    ) {
+        transaction
+            .envelope
+            .signed_transactions
+            .push(signed_attempt(transaction_hash, generation));
+        transaction.state = GovernanceTransactionState::Confirmed {
+            transaction_hash,
+            receipt_block_number,
+        };
+        store
+            .update_governance_transaction(transaction.clone())
+            .expect("record confirmed transaction");
+    }
+
     fn confirmed_activation_transaction(
         store: &mut StableStore,
     ) -> (GovernanceTransaction, Principal) {
@@ -9737,15 +10141,13 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(0), [0x43; 32]).assign_nonce(7),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
             .prepare_governance_transaction(schedule.clone())
             .expect("prepare activation schedule");
-        schedule.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [0x44; 32],
-            receipt_block_number: 10,
-        };
+        record_confirmed_attempt(store, &mut schedule, [0x44; 32], 10, 0);
         store
             .complete_governance_transaction(schedule)
             .expect("complete activation schedule");
@@ -9754,15 +10156,13 @@ mod tests {
             id: 1,
             kind: GovernanceTransactionKind::ExecuteActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(1), [0x45; 32]).assign_nonce(8),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
             .prepare_governance_transaction(execute.clone())
             .expect("prepare activation execute");
-        execute.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [0x46; 32],
-            receipt_block_number: 20,
-        };
+        record_confirmed_attempt(store, &mut execute, [0x46; 32], 20, 2);
         (execute, governance)
     }
 
@@ -9930,6 +10330,8 @@ mod tests {
         assert!(matches!(
             store.seal_operational_config(
                 &bootstrap,
+                0,
+                Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
             ),
@@ -9954,15 +10356,38 @@ mod tests {
             .expect("initialize configured store");
         let revision_before = storage_revision(&store);
 
+        assert!(matches!(
+            store.seal_operational_config(
+                &next,
+                1,
+                Principal::from_slice(&[0x99]),
+                activation_attestation(),
+                activation_finalized_observation(),
+            ),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+        assert_eq!(storage_revision(&store), revision_before);
+        assert!(!store
+            .operational_config_sealed()
+            .expect("operation ID mismatch leaves lifecycle unsealed"));
+
         store
             .seal_operational_config(
                 &next,
+                0,
+                Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
             )
             .expect("seal operational config");
         assert_eq!(store.config().expect("sealed config"), Some(next.clone()));
         assert!(store.operational_config_sealed().expect("sealed lifecycle"));
+        assert_eq!(
+            store
+                .bootstrap_activation_controller()
+                .expect("sealed controller binding"),
+            Some(Principal::from_slice(&[0x99]))
+        );
         assert_eq!(
             store
                 .external_progress()
@@ -9977,6 +10402,8 @@ mod tests {
         assert!(matches!(
             store.seal_operational_config(
                 &conflicting,
+                0,
+                Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
             ),
@@ -9993,12 +10420,19 @@ mod tests {
         assert!(reopened
             .operational_config_sealed()
             .expect("reopened lifecycle"));
+        assert_eq!(
+            reopened
+                .bootstrap_activation_controller()
+                .expect("reopened controller binding"),
+            Some(Principal::from_slice(&[0x99]))
+        );
         assert_eq!(storage_revision(&reopened), revision_before + 1);
     }
 
     #[test]
     #[serial]
-    fn activation_attestation_refresh_requires_sealed_paused_state_and_replaces_only_observation() {
+    fn activation_attestation_refresh_requires_lifecycle_pause_consistency_and_replaces_only_observation(
+    ) {
         let memory = VectorMemory::default();
         let initial = config();
         let mut store = StableStore::init_configured(memory.clone(), &initial)
@@ -10013,11 +10447,30 @@ mod tests {
 
         let first = activation_attestation();
         store
-            .seal_operational_config(&initial, first.clone(), activation_finalized_observation())
+            .seal_operational_config(
+                &initial,
+                0,
+                Principal::from_slice(&[0x99]),
+                first.clone(),
+                activation_finalized_observation(),
+            )
             .expect("seal operational config");
+        let mut unpaused = activation_attestation();
+        unpaused.deposits_paused = false;
+        unpaused.withdrawals_paused = false;
+        assert!(matches!(
+            store.refresh_activation_attestation(unpaused, activation_finalized_observation(),),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+        let mut one_sided = activation_attestation();
+        one_sided.withdrawals_paused = false;
+        assert!(matches!(
+            store.refresh_activation_attestation(one_sided, activation_finalized_observation(),),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
         let mut refreshed = first;
-        refreshed.finalized_block_number += 1;
-        refreshed.observed_at_ns += 1;
+        refreshed.finalized_block_number = 1_000;
+        refreshed.observed_at_ns = 1_000;
         store
             .refresh_activation_attestation(
                 refreshed.clone(),
@@ -10058,6 +10511,87 @@ mod tests {
 
     #[test]
     #[serial]
+    fn activated_unpaused_state_can_refresh_activation_attestation() {
+        let memory = VectorMemory::default();
+        let initial = config();
+        let mut store = StableStore::init_configured(memory.clone(), &initial)
+            .expect("initialize configured store");
+        store
+            .seal_operational_config(
+                &initial,
+                0,
+                Principal::from_slice(&[0x99]),
+                activation_attestation(),
+                activation_finalized_observation(),
+            )
+            .expect("seal operational config");
+        let mut admission = store.deposit_admission().expect("sealed admission");
+        admission.bootstrap_activation_controller = None;
+        store
+            .set_deposit_admission(&admission)
+            .expect("consume bootstrap authority");
+        let mut admin = store.admin_state().expect("paused admin");
+        admin.deposits_paused = false;
+        store.set_admin_state(&admin).expect("resume deposits");
+
+        assert!(matches!(
+            store.refresh_activation_attestation(
+                activation_attestation(),
+                activation_finalized_observation(),
+            ),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+        let mut one_sided = activation_attestation();
+        one_sided.deposits_paused = false;
+        assert!(matches!(
+            store.refresh_activation_attestation(one_sided, activation_finalized_observation(),),
+            Err(StorageError::Core(CoreError::ConflictingReplay))
+        ));
+
+        let mut refreshed = activation_attestation();
+        refreshed.deposits_paused = false;
+        refreshed.withdrawals_paused = false;
+        refreshed.finalized_block_number += 1;
+        refreshed.observed_at_ns += 1;
+        store
+            .refresh_activation_attestation(
+                refreshed.clone(),
+                FinalizedObservationRecord {
+                    block_number: refreshed.finalized_block_number,
+                    observed_at_ns: refreshed.observed_at_ns,
+                    ..activation_finalized_observation()
+                },
+            )
+            .expect("refresh active attestation");
+        assert_eq!(
+            store.activation_attestation().expect("read attestation"),
+            Some(refreshed.clone())
+        );
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen active refreshed store");
+        assert!(
+            !reopened
+                .admin_state()
+                .expect("active admin")
+                .deposits_paused
+        );
+        assert_eq!(
+            reopened
+                .bootstrap_activation_controller()
+                .expect("consumed bootstrap authority"),
+            None
+        );
+        assert_eq!(
+            reopened
+                .activation_attestation()
+                .expect("reopen attestation"),
+            Some(refreshed)
+        );
+    }
+
+    #[test]
+    #[serial]
     fn operational_config_seal_rolls_back_config_and_lifecycle_together() {
         let memory = VectorMemory::default();
         let initial = config();
@@ -10073,6 +10607,8 @@ mod tests {
         assert!(store
             .seal_operational_config(
                 &next,
+                0,
+                Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
             )
@@ -10137,6 +10673,8 @@ mod tests {
                 matches!(
                     store.seal_operational_config(
                         &initial,
+                        0,
+                        Principal::from_slice(&[0x99]),
                         mismatched,
                         activation_finalized_observation(),
                     ),
@@ -10158,6 +10696,8 @@ mod tests {
         store
             .seal_operational_config(
                 &initial,
+                0,
+                Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
             )
@@ -10194,6 +10734,8 @@ mod tests {
         store
             .seal_operational_config(
                 &initial,
+                0,
+                Principal::from_slice(&[0x99]),
                 activation_attestation(),
                 activation_finalized_observation(),
             )
@@ -10247,6 +10789,7 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::PauseDepositMints,
             envelope: intent.assign_nonce(7),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10323,6 +10866,7 @@ mod tests {
                 salt,
             },
             envelope: governance_intent(GovernanceOperationId::new(0), [0x93; 32]).assign_nonce(7),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10341,6 +10885,7 @@ mod tests {
             id: 1,
             kind: GovernanceTransactionKind::PauseDepositMints,
             envelope: governance_intent(GovernanceOperationId::new(1), [0x95; 32]).assign_nonce(20),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10353,6 +10898,7 @@ mod tests {
                 operation_id: timelock_operation_id,
             },
             envelope: governance_intent(GovernanceOperationId::new(2), [0x96; 32]).assign_nonce(30),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10388,6 +10934,7 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::PauseDepositMints,
             envelope: governance_intent(GovernanceOperationId::new(0), [0xb1; 32]).assign_nonce(20),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10408,15 +10955,13 @@ mod tests {
                 salt: [0xb6; 32],
             },
             envelope: governance_intent(GovernanceOperationId::new(1), [0xb3; 32]).assign_nonce(10),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
             .prepare_governance_transaction(governance.clone())
             .expect("prepare governance transaction");
-        governance.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [0xb4; 32],
-            receipt_block_number: 2,
-        };
+        record_confirmed_attempt(&mut store, &mut governance, [0xb4; 32], 2, 0);
         store
             .complete_governance_transaction(governance.clone())
             .expect("complete governance transaction");
@@ -10461,6 +11006,7 @@ mod tests {
                 independent_canceller: rotation.independent_canceller,
             },
             envelope: governance_intent(GovernanceOperationId::new(0), [0xa3; 32]).assign_nonce(7),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10492,6 +11038,7 @@ mod tests {
                 independent_canceller: rotation.independent_canceller,
             },
             envelope: governance_intent(GovernanceOperationId::new(1), [0xa5; 32]).assign_nonce(8),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10550,15 +11097,13 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(0), [7; 32]).assign_nonce(7),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
             .prepare_governance_transaction(scheduled.clone())
             .expect("prepare activation schedule");
-        scheduled.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [3; 32],
-            receipt_block_number: 5,
-        };
+        record_confirmed_attempt(&mut store, &mut scheduled, [3; 32], 5, 0);
         store
             .complete_governance_transaction(scheduled)
             .expect("complete activation schedule");
@@ -10575,6 +11120,7 @@ mod tests {
             id: 1,
             kind: GovernanceTransactionKind::ExecuteActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(1), [9; 32]).assign_nonce(8),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10601,18 +11147,13 @@ mod tests {
             id: 2,
             kind: GovernanceTransactionKind::ExecuteActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(2), [8; 32]).assign_nonce(9),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
             .prepare_governance_transaction(confirmed.clone())
             .expect("prepare mature execute");
-        confirmed.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [2; 32],
-            receipt_block_number: 20,
-        };
-        store
-            .update_governance_transaction(confirmed.clone())
-            .expect("record confirmed execute");
+        record_confirmed_attempt(&mut store, &mut confirmed, [2; 32], 20, 0);
         store
             .complete_governance_transaction(confirmed)
             .expect("complete confirmed execute");
@@ -10644,6 +11185,12 @@ mod tests {
         assert!(!store.admin_state().expect("admin state").deposits_paused);
         assert_eq!(
             store
+                .bootstrap_activation_controller()
+                .expect("consumed bootstrap authority"),
+            None
+        );
+        assert_eq!(
+            store
                 .last_completed_governance_transaction()
                 .expect("completed transaction"),
             Some(transaction.clone())
@@ -10657,7 +11204,11 @@ mod tests {
         assert_eq!(events[0].kind, AuditEventKind::DepositsResumed);
         let completed = rpc_atomic_snapshot(&store, None);
         assert!(store
-            .complete_confirmed_activation_and_resume_if_clear(transaction, governance, 2_000)
+            .complete_confirmed_activation_and_resume_if_clear(
+                transaction.clone(),
+                governance,
+                2_000,
+            )
             .is_err());
         assert_eq!(rpc_atomic_snapshot(&store, None), completed);
 
@@ -10665,13 +11216,268 @@ mod tests {
         let reopened = StableStore::reopen(memory).expect("reopen completed activation");
         assert_eq!(rpc_atomic_snapshot(&reopened, None), completed);
         assert_eq!(storage_revision(&reopened), revision_before + 1);
+        assert_eq!(
+            reopened
+                .last_confirmed_activation()
+                .expect("reopened activation history"),
+            Some(confirmed_activation_record(&transaction).unwrap().unwrap())
+        );
+        assert_eq!(
+            reopened
+                .bootstrap_activation_controller()
+                .expect("reopened consumed bootstrap authority"),
+            None
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn confirmed_activation_history_survives_later_governance_completion_and_reopen() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let (activation, governance) = confirmed_activation_transaction(&mut store);
+        store
+            .complete_confirmed_activation_and_resume_if_clear(
+                activation.clone(),
+                governance,
+                1_000,
+            )
+            .expect("complete activation");
+
+        let operation_id = [0x31; 32];
+        let salt = [0x32; 32];
+        let rotation = ControlPlaneRotation {
+            generation: 2,
+            bridge_signer: [0x41; 20],
+            governance_operator: [0x42; 20],
+            runtime_administrator: [0x43; 20],
+            independent_canceller: [0x44; 20],
+        };
+        let mut later = GovernanceTransaction {
+            id: activation.id + 1,
+            kind: GovernanceTransactionKind::ScheduleControlPlaneRotation {
+                operation_id,
+                salt,
+                generation: rotation.generation,
+                bridge_signer: rotation.bridge_signer,
+                governance_operator: rotation.governance_operator,
+                runtime_administrator: rotation.runtime_administrator,
+                independent_canceller: rotation.independent_canceller,
+            },
+            envelope: governance_intent(GovernanceOperationId::new(activation.id + 1), [0x51; 32])
+                .assign_nonce(activation.envelope.nonce + 1),
+            activation_controller_authority: None,
+            state: GovernanceTransactionState::Prepared,
+        };
+        let mut admission = store.deposit_admission().expect("activation admission");
+        admission.pending_governance_transaction = Some(later.clone());
+        admission.pending_timelock_operation =
+            Some(PendingTimelockOperation { operation_id, salt });
+        admission.pending_control_plane_rotation = Some(rotation);
+        later.state = GovernanceTransactionState::Reverted {
+            transaction_hash: [0x52; 32],
+            receipt_block_number: 200,
+        };
+        admission.pending_governance_transaction = Some(later.clone());
+        StableStore::apply_governance_completion(&mut admission, &later)
+            .expect("complete later governance transaction");
+        store
+            .set_deposit_admission(&admission)
+            .expect("persist later completion");
+
+        assert_eq!(
+            store
+                .last_completed_governance_transaction()
+                .expect("generic completion"),
+            Some(later.clone())
+        );
+        assert_eq!(
+            store
+                .last_confirmed_activation()
+                .expect("activation completion"),
+            confirmed_activation_record(&activation).unwrap()
+        );
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen store");
+        assert_eq!(
+            reopened
+                .last_confirmed_activation()
+                .expect("reopened activation completion"),
+            confirmed_activation_record(&activation).unwrap()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn upgrade_migrations_backfill_activation_history_and_consume_staging_sentinel() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let (activation, governance) = confirmed_activation_transaction(&mut store);
+        store
+            .complete_confirmed_activation_and_resume_if_clear(
+                activation.clone(),
+                governance,
+                1_000,
+            )
+            .expect("complete activation");
+        let mut admission = store.deposit_admission().expect("activation admission");
+        admission.last_confirmed_activation = None;
+        admission.bootstrap_activation_controller = Some(Principal::anonymous());
+        store
+            .set_deposit_admission(&admission)
+            .expect("persist legacy state");
+
+        assert!(store
+            .migrate_confirmed_activation_history()
+            .expect("backfill activation history"));
+        assert!(store
+            .migrate_staging_bootstrap_activation_controller()
+            .expect("migrate staging marker"));
+        assert!(!store
+            .migrate_staging_bootstrap_activation_controller()
+            .expect("repeat staging marker migration"));
+        assert!(!store
+            .migrate_confirmed_activation_history()
+            .expect("repeat activation backfill"));
+        assert_eq!(
+            store
+                .bootstrap_activation_controller()
+                .expect("migrated controller marker"),
+            None
+        );
+        assert_eq!(
+            store
+                .last_confirmed_activation()
+                .expect("backfilled activation history"),
+            confirmed_activation_record(&activation).unwrap()
+        );
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen migrated store");
+        assert_eq!(
+            reopened
+                .last_confirmed_activation()
+                .expect("reopened activation history"),
+            confirmed_activation_record(&activation).unwrap()
+        );
+        assert_eq!(
+            reopened
+                .bootstrap_activation_controller()
+                .expect("reopened controller marker"),
+            None
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn staging_sentinel_migration_preserves_absence_and_real_controller() {
+        let mut store =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        let mut admission = store.deposit_admission().expect("admission");
+        admission.bootstrap_activation_controller = None;
+        store
+            .set_deposit_admission(&admission)
+            .expect("persist absent controller");
+        assert!(!store
+            .migrate_staging_bootstrap_activation_controller()
+            .expect("preserve absence"));
+
+        let real_controller = Principal::self_authenticating([0x77; 32]);
+        admission.bootstrap_activation_controller = Some(real_controller);
+        store
+            .set_deposit_admission(&admission)
+            .expect("persist real controller");
+        assert!(!store
+            .migrate_staging_bootstrap_activation_controller()
+            .expect("preserve real controller"));
+        assert_eq!(
+            store.bootstrap_activation_controller().expect("controller"),
+            Some(real_controller)
+        );
+
+        admission.bootstrap_activation_controller = Some(Principal::anonymous());
+        admission.last_confirmed_activation = None;
+        store
+            .set_deposit_admission(&admission)
+            .expect("persist unconfirmed sentinel");
+        assert!(!store
+            .migrate_staging_bootstrap_activation_controller()
+            .expect("preserve fail-closed sentinel"));
+        assert_eq!(
+            store.bootstrap_activation_controller().expect("sentinel"),
+            Some(Principal::anonymous())
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn activated_legacy_state_without_confirmed_activation_fails_closed() {
+        let mut store =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        let mut admission = store.deposit_admission().expect("admission");
+        admission.operational_config_sealed = true;
+        admission.bootstrap_activation_controller = None;
+        admission.last_completed_governance_transaction = None;
+        admission.last_confirmed_activation = None;
+        store
+            .set_deposit_admission(&admission)
+            .expect("persist incomplete activated state");
+
+        assert_eq!(
+            store.migrate_confirmed_activation_history(),
+            Err(StorageError::DecodeFailed)
+        );
+        assert_eq!(
+            store
+                .last_confirmed_activation()
+                .expect("activation history remains absent"),
+            None
+        );
+    }
+
+    #[test]
+    fn confirmed_activation_record_requires_one_exact_signed_attempt() {
+        let mut transaction = GovernanceTransaction {
+            id: 9,
+            kind: GovernanceTransactionKind::ExecuteActivation {
+                operation_id: [0x61; 32],
+                salt: [0x62; 32],
+            },
+            envelope: governance_intent(GovernanceOperationId::new(9), [0x63; 32]).assign_nonce(4),
+            activation_controller_authority: None,
+            state: GovernanceTransactionState::Confirmed {
+                transaction_hash: [0x64; 32],
+                receipt_block_number: 22,
+            },
+        };
+        assert!(confirmed_activation_record(&transaction).is_err());
+        transaction
+            .envelope
+            .signed_transactions
+            .push(signed_attempt([0x64; 32], 2));
+        transaction
+            .envelope
+            .signed_transactions
+            .push(signed_attempt([0x65; 32], 3));
+        let record = confirmed_activation_record(&transaction)
+            .expect("valid history")
+            .expect("activation record");
+        assert_eq!(record.generation, 2);
+        assert_eq!(record.signed_at_ns, 102);
+        transaction
+            .envelope
+            .signed_transactions
+            .push(signed_attempt([0x64; 32], 4));
+        assert!(confirmed_activation_record(&transaction).is_err());
     }
 
     #[test]
     #[serial]
     fn confirmed_activation_completion_keeps_pause_while_emergency_actions_remain() {
-        let mut store =
-            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init_configured(memory.clone(), &config()).expect("store");
         let (transaction, governance) = confirmed_activation_transaction(&mut store);
         store
             .enqueue_emergency_base_actions()
@@ -10693,6 +11499,22 @@ mod tests {
         assert!(store
             .emergency_base_actions_pending()
             .expect("emergency actions"));
+        assert_eq!(
+            store
+                .bootstrap_activation_controller()
+                .expect("consumed bootstrap authority"),
+            None
+        );
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen paused activation");
+        assert!(reopened.admin_state().expect("admin state").deposits_paused);
+        assert_eq!(
+            reopened
+                .bootstrap_activation_controller()
+                .expect("reopened consumed bootstrap authority"),
+            None
+        );
     }
 
     #[test]
@@ -10792,6 +11614,7 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(0), [5; 32]).assign_nonce(4),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10831,6 +11654,7 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(0), [0x43; 32]).assign_nonce(4),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10860,6 +11684,7 @@ mod tests {
             id: 1,
             kind: GovernanceTransactionKind::SetServiceFee { value: 7 },
             envelope: governance_intent(GovernanceOperationId::new(1), [0x44; 32]).assign_nonce(4),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::SignedAwaitingRelay {
                 transaction_hash: [0x45; 32],
                 generation: 0,
@@ -10909,15 +11734,13 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(0), [0x53; 32]).assign_nonce(10),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
             .prepare_governance_transaction(schedule.clone())
             .expect("prepare schedule");
-        schedule.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [0x54; 32],
-            receipt_block_number: 1,
-        };
+        record_confirmed_attempt(&mut store, &mut schedule, [0x54; 32], 1, 0);
         store
             .complete_governance_transaction(schedule)
             .expect("confirm schedule");
@@ -10930,6 +11753,7 @@ mod tests {
             id: 1,
             kind: GovernanceTransactionKind::ExecuteActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(1), [0x55; 32]).assign_nonce(11),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -10975,15 +11799,13 @@ mod tests {
             id: 0,
             kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
             envelope: governance_intent(GovernanceOperationId::new(0), [0x33; 32]).assign_nonce(10),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
             .prepare_governance_transaction(schedule.clone())
             .expect("prepare schedule");
-        schedule.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [0x34; 32],
-            receipt_block_number: 1,
-        };
+        record_confirmed_attempt(&mut store, &mut schedule, [0x34; 32], 1, 0);
         store
             .complete_governance_transaction(schedule)
             .expect("confirm schedule");
@@ -10998,6 +11820,7 @@ mod tests {
                 operation_id: [0x35; 32],
             },
             envelope: governance_intent(GovernanceOperationId::new(1), [0x36; 32]).assign_nonce(11),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         assert!(store.prepare_governance_transaction(wrong).is_err());
@@ -11006,6 +11829,7 @@ mod tests {
             id: 1,
             kind: GovernanceTransactionKind::CancelTimelock { operation_id },
             envelope: governance_intent(GovernanceOperationId::new(1), [0x37; 32]).assign_nonce(11),
+            activation_controller_authority: None,
             state: GovernanceTransactionState::Prepared,
         };
         store
@@ -12591,11 +13415,75 @@ mod tests {
         assert_eq!(store.schema_version(), SCHEMA_VERSION);
     }
 
+    fn without_fields<T: Serialize>(value: &T, fields: &[&str]) -> StableBlob {
+        let encoded = encode(value).expect("encode current value");
+        let mut cbor: ciborium::value::Value =
+            ciborium::from_reader(&encoded.as_slice()[1..]).expect("decode CBOR value");
+        let ciborium::value::Value::Map(entries) = &mut cbor else {
+            panic!("serialized struct must be a CBOR map");
+        };
+        let before = entries.len();
+        entries.retain(|(key, _)| {
+            !fields
+                .iter()
+                .any(|field| key == &ciborium::value::Value::Text((*field).to_string()))
+        });
+        assert_eq!(
+            entries.len() + fields.len(),
+            before,
+            "fields must exist before removal"
+        );
+        let mut bytes = vec![WIRE_VERSION];
+        ciborium::into_writer(&cbor, &mut bytes).expect("encode legacy CBOR value");
+        StableBlob::new(bytes).expect("bounded legacy value")
+    }
+
+    fn without_field<T: Serialize>(value: &T, field: &str) -> StableBlob {
+        without_fields(value, &[field])
+    }
+
+    #[test]
+    fn controller_authority_fields_default_when_reopening_pre_upgrade_cbor() {
+        let admission = DepositAdmissionControl {
+            operational_config_sealed: true,
+            bootstrap_activation_controller: Some(Principal::from_slice(&[0x99])),
+            ..Default::default()
+        };
+        let decoded_admission: DepositAdmissionControl = decode(&without_field(
+            &admission,
+            "bootstrap_activation_controller",
+        ))
+        .expect("decode admission written before controller binding existed");
+        assert_eq!(
+            decoded_admission.bootstrap_activation_controller,
+            Some(Principal::anonymous())
+        );
+        assert!(decoded_admission.operational_config_sealed);
+        assert!(decoded_admission.bootstrap_activation_controller.is_some());
+
+        let transaction = GovernanceTransaction {
+            id: 4,
+            kind: GovernanceTransactionKind::PauseDepositMints,
+            envelope: governance_intent(GovernanceOperationId::new(4), [0x88; 32]).assign_nonce(9),
+            state: GovernanceTransactionState::Prepared,
+            activation_controller_authority: Some(ActivationControllerAuthority {
+                controller: Principal::from_slice(&[0x99]),
+            }),
+        };
+        let decoded_transaction: GovernanceTransaction = decode(&without_field(
+            &transaction,
+            "activation_controller_authority",
+        ))
+        .expect("decode transaction written before controller binding existed");
+        assert_eq!(decoded_transaction.activation_controller_authority, None);
+        assert_eq!(decoded_transaction.id, transaction.id);
+    }
+
     #[test]
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 35);
+        assert_eq!(SCHEMA_VERSION, 36);
         assert_eq!(WIRE_VERSION, 30);
     }
 
@@ -12685,6 +13573,246 @@ mod tests {
                 )
             })
             .expect("mark stored schema");
+    }
+
+    fn write_v35_admission(store: &StableStore, admission: &DepositAdmissionControl) {
+        let legacy = without_field(admission, "last_confirmed_activation");
+        store
+            .handle
+            .0
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
+                    params![legacy.to_sql_bytes()],
+                )?;
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
+                    params![i64::from(PREVIOUS_SCHEMA_VERSION)],
+                )
+            })
+            .expect("write schema 35 admission");
+    }
+
+    #[cfg(feature = "test-deployment")]
+    fn write_v35_admission_without_controller(
+        store: &StableStore,
+        admission: &DepositAdmissionControl,
+    ) {
+        let legacy = without_fields(
+            admission,
+            &[
+                "last_confirmed_activation",
+                "bootstrap_activation_controller",
+            ],
+        );
+        store
+            .handle
+            .0
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
+                    params![legacy.to_sql_bytes()],
+                )?;
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
+                    params![i64::from(PREVIOUS_SCHEMA_VERSION)],
+                )
+            })
+            .expect("write legacy staging admission");
+    }
+
+    #[test]
+    #[serial]
+    fn schema_v35_is_migrated_only_by_upgrade_reopen() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let (execute, _) = confirmed_activation_transaction(&mut store);
+        store
+            .complete_governance_transaction(execute.clone())
+            .expect("complete activation");
+        let expected = confirmed_activation_record(&execute)
+            .expect("derive activation evidence")
+            .expect("execute evidence");
+        let admission = store.deposit_admission().expect("admission");
+        write_v35_admission(&store, &admission);
+        drop(store);
+
+        assert!(matches!(
+            StableStore::reopen(memory.clone()),
+            Err(StorageError::UnsupportedSchemaVersion(
+                PREVIOUS_SCHEMA_VERSION
+            ))
+        ));
+        let reopened = StableStore::reopen_after_upgrade(memory).expect("migrate schema 35");
+        assert_eq!(reopened.schema_version(), SCHEMA_VERSION);
+        assert_eq!(
+            reopened
+                .last_confirmed_activation()
+                .expect("migrated activation evidence"),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn failed_schema_v35_migration_keeps_schema_and_admission_unchanged() {
+        let memory = VectorMemory::default();
+        let store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let mut admission = store.deposit_admission().expect("admission");
+        admission.operational_config_sealed = true;
+        admission.bootstrap_activation_controller = None;
+        admission.last_completed_governance_transaction = None;
+        admission.last_confirmed_activation = None;
+        write_v35_admission(&store, &admission);
+        let before = store
+            .handle
+            .query(|connection| {
+                connection.query_scalar::<Vec<u8>>(
+                    "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                    params![],
+                )
+            })
+            .expect("read legacy admission");
+        drop(store);
+
+        assert_eq!(
+            StableStore::reopen_after_upgrade(memory.clone()).err(),
+            Some(StorageError::DecodeFailed)
+        );
+        reset_sqlite_test_runtime();
+        let handle = open_database(memory).expect("open failed migration state");
+        assert_eq!(
+            stored_metadata(handle).expect("stored metadata"),
+            (PREVIOUS_SCHEMA_VERSION, WIRE_VERSION)
+        );
+        assert_eq!(
+            handle
+                .query(|connection| {
+                    connection.query_scalar::<Vec<u8>>(
+                        "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                        params![],
+                    )
+                })
+                .expect("unchanged admission"),
+            before
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn schema_v35_pending_activation_requires_its_exact_confirmed_schedule() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        store.initialize_governance_nonce(7).expect("nonce");
+        let operation_id = [0x81; 32];
+        let salt = [0x82; 32];
+        let mut schedule = GovernanceTransaction {
+            id: 0,
+            kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
+            envelope: governance_intent(GovernanceOperationId::new(0), [0x83; 32]).assign_nonce(7),
+            activation_controller_authority: None,
+            state: GovernanceTransactionState::Prepared,
+        };
+        store
+            .prepare_governance_transaction(schedule.clone())
+            .expect("prepare schedule");
+        record_confirmed_attempt(&mut store, &mut schedule, [0x84; 32], 10, 2);
+        store
+            .complete_governance_transaction(schedule)
+            .expect("complete schedule");
+        let mut admission = store.deposit_admission().expect("admission");
+        admission.operational_config_sealed = true;
+        admission.bootstrap_activation_controller = Some(Principal::self_authenticating([9; 32]));
+        write_v35_admission(&store, &admission);
+        drop(store);
+
+        let reopened = StableStore::reopen_after_upgrade(memory).expect("migrate schedule");
+        let record = reopened
+            .last_confirmed_activation()
+            .expect("schedule record")
+            .expect("confirmed schedule");
+        assert_eq!(record.phase, "schedule");
+        assert_eq!(record.timelock_operation_id, operation_id);
+        assert_eq!(record.generation, 2);
+
+        let memory = VectorMemory::default();
+        let store = StableStore::init_configured(memory.clone(), &config()).expect("store");
+        admission.last_completed_governance_transaction = Some(GovernanceTransaction {
+            id: 1,
+            kind: GovernanceTransactionKind::SetServiceFee { value: 1 },
+            envelope: governance_intent(GovernanceOperationId::new(1), [0x85; 32]).assign_nonce(8),
+            activation_controller_authority: None,
+            state: GovernanceTransactionState::Confirmed {
+                transaction_hash: [0x86; 32],
+                receipt_block_number: 11,
+            },
+        });
+        write_v35_admission(&store, &admission);
+        drop(store);
+        assert_eq!(
+            StableStore::reopen_after_upgrade(memory).err(),
+            Some(StorageError::DecodeFailed)
+        );
+    }
+
+    #[cfg(feature = "test-deployment")]
+    #[test]
+    #[serial]
+    fn schema_v35_staging_consumes_only_an_executed_sentinel() {
+        for deposits_paused in [true, false] {
+            let memory = VectorMemory::default();
+            let mut store =
+                StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+            let (execute, _) = confirmed_activation_transaction(&mut store);
+            store
+                .complete_governance_transaction(execute)
+                .expect("complete activation");
+            let mut admin = store.admin_state().expect("admin");
+            admin.deposits_paused = deposits_paused;
+            store.set_admin_state(&admin).expect("set pause state");
+            let mut admission = store.deposit_admission().expect("admission");
+            admission.operational_config_sealed = true;
+            write_v35_admission_without_controller(&store, &admission);
+            drop(store);
+
+            let reopened = StableStore::reopen_after_staging_upgrade(
+                memory,
+                Some(config().confirmation_relayer_principal),
+            )
+            .expect("migrate activated staging");
+            assert_eq!(reopened.bootstrap_activation_controller().unwrap(), None);
+            assert_eq!(
+                reopened
+                    .last_confirmed_activation()
+                    .unwrap()
+                    .expect("execute record")
+                    .phase,
+                "execute"
+            );
+        }
+
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let mut admin = store.admin_state().expect("admin");
+        admin.deposits_paused = false;
+        store.set_admin_state(&admin).expect("unpause");
+        let mut admission = store.deposit_admission().expect("admission");
+        admission.operational_config_sealed = true;
+        admission.last_completed_governance_transaction = None;
+        write_v35_admission_without_controller(&store, &admission);
+        drop(store);
+        assert_eq!(
+            StableStore::reopen_after_staging_upgrade(
+                memory,
+                Some(config().confirmation_relayer_principal)
+            )
+            .err(),
+            Some(StorageError::DecodeFailed)
+        );
     }
 
     #[test]
@@ -16685,6 +17813,130 @@ mod tests {
             next
         );
         assert_eq!(reopened.accounting().expect("accounting"), before);
+    }
+
+    #[test]
+    #[serial]
+    fn bootstrap_pause_principal_migration_is_atomic_idempotent_and_reopens() {
+        use bridge_core::BootstrapPausePrincipalMigrationDecision::{
+            AlreadyApplied, Apply, FreshInstallNoop,
+        };
+
+        let memory = VectorMemory::default();
+        let mut initial = config();
+        let old = initial.pause_principal;
+        let next = Principal::self_authenticating([42; 32]);
+        initial.pause_principal = old;
+        let mut store =
+            StableStore::init_configured(memory.clone(), &initial).expect("initialize configured");
+        let accounting = store.accounting().expect("accounting");
+        let counts = store.status_counts().expect("counts");
+        let admin = store.admin_state().expect("admin");
+        let marker = store.bootstrap_activation_controller().expect("marker");
+
+        assert!(store
+            .migrate_bootstrap_pause_principal(Principal::self_authenticating([41; 32]), next, 98,)
+            .is_err());
+        assert_eq!(store.admin_state().expect("admin"), admin);
+        assert_eq!(
+            store.bootstrap_activation_controller().expect("marker"),
+            marker
+        );
+        assert_eq!(store.status_counts().expect("counts"), counts);
+
+        assert_eq!(
+            store
+                .migrate_bootstrap_pause_principal(old, next, 99)
+                .expect("apply migration"),
+            Apply
+        );
+        assert_eq!(store.admin_state().expect("admin").pause_principal, next);
+        assert_eq!(
+            store.bootstrap_activation_controller().expect("marker"),
+            Some(next)
+        );
+        assert_eq!(
+            store.config().expect("config").unwrap().pause_principal,
+            next
+        );
+        assert_eq!(store.accounting().expect("accounting"), accounting);
+        assert_eq!(
+            store.status_counts().expect("counts").retained_audit_events,
+            counts.retained_audit_events + 1
+        );
+        let audit = store.audit_events(0, 10).expect("audit");
+        assert_eq!(audit.events[0].caller, next);
+        assert!(matches!(
+            audit.events[0].kind,
+            AuditEventKind::PausePrincipalRotated
+        ));
+        assert_eq!(
+            store
+                .migrate_bootstrap_pause_principal(old, next, 100)
+                .expect("idempotent migration"),
+            AlreadyApplied
+        );
+        assert_eq!(
+            store.status_counts().expect("counts").retained_audit_events,
+            counts.retained_audit_events + 1
+        );
+        drop(store);
+
+        let reopened = StableStore::reopen(memory).expect("reopen");
+        assert_eq!(reopened.admin_state().expect("admin").pause_principal, next);
+        assert_eq!(
+            reopened.bootstrap_activation_controller().expect("marker"),
+            Some(next)
+        );
+        assert_eq!(reopened.accounting().expect("accounting"), accounting);
+
+        let fresh_memory = VectorMemory::default();
+        let mut fresh = config();
+        fresh.pause_principal = next;
+        let mut fresh_store = StableStore::init_configured(fresh_memory.clone(), &fresh)
+            .expect("initialize current production template");
+        let fresh_counts = fresh_store.status_counts().expect("fresh counts");
+        let fresh_revision = storage_revision(&fresh_store);
+        assert_eq!(
+            fresh_store
+                .migrate_bootstrap_pause_principal(old, next, 101)
+                .expect("current template is already configured"),
+            FreshInstallNoop
+        );
+        assert_eq!(storage_revision(&fresh_store), fresh_revision);
+        assert_eq!(
+            fresh_store.status_counts().expect("fresh counts unchanged"),
+            fresh_counts
+        );
+        assert_eq!(
+            fresh_store
+                .bootstrap_activation_controller()
+                .expect("fresh marker remains unbound"),
+            None
+        );
+        fresh_store
+            .seal_operational_config(
+                &fresh,
+                0,
+                next,
+                activation_attestation(),
+                activation_finalized_observation(),
+            )
+            .expect("fresh template seals under its controller");
+        assert_eq!(
+            fresh_store
+                .bootstrap_activation_controller()
+                .expect("sealed marker"),
+            Some(next)
+        );
+        drop(fresh_store);
+        let fresh_reopened = StableStore::reopen(fresh_memory).expect("reopen fresh template");
+        assert_eq!(
+            fresh_reopened
+                .bootstrap_activation_controller()
+                .expect("reopened sealed marker"),
+            Some(next)
+        );
     }
 
     #[test]

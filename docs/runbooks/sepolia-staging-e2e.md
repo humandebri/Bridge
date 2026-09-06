@@ -1,6 +1,6 @@
 # IC mainnet × Base Sepolia staging E2E
 
-このrunbookの対象は、現在のstaging Canister、deployment instance、Timelock、Bridge、bSNS、signerで構成される同一のlive stackである。2026-08-27/28に完了したdestructive reinstallとfresh-stack構築は一度限りの履歴としてhash固定し、再実行、resume、別stack構築の入力には使わない。今後のCanister更新はstable schema v35／record wire v30を保つsame-instance `upgrade`だけを許可する。
+このrunbookの対象は、現在のstaging Canister、deployment instance、Timelock、Bridge、bSNS、signerで構成される同一のlive stackである。2026-08-27/28に完了したdestructive reinstallとfresh-stack構築は一度限りの履歴としてhash固定し、再実行、resume、別stack構築の入力には使わない。配置済みstable schema v35はsame-instance `upgrade`でv36へ一度だけ移行し、record wire v30を維持する。その後のCanister更新はv36のreview済みupgradeだけを許可する。
 
 Base Sepolia stagingは`short-delay-test-only` policyによりTimelock delayを300秒とする。productionの259200秒制約は変更せず、短縮版artifactや証跡をproduction rehearsalへ使用しない。production Canister、KINIC Ledger、Base Mainnet、SNSを対象にしてはならない。
 
@@ -39,7 +39,7 @@ bootstrap_attestation
 
 `current_schema_upgrade`はcanonical test-deployment Wasm `target/test-deployment/staging/bridge_canister.wasm`を`upgrade` modeで適用した証跡だけを受理する。次をすべて満たさなければならない。
 
-- Canister ID、deployment instance、stable schema v35、record wire v30、minimum Withdrawal IDが不変。
+- Canister ID、deployment instance、stable schema v36、record wire v30、minimum Withdrawal IDが不変。
 - module/Candid hashがreview済みbindingと一致。
 - controller集合と全state countが前後で一致し、storage integrityが`ok`。
 - `reinstall`、`auto`、instance drift、旧・未知schema、未登録wireを拒否。
@@ -63,7 +63,7 @@ RPC順序はPublicNode、`sepolia.base.org`、dRPCに固定し、事前chain bin
 新しいv8 manifestだけが、次をすべて満たした場合に`SHORT_DELAY_LIVE`へ遷移する。
 
 - Base Deposit/WithdrawalとCanister Depositがunpaused。
-- Canister ID、module、schema v35、wire v30、deployment instance、minimum Withdrawal ID、contract/runtime/profile hashが一致し、storage integrityが`ok`。
+- Canister ID、module、schema v36、wire v30、deployment instance、minimum Withdrawal ID、contract/runtime/profile hashが一致し、storage integrityが`ok`。
 - historical/retired stack identityがactive profile、signer、automationから排除されている。
 - pending governance、Timelock、Deposit、Withdrawal、Ledger operation、reconciliation、mint reservation、unpaid liabilityがすべて0。
 - 固定RPC providerの事前chain bindingとhealthが正常。

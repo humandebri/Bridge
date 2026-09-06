@@ -546,14 +546,17 @@ proof fn withdrawal_admission_boundary_requires_well_formed_nonzero_ge_minimum(
             <==> well_formed_len && minimum_nonzero && observed_ge_minimum
 {}
 
-proof fn activation_preflight_requires_signer_match_and_paused_state(
+proof fn activation_preflight_requires_signer_and_expected_pause_state(
     signer_matches: bool,
     deposits_paused: bool,
     withdrawals_paused: bool,
+    expected_paused: bool,
 )
     ensures kernel::activation_base_preflight_matches_spec(
-        signer_matches, deposits_paused, withdrawals_paused)
-            <==> signer_matches && deposits_paused && withdrawals_paused
+        signer_matches, deposits_paused, withdrawals_paused, expected_paused)
+            <==> signer_matches
+                && deposits_paused == expected_paused
+                && withdrawals_paused == expected_paused
 {}
 
 proof fn activation_postcondition_requires_unpaused_state(
@@ -865,6 +868,126 @@ proof fn role_action_matrix(action: int, pause: bool, governance: bool)
 
 proof fn unprivileged_caller_has_no_action(action: int)
     ensures !kernel::administrator_authorized_spec(action, false, false)
+{}
+
+proof fn operational_config_seal_requires_the_current_bootstrap_controller(
+    controller: bool,
+    bootstrap: bool,
+)
+    ensures kernel::operational_config_seal_caller_authorized_spec(controller, bootstrap)
+        <==> controller && bootstrap
+{}
+
+proof fn bootstrap_pause_principal_migration_is_scoped_and_idempotent(
+    sealed: bool,
+    paused: bool,
+    pause_is_old: bool,
+    pause_is_new: bool,
+    marker_unbound: bool,
+    marker_is_new: bool,
+    roles_distinct: bool,
+)
+    ensures
+        kernel::bootstrap_pause_principal_migration_code_spec(
+            sealed,
+            paused,
+            pause_is_old,
+            pause_is_new,
+            marker_unbound,
+            marker_is_new,
+            roles_distinct,
+        ) == if sealed {
+            2u8
+        } else if pause_is_new && marker_is_new {
+            1u8
+        } else if paused && pause_is_new && marker_unbound && roles_distinct {
+            4u8
+        } else if paused && pause_is_old && marker_unbound && roles_distinct {
+            0u8
+        } else {
+            3u8
+        }
+{}
+
+proof fn activation_authority_fails_closed_until_bootstrap_consumed(
+    bootstrap_controller: bool,
+    governance: bool,
+    sealed_paused: bool,
+    bootstrap_authority_present: bool,
+    phase: int,
+)
+    requires phase == 0 || phase == 1
+    ensures
+        bootstrap_authority_present ==> (kernel::activation_prepare_authorized_spec(
+                bootstrap_controller, governance, sealed_paused, bootstrap_authority_present, phase)
+            <==> bootstrap_controller && sealed_paused),
+        !bootstrap_authority_present ==> (kernel::activation_prepare_authorized_spec(
+                bootstrap_controller, governance, sealed_paused, bootstrap_authority_present, phase)
+            <==> governance && sealed_paused),
+{}
+
+proof fn confirmed_execute_consumes_bootstrap_activation_authority(
+    authority_present: bool,
+    confirmed_execute: bool,
+)
+    ensures
+        kernel::bootstrap_activation_authority_after_transition_spec(
+            authority_present, confirmed_execute) == (authority_present && !confirmed_execute),
+        !kernel::bootstrap_activation_authority_after_transition_spec(false, confirmed_execute),
+        !kernel::bootstrap_activation_authority_after_transition_spec(authority_present, true),
+{}
+
+proof fn confirmed_activation_attempt_requires_exactly_one_hash(
+    found_match: bool,
+    found_additional_match: bool,
+)
+    ensures kernel::confirmed_activation_attempt_is_unique_spec(
+        found_match,
+        found_additional_match,
+    ) == (found_match && !found_additional_match),
+{}
+
+proof fn legacy_activation_migration_requires_recoverable_evidence(
+    sealed: bool,
+    pending: bool,
+    controller_present: bool,
+    staging_sentinel: bool,
+    paused: bool,
+    exact_execute: bool,
+)
+    ensures kernel::legacy_activation_evidence_requirement_spec(
+        sealed,
+        pending,
+        controller_present,
+        staging_sentinel,
+        paused,
+        exact_execute,
+    ) == if !sealed {
+        0int
+    } else if pending {
+        1int
+    } else if !controller_present || (staging_sentinel && (!paused || exact_execute)) {
+        2int
+    } else {
+        0int
+    },
+{}
+
+proof fn confirmed_activation_metadata_requires_exact_match(
+    confirmed_generation: int,
+    confirmed_signed_at_ns: int,
+    artifact_generation: int,
+    artifact_signed_at_ns: int,
+)
+    ensures kernel::confirmed_activation_metadata_matches_spec(
+        confirmed_generation,
+        confirmed_signed_at_ns,
+        artifact_generation,
+        artifact_signed_at_ns,
+    ) == (
+        confirmed_generation == artifact_generation
+            && confirmed_signed_at_ns == artifact_signed_at_ns
+    ),
 {}
 
 proof fn audit_sequence_is_strictly_monotone(current: int)

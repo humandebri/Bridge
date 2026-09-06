@@ -26,6 +26,8 @@ type ActivationAttestation = record {
 };
 type ActivationConfirmationView = record {
   transaction_hash : blob;
+  generation : nat8;
+  signed_at_ns : nat64;
   governance_operation_id : nat64;
   phase : text;
   timelock_operation_id : blob;

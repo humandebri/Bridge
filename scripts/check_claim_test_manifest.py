@@ -7,6 +7,7 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -163,6 +164,11 @@ def prepare_test_dependencies(
         return
     run_command(
         [str(root / "scripts/plan007/build-staging-canister-wasm.sh")],
+        root,
+        runner,
+    )
+    run_command(
+        [str(root / "scripts/plan007/build-schema35-predecessor-wasm.sh")],
         root,
         runner,
     )

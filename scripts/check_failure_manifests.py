@@ -26,6 +26,10 @@ REQUIRED_LEAN_FAILURE_SHA256 = {
     "DestinationMutation.lean": "a3992470b4340e01eb81291efe4172fb9b3269141e987beea8238f02fded0cae",
     "DoubleDepositFeeTrace.lean": "daa0327e85847d2435b85c11f9bfe1031a2f19e0a53249d66e24effa7fe43434",
     "DoubleFee.lean": "076049e9a5e13cd6c1e4ebab231ed452dffc9fcac994b7aa15bdd8645e304851",
+    "DriftedConfirmedActivationEvidence.lean": (
+        "cce72323186747a19ebd7bd19393b756"
+        "24c5b5f5a330eebb6a24b6c75aa1df5a"
+    ),
     "EvidencelessMint.lean": "7d248eb1e8b57cfd2e9f2c3d3892e03b495934fbc920278146a056cca36b2c96",
     "FinalizedTimestampDeadline.lean": "614a8705cfd818db1749f072723d51e18f07d03b750a882a3f8d1fdb2935a212",
     "IncompleteAbsence.lean": "22ed9af027b854b148ed57fd103aa4cf9707a4366943ce43b4276e3ca4cbad62",
@@ -43,6 +47,8 @@ REQUIRED_LEAN_FAILURE_SHA256 = {
     "TerminalAuthorizationReopen.lean": "c7ba272a6f81dfcd0c4333bd325bcea1f41c1ce618cd1a645cd3dddea5daa29f",
     "TerminalDepositIndexed.lean": "5a740f2449b4ebd506b9d3095378f2226f253b9fd4ec96442422a0adbcbd91d7",
     "UnauthorizedConfirmationCaller.lean": "ebb7016ca30fe6b8c28c6dc6533da01331be76d3cc479a886866213d52ce80d0",
+    "UnauthorizedOperationalConfigSeal.lean": "8d45c7d35059439e55d1e8b7eaec11c842f9918084a8d4410c70dc986f43423e",
+    "UnsafeBootstrapPausePrincipalMigration.lean": "ddd05423bdf6e17a1ca3f0be7a2eae1694f5e331b638d5939fef44dafaf485eb",
     "UnfairLiveness.lean": "e346efb2083754bc8793d27a176243cc79c29f55a54eed0af4778e85faff6eca",
 }
 
@@ -60,6 +66,14 @@ def relative_fixture_paths(directory: Path, suffix: str) -> list[str]:
         for path in directory.rglob(f"*{suffix}")
         if path.is_file()
     )
+
+
+def require_unique_manifest_column(
+    manifest_rows: list[list[str]], column: int, label: str
+) -> None:
+    values = [row[column] for row in manifest_rows]
+    if len(set(values)) != len(values):
+        raise ValueError(f"duplicate {label} in failure manifest")
 
 
 def main() -> int:
@@ -132,6 +146,7 @@ def main() -> int:
         )
     )
     lean_rows = rows(ROOT / "verification" / "lean" / "deposit-failure-manifest.tsv", 3)
+    require_unique_manifest_column(lean_rows, 1, "Lean failure fixture")
     fixture_names = set(relative_fixture_paths(lean_dir, ".lean"))
     manifest_names = {fixture for _, fixture, _ in lean_rows}
     required_names = set(REQUIRED_LEAN_FAILURE_SHA256)

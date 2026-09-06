@@ -12,15 +12,15 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 ## 現在の進捗
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v35、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
-Plan 005は10回・7日の本番パラメータ外部計測と単一emergency pause経路演習待ちである。Plan 006のSNS handover、Canister操作型Base管理、主要5 scenarioのGate B真正性検証、固定SNS activation proposal提出とpostcondition receipt経路は実装済みで、実mainnet evidenceの取得・承認・実行は未完了である。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、追加wallet互換性と追加5 scenarioの外部実行は明示承認待ちだがproduction activationをblockしない。
+Bridge canisterはstable schema v36、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
+Plan 005の7日・各10件の本番計測とPlan 006のRPC rehearsal／monitor drillはunpause後のGate Cへ移動した。これらはGate Bまたはcontroller handoverを認可しない。SNS proposal型activation receiptはhandover後の再activation用として保持する。初回activationはseal時に固定したproduction controllerによるseal／schedule／execute、匿名relay、固定confirmation relayerの役割分離経路を使い、Confirmed executeで内部bootstrap authorityを永久に消費する。外部controllerを外す時期は自動化せず運用者が別途決定し、変更前でも初回execute後のactivation権限は既存Governance principalだけに限定する。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、追加wallet互換性と追加5 scenarioの外部実行は明示承認待ちだがproduction activationをblockしない。
 
 ## 全体構成
 
 実装対象は次の 3 つのコンポーネントである。
 
 - **Base contract 群**：bSNS ERC-20 と Bridge contract。デプロイ後にアップグレードしない（ADR 0001）。
-- **Bridge canister**：ICP 側の Rust canister。escrow、Deposit と Withdrawal の状態機械、EVM への署名送信を担う。アップグレード可能とし、本番前に SNS 管理へ移管する（ADR 0008）。
+- **Bridge canister**：ICP 側の Rust canister。escrow、Deposit と Withdrawal の状態機械、EVM への署名送信を担う。アップグレード可能とし、運用者が別途承認した時期にSNS管理へ移管する（ADR 0008）。
 - **形式検証**：canister 側は Verus、contract 側は Solidity SMTChecker。各 ADR が指定する証明義務を対象とする。
 
 依存関係は次のとおりである。
@@ -122,7 +122,7 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
 Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003および現行ADRで外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorization、役割別governance nonce laneを追加し、現行stable schemaはv35である。
+後続のPlan 002と003および現行ADRで外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorization、役割別governance nonce lane、確定activation evidenceを追加し、現行stable schemaはv36である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 
@@ -130,7 +130,7 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 - 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
 - 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
 - 本番初回deployまではstable schemaを直接置換し、migration、dual-read、fallbackを追加しない。現行version以外はfail closedとする。
-- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v35・record wire v30とする。
+- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v36・record wire v30とする。
 - Deposit record、owner sequence、Base recipientは単一envelopeへ保存する。pending EVM、open hold、nonterminal Withdrawalの件数は対応indexのtable countを正本とする。
 - Withdrawal primary rowとliability index、合計額、stop reason集計はtyped SQLite transactionで同時に更新し、change-log triggerへ依存しない。
 
@@ -195,7 +195,7 @@ Settlement Reserve、stable executor、新規Deposit pause、Fee Recipient、fee
 Plan 003で管理権限と監査ログを実装済みである。
 
 - 単一pause principalはIC/Base双方のpause、記録済みpending Timelock cancel、許可済みSettlementの進行だけを実行できる。
-- SNS Governanceだけが再開、pause principal rotation、Fee Recipient、fee payout、Service Fee、Timelock schedule/executeを実行できる。
+- SNS Governanceだけが通常時の再開、pause principal rotation、Fee Recipient、fee payout、Service Fee、Timelock schedule/executeを実行できる。初回activationのschedule/executeだけは、seal時に固定したproduction controllerを一時的な例外とする。
 - Base操作はMint Signerと、Governance Operator、Runtime Administrator、Independent Cancellerの各管理laneを分離し、任意target/calldata/raw transaction/nonce APIを公開しない。
 - 人間のEVM address、controller identity、初回deployerへ永続roleを与えない。
 - SNS-token feeからBase gas用ETHへの自動変換は行わず、運用者がrunbookに従って補充する。
@@ -215,22 +215,24 @@ Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みで�
 
 証明範囲は資産の 1:1 裏付けと上記の性質に限定し、cross-chain governance を含めない（ADR 0002）。
 
-## Phase 6: SNS 移管と本番準備
+## Phase 6: 初回activation、本番計測、SNS移管
 
-- 開発者 identity が controller である間は Bridge を未稼働または全面 pause とし、本番 SNS トークンを pull しない（ADR 0008）。
+- production controllerを単独controllerとして保持したまま、固定運用値をsealし、Gate Bと個別承認後に初回schedule／executeを行う。
+- 初回executeのConfirmed完了時に内部bootstrap activation authorityを永久に消費し、外部controller設定を変えなくても以後はGovernance principalだけを認可する。
 - upgrade 前後で未完了のDeposit Authorization、Withdrawal、Governance EVM transaction、Reconciliation Holdが再開できることを、実データ相当のstateで検証する。
-- handover を実行し、controller 一覧が SNS Root だけであることを確認する。開発者 identity、fallback identity、NNS Root を残さない。
+- unpause後に7日・各10件以上の本番計測とGate C証跡を収集する。結果は運用値を自動更新せず、handoverの認可入力または実施時期の自動決定にも使わない。
+- 別途明示承認された時期にhandoverを実行する場合は、初期運用値、seal／schedule／execute receipt、live RuntimeBinding、post-Gate-A upgrade chainをcurrent profile Wasmへ束縛する。送信直前はproduction identity一件だけのcontroller、Activated、Base両flowとIC Depositのunpausedを必須にし、変更前後のmodule、runtime、storage integrity、運用状態のcontinuityを保存する。空stateは要求せず、変更後のcontroller一覧はSNS Rootだけにして開発者identity、fallback identity、NNS Rootを残さない。
 - handover 後の upgrade proposal に添付する成果物（Wasm hash、source revision、Verus 結果、テスト結果、stable schema 互換性）の生成を CI で自動化する。
 - EIP-3009はbSNSの任意連携機能とし、x402 resource serverやfacilitatorとの互換性をBridgeの配置・activation条件に含めない（ADR 0015）。
 - UI 側の要件として、Deposit 前に bSNS では投票と投票報酬を得られないことを明示する（ADR 0002）。UI 実装が別リポジトリの場合は要件として引き渡す。
 
-**完了条件**：handover checklist がすべて満たされ、SNS proposal による upgrade が一度実際に成功する。
+**完了条件**：初回activationはcontroller activation receiptとactive状態の検証で完了する。SNS移管は、運用者が時期を別途承認した後にhandover checklistとSNS proposal upgradeを完了した時点で別に判定する。
 
 ## 未完了事項
 
-Plan 005の完了には、Sepoliaでのgovernance gasとsettlement cycles各10回、Base mainnetの7日fee分布、承認済み日次settlement上限、単一pause principalの実request/audit証跡、固定limitの承認、pause/cancel経路演習が必要である。cycles floorは基礎日次消費と10回計測最大値を用いる30日負荷モデルへ2倍の安全係数を掛けて導出する。5/15/60は本番ゲートではなく公開後の監視目標とする。
-これらの証跡が揃うまでmainnet candidateを`validated`にしない。
-Plan 006のrepository実装は完了している。完了判定には、SNS Rootへの実controller handover、実upgrade proposal、認証済みGate A/Gate B、schedule/execute activation receiptをmainnet evidenceとして取得する必要がある。
+Plan 005の初回activation前条件は、承認済み初期運用値、単一pause principal、固定limit、pre-seal／live Gate Bである。RPC rehearsal、monitor drill、7日以上のBase feeと各10件以上の本番governance gas／settlement cyclesはunpause後のGate Cで収集し、設定を自動変更しない。5/15/60は本番ゲートではなく公開後の監視目標とする。
+初回activationのmainnet candidateは認証済みGate A／Gate Bとschedule／execute activation receiptが揃うまで`validated`にしない。
+Plan 006のrepository実装は完了している。SNS Rootへの実controller handoverとSNS proposal upgradeは、運用者が時期を別途承認した後の完了条件として分離する。
 
 ## Phase 間の依存とマイルストーン
 
@@ -242,4 +244,4 @@ Plan 006のrepository実装は完了している。完了判定には、SNS Root
 | 3 | 外部連携 | Phase 2 |
 | 4 | 管理権限 | Phase 2（Phase 3 と並行可） |
 | 5 | Verus 証明 | Phase 2 以降と並走 |
-| 6 | SNS 移管 | Phase 1〜5 すべて、対象 SNS トークンの確定、`docs/parameters.md` の TBD 解消、鍵管理詳細の確定 |
+| 6 | 初回activation・本番計測・SNS移管 | Phase 1〜5 すべて、対象 SNS トークンの確定、初期運用値と鍵管理詳細の確定 |

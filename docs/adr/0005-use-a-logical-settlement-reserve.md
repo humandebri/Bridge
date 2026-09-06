@@ -2,22 +2,23 @@
 status: accepted
 ---
 
-# 単一資源プール内でSettlement Reserveを論理予約する
+# Settlement用cyclesとMint capacityを論理予約する
 
-BridgeはEVM signer、nonce、ETH残高、canisterを用途別に分離せず、それぞれ単一とする。新規Depositが既存Withdrawal Settlement用の資源を侵食しないよう、ETHとcyclesの一部をSettlement Reserveとして会計上予約する。
+Bridgeは単一canisterのcycles残高を共有する。新規Depositが既存operationのSettlement用cyclesを侵食しないよう、非終端liabilityの保守的最大費用を論理予約する。Mint Authorizationのcapacityは`AuthorizationPending`または`AuthorizationAvailable`の間だけ別に予約する。Base control-planeはGovernance Operator、Runtime Administrator、Independent Cancellerごとにsigner、nonce lane、ETH残高を分離し、送信候補transactionごとに必要liabilityを検査する。Deposit MintのBase gasは利用者walletが負担するため、Deposit admissionのETH reserveには含めない。
 
 ## Considered Options
 
-- DepositとSettlementでaddress、role、nonce queue、canisterを物理分離する案は、資金移動、監視、復旧、権限管理を増やすため不採用とする。
-- 単一資源プールを無条件に共有する案は、新規Depositが既存Withdrawalの実行資源を消費できるため不採用とする。
-- 単一資源プール内の論理予約とrecord指定の明示操作を採用する。
+- DepositとSettlementでcanisterを物理分離する案は、資金移動、監視、復旧、権限管理を増やすため不採用とする。
+- cyclesとMint capacityを無条件に共有する案は、新規Depositが既存operationの実行資源を消費できるため不採用とする。
+- 共有cycles残高内の論理予約、Mint capacity予約、record指定の明示操作、Base control-plane roleの物理分離を採用する。
 
 ## Consequences
 
 - Settlementは利用者または管理者が指定したrecordだけを処理する。
 - Settlement Reserveを満たせない場合、新規DepositをICP ledgerからpullする前に受付を停止する。
-- 必要なSettlement Reserveは固定floorだけでなく、未完了Settlementに必要な保守的最大費用を含める。
-- 受付済みDepositはICP tokenをpullする前に、対応するBase mintの保守的最大費用を予約する。
+- 必要なSettlement cycles reserveは運用floorに加え、すべての非終端liabilityの保守的最大費用を含める。
+- Mint capacityは`AuthorizationPending`／`AuthorizationAvailable`の間だけ予約し、Mint確定またはdeadline超過による`RefundAvailable`移行時に解放する。Base mint gas用ETHは予約しない。
+- Base control-plane transactionは、選択されたsender roleのFinalizedとSafeの保守的なETH残高がcandidate liabilityを満たす場合だけ署名する。後続relayは固定済みtransactionを送信する。別の固定ETH floorは設けない。
 - Withdrawal受付を継続できない残高では、Base contractの新規Withdrawalをpauseし、既存Settlementだけを継続する。
 - Verusで、Deposit受付がSettlement Reserveを侵食しないことを証明する。
 - gas価格、EVM RPC費用、management canister call費用の上限評価は外部仮定として監査する。

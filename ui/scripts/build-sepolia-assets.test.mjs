@@ -52,9 +52,51 @@ describe("Base Sepolia asset profile template", () => {
     const manifest = JSON.parse(
       await readFile(path.resolve(import.meta.dirname, "../package.json"), "utf8"),
     )
+    const productionAssets = await readFile(
+      path.resolve(import.meta.dirname, "production-assets.mjs"),
+      "utf8",
+    )
     expect(manifest.scripts.deploy).toContain("production-assets.mjs deploy")
     expect(manifest.scripts.deploy).toContain("$BRIDGE_RELEASE_BUNDLE/ui-assets.json")
     expect(manifest.scripts.deploy).toContain("$BRIDGE_UI_RUNTIME_PROFILE_FILE")
     expect(manifest.scripts.deploy).not.toContain("pnpm run build && wrangler deploy")
+    expect(productionAssets).toContain('"verify-live", "schedule", bundle')
+    expect(productionAssets).toContain("readOrdinaryFile(profileFile)")
+    expect(productionAssets).toContain("releaseProfileSchema.parse(JSON.parse(raw))")
+    expect(productionAssets).toContain("assertProductionUiProfile(releaseProfile, manifestSha256)")
+    expect(productionAssets).toContain("await deployFrozenAssets(receipt, rawProfile, identity")
+    expect(productionAssets).toContain("await requireUnchangedSourceIdentity(identity)")
+    expect(productionAssets).toContain("walletconnect_project_id: projectId")
+    expect(productionAssets).toContain(
+      "receipt.walletconnect_project_id?.toLowerCase() !== projectId",
+    )
+    expect(productionAssets).toContain("VITE_WALLETCONNECT_PROJECT_ID: projectId")
+    expect(productionAssets).toContain('"HEAD:ui/wrangler.production.jsonc"')
+    expect(productionAssets).toMatch(/"--config",\s*frozenConfig/)
+    expect(productionAssets).not.toContain("installRuntimeProfile(frozen, profileFile)")
+  })
+
+  it("keeps the production custom domain out of staging deployments", async () => {
+    const productionConfig = await readFile(
+      path.resolve(import.meta.dirname, "../wrangler.production.jsonc"),
+      "utf8",
+    )
+    const stagingConfig = await readFile(
+      path.resolve(import.meta.dirname, "../wrangler.jsonc"),
+      "utf8",
+    )
+    const productionAssets = await readFile(
+      path.resolve(import.meta.dirname, "production-assets.mjs"),
+      "utf8",
+    )
+    const stagingAssets = await readFile(
+      path.resolve(import.meta.dirname, "staging-assets.mjs"),
+      "utf8",
+    )
+    expect(productionConfig).toContain("bridge.kinic.xyz")
+    expect(stagingConfig).not.toContain("bridge.kinic.xyz")
+    expect(productionAssets).toContain("wrangler.production.jsonc")
+    expect(stagingAssets).toContain('resolve(uiRoot, "wrangler.jsonc")')
+    expect(stagingAssets).not.toContain("wrangler.production.jsonc")
   })
 })

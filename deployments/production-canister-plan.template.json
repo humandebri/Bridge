@@ -51,7 +51,7 @@
     "cycles_floor": "1",
     "settlement_cycle_ceiling": "340282366920938463463374607431768211455",
     "governance_principal": "74ncn-fqaaa-aaaaq-aaasa-cai",
-    "pause_principal": "7jkta-eyaaa-aaaaq-aaarq-cai",
+    "pause_principal": "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe",
     "confirmation_relayer_principal": "<reviewed-relayer-principal>",
     "fee_recipient": {
       "owner": "<reviewed-fee-recipient-principal>",

@@ -95,13 +95,16 @@ class SepoliaEvidenceTests(unittest.TestCase):
             },
             "storage_integrity": "ok",
         }
+        upgrade_state_after = copy.deepcopy(upgrade_state)
+        upgrade_state_after["status"]["schema_version"] = 36
+        upgrade_state_after["runtime_binding"]["schema_version"] = 36
         self.local.write_text(
             json.dumps(
                 {
                     "schema_version": 8,
                     "environment_mode": "short-delay-test-only",
                     "activation_timelock_delay_seconds": 300,
-                    "stable_schema_version": 35,
+                    "stable_schema_version": 36,
                     "record_wire_version": 30,
                     "deployment_instance_id": PROFILE_INSTANCE,
                     "created_at": OBSERVED_AT,
@@ -118,7 +121,7 @@ class SepoliaEvidenceTests(unittest.TestCase):
                     "state_upgrade": {
                         "verified": True,
                         "before": upgrade_state,
-                        "after": copy.deepcopy(upgrade_state),
+                        "after": upgrade_state_after,
                     },
                     "tests": {
                         "full_local_ci": "passed",
@@ -447,7 +450,7 @@ class SepoliaEvidenceTests(unittest.TestCase):
                 "bridge_canister_id_before": BRIDGE_CANISTER_ID,
                 "bridge_canister_id_after": BRIDGE_CANISTER_ID,
                 "schema_version_before": 35,
-                "schema_version_after": 35,
+                "schema_version_after": 36,
                 "record_wire_version_before": 30,
                 "record_wire_version_after": 30,
                 "deployment_instance_id_before": PROFILE_INSTANCE,
@@ -459,7 +462,7 @@ class SepoliaEvidenceTests(unittest.TestCase):
         if stage == "post_upgrade_binding":
             return {
                 "canister": {
-                    "schema_version": 35,
+                    "schema_version": 36,
                     "record_wire_version": 30,
                     "deployment_instance_id": PROFILE_INSTANCE,
                     "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,
@@ -607,7 +610,7 @@ class SepoliaEvidenceTests(unittest.TestCase):
                 "settlement_scheduler_healthy": True,
                 "storage_integrity": "ok",
                 "reserve_sufficient": True,
-                "schema_version": 35,
+                "schema_version": 36,
                 "record_wire_version": 30,
                 "deployment_instance_id": PROFILE_INSTANCE,
                 "minimum_withdrawal_id": MINIMUM_WITHDRAWAL_ID,

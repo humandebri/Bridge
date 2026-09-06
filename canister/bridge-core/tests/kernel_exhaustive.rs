@@ -1,22 +1,23 @@
 use bridge_core::{
-    administrator_authorized, asset_operation_lifecycle_decision, audit_next,
-    authorization_commit_allowed, checked_counter_transition, checked_requirement,
-    confirmation_caller_authorized, confirmation_roles_distinct, counter_delta,
-    deposit_admission_decision, deposit_reservation_active, deposit_transition,
-    deposit_transition_decision, evidence_matches, expiry_refund_allowed,
-    fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
+    activation_prepare_authorized, administrator_authorized, asset_operation_lifecycle_decision,
+    audit_next, authorization_commit_allowed, bootstrap_pause_principal_migration_decision,
+    checked_counter_transition, checked_requirement, confirmation_caller_authorized,
+    confirmation_roles_distinct, counter_delta, deposit_admission_decision,
+    deposit_reservation_active, deposit_transition, deposit_transition_decision, evidence_matches,
+    expiry_refund_allowed, fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
     funding_reconciliation_decision, hold_resolution_decision, lease_generation_next,
-    lease_outcome_is_current, manual_claim_decision, mint_admission_total,
-    mint_authorization_has_minimum_remaining_time, mint_finalization_allowed, next_attempt,
-    notification_failure_cooldown_active, operational_config_seal_decision, outbound_settlement,
-    payout_allowed, payout_debit, refresh_generation_next, refresh_owner_matches,
-    release_transfer_matches, replay_matches, reservation_decision,
-    reserve_admission_preserves_requirement, scan_complete, service_fee_change_allowed,
-    settlement_decision, signature_install_allowed, signing_cycle_requirement,
-    transaction_liability_wei, withdrawal_phase_allows, withdrawal_phase_step,
-    withdrawal_transition_effects, AssetOperationLifecycleDecision, DepositEventGuard,
-    DepositTransitionDecision, DepositTransitionInput, FeeRecipientRotationDecision,
-    FundingReconciliationDecision, HoldResolutionDecision, ManualClaimDecision,
+    lease_outcome_is_current, legacy_activation_evidence_requirement, manual_claim_decision,
+    mint_admission_total, mint_authorization_has_minimum_remaining_time, mint_finalization_allowed,
+    next_attempt, notification_failure_cooldown_active, operational_config_seal_caller_authorized,
+    operational_config_seal_decision, outbound_settlement, payout_allowed, payout_debit,
+    refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
+    reservation_decision, reserve_admission_preserves_requirement, scan_complete,
+    service_fee_change_allowed, settlement_decision, signature_install_allowed,
+    signing_cycle_requirement, transaction_liability_wei, withdrawal_phase_allows,
+    withdrawal_phase_step, withdrawal_transition_effects, AssetOperationLifecycleDecision,
+    BootstrapPausePrincipalMigrationDecision, DepositEventGuard, DepositTransitionDecision,
+    DepositTransitionInput, FeeRecipientRotationDecision, FundingReconciliationDecision,
+    HoldResolutionDecision, LegacyActivationEvidenceRequirement, ManualClaimDecision,
     OperationalConfigSealDecision,
 };
 
@@ -103,6 +104,84 @@ fn boolean_decisions_are_exhaustive() {
     assert!(!notification_failure_cooldown_active(false, 9, 10));
     assert!(!notification_failure_cooldown_active(true, 10, 10));
     assert!(!notification_failure_cooldown_active(true, 11, 10));
+}
+
+#[test]
+fn activation_authorization_fails_closed_until_bootstrap_is_consumed() {
+    for controller in [false, true] {
+        for bootstrap in [false, true] {
+            assert_eq!(
+                operational_config_seal_caller_authorized(controller, bootstrap),
+                controller && bootstrap
+            );
+        }
+    }
+    for controller in [false, true] {
+        for governance in [false, true] {
+            for sealed_paused in [false, true] {
+                for bootstrap_authority_present in [false, true] {
+                    for phase in 0..=2 {
+                        let expected = if phase > 1 {
+                            false
+                        } else if bootstrap_authority_present {
+                            controller && sealed_paused
+                        } else {
+                            governance && sealed_paused
+                        };
+                        assert_eq!(
+                            activation_prepare_authorized(
+                                controller,
+                                governance,
+                                sealed_paused,
+                                bootstrap_authority_present,
+                                phase,
+                            ),
+                            expected,
+                            "controller={controller} governance={governance} sealed_paused={sealed_paused} bootstrap_authority_present={bootstrap_authority_present} phase={phase}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn confirmed_execute_consumes_bootstrap_activation_authority_permanently() {
+    use bridge_core::kernel::bootstrap_activation_authority_after_transition;
+
+    for authority_present in [false, true] {
+        assert!(!bootstrap_activation_authority_after_transition(
+            authority_present,
+            true,
+        ));
+    }
+    for confirmed_execute in [false, true] {
+        assert!(!bootstrap_activation_authority_after_transition(
+            false,
+            confirmed_execute,
+        ));
+    }
+    assert!(bootstrap_activation_authority_after_transition(true, false));
+}
+
+#[test]
+fn confirmed_activation_evidence_requires_one_hash_and_exact_metadata() {
+    use bridge_core::kernel::{
+        confirmed_activation_attempt_is_unique, confirmed_activation_metadata_matches,
+    };
+
+    for found_match in [false, true] {
+        for found_additional_match in [false, true] {
+            assert_eq!(
+                confirmed_activation_attempt_is_unique(found_match, found_additional_match),
+                found_match && !found_additional_match,
+            );
+        }
+    }
+    assert!(confirmed_activation_metadata_matches(2, 41, 2, 41));
+    assert!(!confirmed_activation_metadata_matches(3, 41, 2, 41));
+    assert!(!confirmed_activation_metadata_matches(2, 42, 2, 41));
 }
 
 #[test]
@@ -297,6 +376,91 @@ fn payout_and_authorization_tables_are_exhaustive() {
                     administrator_authorized(action, pause, governance),
                     expected
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn bootstrap_pause_principal_migration_is_exact_and_idempotent() {
+    use BootstrapPausePrincipalMigrationDecision::{
+        AlreadyApplied, Apply, FreshInstallNoop, PostBootstrapNoop, Reject,
+    };
+    for sealed in [false, true] {
+        for paused in [false, true] {
+            for pause_is_old in [false, true] {
+                for pause_is_new in [false, true] {
+                    for marker_unbound in [false, true] {
+                        for marker_is_new in [false, true] {
+                            for roles_distinct in [false, true] {
+                                let expected = if sealed {
+                                    PostBootstrapNoop
+                                } else if pause_is_new && marker_is_new {
+                                    AlreadyApplied
+                                } else if paused && pause_is_new && marker_unbound && roles_distinct
+                                {
+                                    FreshInstallNoop
+                                } else if paused && pause_is_old && marker_unbound && roles_distinct
+                                {
+                                    Apply
+                                } else {
+                                    Reject
+                                };
+                                assert_eq!(
+                                    bootstrap_pause_principal_migration_decision(
+                                        sealed,
+                                        paused,
+                                        pause_is_old,
+                                        pause_is_new,
+                                        marker_unbound,
+                                        marker_is_new,
+                                        roles_distinct,
+                                    ),
+                                    expected
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_activation_migration_requires_only_the_exact_recoverable_phase() {
+    use LegacyActivationEvidenceRequirement::{Execute, NotRequired, Schedule};
+    for sealed in [false, true] {
+        for pending in [false, true] {
+            for controller_present in [false, true] {
+                for staging_sentinel in [false, true] {
+                    for paused in [false, true] {
+                        for exact_execute in [false, true] {
+                            let expected = if !sealed {
+                                NotRequired
+                            } else if pending {
+                                Schedule
+                            } else if !controller_present
+                                || (staging_sentinel && (!paused || exact_execute))
+                            {
+                                Execute
+                            } else {
+                                NotRequired
+                            };
+                            assert_eq!(
+                                legacy_activation_evidence_requirement(
+                                    sealed,
+                                    pending,
+                                    controller_present,
+                                    staging_sentinel,
+                                    paused,
+                                    exact_execute,
+                                ),
+                                expected
+                            );
+                        }
+                    }
+                }
             }
         }
     }

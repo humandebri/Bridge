@@ -120,6 +120,86 @@ theorem operational_config_seal_witness : OperationalConfigSeal := by
   · intro sealed
     cases sealed <;> simp [assetOperationsAllowed]
 
+def initialActivationAuthorized
+    (bootstrapController governance sealed bootstrapActive validPhase : Bool) : Bool :=
+  validPhase && sealed && if bootstrapActive then bootstrapController else governance
+
+def bootstrapActivationAuthorityAfterTransition
+    (authorityPresent confirmedExecute : Bool) : Bool :=
+  authorityPresent && !confirmedExecute
+
+def operationalConfigSealCallerAuthorized (controller bootstrap : Bool) : Bool :=
+  controller && bootstrap
+
+def bootstrapPausePrincipalMigrationCode
+    (sealed paused pauseIsOld pauseIsNew markerUnbound markerIsNew rolesDistinct : Bool) : Nat :=
+  if sealed then 2
+  else if pauseIsNew && markerIsNew then 1
+  else if paused && pauseIsNew && markerUnbound && rolesDistinct then 4
+  else if paused && pauseIsOld && markerUnbound && rolesDistinct then 0
+  else 3
+
+def InitialActivationAuthorization : Prop :=
+  (∀ bootstrapController governance sealed bootstrapActive validPhase : Bool,
+      initialActivationAuthorized bootstrapController governance sealed bootstrapActive validPhase = true ↔
+        validPhase = true ∧ sealed = true ∧
+          (if bootstrapActive then bootstrapController = true else governance = true)) ∧
+  (∀ authorityPresent confirmedExecute : Bool,
+      bootstrapActivationAuthorityAfterTransition authorityPresent confirmedExecute = true ↔
+        authorityPresent = true ∧ confirmedExecute = false) ∧
+  (∀ controller bootstrap : Bool,
+      operationalConfigSealCallerAuthorized controller bootstrap = true ↔
+        controller = true ∧ bootstrap = true) ∧
+  (∀ sealed paused pauseIsOld pauseIsNew markerUnbound markerIsNew rolesDistinct : Bool,
+      bootstrapPausePrincipalMigrationCode sealed paused pauseIsOld pauseIsNew markerUnbound markerIsNew rolesDistinct =
+        if sealed then 2
+        else if pauseIsNew && markerIsNew then 1
+        else if paused && pauseIsNew && markerUnbound && rolesDistinct then 4
+        else if paused && pauseIsOld && markerUnbound && rolesDistinct then 0
+        else 3)
+
+theorem initial_activation_authorization_witness : InitialActivationAuthorization := by
+  constructor
+  · intro bootstrapController governance sealed bootstrapActive validPhase
+    cases bootstrapController <;> cases governance <;> cases sealed <;> cases bootstrapActive <;>
+      cases validPhase <;> simp [initialActivationAuthorized]
+  · constructor
+    · intro authorityPresent confirmedExecute
+      cases authorityPresent <;> cases confirmedExecute <;>
+        simp [bootstrapActivationAuthorityAfterTransition]
+    · constructor
+      · intro controller bootstrap
+        cases controller <;> cases bootstrap <;>
+          simp [operationalConfigSealCallerAuthorized]
+      · intro sealed paused pauseIsOld pauseIsNew markerUnbound markerIsNew rolesDistinct
+        rfl
+
+def confirmedActivationAttemptIsUnique
+    (foundMatch foundAdditionalMatch : Bool) : Bool :=
+  foundMatch && !foundAdditionalMatch
+
+def confirmedActivationMetadataMatches
+    (confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt : Nat) : Bool :=
+  confirmedGeneration == artifactGeneration && confirmedSignedAt == artifactSignedAt
+
+def ConfirmedActivationEvidenceBinding : Prop :=
+  (∀ foundMatch foundAdditionalMatch : Bool,
+      confirmedActivationAttemptIsUnique foundMatch foundAdditionalMatch = true ↔
+        foundMatch = true ∧ foundAdditionalMatch = false) ∧
+  (∀ confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt : Nat,
+      confirmedActivationMetadataMatches
+          confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt = true ↔
+        confirmedGeneration = artifactGeneration ∧ confirmedSignedAt = artifactSignedAt)
+
+theorem confirmed_activation_evidence_binding_witness :
+    ConfirmedActivationEvidenceBinding := by
+  constructor
+  · intro foundMatch foundAdditionalMatch
+    cases foundMatch <;> cases foundAdditionalMatch <;>
+      simp [confirmedActivationAttemptIsUnique]
+  · intro confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt
+    simp [confirmedActivationMetadataMatches, Bool.and_eq_true]
+
 def IntegratedProtocolReachability : Prop :=
   (∀ {state : Protocol.ProtocolState}, Protocol.Reachable state → Protocol.Safe state) ∧
     (∀ {stored reopened : Protocol.ProtocolState},

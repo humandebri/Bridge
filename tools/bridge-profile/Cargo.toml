@@ -6,12 +6,16 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+bridge-core = { path = "../../canister/bridge-core" }
 candid.workspace = true
 ciborium.workspace = true
 ic-agent.workspace = true
+ic-transport-types.workspace = true
 k256.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_cbor.workspace = true
 sha2.workspace = true
 tiny-keccak.workspace = true
 tokio.workspace = true

@@ -46,27 +46,26 @@ service_fee初期値 = 0.5 KINIC
 - `MAX_SERVICE_FEE`: `1000000000` raw（10 KINIC、ledger feeの10000倍）
 - `service_fee`運用初期値: `50000000` raw（0.5 KINIC、ledger feeの500倍）
 
-## Settlement Reserve
+## Base control-plane transaction affordability
 
-固定 floor に未完了 Settlement の保守的最大費用を加算する（ADR 0005）。
+- 送信対象actionが選択したGovernance Operator、Runtime Administrator、またはIndependent CancellerのETH残高を使う。別の固定floorは設けず、FinalizedとSafeの保守的なlive残高がcandidate transaction liabilityを満たさない、または観測できない場合は署名・送信しない。
+- governance fee上限: exact schedule／execute calldataのgas estimateと10件以上の異なるFinalized fee blockから導出する。gas limitは最大estimateの130%を1,000単位で切り上げ、max feeはbase fee p99×20、priority feeはp95×4、L1 ceilingはp99×10とする。quote validityは90秒、13,000／60,000／15,000 bps multiplierを維持する。
 
-```
-必要 Settlement Reserve =
-    固定 floor
-  + Σ (未完了 Settlement ごとの gas limit × max fee per gas 上限)
-  + cycles の N 日分の運用費
-```
+## Settlement cycles reserve
 
-- ETH固定floor: 未確定。Sepolia governance gas 10回計測とBase mainnet 7日fee分布の証跡が揃った後、承認済みreserve window内のGovernance transaction数へ2倍の余裕を掛けて設定する。
-- max fee per gas上限: 未確定。Base mainnet直近7日のbase fee p99×20、priority fee p95×4、L1 fee p99×10で各ceilingを算出する。
-- cycles floor: 未確定。pause状態の基礎日次消費、10回のsettlement cycles計測、承認済み日次最大件数から次式で設定する。
+新規処理が既存の非終端operationの完了用cyclesを侵食しないよう、基礎floorに非終端liabilityごとの保守的上限を加えて検査する（ADR 0005）。
 
-production installとGate Aでは、上記3値が未確定のためschema 2 template固定のBootstrap運用値を使う。この値は運用上限ではなく、`Bootstrap` lifecycleとshared kernel gateの組でasset update、scheduler、Base governance transactionをfail closedにするための非運用値である。Baseをpause配置した後に計測を完了し、Gate B profileで3値だけを最終値へ置換して一度だけ封印する。
-- `cycles floor = (baseline cycles/day + max(settlement cycles) × expected daily settlements) × 30 × 2`
-- `settlement cycle ceiling = ceil(max(settlement cycles) × 1.5)`
+- settlement cycle ceiling: `5000000000` cyclesに固定する。
+- cycles floor: pause状態の`idle_cycles_burned_per_day`から次式で設定する。
+
+production installとGate Aではschema 2 template固定のBootstrap運用値を使う。この値は運用上限ではなく、`Bootstrap` lifecycleとshared kernel gateの組でasset update、scheduler、Base governance transactionをfail closedにするための非運用値である。Baseをpause配置した後に`initial-operational-parameters.json`を作成し、Gate B profileでgovernance fee 8項目、cycles floor、settlement cycle ceilingだけを導出値へ置換して一度だけsealする。
+- `cycles floor = (idle cycles burn/day + 5,000,000,000) × 30 × 2`
+- `settlement cycle ceiling = 5,000,000,000`
 - N: 30日
 
-未確定値をzeroや任意の仮値でmainnet plan/profileへ入れてはならない。install時だけはprotocol定義済みの固定Bootstrap sentinelを使用する。production Canister install planは`schema_version: 2`、install receiptは`schema_version: 3`、release profileは`schema_version: 5`、Gate A/B release manifestは`schema_version: 3`、Gate A receiptは`schema_version: 2`、Activation Receiptは`schema_version: 4`だけを受理し、旧versionや未知versionをmigrationせずfail closedにする。`bridge-profile validate-bundle --offline`、`validate-bundle --offline --gate-b`、`verify-live`は、実artifact、署名、zero reserve、証跡欠落をfail closedで拒否する。Gate Bのoffline検証結果は`authorizing=false`であり、proofと再build後の`verify-live`だけがactivation proposalを認可する。
+unpause後は7日以上のBase feeとgovernance gas／settlement cycles各10件以上をGate Cで観測する。この観測結果と`fee-cycles-measurements.json`はseal済み値を自動更新せず、controller handoverの認可入力にも使わない。変更が必要なら別upgradeとレビューを行う。
+
+未確定値をzeroや任意の仮値でmainnet plan/profileへ入れてはならない。install時だけはprotocol定義済みの固定Bootstrap sentinelを使用する。production Canister install planは`schema_version: 2`、install receiptは`schema_version: 3`、release profileは`schema_version: 5`、Gate A manifestは`schema_version: 3`、Gate B manifestは`schema_version: 4`、Gate A receiptは`schema_version: 2`、post-Gate-A policy transitionは`schema_version: 3`だけを受理する。初回controller activation receiptはschema 1、handover後のSNS proposal型Activation Receiptはschema 4として別型のまま保持し、旧versionや未知versionをmigrationせずfail closedにする。`validate-bundle --offline --gate-b`のpre-seal結果はsealだけを認可し、seal後の`verify-live schedule`だけがschedule prepareを認可する。fee cap超過またはcycles不足ではtransactionを生成・送信しない。
 
 ## timelock 遅延（Base Admin）
 

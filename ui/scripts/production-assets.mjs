@@ -2,10 +2,14 @@ import { createHash } from "node:crypto"
 import { execFileSync, spawn, spawnSync } from "node:child_process"
 import {
   chmodSync,
+  closeSync,
+  constants,
   copyFileSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -18,6 +22,7 @@ const uiRoot = resolve(import.meta.dirname, "..")
 const sourceRoot = resolve(uiRoot, "..")
 const distRoot = resolve(uiRoot, "dist")
 const profileBootstrap = "deployment-profile.js"
+const productionWranglerConfig = resolve(uiRoot, "wrangler.production.jsonc")
 
 if (process.versions.node !== "24.14.0")
   throw new Error("Production UI artifacts require Node.js 24.14.0")
@@ -28,11 +33,22 @@ if (execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim() !== "11.0.8
 /** @typedef {{ path: string, sha256: string }} ArtifactFile */
 /** @typedef {{ source_revision: string, source_tree_sha256: string }} SourceIdentity */
 /** @typedef {{ files: ArtifactFile[], artifact_set_sha256: string }} BuiltAssets */
-/** @typedef {{ schema_version: number, source_revision: string, source_tree_sha256: string, artifact_set_sha256: string, files: ArtifactFile[] }} ArtifactReceipt */
+/** @typedef {{ schema_version: number, source_revision: string, source_tree_sha256: string, walletconnect_project_id: string, artifact_set_sha256: string, files: ArtifactFile[] }} ArtifactReceipt */
 
 /** @param {string | NodeJS.ArrayBufferView} value */
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex")
+}
+
+/** @param {string} path */
+function readOrdinaryFile(path) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error(`Expected an ordinary file: ${path}`)
+    return readFileSync(fd)
+  } finally {
+    closeSync(fd)
+  }
 }
 
 function hashGitArchive() {
@@ -110,13 +126,26 @@ function walk(root, current = root) {
   return files
 }
 
-function buildGenericAssets() {
+/** @returns {string} */
+function walletConnectProjectId() {
+  const value = process.env.VITE_WALLETCONNECT_PROJECT_ID ?? ""
+  if (!/^[0-9a-fA-F]{32}$/.test(value)) {
+    throw new Error(
+      "Production UI artifacts require a 32-character hexadecimal VITE_WALLETCONNECT_PROJECT_ID",
+    )
+  }
+  return value.toLowerCase()
+}
+
+/** @param {string} projectId */
+function buildGenericAssets(projectId) {
   const result = spawnSync("pnpm", ["run", "build"], {
     cwd: uiRoot,
     env: {
       ...process.env,
       KINIC_GENERIC_PRODUCTION_UI_BUILD: "1",
       VITE_DEPLOYMENT_PROFILE_JSON: "",
+      VITE_WALLETCONNECT_PROJECT_ID: projectId,
     },
     stdio: "inherit",
   })
@@ -126,16 +155,20 @@ function buildGenericAssets() {
   return { files, artifact_set_sha256: sha256(JSON.stringify(files)) }
 }
 
-/** @param {ArtifactReceipt} receipt @param {SourceIdentity} identity @param {BuiltAssets} built */
-function validateReceipt(receipt, identity, built) {
+/** @param {ArtifactReceipt} receipt @param {SourceIdentity} identity @param {BuiltAssets} built @param {string} projectId */
+function validateReceipt(receipt, identity, built, projectId) {
   const keys = Object.keys(receipt).sort().join(",")
-  if (keys !== "artifact_set_sha256,files,schema_version,source_revision,source_tree_sha256") {
+  if (
+    keys !==
+    "artifact_set_sha256,files,schema_version,source_revision,source_tree_sha256,walletconnect_project_id"
+  ) {
     throw new Error("UI artifact receipt has unexpected fields")
   }
   if (
-    receipt.schema_version !== 1 ||
+    receipt.schema_version !== 2 ||
     receipt.source_revision !== identity.source_revision ||
     receipt.source_tree_sha256?.toLowerCase() !== identity.source_tree_sha256 ||
+    receipt.walletconnect_project_id?.toLowerCase() !== projectId ||
     receipt.artifact_set_sha256?.toLowerCase() !== built.artifact_set_sha256 ||
     JSON.stringify(receipt.files) !== JSON.stringify(built.files)
   ) {
@@ -143,9 +176,8 @@ function validateReceipt(receipt, identity, built) {
   }
 }
 
-/** @param {string} targetRoot @param {string} profileFile */
-async function installRuntimeProfile(targetRoot, profileFile) {
-  const raw = readFileSync(profileFile, "utf8")
+/** @param {string} targetRoot @param {string} raw */
+async function installRuntimeProfile(targetRoot, raw) {
   const { deploymentProfileSchema } = await import("../src/config/profile.ts")
   const parsedProfile = deploymentProfileSchema.parse(JSON.parse(raw))
   const publicProfile = {
@@ -160,9 +192,8 @@ async function installRuntimeProfile(targetRoot, profileFile) {
   )
 }
 
-/** @param {string} profileFile */
-async function validatePreActivationProfile(profileFile) {
-  const raw = readFileSync(profileFile, "utf8")
+/** @param {string} raw */
+async function validatePreActivationProfile(raw) {
   const releaseProfile = JSON.parse(raw)
   /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
   const deploymentGlobal = globalThis
@@ -180,10 +211,104 @@ async function validatePreActivationProfile(profileFile) {
   }
 }
 
-/** @param {ArtifactReceipt} receipt @param {string} profileFile @param {boolean} [dryRun] */
-async function deployFrozenAssets(receipt, profileFile, dryRun = false) {
-  const frozen = mkdtempSync(resolve(tmpdir(), "kinic-ui-deploy."))
+/** @param {string} profileFile @param {SourceIdentity} identity */
+async function validateProductionProfile(profileFile, identity) {
+  const bundle = process.env.BRIDGE_RELEASE_BUNDLE
+  const inputsManifestFile = process.env.BRIDGE_RELEASE_INPUTS_MANIFEST
+  if (!bundle || !inputsManifestFile) {
+    throw new Error(
+      "Production UI deploy requires a signed Gate B bundle and reviewed release inputs",
+    )
+  }
+  const releaseManifest = JSON.parse(readFileSync(resolve(bundle, "release-manifest.json"), "utf8"))
+  if (
+    releaseManifest.source_revision !== identity.source_revision ||
+    releaseManifest.source_tree_sha256?.toLowerCase() !== identity.source_tree_sha256
+  ) {
+    throw new Error("Production UI checkout differs from the Gate B source revision or tree")
+  }
+  const cargoArgs = [
+    "run",
+    "--locked",
+    "--quiet",
+    "--manifest-path",
+    resolve(sourceRoot, "Cargo.toml"),
+    "-p",
+    "bridge-profile",
+    "--",
+  ]
+  const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", "schedule", bundle], {
+    encoding: "utf8",
+  })
+  const manifestSha256 =
+    /^gate_b=live-pass authorizing=schedule manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
+      gateOutput,
+    )?.[1]
+  if (!manifestSha256) throw new Error("Fixed bridge-profile did not verify the Gate B manifest")
+  const rawBuffer = readOrdinaryFile(profileFile)
+  const inputsManifestBuffer = readOrdinaryFile(inputsManifestFile)
+  const rendered = mkdtempSync(resolve(tmpdir(), "bridge-ui-release-inputs."))
   try {
+    execFileSync("cargo", [...cargoArgs, "render-bundle-inputs", bundle, rendered], {
+      stdio: "pipe",
+    })
+    const reviewedRoot = dirname(inputsManifestFile)
+    for (const name of ["canister-init.json", "contract-constructor-args.json"]) {
+      if (
+        !readFileSync(resolve(rendered, name)).equals(readOrdinaryFile(resolve(reviewedRoot, name)))
+      ) {
+        throw new Error(`Production release input drift: ${name}`)
+      }
+    }
+    if (!readFileSync(resolve(rendered, "ui-runtime-profile.json")).equals(rawBuffer)) {
+      throw new Error("Production release input drift: ui-runtime-profile.json")
+    }
+    if (
+      !readFileSync(resolve(rendered, "release-inputs-manifest.json")).equals(inputsManifestBuffer)
+    ) {
+      throw new Error("Production release input drift: release-inputs-manifest.json")
+    }
+  } finally {
+    rmSync(rendered, { recursive: true, force: true })
+  }
+  const raw = rawBuffer.toString("utf8")
+  const inputsManifest = JSON.parse(inputsManifestBuffer.toString("utf8"))
+  if (inputsManifest.artifacts?.["ui-runtime-profile.json"] !== sha256(rawBuffer)) {
+    throw new Error("Production UI profile hash differs from the reviewed release inputs")
+  }
+  if (process.env.VITE_DEPLOYMENT_PROFILE_JSON?.trim() !== raw.trim()) {
+    throw new Error("VITE_DEPLOYMENT_PROFILE_JSON must be the reviewed UI runtime profile verbatim")
+  }
+  /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
+  const deploymentGlobal = globalThis
+  deploymentGlobal.__KINIC_DEPLOYMENT_PROFILE_JSON__ = raw.trim()
+  const [{ releaseProfileSchema }, { assertProductionUiProfile }] = await Promise.all([
+    import("../src/config/profile.ts"),
+    import("../src/config/deploy-safety.ts"),
+  ])
+  const releaseProfile = releaseProfileSchema.parse(JSON.parse(raw))
+  assertProductionUiProfile(releaseProfile, manifestSha256)
+  return raw
+}
+
+/** @param {SourceIdentity} expected */
+async function requireUnchangedSourceIdentity(expected) {
+  const current = await sourceIdentity()
+  if (
+    current.source_revision !== expected.source_revision ||
+    current.source_tree_sha256 !== expected.source_tree_sha256
+  ) {
+    throw new Error("Production UI checkout changed before publication")
+  }
+}
+
+/** @param {ArtifactReceipt} receipt @param {string} rawProfile @param {SourceIdentity} identity @param {boolean} [dryRun] */
+async function deployFrozenAssets(receipt, rawProfile, identity, dryRun = false) {
+  const frozenRoot = mkdtempSync(resolve(tmpdir(), "kinic-ui-deploy."))
+  const frozen = resolve(frozenRoot, "assets")
+  const frozenConfig = resolve(frozenRoot, "wrangler.production.jsonc")
+  try {
+    mkdirSync(frozen, { mode: 0o700 })
     for (const file of receipt.files) {
       const source = resolve(distRoot, file.path)
       const target = resolve(frozen, file.path)
@@ -194,7 +319,18 @@ async function deployFrozenAssets(receipt, profileFile, dryRun = false) {
       }
       chmodSync(target, 0o400)
     }
-    await installRuntimeProfile(frozen, profileFile)
+    await installRuntimeProfile(frozen, rawProfile)
+    const configBytes = readOrdinaryFile(productionWranglerConfig)
+    const reviewedConfig = execFileSync("git", [
+      "-C",
+      sourceRoot,
+      "show",
+      "HEAD:ui/wrangler.production.jsonc",
+    ])
+    if (!configBytes.equals(reviewedConfig)) {
+      throw new Error("Production Wrangler config differs from the reviewed HEAD")
+    }
+    writeFileSync(frozenConfig, configBytes, { flag: "wx", mode: 0o400 })
     for (const path of readdirSync(frozen, { recursive: true })
       .map((entry) => resolve(frozen, String(entry)))
       .sort()
@@ -202,15 +338,8 @@ async function deployFrozenAssets(receipt, profileFile, dryRun = false) {
       if (lstatSync(path).isDirectory()) chmodSync(path, 0o500)
     }
     chmodSync(frozen, 0o500)
-    const deployArgs = [
-      "exec",
-      "wrangler",
-      "deploy",
-      "--config",
-      resolve(uiRoot, "wrangler.jsonc"),
-      "--assets",
-      frozen,
-    ]
+    await requireUnchangedSourceIdentity(identity)
+    const deployArgs = ["exec", "wrangler", "deploy", "--config", frozenConfig, "--assets", frozen]
     if (dryRun) deployArgs.push("--dry-run")
     const deployed = spawnSync("pnpm", deployArgs, {
       cwd: uiRoot,
@@ -225,7 +354,7 @@ async function deployFrozenAssets(receipt, profileFile, dryRun = false) {
     )) {
       if (lstatSync(path).isDirectory()) chmodSync(path, 0o700)
     }
-    rmSync(frozen, { recursive: true, force: true })
+    rmSync(frozenRoot, { recursive: true, force: true })
   }
 }
 
@@ -238,21 +367,31 @@ try {
     )
   }
   const identity = await sourceIdentity()
-  const built = buildGenericAssets()
+  const projectId = walletConnectProjectId()
+  const built = buildGenericAssets(projectId)
   if (mode === "generate") {
     writeFileSync(
       receiptPath,
-      `${JSON.stringify({ schema_version: 1, ...identity, ...built })}\n`,
+      `${JSON.stringify({
+        schema_version: 2,
+        ...identity,
+        walletconnect_project_id: projectId,
+        ...built,
+      })}\n`,
       { flag: "wx" },
     )
     process.stdout.write(`ui_artifact_set_sha256=${built.artifact_set_sha256}\n`)
   } else {
     const receipt = JSON.parse(readFileSync(receiptPath, "utf8"))
-    validateReceipt(receipt, identity, built)
+    validateReceipt(receipt, identity, built, projectId)
     if (["deploy", "verify-preactivation", "deploy-preactivation"].includes(mode)) {
       if (!profileFile) throw new Error(`${mode} requires the UI runtime profile`)
-      if (mode !== "deploy") await validatePreActivationProfile(profileFile)
-      await deployFrozenAssets(receipt, profileFile, mode === "verify-preactivation")
+      const rawProfile =
+        mode === "deploy"
+          ? await validateProductionProfile(profileFile, identity)
+          : readOrdinaryFile(profileFile).toString("utf8")
+      if (mode !== "deploy") await validatePreActivationProfile(rawProfile)
+      await deployFrozenAssets(receipt, rawProfile, identity, mode === "verify-preactivation")
     }
     process.stdout.write(`ui_artifact_set_sha256=${built.artifact_set_sha256}\n`)
   }

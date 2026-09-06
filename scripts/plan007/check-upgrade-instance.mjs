@@ -57,8 +57,8 @@ export function verifyUpgradeInstance(profile, liveRuntimeBinding, liveCanisterS
   }
   const next = deploymentInstanceHex(profile?.deploymentInstanceId, "frontend profile deploymentInstanceId")
   const schemaVersion = Number(liveRuntimeBinding?.schema_version)
-  if (schemaVersion !== 35) {
-    throw new Error("staging upgrade requires current schema v35; old and unknown schemas are unsupported")
+  if (schemaVersion !== 35 && schemaVersion !== 36) {
+    throw new Error("staging upgrade requires deployed schema v35 or current schema v36; all other schemas are unsupported")
   }
   const previous = deploymentInstanceHex(
     liveRuntimeBinding?.deployment_instance_id,

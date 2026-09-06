@@ -137,6 +137,8 @@ AWAITING_PREFLIGHT
      └─ 追加5件 -> final_pause -> EXTENDED_COMPLETE
 ```
 
+このstaging rehearsalはreview済みCustom RPC 3件のchain bindingとfault behaviorを検証する。本番の`provider-independence.json`は別の証跡であり、公式EVM RPC Canisterの`BaseMainnet`既定poolとBridge Wasm内の3-provider/2-thresholdをsource/profileへ束縛する。stagingのCustom RPC演習を、本番既定providerの組織的独立性を証明するものとして扱わない。
+
 asset flowとして次の4件を実行し、各transactionをFinalized headまで待つ。
 
 1. `authorization_mint`: Deposit ID、Ledger block、Authorization digest、Base walletのmint transaction、exact event、Finalized block/hash
@@ -157,7 +159,7 @@ EVM RPC clientはthreshold判定に使ったprovider別全responseやexact agree
 代わりにconfigured count、required threshold、故障注入artifact、処理継続またはfail-closed decisionをthreshold certificateとして記録する。
 故障注入条件はBridge/Canister auditへ存在しないfieldを合成せず、専用`fault` raw artifactへ分離する。このartifactは`rehearsal_id`、scenario、run reference、configured provider count 3、required threshold 2、failed provider count、request/config digestを持ち、manifest hashで保護する。Canister `EvmRpcDecision`は継続またはfail-closedの判断だけを証明する。
 
-Gate B用の最小演習は`preflight`、`authorization_mint`、`withdrawal_release`、`quorum_loss`の順に実行し、最後に`final_pause`を記録する。BaseのDeposit/WithdrawalとCanisterの新規Deposit受付をpauseし、Base側pause transactionのFinalized block/hashを再読する。残り5 scenarioを詳細Plan 007として記録する場合は、`final_pause`より前に完了する。`final_pause`後の追記は拒否される。
+この演習はunpause後のGate C運用証跡として実行し、Gate B、activation、controller handoverを認可しない。現行templateの主要演習は`preflight`、`authorization_mint`、`withdrawal_release`、`quorum_loss`の順に実行し、最後に`final_pause`を記録する。BaseのDeposit/WithdrawalとCanisterの新規Deposit受付をpauseし、Base側pause transactionのFinalized block/hashを再読する。残り5 scenarioを記録する場合は、`final_pause`より前に完了する。`final_pause`後の追記は拒否される。
 
 各scenarioの`details`の正確なfield名と型は`scripts/evm-rpc-rehearsal/rehearsal.py`がfail closedで検査する。
 templateの`details`文字列を実objectへ置換し、次のように一件ずつrecordする。
@@ -171,7 +173,7 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 
 ## 終了条件
 
-- Gate Bではmanifestが`LAUNCH_READY`または`EXTENDED_COMPLETE`かつ`launch_ready=true`である。
+- Gate C候補ではmanifestが`LAUNCH_READY`または`EXTENDED_COMPLETE`かつ`launch_ready=true`である。ただし現行schemaの既知の不整合を修正して再レビューするまで認可証跡にはしない。
 - 主要5 scenarioが公式EVM RPC Canister、Base Sepolia、同じrehearsal ID、同じBridge Canisterへbindingされている。追加5 scenarioまで揃うと`extended_complete=true`になるが、production activationはblockしない。
 - rehearsalのsource revision/tree、Bridge Canister Wasm、Bridge runtime bytecodeがrelease bundleと一致する。
 - quorum成功scenarioの`canister_audit`がraw `get_audit_events` artifactから再導出され、preflight module hashがreleaseのBridge Wasmと一致する。
@@ -179,6 +181,8 @@ python3 scripts/evm-rpc-rehearsal/rehearsal.py \
 - quorum lossはLedger call前に停止する。
 - 期限切れ未処理Depositだけがrefundされ、processed/event不一致はrefundせずDepositをpauseする。
 - Base BridgeとCanisterは演習終了時もpause状態に戻す。資産受付開始はこの演習とは別の明示承認とする。
-- `rpc-e2e.json`のSHA-256をrelease evidence bundleへ登録し、参照する`artifacts/`も同じbundleへ含める。artifactにはcredentialを含まないraw command stdoutだけを保存し、生authorization、credential URL、秘密は含めない。
+- `rpc-e2e.json`と参照する`artifacts/`はGate B bundleへ登録せず、後日のGate C evidenceへ含める。artifactにはcredentialを含まないraw command stdoutだけを保存し、生authorization、credential URL、秘密は含めない。
 
 `LAUNCH_READY`と`EXTENDED_COMPLETE`は実演習の証跡が構造上揃ったことだけを意味し、本番deploy、controller handover、unpause、資産受付開始を承認しない。
+
+現行schemaはproduction release Wasmとrehearsal Wasmを一つのhashへ束縛し、monitor schemaもproductionとrehearsalのpause principalを一つのfieldへ束縛する。さらにouter staging v8は10 scenarioすべてを要求し、`quorum_loss`のfixed injectorは`request_deposit`を記録する一方validatorは`notify_withdrawal`を要求し、review済み固定URLにはfault-control APIがない。Gate C収集前にこれらを置換し、certified update captureを用意して別レビューする。optional pathを迂回して合格扱いにしてはならず、quorum-loss安全性はPocketIC/proofの必須negative evidenceで継続検証する。

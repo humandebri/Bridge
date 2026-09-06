@@ -196,6 +196,73 @@ macro_rules! operational_config_seal_allowed_body {
     };
 }
 
+macro_rules! operational_config_seal_caller_authorized_body {
+    ($controller:expr, $bootstrap:expr) => {
+        $controller && $bootstrap
+    };
+}
+
+macro_rules! bootstrap_pause_principal_migration_body {
+    ($sealed:expr, $paused:expr, $pause_is_old:expr, $pause_is_new:expr, $marker_unbound:expr, $marker_is_new:expr, $roles_distinct:expr, $post_bootstrap:expr, $already_applied:expr, $fresh_install:expr, $apply:expr, $reject:expr) => {{
+        if $sealed {
+            $post_bootstrap
+        } else if $pause_is_new && $marker_is_new {
+            $already_applied
+        } else if $paused && $pause_is_new && $marker_unbound && $roles_distinct {
+            $fresh_install
+        } else if $paused && $pause_is_old && $marker_unbound && $roles_distinct {
+            $apply
+        } else {
+            $reject
+        }
+    }};
+}
+
+macro_rules! activation_prepare_authorized_body {
+    ($bootstrap_controller:expr, $governance:expr, $sealed_paused:expr, $bootstrap_authority_present:expr, $phase:expr, $schedule:expr, $execute:expr) => {{
+        if $phase != $schedule && $phase != $execute {
+            false
+        } else if $bootstrap_authority_present {
+            $bootstrap_controller && $sealed_paused
+        } else {
+            $governance && $sealed_paused
+        }
+    }};
+}
+
+macro_rules! bootstrap_activation_authority_after_transition_body {
+    ($authority_present:expr, $confirmed_execute:expr) => {
+        $authority_present && !$confirmed_execute
+    };
+}
+
+macro_rules! confirmed_activation_attempt_is_unique_body {
+    ($found_match:expr, $found_additional_match:expr) => {
+        $found_match && !$found_additional_match
+    };
+}
+
+macro_rules! confirmed_activation_metadata_matches_body {
+    ($confirmed_generation:expr, $confirmed_signed_at_ns:expr, $artifact_generation:expr, $artifact_signed_at_ns:expr) => {
+        $confirmed_generation == $artifact_generation
+            && $confirmed_signed_at_ns == $artifact_signed_at_ns
+    };
+}
+
+macro_rules! legacy_activation_evidence_requirement_body {
+    ($sealed:expr, $pending:expr, $controller_present:expr, $staging_sentinel:expr, $paused:expr, $exact_execute:expr, $none:expr, $schedule:expr, $execute:expr) => {
+        if !$sealed {
+            $none
+        } else if $pending {
+            $schedule
+        } else if !$controller_present || ($staging_sentinel && (!$paused || $exact_execute)) {
+            $execute
+        } else {
+            $none
+        }
+    };
+}
+
 #[cfg(not(verus_keep_ghost))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetOperationLifecycleDecision {
@@ -220,6 +287,50 @@ pub enum OperationalConfigSealDecision {
     Seal,
     AlreadySealed,
     InvalidCandidate,
+}
+
+#[cfg(not(verus_keep_ghost))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BootstrapPausePrincipalMigrationDecision {
+    Apply,
+    AlreadyApplied,
+    FreshInstallNoop,
+    PostBootstrapNoop,
+    Reject,
+}
+
+#[cfg(not(verus_keep_ghost))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegacyActivationEvidenceRequirement {
+    NotRequired,
+    Schedule,
+    Execute,
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn legacy_activation_evidence_requirement(
+    operational_config_sealed: bool,
+    pending_activation: bool,
+    bootstrap_controller_present: bool,
+    legacy_staging_controller: bool,
+    deposits_paused: bool,
+    exact_execute_evidence: bool,
+) -> LegacyActivationEvidenceRequirement {
+    match legacy_activation_evidence_requirement_body!(
+        operational_config_sealed,
+        pending_activation,
+        bootstrap_controller_present,
+        legacy_staging_controller,
+        deposits_paused,
+        exact_execute_evidence,
+        0,
+        1,
+        2
+    ) {
+        1 => LegacyActivationEvidenceRequirement::Schedule,
+        2 => LegacyActivationEvidenceRequirement::Execute,
+        _ => LegacyActivationEvidenceRequirement::NotRequired,
+    }
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -280,8 +391,10 @@ macro_rules! withdrawal_id_is_admissible_body {
 }
 
 macro_rules! activation_base_preflight_matches_body {
-    ($signer_matches:expr, $deposits_paused:expr, $withdrawals_paused:expr) => {
-        $signer_matches && $deposits_paused && $withdrawals_paused
+    ($signer_matches:expr, $deposits_paused:expr, $withdrawals_paused:expr, $expected_paused:expr) => {
+        $signer_matches
+            && $deposits_paused == $expected_paused
+            && $withdrawals_paused == $expected_paused
     };
 }
 
@@ -1118,8 +1231,14 @@ pub fn activation_base_preflight_matches(
     signer_matches: bool,
     deposits_paused: bool,
     withdrawals_paused: bool,
+    expected_paused: bool,
 ) -> bool {
-    activation_base_preflight_matches_body!(signer_matches, deposits_paused, withdrawals_paused)
+    activation_base_preflight_matches_body!(
+        signer_matches,
+        deposits_paused,
+        withdrawals_paused,
+        expected_paused
+    )
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -1771,6 +1890,117 @@ pub const fn operational_config_seal_allowed(
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn operational_config_seal_caller_authorized(
+    is_controller: bool,
+    lifecycle_is_bootstrap: bool,
+) -> bool {
+    operational_config_seal_caller_authorized_body!(is_controller, lifecycle_is_bootstrap)
+}
+
+#[cfg(not(verus_keep_ghost))]
+const fn bootstrap_pause_principal_migration_code(
+    operational_config_sealed: bool,
+    deposits_paused: bool,
+    pause_is_old: bool,
+    pause_is_new: bool,
+    marker_unbound: bool,
+    marker_is_new: bool,
+    roles_distinct: bool,
+) -> u8 {
+    bootstrap_pause_principal_migration_body!(
+        operational_config_sealed,
+        deposits_paused,
+        pause_is_old,
+        pause_is_new,
+        marker_unbound,
+        marker_is_new,
+        roles_distinct,
+        2,
+        1,
+        4,
+        0,
+        3
+    )
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn bootstrap_pause_principal_migration_decision(
+    operational_config_sealed: bool,
+    deposits_paused: bool,
+    pause_is_old: bool,
+    pause_is_new: bool,
+    marker_unbound: bool,
+    marker_is_new: bool,
+    roles_distinct: bool,
+) -> BootstrapPausePrincipalMigrationDecision {
+    match self::bootstrap_pause_principal_migration_code(
+        operational_config_sealed,
+        deposits_paused,
+        pause_is_old,
+        pause_is_new,
+        marker_unbound,
+        marker_is_new,
+        roles_distinct,
+    ) {
+        0 => BootstrapPausePrincipalMigrationDecision::Apply,
+        1 => BootstrapPausePrincipalMigrationDecision::AlreadyApplied,
+        2 => BootstrapPausePrincipalMigrationDecision::PostBootstrapNoop,
+        4 => BootstrapPausePrincipalMigrationDecision::FreshInstallNoop,
+        _ => BootstrapPausePrincipalMigrationDecision::Reject,
+    }
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn activation_prepare_authorized(
+    is_bootstrap_controller: bool,
+    is_governance: bool,
+    lifecycle_is_operational_config_sealed: bool,
+    bootstrap_authority_present: bool,
+    phase: u8,
+) -> bool {
+    activation_prepare_authorized_body!(
+        is_bootstrap_controller,
+        is_governance,
+        lifecycle_is_operational_config_sealed,
+        bootstrap_authority_present,
+        phase,
+        0u8,
+        1u8
+    )
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn bootstrap_activation_authority_after_transition(
+    authority_present: bool,
+    confirmed_execute: bool,
+) -> bool {
+    bootstrap_activation_authority_after_transition_body!(authority_present, confirmed_execute)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn confirmed_activation_attempt_is_unique(
+    found_match: bool,
+    found_additional_match: bool,
+) -> bool {
+    confirmed_activation_attempt_is_unique_body!(found_match, found_additional_match)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn confirmed_activation_metadata_matches(
+    confirmed_generation: u8,
+    confirmed_signed_at_ns: u64,
+    artifact_generation: u8,
+    artifact_signed_at_ns: u64,
+) -> bool {
+    confirmed_activation_metadata_matches_body!(
+        confirmed_generation,
+        confirmed_signed_at_ns,
+        artifact_generation,
+        artifact_signed_at_ns
+    )
+}
+
+#[cfg(not(verus_keep_ghost))]
 pub const fn audit_next(current: u64) -> Option<u64> {
     next_attempt_body!(current, u64::MAX, 1u64)
 }
@@ -2368,9 +2598,10 @@ verus! {
         signer_matches: bool,
         deposits_paused: bool,
         withdrawals_paused: bool,
+        expected_paused: bool,
     ) -> bool {
         activation_base_preflight_matches_body!(
-            signer_matches, deposits_paused, withdrawals_paused)
+            signer_matches, deposits_paused, withdrawals_paused, expected_paused)
     }
 
     pub open spec fn activation_postcondition_matches_spec(
@@ -2539,6 +2770,112 @@ verus! {
         sealed: bool, candidate_valid: bool,
     ) -> bool {
         operational_config_seal_allowed_body!(sealed, candidate_valid)
+    }
+
+    pub open spec fn operational_config_seal_caller_authorized_spec(
+        controller: bool, bootstrap: bool,
+    ) -> bool {
+        operational_config_seal_caller_authorized_body!(controller, bootstrap)
+    }
+
+    pub open spec fn bootstrap_pause_principal_migration_code_spec(
+        sealed: bool,
+        paused: bool,
+        pause_is_old: bool,
+        pause_is_new: bool,
+        marker_unbound: bool,
+        marker_is_new: bool,
+        roles_distinct: bool,
+    ) -> u8 {
+        bootstrap_pause_principal_migration_body!(
+            sealed,
+            paused,
+            pause_is_old,
+            pause_is_new,
+            marker_unbound,
+            marker_is_new,
+            roles_distinct,
+            2,
+            1,
+            4,
+            0,
+            3
+        )
+    }
+
+    pub open spec fn activation_prepare_authorized_spec(
+        bootstrap_controller: bool,
+        governance: bool,
+        sealed_paused: bool,
+        bootstrap_authority_present: bool,
+        phase: int,
+    ) -> bool {
+        let schedule: int = 0;
+        let execute: int = 1;
+        activation_prepare_authorized_body!(
+            bootstrap_controller,
+            governance,
+            sealed_paused,
+            bootstrap_authority_present,
+            phase,
+            schedule,
+            execute
+        )
+    }
+
+    pub open spec fn bootstrap_activation_authority_after_transition_spec(
+        authority_present: bool,
+        confirmed_execute: bool,
+    ) -> bool {
+        bootstrap_activation_authority_after_transition_body!(
+            authority_present,
+            confirmed_execute
+        )
+    }
+
+    pub open spec fn confirmed_activation_attempt_is_unique_spec(
+        found_match: bool,
+        found_additional_match: bool,
+    ) -> bool {
+        confirmed_activation_attempt_is_unique_body!(found_match, found_additional_match)
+    }
+
+    pub open spec fn legacy_activation_evidence_requirement_spec(
+        sealed: bool,
+        pending: bool,
+        controller_present: bool,
+        staging_sentinel: bool,
+        paused: bool,
+        exact_execute: bool,
+    ) -> int {
+        let none: int = 0;
+        let schedule: int = 1;
+        let execute: int = 2;
+        legacy_activation_evidence_requirement_body!(
+            sealed,
+            pending,
+            controller_present,
+            staging_sentinel,
+            paused,
+            exact_execute,
+            none,
+            schedule,
+            execute
+        )
+    }
+
+    pub open spec fn confirmed_activation_metadata_matches_spec(
+        confirmed_generation: int,
+        confirmed_signed_at_ns: int,
+        artifact_generation: int,
+        artifact_signed_at_ns: int,
+    ) -> bool {
+        confirmed_activation_metadata_matches_body!(
+            confirmed_generation,
+            confirmed_signed_at_ns,
+            artifact_generation,
+            artifact_signed_at_ns
+        )
     }
 
     pub open spec fn audit_next_spec(current: int) -> Option<int> {

@@ -178,9 +178,14 @@ class ClaimContractTests(unittest.TestCase):
             for claim_id, (_, strength) in REQUIRED_CLAIM_POLICY.items()
             if strength == "implementation-proved"
         )
+        registration = parse_claim_manifest(document).contracts[implementation_claim]
+        implementation_row = (
+            f"contract\t{implementation_claim}\t{registration.proof_class}\t"
+            f"{registration.assurance_target}\t{registration.required_strength}"
+        )
         strength_downgrade = document.replace(
-            f"contract\t{implementation_claim}\thistory-safety\trelease-safety\timplementation-proved",
-            f"contract\t{implementation_claim}\thistory-safety\trelease-safety\tproduction-linked",
+            implementation_row,
+            implementation_row.replace("\timplementation-proved", "\tproduction-linked"),
             1,
         )
         with self.assertRaisesRegex(ValueError, "mandatory claim policy differs"):
@@ -199,13 +204,24 @@ class ClaimContractTests(unittest.TestCase):
             for claim_id, (_, strength) in REQUIRED_CLAIM_POLICY.items()
             if strength == "production-linked"
         )
+        manifest = parse_claim_manifest(document)
+        implementation_registration = manifest.contracts[implementation_claim]
+        linked_registration = manifest.contracts[linked_claim]
+        implementation_row = (
+            f"contract\t{implementation_claim}\t{implementation_registration.proof_class}\t"
+            f"{implementation_registration.assurance_target}\timplementation-proved"
+        )
+        linked_row = (
+            f"contract\t{linked_claim}\t{linked_registration.proof_class}\t"
+            f"{linked_registration.assurance_target}\tproduction-linked"
+        )
         exchanged = document.replace(
-            f"contract\t{implementation_claim}\thistory-safety\trelease-safety\timplementation-proved",
-            f"contract\t{implementation_claim}\thistory-safety\trelease-safety\tSWAP",
+            implementation_row,
+            implementation_row.replace("\timplementation-proved", "\tSWAP"),
             1,
         ).replace(
-            f"contract\t{linked_claim}\thistory-safety\trelease-safety\tproduction-linked",
-            f"contract\t{linked_claim}\thistory-safety\trelease-safety\timplementation-proved",
+            linked_row,
+            linked_row.replace("\tproduction-linked", "\timplementation-proved"),
             1,
         ).replace("\tSWAP\t", "\tproduction-linked\t", 1)
         with self.assertRaisesRegex(ValueError, "mandatory claim policy differs"):

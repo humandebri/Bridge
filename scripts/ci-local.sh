@@ -145,7 +145,9 @@ run_versions() {
     "$ROOT/scripts/production-deploy-driver.sh" \
     "$ROOT/scripts/production-activation-proposal.sh" \
     "$ROOT/scripts/production-activate-driver.sh" \
+    "$ROOT/scripts/production-seal-driver.sh" \
     "$ROOT/scripts/production-handover-driver.sh" \
+    "$ROOT/scripts/production-canister-upgrade.sh" \
     "$ROOT/scripts/base-sepolia-experiment/experiment.sh" \
     "$ROOT/scripts/test_base_sepolia_experiment.sh" \
     "$ROOT/scripts/install-certora-solc.sh" \
@@ -174,6 +176,7 @@ run_versions() {
   "$ROOT/scripts/test_production_canister_install.sh"
   "$ROOT/scripts/test_production_release.sh"
   "$ROOT/scripts/test_production_drivers.sh"
+  "$ROOT/scripts/test_production_canister_upgrade.sh"
   "$ROOT/scripts/test_production_activation.sh"
   "$ROOT/scripts/test_production_handover.sh"
   bash "$ROOT/scripts/test_base_sepolia_experiment.sh"
@@ -474,8 +477,8 @@ run_verus() {
     return 1
   fi
 
-  verus --no-cheating "$ROOT/verification/verus/pass.rs" -o "$TMP_ROOT/verus-pass"
-  python3 "$ROOT/scripts/check_verus_manifest.py"
+  verus --no-cheating "$ROOT/verification/verus/pass.rs" -o "$TMP_ROOT/verus-pass" || return
+  python3 "$ROOT/scripts/check_verus_manifest.py" || return
 
   while IFS=$'\t' read -r obligation_id kind kernel_name proof_name expected_fixture _binding _derived_bindings _production_calls _claim_ids; do
     [[ "$obligation_id" == "schema" ]] && continue
@@ -493,7 +496,7 @@ run_verus() {
           echo "Verus failure fixture does not reference ${kernel_name}_spec: $expected_fixture" >&2
           return 1
         }
-        rg -q "pub (const )?fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
+        rg -q "^(pub )?(const )?fn ${kernel_name}\b" "$ROOT/canister/bridge-core/src/kernel.rs" || {
           [[ "$kind" == "model" ]] || {
             echo "non-model Verus kernel is missing: $kernel_name" >&2
             return 1
@@ -698,10 +701,7 @@ run_proof_stage() {
       echo "proof source fingerprint changed before stage: $stage" >&2
       exit 1
     }
-    if ! "$@"; then
-      echo "proof stage command failed: $stage" >&2
-      exit 1
-    fi
+    "$@"
     python3 "$PROOF_FINGERPRINT" --check "$PROOF_SOURCE_BASELINE" >/dev/null || {
       echo "proof source fingerprint changed during stage: $stage" >&2
       exit 1

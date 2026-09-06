@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import re
@@ -19,7 +20,7 @@ CHAIN_ID = 84532
 ENVIRONMENT_MODE = "short-delay-test-only"
 ACTIVATION_TIMELOCK_DELAY_SECONDS = 300
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
-CURRENT_STABLE_SCHEMA = 35
+CURRENT_STABLE_SCHEMA = 36
 CURRENT_RECORD_WIRE_VERSION = 30
 LIVE_PUBLIC_CONFIG_ARTIFACT_KIND = "live-public-config"
 UPGRADE_INSTANCE_CHECK_ARTIFACT_KIND = "upgrade-instance-check"
@@ -443,8 +444,8 @@ def upgrade_instance_check(
         "schema_version",
         "live RuntimeBinding",
     )
-    if schema_version != CURRENT_STABLE_SCHEMA:
-        fail(f"staging upgrade requires current stable schema v{CURRENT_STABLE_SCHEMA}")
+    if schema_version not in (35, CURRENT_STABLE_SCHEMA):
+        fail("staging upgrade requires deployed schema v35 or current stable schema v36")
     previous = deployment_instance_hex(
         live_public_config.get("deployment_instance_id"),
         "live RuntimeBinding deployment_instance_id",
@@ -496,8 +497,8 @@ def normalized_upgrade_check(value: dict[str, Any]) -> dict[str, Any]:
         f"{context} previous_deployment_instance_id",
     )
     next_id = deployment_instance_hex(value["next"], f"{context} next")
-    if schema_version != CURRENT_STABLE_SCHEMA or previous != next_id:
-        fail(f"{context} must preserve the current schema and deployment instance ID")
+    if schema_version not in (35, CURRENT_STABLE_SCHEMA) or previous != next_id:
+        fail(f"{context} must use deployed schema v35 or current schema v{CURRENT_STABLE_SCHEMA} and preserve the deployment instance ID")
     if replacement_mode != CURRENT_SCHEMA_UPGRADE:
         fail(f"{context} replacement_mode must be {CURRENT_SCHEMA_UPGRADE}")
     return {
@@ -658,8 +659,8 @@ def validate_bootstrap_attestation(
         details, "deployment_instance_id", context
     ) != binding["deployment_instance_id"]:
         fail("historical fresh stack has a different deployment instance")
-    if require_nat(details, "stable_schema_version", context) != CURRENT_STABLE_SCHEMA:
-        fail("historical fresh stack does not use the current stable schema")
+    if require_nat(details, "stable_schema_version", context) != 35:
+        fail("historical fresh stack is not bound to deployed schema v35")
 
     for kind, (expected_path, expected_sha256) in TRUSTED_HISTORICAL_ARTIFACTS.items():
         matches = [
@@ -698,7 +699,7 @@ def validate_bootstrap_attestation(
     if (
         fresh.get("schema_version") != 1
         or fresh.get("kind") != "fresh-staging-stack"
-        or fresh.get("stable_schema_version") != CURRENT_STABLE_SCHEMA
+        or fresh.get("stable_schema_version") != 35
     ):
         fail("historical fresh-stack evidence has an unsupported schema or kind")
     reuse = fresh.get("reuse")
@@ -930,9 +931,10 @@ def validate_current_schema_upgrade(details: dict[str, Any], binding: dict[str, 
     for field in ("bridge_canister_id_before", "bridge_canister_id_after"):
         if details[field] != binding["bridge_canister_id"]:
             fail("upgrade changed the Bridge Canister ID")
-    for field in ("schema_version_before", "schema_version_after"):
-        if require_nat(details, field, context) != CURRENT_STABLE_SCHEMA:
-            fail("upgrade must start and finish on the current stable schema")
+    schema_before = require_nat(details, "schema_version_before", context)
+    schema_after = require_nat(details, "schema_version_after", context)
+    if schema_before not in (35, CURRENT_STABLE_SCHEMA) or schema_after != CURRENT_STABLE_SCHEMA:
+        fail("upgrade must migrate deployed schema v35 to v36 or remain on current schema v36")
     for field in ("record_wire_version_before", "record_wire_version_after"):
         if require_nat(details, field, context) != CURRENT_RECORD_WIRE_VERSION:
             fail("upgrade must start and finish on the current record wire version")
@@ -1829,7 +1831,7 @@ def manifest_state(completed: list[str]) -> str:
     return f"AWAITING_{STAGES[len(completed)].upper()}"
 
 
-def validate_local_upgrade_state(value: Any, context: str) -> str:
+def validate_local_upgrade_state(value: Any, context: str, expected_schema: int) -> str:
     if not isinstance(value, dict):
         fail(f"{context} must be an object")
     required = {
@@ -1858,8 +1860,8 @@ def validate_local_upgrade_state(value: Any, context: str) -> str:
         schema_version = int(status["schema_version"])
     except (TypeError, ValueError):
         fail(f"{context}.status.schema_version is invalid")
-    if schema_version != CURRENT_STABLE_SCHEMA:
-        fail(f"{context} must use stable schema v{CURRENT_STABLE_SCHEMA}")
+    if schema_version != expected_schema:
+        fail(f"{context} must use stable schema v{expected_schema}")
     counts = status["counts"]
     if not isinstance(counts, dict) or not {
         "pending_ledger_operations",
@@ -1886,6 +1888,8 @@ def validate_local_upgrade_state(value: Any, context: str) -> str:
     }
     if not isinstance(runtime, dict) or not runtime_fields.issubset(runtime):
         fail(f"{context}.runtime_binding is incomplete")
+    if require_nat(runtime, "schema_version", f"{context}.runtime_binding") != expected_schema:
+        fail(f"{context}.runtime_binding must use stable schema v{expected_schema}")
     operational_fields = {
         "deposit_rate_limit_window_seconds",
         "deposit_rate_limit_global",
@@ -1999,13 +2003,29 @@ def validate_local_promotion_evidence(local: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(upgrade, dict):
         fail("local promotion evidence has no verified same-Wasm upgrade")
     exact_keys(upgrade, {"verified", "before", "after"}, f"{context}.state_upgrade")
-    if upgrade["verified"] is not True or upgrade["before"] != upgrade["after"]:
-        fail("local promotion evidence has no exact same-Wasm state preservation")
+    if upgrade["verified"] is not True:
+        fail("local promotion evidence has no verified same-Wasm upgrade")
+    if any(
+        not isinstance(state, dict) or not isinstance(state.get("status"), dict)
+        for state in (upgrade["before"], upgrade["after"])
+    ):
+        fail("local promotion evidence has malformed upgrade states")
+    before_schema = require_nat(upgrade["before"]["status"], "schema_version", f"{context}.state_upgrade.before.status")
+    after_schema = require_nat(upgrade["after"]["status"], "schema_version", f"{context}.state_upgrade.after.status")
+    if before_schema not in (35, CURRENT_STABLE_SCHEMA) or after_schema != CURRENT_STABLE_SCHEMA:
+        fail("local promotion evidence must migrate schema v35 to v36 or remain on v36")
+    normalized_before = copy.deepcopy(upgrade["before"])
+    normalized_after = copy.deepcopy(upgrade["after"])
+    for state in (normalized_before, normalized_after):
+        state["status"]["schema_version"] = CURRENT_STABLE_SCHEMA
+        state["runtime_binding"]["schema_version"] = CURRENT_STABLE_SCHEMA
+    if normalized_before != normalized_after:
+        fail("local promotion evidence changed state beyond the reviewed schema migration")
     before_instance = validate_local_upgrade_state(
-        upgrade["before"], f"{context}.state_upgrade.before"
+        upgrade["before"], f"{context}.state_upgrade.before", before_schema
     )
     after_instance = validate_local_upgrade_state(
-        upgrade["after"], f"{context}.state_upgrade.after"
+        upgrade["after"], f"{context}.state_upgrade.after", after_schema
     )
     top_instance = require_deployment_instance_id(
         local, "deployment_instance_id", context

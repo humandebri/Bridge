@@ -3,8 +3,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/bridge-driver-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
+mkdir "$T/runtime-tmp"
+export TMPDIR="$T/runtime-tmp"
 mkdir -p "$T/bin" "$T/bundle" "$T/source/contracts" "$T/source/scripts" "$T/source/src"
-cp "$ROOT/scripts/production-deploy-driver.sh" "$ROOT/scripts/production-activate-driver.sh" "$ROOT/scripts/production-activation-proposal.sh" "$ROOT/scripts/production-live-preflight.sh" "$ROOT/scripts/production-validation.sh" "$T/source/scripts/"
+cp "$ROOT/scripts/production-deploy-driver.sh" "$ROOT/scripts/production-activate-driver.sh" "$ROOT/scripts/production-seal-driver.sh" "$ROOT/scripts/production-activation-proposal.sh" "$ROOT/scripts/production-live-preflight.sh" "$ROOT/scripts/production-validation.sh" "$T/source/scripts/"
 cat >"$T/source/scripts/ci-local.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -21,7 +23,7 @@ set -euo pipefail
 printf 'rebuild %s\n' "$*" >>"$TRACE"
 [[ "${REPRODUCIBLE_BUILD_FAIL:-false}" != true ]]
 SH
-chmod +x "$T/source/scripts/production-deploy-driver.sh" "$T/source/scripts/production-activate-driver.sh" "$T/source/scripts/production-activation-proposal.sh" "$T/source/scripts/production-live-preflight.sh" "$T/source/scripts/ci-local.sh"
+chmod +x "$T/source/scripts/production-deploy-driver.sh" "$T/source/scripts/production-activate-driver.sh" "$T/source/scripts/production-seal-driver.sh" "$T/source/scripts/production-activation-proposal.sh" "$T/source/scripts/production-live-preflight.sh" "$T/source/scripts/ci-local.sh"
 chmod +x "$T/source/scripts/rebuild-release-artifacts.sh"
 printf '/target\n' >"$T/source/.gitignore"
 cat >"$T/source/Cargo.toml" <<'TOML'
@@ -41,7 +43,9 @@ LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs,path::Path};
 fn copy_dir(from:&Path,to:&Path){fs::create_dir_all(to).unwrap();for e in fs::read_dir(from).unwrap(){let e=e.unwrap();let d=to.join(e.file_name());if e.path().is_dir(){copy_dir(&e.path(),&d)}else{fs::copy(e.path(),d).unwrap();}}}
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if let Ok(trace)=env::var("TRACE"){use std::io::Write;writeln!(fs::OpenOptions::new().create(true).append(true).open(trace).unwrap(),"profile {}",a.join(" ")).unwrap()}if a[0]=="render-release-inputs"{copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="validate-bundle"&&a.iter().any(|v|v=="--gate-b"){println!("gate_b=structural-pass authorizing=false manifest_sha256={}","b".repeat(64))}else if a[0]=="validate-bundle"{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}else if a[0]=="verify-production-canister-predeploy"{if a.len()!=3||env::var("CANISTER_PREDEPLOY_FAIL").as_deref()==Ok("true")||env::var("CANISTER_MODULE_DRIFT").as_deref()==Ok("true")||env::var("CANISTER_CONTROLLER_DRIFT").as_deref()==Ok("true"){std::process::exit(1)}println!("production_canister_predeploy=verified")}else if a[0]=="verify-live"{if env::var("FINAL_LIVE_FAIL").as_deref()==Ok("true"){std::process::exit(1)}println!("gate_b=pass manifest_sha256={}","b".repeat(64))}else{println!("gate=pass manifest_sha256={}","b".repeat(64))}}
+fn field(value:&str,name:&str)->String{value.split(&format!("\"{}\":\"",name)).nth(1).unwrap().split('"').next().unwrap().into()}
+fn confirm_inputs_match(a:&[String])->bool{let artifact=fs::read_to_string(&a[3]).unwrap();match a[1].as_str(){"schedule"=>a[7]=="-"&&artifact.contains("\"ScheduleActivation\""),"execute"=>a[7]!="-"&&artifact.contains("\"ExecuteActivation\"")&&fs::read_to_string(&a[7]).map(|v|v.contains("\"phase\":\"schedule\"")).unwrap_or(false),_=>false}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if let Ok(trace)=env::var("TRACE"){use std::io::Write;writeln!(fs::OpenOptions::new().create(true).append(true).open(trace).unwrap(),"profile {}",a.join(" ")).unwrap()}if a[0]=="render-release-inputs"{copy_dir(Path::new(&env::var("RENDER_SOURCE").unwrap()),Path::new(&a[2]));return}if a[0]=="reserve-operational-config-seal"{if Path::new(&a[3]).exists(){println!("existing")}else{fs::write(&a[3],"{\"schema_version\":1}\n").unwrap();println!("created")}}else if a[0]=="write-operational-config-seal-receipt"{fs::write(&a[4],"{\"schema_version\":1}\n").unwrap()}else if a[0]=="authorize-controller-activation"{let root=Path::new(&a[2]);let m=fs::read_to_string(root.join("release-manifest.json")).unwrap();let p=fs::read_to_string(root.join("profile.json")).unwrap();let value=format!("{{\"schema_version\":1,\"phase\":\"{}\",\"release_id\":\"{}\",\"source_revision\":\"{}\",\"source_tree_sha256\":\"{}\",\"gate_b_manifest_sha256\":\"{}\",\"operational_config_seal_receipt_sha256\":\"{}\",\"controller_principal\":\"aaaaa-aa\",\"certified_controller_set\":[\"aaaaa-aa\"],\"certified_module_sha256\":\"{}\",\"authorized_at_unix\":1}}\n",a[1],field(&m,"release_id"),field(&m,"source_revision"),field(&m,"source_tree_sha256"),a[3],env::var("SEAL_RECEIPT_HASH").unwrap(),field(&p,"bridge_canister_wasm_sha256"));fs::write(&a[5],value).unwrap()}else if a[0]=="verify-controller-activation-authorization-fresh"&&env::var("STALE_ACTIVATION_AUTH").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="verify-controller-activation-authorization"&&env::var("CANISTER_CONTROLLER_DRIFT").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="verify-controller-activation-artifact"&&(env::var("ACTIVATION_BINDING_DRIFT").as_deref()==Ok("true")||env::var("STALE_ACTIVATION_ATTESTATION").as_deref()==Ok("true")){std::process::exit(1)}else if a[0]=="verify-controller-activation-confirm-inputs"&&(env::var("ACTIVATION_BINDING_DRIFT").as_deref()==Ok("true")||env::var("CANISTER_CONTROLLER_DRIFT").as_deref()==Ok("true")||env::var("CANISTER_MODULE_DRIFT").as_deref()==Ok("true")||!confirm_inputs_match(&a)){std::process::exit(1)}else if a[0]=="verify-controller-activation"{let value=format!("{{\"schema_version\":1,\"phase\":\"{}\"}}\n",a[1]);fs::write(&a[9],value).unwrap()}else if a[0]=="validate-bundle"&&a.iter().any(|v|v=="--gate-b"){println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","b".repeat(64))}else if a[0]=="validate-bundle"{println!("gate_a=pass authorizing=true manifest_sha256={}","a".repeat(64))}else if a[0]=="verify-production-canister-predeploy"{if a.len()!=3||env::var("CANISTER_PREDEPLOY_FAIL").as_deref()==Ok("true")||env::var("CANISTER_MODULE_DRIFT").as_deref()==Ok("true")||env::var("CANISTER_CONTROLLER_DRIFT").as_deref()==Ok("true"){std::process::exit(1)}println!("production_canister_predeploy=verified")}else if a[0]=="verify-live"{if env::var("FINAL_LIVE_FAIL").as_deref()==Ok("true"){std::process::exit(1)}println!("gate_b=live-pass authorizing={} manifest_sha256={}",a[1],"b".repeat(64))}else{println!("gate=pass manifest_sha256={}","b".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -145,7 +149,7 @@ cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
 echo "icp $*" >>"$TRACE"
 if [[ "$*" == *initialize_public_config* ]]; then if [[ "${INITIALIZE_PUBLIC_CONFIG_FAIL:-false}" == true ]]; then echo '{"Err":"DerivationUnavailable"}'; else echo '{"Ok":null}'; fi;
-elif [[ "$*" == *get_runtime_binding* ]]; then if [[ "${CANISTER_SIGNER_DRIFT:-false}" == true ]]; then signer_byte=34; else signer_byte=17; fi; signer="$signer_byte"; for _ in {2..20}; do signer="$signer,$signer_byte"; done; printf '{"base_chain_id":8453,"bridge_contract":[51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51],"expected_bridge_runtime_sha256":[110,52,11,156,255,179,122,152,156,165,68,230,187,120,10,44,120,144,29,63,179,55,56,118,133,17,163,6,23,175,160,29],"timelock_contract":[34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34],"deployment_instance_id":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"minimum_withdrawal_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],"ledger_canister_id":"aaaaa-aa","index_canister_id":"aaaaa-aa","schema_version":35,"expected_bridge_signer":[%s],"evm_rpc_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s"}\n' "$signer" "$RPC_DIGEST";
+elif [[ "$*" == *get_runtime_binding* ]]; then if [[ "${CANISTER_SIGNER_DRIFT:-false}" == true ]]; then signer_byte=34; else signer_byte=17; fi; signer="$signer_byte"; for _ in {2..20}; do signer="$signer,$signer_byte"; done; printf '{"base_chain_id":8453,"bridge_contract":[51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51,51],"expected_bridge_runtime_sha256":[110,52,11,156,255,179,122,152,156,165,68,230,187,120,10,44,120,144,29,63,179,55,56,118,133,17,163,6,23,175,160,29],"timelock_contract":[34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34,34],"deployment_instance_id":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"minimum_withdrawal_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],"ledger_canister_id":"aaaaa-aa","index_canister_id":"aaaaa-aa","schema_version":36,"expected_bridge_signer":[%s],"evm_rpc_canister_id":"aaaaa-aa","rpc_provider_urls_sha256":"%s"}\n' "$signer" "$RPC_DIGEST";
 elif [[ "$*" == *get_bridge_status* ]]; then printf '{"deposits_paused":%s,"reserve":{"sufficient":true}}\n' "${CANISTER_PAUSED:-true}";
 elif [[ "$*" == *icrc1_fee* ]]; then echo '100000';
 elif [[ "$*" == *pause_new_deposits* ]]; then if [[ "${IC_PAUSE_FAIL:-}" == true ]]; then exit 1; fi; echo '{"Ok":null}';
@@ -189,6 +193,7 @@ value['confirmation_relayer_principal']='aaaaa-aa'
 value['initial_base_deployment']={'deployer_address':'0x4444444444444444444444444444444444444444','starting_nonce':0,'gas_limit':'10000000','max_fee_per_gas':'100','max_priority_fee_per_gas':'2'}
 with open(path,'w',encoding='utf-8') as out: json.dump(value,out,separators=(',',':')); out.write('\n')
 PY
+printf '{"derived":{}}\n' >"$T/bundle/initial-operational-parameters.json"
 cat >"$T/constructors.json" <<'JSON'
 {"timelock":["86400","[0x6666666666666666666666666666666666666666]","[0x9999999999999999999999999999999999999999]","[0x6666666666666666666666666666666666666666]"],"bridge":["0x1111111111111111111111111111111111111111","0x8888888888888888888888888888888888888888","0x2222222222222222222222222222222222222222","0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","1","2","3600","2","1"]}
 JSON
@@ -207,11 +212,244 @@ printf wasm >"$T/bundle/bridge-canister.wasm"
 printf '\0' >"$T/bundle/bsns-runtime.bin"
 printf '{"byte_length":1,"immutable_ranges":[{"length":1,"start":0}],"schema_version":1}\n' >"$T/bundle/bsns-runtime-layout.json"
 SOURCE_REVISION="$(git -C "$DRIVER_ROOT" rev-parse HEAD)"; SOURCE_TREE="$(git -C "$DRIVER_ROOT" archive HEAD | shasum -a 256 | awk '{print $1}')"
+printf '{"schema_version":3,"from_source_revision":"%s","from_source_tree_sha256":"%s","upgrade_source_revision":"%s","upgrade_source_tree_sha256":"%s","to_source_revision":"%s","to_source_tree_sha256":"%s"}\n' \
+  "$SOURCE_REVISION" "$SOURCE_TREE" "$SOURCE_REVISION" "$SOURCE_TREE" "$SOURCE_REVISION" "$SOURCE_TREE" \
+  >"$T/bundle/post-gate-a-policy-transition.json"
+printf '{"kind":"production-controller-bootstrap-upgrade","source_revision":"%s","source_tree_sha256":"%s"}\n' \
+  "$SOURCE_REVISION" "$SOURCE_TREE" >"$T/bundle/production-canister-upgrade-receipt.json"
 printf '{"release_id":"release-test","source_revision":"%s","source_tree_sha256":"%s"}\n' "$SOURCE_REVISION" "$SOURCE_TREE" >"$T/bundle/release-manifest.json"
 printf '{"final_controllers":["aaaaa-aa"]}\n' >"$T/bundle/controller-handover.json"
-printf '{"gate_a_manifest_sha256":"%s","bridge_deployment_transaction_hash":"0x%s","bridge_deployment_block_number":1,"bridge_deployment_block_hash":"0x%s","timelock_deployment_transaction_hash":"0x%s","timelock_deployment_block_number":1,"timelock_deployment_block_hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'c%.0s' {1..64})" >"$T/bundle/gate-a-receipt.json"
+printf '{"gate_a_manifest_sha256":"%s","canister_install":{"installer_principal":"aaaaa-aa"},"bridge_deployment_transaction_hash":"0x%s","bridge_deployment_block_number":1,"bridge_deployment_block_hash":"0x%s","timelock_deployment_transaction_hash":"0x%s","timelock_deployment_block_number":1,"timelock_deployment_block_hash":"0x%s"}\n' "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'c%.0s' {1..64})" >"$T/bundle/gate-a-receipt.json"
 printf '{"base_chain_id":8453,"rpc_provider_urls_sha256":"%s","base_actions":[{"kind":"PauseDepositMints","transaction_hash":"deposit-action","block_number":100,"block_hash":"0x%s","target":"0x3333333333333333333333333333333333333333","calldata_hex":"0x1111"},{"kind":"PauseWithdrawals","transaction_hash":"withdrawal-action","block_number":100,"block_hash":"0x%s","target":"0x3333333333333333333333333333333333333333","calldata_hex":"0x2222"},{"kind":"CancelTimelock","transaction_hash":"cancel-action","block_number":100,"block_hash":"0x%s","target":"0x2222222222222222222222222222222222222222","calldata_hex":"0x3333"}]}\n' "$INDEPENDENT_RPC_DIGEST" "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" >"$T/bundle/monitor-drill.json"
 printf '{"burn_transaction_hash":"0x%s","burn":{"block_number":100,"block_hash":"0x%s","withdrawal_committed_topic":"0x%s","withdrawal_id_topic":"0x%s"}}\n' "$(printf '88%.0s' {1..32})" "$(printf 'a%.0s' {1..64})" "$(printf '99%.0s' {1..32})" "$(printf '77%.0s' {1..32})" >"$T/bundle/monitoring-receipt.json"
+python3 - "$T/bundle" "$SOURCE_REVISION" "$SOURCE_TREE" <<'PY'
+import hashlib,json,os,sys
+bundle,source_revision,source_tree=sys.argv[1:]
+artifacts=[]
+for name in sorted(os.listdir(bundle)):
+    path=os.path.join(bundle,name)
+    if name == 'release-manifest.json' or not os.path.isfile(path):
+        continue
+    with open(path,'rb') as source:
+        digest=hashlib.sha256(source.read()).hexdigest()
+    artifacts.append({'path':name,'sha256':digest})
+manifest={
+    'release_id':'release-test',
+    'source_revision':source_revision,
+    'source_tree_sha256':source_tree,
+    'artifacts':artifacts,
+}
+with open(os.path.join(bundle,'release-manifest.json'),'w',encoding='utf-8') as output:
+    json.dump(manifest,output,separators=(',',':'))
+    output.write('\n')
+PY
+FREEZE_SOURCE="$T/freeze-source"
+FREEZE_TARGET="$T/freeze-target"
+mkdir -p "$FREEZE_SOURCE/artifacts" "$FREEZE_TARGET"
+printf '{"raw":true}\n' >"$FREEZE_SOURCE/artifacts/preflight-base.json"
+FREEZE_RAW_SHA="$(shasum -a 256 "$FREEZE_SOURCE/artifacts/preflight-base.json" | awk '{print $1}')"
+python3 - "$FREEZE_SOURCE/rpc-e2e.json" "$FREEZE_RAW_SHA" <<'PY'
+import json,sys
+path,digest=sys.argv[1:]
+value={'scenarios':{'preflight':{'artifacts':[{'path':'artifacts/preflight-base.json','sha256':digest}]}}}
+with open(path,'w',encoding='utf-8') as output: json.dump(value,output,separators=(',',':')); output.write('\n')
+PY
+FREEZE_RPC_SHA="$(shasum -a 256 "$FREEZE_SOURCE/rpc-e2e.json" | awk '{print $1}')"
+printf '{"artifacts":[{"path":"rpc-e2e.json","sha256":"%s"}]}\n' "$FREEZE_RPC_SHA" >"$FREEZE_SOURCE/release-manifest.json"
+# shellcheck source=production-validation.sh
+source "$DRIVER_ROOT/scripts/production-validation.sh"
+production_freeze_bundle "$FREEZE_SOURCE" "$FREEZE_TARGET"
+cmp -s "$FREEZE_SOURCE/artifacts/preflight-base.json" "$FREEZE_TARGET/artifacts/preflight-base.json"
+chmod u+w "$FREEZE_TARGET" "$FREEZE_TARGET/artifacts"
+printf '{"raw":false}\n' >"$FREEZE_SOURCE/artifacts/preflight-base.json"
+mkdir "$T/freeze-rejected"
+if production_freeze_bundle "$FREEZE_SOURCE" "$T/freeze-rejected" >/dev/null 2>&1; then
+  echo "bundle freeze accepted a drifted RPC rehearsal raw artifact" >&2
+  exit 1
+fi
+FREEZE_COUNT_SOURCE="$T/freeze-count-source"
+mkdir -p "$FREEZE_COUNT_SOURCE/artifacts"
+python3 - "$FREEZE_COUNT_SOURCE" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); references=[]
+for index in range(129):
+    relative=f'artifacts/raw-{index:03}.json'; payload=b'{}\n'
+    (root/relative).write_bytes(payload)
+    references.append({'path':relative,'sha256':hashlib.sha256(payload).hexdigest()})
+rpc=json.dumps({'scenarios':{'preflight':{'artifacts':references}}},separators=(',',':')).encode()+b'\n'
+(root/'rpc-e2e.json').write_bytes(rpc)
+manifest={'artifacts':[{'path':'rpc-e2e.json','sha256':hashlib.sha256(rpc).hexdigest()}]}
+(root/'release-manifest.json').write_text(json.dumps(manifest,separators=(',',':'))+'\n')
+PY
+mkdir "$T/freeze-count-rejected"
+if production_freeze_bundle "$FREEZE_COUNT_SOURCE" "$T/freeze-count-rejected" >/dev/null 2>&1; then
+  echo "bundle freeze accepted too many RPC rehearsal raw artifacts" >&2
+  exit 1
+fi
+UPGRADE_LIMIT_SOURCE="$T/upgrade-limit-source"
+mkdir "$UPGRADE_LIMIT_SOURCE"
+python3 - "$UPGRADE_LIMIT_SOURCE" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); receipt=root/'production-canister-upgrade-receipt.json'
+prefix=b'{"schema_version":1,"kind":"production-controller-bootstrap-upgrade-chain","entries":[],"padding":"'
+target=512*1024*1024+64*1024
+with receipt.open('wb') as output:
+ output.write(prefix)
+ remaining=target-len(prefix)-2
+ while remaining:
+  chunk=b'0'*min(1024*1024,remaining); output.write(chunk); remaining-=len(chunk)
+ output.write(b'"}')
+digest=hashlib.sha256()
+with receipt.open('rb') as source:
+ for chunk in iter(lambda:source.read(1024*1024),b''): digest.update(chunk)
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':receipt.name,'sha256':digest.hexdigest()}]},separators=(',',':'))+'\n')
+PY
+mkdir "$T/upgrade-limit-accepted"
+production_freeze_bundle "$UPGRADE_LIMIT_SOURCE" "$T/upgrade-limit-accepted"
+cmp -s "$UPGRADE_LIMIT_SOURCE/production-canister-upgrade-receipt.json" "$T/upgrade-limit-accepted/production-canister-upgrade-receipt.json"
+chmod -R u+w "$T/upgrade-limit-accepted"
+RAW_UPGRADE_OVERSIZE_SOURCE="$T/raw-upgrade-oversize-source"
+mkdir "$RAW_UPGRADE_OVERSIZE_SOURCE"
+python3 - "$RAW_UPGRADE_OVERSIZE_SOURCE" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); receipt=root/'production-canister-upgrade-receipt.json'
+prefix=b'{"schema_version":1,"kind":"production-controller-bootstrap-upgrade","padding":"'
+target=128*1024*1024+1
+with receipt.open('wb') as output:
+ output.write(prefix)
+ remaining=target-len(prefix)-2
+ while remaining:
+  chunk=b'0'*min(1024*1024,remaining); output.write(chunk); remaining-=len(chunk)
+ output.write(b'"}')
+digest=hashlib.sha256()
+with receipt.open('rb') as source:
+ for chunk in iter(lambda:source.read(1024*1024),b''): digest.update(chunk)
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':receipt.name,'sha256':digest.hexdigest()}]},separators=(',',':'))+'\n')
+PY
+mkdir "$T/raw-upgrade-oversize-rejected"
+if RAW_UPGRADE_OVERSIZE_ERROR="$(production_freeze_bundle "$RAW_UPGRADE_OVERSIZE_SOURCE" "$T/raw-upgrade-oversize-rejected" 2>&1)"; then
+  echo "bundle freeze accepted an oversized raw production upgrade receipt" >&2
+  exit 1
+fi
+[[ "$RAW_UPGRADE_OVERSIZE_ERROR" == *"raw production upgrade receipt is too large"* ]]
+CHAIN_ENTRY_OVERSIZE_SOURCE="$T/chain-entry-oversize-source"
+mkdir "$CHAIN_ENTRY_OVERSIZE_SOURCE"
+python3 - "$CHAIN_ENTRY_OVERSIZE_SOURCE" <<'PY'
+import json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); receipt=root/'production-canister-upgrade-receipt.json'
+size=128*1024*1024+1
+prefix='{"schema_version":1,"kind":"production-controller-bootstrap-upgrade-chain","entries":[{"sequence":0,"previous_receipt_sha256":null,"receipt_sha256":"'+'0'*64+'","receipt_json_hex":"'
+with receipt.open('w',encoding='utf-8') as output:
+ output.write(prefix)
+ remaining=size
+ while remaining:
+  chunk=min(1024*1024,remaining); output.write('00'*chunk); remaining-=chunk
+ output.write('"}]}\n')
+(root/'post-gate-a-policy-transition.json').write_text('{}\n')
+PY
+if CHAIN_ENTRY_OVERSIZE_ERROR="$(production_validate_gate_b_source_chain "$DRIVER_ROOT" "$CHAIN_ENTRY_OVERSIZE_SOURCE" 2>&1)"; then
+  echo "Gate B source validation accepted an oversized receipt inside the upgrade chain" >&2
+  exit 1
+fi
+[[ "$CHAIN_ENTRY_OVERSIZE_ERROR" == *"production upgrade receipt is too large"* ]]
+UPGRADE_OVERSIZE_SOURCE="$T/upgrade-oversize-source"
+mkdir "$UPGRADE_OVERSIZE_SOURCE"
+python3 - "$UPGRADE_OVERSIZE_SOURCE" <<'PY'
+import json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); receipt=root/'production-canister-upgrade-receipt.json'
+with receipt.open('wb') as output: output.truncate(513*1024*1024+1)
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':receipt.name,'sha256':'0'*64}]},separators=(',',':'))+'\n')
+PY
+mkdir "$T/upgrade-oversize-rejected"
+if UPGRADE_OVERSIZE_ERROR="$(production_freeze_bundle "$UPGRADE_OVERSIZE_SOURCE" "$T/upgrade-oversize-rejected" 2>&1)"; then
+  echo "bundle freeze accepted an oversized production upgrade receipt" >&2
+  exit 1
+fi
+[[ "$UPGRADE_OVERSIZE_ERROR" == *"invalid release artifact: production-canister-upgrade-receipt.json"* ]]
+RAW_LIMIT_SOURCE="$T/raw-limit-source"
+mkdir -p "$RAW_LIMIT_SOURCE/artifacts"
+python3 - "$RAW_LIMIT_SOURCE" exact <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); mode=sys.argv[2]; refs=[]
+for index in range(4):
+    path=root/f'artifacts/raw-{index}.json'
+    with path.open('wb') as output: output.truncate(16*1024*1024)
+    refs.append({'path':str(path.relative_to(root)),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+rpc=json.dumps({'scenarios':{'preflight':{'artifacts':refs}}},separators=(',',':')).encode()+b'\n'
+(root/'rpc-e2e.json').write_bytes(rpc)
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':'rpc-e2e.json','sha256':hashlib.sha256(rpc).hexdigest()}]},separators=(',',':'))+'\n')
+PY
+mkdir "$T/raw-limit-accepted"
+production_freeze_bundle "$RAW_LIMIT_SOURCE" "$T/raw-limit-accepted"
+chmod -R u+w "$T/raw-limit-accepted"
+python3 - "$RAW_LIMIT_SOURCE" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); extra=root/'artifacts/raw-extra.json'; extra.write_bytes(b'x')
+rpc_path=root/'rpc-e2e.json'; rpc=json.loads(rpc_path.read_text()); rpc['scenarios']['preflight']['artifacts'].append({'path':'artifacts/raw-extra.json','sha256':hashlib.sha256(b'x').hexdigest()})
+payload=json.dumps(rpc,separators=(',',':')).encode()+b'\n'; rpc_path.write_bytes(payload)
+manifest=json.loads((root/'release-manifest.json').read_text()); manifest['artifacts'][0]['sha256']=hashlib.sha256(payload).hexdigest(); (root/'release-manifest.json').write_text(json.dumps(manifest,separators=(',',':'))+'\n')
+PY
+mkdir "$T/raw-total-rejected"
+if production_freeze_bundle "$RAW_LIMIT_SOURCE" "$T/raw-total-rejected" >/dev/null 2>&1; then
+  echo "bundle freeze accepted RPC raw artifacts above the cumulative limit" >&2
+  exit 1
+fi
+python3 - "$RAW_LIMIT_SOURCE" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); raw=root/'artifacts/raw-0.json'
+with raw.open('wb') as output: output.truncate(16*1024*1024+1)
+rpc={'scenarios':{'preflight':{'artifacts':[{'path':'artifacts/raw-0.json','sha256':'0'*64}]}}}; payload=json.dumps(rpc,separators=(',',':')).encode()+b'\n'; (root/'rpc-e2e.json').write_bytes(payload)
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':'rpc-e2e.json','sha256':hashlib.sha256(payload).hexdigest()}]},separators=(',',':'))+'\n')
+PY
+mkdir "$T/raw-single-rejected"
+if RAW_OVERSIZE_ERROR="$(production_freeze_bundle "$RAW_LIMIT_SOURCE" "$T/raw-single-rejected" 2>&1)"; then
+  echo "bundle freeze accepted an oversized RPC raw artifact" >&2
+  exit 1
+fi
+[[ "$RAW_OVERSIZE_ERROR" == *"invalid release artifact: artifacts/raw-0.json"* ]]
+for unsafe_path in /tmp/escape.json ../escape.json; do
+  UNSAFE_SOURCE="$T/unsafe-$(printf '%s' "$unsafe_path" | shasum -a 256 | cut -c1-8)"
+  mkdir "$UNSAFE_SOURCE"
+  python3 - "$UNSAFE_SOURCE" "$unsafe_path" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); unsafe=sys.argv[2]
+rpc={'scenarios':{'preflight':{'artifacts':[{'path':unsafe,'sha256':'0'*64}]}}}; payload=json.dumps(rpc,separators=(',',':')).encode()+b'\n'; (root/'rpc-e2e.json').write_bytes(payload)
+(root/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':'rpc-e2e.json','sha256':hashlib.sha256(payload).hexdigest()}]},separators=(',',':'))+'\n')
+PY
+  mkdir "$UNSAFE_SOURCE-target"
+  if production_freeze_bundle "$UNSAFE_SOURCE" "$UNSAFE_SOURCE-target" >/dev/null 2>&1; then
+    echo "bundle freeze accepted unsafe RPC artifact path $unsafe_path" >&2
+    exit 1
+  fi
+done
+python3 - "$T" <<'PY'
+import hashlib,json,os,pathlib,sys
+root=pathlib.Path(sys.argv[1])
+def manifest(case, refs):
+    payload=json.dumps({'scenarios':{'preflight':{'artifacts':refs}}},separators=(',',':')).encode()+b'\n'
+    (case/'rpc-e2e.json').write_bytes(payload)
+    (case/'release-manifest.json').write_text(json.dumps({'artifacts':[{'path':'rpc-e2e.json','sha256':hashlib.sha256(payload).hexdigest()}]},separators=(',',':'))+'\n')
+payload=b'{}\n'; digest=hashlib.sha256(payload).hexdigest()
+case=root/'freeze-duplicate-source'; (case/'artifacts').mkdir(parents=True); (case/'artifacts/raw.json').write_bytes(payload)
+manifest(case,[{'path':'artifacts/raw.json','sha256':digest},{'path':'artifacts/raw.json','sha256':digest}])
+outside=root/'freeze-symlink-outside.json'; outside.write_bytes(payload)
+case=root/'freeze-leaf-symlink-source'; (case/'artifacts').mkdir(parents=True); os.symlink(outside,case/'artifacts/raw.json')
+manifest(case,[{'path':'artifacts/raw.json','sha256':digest}])
+outside_dir=root/'freeze-symlink-outside-dir'; outside_dir.mkdir(); (outside_dir/'raw.json').write_bytes(payload)
+case=root/'freeze-directory-symlink-source'; case.mkdir(); os.symlink(outside_dir,case/'artifacts')
+manifest(case,[{'path':'artifacts/raw.json','sha256':digest}])
+case=root/'freeze-prefix-source'; (case/'artifacts/node').mkdir(parents=True)
+manifest(case,[{'path':'artifacts/node','sha256':digest}])
+case=root/'freeze-dot-source'; (case/'artifacts').mkdir(parents=True); (case/'artifacts/raw.json').write_bytes(payload)
+manifest(case,[{'path':'artifacts/./raw.json','sha256':digest}])
+PY
+for freeze_case in duplicate leaf-symlink directory-symlink prefix dot; do
+  mkdir "$T/freeze-$freeze_case-rejected"
+  if production_freeze_bundle "$T/freeze-$freeze_case-source" "$T/freeze-$freeze_case-rejected" >/dev/null 2>&1; then
+    echo "bundle freeze accepted unsafe $freeze_case RPC artifact input" >&2
+    exit 1
+  fi
+done
 : >"$TRACE"
 BRIDGE_MONITOR_RPC_URL_1=https://one.example BRIDGE_MONITOR_RPC_URL_2=https://two.example BRIDGE_MONITOR_RPC_URL_3=https://three.example \
   "$DRIVER_ROOT/scripts/production-live-preflight.sh" verify-monitor-drill "$T/bundle" >/dev/null
@@ -315,28 +553,169 @@ assert 'MALICIOUS' not in s
 PY
 [[ ! -e "$T/path-proof-override-used" ]]
 : >"$TRACE"
-SNS_IDENTITY_FIXTURE=production
 CONFIRMATION_RELAYER_IDENTITY_FIXTURE=production
-SNS_NEURON_SUBACCOUNT_FIXTURE="$(printf '11%.0s' {1..32})"
-SNS_PROPOSER_PRINCIPAL_FIXTURE=aaaaa-aa
-ACTIVATION_SUBMISSION_FIXTURE="$T/activation-submission.json"
+ACTIVATION_ARTIFACT_FIXTURE="$T/activation-artifact.json"
+CONTROLLER_PEM_FIXTURE="$T/controller.pem"
+printf 'fixture-controller-key\n' >"$CONTROLLER_PEM_FIXTURE"
+cat >"$T/bin/node" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "node $*" >>"$TRACE"
+echo "node_identity=${IC_IDENTITY_PEM-unset}" >>"$TRACE"
+output=""
+receipt=""
+replacement_output=""
+replacement_binding=""
+for ((index=1; index<=$#; index++)); do
+  if [[ "${!index}" == --artifact-file ]]; then
+    next=$((index+1)); output="${!next}"
+  fi
+  if [[ "${!index}" == --receipt-file ]]; then
+    next=$((index+1)); receipt="${!next}"
+  fi
+  if [[ "${!index}" == --output-artifact-file ]]; then
+    next=$((index+1)); replacement_output="${!next}"
+  fi
+  if [[ "${!index}" == --output-binding-file ]]; then
+    next=$((index+1)); replacement_binding="${!next}"
+  fi
+done
+if [[ "$*" == *prepare-schedule-activation* && -n "$output" ]]; then
+  printf '{"operation_id":"0","kind":{"ScheduleActivation":{"operation_id":"0x%s","salt":"0x%s"}}}\n' \
+    "$(printf '11%.0s' {1..32})" "$(printf '22%.0s' {1..32})" >"$output"
+fi
+if [[ "$*" == *recover-activation* && -n "$output" ]]; then
+  [[ "${RECOVERY_PENDING_MISSING:-false}" != true ]] || exit 1
+  if [[ -e "$output" ]]; then
+    [[ "$(<"$output")" == *'"ScheduleActivation"'* ]] || exit 1
+  else
+    printf '{"operation_id":"0","kind":{"ScheduleActivation":{"operation_id":"0x%s","salt":"0x%s"}}}\n' \
+      "$(printf '11%.0s' {1..32})" "$(printf '22%.0s' {1..32})" >"$output"
+  fi
+fi
+if [[ "$*" == *replace-activation* ]]; then
+  printf '{"operation_id":"0","generation":1}\n' >"$replacement_output"
+  printf '{"schema_version":1}\n' >"$replacement_binding"
+fi
+if [[ "$*" == *refresh-attestation* && "${REFRESH_ATTESTATION_FAIL:-false}" == true ]]; then
+  exit 1
+fi
+if [[ -n "$receipt" ]]; then
+  if [[ -e "$receipt" ]]; then
+    [[ "$(<"$receipt")" == '{"schema_version":1}' ]] || exit 1
+  else
+    printf '{"schema_version":1}\n' >"$receipt"
+  fi
+fi
+exit 0
+SH
+chmod +x "$T/bin/node"
+production_validate_gate_b_source_chain "$DRIVER_ROOT" "$T/bundle"
+for source_fault in missing tree; do
+  SOURCE_CHAIN_CASE="$T/source-chain-$source_fault"
+  mkdir "$SOURCE_CHAIN_CASE"
+  cp "$T/bundle/post-gate-a-policy-transition.json" "$SOURCE_CHAIN_CASE/post-gate-a-policy-transition.json"
+  cp "$T/bundle/production-canister-upgrade-receipt.json" "$SOURCE_CHAIN_CASE/production-canister-upgrade-receipt.json"
+  python3 - "$SOURCE_CHAIN_CASE/post-gate-a-policy-transition.json" "$source_fault" <<'PY'
+import json,sys
+path,fault=sys.argv[1:]
+value=json.load(open(path,encoding='utf-8'))
+if fault == 'missing': value['upgrade_source_revision']='0'*40
+else: value['upgrade_source_tree_sha256']='f'*64
+with open(path,'w',encoding='utf-8') as output: json.dump(value,output,separators=(',',':')); output.write('\n')
+PY
+  if production_validate_gate_b_source_chain "$DRIVER_ROOT" "$SOURCE_CHAIN_CASE" >/dev/null 2>&1; then
+    echo "Gate B source-chain validation accepted $source_fault upgrade source evidence" >&2
+    exit 1
+  fi
+done
+
+NONANCESTOR_REVISION="$(git -C "$DRIVER_ROOT" commit-tree "$(git -C "$DRIVER_ROOT" rev-parse 'HEAD^{tree}')" -m 'unrelated fixture commit')"
+NONANCESTOR_TREE="$(git -C "$DRIVER_ROOT" --attr-source="$NONANCESTOR_REVISION" archive "$NONANCESTOR_REVISION" | shasum -a 256 | awk '{print $1}')"
+NONANCESTOR_BUNDLE="$T/nonancestor-bundle"
+cp -R "$T/bundle" "$NONANCESTOR_BUNDLE"
+python3 - "$NONANCESTOR_BUNDLE/post-gate-a-policy-transition.json" "$NONANCESTOR_BUNDLE/release-manifest.json" "$NONANCESTOR_REVISION" "$NONANCESTOR_TREE" <<'PY'
+import hashlib,json,sys
+transition_path,manifest_path,revision,tree=sys.argv[1:]
+transition=json.load(open(transition_path,encoding='utf-8'))
+transition['upgrade_source_revision']=revision
+transition['upgrade_source_tree_sha256']=tree
+with open(transition_path,'w',encoding='utf-8') as output: json.dump(transition,output,separators=(',',':')); output.write('\n')
+digest=hashlib.sha256(open(transition_path,'rb').read()).hexdigest()
+manifest=json.load(open(manifest_path,encoding='utf-8'))
+next(item for item in manifest['artifacts'] if item['path']=='post-gate-a-policy-transition.json')['sha256']=digest
+with open(manifest_path,'w',encoding='utf-8') as output: json.dump(manifest,output,separators=(',',':')); output.write('\n')
+PY
+NONANCESTOR_SEAL_RECEIPT="$T/nonancestor-seal-receipt.json"
+: >"$TRACE"
+if BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" \
+  BRIDGE_RELEASE_BUNDLE="$NONANCESTOR_BUNDLE" \
+  BRIDGE_PRODUCTION_CONTROLLER_PEM="$CONTROLLER_PEM_FIXTURE" \
+  BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$NONANCESTOR_SEAL_RECEIPT" \
+  BRIDGE_CONFIRM_OPERATIONAL_CONFIG_SEAL=SEAL_PRODUCTION_OPERATIONAL_CONFIG \
+  "$DRIVER_ROOT/scripts/production-seal-driver.sh" >/dev/null 2>&1; then
+  echo "seal driver accepted a nonancestor production upgrade source" >&2
+  exit 1
+fi
+! grep -q 'seal-operational-config' "$TRACE"
+[[ ! -e "$NONANCESTOR_SEAL_RECEIPT.reservation.json" ]]
+
+STALE_SEAL_RECEIPT="$T/stale-operational-config-seal-receipt.json"
+printf '{"schema_version":1}\n' >"$STALE_SEAL_RECEIPT.attempt.json"
+: >"$TRACE"
+if BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" \
+  BRIDGE_RELEASE_BUNDLE="$T/bundle" \
+  BRIDGE_PRODUCTION_CONTROLLER_PEM="$CONTROLLER_PEM_FIXTURE" \
+  BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$STALE_SEAL_RECEIPT" \
+  BRIDGE_CONFIRM_OPERATIONAL_CONFIG_SEAL=SEAL_PRODUCTION_OPERATIONAL_CONFIG \
+  "$DRIVER_ROOT/scripts/production-seal-driver.sh" >/dev/null 2>&1; then
+  echo "seal driver accepted an attempt without its durable reservation" >&2
+  exit 1
+fi
+! grep -q 'seal-operational-config' "$TRACE"
+[[ ! -e "$STALE_SEAL_RECEIPT.reservation.json" ]]
+SEAL_RECEIPT_FIXTURE="$T/operational-config-seal-receipt.json"
+: >"$TRACE"
+BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" \
+  BRIDGE_RELEASE_BUNDLE="$T/bundle" \
+  BRIDGE_PRODUCTION_CONTROLLER_PEM="$CONTROLLER_PEM_FIXTURE" \
+  BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$SEAL_RECEIPT_FIXTURE" \
+  BRIDGE_CONFIRM_OPERATIONAL_CONFIG_SEAL=SEAL_PRODUCTION_OPERATIONAL_CONFIG \
+  "$DRIVER_ROOT/scripts/production-seal-driver.sh"
+grep -q 'profile validate-bundle --offline --gate-b' "$TRACE"
+grep -q 'proofs proofs' "$TRACE"
+grep -q 'seal-operational-config' "$TRACE"
+grep -q "node_identity=$CONTROLLER_PEM_FIXTURE" "$TRACE"
+[[ -s "$SEAL_RECEIPT_FIXTURE" ]]
+export SEAL_RECEIPT_HASH="$(shasum -a 256 "$SEAL_RECEIPT_FIXTURE" | awk '{print $1}')"
 COMMON_ACTIVATION_ENV=(
   BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})"
   BRIDGE_RELEASE_BUNDLE="$T/bundle"
   BRIDGE_ACTIVATION_PHASE=schedule
-  BRIDGE_ACTIVATION_SUBMISSION_OUT="$ACTIVATION_SUBMISSION_FIXTURE"
-  BRIDGE_SNS_IDENTITY="$SNS_IDENTITY_FIXTURE"
+  BRIDGE_ACTIVATION_STEP=prepare
+  BRIDGE_CONFIRM_ASSET_ACCEPTANCE=SCHEDULE_PRODUCTION_ASSET_ACTIVATION
+  BRIDGE_ACTIVATION_ARTIFACT="$ACTIVATION_ARTIFACT_FIXTURE"
+  BRIDGE_PRODUCTION_CONTROLLER_PEM="$CONTROLLER_PEM_FIXTURE"
   BRIDGE_CONFIRMATION_RELAYER_IDENTITY="$CONFIRMATION_RELAYER_IDENTITY_FIXTURE"
-  BRIDGE_SNS_NEURON_SUBACCOUNT="$SNS_NEURON_SUBACCOUNT_FIXTURE"
-  BRIDGE_SNS_PROPOSER_PRINCIPAL="$SNS_PROPOSER_PRINCIPAL_FIXTURE"
+  BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$SEAL_RECEIPT_FIXTURE"
 )
+for invalid_confirmation in "" WRONG_CONFIRMATION; do
+  : >"$TRACE"
+  if env "${COMMON_ACTIVATION_ENV[@]}" \
+    BRIDGE_CONFIRM_ASSET_ACCEPTANCE="$invalid_confirmation" \
+    "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+    echo "activation driver accepted a missing or incorrect direct confirmation token" >&2
+    exit 1
+  fi
+  ! grep -q 'prepare-schedule-activation' "$TRACE"
+done
 : >"$TRACE"
 if env CONFIRMATION_RELAYER_DRIFT=true "${COMMON_ACTIVATION_ENV[@]}" \
   "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
   echo "activation driver accepted a confirmation relayer identity mismatch" >&2
   exit 1
 fi
-! grep -q 'manage_neuron' "$TRACE"
+! grep -q 'prepare-schedule-activation' "$TRACE"
 : >"$TRACE"
 if env FINAL_LIVE_FAIL=true "${COMMON_ACTIVATION_ENV[@]}" \
   "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
@@ -344,20 +723,11 @@ if env FINAL_LIVE_FAIL=true "${COMMON_ACTIVATION_ENV[@]}" \
   exit 1
 fi
 grep -q 'refresh_activation_attestation' "$TRACE"
-! grep -q 'manage_neuron' "$TRACE"
+! grep -q 'prepare-schedule-activation' "$TRACE"
 : >"$TRACE"
-if REFRESH_CALL_FAIL=true BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'b%.0s' {1..64})" \
-  BRIDGE_RELEASE_BUNDLE="$T/bundle" \
-  BRIDGE_ACTIVATION_PHASE=schedule \
-  BRIDGE_ACTIVATION_SUBMISSION_OUT="$ACTIVATION_SUBMISSION_FIXTURE" \
-  BRIDGE_SNS_IDENTITY="$SNS_IDENTITY_FIXTURE" \
-  BRIDGE_CONFIRMATION_RELAYER_IDENTITY="$CONFIRMATION_RELAYER_IDENTITY_FIXTURE" \
-  BRIDGE_SNS_NEURON_SUBACCOUNT="$SNS_NEURON_SUBACCOUNT_FIXTURE" \
-  BRIDGE_SNS_PROPOSER_PRINCIPAL="$SNS_PROPOSER_PRINCIPAL_FIXTURE" \
-  "$DRIVER_ROOT/scripts/production-activate-driver.sh"; then
-  echo "activation driver reported success without submitting an SNS proposal" >&2
-  exit 1
-fi
+rm -f "$ACTIVATION_ARTIFACT_FIXTURE"
+env REFRESH_CALL_FAIL=true "${COMMON_ACTIVATION_ENV[@]}" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh"
 grep -q '^icp identity principal --identity production$' "$TRACE"
 python3 - "$TRACE" <<'PY'
 import sys
@@ -368,16 +738,358 @@ required=[
     'rebuild ',
     'icp identity principal --identity production',
     'icp canister call aaaaa-aa refresh_activation_attestation () -n ic --identity production --json',
-    'profile verify-live',
-    ' manage_neuron ',
+    'profile verify-live schedule',
+    'profile verify-controller-activation-authorization-fresh schedule',
+    'node --no-warnings --experimental-strip-types',
+    'prepare-schedule-activation',
 ]
 position=-1
 for item in required:
     position=trace.find(item,position+1)
     assert position >= 0, (item, trace)
 PY
-grep -q 'list_nervous_system_functions' "$TRACE"
-grep -q 'manage_neuron' "$TRACE"
-[[ -f "$ACTIVATION_SUBMISSION_FIXTURE" && ! -s "$ACTIVATION_SUBMISSION_FIXTURE" ]]
+! grep -q 'list_nervous_system_functions' "$TRACE"
+! grep -q 'manage_neuron' "$TRACE"
+[[ -s "$ACTIVATION_ARTIFACT_FIXTURE" ]]
+[[ -s "$ACTIVATION_ARTIFACT_FIXTURE.authorization.json" ]]
+[[ -s "$ACTIVATION_ARTIFACT_FIXTURE.prepare-receipt.json" ]]
+
+# A durable authorization written before the Canister call permits recovery
+# without rerunning the pending-empty Gate B.
+RECOVERY_ARTIFACT="$T/recovery-activation-artifact.json"
+cp "$ACTIVATION_ARTIFACT_FIXTURE.authorization.json" "$RECOVERY_ARTIFACT.authorization.json"
+: >"$TRACE"
+env "${COMMON_ACTIVATION_ENV[@]}" BRIDGE_ACTIVATION_ARTIFACT="$RECOVERY_ARTIFACT" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh"
+! grep -q 'proofs proofs' "$TRACE"
+grep -q 'verify-controller-activation-authorization' "$TRACE"
+[[ -s "$RECOVERY_ARTIFACT" && -s "$RECOVERY_ARTIFACT.prepare-receipt.json" ]]
+! grep -q 'prepare-schedule-activation' "$TRACE"
+MISSING_PENDING_ARTIFACT="$T/missing-pending-activation-artifact.json"
+cp "$ACTIVATION_ARTIFACT_FIXTURE.authorization.json" "$MISSING_PENDING_ARTIFACT.authorization.json"
+: >"$TRACE"
+env RECOVERY_PENDING_MISSING=true "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_ARTIFACT="$MISSING_PENDING_ARTIFACT" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh"
+grep -q 'recover-activation' "$TRACE"
+grep -q 'proofs proofs' "$TRACE"
+grep -q 'profile verify-live schedule' "$TRACE"
+grep -q 'profile verify-controller-activation-authorization-fresh schedule' "$TRACE"
+grep -q 'prepare-schedule-activation' "$TRACE"
+grep -q "node_identity=$CONTROLLER_PEM_FIXTURE" "$TRACE"
+[[ -s "$MISSING_PENDING_ARTIFACT" && -s "$MISSING_PENDING_ARTIFACT.prepare-receipt.json" ]]
+STALE_RECOVERY_ARTIFACT="$T/stale-recovery-activation-artifact.json"
+cp "$ACTIVATION_ARTIFACT_FIXTURE.authorization.json" "$STALE_RECOVERY_ARTIFACT.authorization.json"
+: >"$TRACE"
+if env RECOVERY_PENDING_MISSING=true STALE_ACTIVATION_AUTH=true \
+  "${COMMON_ACTIVATION_ENV[@]}" BRIDGE_ACTIVATION_ARTIFACT="$STALE_RECOVERY_ARTIFACT" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation recovery created a transaction from a stale authorization" >&2
+  exit 1
+fi
+grep -q 'profile verify-controller-activation-authorization-fresh schedule' "$TRACE"
+! grep -q 'prepare-schedule-activation' "$TRACE"
+[[ ! -e "$STALE_RECOVERY_ARTIFACT" && ! -e "$STALE_RECOVERY_ARTIFACT.prepare-receipt.json" ]]
+if env CANISTER_CONTROLLER_DRIFT=true "${COMMON_ACTIVATION_ENV[@]}" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation resume accepted a changed certified controller set" >&2
+  exit 1
+fi
+REPLACEMENT_ARTIFACT="$T/replacement-activation-artifact.json"
+: >"$TRACE"
+env "${COMMON_ACTIVATION_ENV[@]}" BRIDGE_ACTIVATION_STEP=replace \
+  BRIDGE_ACTIVATION_REPLACEMENT_ARTIFACT="$REPLACEMENT_ARTIFACT" \
+  BRIDGE_ACTIVATION_REPLACEMENT_MAX_FEE=200 \
+  BRIDGE_ACTIVATION_REPLACEMENT_PRIORITY_FEE=3 \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh"
+grep -q 'profile verify-controller-activation-artifact schedule' "$TRACE"
+grep -q 'replace-activation' "$TRACE"
+[[ -s "$REPLACEMENT_ARTIFACT" && -s "$REPLACEMENT_ARTIFACT.authorization.json" && -s "$REPLACEMENT_ARTIFACT.prepare-receipt.json" ]]
+: >"$TRACE"
+if env ACTIVATION_BINDING_DRIFT=true "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_STEP=replace \
+  BRIDGE_ACTIVATION_REPLACEMENT_ARTIFACT="$T/rejected-replacement.json" \
+  BRIDGE_ACTIVATION_REPLACEMENT_MAX_FEE=200 \
+  BRIDGE_ACTIVATION_REPLACEMENT_PRIORITY_FEE=3 \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation replacement accepted an artifact outside the exact Gate B binding" >&2
+  exit 1
+fi
+! grep -q 'replace-activation' "$TRACE"
+ARTIFACT_BEFORE="$(shasum -a 256 "$ACTIVATION_ARTIFACT_FIXTURE" | awk '{print $1}')"
+: >"$TRACE"
+env "${COMMON_ACTIVATION_ENV[@]}" BRIDGE_ACTIVATION_STEP=relay \
+  BASE_RPC_URL=https://base.example \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh"
+grep -q 'node_identity=unset' "$TRACE"
+grep -q 'profile verify-controller-activation-artifact schedule' "$TRACE"
+grep -q ' relay --artifact-file ' "$TRACE"
+[[ "$ARTIFACT_BEFORE" == "$(shasum -a 256 "$ACTIVATION_ARTIFACT_FIXTURE" | awk '{print $1}')" ]]
+: >"$TRACE"
+if env STALE_ACTIVATION_ATTESTATION=true "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_STEP=relay BASE_RPC_URL=https://base.example \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation relay accepted a stale activation attestation" >&2
+  exit 1
+fi
+grep -q 'profile verify-controller-activation-artifact schedule' "$TRACE"
+! grep -q ' relay --artifact-file ' "$TRACE"
+: >"$TRACE"
+if env ACTIVATION_BINDING_DRIFT=true "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_STEP=relay BASE_RPC_URL=https://base.example \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation relay accepted an artifact outside the exact Gate B binding" >&2
+  exit 1
+fi
+grep -q 'profile verify-controller-activation-artifact schedule' "$TRACE"
+! grep -q ' relay --artifact-file ' "$TRACE"
+cp "$ACTIVATION_ARTIFACT_FIXTURE.prepare-receipt.json" "$T/prepare-receipt.saved"
+chmod u+w "$ACTIVATION_ARTIFACT_FIXTURE.prepare-receipt.json"
+python3 - "$ACTIVATION_ARTIFACT_FIXTURE.prepare-receipt.json" <<'PY'
+import json,sys
+path=sys.argv[1]
+value=json.load(open(path,encoding='utf-8'))
+value['artifact_sha256']='ff'*32
+with open(path,'w',encoding='utf-8') as output: json.dump(value,output,separators=(',',':')); output.write('\n')
+PY
+if env "${COMMON_ACTIVATION_ENV[@]}" BRIDGE_ACTIVATION_STEP=relay \
+  BASE_RPC_URL=https://base.example "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation relay accepted a Gate B binding with artifact hash drift" >&2
+  exit 1
+fi
+mv "$T/prepare-receipt.saved" "$ACTIVATION_ARTIFACT_FIXTURE.prepare-receipt.json"
+
+RELAYER_PEM_FIXTURE="$T/relayer.pem"
+RAW_CONFIRMATION_FIXTURE="$T/activation-confirmation.json"
+VERIFIED_ACTIVATION_FIXTURE="$T/controller-activation-receipt.json"
+printf 'fixture-relayer-key\n' >"$RELAYER_PEM_FIXTURE"
+: >"$TRACE"
+env "${COMMON_ACTIVATION_ENV[@]}" BRIDGE_ACTIVATION_STEP=confirm \
+  BRIDGE_CONFIRMATION_RELAYER_PEM="$RELAYER_PEM_FIXTURE" \
+  BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$RAW_CONFIRMATION_FIXTURE" \
+  BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$VERIFIED_ACTIVATION_FIXTURE" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh"
+grep -q 'profile verify-controller-activation-confirm-inputs schedule' "$TRACE"
+! grep -q 'profile verify-controller-activation-artifact schedule' "$TRACE"
+! grep -q 'profile verify-controller-activation-authorization schedule' "$TRACE"
+grep -q "node_identity=$RELAYER_PEM_FIXTURE" "$TRACE"
+grep -q ' confirm --artifact-file ' "$TRACE"
+grep -q ' refresh-attestation' "$TRACE"
+grep -q 'profile verify-controller-activation schedule' "$TRACE"
+[[ -s "$RAW_CONFIRMATION_FIXTURE" && -s "$VERIFIED_ACTIVATION_FIXTURE" ]]
+python3 - "$TRACE" <<'PY'
+import sys
+trace=open(sys.argv[1],encoding='utf-8').read()
+required=[
+    'profile verify-controller-activation-confirm-inputs schedule',
+    ' confirm --artifact-file ',
+    ' refresh-attestation',
+    'profile verify-controller-activation schedule',
+]
+position=-1
+for item in required:
+    position=trace.find(item,position+1)
+    assert position >= 0, (item,trace)
+PY
+: >"$TRACE"
+env STALE_ACTIVATION_ATTESTATION=true "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_STEP=confirm \
+  BRIDGE_CONFIRMATION_RELAYER_PEM="$RELAYER_PEM_FIXTURE" \
+  BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$RAW_CONFIRMATION_FIXTURE" \
+  BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$VERIFIED_ACTIVATION_FIXTURE" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh"
+grep -q 'profile verify-controller-activation-confirm-inputs schedule' "$TRACE"
+grep -q ' confirm --artifact-file ' "$TRACE"
+: >"$TRACE"
+if env ACTIVATION_BINDING_DRIFT=true "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_STEP=confirm \
+  BRIDGE_CONFIRMATION_RELAYER_PEM="$RELAYER_PEM_FIXTURE" \
+  BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$T/rejected-confirmation.json" \
+  BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/rejected-activation.json" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation confirmation accepted an artifact outside the exact Gate B binding" >&2
+  exit 1
+fi
+! grep -q ' confirm --artifact-file ' "$TRACE"
+for management_drift in CANISTER_CONTROLLER_DRIFT CANISTER_MODULE_DRIFT; do
+  : >"$TRACE"
+  if env "$management_drift"=true "${COMMON_ACTIVATION_ENV[@]}" \
+    BRIDGE_ACTIVATION_STEP=confirm \
+    BRIDGE_CONFIRMATION_RELAYER_PEM="$RELAYER_PEM_FIXTURE" \
+    BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$T/rejected-management-confirmation.json" \
+    BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/rejected-management-activation.json" \
+    "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+    echo "activation confirmation accepted $management_drift" >&2
+    exit 1
+  fi
+  grep -q 'profile verify-controller-activation-confirm-inputs schedule' "$TRACE"
+  ! grep -q ' confirm --artifact-file ' "$TRACE"
+done
+
+RECOVERED_RAW_CONFIRMATION="$T/recovered-activation-confirmation.json"
+RECOVERED_VERIFIED_ACTIVATION="$T/recovered-controller-activation-receipt.json"
+: >"$TRACE"
+if env REFRESH_ATTESTATION_FAIL=true "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_STEP=confirm \
+  BRIDGE_CONFIRMATION_RELAYER_PEM="$RELAYER_PEM_FIXTURE" \
+  BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$RECOVERED_RAW_CONFIRMATION" \
+  BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$RECOVERED_VERIFIED_ACTIVATION" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "activation confirmation ignored a post-confirm attestation refresh failure" >&2
+  exit 1
+fi
+[[ -s "$RECOVERED_RAW_CONFIRMATION" && ! -e "$RECOVERED_VERIFIED_ACTIVATION" ]]
+RECOVERED_RAW_BEFORE="$(shasum -a 256 "$RECOVERED_RAW_CONFIRMATION" | awk '{print $1}')"
+grep -q ' confirm --artifact-file ' "$TRACE"
+grep -q ' refresh-attestation' "$TRACE"
+! grep -q 'profile verify-controller-activation schedule' "$TRACE"
+: >"$TRACE"
+env "${COMMON_ACTIVATION_ENV[@]}" BRIDGE_ACTIVATION_STEP=confirm \
+  BRIDGE_CONFIRMATION_RELAYER_PEM="$RELAYER_PEM_FIXTURE" \
+  BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$RECOVERED_RAW_CONFIRMATION" \
+  BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$RECOVERED_VERIFIED_ACTIVATION" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh"
+[[ -s "$RECOVERED_RAW_CONFIRMATION" && -s "$RECOVERED_VERIFIED_ACTIVATION" ]]
+[[ "$RECOVERED_RAW_BEFORE" == "$(shasum -a 256 "$RECOVERED_RAW_CONFIRMATION" | awk '{print $1}')" ]]
+grep -q ' confirm --artifact-file ' "$TRACE"
+grep -q ' refresh-attestation' "$TRACE"
+grep -q 'profile verify-controller-activation schedule' "$TRACE"
+
+EXECUTE_ARTIFACT_FIXTURE="$T/execute-activation-artifact.json"
+cp "$ACTIVATION_ARTIFACT_FIXTURE" "$EXECUTE_ARTIFACT_FIXTURE"
+cp "$ACTIVATION_ARTIFACT_FIXTURE.authorization.json" \
+  "$EXECUTE_ARTIFACT_FIXTURE.authorization.json"
+python3 - "$EXECUTE_ARTIFACT_FIXTURE" \
+  "$EXECUTE_ARTIFACT_FIXTURE.authorization.json" \
+  "$EXECUTE_ARTIFACT_FIXTURE.prepare-receipt.json" <<'PY'
+import hashlib,json,sys,time
+artifact,authorization_path,binding_path=sys.argv[1:]
+artifact_value=json.load(open(artifact,encoding='utf-8'))
+operation=artifact_value['kind'].pop('ScheduleActivation')
+artifact_value['kind']['ExecuteActivation']=operation
+artifact_value['operation_id']='1'
+with open(artifact,'w',encoding='utf-8') as output:
+    json.dump(artifact_value,output,separators=(',',':')); output.write('\n')
+authorization=json.load(open(authorization_path,encoding='utf-8'))
+authorization['phase']='execute'
+with open(authorization_path,'w',encoding='utf-8') as output:
+    json.dump(authorization,output,separators=(',',':')); output.write('\n')
+with open(artifact,'rb') as source:
+    artifact_sha256=hashlib.sha256(source.read()).hexdigest()
+with open(authorization_path,'rb') as source:
+    authorization_sha256=hashlib.sha256(source.read()).hexdigest()
+binding={
+    'schema_version':1,
+    'phase':'execute',
+    'gate_b_manifest_sha256':'b'*64,
+    'artifact_sha256':artifact_sha256,
+    'authorization_receipt_sha256':authorization_sha256,
+    'bound_at_unix':int(time.time()),
+}
+with open(binding_path,'w',encoding='utf-8') as output:
+    json.dump(binding,output,separators=(',',':')); output.write('\n')
+PY
+EXECUTE_RAW_CONFIRMATION="$T/execute-activation-confirmation.json"
+EXECUTE_VERIFIED_ACTIVATION="$T/execute-controller-activation-receipt.json"
+: >"$TRACE"
+env "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_PHASE=execute \
+  BRIDGE_ACTIVATION_STEP=confirm \
+  BRIDGE_CONFIRM_ASSET_ACCEPTANCE=UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE \
+  BRIDGE_ACTIVATION_ARTIFACT="$EXECUTE_ARTIFACT_FIXTURE" \
+  BRIDGE_PRIOR_SCHEDULE_RECEIPT="$VERIFIED_ACTIVATION_FIXTURE" \
+  BRIDGE_CONFIRMATION_RELAYER_PEM="$RELAYER_PEM_FIXTURE" \
+  BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$EXECUTE_RAW_CONFIRMATION" \
+  BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$EXECUTE_VERIFIED_ACTIVATION" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh"
+python3 - "$TRACE" <<'PY'
+import sys
+trace=open(sys.argv[1],encoding='utf-8').read()
+required=[
+    'profile verify-controller-activation-confirm-inputs execute',
+    ' confirm --artifact-file ',
+    ' refresh-attestation',
+    'profile verify-controller-activation execute',
+]
+position=-1
+for item in required:
+    position=trace.find(item,position+1)
+    assert position >= 0, (item,trace)
+PY
+[[ -s "$EXECUTE_RAW_CONFIRMATION" && -s "$EXECUTE_VERIFIED_ACTIVATION" ]]
+
+WRONG_EXECUTE_KIND_ARTIFACT="$T/wrong-execute-kind-artifact.json"
+cp "$EXECUTE_ARTIFACT_FIXTURE" "$WRONG_EXECUTE_KIND_ARTIFACT"
+cp "$EXECUTE_ARTIFACT_FIXTURE.authorization.json" \
+  "$WRONG_EXECUTE_KIND_ARTIFACT.authorization.json"
+python3 - "$WRONG_EXECUTE_KIND_ARTIFACT" \
+  "$WRONG_EXECUTE_KIND_ARTIFACT.authorization.json" \
+  "$WRONG_EXECUTE_KIND_ARTIFACT.prepare-receipt.json" <<'PY'
+import hashlib,json,sys,time
+artifact,authorization,binding_path=sys.argv[1:]
+value=json.load(open(artifact,encoding='utf-8'))
+operation=value['kind'].pop('ExecuteActivation')
+value['kind']['ScheduleActivation']=operation
+with open(artifact,'w',encoding='utf-8') as output:
+    json.dump(value,output,separators=(',',':')); output.write('\n')
+with open(artifact,'rb') as source:
+    artifact_sha256=hashlib.sha256(source.read()).hexdigest()
+with open(authorization,'rb') as source:
+    authorization_sha256=hashlib.sha256(source.read()).hexdigest()
+binding={'schema_version':1,'phase':'execute','gate_b_manifest_sha256':'b'*64,
+         'artifact_sha256':artifact_sha256,
+         'authorization_receipt_sha256':authorization_sha256,
+         'bound_at_unix':int(time.time())}
+with open(binding_path,'w',encoding='utf-8') as output:
+    json.dump(binding,output,separators=(',',':')); output.write('\n')
+PY
+: >"$TRACE"
+if env "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_PHASE=execute BRIDGE_ACTIVATION_STEP=confirm \
+  BRIDGE_CONFIRM_ASSET_ACCEPTANCE=UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE \
+  BRIDGE_ACTIVATION_ARTIFACT="$WRONG_EXECUTE_KIND_ARTIFACT" \
+  BRIDGE_PRIOR_SCHEDULE_RECEIPT="$VERIFIED_ACTIVATION_FIXTURE" \
+  BRIDGE_CONFIRMATION_RELAYER_PEM="$RELAYER_PEM_FIXTURE" \
+  BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$T/wrong-kind-confirmation.json" \
+  BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/wrong-kind-activation.json" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "execute confirmation accepted a schedule artifact" >&2
+  exit 1
+fi
+grep -q 'profile verify-controller-activation-confirm-inputs execute' "$TRACE"
+! grep -q ' confirm --artifact-file ' "$TRACE"
+
+DRIFTED_PRIOR_RECEIPT="$T/drifted-prior-schedule-receipt.json"
+printf '{"schema_version":1,"phase":"execute"}\n' >"$DRIFTED_PRIOR_RECEIPT"
+: >"$TRACE"
+if env "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_PHASE=execute BRIDGE_ACTIVATION_STEP=confirm \
+  BRIDGE_CONFIRM_ASSET_ACCEPTANCE=UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE \
+  BRIDGE_ACTIVATION_ARTIFACT="$EXECUTE_ARTIFACT_FIXTURE" \
+  BRIDGE_PRIOR_SCHEDULE_RECEIPT="$DRIFTED_PRIOR_RECEIPT" \
+  BRIDGE_CONFIRMATION_RELAYER_PEM="$RELAYER_PEM_FIXTURE" \
+  BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$T/drifted-prior-confirmation.json" \
+  BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/drifted-prior-activation.json" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "execute confirmation accepted a drifted prior schedule receipt" >&2
+  exit 1
+fi
+grep -q 'profile verify-controller-activation-confirm-inputs execute' "$TRACE"
+! grep -q ' confirm --artifact-file ' "$TRACE"
+
+: >"$TRACE"
+if env -u BRIDGE_PRIOR_SCHEDULE_RECEIPT "${COMMON_ACTIVATION_ENV[@]}" \
+  BRIDGE_ACTIVATION_PHASE=execute BRIDGE_ACTIVATION_STEP=confirm \
+  BRIDGE_CONFIRM_ASSET_ACCEPTANCE=UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE \
+  BRIDGE_ACTIVATION_ARTIFACT="$EXECUTE_ARTIFACT_FIXTURE" \
+  BRIDGE_CONFIRMATION_RELAYER_PEM="$RELAYER_PEM_FIXTURE" \
+  BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT="$T/missing-prior-confirmation.json" \
+  BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/missing-prior-activation.json" \
+  "$DRIVER_ROOT/scripts/production-activate-driver.sh" >/dev/null 2>&1; then
+  echo "execute confirmation accepted a missing prior schedule receipt" >&2
+  exit 1
+fi
+! grep -q ' confirm --artifact-file ' "$TRACE"
 ! grep -q '^cast send' "$TRACE"
 ! grep -q resume_new_deposits "$TRACE"
+[[ -z "$(find "$TMPDIR" -maxdepth 1 -type d \( -name 'bridge-seal-plan.*' -o -name 'bridge-activation-plan.*' -o -name 'bridge-activation-inputs.*' \) -print -quit)" ]]

@@ -4,8 +4,8 @@
 
 `bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、storageに依存しない決定的な状態遷移を定義する。`bridge-canister`は単一SQLite DBへ状態を保存し、Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
 
-通常の再オープン、Production `post_upgrade`、test-deployment `post_upgrade`はstable schema v35、record wire version v30だけを受理する。旧schema、未知schema、未知wire、decode不能なDBはfail closedで起動を拒否し、migration、dual-read、互換fallbackは持たない。現在のstagingも同じCanisterとdeployment instanceを保つcurrent-schema upgradeだけを受理し、一度限りのreinstall履歴を再実行またはresumeしない。
-upgrade検証はcurrent schema v35のrecord・config・quota・auditを保持するsame-Wasm再オープンと、すべての旧schema・wireの拒否を検証する。
+通常の再オープンはstable schema v36、record wire version v30だけを受理する。Productionとtest-deploymentの`post_upgrade`だけは配置済みversion 35／wire v30からv36への一度限りのatomic migrationを受理し、それ以外の旧schema、未知schema、未知wire、decode不能なDBはfail closedで起動を拒否する。現在のstagingも同じCanisterとdeployment instanceを保つupgradeだけを受理し、一度限りのreinstall履歴を再実行またはresumeしない。
+upgrade検証はcurrent schema v36のrecord・config・quota・auditを保持するsame-Wasm再オープン、version 35からのactivation evidence migration、その他の旧schema・wireの拒否を検証する。
 
 `settlement_jobs`が実行中・停止中Settlementの正本である。Depositとfee payoutはtimerが自動claimし、Withdrawalは明示的な`continue_withdrawal`だけがmanual claimする。Withdrawal通知時はrecordと固定transfer identityだけをatomic保存し、jobを作らない。外部`await`前に署名dispatchやLedger transfer identityを永続化し、lease generationとDB上の状態だけが実行権を決める。
 
@@ -95,4 +95,4 @@ UIはtransaction hashと通知attempt状態をv7形式でlocalStorageへ保存�
 | `get_deposit` / `get_deposit_by_owner_sequence` | 公開query | Authorization、deadline、signature、状態を照会 |
 | `get_bridge_status` | 公開query | Finalized観測、epoch、Governance reserve、schedulerを照会 |
 
-SNS Governance principalはresume、principal rotation、Fee Recipient、fee payout、Service Fee、Timelock操作を行う。pause principalは緊急pauseと許可された進行だけを行う。Mint SignerはEIP-712 Authorization専用、Governance OperatorはCanister発Base governance transaction専用で、derivation pathとETH管理を分離する。
+SNS Governance principalは通常時のresume、principal rotation、Fee Recipient、fee payout、Service Fee、Timelock操作を行う。Bootstrap中のsealはcurrent controllerだけに許可し、そのprincipalをbootstrap activation controllerとして固定する。内部bootstrap activation authorityが残り、固定principalがcontrollerである間は、pause中の初回schedule／executeとpending resume/replacementをそのprincipalだけに許可する。初回executeのConfirmed完了時に内部authorityを永久に消費し、外部controller設定の変更時期にかかわらず以後のactivation権限を既存Governance principalへ切り替える。controller権限を使う各外部await後はmanagement canisterのcontroller集合が固定principal一件だけであることを再確認し、削除・追加・置換時はcommit前に拒否する。pause principalは緊急pauseと許可された進行だけを行う。Mint SignerはEIP-712 Authorization専用、Governance OperatorはCanister発Base governance transaction専用で、derivation pathとETH管理を分離する。
