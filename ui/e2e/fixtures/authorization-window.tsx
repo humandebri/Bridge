@@ -52,32 +52,49 @@ function Harness() {
     }
   }
 
-  return <main className="mx-auto grid max-w-6xl gap-6 p-6">
-    <h1 className="text-xl font-bold">Authorization window browser fixture</h1>
-    <DepositActivityRow
-      item={item}
-      mintFinalization="absent"
-      finalizedBlockTimestamp={finalizedTimestamp}
-      writesEnabled
-      onRequestRefund={() => {
-        setRefundRequests((count) => count + 1)
-        return Promise.resolve()
-      }}
-      onContinue={() => Promise.resolve()}
-    />
-    <button type="button" onClick={() => setFinalizedTimestamp(1_001n)}>Advance finalized Base time</button>
-    <p data-testid="refund-requests">Refund requests: {refundRequests}</p>
-    <button type="button" onClick={attemptBoundaryDeposit}>Attempt boundary deposit</button>
-    <p role="alert">{boundaryError}</p>
-    <dl>
-      <div><dt>Wallet writes</dt><dd data-testid="wallet-writes">{walletWrites}</dd></div>
-      <div><dt>Ledger pulls</dt><dd data-testid="ledger-pulls">{ledgerPulls}</dd></div>
-      <div><dt>Intent writes</dt><dd data-testid="intent-writes">{intentWrites}</dd></div>
-    </dl>
-  </main>
+  return (
+    <main className="mx-auto grid max-w-6xl gap-6 p-6">
+      <h1 className="text-xl font-bold">Authorization window browser fixture</h1>
+      <DepositActivityRow
+        item={item}
+        mintFinalization="absent"
+        finalizedBlockTimestamp={finalizedTimestamp}
+        writesEnabled
+        onRequestRefund={() => {
+          setRefundRequests((count) => count + 1)
+          return Promise.resolve()
+        }}
+        onContinue={() => Promise.resolve()}
+      />
+      <button type="button" onClick={() => setFinalizedTimestamp(1_001n)}>
+        Advance finalized Base time
+      </button>
+      <p data-testid="refund-requests">Refund requests: {refundRequests}</p>
+      <button type="button" onClick={attemptBoundaryDeposit}>
+        Attempt boundary deposit
+      </button>
+      <p role="alert">{boundaryError}</p>
+      <dl>
+        <div>
+          <dt>Wallet writes</dt>
+          <dd data-testid="wallet-writes">{walletWrites}</dd>
+        </div>
+        <div>
+          <dt>Ledger pulls</dt>
+          <dd data-testid="ledger-pulls">{ledgerPulls}</dd>
+        </div>
+        <div>
+          <dt>Intent writes</dt>
+          <dd data-testid="intent-writes">{intentWrites}</dd>
+        </div>
+      </dl>
+    </main>
+  )
 }
 
-function depositItem(reason: SettlementStopReason): Extract<ActivityItem, { direction: "to-base" }> {
+function depositItem(
+  reason: SettlementStopReason,
+): Extract<ActivityItem, { direction: "to-base" }> {
   const deposit: DepositView = {
     base_recipient: new Uint8Array(20).fill(3),
     deposit_id: new Uint8Array(32).fill(1),
@@ -90,26 +107,28 @@ function depositItem(reason: SettlementStopReason): Extract<ActivityItem, { dire
     state: { AuthorizationPending: null },
     available_refund_amount: [100n],
     owner_sequence: 1n,
-    mint_authorization: [{
-      finalized_block_number: 10n,
-      signature: [],
-      deposit_id: new Uint8Array(32).fill(1),
-      issued_at_timestamp: 900n,
-      domain_name: "KINIC Bridge",
-      charged_service_fee: 10n,
-      recipient: new Uint8Array(20).fill(3),
-      domain_version: "1",
-      authorization_epoch: 1n,
-      max_service_fee: 10n,
-      deadline: 1_000n,
-      signature_dispatch_attempt: 1,
-      chain_id: 84_532n,
-      finalized_block_hash: new Uint8Array(32).fill(2),
-      finalized_block_timestamp: 900n,
-      verifying_contract: new Uint8Array(20).fill(4),
-      digest: new Uint8Array(32).fill(5),
-      gross_amount: 100n,
-    }],
+    mint_authorization: [
+      {
+        finalized_block_number: 10n,
+        signature: [],
+        deposit_id: new Uint8Array(32).fill(1),
+        issued_at_timestamp: 900n,
+        domain_name: "KINIC Bridge",
+        charged_service_fee: 10n,
+        recipient: new Uint8Array(20).fill(3),
+        domain_version: "1",
+        authorization_epoch: 1n,
+        max_service_fee: 10n,
+        deadline: 1_000n,
+        signature_dispatch_attempt: 1,
+        chain_id: 84_532n,
+        finalized_block_hash: new Uint8Array(32).fill(2),
+        finalized_block_timestamp: 900n,
+        verifying_contract: new Uint8Array(20).fill(4),
+        digest: new Uint8Array(32).fill(5),
+        gross_amount: 100n,
+      },
+    ],
     automatic_progress: [],
     gross_amount: 100n,
     refund: [],

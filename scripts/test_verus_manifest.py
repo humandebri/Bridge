@@ -325,6 +325,19 @@ proof fn registered_proof()
             source, "shared-expression", "registered_kernel", "registered_proof"
         )
 
+    def test_ignores_the_closing_verus_block_after_the_last_proof(self) -> None:
+        source = """
+verus! {
+proof fn registered_proof()
+    ensures kernel::registered_kernel_spec()
+{}
+}
+fn main() {}
+"""
+        validate_proof_binding(
+            source, "shared-expression", "registered_kernel", "registered_proof"
+        )
+
     def test_rejects_spec_reference_only_in_proof_body(self) -> None:
         source = """
 proof fn registered_proof()

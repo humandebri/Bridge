@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { deploymentProfile, deploymentProfileSchema, profileCompleteness } from "./profile"
+import {
+  DEFAULT_BASE_MAINNET_RPC_URL,
+  deploymentProfile,
+  deploymentProfileSchema,
+  profileCompleteness,
+  releaseProfileSchema,
+  resolvedBaseRpcUrl,
+} from "./profile"
 
 describe("reviewed deployment profile", () => {
   it("reports every missing preflight deployment value", () => {
@@ -10,7 +17,7 @@ describe("reviewed deployment profile", () => {
     expect(blockers).toContain("Timelock contract address is missing")
     expect(blockers).toContain("Timelock delay is missing")
     expect(blockers).toContain("Deployment instance ID is missing")
-    expect(blockers).toHaveLength(17)
+    expect(blockers).toHaveLength(15)
     expect(deploymentProfile.snsRootCanisterId).toBeNull()
     expect(deploymentProfile.icToken).toEqual({ name: "TEST ICRC1", symbol: "TICRC1", decimals: 8 })
     expect(deploymentProfile.baseToken).toEqual({ symbol: "KINIC", decimals: 8 })
@@ -24,57 +31,110 @@ describe("reviewed deployment profile", () => {
     expect(parsed.deploymentBlock).toBe(123n)
   })
 
+  it("strips release-management evidence from the browser runtime profile", () => {
+    const parsed = deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      gateBManifestSha256: "a".repeat(64),
+      profileFileSha256: "b".repeat(64),
+      profileCanonicalSha256: "c".repeat(64),
+    })
+    expect(parsed).not.toHaveProperty("gateBManifestSha256")
+    expect(parsed).not.toHaveProperty("profileFileSha256")
+    expect(parsed).not.toHaveProperty("profileCanonicalSha256")
+  })
+
+  it("uses the official Base Mainnet RPC when a production profile omits a browser RPC", () => {
+    const profile = deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      testOnly: false,
+      chainId: 8453,
+      baseRpcUrl: undefined,
+    })
+    expect(resolvedBaseRpcUrl(profile)).toBe(DEFAULT_BASE_MAINNET_RPC_URL)
+    expect(() => resolvedBaseRpcUrl({ chainId: 31_337 })).toThrow("no default RPC URL")
+  })
+
+  it("ignores a custom browser RPC on Base Mainnet", () => {
+    const profile = deploymentProfileSchema.parse({
+      ...deploymentProfile,
+      testOnly: false,
+      chainId: 8453,
+      baseRpcUrl: "https://untrusted.example",
+    })
+    expect(resolvedBaseRpcUrl(profile)).toBe(DEFAULT_BASE_MAINNET_RPC_URL)
+  })
+
+  it("requires release evidence fields only in the release schema", () => {
+    const release = releaseProfileSchema.parse({
+      ...deploymentProfile,
+      gateBManifestSha256: "a".repeat(64),
+      profileFileSha256: "b".repeat(64),
+      profileCanonicalSha256: "c".repeat(64),
+    })
+    expect(release.profileFileSha256).toBe("b".repeat(64))
+    expect(() => releaseProfileSchema.parse({ ...release, profileFileSha256: undefined })).toThrow()
+  })
+
   it("rejects token metadata that does not use the Bridge-wide 8 decimal contract", () => {
-    expect(() => deploymentProfileSchema.parse({
-      ...deploymentProfile,
-      icToken: { ...deploymentProfile.icToken, decimals: 6 },
-    })).toThrow()
-    expect(() => deploymentProfileSchema.parse({
-      ...deploymentProfile,
-      baseToken: { ...deploymentProfile.baseToken, decimals: 18 },
-    })).toThrow()
+    expect(() =>
+      deploymentProfileSchema.parse({
+        ...deploymentProfile,
+        icToken: { ...deploymentProfile.icToken, decimals: 6 },
+      }),
+    ).toThrow()
+    expect(() =>
+      deploymentProfileSchema.parse({
+        ...deploymentProfile,
+        baseToken: { ...deploymentProfile.baseToken, decimals: 18 },
+      }),
+    ).toThrow()
   })
 
   it("requires reviewed history RPCs for Sepolia staging", () => {
-    expect(() => deploymentProfileSchema.parse({
-      ...deploymentProfile,
-      environment: "sepolia-staging",
-      environmentMode: "short-delay-test-only",
-      activationTimelockDelaySeconds: 300,
-      bridgeCanisterId: "aaaaa-aa",
-      deploymentInstanceId: `0x${"99".repeat(32)}`,
-      minimumWithdrawalId: `0x${"00".repeat(31)}01`,
-      ledgerCanisterId: "aaaaa-aa",
-      indexCanisterId: "aaaaa-aa",
-      evmRpcCanisterId: "7hfb6-caaaa-aaaar-qadga-cai",
-      baseHistoryRpcUrls: undefined,
-    })).toThrow("reviewed Base history RPC URLs")
+    expect(() =>
+      deploymentProfileSchema.parse({
+        ...deploymentProfile,
+        environment: "sepolia-staging",
+        environmentMode: "short-delay-test-only",
+        activationTimelockDelaySeconds: 300,
+        bridgeCanisterId: "aaaaa-aa",
+        deploymentInstanceId: `0x${"99".repeat(32)}`,
+        minimumWithdrawalId: `0x${"00".repeat(31)}01`,
+        ledgerCanisterId: "aaaaa-aa",
+        indexCanisterId: "aaaaa-aa",
+        evmRpcCanisterId: "7hfb6-caaaa-aaaar-qadga-cai",
+        baseHistoryRpcUrls: undefined,
+      }),
+    ).toThrow("reviewed Base history RPC URLs")
   })
 
   it("rejects duplicate history RPC URLs", () => {
-    expect(() => deploymentProfileSchema.parse({
-      ...deploymentProfile,
-      baseHistoryRpcUrls: ["https://history.example", "https://history.example/"],
-    })).toThrow("Base history RPC URLs must be distinct")
+    expect(() =>
+      deploymentProfileSchema.parse({
+        ...deploymentProfile,
+        baseHistoryRpcUrls: ["https://history.example", "https://history.example/"],
+      }),
+    ).toThrow("Base history RPC URLs must be distinct")
   })
 
   it("rejects a zero deployment instance ID", () => {
-    expect(() => deploymentProfileSchema.parse({
-      ...deploymentProfile,
-      deploymentInstanceId: `0x${"00".repeat(32)}`,
-      minimumWithdrawalId: `0x${"00".repeat(31)}01`,
-    })).toThrow("hash must be nonzero")
+    expect(() =>
+      deploymentProfileSchema.parse({
+        ...deploymentProfile,
+        deploymentInstanceId: `0x${"00".repeat(32)}`,
+        minimumWithdrawalId: `0x${"00".repeat(31)}01`,
+      }),
+    ).toThrow("hash must be nonzero")
   })
 
-  it("fails closed for a production profile without Gate B deployment binding", () => {
+  it("requires the operational history start without exposing release management metadata", () => {
     const blockers = profileCompleteness({
       ...deploymentProfile,
       testOnly: false,
       deploymentBlock: 0n,
-      gateBManifestSha256: null,
     })
-    expect(blockers).toContain("Production deployment block is not Gate B bound")
-    expect(blockers).toContain("Verified Gate B manifest SHA-256 is missing")
+    expect(blockers).toContain("Deployment history start block is missing")
+    expect(blockers.join(" ")).not.toMatch(/Gate B|manifest|SHA-256/i)
     expect(blockers).toContain("KINIC SNS Root ID is missing")
   })
 })

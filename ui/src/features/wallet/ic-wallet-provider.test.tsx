@@ -22,12 +22,16 @@ vi.mock("@/config/profile", () => ({
 
 vi.mock("@/lib/ic/wallet", () => ({
   OisyAdapter: class {
-    constructor(...args: unknown[]) { mocks.oisyConstructed(...args) }
+    constructor(...args: unknown[]) {
+      mocks.oisyConstructed(...args)
+    }
     connect = mocks.connect
     disconnect = mocks.disconnect
   },
   PlugAdapter: class {
-    constructor(...args: unknown[]) { mocks.plugConstructed(...args) }
+    constructor(...args: unknown[]) {
+      mocks.plugConstructed(...args)
+    }
     connect = mocks.connect
     disconnect = mocks.disconnect
   },
@@ -35,13 +39,19 @@ vi.mock("@/lib/ic/wallet", () => ({
 
 function Probe() {
   const wallet = useIcWallet()
-  return <div>
-    <span>signed:{wallet.account?.owner ?? "none"}</span>
-    <span>history:{wallet.historyAccount?.owner ?? "none"}</span>
-    <span>adapter:{wallet.adapter ? "ready" : "none"}</span>
-    <button type="button" onClick={() => void wallet.connect("oisy")}>Connect test wallet</button>
-    <button type="button" onClick={() => void wallet.disconnect()}>Disconnect test wallet</button>
-  </div>
+  return (
+    <div>
+      <span>signed:{wallet.account?.owner ?? "none"}</span>
+      <span>history:{wallet.historyAccount?.owner ?? "none"}</span>
+      <span>adapter:{wallet.adapter ? "ready" : "none"}</span>
+      <button type="button" onClick={() => void wallet.connect("oisy")}>
+        Connect test wallet
+      </button>
+      <button type="button" onClick={() => void wallet.disconnect()}>
+        Disconnect test wallet
+      </button>
+    </div>
+  )
 }
 
 describe("IC wallet history restoration", () => {
@@ -57,29 +67,47 @@ describe("IC wallet history restoration", () => {
 
   it("restores the remembered OISY account without opening the signer", () => {
     saveIcHistoryOwner({ account: { owner: "aaaaa-aa" }, provider: "oisy" })
-    render(<IcWalletProviderRoot><Probe /></IcWalletProviderRoot>)
+    render(
+      <IcWalletProviderRoot>
+        <Probe />
+      </IcWalletProviderRoot>,
+    )
 
     expect(screen.getByText("signed:aaaaa-aa")).toBeVisible()
     expect(screen.getByText("history:aaaaa-aa")).toBeVisible()
     expect(screen.getByText("adapter:ready")).toBeVisible()
     expect(mocks.oisyConstructed).toHaveBeenCalledOnce()
-    expect(mocks.oisyConstructed.mock.calls[0]?.[4]).toEqual({ owner: "aaaaa-aa", subaccount: undefined })
+    expect(mocks.oisyConstructed.mock.calls[0]?.[4]).toEqual({
+      owner: "aaaaa-aa",
+      subaccount: undefined,
+    })
     expect(mocks.connect).not.toHaveBeenCalled()
   })
 
   it("restores the remembered Plug account without requesting a new connection", () => {
     saveIcHistoryOwner({ account: { owner: "aaaaa-aa" }, provider: "plug" })
-    render(<IcWalletProviderRoot><Probe /></IcWalletProviderRoot>)
+    render(
+      <IcWalletProviderRoot>
+        <Probe />
+      </IcWalletProviderRoot>,
+    )
 
     expect(screen.getByText("signed:aaaaa-aa")).toBeVisible()
     expect(screen.getByText("adapter:ready")).toBeVisible()
     expect(mocks.plugConstructed).toHaveBeenCalledOnce()
-    expect(mocks.plugConstructed.mock.calls[0]?.[3]).toEqual({ owner: "aaaaa-aa", subaccount: undefined })
+    expect(mocks.plugConstructed.mock.calls[0]?.[3]).toEqual({
+      owner: "aaaaa-aa",
+      subaccount: undefined,
+    })
     expect(mocks.connect).not.toHaveBeenCalled()
   })
 
   it("updates remembered history on connect and clears it on disconnect", async () => {
-    render(<IcWalletProviderRoot><Probe /></IcWalletProviderRoot>)
+    render(
+      <IcWalletProviderRoot>
+        <Probe />
+      </IcWalletProviderRoot>,
+    )
 
     fireEvent.click(screen.getByRole("button", { name: "Connect test wallet" }))
     expect(await screen.findByText("signed:2vxsx-fae")).toBeVisible()

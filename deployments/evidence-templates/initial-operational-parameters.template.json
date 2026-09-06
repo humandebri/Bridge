@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "environment": "mainnet-candidate",
+  "chain_id": 8453,
+  "bridge_canister_id": "<production-bridge-canister-id>",
+  "bridge_contract": "<base-bridge-address>",
+  "timelock_contract": "<base-timelock-address>",
+  "profile_sha256": "<canonical-profile-64-hex>",
+  "gas_estimates": [
+    { "action": "schedule_activation", "calldata_hex": "4449444c0000", "gas": "1", "block_number": 1, "block_hash": "<nonzero-0x-64-hex>", "observed_at_unix": 0, "source_ref": "replace-with-exact-schedule-estimate-artifact" },
+    { "action": "execute_activation", "calldata_hex": "4449444c0000", "gas": "1", "block_number": 1, "block_hash": "<nonzero-0x-64-hex>", "observed_at_unix": 0, "source_ref": "replace-with-exact-execute-estimate-artifact" }
+  ],
+  "fee_samples": [
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "block_number": 1, "block_hash": "<nonzero-0x-64-hex-01>", "observed_at_unix": 0, "source_ref": "replace-with-finalized-fee-sample-01" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "block_number": 2, "block_hash": "<nonzero-0x-64-hex-02>", "observed_at_unix": 0, "source_ref": "replace-with-finalized-fee-sample-02" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "block_number": 3, "block_hash": "<nonzero-0x-64-hex-03>", "observed_at_unix": 0, "source_ref": "replace-with-finalized-fee-sample-03" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "block_number": 4, "block_hash": "<nonzero-0x-64-hex-04>", "observed_at_unix": 0, "source_ref": "replace-with-finalized-fee-sample-04" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "block_number": 5, "block_hash": "<nonzero-0x-64-hex-05>", "observed_at_unix": 0, "source_ref": "replace-with-finalized-fee-sample-05" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "block_number": 6, "block_hash": "<nonzero-0x-64-hex-06>", "observed_at_unix": 0, "source_ref": "replace-with-finalized-fee-sample-06" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "block_number": 7, "block_hash": "<nonzero-0x-64-hex-07>", "observed_at_unix": 0, "source_ref": "replace-with-finalized-fee-sample-07" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "block_number": 8, "block_hash": "<nonzero-0x-64-hex-08>", "observed_at_unix": 0, "source_ref": "replace-with-finalized-fee-sample-08" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "block_number": 9, "block_hash": "<nonzero-0x-64-hex-09>", "observed_at_unix": 0, "source_ref": "replace-with-finalized-fee-sample-09" },
+    { "base_fee_per_gas": "1", "priority_fee_per_gas": "1", "l1_fee_upper_bound_wei": "1", "block_number": 10, "block_hash": "<nonzero-0x-64-hex-10>", "observed_at_unix": 0, "source_ref": "replace-with-finalized-fee-sample-10" }
+  ],
+  "idle_cycles_burned_per_day": "1",
+  "idle_cycles_observed_at_unix": 0,
+  "idle_cycles_source_ref": "replace-with-icp-canister-status-artifact",
+  "expected_daily_settlements": 1,
+  "settlement_cycle_ceiling": "5000000000",
+  "derived": {
+    "gas_limit_ceiling": "0",
+    "max_fee_per_gas_ceiling": "0",
+    "max_priority_fee_per_gas_ceiling": "0",
+    "l1_fee_per_transaction_ceiling_wei": "0",
+    "quote_validity_seconds": 90,
+    "gas_limit_multiplier_bps": 13000,
+    "base_fee_multiplier_bps": 60000,
+    "l1_fee_multiplier_bps": 15000,
+    "cycles_floor": "0",
+    "settlement_cycle_ceiling": "5000000000"
+  }
+}

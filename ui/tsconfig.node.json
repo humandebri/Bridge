@@ -17,5 +17,12 @@
     "noUnusedParameters": true,
     "types": ["node", "vite/client"]
   },
-  "include": ["vite.config.ts", "vite.real.config.ts", "vitest.config.ts", "playwright.config.ts", "playwright.real.config.ts", "eslint.config.js", "scripts"]
+  "include": [
+    "vite.config.ts",
+    "vite.real.config.ts",
+    "vitest.config.ts",
+    "playwright.config.ts",
+    "playwright.real.config.ts",
+    "scripts"
+  ]
 }

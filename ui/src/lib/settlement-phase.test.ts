@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest"
 import type { DepositView } from "@/generated/bridge.did"
-import { authorizationDeadlineRefundStatus, depositContinuation, depositPhaseName, depositPhaseTone, depositReconciliationMessage, depositUsesPendingMintStatus, isDepositPhase, isDepositTerminal, isSettlementActionResult, isWithdrawalTerminal, settlementStateName, withdrawalPhaseName } from "./settlement-phase"
+import {
+  authorizationDeadlineRefundStatus,
+  depositContinuation,
+  depositPhaseName,
+  depositPhaseTone,
+  depositReconciliationMessage,
+  depositUsesPendingMintStatus,
+  isDepositPhase,
+  isDepositTerminal,
+  isSettlementActionResult,
+  isWithdrawalTerminal,
+  settlementStateName,
+  withdrawalPhaseName,
+} from "./settlement-phase"
 
 describe("settlement phase helpers", () => {
   it("preserves public display names and terminal tones", () => {
@@ -19,44 +32,101 @@ describe("settlement phase helpers", () => {
   it("rejects unknown and malformed runtime variants", () => {
     expect(isDepositPhase({ FuturePhase: null })).toBe(false)
     expect(isDepositPhase({ Minted: "not null" })).toBe(false)
-    expect(isSettlementActionResult({ Complete: { state: { Deposit: { Minted: null } } } })).toBe(true)
-    expect(isSettlementActionResult({ Complete: { state: { Deposit: { FuturePhase: null } } } })).toBe(false)
-    expect(isSettlementActionResult({ Complete: { state: { Deposit: { Minted: null } }, extra: true } })).toBe(false)
-    expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } } } })).toBe(false)
-    expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } }, reason: { LedgerFeeExceedsServiceFee: null } } })).toBe(true)
-    expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } }, reason: { RpcUnavailable: null } } })).toBe(true)
-    expect(isSettlementActionResult({ Stopped: { state: { Deposit: { AuthorizationPending: null } }, reason: { AuthorizationExpired: null } } })).toBe(true)
-    expect(isSettlementActionResult({ Stopped: { state: { Deposit: { AuthorizationPending: null } }, reason: { AuthorizationWindowTooShort: null } } })).toBe(true)
-    expect(isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } }, reason: { LedgerRejected: null } } })).toBe(false)
-    expect(isSettlementActionResult({ Submitted: { state: { Deposit: { AuthorizationPending: null } }, transaction_hash: new Uint8Array(32) } })).toBe(false)
+    expect(isSettlementActionResult({ Complete: { state: { Deposit: { Minted: null } } } })).toBe(
+      true,
+    )
+    expect(
+      isSettlementActionResult({ Complete: { state: { Deposit: { FuturePhase: null } } } }),
+    ).toBe(false)
+    expect(
+      isSettlementActionResult({ Complete: { state: { Deposit: { Minted: null } }, extra: true } }),
+    ).toBe(false)
+    expect(
+      isSettlementActionResult({ Stopped: { state: { Withdrawal: { Observed: null } } } }),
+    ).toBe(false)
+    expect(
+      isSettlementActionResult({
+        Stopped: {
+          state: { Withdrawal: { Observed: null } },
+          reason: { LedgerFeeExceedsServiceFee: null },
+        },
+      }),
+    ).toBe(true)
+    expect(
+      isSettlementActionResult({
+        Stopped: { state: { Withdrawal: { Observed: null } }, reason: { RpcUnavailable: null } },
+      }),
+    ).toBe(true)
+    expect(
+      isSettlementActionResult({
+        Stopped: {
+          state: { Deposit: { AuthorizationPending: null } },
+          reason: { AuthorizationExpired: null },
+        },
+      }),
+    ).toBe(true)
+    expect(
+      isSettlementActionResult({
+        Stopped: {
+          state: { Deposit: { AuthorizationPending: null } },
+          reason: { AuthorizationWindowTooShort: null },
+        },
+      }),
+    ).toBe(true)
+    expect(
+      isSettlementActionResult({
+        Stopped: { state: { Withdrawal: { Observed: null } }, reason: { LedgerRejected: null } },
+      }),
+    ).toBe(false)
+    expect(
+      isSettlementActionResult({
+        Submitted: {
+          state: { Deposit: { AuthorizationPending: null } },
+          transaction_hash: new Uint8Array(32),
+        },
+      }),
+    ).toBe(false)
   })
 
   it("distinguishes finalized confirmation, RPC stops, and audit stops", () => {
     const phase = { RefundAvailable: null } as const
     expect(depositReconciliationMessage(phase)).toBeUndefined()
-    expect(depositReconciliationMessage(phase, { RpcUnavailable: null })).toBe("Base RPC confirmation stopped — requesting again is safe")
-    expect(depositReconciliationMessage(phase, { BaseStateMismatch: null })).toBe("Mint evidence requires audit — refund is blocked")
+    expect(depositReconciliationMessage(phase, { RpcUnavailable: null })).toBe(
+      "Base RPC confirmation stopped — requesting again is safe",
+    )
+    expect(depositReconciliationMessage(phase, { BaseStateMismatch: null })).toBe(
+      "Mint evidence requires audit — refund is blocked",
+    )
   })
 
   it("derives_automatic_retry_refund_and_blocked_authorization_recovery_from_canonical_facts", () => {
-    const record = (reason: DepositView["last_settlement_stop_reason"], automatic = false) => ({
-      state: { AuthorizationPending: null },
-      last_settlement_stop_reason: reason,
-      automatic_progress: automatic ? [{ state: { Scheduled: { next_run_at_ns: 10n } } }] : [],
-    }) as DepositView
+    const record = (reason: DepositView["last_settlement_stop_reason"], automatic = false) =>
+      ({
+        state: { AuthorizationPending: null },
+        last_settlement_stop_reason: reason,
+        automatic_progress: automatic ? [{ state: { Scheduled: { next_run_at_ns: 10n } } }] : [],
+      }) as DepositView
 
     expect(depositContinuation(record([{ SigningUnavailable: null }], true)).mode).toBe("automatic")
-    expect(depositContinuation(record([{ RpcInconsistent: null }])).action).toBe("retry-authorization")
-    expect(depositContinuation(record([{ AuthorizationExpired: null }])).action).toBe("request-refund")
+    expect(depositContinuation(record([{ RpcInconsistent: null }])).action).toBe(
+      "retry-authorization",
+    )
+    expect(depositContinuation(record([{ AuthorizationExpired: null }])).action).toBe(
+      "request-refund",
+    )
     const shortWindow = depositContinuation(record([{ AuthorizationWindowTooShort: null }]))
     expect(shortWindow).toMatchObject({
       mode: "stopped",
       action: "request-refund",
     })
     expect(shortWindow.message).toContain("Wait for finalized Base time")
-    expect(depositContinuation(record([{ BridgeSignerMismatch: null }]))).toMatchObject({ mode: "stopped" })
+    expect(depositContinuation(record([{ BridgeSignerMismatch: null }]))).toMatchObject({
+      mode: "stopped",
+    })
     expect(depositContinuation(record([{ BridgeSignerMismatch: null }])).action).toBeUndefined()
-    expect(depositContinuation(record([{ Unknown: "future stop" }])).message).toContain("future stop")
+    expect(depositContinuation(record([{ Unknown: "future stop" }])).message).toContain(
+      "future stop",
+    )
 
     const refundRecord = {
       ...record([{ RpcUnavailable: null }]),

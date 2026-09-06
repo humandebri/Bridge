@@ -32,7 +32,9 @@ describe("latest bridge progress persistence", () => {
     saveLatestBridgeProgress(record)
 
     const storage = browserLocalStorage()
-    const stored = Array.from({ length: storage.length }, (_, index) => storage.getItem(storage.key(index)!))[0]!
+    const stored = Array.from({ length: storage.length }, (_, index) =>
+      storage.getItem(storage.key(index)!),
+    )[0]!
     expect(stored).toContain('"version":3')
     expect(stored).toContain('"tokenApproval":"not-required"')
     expect(stored).not.toContain("base-mint-finalizing")
@@ -94,7 +96,10 @@ describe("latest bridge progress persistence", () => {
       deposit: { owner: "aaaaa-aa", ownerSequence: "3", depositId: `0x${"07".repeat(32)}` },
     })
     saveLatestBridgeProgress(accepted)
-    expect(readLatestBridgeProgress()).toMatchObject({ phase: "authorization-generating", deposit: accepted.deposit })
+    expect(readLatestBridgeProgress()).toMatchObject({
+      phase: "authorization-generating",
+      deposit: accepted.deposit,
+    })
 
     const attention = createBridgeProgress({
       direction: "withdraw",
@@ -109,7 +114,10 @@ describe("latest bridge progress persistence", () => {
       attentionMessage: "The Base transaction reverted.",
     })
     saveLatestBridgeProgress(attention)
-    expect(readLatestBridgeProgress()).toMatchObject({ phase: "attention", attentionMessage: attention.attentionMessage })
+    expect(readLatestBridgeProgress()).toMatchObject({
+      phase: "attention",
+      attentionMessage: attention.attentionMessage,
+    })
   })
 
   it("rejects malformed nested identities from browser storage", () => {
@@ -150,21 +158,24 @@ describe("latest bridge progress persistence", () => {
     saveLatestBridgeProgress(current)
     const storage = browserLocalStorage()
     const key = storage.key(0)!
-    storage.setItem(key, JSON.stringify({
-      version: 2,
-      id: current.id,
-      direction: "withdraw",
-      phase: "base-withdrawal-submitted",
-      source: "0x0000000000000000000000000000000000000002",
-      destination: "aaaaa-aa",
-      sendAmount: "2",
-      receiveAmount: "1.5",
-      sendSymbol: "KINIC",
-      receiveSymbol: "TICRC1",
-      createdAt: 1,
-      transactionHash: `0x${"33".repeat(32)}`,
-      withdrawal: { owner: "aaaaa-aa" },
-    }))
+    storage.setItem(
+      key,
+      JSON.stringify({
+        version: 2,
+        id: current.id,
+        direction: "withdraw",
+        phase: "base-withdrawal-submitted",
+        source: "0x0000000000000000000000000000000000000002",
+        destination: "aaaaa-aa",
+        sendAmount: "2",
+        receiveAmount: "1.5",
+        sendSymbol: "KINIC",
+        receiveSymbol: "TICRC1",
+        createdAt: 1,
+        transactionHash: `0x${"33".repeat(32)}`,
+        withdrawal: { owner: "aaaaa-aa" },
+      }),
+    )
 
     expect(readLatestBridgeProgress()).toBeUndefined()
   })
@@ -262,10 +273,22 @@ describe("latest bridge progress persistence", () => {
       { label: "Ledger payout", status: "waiting" },
       { label: "Complete", status: "waiting" },
     ])
-    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-base-allowance" })[1]).toEqual({ label: "Base token approval", status: "current" })
-    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-base-withdrawal" })[2]).toEqual({ label: "Base withdrawal transaction", status: "current" })
-    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-ic-notification" })[4]).toEqual({ label: "IC notification", status: "current" })
-    expect(bridgeProgressSteps({ ...withdrawal, phase: "ledger-payout" })[5]).toEqual({ label: "Ledger payout", status: "current" })
+    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-base-allowance" })[1]).toEqual({
+      label: "Base token approval",
+      status: "current",
+    })
+    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-base-withdrawal" })[2]).toEqual({
+      label: "Base withdrawal transaction",
+      status: "current",
+    })
+    expect(bridgeProgressSteps({ ...withdrawal, phase: "awaiting-ic-notification" })[4]).toEqual({
+      label: "IC notification",
+      status: "current",
+    })
+    expect(bridgeProgressSteps({ ...withdrawal, phase: "ledger-payout" })[5]).toEqual({
+      label: "Ledger payout",
+      status: "current",
+    })
   })
 
   it("marks every Withdrawal step complete after the payout reaches its terminal state", () => {
@@ -309,9 +332,18 @@ describe("latest bridge progress persistence", () => {
       withdrawal: { owner: "aaaaa-aa" },
     })
 
-    expect(bridgeProgressSteps(withdrawal)[1]).toEqual({ label: "Base token approval", status: "complete", note: "Not required" })
-    expect(bridgeProgressSteps(withdrawal)[2]).toEqual({ label: "Base withdrawal transaction", status: "attention" })
-    expect(bridgeProgressSteps({ ...withdrawal, attentionPhase: "verifying-ic-destination" })[0]).toEqual({ label: "IC destination verification", status: "attention" })
+    expect(bridgeProgressSteps(withdrawal)[1]).toEqual({
+      label: "Base token approval",
+      status: "complete",
+      note: "Not required",
+    })
+    expect(bridgeProgressSteps(withdrawal)[2]).toEqual({
+      label: "Base withdrawal transaction",
+      status: "attention",
+    })
+    expect(
+      bridgeProgressSteps({ ...withdrawal, attentionPhase: "verifying-ic-destination" })[0],
+    ).toEqual({ label: "IC destination verification", status: "attention" })
   })
 
   it("reports exact Withdrawal finality block progress without changing Deposit presentation", () => {

@@ -2,7 +2,14 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { createBridgeActor } from "@/lib/ic/bridge"
-import { RUNTIME_VALIDATION_TTL_MS, runtimeProfileFingerprint, validateRuntime, validateRuntimeHeartbeat, type FinalizedRuntimeObservation, type RuntimeValidation } from "@/lib/runtime-validation"
+import {
+  RUNTIME_VALIDATION_TTL_MS,
+  runtimeProfileFingerprint,
+  validateRuntime,
+  validateRuntimeHeartbeat,
+  type FinalizedRuntimeObservation,
+  type RuntimeValidation,
+} from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
 
 interface AutomaticQueryOptions {
@@ -44,8 +51,13 @@ export function useRuntimeValidation(chainId?: number, options: AutomaticQueryOp
           )
         }
         return validation
+      } catch (error) {
+        return {
+          ready: false,
+          checkedAt: Date.now(),
+          blockers: [error instanceof Error ? error.message : "Runtime validation failed"],
+        }
       }
-      catch (error) { return { ready: false, checkedAt: Date.now(), blockers: [error instanceof Error ? error.message : "Runtime validation failed"] } }
     },
     enabled,
     gcTime,
@@ -54,7 +66,11 @@ export function useRuntimeValidation(chainId?: number, options: AutomaticQueryOp
   return query
 }
 
-export function useRuntimeHeartbeat(chainId: number | undefined, initialValidation: RuntimeValidation | undefined, options: RuntimeHeartbeatQueryOptions = {}) {
+export function useRuntimeHeartbeat(
+  chainId: number | undefined,
+  initialValidation: RuntimeValidation | undefined,
+  options: RuntimeHeartbeatQueryOptions = {},
+) {
   const queryClient = useQueryClient()
   const {
     enabled = false,
@@ -74,7 +90,8 @@ export function useRuntimeHeartbeat(chainId: number | undefined, initialValidati
         if (deploymentProfile.testOnly) console.warn("Runtime heartbeat failed:", error)
         throw error
       }
-      if (!validation.ready && deploymentProfile.testOnly) console.warn("Runtime heartbeat blockers:", validation.blockers.join("; "))
+      if (!validation.ready && deploymentProfile.testOnly)
+        console.warn("Runtime heartbeat blockers:", validation.blockers.join("; "))
       if (validation.status) {
         queryClient.setQueryData(
           ["bridge-status", deploymentProfile.bridgeCanisterId],
@@ -99,7 +116,10 @@ export function useBridgeStatus() {
     queryKey: ["bridge-status", deploymentProfile.bridgeCanisterId],
     enabled: false,
     queryFn: async () => {
-      const actor = await createBridgeActor(deploymentProfile.icHost, deploymentProfile.bridgeCanisterId as string)
+      const actor = await createBridgeActor(
+        deploymentProfile.icHost,
+        deploymentProfile.bridgeCanisterId as string,
+      )
       return actor.get_bridge_status()
     },
   })
@@ -118,7 +138,11 @@ export function useCurrentBaseQuote(options: AutomaticQueryOptions = {}) {
     queryFn: async () => {
       const client = basePublicClient
       const address = deploymentProfile.bridgeAddress as `0x${string}`
-      const snapshot = await client.readContract({ address, abi: bridgeAbi, functionName: "bridgeSnapshot" })
+      const snapshot = await client.readContract({
+        address,
+        abi: bridgeAbi,
+        functionName: "bridgeSnapshot",
+      })
       return bridgeSnapshotView(snapshot)
     },
   })

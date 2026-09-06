@@ -147,7 +147,13 @@ assert receipt['timelock_deployment_block_number']==1
 assert receipt['timelock_deployment_block_hash']=='0x'+'d'*64
 PY
 cp "$TEST_TMP_ROOT/receipt.json.post-deploy-profile.json" "$TEST_TMP_ROOT/bundle-b/profile.json"
+python3 - "$TEST_TMP_ROOT/bundle-b/profile.json" <<'PY'
+import json,sys
+p=sys.argv[1]; value=json.load(open(p)); value['initial_operational_parameters']='sealed'
+json.dump(value,open(p,'w'),sort_keys=True,separators=(',',':'))
+PY
 POST_PROFILE_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/profile.json" | awk '{print $1}')"
+[[ "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["post_deploy_profile_sha256"])' "$TEST_TMP_ROOT/receipt.json")" != "$POST_PROFILE_SHA256" ]]
 python3 - "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$POST_PROFILE_SHA256" <<'PY'
 import json,sys
 p=sys.argv[1]; value=json.load(open(p))
@@ -158,12 +164,30 @@ python3 -c 'import json,sys; json.dump({"profile_file_sha256":sys.argv[2]},open(
   "$TEST_TMP_ROOT/release-inputs/release-inputs-manifest.json" "$POST_PROFILE_SHA256"
 cp "$TEST_TMP_ROOT/receipt.json" "$TEST_TMP_ROOT/bundle-b/gate-a-receipt.json"
 GATE_RECEIPT_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/gate-a-receipt.json" | awk '{print $1}')"
-python3 - "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$GATE_RECEIPT_SHA256" <<'PY'
+printf '{"from_source_revision":"%s","from_source_tree_sha256":"%s","to_source_revision":"%s","to_source_tree_sha256":"%s"}\n' \
+  "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" "$SOURCE_REVISION" "$SOURCE_TREE_SHA256" \
+  >"$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json"
+TRANSITION_SHA256="$(shasum -a 256 "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" | awk '{print $1}')"
+python3 - "$TEST_TMP_ROOT/bundle-b/release-manifest.json" "$GATE_RECEIPT_SHA256" "$TRANSITION_SHA256" <<'PY'
 import json,sys
-p=sys.argv[1]; value=json.load(open(p)); value['artifacts'].append({'path':'gate-a-receipt.json','sha256':sys.argv[2]})
+p=sys.argv[1]; value=json.load(open(p)); value['artifacts'].extend([
+    {'path':'gate-a-receipt.json','sha256':sys.argv[2]},
+    {'path':'post-gate-a-policy-transition.json','sha256':sys.argv[3]},
+])
 json.dump(value,open(p,'w'),sort_keys=True,separators=(',',':'))
 PY
 rg -q '^validate-bundle --offline ' "$TEST_TMP_ROOT/gate-calls"
+
+cp "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" "$TEST_TMP_ROOT/transition-valid.json"
+python3 - "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json" <<'PY'
+import json,sys
+p=sys.argv[1]; value=json.load(open(p)); value['to_source_revision']='f'*40
+json.dump(value,open(p,'w'),sort_keys=True,separators=(',',':'))
+PY
+write_gate 0
+expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \
+  --release-inputs "$TEST_TMP_ROOT/release-inputs" "${ACTIVATION_ARGS[@]}" -- "$TEST_TMP_ROOT/source/scripts/production-activate-driver.sh"
+mv "$TEST_TMP_ROOT/transition-valid.json" "$TEST_TMP_ROOT/bundle-b/post-gate-a-policy-transition.json"
 
 write_gate 1
 expect_rejected activate --bundle "$TEST_TMP_ROOT/bundle-b" --receipt "$TEST_TMP_ROOT/receipt.json" \

@@ -2,9 +2,21 @@ import { IDL } from "@icp-sdk/core/candid"
 import { IcrcWallet } from "@dfinity/oisy-wallet-signer/icrc-wallet"
 import { base64ToUint8Array, uint8ArrayToBase64 } from "@dfinity/utils"
 import type { ApproveParams } from "@icp-sdk/canisters/ledger/icrc"
-import { AnonymousIdentity, Cbor, Certificate, HttpAgent, lookupResultToBuffer, requestIdOf } from "@icp-sdk/core/agent"
+import {
+  AnonymousIdentity,
+  Cbor,
+  Certificate,
+  HttpAgent,
+  lookupResultToBuffer,
+  requestIdOf,
+} from "@icp-sdk/core/agent"
 import { Principal } from "@icp-sdk/core/principal"
-import type { _SERVICE, DepositReceipt, DepositView, SettlementActionResult } from "@/generated/bridge.did"
+import type {
+  _SERVICE,
+  DepositReceipt,
+  DepositView,
+  SettlementActionResult,
+} from "@/generated/bridge.did"
 import { idlFactory } from "@/generated/bridge.idl"
 import { isDepositPhase, isSettlementActionResult } from "@/lib/settlement-phase"
 
@@ -15,9 +27,21 @@ const BRIDGE_SERVICE = idlFactory({ IDL })
 type BridgeWalletMethod = "continue_deposit" | "request_deposit" | "request_deposit_refund"
 
 export type IcWalletProvider = "oisy" | "plug"
-export interface IcAccount { owner: string; subaccount?: Uint8Array }
-export interface DepositCall { ownerSequence: bigint; baseRecipient: Uint8Array; grossAmount: bigint; maxServiceFee: bigint }
-export interface ApprovalCall { amount: bigint; currentAllowance: bigint; ledgerFee: bigint }
+export interface IcAccount {
+  owner: string
+  subaccount?: Uint8Array
+}
+export interface DepositCall {
+  ownerSequence: bigint
+  baseRecipient: Uint8Array
+  grossAmount: bigint
+  maxServiceFee: bigint
+}
+export interface ApprovalCall {
+  amount: bigint
+  currentAllowance: bigint
+  ledgerFee: bigint
+}
 
 export interface IcWalletAdapter {
   readonly provider: IcWalletProvider
@@ -32,21 +56,39 @@ export interface IcWalletAdapter {
   continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult>
 }
 
-type IcrcCallCanisterRequestParams = { canisterId: string; sender: string; method: string; arg: string; nonce?: string }
+type IcrcCallCanisterRequestParams = {
+  canisterId: string
+  sender: string
+  method: string
+  arg: string
+  nonce?: string
+}
 type IcrcCallCanisterResult = { contentMap: string; certificate: string }
 type OisyOptions = { origin: string; popup: Window; onDisconnect?: () => void; host?: string }
 
 class BridgeIcrcWallet extends IcrcWallet {
-  constructor(options: OisyOptions) { super(options) }
-  static override async connect({ onDisconnect, host, ...rest }: Parameters<typeof IcrcWallet.connect>[0]): Promise<BridgeIcrcWallet> {
-    return BridgeIcrcWallet.connectSigner({ options: rest, init: (params) => new BridgeIcrcWallet({ ...params, onDisconnect, host }) })
+  constructor(options: OisyOptions) {
+    super(options)
+  }
+  static override async connect({
+    onDisconnect,
+    host,
+    ...rest
+  }: Parameters<typeof IcrcWallet.connect>[0]): Promise<BridgeIcrcWallet> {
+    return BridgeIcrcWallet.connectSigner({
+      options: rest,
+      init: (params) => new BridgeIcrcWallet({ ...params, onDisconnect, host }),
+    })
   }
   callCanister(params: IcrcCallCanisterRequestParams): Promise<IcrcCallCanisterResult> {
     return this.call({ params, options: { timeoutInMilliseconds: CALL_TIMEOUT_MS } })
   }
 }
 
-type OisyWalletSession = Pick<BridgeIcrcWallet, "accounts" | "approve" | "callCanister" | "disconnect" | "requestPermissionsNotGranted">
+type OisyWalletSession = Pick<
+  BridgeIcrcWallet,
+  "accounts" | "approve" | "callCanister" | "disconnect" | "requestPermissionsNotGranted"
+>
 
 export class OisyAdapter implements IcWalletAdapter {
   readonly provider = "oisy" as const
@@ -57,7 +99,12 @@ export class OisyAdapter implements IcWalletAdapter {
     private readonly host: string,
     private readonly ledgerCanisterId: string,
     private readonly bridgeCanisterId: string,
-    private readonly connectWallet: () => Promise<OisyWalletSession> = () => BridgeIcrcWallet.connect({ url: OISY_SIGNER_URL, host, connectionOptions: { timeoutInMilliseconds: CALL_TIMEOUT_MS } }),
+    private readonly connectWallet: () => Promise<OisyWalletSession> = () =>
+      BridgeIcrcWallet.connect({
+        url: OISY_SIGNER_URL,
+        host,
+        connectionOptions: { timeoutInMilliseconds: CALL_TIMEOUT_MS },
+      }),
     restoredAccount?: IcAccount,
   ) {
     this.#account = restoredAccount ? copyAccount(restoredAccount) : undefined
@@ -131,27 +178,58 @@ export class OisyAdapter implements IcWalletAdapter {
         from_subaccount: account.subaccount,
         spender: { owner: Principal.fromText(this.bridgeCanisterId), subaccount: [] },
       }
-      return wallet.approve({ owner: account.owner, ledgerCanisterId: this.ledgerCanisterId, params })
+      return wallet.approve({
+        owner: account.owner,
+        ledgerCanisterId: this.ledgerCanisterId,
+        params,
+      })
     })
   }
 
   async requestDeposit(call: DepositCall): Promise<DepositReceipt> {
-    return unwrapDepositResult(await this.bridgeCall("request_deposit", (account) => [{ owner_sequence: call.ownerSequence, base_recipient: call.baseRecipient, from_subaccount: account.subaccount ? [account.subaccount] : [], gross_amount: call.grossAmount, max_service_fee: call.maxServiceFee }]))
+    return unwrapDepositResult(
+      await this.bridgeCall("request_deposit", (account) => [
+        {
+          owner_sequence: call.ownerSequence,
+          base_recipient: call.baseRecipient,
+          from_subaccount: account.subaccount ? [account.subaccount] : [],
+          gross_amount: call.grossAmount,
+          max_service_fee: call.maxServiceFee,
+        },
+      ]),
+    )
   }
 
   async requestDepositRefund(depositId: Uint8Array): Promise<DepositView> {
-    return unwrapRequestDepositRefundResult(await this.bridgeCall("request_deposit_refund", () => [depositId]))
+    return unwrapRequestDepositRefundResult(
+      await this.bridgeCall("request_deposit_refund", () => [depositId]),
+    )
   }
 
   async continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult> {
     return unwrapContinueDepositResult(await this.bridgeCall("continue_deposit", () => [depositId]))
   }
 
-  private async bridgeCall(method: BridgeWalletMethod, createArgs: (account: IcAccount) => unknown[] = () => []): Promise<unknown> {
+  private async bridgeCall(
+    method: BridgeWalletMethod,
+    createArgs: (account: IcAccount) => unknown[] = () => [],
+  ): Promise<unknown> {
     return this.withWallet(async (wallet, account) => {
       const arg = uint8ArrayToBase64(encodeBridgeCall(method, createArgs(account)))
-      const result = await wallet.callCanister({ canisterId: this.bridgeCanisterId, sender: account.owner, method, arg })
-      const reply = await verifyOisyReply({ host: this.host, canisterId: this.bridgeCanisterId, sender: account.owner, method, arg, result })
+      const result = await wallet.callCanister({
+        canisterId: this.bridgeCanisterId,
+        sender: account.owner,
+        method,
+        arg,
+      })
+      const reply = await verifyOisyReply({
+        host: this.host,
+        canisterId: this.bridgeCanisterId,
+        sender: account.owner,
+        method,
+        arg,
+        result,
+      })
       return decodeBridgeReply(method, reply)
     })
   }
@@ -161,13 +239,17 @@ export class OisyAdapter implements IcWalletAdapter {
   }
 
   private async readAccount(wallet: OisyWalletSession): Promise<IcAccount> {
-    await wallet.requestPermissionsNotGranted({ options: { timeoutInMilliseconds: CALL_TIMEOUT_MS } })
+    await wallet.requestPermissionsNotGranted({
+      options: { timeoutInMilliseconds: CALL_TIMEOUT_MS },
+    })
     const [account] = await wallet.accounts({ options: { timeoutInMilliseconds: CALL_TIMEOUT_MS } })
     if (!account) throw new Error("OISY returned no ICRC account")
     return { owner: account.owner, subaccount: parseSubaccount(account.subaccount) }
   }
 
-  private async withWallet<T>(operation: (wallet: OisyWalletSession, account: IcAccount) => Promise<T>): Promise<T> {
+  private async withWallet<T>(
+    operation: (wallet: OisyWalletSession, account: IcAccount) => Promise<T>,
+  ): Promise<T> {
     const expected = this.requiredAccount()
     const prepared = this.#session
     if (prepared) {
@@ -186,24 +268,39 @@ export class OisyAdapter implements IcWalletAdapter {
   }
 
   private assertExpectedAccount(expected: IcAccount, current: IcAccount): void {
-    if (current.owner !== expected.owner || !sameOptionalBytes(current.subaccount, expected.subaccount)) {
+    if (
+      current.owner !== expected.owner ||
+      !sameOptionalBytes(current.subaccount, expected.subaccount)
+    ) {
       throw new Error("OISY account changed; reconnect and review the transaction")
     }
   }
 
-  private requiredAccount(): IcAccount { if (!this.#account) throw new Error("Connect OISY first"); return this.#account }
+  private requiredAccount(): IcAccount {
+    if (!this.#account) throw new Error("Connect OISY first")
+    return this.#account
+  }
 }
 
-interface PlugLedgerActor { icrc2_approve(args: Record<string, unknown>): Promise<{ Ok: bigint } | { Err: unknown }> }
+interface PlugLedgerActor {
+  icrc2_approve(args: Record<string, unknown>): Promise<{ Ok: bigint } | { Err: unknown }>
+}
 interface PlugApi {
   isConnected(): Promise<boolean>
   requestConnect(options: { whitelist: string[]; host: string }): Promise<boolean>
   disconnect(): Promise<void>
   agent?: { getPrincipal(): Promise<Principal> }
-  createActor<T>(options: { canisterId: string; interfaceFactory: IDL.InterfaceFactory }): Promise<T>
+  createActor<T>(options: {
+    canisterId: string
+    interfaceFactory: IDL.InterfaceFactory
+  }): Promise<T>
 }
 
-declare global { interface Window { ic?: { plug?: PlugApi } } }
+declare global {
+  interface Window {
+    ic?: { plug?: PlugApi }
+  }
+}
 
 export class PlugAdapter implements IcWalletAdapter {
   readonly provider = "plug" as const
@@ -219,11 +316,16 @@ export class PlugAdapter implements IcWalletAdapter {
     this.#requiresUserGesture = restoredAccount !== undefined
   }
 
-  get requiresUserGesture(): boolean { return this.#requiresUserGesture }
+  get requiresUserGesture(): boolean {
+    return this.#requiresUserGesture
+  }
 
   async connect(): Promise<IcAccount> {
     const plug = requiredPlug()
-    const connected = await plug.requestConnect({ whitelist: [this.ledgerCanisterId, this.bridgeCanisterId], host: this.host })
+    const connected = await plug.requestConnect({
+      whitelist: [this.ledgerCanisterId, this.bridgeCanisterId],
+      host: this.host,
+    })
     if (!connected) throw new Error("Plug connection was rejected")
     const agent = plug.agent
     if (!agent) throw new Error("Plug did not initialize its Agent; reconnect and try again")
@@ -233,7 +335,10 @@ export class PlugAdapter implements IcWalletAdapter {
     return this.#account
   }
 
-  async disconnect(): Promise<void> { await requiredPlug().disconnect(); this.#account = undefined }
+  async disconnect(): Promise<void> {
+    await requiredPlug().disconnect()
+    this.#account = undefined
+  }
 
   async prepare(): Promise<() => Promise<void>> {
     const plug = requiredPlug()
@@ -244,7 +349,10 @@ export class PlugAdapter implements IcWalletAdapter {
       // A failed session probe requires an explicit reconnect below.
     }
     if (!connected || !plug.agent) {
-      const accepted = await plug.requestConnect({ whitelist: [this.ledgerCanisterId, this.bridgeCanisterId], host: this.host })
+      const accepted = await plug.requestConnect({
+        whitelist: [this.ledgerCanisterId, this.bridgeCanisterId],
+        host: this.host,
+      })
       if (!accepted) throw new Error("Plug connection was rejected")
     }
     await this.assertConnectedPrincipal()
@@ -252,18 +360,25 @@ export class PlugAdapter implements IcWalletAdapter {
     return () => Promise.resolve()
   }
 
-  async getAccount(): Promise<IcAccount> { return this.assertConnectedPrincipal() }
+  async getAccount(): Promise<IcAccount> {
+    return this.assertConnectedPrincipal()
+  }
 
   async approve(call: ApprovalCall): Promise<bigint> {
     const account = await this.assertConnectedPrincipal()
-    const actor = await requiredPlug().createActor<PlugLedgerActor>({ canisterId: this.ledgerCanisterId, interfaceFactory: plugLedgerIdlFactory })
+    const actor = await requiredPlug().createActor<PlugLedgerActor>({
+      canisterId: this.ledgerCanisterId,
+      interfaceFactory: plugLedgerIdlFactory,
+    })
     const result = await actor.icrc2_approve({
       from_subaccount: [],
       spender: { owner: Principal.fromText(this.bridgeCanisterId), subaccount: [] },
       amount: call.amount,
       expected_allowance: [call.currentAllowance],
       expires_at: [BigInt(Date.now() + 30 * 60 * 1000) * 1_000_000n],
-      fee: [call.ledgerFee], memo: [], created_at_time: [],
+      fee: [call.ledgerFee],
+      memo: [],
+      created_at_time: [],
     })
     if ("Err" in result) throw new Error(`Plug approval failed: ${stringify(result.Err)}`)
     await this.assertSameConnectedAccount(account, "approval")
@@ -272,7 +387,10 @@ export class PlugAdapter implements IcWalletAdapter {
 
   async requestDeposit(call: DepositCall): Promise<DepositReceipt> {
     const account = await this.assertConnectedPrincipal()
-    const actor = await requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
+    const actor = await requiredPlug().createActor<_SERVICE>({
+      canisterId: this.bridgeCanisterId,
+      interfaceFactory: idlFactory,
+    })
     const result = await actor.request_deposit({
       owner_sequence: call.ownerSequence,
       base_recipient: call.baseRecipient,
@@ -286,7 +404,10 @@ export class PlugAdapter implements IcWalletAdapter {
 
   async requestDepositRefund(depositId: Uint8Array): Promise<DepositView> {
     const account = await this.assertConnectedPrincipal()
-    const actor = await requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
+    const actor = await requiredPlug().createActor<_SERVICE>({
+      canisterId: this.bridgeCanisterId,
+      interfaceFactory: idlFactory,
+    })
     const result = await actor.request_deposit_refund(depositId)
     await this.assertSameConnectedAccount(account, "refund")
     return unwrapRequestDepositRefundResult(result)
@@ -294,7 +415,10 @@ export class PlugAdapter implements IcWalletAdapter {
 
   async continueDeposit(depositId: Uint8Array): Promise<SettlementActionResult> {
     const account = await this.assertConnectedPrincipal()
-    const actor = await requiredPlug().createActor<_SERVICE>({ canisterId: this.bridgeCanisterId, interfaceFactory: idlFactory })
+    const actor = await requiredPlug().createActor<_SERVICE>({
+      canisterId: this.bridgeCanisterId,
+      interfaceFactory: idlFactory,
+    })
     const result = await actor.continue_deposit(depositId)
     await this.assertSameConnectedAccount(account, "authorization retry")
     return unwrapContinueDepositResult(result)
@@ -305,14 +429,20 @@ export class PlugAdapter implements IcWalletAdapter {
     const agent = requiredPlug().agent
     if (!agent) throw new Error("Plug Agent is unavailable; reconnect and review the transaction")
     const current = (await agent.getPrincipal()).toText()
-    if (current !== this.#account.owner) throw new Error("Plug account changed; reconnect and review the transaction")
+    if (current !== this.#account.owner)
+      throw new Error("Plug account changed; reconnect and review the transaction")
     return copyAccount(this.#account)
   }
 
   private async assertSameConnectedAccount(expected: IcAccount, operation: string): Promise<void> {
     const current = await this.assertConnectedPrincipal()
-    if (current.owner !== expected.owner || !sameOptionalBytes(current.subaccount, expected.subaccount)) {
-      throw new Error(`Plug account changed during ${operation}; reconnect and review the transaction`)
+    if (
+      current.owner !== expected.owner ||
+      !sameOptionalBytes(current.subaccount, expected.subaccount)
+    ) {
+      throw new Error(
+        `Plug account changed during ${operation}; reconnect and review the transaction`,
+      )
     }
   }
 }
@@ -320,15 +450,41 @@ export class PlugAdapter implements IcWalletAdapter {
 const plugLedgerIdlFactory: IDL.InterfaceFactory = ({ IDL: I }) => {
   const account = I.Record({ owner: I.Principal, subaccount: I.Opt(I.Vec(I.Nat8)) })
   const approveError = I.Variant({
-    BadFee: I.Record({ expected_fee: I.Nat }), InsufficientFunds: I.Record({ balance: I.Nat }),
-    AllowanceChanged: I.Record({ current_allowance: I.Nat }), Expired: I.Record({ ledger_time: I.Nat64 }),
-    TooOld: I.Null, CreatedInFuture: I.Record({ ledger_time: I.Nat64 }), Duplicate: I.Record({ duplicate_of: I.Nat }),
-    TemporarilyUnavailable: I.Null, GenericError: I.Record({ error_code: I.Nat, message: I.Text }),
+    BadFee: I.Record({ expected_fee: I.Nat }),
+    InsufficientFunds: I.Record({ balance: I.Nat }),
+    AllowanceChanged: I.Record({ current_allowance: I.Nat }),
+    Expired: I.Record({ ledger_time: I.Nat64 }),
+    TooOld: I.Null,
+    CreatedInFuture: I.Record({ ledger_time: I.Nat64 }),
+    Duplicate: I.Record({ duplicate_of: I.Nat }),
+    TemporarilyUnavailable: I.Null,
+    GenericError: I.Record({ error_code: I.Nat, message: I.Text }),
   })
-  return I.Service({ icrc2_approve: I.Func([I.Record({ from_subaccount: I.Opt(I.Vec(I.Nat8)), spender: account, amount: I.Nat, expected_allowance: I.Opt(I.Nat), expires_at: I.Opt(I.Nat64), fee: I.Opt(I.Nat), memo: I.Opt(I.Vec(I.Nat8)), created_at_time: I.Opt(I.Nat64) })], [I.Variant({ Ok: I.Nat, Err: approveError })], []) })
+  return I.Service({
+    icrc2_approve: I.Func(
+      [
+        I.Record({
+          from_subaccount: I.Opt(I.Vec(I.Nat8)),
+          spender: account,
+          amount: I.Nat,
+          expected_allowance: I.Opt(I.Nat),
+          expires_at: I.Opt(I.Nat64),
+          fee: I.Opt(I.Nat),
+          memo: I.Opt(I.Vec(I.Nat8)),
+          created_at_time: I.Opt(I.Nat64),
+        }),
+      ],
+      [I.Variant({ Ok: I.Nat, Err: approveError })],
+      [],
+    ),
+  })
 }
 
-function requiredPlug(): PlugApi { const plug = window.ic?.plug; if (!plug) throw new Error("Plug extension is not installed"); return plug }
+function requiredPlug(): PlugApi {
+  const plug = window.ic?.plug
+  if (!plug) throw new Error("Plug extension is not installed")
+  return plug
+}
 
 function parseSubaccount(value?: string): Uint8Array | undefined {
   if (!value) return undefined
@@ -349,23 +505,46 @@ function encodeBridgeCall(method: BridgeWalletMethod, args: unknown[]): Uint8Arr
 
 function decodeBridgeReply(method: BridgeWalletMethod, reply: Uint8Array): unknown {
   const decoded = IDL.decode(bridgeMethod(method).retTypes, reply)
-  if (decoded.length !== 1) throw new Error(`Wallet reply for ${method} has an invalid result count`)
+  if (decoded.length !== 1)
+    throw new Error(`Wallet reply for ${method} has an invalid result count`)
   return decoded[0]
 }
 
-async function verifyOisyReply(input: { host: string; canisterId: string; sender: string; method: string; arg: string; result: IcrcCallCanisterResult }): Promise<Uint8Array> {
-  const contentMap = Cbor.decode<Record<string, unknown>>(base64ToUint8Array(input.result.contentMap))
+async function verifyOisyReply(input: {
+  host: string
+  canisterId: string
+  sender: string
+  method: string
+  arg: string
+  result: IcrcCallCanisterResult
+}): Promise<Uint8Array> {
+  const contentMap = Cbor.decode<Record<string, unknown>>(
+    base64ToUint8Array(input.result.contentMap),
+  )
   if (contentMap.method_name !== input.method) throw new Error("Wallet response method mismatch")
   const canister = bytes(contentMap.canister_id, "canister")
-  if (Principal.fromUint8Array(canister).toText() !== Principal.fromText(input.canisterId).toText()) throw new Error("Wallet response canister mismatch")
+  if (Principal.fromUint8Array(canister).toText() !== Principal.fromText(input.canisterId).toText())
+    throw new Error("Wallet response canister mismatch")
   const sender = bytes(contentMap.sender, "sender")
-  if (Principal.fromUint8Array(sender).toText() !== Principal.fromText(input.sender).toText()) throw new Error("Wallet response sender mismatch")
-  if (!sameBytes(bytes(contentMap.arg, "argument"), base64ToUint8Array(input.arg))) throw new Error("Wallet response argument mismatch")
+  if (Principal.fromUint8Array(sender).toText() !== Principal.fromText(input.sender).toText())
+    throw new Error("Wallet response sender mismatch")
+  if (!sameBytes(bytes(contentMap.arg, "argument"), base64ToUint8Array(input.arg)))
+    throw new Error("Wallet response argument mismatch")
   const agent = HttpAgent.createSync({ identity: new AnonymousIdentity(), host: input.host })
   if (agent.isLocal()) await agent.fetchRootKey()
   if (!agent.rootKey) throw new Error("IC root key is unavailable")
-  const certificate = await Certificate.create({ certificate: base64ToUint8Array(input.result.certificate), rootKey: agent.rootKey, principal: { canisterId: Principal.fromText(input.canisterId) } })
-  const reply = lookupResultToBuffer(certificate.lookup_path([new TextEncoder().encode("request_status"), requestIdOf(contentMap), "reply"]))
+  const certificate = await Certificate.create({
+    certificate: base64ToUint8Array(input.result.certificate),
+    rootKey: agent.rootKey,
+    principal: { canisterId: Principal.fromText(input.canisterId) },
+  })
+  const reply = lookupResultToBuffer(
+    certificate.lookup_path([
+      new TextEncoder().encode("request_status"),
+      requestIdOf(contentMap),
+      "reply",
+    ]),
+  )
   if (!reply) throw new Error("Certified wallet reply is unavailable")
   return reply
 }
@@ -378,13 +557,16 @@ function unwrapDepositResult(result: unknown): DepositReceipt {
   if (!isObject(result)) throw new Error("Wallet reply has an invalid shape")
   if ("Err" in result) throw new Error(depositErrorMessage(Reflect.get(result, "Err")))
   const ok: unknown = Reflect.get(result, "Ok")
-  if (!isObject(ok) || !isDepositPhase(Reflect.get(ok, "state"))) throw new Error("Wallet reply has an invalid deposit receipt")
+  if (!isObject(ok) || !isDepositPhase(Reflect.get(ok, "state")))
+    throw new Error("Wallet reply has an invalid deposit receipt")
   const id: unknown = Reflect.get(ok, "deposit_id")
-  if (!(id instanceof Uint8Array) && !Array.isArray(id)) throw new Error("Wallet reply has an invalid deposit ID")
+  if (!(id instanceof Uint8Array) && !Array.isArray(id))
+    throw new Error("Wallet reply has an invalid deposit ID")
   const state: unknown = Reflect.get(ok, "state")
   if (!isDepositPhase(state)) throw new Error("Wallet reply has an invalid deposit state")
   const ownerSequence: unknown = Reflect.get(ok, "owner_sequence")
-  if (typeof ownerSequence !== "bigint") throw new Error("Wallet reply has an invalid owner sequence")
+  if (typeof ownerSequence !== "bigint")
+    throw new Error("Wallet reply has an invalid owner sequence")
   if (Object.keys(ok).length !== 3) throw new Error("Wallet reply has an invalid deposit receipt")
   return { deposit_id: id, owner_sequence: ownerSequence, state }
 }
@@ -459,7 +641,8 @@ function unwrapContinueDepositResult(result: unknown): SettlementActionResult {
   if (!isObject(result)) throw new Error("Wallet reply has an invalid authorization retry result")
   if ("Err" in result) throw new Error(settlementActionErrorMessage(Reflect.get(result, "Err")))
   const value: unknown = Reflect.get(result, "Ok")
-  if (!isSettlementActionResult(value)) throw new Error("Wallet reply has an invalid authorization retry state")
+  if (!isSettlementActionResult(value))
+    throw new Error("Wallet reply has an invalid authorization retry state")
   return value
 }
 
@@ -471,14 +654,26 @@ export function requestDepositRefundErrorMessage(error: unknown): string {
 }
 
 function settlementActionErrorMessage(error: unknown): string {
-  if (isObject(error) && "WrongState" in error) return "This settlement is not waiting for this action."
-  if (isObject(error) && "AutomaticProgressPending" in error && isObject(error.AutomaticProgressPending) && "next_run_at_ns" in error.AutomaticProgressPending) {
+  if (isObject(error) && "WrongState" in error)
+    return "This settlement is not waiting for this action."
+  if (
+    isObject(error) &&
+    "AutomaticProgressPending" in error &&
+    isObject(error.AutomaticProgressPending) &&
+    "next_run_at_ns" in error.AutomaticProgressPending
+  ) {
     const nextRun = error.AutomaticProgressPending.next_run_at_ns
     const nextCheck: unknown = Array.isArray(nextRun) ? (nextRun.at(0) as unknown) : undefined
-    if (typeof nextCheck === "bigint") return `Settlement is progressing automatically. Next confirmation check: ${new Date(Number(nextCheck / 1_000_000n)).toLocaleString()}.`
+    if (typeof nextCheck === "bigint")
+      return `Settlement is progressing automatically. Next confirmation check: ${new Date(Number(nextCheck / 1_000_000n)).toLocaleString()}.`
     return "Settlement is progressing automatically."
   }
-  if (isObject(error) && "RateLimited" in error && isObject(error.RateLimited) && "retry_after_seconds" in error.RateLimited) {
+  if (
+    isObject(error) &&
+    "RateLimited" in error &&
+    isObject(error.RateLimited) &&
+    "retry_after_seconds" in error.RateLimited
+  ) {
     const retryAfter = error.RateLimited.retry_after_seconds
     if (typeof retryAfter === "bigint") {
       const retryAt = new Date(Date.now() + Number(retryAfter) * 1_000)
@@ -488,12 +683,25 @@ function settlementActionErrorMessage(error: unknown): string {
   return `Bridge rejected settlement action: ${stringify(error)}`
 }
 
-function bytes(value: unknown, label: string): Uint8Array { if (value instanceof Uint8Array) return value; throw new Error(`Wallet response ${label} mismatch`) }
-function copyAccount(account: IcAccount): IcAccount { return { owner: account.owner, subaccount: account.subaccount?.slice() } }
-function sameBytes(left: Uint8Array, right: Uint8Array): boolean { return left.length === right.length && left.every((byte, index) => byte === right[index]) }
+function bytes(value: unknown, label: string): Uint8Array {
+  if (value instanceof Uint8Array) return value
+  throw new Error(`Wallet response ${label} mismatch`)
+}
+function copyAccount(account: IcAccount): IcAccount {
+  return { owner: account.owner, subaccount: account.subaccount?.slice() }
+}
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((byte, index) => byte === right[index])
+}
 function sameOptionalBytes(left?: Uint8Array, right?: Uint8Array): boolean {
   if (!left || !right) return left === right
   return sameBytes(left, right)
 }
-function isObject(value: unknown): value is object { return typeof value === "object" && value !== null }
-function stringify(value: unknown): string { return JSON.stringify(value, (_key, item: unknown) => typeof item === "bigint" ? item.toString() : item) }
+function isObject(value: unknown): value is object {
+  return typeof value === "object" && value !== null
+}
+function stringify(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    typeof item === "bigint" ? item.toString() : item,
+  )
+}

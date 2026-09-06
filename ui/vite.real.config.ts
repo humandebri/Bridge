@@ -3,7 +3,8 @@ import { defineConfig, type Plugin, type PreviewServer, type ViteDevServer } fro
 import baseConfig from "./vite.config"
 
 const pocketIcGateway = process.env.KINIC_POCKET_IC_GATEWAY_URL
-if (!pocketIcGateway) throw new Error("KINIC_POCKET_IC_GATEWAY_URL is required for the real E2E server")
+if (!pocketIcGateway)
+  throw new Error("KINIC_POCKET_IC_GATEWAY_URL is required for the real E2E server")
 
 const rejectUnsupportedPocketIcV4: Plugin = {
   name: "reject-unsupported-pocket-ic-v4",
@@ -45,8 +46,14 @@ export default defineConfig({
   },
   resolve: {
     alias: [
-      { find: /^@\/config\/profile$/, replacement: path.resolve(import.meta.dirname, ".e2e-runtime/profile.ts") },
-      { find: /^@\/features\/wallet\/ic-wallet-provider$/, replacement: path.resolve(import.meta.dirname, "e2e-real/ic-wallet-provider.tsx") },
+      {
+        find: /^@\/config\/profile$/,
+        replacement: path.resolve(import.meta.dirname, ".e2e-runtime/profile.ts"),
+      },
+      {
+        find: /^@\/features\/wallet\/ic-wallet-provider$/,
+        replacement: path.resolve(import.meta.dirname, "e2e-real/ic-wallet-provider.tsx"),
+      },
       { find: "@", replacement: path.resolve(import.meta.dirname, "src") },
     ],
   },

@@ -31,7 +31,9 @@ import {
 } from "./withdrawal-notification-client"
 import { browserLocalStorage } from "@/lib/browser-lock"
 
-function profile(instanceByte: string): Pick<DeploymentProfile, "chainId" | "bridgeCanisterId" | "deploymentInstanceId" | "icHost"> {
+function profile(
+  instanceByte: string,
+): Pick<DeploymentProfile, "chainId" | "bridgeCanisterId" | "deploymentInstanceId" | "icHost"> {
   return {
     chainId: 84_532,
     bridgeCanisterId: "aaaaa-aa",
@@ -48,7 +50,12 @@ beforeEach(() => {
     continue_withdrawal: mocks.continueWithdrawal,
   })
   mocks.notifyWithdrawal.mockResolvedValue({
-    Ok: { Ingested: { finalized_checkpoint_block_number: 42n, withdrawal_id: new Uint8Array(32).fill(7) } },
+    Ok: {
+      Ingested: {
+        finalized_checkpoint_block_number: 42n,
+        withdrawal_id: new Uint8Array(32).fill(7),
+      },
+    },
   })
   mocks.continueWithdrawal.mockResolvedValue({
     Ok: { Complete: { state: { Withdrawal: { Paid: null } } } },
@@ -90,8 +97,12 @@ describe("withdrawal notification identity", () => {
 
   it("keeps a session identity when browser storage is unavailable", async () => {
     const deployment = profile("5")
-    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked") })
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked") })
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("blocked")
+    })
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked")
+    })
     try {
       const first = await getWithdrawalNotificationIdentity(deployment)
       const second = await getWithdrawalNotificationIdentity(deployment)
@@ -119,7 +130,9 @@ describe("withdrawal notification client", () => {
     const deployment = profile("7")
     const transactionHash = new Uint8Array(32).fill(9)
 
-    await expect(notifyWithdrawalWithBrowserIdentity(transactionHash, deployment)).resolves.toMatchObject({
+    await expect(
+      notifyWithdrawalWithBrowserIdentity(transactionHash, deployment),
+    ).resolves.toMatchObject({
       Ingested: { finalized_checkpoint_block_number: 42n },
     })
 
@@ -135,8 +148,12 @@ describe("withdrawal notification client", () => {
 
   it("decodes_typed_notification_failures", () => {
     expect(notifyWithdrawalErrorMessage({ RpcInconsistent: null })).toContain("providers disagreed")
-    expect(() => unwrapNotifyWithdrawalResult({ Err: { BaseStateMismatch: null } })).toThrow("state does not match")
-    expect(() => unwrapNotifyWithdrawalResult({ Err: { RateLimited: null } })).toThrow("rate limited")
+    expect(() => unwrapNotifyWithdrawalResult({ Err: { BaseStateMismatch: null } })).toThrow(
+      "state does not match",
+    )
+    expect(() => unwrapNotifyWithdrawalResult({ Err: { RateLimited: null } })).toThrow(
+      "rate limited",
+    )
 
     let boundaryFailure: unknown
     try {
@@ -152,7 +169,9 @@ describe("withdrawal notification client", () => {
       boundaryFailure = error
     }
     expect(boundaryFailure).toBeInstanceOf(NotifyWithdrawalCallError)
-    expect((boundaryFailure as NotifyWithdrawalCallError).code).toBe("WithdrawalBeforeAdmissionBoundary")
+    expect((boundaryFailure as NotifyWithdrawalCallError).code).toBe(
+      "WithdrawalBeforeAdmissionBoundary",
+    )
     expect((boundaryFailure as Error).message).toContain("admission boundary")
 
     let thrown: unknown
@@ -172,7 +191,9 @@ describe("withdrawal notification client", () => {
     const expectedIdentity = await getWithdrawalNotificationIdentity(deployment)
     const withdrawalId = new Uint8Array(32).fill(4)
 
-    await expect(continueWithdrawalWithBrowserIdentity(withdrawalId, deployment)).resolves.toHaveProperty("Complete")
+    await expect(
+      continueWithdrawalWithBrowserIdentity(withdrawalId, deployment),
+    ).resolves.toHaveProperty("Complete")
 
     expect(mocks.createBridgeActor).toHaveBeenCalledWith(
       deployment.icHost,
@@ -184,7 +205,9 @@ describe("withdrawal notification client", () => {
   })
 
   it("decodes_typed_continuation_failures", () => {
-    expect(() => unwrapContinueWithdrawalResult({ Err: { InsufficientCycles: null } })).toThrow("enough cycles")
+    expect(() => unwrapContinueWithdrawalResult({ Err: { InsufficientCycles: null } })).toThrow(
+      "enough cycles",
+    )
     try {
       unwrapContinueWithdrawalResult({ Err: { RateLimited: { retry_after_seconds: 10n } } })
       throw new Error("expected continuation failure")

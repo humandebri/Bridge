@@ -43,12 +43,14 @@ export function depositMintEventMatches(
   expected: ExpectedDepositMint,
   observed: ObservedDepositMint,
 ): boolean {
-  return observed.depositId.toLowerCase() === expected.depositId.toLowerCase()
-    && observed.recipient.toLowerCase() === expected.recipient.toLowerCase()
-    && observed.authorizationDigest.toLowerCase() === expected.authorizationDigest.toLowerCase()
-    && observed.grossAmount === expected.grossAmount
-    && observed.serviceFee === expected.serviceFee
-    && observed.mintedAmount === expected.mintedAmount
+  return (
+    observed.depositId.toLowerCase() === expected.depositId.toLowerCase() &&
+    observed.recipient.toLowerCase() === expected.recipient.toLowerCase() &&
+    observed.authorizationDigest.toLowerCase() === expected.authorizationDigest.toLowerCase() &&
+    observed.grossAmount === expected.grossAmount &&
+    observed.serviceFee === expected.serviceFee &&
+    observed.mintedAmount === expected.mintedAmount
+  )
 }
 
 export function receiptContainsExactDepositMint(
@@ -99,11 +101,13 @@ export function exactMintReceiptFinalization({
   finalizedBlockNumber: bigint
   canonicalReceiptBlockHash?: Hex | null
 }): MintReceiptFinalization {
-  if (receipt.blockNumber === null
-    || receipt.blockHash === null
-    || receipt.blockNumber > finalizedBlockNumber
-    || !canonicalReceiptBlockHash
-    || canonicalReceiptBlockHash.toLowerCase() !== receipt.blockHash.toLowerCase()) {
+  if (
+    receipt.blockNumber === null ||
+    receipt.blockHash === null ||
+    receipt.blockNumber > finalizedBlockNumber ||
+    !canonicalReceiptBlockHash ||
+    canonicalReceiptBlockHash.toLowerCase() !== receipt.blockHash.toLowerCase()
+  ) {
     return "pending"
   }
   if (receipt.status === "reverted") return "reverted"
@@ -170,24 +174,18 @@ export async function scanDepositMintLogs({
     let fromBlock = checkpoint + 1n
     while (fromBlock <= finalizedBlock && calls < maxChunks) {
       const toBlock = minBigInt(fromBlock + DEPOSIT_MINT_LOG_CHUNK_SIZE - 1n, finalizedBlock)
-      logs.push(...await fetchLogs(fromBlock, toBlock))
+      logs.push(...(await fetchLogs(fromBlock, toBlock)))
       checkpoint = toBlock
       fromBlock = toBlock + 1n
       calls += 1
     }
-    checkpointHash = checkpoint === finalizedBlock
-      ? finalizedBlockHash
-      : await fetchBlockHash(checkpoint)
+    checkpointHash =
+      checkpoint === finalizedBlock ? finalizedBlockHash : await fetchBlockHash(checkpoint)
   }
 
-  while (olderCursor !== null
-    && olderCursor >= deploymentBlock
-    && calls < maxChunks) {
-    const fromBlock = maxBigInt(
-      deploymentBlock,
-      olderCursor - DEPOSIT_MINT_LOG_CHUNK_SIZE + 1n,
-    )
-    logs.push(...await fetchLogs(fromBlock, olderCursor))
+  while (olderCursor !== null && olderCursor >= deploymentBlock && calls < maxChunks) {
+    const fromBlock = maxBigInt(deploymentBlock, olderCursor - DEPOSIT_MINT_LOG_CHUNK_SIZE + 1n)
+    logs.push(...(await fetchLogs(fromBlock, olderCursor)))
     calls += 1
     if (fromBlock === deploymentBlock) {
       reachedDeploymentBlock = true
