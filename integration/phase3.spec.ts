@@ -15,7 +15,15 @@ const bridgeWasm = resolve(root, "target/test-deployment/staging/bridge_canister
 const schema35BridgeWasm = resolve(root, "target/test-deployment/predecessor-v35/bridge_canister.wasm");
 const schema35Revision = "e0b426e7465531d2e572b5b741509f1889e6def8";
 const schema35ArchiveSha256 = "24dfae12273dd04c899b058f2665610fb8c273b9099f0574838898d686f14866";
-const schema35WasmSha256 = "621e864035988f1f47169576d68251c80fe369ff155aa17ab55d201c07669730";
+const schema35WasmSha256ByHost: Readonly<Record<string, string>> = {
+  "darwin-arm64": "621e864035988f1f47169576d68251c80fe369ff155aa17ab55d201c07669730",
+  "linux-x64": "0ee5c687528eb7725624f244506eaa3d09a7280f2d962662bc78059e14657809",
+};
+const schema35BuildHost = `${process.platform}-${process.arch}`;
+const schema35WasmSha256 = schema35WasmSha256ByHost[schema35BuildHost];
+if (schema35WasmSha256 === undefined) {
+  throw new Error(`schema 35 predecessor Wasm has no reviewed artifact for host ${schema35BuildHost}`);
+}
 const mockWasm = resolve(root, "target/wasm32-unknown-unknown/release/mock_external.wasm");
 const testLedgerFee = 10_000n;
 
