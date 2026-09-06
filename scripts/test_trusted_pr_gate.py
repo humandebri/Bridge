@@ -206,6 +206,12 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("matrix.area == 'real'", rust_toolchain_step)
         self.assertIn("matrix.area == 'real'", rust_cache_step)
         self.assertIn("matrix.area == 'real'", foundry_step)
+        workspace_dependencies_step = workflow[
+            workflow.index("Install reviewed workspace dependencies without lifecycle scripts") : workflow.index(
+                "Install reviewed UI dependencies without lifecycle scripts"
+            )
+        ]
+        self.assertIn("matrix.area == 'proofs'", workspace_dependencies_step)
         self.assertIn('case "${{ matrix.area }}" in', workflow)
         self.assertIn('rust|proofs|ui|real) ;;', workflow)
         self.assertIn('*) mkdir "$dependency_root" ;;', workflow)
@@ -312,6 +318,10 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
         self.assertIn('if [[ "$NEEDS_WORKSPACE_DEPS" == true ]]', wrapper)
         self.assertIn('if [[ "$NEEDS_UI_DEPS" == true ]]', wrapper)
+        self.assertIn(
+            "rust-integration|proofs) NEEDS_WORKSPACE_DEPS=true; NEEDS_UI_DEPS=true ;;",
+            wrapper,
+        )
         self.assertIn("DEPENDENCY_ROOT", wrapper)
         self.assertNotIn("src=$POLICY_ROOT/node_modules", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.tmp", wrapper)

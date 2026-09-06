@@ -25,8 +25,8 @@ case "$MODE" in
   contracts-fast|contracts-coverage|proofs|certora|real) NEEDS_FOUNDRY=true ;;
 esac
 case "$MODE" in
-  rust-integration) NEEDS_WORKSPACE_DEPS=true; NEEDS_UI_DEPS=true ;;
-  proofs|ui-fast|ui-e2e|real) NEEDS_UI_DEPS=true ;;
+  rust-integration|proofs) NEEDS_WORKSPACE_DEPS=true; NEEDS_UI_DEPS=true ;;
+  ui-fast|ui-e2e|real) NEEDS_UI_DEPS=true ;;
 esac
 if [[ "$MODE" == "icp" ]]; then
   NEEDS_ICP_PACKAGE_CACHE=true

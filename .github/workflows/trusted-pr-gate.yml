@@ -232,7 +232,7 @@ jobs:
             --source source --destination "$dependency_root"
           echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$dependency_root" >> "$GITHUB_ENV"
       - name: Install reviewed workspace dependencies without lifecycle scripts
-        if: matrix.area == 'rust'
+        if: matrix.area == 'rust' || matrix.area == 'proofs'
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts
       - name: Install reviewed UI dependencies without lifecycle scripts
         if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
