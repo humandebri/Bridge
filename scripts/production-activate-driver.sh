@@ -287,12 +287,9 @@ case "$BRIDGE_ACTIVATION_STEP" in
     [[ -f "$BRIDGE_CONFIRMATION_RELAYER_PEM" && ! -L "$BRIDGE_CONFIRMATION_RELAYER_PEM" ]] || { echo "confirmation relayer PEM must be an ordinary file" >&2; exit 1; }
     verify_prepare_receipt
     freeze_activation_inputs
-    "${PROFILE[@]}" verify-controller-activation-authorization "$BRIDGE_ACTIVATION_PHASE" \
-      "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
-      "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$FROZEN_INPUTS/authorization.json"
     PRIOR_RECEIPT="${BRIDGE_PRIOR_SCHEDULE_RECEIPT:--}"
     [[ -n "$PRIOR_RECEIPT" ]] || PRIOR_RECEIPT="-"
-    "${PROFILE[@]}" verify-controller-activation-artifact "$BRIDGE_ACTIVATION_PHASE" \
+    "${PROFILE[@]}" verify-controller-activation-confirm-inputs "$BRIDGE_ACTIVATION_PHASE" \
       "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_INPUTS/artifact.json" \
       "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
       "$FROZEN_INPUTS/authorization.json" "$FROZEN_INPUTS/binding.json" \
@@ -303,6 +300,8 @@ case "$BRIDGE_ACTIVATION_STEP" in
       --authorization-file "$FROZEN_INPUTS/authorization.json" \
       --binding-file "$FROZEN_INPUTS/binding.json" \
       --receipt-file "$BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT"
+    require_fixed_source
+    "${CLI[@]}" refresh-attestation
     require_fixed_source
     "${PROFILE[@]}" verify-controller-activation "$BRIDGE_ACTIVATION_PHASE" \
       "$BRIDGE_RELEASE_BUNDLE" "$FROZEN_INPUTS/artifact.json" \

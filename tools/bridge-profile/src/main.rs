@@ -7529,10 +7529,23 @@ fn validate_historical_evidence_window(
 enum SealReceiptLiveContext {
     PrePrepare,
     PendingResume,
+    ConfirmationInput,
     ScheduleFinalization,
     ExecuteFinalization,
     HandoverPreTransfer,
     HandoverPostTransfer,
+}
+
+fn live_activation_pause_requirement(context: SealReceiptLiveContext) -> Option<bool> {
+    match context {
+        SealReceiptLiveContext::PrePrepare | SealReceiptLiveContext::ConfirmationInput => None,
+        SealReceiptLiveContext::PendingResume | SealReceiptLiveContext::ScheduleFinalization => {
+            Some(true)
+        }
+        SealReceiptLiveContext::ExecuteFinalization
+        | SealReceiptLiveContext::HandoverPreTransfer
+        | SealReceiptLiveContext::HandoverPostTransfer => Some(false),
+    }
 }
 
 fn validate_operational_config_seal_receipt(
@@ -7711,7 +7724,7 @@ fn validate_operational_config_seal_receipt(
     }
     if matches!(live_context, SealReceiptLiveContext::PrePrepare) {
         verify_live(bundle, true)?;
-    } else {
+    } else if let Some(expected_paused) = live_activation_pause_requirement(live_context) {
         let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
             .map_err(|error| error.to_string())?;
         let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
@@ -7755,14 +7768,6 @@ fn validate_operational_config_seal_receipt(
         let ActivationAttestationResultView::Ok(live_attestation) = live_attestation else {
             return Err("live activation attestation is unavailable for seal recovery".into());
         };
-        let expected_paused = match live_context {
-            SealReceiptLiveContext::PendingResume
-            | SealReceiptLiveContext::ScheduleFinalization => true,
-            SealReceiptLiveContext::ExecuteFinalization
-            | SealReceiptLiveContext::HandoverPreTransfer
-            | SealReceiptLiveContext::HandoverPostTransfer => false,
-            SealReceiptLiveContext::PrePrepare => unreachable!(),
-        };
         validate_activation_attestation_with_pause(
             &bundle.profile,
             &live_attestation,
@@ -7796,7 +7801,9 @@ fn validate_operational_config_seal_receipt(
                     ProductionLifecycleResultView::Ok(ProductionLifecycleView::Activated)
                 ) && !live_status.deposits_paused
             }
-            SealReceiptLiveContext::PrePrepare => unreachable!(),
+            SealReceiptLiveContext::PrePrepare | SealReceiptLiveContext::ConfirmationInput => {
+                unreachable!()
+            }
         };
         if !lifecycle_matches
             || !live_status.reserve.sufficient
@@ -8087,6 +8094,7 @@ fn verify_controller_activation_artifact_binding(
     authorization_path: &Path,
     prepare_receipt_path: &Path,
     prior_path: Option<&Path>,
+    live_context: SealReceiptLiveContext,
 ) -> Result<(), String> {
     if phase != "schedule" && phase != "execute" {
         return Err("activation phase must be schedule or execute".into());
@@ -8098,11 +8106,8 @@ fn verify_controller_activation_artifact_binding(
     let authorization_bytes = fs::read(authorization_path).map_err(|error| error.to_string())?;
     let authorization: ControllerActivationAuthorizationReceipt =
         serde_json::from_slice(&authorization_bytes).map_err(|error| error.to_string())?;
-    let seal_receipt_sha256 = validate_operational_config_seal_receipt(
-        bundle,
-        seal_receipt_path,
-        SealReceiptLiveContext::PendingResume,
-    )?;
+    let seal_receipt_sha256 =
+        validate_operational_config_seal_receipt(bundle, seal_receipt_path, live_context)?;
     validate_controller_activation_authorization(
         phase,
         bundle,
@@ -10654,8 +10659,34 @@ fn run() -> Result<(), String> {
                 Path::new(&args[6]),
                 Path::new(&args[7]),
                 prior,
+                SealReceiptLiveContext::PendingResume,
             )?;
             println!("controller_activation_artifact=verified phase={}", args[2]);
+        }
+        Some("verify-controller-activation-confirm-inputs") if args.len() == 9 => {
+            let bundle = validate_bundle(Path::new(&args[3]), true)?;
+            if bundle.manifest.test_only {
+                return Err(
+                    "controller activation confirmation input verification rejects test-only bundles"
+                        .into(),
+                );
+            }
+            let prior = if args[8] == "-" {
+                None
+            } else {
+                Some(Path::new(&args[8]))
+            };
+            verify_controller_activation_artifact_binding(
+                &args[2],
+                &bundle,
+                Path::new(&args[4]),
+                Path::new(&args[5]),
+                Path::new(&args[6]),
+                Path::new(&args[7]),
+                prior,
+                SealReceiptLiveContext::ConfirmationInput,
+            )?;
+            println!("controller_activation_confirm_inputs=verified phase={}", args[2]);
         }
         Some("verify-controller-activation") if args.len() == 11 => {
             let bundle = validate_bundle(Path::new(&args[3]), true)?;
@@ -12613,6 +12644,26 @@ mod tests {
         let mut extra_kind_field = serde_json::to_value(&strict).unwrap();
         extra_kind_field["kind"]["ScheduleActivation"]["extra"] = Value::Bool(true);
         assert!(serde_json::from_value::<DirectActivationArtifact>(extra_kind_field).is_err());
+    }
+
+    #[test]
+    fn confirmation_input_does_not_revalidate_phase_attestation() {
+        assert_eq!(
+            live_activation_pause_requirement(SealReceiptLiveContext::ConfirmationInput),
+            None
+        );
+        assert_eq!(
+            live_activation_pause_requirement(SealReceiptLiveContext::PendingResume),
+            Some(true)
+        );
+        assert_eq!(
+            live_activation_pause_requirement(SealReceiptLiveContext::ScheduleFinalization),
+            Some(true)
+        );
+        assert_eq!(
+            live_activation_pause_requirement(SealReceiptLiveContext::ExecuteFinalization),
+            Some(false)
+        );
     }
 
     #[test]
