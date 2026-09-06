@@ -6,11 +6,11 @@
   "routes": [
     {
       "pattern": "bridge.kinic.xyz",
-      "custom_domain": true
-    }
+      "custom_domain": true,
+    },
   ],
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
-  }
+    "not_found_handling": "single-page-application",
+  },
 }

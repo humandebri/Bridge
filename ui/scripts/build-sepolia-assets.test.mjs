@@ -67,7 +67,9 @@ describe("Base Sepolia asset profile template", () => {
     expect(productionAssets).toContain("await deployFrozenAssets(receipt, rawProfile, identity")
     expect(productionAssets).toContain("await requireUnchangedSourceIdentity(identity)")
     expect(productionAssets).toContain("walletconnect_project_id: projectId")
-    expect(productionAssets).toContain("receipt.walletconnect_project_id?.toLowerCase() !== projectId")
+    expect(productionAssets).toContain(
+      "receipt.walletconnect_project_id?.toLowerCase() !== projectId",
+    )
     expect(productionAssets).toContain("VITE_WALLETCONNECT_PROJECT_ID: projectId")
     expect(productionAssets).toContain('"HEAD:ui/wrangler.production.jsonc"')
     expect(productionAssets).toMatch(/"--config",\s*frozenConfig/)
