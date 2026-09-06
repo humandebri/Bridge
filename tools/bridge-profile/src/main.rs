@@ -5934,6 +5934,8 @@ fn validate_production_upgrade_history_bytes(
     let mut terminal_deposits_paused = true;
     let migration_required = gate_a_profile.pause_principal == KINIC_ROOT;
     let mut pause_migration_seen = false;
+    let mut install_request_ids = BTreeSet::new();
+    let mut signed_install_updates = BTreeSet::new();
 
     for (entry, _) in upgrades {
         let (before_controllers, before_module) =
@@ -5963,6 +5965,11 @@ fn validate_production_upgrade_history_bytes(
             &wasm,
             &submission_bytes,
         )?;
+        if !install_request_ids.insert(submission.request_id.to_ascii_lowercase())
+            || !signed_install_updates.insert(submission.signed_update_sha256.to_ascii_lowercase())
+        {
+            return Err("production upgrade history repeats an install request".into());
+        }
         validate_production_upgrade_upload_evidence(
             &submission,
             &decode_hex(&entry.chunk_upload_evidence_json_hex)?,
@@ -15560,6 +15567,34 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         .unwrap();
         sealed_upgrade.after_public_state_sha256 =
             sealed_upgrade.before_public_state_sha256.clone();
+        let sealed_signed = signing_agent
+            .update(&Principal::management_canister(), "install_chunked_code")
+            .with_effective_canister_id(canister)
+            .with_arg(argument.clone())
+            .expire_at(
+                UNIX_EPOCH + std::time::Duration::from_nanos(submission.ingress_expiry + 1_000_000),
+            )
+            .sign()
+            .unwrap();
+        let mut sealed_submission: ProductionUpgradeSubmission =
+            serde_json::from_slice(&submission_bytes).unwrap();
+        sealed_submission.ingress_expiry = sealed_signed.ingress_expiry;
+        sealed_submission.request_id = hex(sealed_signed.request_id.as_slice());
+        sealed_submission.signed_update_hex = hex(&sealed_signed.signed_update);
+        sealed_submission.signed_update_sha256 = hex(&Sha256::digest(&sealed_signed.signed_update));
+        let sealed_submission_bytes = serde_json::to_vec(&sealed_submission).unwrap();
+        sealed_upgrade.submission_json_hex = hex(&sealed_submission_bytes);
+        sealed_upgrade.submission_json_sha256 = hex(&Sha256::digest(&sealed_submission_bytes));
+        sealed_upgrade.request_id = sealed_submission.request_id.clone();
+        let sealed_response_stdout = format!(
+            "request_id={}\nresponse_hex=\nsender_principal={}\nwasm_sha256={}\n",
+            sealed_submission.request_id,
+            sealed_submission.sender_principal,
+            sealed_submission.wasm_sha256,
+        );
+        sealed_upgrade.response_stdout_hex = hex(sealed_response_stdout.as_bytes());
+        sealed_upgrade.response_stdout_sha256 =
+            hex(&Sha256::digest(sealed_response_stdout.as_bytes()));
         let sealed_upgrade_bytes = serde_json::to_vec(&sealed_upgrade).unwrap();
         let first_receipt_sha256 = hex(&Sha256::digest(&production_upgrade_bytes));
         let sealed_receipt_sha256 = hex(&Sha256::digest(&sealed_upgrade_bytes));
@@ -15612,6 +15647,47 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         )
         .unwrap();
         assert!(validate_bundle(&root, true).is_ok());
+        let mut duplicate_request_upgrade: ProductionCanisterUpgradeReceipt =
+            serde_json::from_slice(&sealed_upgrade_bytes).unwrap();
+        duplicate_request_upgrade.submission_json_hex =
+            production_upgrade.submission_json_hex.clone();
+        duplicate_request_upgrade.submission_json_sha256 =
+            production_upgrade.submission_json_sha256.clone();
+        duplicate_request_upgrade.request_id = production_upgrade.request_id.clone();
+        duplicate_request_upgrade.response_stdout_hex =
+            production_upgrade.response_stdout_hex.clone();
+        duplicate_request_upgrade.response_stdout_sha256 =
+            production_upgrade.response_stdout_sha256.clone();
+        let duplicate_request_bytes = serde_json::to_vec(&duplicate_request_upgrade).unwrap();
+        let duplicate_request_chain = serde_json::to_vec(&ProductionCanisterUpgradeChain {
+            schema_version: 1,
+            kind: "production-controller-bootstrap-upgrade-chain".into(),
+            entries: vec![
+                ProductionCanisterUpgradeChainEntry {
+                    sequence: 0,
+                    previous_receipt_sha256: None,
+                    receipt_sha256: first_receipt_sha256.clone(),
+                    receipt_json_hex: hex(&production_upgrade_bytes),
+                },
+                ProductionCanisterUpgradeChainEntry {
+                    sequence: 1,
+                    previous_receipt_sha256: Some(first_receipt_sha256.clone()),
+                    receipt_sha256: hex(&Sha256::digest(&duplicate_request_bytes)),
+                    receipt_json_hex: hex(&duplicate_request_bytes),
+                },
+            ],
+        })
+        .unwrap();
+        let duplicate_error = validate_production_upgrade_history_bytes(
+            &gate_a_profile,
+            &receipt,
+            &duplicate_request_chain,
+            &profile.bridge_canister_wasm_sha256,
+            CURRENT_STABLE_SCHEMA_VERSION,
+        )
+        .err()
+        .expect("duplicate install request must fail closed");
+        assert!(duplicate_error.contains("repeats an install request"));
         let mut drifted_upgrade: ProductionCanisterUpgradeReceipt =
             serde_json::from_slice(&sealed_upgrade_bytes).unwrap();
         let mut drifted_runtime_view = sealed_runtime_view;
