@@ -15710,6 +15710,46 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         .unwrap();
         drifted_upgrade.after_public_state_sha256 =
             drifted_upgrade.before_public_state_sha256.clone();
+        let drifted_signed = signing_agent
+            .update(&Principal::management_canister(), "install_chunked_code")
+            .with_effective_canister_id(canister)
+            .with_arg(argument.clone())
+            .expire_at(
+                UNIX_EPOCH
+                    + std::time::Duration::from_nanos(sealed_submission.ingress_expiry + 1_000_000),
+            )
+            .sign()
+            .unwrap();
+        let mut drifted_submission: ProductionUpgradeSubmission =
+            serde_json::from_slice(&sealed_submission_bytes).unwrap();
+        drifted_submission.ingress_expiry = drifted_signed.ingress_expiry;
+        drifted_submission.request_id = hex(drifted_signed.request_id.as_slice());
+        drifted_submission.signed_update_hex = hex(&drifted_signed.signed_update);
+        drifted_submission.signed_update_sha256 =
+            hex(&Sha256::digest(&drifted_signed.signed_update));
+        assert_ne!(submission.request_id, sealed_submission.request_id);
+        assert_ne!(sealed_submission.request_id, drifted_submission.request_id);
+        assert_ne!(
+            submission.signed_update_sha256,
+            sealed_submission.signed_update_sha256,
+        );
+        assert_ne!(
+            sealed_submission.signed_update_sha256,
+            drifted_submission.signed_update_sha256,
+        );
+        let drifted_submission_bytes = serde_json::to_vec(&drifted_submission).unwrap();
+        drifted_upgrade.submission_json_hex = hex(&drifted_submission_bytes);
+        drifted_upgrade.submission_json_sha256 = hex(&Sha256::digest(&drifted_submission_bytes));
+        drifted_upgrade.request_id = drifted_submission.request_id.clone();
+        let drifted_response_stdout = format!(
+            "request_id={}\nresponse_hex=\nsender_principal={}\nwasm_sha256={}\n",
+            drifted_submission.request_id,
+            drifted_submission.sender_principal,
+            drifted_submission.wasm_sha256,
+        );
+        drifted_upgrade.response_stdout_hex = hex(drifted_response_stdout.as_bytes());
+        drifted_upgrade.response_stdout_sha256 =
+            hex(&Sha256::digest(drifted_response_stdout.as_bytes()));
         let drifted_upgrade_bytes = serde_json::to_vec(&drifted_upgrade).unwrap();
         let drifted_chain_bytes = serde_json::to_vec(&ProductionCanisterUpgradeChain {
             schema_version: 1,
@@ -15736,14 +15776,16 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             ],
         })
         .unwrap();
-        assert!(validate_production_upgrade_history_bytes(
+        let drift_error = validate_production_upgrade_history_bytes(
             &gate_a_profile,
             &receipt,
             &drifted_chain_bytes,
             &profile.bridge_canister_wasm_sha256,
             CURRENT_STABLE_SCHEMA_VERSION,
         )
-        .is_err());
+        .err()
+        .expect("post-seal operational config drift must fail closed");
+        assert!(drift_error.contains("invalid between-upgrade transition"));
         let mut broken_chain: ProductionCanisterUpgradeChain =
             serde_json::from_slice(&chain_bytes).unwrap();
         broken_chain.entries[0].previous_receipt_sha256 = Some("9".repeat(64));
