@@ -118,6 +118,14 @@ class CiModeTests(unittest.TestCase):
         body = function_body("run_verus")
         self.assertIn('^(pub )?(const )?fn ${kernel_name}\\b', body)
 
+    def test_verus_pass_failure_is_propagated(self) -> None:
+        body = function_body("run_verus")
+        self.assertIn(
+            'verus --no-cheating "$ROOT/verification/verus/pass.rs" '
+            '-o "$TMP_ROOT/verus-pass" || return',
+            body,
+        )
+
     def test_halmos_runs_each_manifest_obligation_individually(self) -> None:
         body = function_body("run_halmos")
         self.assertIn(

@@ -963,13 +963,13 @@ proof fn legacy_activation_migration_requires_recoverable_evidence(
         paused,
         exact_execute,
     ) == if !sealed {
-        0
+        0int
     } else if pending {
-        1
+        1int
     } else if !controller_present || (staging_sentinel && (!paused || exact_execute)) {
-        2
+        2int
     } else {
-        0
+        0int
     },
 {}
 
