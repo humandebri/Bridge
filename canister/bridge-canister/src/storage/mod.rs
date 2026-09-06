@@ -2453,8 +2453,12 @@ fn migrate_previous_schema(
         .map(confirmed_activation_record)
         .transpose()?
         .flatten();
-    if admission.last_confirmed_activation.is_none() {
-        admission.last_confirmed_activation = derived;
+    if let (Some(stored), Some(derived)) = (&admission.last_confirmed_activation, &derived) {
+        if stored != derived {
+            return Err(StorageError::DecodeFailed);
+        }
+    } else if admission.last_confirmed_activation.is_none() {
+        admission.last_confirmed_activation = derived.clone();
     }
     let pending_activation = admission
         .pending_timelock_operation
@@ -2467,6 +2471,9 @@ fn migrate_previous_schema(
         admission.bootstrap_activation_controller.is_some(),
         legacy_staging_controller,
         deposits_paused,
+        derived
+            .as_ref()
+            .is_some_and(|record| record.phase == "execute"),
     ) {
         LegacyActivationEvidenceRequirement::Schedule => {
             let pending = pending_activation.ok_or(StorageError::DecodeFailed)?;
@@ -13750,36 +13757,38 @@ mod tests {
     #[cfg(feature = "test-deployment")]
     #[test]
     #[serial]
-    fn schema_v35_staging_consumes_only_an_executed_unpaused_sentinel() {
-        let memory = VectorMemory::default();
-        let mut store =
-            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
-        let (execute, _) = confirmed_activation_transaction(&mut store);
-        store
-            .complete_governance_transaction(execute)
-            .expect("complete activation");
-        let mut admin = store.admin_state().expect("admin");
-        admin.deposits_paused = false;
-        store.set_admin_state(&admin).expect("unpause");
-        let mut admission = store.deposit_admission().expect("admission");
-        admission.operational_config_sealed = true;
-        write_v35_admission_without_controller(&store, &admission);
-        drop(store);
+    fn schema_v35_staging_consumes_only_an_executed_sentinel() {
+        for deposits_paused in [true, false] {
+            let memory = VectorMemory::default();
+            let mut store =
+                StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+            let (execute, _) = confirmed_activation_transaction(&mut store);
+            store
+                .complete_governance_transaction(execute)
+                .expect("complete activation");
+            let mut admin = store.admin_state().expect("admin");
+            admin.deposits_paused = deposits_paused;
+            store.set_admin_state(&admin).expect("set pause state");
+            let mut admission = store.deposit_admission().expect("admission");
+            admission.operational_config_sealed = true;
+            write_v35_admission_without_controller(&store, &admission);
+            drop(store);
 
-        let reopened = StableStore::reopen_after_staging_upgrade(
-            memory,
-            Some(config().confirmation_relayer_principal),
-        )
-        .expect("migrate activated staging");
-        assert_eq!(reopened.bootstrap_activation_controller().unwrap(), None);
-        assert_eq!(
-            reopened
-                .last_confirmed_activation()
-                .unwrap()
-                .expect("execute record")
-                .phase,
-            "execute"
-        );
+            let reopened = StableStore::reopen_after_staging_upgrade(
+                memory,
+                Some(config().confirmation_relayer_principal),
+            )
+            .expect("migrate activated staging");
+            assert_eq!(reopened.bootstrap_activation_controller().unwrap(), None);
+            assert_eq!(
+                reopened
+                    .last_confirmed_activation()
+                    .unwrap()
+                    .expect("execute record")
+                    .phase,
+                "execute"
+            );
+        }
 
         let memory = VectorMemory::default();
         let mut store =

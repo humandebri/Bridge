@@ -63,6 +63,22 @@ fn main() {
             }
             println!("{}", "c".repeat(64));
         }
+        Some("validate-production-upgrade-live-predecessor") => {
+            if env::var("TEST_REJECT_LIVE_PREDECESSOR").is_ok() {
+                eprintln!("live predecessor differs from the typed upgrade history");
+                std::process::exit(1);
+            }
+            println!("{}", "d".repeat(64));
+        }
+        Some("production-upgrade-history-sources") => {
+            println!("{}\t{}", env::var("TEST_REVISION").unwrap(), env::var("TEST_SOURCE_TREE").unwrap());
+        }
+        Some("production-upgrade-snapshot-metadata") => {
+            let lifecycle = fs::read_to_string(env::var("TEST_LIVE_LIFECYCLE").unwrap()).unwrap();
+            let paused = fs::read_to_string(env::var("TEST_LIVE_PAUSED").unwrap()).unwrap();
+            let schema = fs::read_to_string(env::var("TEST_LIVE_SCHEMA").unwrap()).unwrap();
+            println!("{}\t{}\t{}", lifecycle.trim(), paused.trim(), schema.trim());
+        }
         Some("verify-production-upgrade-state-preserved") => println!("{}", "a".repeat(64)),
         Some("prepare-production-canister-upgrade") => {
             let mut artifact = OpenOptions::new().write(true).create_new(true).open(&args[7]).unwrap();
@@ -94,6 +110,7 @@ fn main() {
             let count: u64 = fs::read_to_string(&count_path).unwrap().trim().parse().unwrap();
             fs::write(&count_path, format!("{}\n", count + 1)).unwrap();
             fs::write(env::var("TEST_LIVE_MODULE").unwrap(), env::var("TEST_NEW_SHA").unwrap()).unwrap();
+            fs::write(env::var("TEST_LIVE_SCHEMA").unwrap(), b"36\n").unwrap();
             let mut response = OpenOptions::new().write(true).create_new(true).open(&args[9]).unwrap();
             writeln!(response, "request_id={}", "9".repeat(64)).unwrap();
             writeln!(response, "response_hex=").unwrap();
@@ -129,6 +146,9 @@ printf '%s\n' "$OLD_SHA" >"$T/live-module"
 printf '0\n' >"$T/submit-count"
 printf '0\n' >"$T/status-call-count"
 printf 'true\n' >"$T/reserve-sufficient"
+printf 'Bootstrap\n' >"$T/live-lifecycle"
+printf 'true\n' >"$T/live-paused"
+printf '35\n' >"$T/live-schema"
 printf 'dummy production identity\n' >"$T/production.pem"
 printf '{"bridge_canister_id":"%s","bridge_canister_wasm_sha256":"%s","ic_host":"https://icp-api.io"}\n' \
   "$CANISTER" "$OLD_SHA" >"$T/gate-a-profile.json"
@@ -171,6 +191,8 @@ export PATH="$T/bin:$PATH"
 export TEST_INSTALLER="$INSTALLER" TEST_CANISTER="$CANISTER" TEST_LIVE_MODULE="$T/live-module" \
   TEST_NEW_SHA="$NEW_SHA" TEST_SUBMIT_COUNT="$T/submit-count" TEST_STATUS_CALL_COUNT="$T/status-call-count" \
   TEST_RESERVE_SUFFICIENT="$T/reserve-sufficient" TEST_REPRO_WASM="$T/new.wasm"
+export TEST_LIVE_LIFECYCLE="$T/live-lifecycle" TEST_LIVE_PAUSED="$T/live-paused" \
+  TEST_LIVE_SCHEMA="$T/live-schema" TEST_REVISION="$REVISION" TEST_SOURCE_TREE="$SOURCE_TREE"
 
 printf wrong-wasm >"$T/not-reproducible.wasm"
 if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
@@ -510,6 +532,27 @@ if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade
 fi
 cp "$T/evidence/receipt.initial.json" "$T/evidence/prior-upgrade.json"
 cp "$T/evidence/prior-upgrade.json" "$T/evidence/prior-upgrade.approved.json"
+printf 'OperationalConfigSealed\n' >"$T/live-lifecycle"
+if TEST_REJECT_LIVE_PREDECESSOR=1 BRIDGE_ICP_IDENTITY=production \
+  "$T/source/scripts/production-canister-upgrade.sh" preflight \
+  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" \
+  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
+  --evidence "$T/evidence/rejected-live-predecessor.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted live state outside the typed upgrade history" >&2
+  exit 1
+fi
+[[ ! -e "$T/evidence/rejected-live-predecessor.json" && "$(<"$T/submit-count")" == 1 ]]
+if TEST_SOURCE_TREE="$(printf '0%.0s' {1..64})" BRIDGE_ICP_IDENTITY=production \
+  "$T/source/scripts/production-canister-upgrade.sh" preflight \
+  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" \
+  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
+  --evidence "$T/evidence/rejected-prior-tree.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted a prior source tree hash mismatch" >&2
+  exit 1
+fi
+[[ ! -e "$T/evidence/rejected-prior-tree.json" && "$(<"$T/submit-count")" == 1 ]]
 if TEST_REJECT_PRIOR_HISTORY=1 BRIDGE_ICP_IDENTITY=production \
   "$T/source/scripts/production-canister-upgrade.sh" preflight \
   --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
@@ -530,6 +573,8 @@ import hashlib,json,sys
 value=json.load(open(sys.argv[1],encoding='utf-8'))
 assert value['before_module_sha256']==sys.argv[3]
 assert value['before_schema_version']==36
+assert value['before_lifecycle']=='OperationalConfigSealed'
+assert value['before_deposits_paused'] is True
 assert value['prior_upgrade_evidence_sha256']==hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest()
 PY
 printf ' \n' >>"$T/evidence/prior-upgrade.json"

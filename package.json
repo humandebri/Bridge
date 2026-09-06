@@ -11,7 +11,7 @@
     "governance-relayer:test": "node --no-warnings --experimental-strip-types --test tools/governance-relayer/cli.test.ts",
     "governance-relayer:typecheck": "tsc --noEmit --target ES2023 --module ESNext --moduleResolution Bundler --allowImportingTsExtensions --skipLibCheck tools/governance-relayer/cli.ts",
     "integration:typecheck": "tsc --project tsconfig.integration.json",
-    "test:e2e": "scripts/plan007/build-staging-canister-wasm.sh >/dev/null && scripts/plan007/build-schema35-predecessor-wasm.sh >/dev/null && TMPDIR=${TMPDIR:-/tmp} jest --config integration/jest.config.js --runInBand"
+    "test:e2e": "scripts/plan007/build-staging-canister-wasm.sh >/dev/null && TMPDIR=${TMPDIR:-/tmp} jest --config integration/jest.config.js --runInBand"
   },
   "devDependencies": {
     "@dfinity/pic": "0.23.0",

@@ -953,6 +953,7 @@ proof fn legacy_activation_migration_requires_recoverable_evidence(
     controller_present: bool,
     staging_sentinel: bool,
     paused: bool,
+    exact_execute: bool,
 )
     ensures kernel::legacy_activation_evidence_requirement_spec(
         sealed,
@@ -960,11 +961,12 @@ proof fn legacy_activation_migration_requires_recoverable_evidence(
         controller_present,
         staging_sentinel,
         paused,
+        exact_execute,
     ) == if !sealed {
         0
     } else if pending {
         1
-    } else if !controller_present || (staging_sentinel && !paused) {
+    } else if !controller_present || (staging_sentinel && (!paused || exact_execute)) {
         2
     } else {
         0

@@ -250,12 +250,12 @@ macro_rules! confirmed_activation_metadata_matches_body {
 }
 
 macro_rules! legacy_activation_evidence_requirement_body {
-    ($sealed:expr, $pending:expr, $controller_present:expr, $staging_sentinel:expr, $paused:expr, $none:expr, $schedule:expr, $execute:expr) => {
+    ($sealed:expr, $pending:expr, $controller_present:expr, $staging_sentinel:expr, $paused:expr, $exact_execute:expr, $none:expr, $schedule:expr, $execute:expr) => {
         if !$sealed {
             $none
         } else if $pending {
             $schedule
-        } else if !$controller_present || ($staging_sentinel && !$paused) {
+        } else if !$controller_present || ($staging_sentinel && (!$paused || $exact_execute)) {
             $execute
         } else {
             $none
@@ -314,6 +314,7 @@ pub const fn legacy_activation_evidence_requirement(
     bootstrap_controller_present: bool,
     legacy_staging_controller: bool,
     deposits_paused: bool,
+    exact_execute_evidence: bool,
 ) -> LegacyActivationEvidenceRequirement {
     match legacy_activation_evidence_requirement_body!(
         operational_config_sealed,
@@ -321,6 +322,7 @@ pub const fn legacy_activation_evidence_requirement(
         bootstrap_controller_present,
         legacy_staging_controller,
         deposits_paused,
+        exact_execute_evidence,
         0,
         1,
         2
@@ -2844,6 +2846,7 @@ verus! {
         controller_present: bool,
         staging_sentinel: bool,
         paused: bool,
+        exact_execute: bool,
     ) -> int {
         let none: int = 0;
         let schedule: int = 1;
@@ -2854,6 +2857,7 @@ verus! {
             controller_present,
             staging_sentinel,
             paused,
+            exact_execute,
             none,
             schedule,
             execute

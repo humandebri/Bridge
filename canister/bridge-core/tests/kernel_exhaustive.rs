@@ -435,25 +435,30 @@ fn legacy_activation_migration_requires_only_the_exact_recoverable_phase() {
             for controller_present in [false, true] {
                 for staging_sentinel in [false, true] {
                     for paused in [false, true] {
-                        let expected = if !sealed {
-                            NotRequired
-                        } else if pending {
-                            Schedule
-                        } else if !controller_present || (staging_sentinel && !paused) {
-                            Execute
-                        } else {
-                            NotRequired
-                        };
-                        assert_eq!(
-                            legacy_activation_evidence_requirement(
-                                sealed,
-                                pending,
-                                controller_present,
-                                staging_sentinel,
-                                paused,
-                            ),
-                            expected
-                        );
+                        for exact_execute in [false, true] {
+                            let expected = if !sealed {
+                                NotRequired
+                            } else if pending {
+                                Schedule
+                            } else if !controller_present
+                                || (staging_sentinel && (!paused || exact_execute))
+                            {
+                                Execute
+                            } else {
+                                NotRequired
+                            };
+                            assert_eq!(
+                                legacy_activation_evidence_requirement(
+                                    sealed,
+                                    pending,
+                                    controller_present,
+                                    staging_sentinel,
+                                    paused,
+                                    exact_execute,
+                                ),
+                                expected
+                            );
+                        }
                     }
                 }
             }

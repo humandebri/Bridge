@@ -1,8 +1,9 @@
-import { readFileSync } from "node:fs";
-import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:net";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { IDL } from "@icp-sdk/core/candid";
 import { Principal } from "@icp-sdk/core/principal";
 import { idlFactory as bridgeIdl, init as bridgeInitFactory } from "./generated/bridge.idl";
@@ -12,6 +13,8 @@ import { PocketIc, SubnetStateType } from "@dfinity/pic";
 const root = resolve(__dirname, "..");
 const bridgeWasm = resolve(root, "target/test-deployment/staging/bridge_canister.wasm");
 const schema35BridgeWasm = resolve(root, "target/test-deployment/predecessor-v35/bridge_canister.wasm");
+const schema35Revision = "e0b426e7465531d2e572b5b741509f1889e6def8";
+const schema35ArchiveSha256 = "24dfae12273dd04c899b058f2665610fb8c273b9099f0574838898d686f14866";
 const mockWasm = resolve(root, "target/wasm32-unknown-unknown/release/mock_external.wasm");
 const testLedgerFee = 10_000n;
 
@@ -26,6 +29,33 @@ function phaseName(value: Record<string, unknown>): string {
 }
 function debugJson(value: unknown): string {
   return JSON.stringify(value, (_key, item) => typeof item === "bigint" ? `${item}n` : item);
+}
+function buildSchema35Predecessor(): void {
+  const temporary = mkdtempSync(join(tmpdir(), "bridge-schema35-predecessor."));
+  try {
+    const archive = join(temporary, "source.tar");
+    const source = join(temporary, "source");
+    execFileSync("git", ["-C", root, "archive", "--format=tar", "-o", archive, schema35Revision]);
+    expect(createHash("sha256").update(readFileSync(archive)).digest("hex"))
+      .toBe(schema35ArchiveSha256);
+    mkdirSync(source);
+    execFileSync("tar", ["-xf", archive, "-C", source]);
+    const cache = resolve(root, "target/test-deployment/schema35-build");
+    mkdirSync(cache, { recursive: true });
+    symlinkSync(cache, join(source, "target"));
+    mkdirSync(resolve(root, "target/test-deployment/predecessor-v35"), { recursive: true });
+    execFileSync(
+      join(source, "scripts/plan007/build-staging-canister-wasm.sh"),
+      [schema35BridgeWasm],
+      {
+        stdio: "inherit",
+        env: { ...process.env, CARGO_NET_OFFLINE: "true", CARGO_INCREMENTAL: "0" },
+      },
+    );
+    if (!existsSync(schema35BridgeWasm)) throw new Error("schema 35 predecessor Wasm was not built");
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
 }
 describe("Phase 3 PocketIC saga", () => {
   let server: ChildProcess | undefined;
@@ -470,6 +500,7 @@ describe("Phase 3 PocketIC saga", () => {
   }
 
   beforeAll(async () => {
+    buildSchema35Predecessor();
     const probe = createServer();
     const port = await new Promise<number>((resolvePort, reject) => {
       probe.once("error", reject);
@@ -981,6 +1012,8 @@ describe("Phase 3 PocketIC saga", () => {
       controller,
       confirmationRelayerPrincipal,
     } = await setup(false, {}, schema35BridgeWasm, true, true);
+    expect(await (bridge.actor as any).get_runtime_binding())
+      .toHaveProperty("schema_version", 35);
     await (evm.actor as any).set_receipt_mode({ Confirmed: null });
     bridge.actor.setPrincipal(controller);
     const original: any = await (bridge.actor as any).schedule_activation();
@@ -1000,6 +1033,8 @@ describe("Phase 3 PocketIC saga", () => {
     })).toHaveProperty("Ok.succeeded", true);
 
     await upgradeBridge(bridge);
+    expect(await (bridge.actor as any).get_runtime_binding())
+      .toHaveProperty("schema_version", 36);
     const activation: any = await (bridge.actor as any).get_activation_status();
     expect(activation).toHaveProperty("Ok.last_confirmed_activation.0.generation", 0);
     expect(activation.Ok.last_confirmed_activation[0].signed_at_ns)
