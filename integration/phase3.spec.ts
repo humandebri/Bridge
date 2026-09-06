@@ -57,9 +57,11 @@ function buildSchema35Predecessor(): void {
         env: { ...process.env, CARGO_NET_OFFLINE: "true", CARGO_INCREMENTAL: "0" },
       },
     );
-    if (!existsSync(schema35BridgeWasm)
-      || createHash("sha256").update(readFileSync(schema35BridgeWasm)).digest("hex") !== schema35WasmSha256) {
-      throw new Error("schema 35 predecessor Wasm does not match the reviewed artifact");
+    const actualSchema35WasmSha256 = existsSync(schema35BridgeWasm)
+      ? createHash("sha256").update(readFileSync(schema35BridgeWasm)).digest("hex")
+      : "missing";
+    if (actualSchema35WasmSha256 !== schema35WasmSha256) {
+      throw new Error(`schema 35 predecessor Wasm does not match the reviewed artifact: expected=${schema35WasmSha256} actual=${actualSchema35WasmSha256}`);
     }
   } finally {
     rmSync(temporary, { recursive: true, force: true });
