@@ -5560,10 +5560,12 @@ fn production_upgrade_live_predecessor_matches(
     let exact_runtime = &terminal.runtime == live_runtime;
     let mut sealed_runtime = terminal.runtime.clone();
     sealed_runtime.operational_config_sha256 = live_runtime.operational_config_sha256.clone();
-    let operational_config_progress = matches!(
-        lifecycle,
-        ProductionLifecycleView::OperationalConfigSealed | ProductionLifecycleView::Activated
-    ) && &sealed_runtime == live_runtime;
+    let operational_config_progress = terminal.lifecycle == ProductionLifecycleView::Bootstrap
+        && matches!(
+            lifecycle,
+            ProductionLifecycleView::OperationalConfigSealed | ProductionLifecycleView::Activated
+        )
+        && &sealed_runtime == live_runtime;
     let lifecycle_progress = matches!(
         (terminal.lifecycle, lifecycle),
         (ProductionLifecycleView::Bootstrap, _)
@@ -5968,6 +5970,22 @@ fn validate_production_upgrade_history_bytes(
         let wasm_sha256 = hex(&Sha256::digest(&wasm));
         let before_binding = live_runtime_binding_from_view(&before_runtime);
         let after_binding = live_runtime_binding_from_view(&after_runtime);
+        let previous_terminal = ProductionUpgradeTerminal {
+            runtime: expected_runtime.clone(),
+            lifecycle: terminal_lifecycle,
+            deposits_paused: terminal_deposits_paused,
+        };
+        if !production_upgrade_live_predecessor_matches(
+            &previous_terminal,
+            &before_status,
+            before_lifecycle,
+            &before_binding,
+        ) {
+            return Err(
+                "production upgrade history has an invalid between-upgrade transition".into(),
+            );
+        }
+        expected_runtime = before_binding.clone();
         let unchanged = before_binding == expected_runtime
             && after_binding == expected_runtime
             && production_upgrade_status_preserved(&before_status, &after_status)
@@ -6261,6 +6279,8 @@ fn validate_post_gate_a_policy_transition(
     let mut migration_seen = false;
     let mut expected_runtime = receipt.canister_install.runtime_binding.clone();
     let mut expected_schema_version = receipt.canister_install.runtime_binding.schema_version;
+    let mut terminal_lifecycle = ProductionLifecycleView::Bootstrap;
+    let mut terminal_deposits_paused = true;
     for (entry, _) in &upgrades {
         validate_evidence_time(entry.executed_at_unix, manifest.created_at_unix, now)?;
         validate_evidence_time(entry.verified_at_unix, manifest.created_at_unix, now)?;
@@ -6306,6 +6326,22 @@ fn validate_post_gate_a_policy_transition(
         let wasm_sha256 = hex(&Sha256::digest(&wasm));
         let entry_before_binding = live_runtime_binding_from_view(&entry_before_runtime);
         let entry_after_binding = live_runtime_binding_from_view(&entry_after_runtime);
+        let previous_terminal = ProductionUpgradeTerminal {
+            runtime: expected_runtime.clone(),
+            lifecycle: terminal_lifecycle,
+            deposits_paused: terminal_deposits_paused,
+        };
+        if !production_upgrade_live_predecessor_matches(
+            &previous_terminal,
+            &entry_before_status,
+            entry_before_lifecycle,
+            &entry_before_binding,
+        ) {
+            return Err(
+                "production upgrade chain has an invalid between-upgrade transition".into(),
+            );
+        }
+        expected_runtime = entry_before_binding.clone();
         let unchanged_runtime = entry_before_binding == expected_runtime
             && entry_after_binding == expected_runtime
             && production_upgrade_status_preserved(&entry_before_status, &entry_after_status)
@@ -6426,6 +6462,8 @@ fn validate_post_gate_a_policy_transition(
         expected_runtime = entry_after_binding;
         expected_schema_version = next_schema_version;
         expected_before_module = entry_after_module;
+        terminal_lifecycle = entry_after_lifecycle;
+        terminal_deposits_paused = entry_after_status.deposits_paused;
     }
     if migration_seen != migration_required
         || expected_schema_version != CURRENT_STABLE_SCHEMA_VERSION
@@ -6719,12 +6757,14 @@ fn validate_post_gate_a_policy_transition(
         || before_runtime.schema_version != upgrade.before_schema_version
         || after_runtime.schema_version != upgrade.after_schema_version
         || !last_runtime_transition_valid
-        || upgrade.before_lifecycle != "Bootstrap"
-        || upgrade.after_lifecycle != "Bootstrap"
-        || !upgrade.before_deposits_paused
-        || !upgrade.after_deposits_paused
-        || !before_status.deposits_paused
-        || !after_status.deposits_paused
+        || upgrade.before_lifecycle != production_lifecycle_name(before_lifecycle)
+        || upgrade.after_lifecycle != production_lifecycle_name(after_lifecycle)
+        || before_lifecycle != after_lifecycle
+        || !production_lifecycle_pause_valid(before_lifecycle, before_status.deposits_paused)
+        || !production_lifecycle_pause_valid(after_lifecycle, after_status.deposits_paused)
+        || upgrade.before_deposits_paused != before_status.deposits_paused
+        || upgrade.after_deposits_paused != after_status.deposits_paused
+        || before_status.deposits_paused != after_status.deposits_paused
         || !upgrade.before_storage_validation_complete
         || !upgrade.after_storage_validation_complete
         || !hex_sha256_matches(
@@ -12643,6 +12683,47 @@ mod tests {
             &status,
             ProductionLifecycleView::OperationalConfigSealed,
             &drifted,
+        ));
+
+        for lifecycle in [
+            ProductionLifecycleView::OperationalConfigSealed,
+            ProductionLifecycleView::Activated,
+        ] {
+            let sealed_terminal = ProductionUpgradeTerminal {
+                runtime: terminal.runtime.clone(),
+                lifecycle,
+                deposits_paused: lifecycle != ProductionLifecycleView::Activated,
+            };
+            assert!(!production_upgrade_live_predecessor_matches(
+                &sealed_terminal,
+                &status,
+                lifecycle,
+                &live_runtime,
+            ));
+        }
+
+        let sealed_terminal = ProductionUpgradeTerminal {
+            runtime: live_runtime.clone(),
+            lifecycle: ProductionLifecycleView::OperationalConfigSealed,
+            deposits_paused: true,
+        };
+        assert!(production_upgrade_live_predecessor_matches(
+            &sealed_terminal,
+            &status,
+            ProductionLifecycleView::OperationalConfigSealed,
+            &live_runtime,
+        ));
+        assert!(production_upgrade_live_predecessor_matches(
+            &sealed_terminal,
+            &unpaused,
+            ProductionLifecycleView::Activated,
+            &live_runtime,
+        ));
+        assert!(!production_upgrade_live_predecessor_matches(
+            &sealed_terminal,
+            &status,
+            ProductionLifecycleView::Bootstrap,
+            &live_runtime,
         ));
     }
 

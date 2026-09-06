@@ -71,6 +71,13 @@ fn main() {
             println!("{}", "d".repeat(64));
         }
         Some("production-upgrade-history-sources") => {
+            if env::var("TEST_FAIL_HISTORY_SOURCES").is_ok() {
+                eprintln!("history source enumeration failed");
+                std::process::exit(1);
+            }
+            if env::var("TEST_EMPTY_HISTORY_SOURCES").is_ok() {
+                return;
+            }
             println!("{}\t{}", env::var("TEST_REVISION").unwrap(), env::var("TEST_SOURCE_TREE").unwrap());
         }
         Some("production-upgrade-snapshot-metadata") => {
@@ -543,6 +550,18 @@ if TEST_REJECT_LIVE_PREDECESSOR=1 BRIDGE_ICP_IDENTITY=production \
   exit 1
 fi
 [[ ! -e "$T/evidence/rejected-live-predecessor.json" && "$(<"$T/submit-count")" == 1 ]]
+for source_mode in TEST_FAIL_HISTORY_SOURCES TEST_EMPTY_HISTORY_SOURCES; do
+  if env "$source_mode=1" BRIDGE_ICP_IDENTITY=production \
+    "$T/source/scripts/production-canister-upgrade.sh" preflight \
+    --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+    --gate-a-receipt "$T/gate-a-receipt.json" \
+    --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
+    --evidence "$T/evidence/rejected-history-sources-$source_mode.json" >/dev/null 2>&1; then
+    echo "production upgrade accepted unavailable prior source identities" >&2
+    exit 1
+  fi
+  [[ ! -e "$T/evidence/rejected-history-sources-$source_mode.json" && "$(<"$T/submit-count")" == 1 ]]
+done
 if TEST_SOURCE_TREE="$(printf '0%.0s' {1..64})" BRIDGE_ICP_IDENTITY=production \
   "$T/source/scripts/production-canister-upgrade.sh" preflight \
   --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \

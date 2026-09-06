@@ -265,6 +265,12 @@ if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
   "$PROFILE_BIN" validate-production-upgrade-history \
     "$GATE_A_PROFILE" "$GATE_A_RECEIPT" "$PRIOR_UPGRADE_EVIDENCE" \
     "$OLD_WASM" "$OLD_SCHEMA" >/dev/null
+  UPGRADE_SOURCE_LINES="$("$PROFILE_BIN" production-upgrade-history-sources "$PRIOR_UPGRADE_EVIDENCE")" || {
+    echo "prior upgrade source identities could not be enumerated" >&2; exit 1;
+  }
+  [[ -n "$UPGRADE_SOURCE_LINES" ]] || {
+    echo "prior upgrade source identities are empty" >&2; exit 1;
+  }
   PREVIOUS_UPGRADE_SOURCE="$RECEIPT_SOURCE"
   while IFS=$'\t' read -r UPGRADE_REVISION UPGRADE_TREE; do
     [[ "$UPGRADE_REVISION" =~ ^[0-9a-f]{40}$ && "$UPGRADE_TREE" =~ ^[0-9a-fA-F]{64}$ ]] || {
@@ -280,7 +286,7 @@ if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
       echo "prior upgrade source tree hash mismatch" >&2; exit 1;
     }
     PREVIOUS_UPGRADE_SOURCE="$UPGRADE_REVISION"
-  done < <("$PROFILE_BIN" production-upgrade-history-sources "$PRIOR_UPGRADE_EVIDENCE")
+  done <<<"$UPGRADE_SOURCE_LINES"
   git -C "$ROOT" merge-base --is-ancestor "$PREVIOUS_UPGRADE_SOURCE" "$SOURCE_REVISION" || {
     echo "current source is not descended from prior upgrade evidence" >&2; exit 1;
   }
