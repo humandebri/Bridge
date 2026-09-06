@@ -14637,7 +14637,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             source_revision: "a".repeat(40),
             source_tree_sha256: "2".repeat(64),
             created_at_unix: manifest_created,
-            expires_at_unix: manifest_created + 100,
+            expires_at_unix: manifest_created + MAX_EVIDENCE_AGE_SECS,
             parent_gate_a_manifest_sha256: None,
             artifacts: gate_a_artifacts,
         };
@@ -15490,7 +15490,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             source_revision: "a".repeat(40),
             source_tree_sha256: "2".repeat(64),
             created_at_unix: manifest_created,
-            expires_at_unix: manifest_created + 100,
+            expires_at_unix: manifest_created + MAX_EVIDENCE_AGE_SECS,
             parent_gate_a_manifest_sha256: Some(gate_a.manifest_sha256),
             artifacts,
         };
