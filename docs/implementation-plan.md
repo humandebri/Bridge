@@ -12,7 +12,7 @@ Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaat
 ## 現在の進捗
 
 Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v35、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
+Bridge canisterはstable schema v36、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
 Plan 005の7日・各10件の本番計測とPlan 006のRPC rehearsal／monitor drillはunpause後のGate Cへ移動した。これらはGate Bまたはcontroller handoverを認可しない。SNS proposal型activation receiptはhandover後の再activation用として保持する。初回activationはseal時に固定したproduction controllerによるseal／schedule／execute、匿名relay、固定confirmation relayerの役割分離経路を使い、Confirmed executeで内部bootstrap authorityを永久に消費する。外部controllerを外す時期は自動化せず運用者が別途決定し、変更前でも初回execute後のactivation権限は既存Governance principalだけに限定する。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、追加wallet互換性と追加5 scenarioの外部実行は明示承認待ちだがproduction activationをblockしない。
 
 ## 全体構成
@@ -122,7 +122,7 @@ Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純
 外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
 
 Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003および現行ADRで外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorization、役割別governance nonce laneを追加し、現行stable schemaはv35である。
+後続のPlan 002と003および現行ADRで外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorization、役割別governance nonce lane、確定activation evidenceを追加し、現行stable schemaはv36である。
 
 ### 2-1. state 設計（ADR 0008、0010）
 
@@ -130,7 +130,7 @@ Phase 2で決定的状態機械と最初のstable schema、観測queryを実装�
 - 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
 - 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
 - 本番初回deployまではstable schemaを直接置換し、migration、dual-read、fallbackを追加しない。現行version以外はfail closedとする。
-- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v35・record wire v30とする。
+- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v36・record wire v30とする。
 - Deposit record、owner sequence、Base recipientは単一envelopeへ保存する。pending EVM、open hold、nonterminal Withdrawalの件数は対応indexのtable countを正本とする。
 - Withdrawal primary rowとliability index、合計額、stop reason集計はtyped SQLite transactionで同時に更新し、change-log triggerへ依存しない。
 

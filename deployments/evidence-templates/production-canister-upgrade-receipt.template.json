@@ -16,7 +16,7 @@
   "after_module_sha256": "<controller-bootstrap-upgrade-64-hex>",
   "wasm_sha256": "<controller-bootstrap-upgrade-64-hex>",
   "before_schema_version": 35,
-  "after_schema_version": 35,
+  "after_schema_version": 36,
   "before_lifecycle": "Bootstrap",
   "after_lifecycle": "Bootstrap",
   "before_deposits_paused": true,

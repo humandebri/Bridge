@@ -35,7 +35,7 @@ Verus/Rust/LLVM、Lean kernel、Solidity SMTChecker、Halmos/Z3、Wasm compiler�
 
 Leanの`step`は`Safe next`による事後フィルタを持たない。`raw_step_preserves_safe`が受理された各生遷移について安全性を直接証明し、有限trace定理はそのlemmaから帰納する。canonical・Ledger certificateは対象identityを含むが、その履歴やRPC情報の真正性は外部仮定である。
 
-schema v35再オープンとwire v30をRust transaction testとsame-Wasm PocketIC testで検証する。Productionとtest-deploymentはいずれも旧・未知schemaをfail closedにし、既存stagingはmigrationせず新しいCanisterへ初回installする。
+schema v36再オープンとwire v30をRust transaction testとsame-Wasm PocketIC testで検証する。Productionとtest-deploymentのpost-upgradeだけは配置済みschema v35からv36への一度限りのatomic migrationを受理し、それ以外の旧・未知schemaをfail closedにする。
 
 ## Production-equivalence definition
 

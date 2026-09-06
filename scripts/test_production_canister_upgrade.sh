@@ -125,7 +125,7 @@ printf 'true\n' >"$T/reserve-sufficient"
 printf 'dummy production identity\n' >"$T/production.pem"
 printf '{"bridge_canister_id":"%s","bridge_canister_wasm_sha256":"%s","ic_host":"https://icp-api.io"}\n' \
   "$CANISTER" "$OLD_SHA" >"$T/gate-a-profile.json"
-printf '{"source_revision":"%s","source_tree_sha256":"%s","bridge_canister_wasm_sha256":"%s","canister_install":{"source_revision":"%s","source_tree_sha256":"%s","canister_id":"%s","installer_principal":"%s"}}\n' \
+printf '{"source_revision":"%s","source_tree_sha256":"%s","bridge_canister_wasm_sha256":"%s","canister_install":{"source_revision":"%s","source_tree_sha256":"%s","canister_id":"%s","installer_principal":"%s","runtime_binding":{"schema_version":35}}}\n' \
   "$REVISION" "$SOURCE_TREE" "$OLD_SHA" "$INSTALL_REVISION" "$INSTALL_TREE" "$CANISTER" "$INSTALLER" >"$T/gate-a-receipt.json"
 
 cat >"$T/bin/icp" <<'SH'
@@ -360,6 +360,8 @@ assert value['kind']=='production-controller-bootstrap-upgrade'
 assert value['install_mode']=='upgrade'
 assert value['before_module_sha256']==sys.argv[2]
 assert value['after_module_sha256']==sys.argv[3]
+assert value['before_schema_version']==35
+assert value['after_schema_version']==36
 assert value['before_controllers']==value['after_controllers']==[sys.argv[4]]
 assert 'before_canister_version' not in value and 'after_canister_version' not in value
 assert value['request_id']=='9'*64
@@ -510,6 +512,7 @@ python3 -I -S - "$T/evidence/second-preflight.json" "$T/evidence/prior-upgrade.a
 import hashlib,json,sys
 value=json.load(open(sys.argv[1],encoding='utf-8'))
 assert value['before_module_sha256']==sys.argv[3]
+assert value['before_schema_version']==36
 assert value['prior_upgrade_evidence_sha256']==hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest()
 PY
 printf ' \n' >>"$T/evidence/prior-upgrade.json"
@@ -539,6 +542,8 @@ import json,sys
 value=json.load(open(sys.argv[1],encoding='utf-8'))
 assert value['before_module_sha256']==sys.argv[2]
 assert value['after_module_sha256']==sys.argv[3]
+assert value['before_schema_version']==36
+assert value['after_schema_version']==36
 assert value.get('prior_upgrade_evidence_sha256') is None
 PY
 [[ "$(<"$T/submit-count")" == 2 ]]

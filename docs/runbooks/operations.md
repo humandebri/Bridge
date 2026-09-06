@@ -1,8 +1,8 @@
 # Bridge資源補充・緊急停止
 
-## Schema v35 baseline
+## Schema v36 baseline
 
-初回mainnet deployで導入するv35は、capacity reservation、`nonterminal_deposit_owner_index`、役割別governance nonce lane、indexed funding recovery deadline、認可発行時刻を含む現在のSQLite形状だけを正本とする。旧・未知schema、tableやcounterが欠落したDBはreopen時にfail closedとなる。初回mainnet deploy完了後はこの形状をproduction baselineとして固定し、以後の形状変更はschema番号を上げた明示migrationとして扱う。
+初回mainnet deployで導入済みのv35をproduction baselineとし、activation evidenceを専用stable recordへ移すv36だけを一度限りの明示migrationとして受理する。v36はcapacity reservation、`nonterminal_deposit_owner_index`、役割別governance nonce lane、indexed funding recovery deadline、認可発行時刻、確定activation evidenceを含む現在のSQLite形状だけを正本とする。その他の旧・未知schema、tableやcounterが欠落したDBはreopen時にfail closedとなり、以後の形状変更もschema番号を上げた明示migrationとして扱う。
 
 ## 日常確認
 
@@ -25,7 +25,7 @@ production Canisterが受け入れるLedger feeは`100000` raw、`test-deploymen
 production artifactへstaging Wasmを流用しない。
 production buildでは定数をKINIC mainnet Ledgerのlive feeと承認済みprofileへ同期し、Candid binding、Rust/UI/integration test、production preflightを同じ変更で更新する。
 
-stable schemaはv35、record wireはv30を現行形式とする。Productionとtest-deploymentの`post_upgrade`は現行形式だけを受理する。Base Sepolia stagingも、review済みv35／wire v30と同一deployment instanceを保つupgradeだけを受理し、reinstallやlegacy migrationは行わない。
+stable schemaはv36、record wireはv30を現行形式とする。Productionとtest-deploymentの`post_upgrade`だけは配置済みversion 35／wire v30からの一度限りのmigrationも受理する。Base Sepolia stagingも同一Canisterとdeployment instanceを保つreview済みupgradeだけを受理し、reinstallは行わない。
 
 ## 保持制限と監査
 
@@ -33,10 +33,10 @@ stable schemaはv35、record wireはv30を現行形式とする。Productionとt
 
 `list_deposit_ids.history_truncated = true`はownerの古い一覧索引が削除済みであることを示す。`oldest_available_cursor`より古いDepositでも既知IDによる`get_deposit`と同一requestの冪等retryは利用できる。
 
-Productionではschema v35またはwire v30以外のstable state、未知schema、decode不能なDBを、空であってもfail closedで拒否する。
+Productionでは通常reopen時にschema v36またはwire v30以外のstable stateを拒否する。post-upgradeだけは配置済みschema v35／wire v30からv36への一度限りのatomic migrationを受理し、その他の旧・未知schema、decode不能なDBを空であってもfail closedで拒否する。
 
 `get_bridge_status.withdrawal_fee_guard_active`がtrueになった場合は、Base Bridgeのwithdrawalを直ちにpauseする。該当recordの`last_settlement_stop_reason`と監査eventに`LedgerFeeExceedsServiceFee`が残り、IC releaseやreserve変更は行われない。buildが選択した固定`KINIC_LEDGER_FEE`（productionは`100000 raw`、stagingは`10000 raw`）とprepared recordのcharged Service Feeをreview済みprofileに照合した後、任意の非anonymous主体がHistoryから`continue_withdrawal`を実行する。Canisterはruntimeで`icrc1_fee()`を照会せず、固定Ledger Feeがcharged Service Fee以下であることを再検証できた場合だけ、同じrecordからreleaseを開始してguardを解除する。
-現行形式はstable schema v35／record wire v30とし、これ以外をfail closedで拒否する。staging upgrade policyは既存test Canister principal、現行module・certified Candid、deployment instance、controller、新規target module・Candid hashを固定する。同一deployment instanceのcurrent-schema upgradeだけで更新し、reinstallを禁止する。
+現行形式はstable schema v36／record wire v30とし、post-upgrade時の配置済みv35→v36 migration以外をfail closedで拒否する。staging upgrade policyは既存test Canister principal、現行module・certified Candid、deployment instance、controller、新規target module・Candid hashを固定する。同一deployment instanceのreview済みupgradeだけで更新し、reinstallを禁止する。
 SQLite DBやcounterを手作業で変更しない。
 
 schema versionの正本は`bridge_metadata.application_schema_version`だけである。Depositはrecord、owner sequence、Base recipient、Authorization、失効またはMint確定証拠を一つのstable envelopeへ保存する。pending Ledger、open reconciliation hold、nonterminal Withdrawalの件数は各indexの`table_counts`を正本とし、primary rowとliability index・集計は一つのSQLite transactionで更新する。
@@ -162,7 +162,7 @@ preflight、execute、recoverはいずれも固定clean HEADからproduction Was
 
 現行production install templateのようにunsealed・pausedでpause principalが既にproduction identity、bootstrap markerが未束縛、role分離済みの場合、upgrade hookはstateとauditを変更しないfresh-install no-opとして扱う。旧SNS Rootからの実移行だけがpause principal、marker、auditを更新する。
 
-handover driverは全live responseを再取得して完全なschema 4 pre-send checkpointを原子的に保存した後、認証済みlive verifierをもう一度通し、直後にsettings updateを送る。この最終検証から送信までの短い区間は、pause・activation・runtime・reserve・storage・module・controllerを書き換える別operatorが存在しないことを外部仮定とする。送信結果が不明またはrequest IDを取得できない場合はcheckpointを削除・上書きせず、同じ証跡pathへ`BRIDGE_HANDOVER_MODE=recover`を指定して再実行する。recoverはsettings updateを再送せず、checkpointのsource・Gate B・activation receipt・pre-send snapshotを検証したうえで、live controllerがSNS Root一件でありmodule、RuntimeBinding、storage integrity、active運用状態が連続している場合だけcompletion receiptへ昇格する。
+handover driverは全live responseを再取得し、認証済みlive verifierをもう一度通した後、完全なschema 4 pre-send checkpointを証跡pathと同じdirectoryで排他的かつ原子的に公開して、直後にsettings updateを送る。この最終検証から送信までの短い区間は、pause・activation・runtime・reserve・storage・module・controllerを書き換える別operatorが存在しないことを外部仮定とする。送信結果が不明またはrequest IDを取得できない場合はcheckpointを削除せず、同じ証跡pathへ`BRIDGE_HANDOVER_MODE=recover`を指定して再実行する。非zero応答でも一意なrequest IDが得られた場合はtranscriptと共に保持する。recoverはsettings updateを再送せず、元のrecovery source全体とembedded pre-send checkpoint、Gate B、activation receiptを検証したうえで、live controllerがSNS Root一件でありmodule、RuntimeBinding、storage integrity、active運用状態が連続している場合だけ別のcompletion candidateを作る。typed validation成功後にだけ元checkpointをcompletion receiptへ原子的に置換し、検証失敗時は元checkpointを保持する。
 
 ## Mint証拠不一致
 

@@ -78,7 +78,7 @@ credential、seed、private key、hardware wallet backup、credential入りRPC U
 
 ## IC mainnet × Base Sepolia test staging
 
-Plan 007のIC stagingは、現在の`sepolia-staging` bindingに固定された`bridge-sepolia`（`rlhjx-iyaaa-aaaaf-qcnyq-cai`）、deployment instance、Base contracts、signer、共有`testicrc` Ledger/Indexを維持する。2026-08-27/28のreinstallとfresh-stack作成は一度限りの履歴であり、再実行またはresumeしない。今後のCanister更新はschema v35／wire v30を保つsame-instance `upgrade`だけを許可する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。KINIC Ledger、Base Mainnet、SNSには触れない。
+Plan 007のIC stagingは、現在の`sepolia-staging` bindingに固定された`bridge-sepolia`（`rlhjx-iyaaa-aaaaf-qcnyq-cai`）、deployment instance、Base contracts、signer、共有`testicrc` Ledger/Indexを維持する。2026-08-27/28のreinstallとfresh-stack作成は一度限りの履歴であり、再実行またはresumeしない。配置済みschema v35はsame-instance `upgrade`でv36へ一度だけ移行し、wire v30を維持する。その後はv36のreview済みupgradeだけを許可する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。KINIC Ledger、Base Mainnet、SNSには触れない。
 
 外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh /secure/work/local-e2e.json`をclean commitで実行し、repo外へ証跡を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、Cloudflare Worker公開はそれぞれ別の明示承認後に行う。
 
@@ -88,7 +88,7 @@ Plan 007のIC stagingは、現在の`sepolia-staging` bindingに固定された`
 
 ## ICP mainnet上のBase Sepolia staging Bridge deploy先
 
-deploy先は既存`rlhjx-iyaaa-aaaaf-qcnyq-cai`とし、`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`をそのまま使う。既存deployment instance、minimum Withdrawal ID、Base contract binding、schema v35／wire v30を保つ`upgrade`だけを許可し、`install`、`reinstall`、`auto`を拒否する。将来reinstall用のinit templateやrender/validate commandは提供しない。
+deploy先は既存`rlhjx-iyaaa-aaaaf-qcnyq-cai`とし、`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`をそのまま使う。既存deployment instance、minimum Withdrawal ID、Base contract bindingを保ち、配置済みschema v35からv36への一度限りのmigrationまたはv36／wire v30を維持する`upgrade`だけを許可する。`install`、`reinstall`、`auto`を拒否し、将来reinstall用のinit templateやrender/validate commandは提供しない。
 
 deploy前に対象IDとcontrollerを再確認し、必要なcyclesを補充する。test-only stagingであり、本番資産、production controller handover、SNS操作には使用しない。
 

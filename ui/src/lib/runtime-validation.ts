@@ -423,7 +423,7 @@ export async function validateRuntime(
   } catch {
     blockers.push("Index ledger binding is unavailable")
   }
-  if (config.schema_version !== 35)
+  if (config.schema_version !== 36)
     blockers.push(`Unsupported canister schema ${config.schema_version}`)
   if (
     ledgerName !== profile.icToken.name ||

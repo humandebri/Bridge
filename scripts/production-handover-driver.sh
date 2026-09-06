@@ -40,7 +40,9 @@ fi
 for tool in icp python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/bridge-handover.XXXXXX")"
+COMPLETION_CANDIDATE=""
 cleanup_handover_tmp() {
+  if [[ -n "$COMPLETION_CANDIDATE" ]]; then rm -f -- "$COMPLETION_CANDIDATE"; fi
   chmod -R u+w "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
 }
@@ -226,29 +228,58 @@ with open(target,'w') as out:
  json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno())
 PY
 python3 - "$TMP/pre-send-checkpoint.json" "$BRIDGE_HANDOVER_EVIDENCE_FILE" <<'PY'
-import os,sys
+import os,stat,sys,tempfile
 source,target=sys.argv[1:]
 parent=os.path.dirname(os.path.abspath(target)) or '.'
 if not os.path.isdir(parent): raise SystemExit('handover evidence parent directory does not exist')
-os.link(source,target)
-fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY)
-try: os.fsync(fd)
-finally: os.close(fd)
+source_fd=os.open(source,os.O_RDONLY|os.O_NOFOLLOW)
+try:
+ if not stat.S_ISREG(os.fstat(source_fd).st_mode): raise SystemExit('handover checkpoint source is not regular')
+ data=b''
+ while True:
+  chunk=os.read(source_fd,1024*1024)
+  if not chunk: break
+  data+=chunk
+finally: os.close(source_fd)
+fd,tmp=tempfile.mkstemp(prefix='.handover-checkpoint.',dir=parent)
+try:
+ os.fchmod(fd,0o400)
+ view=memoryview(data)
+ while view:
+  written=os.write(fd,view)
+  if written<=0: raise SystemExit('short write while publishing handover checkpoint')
+  view=view[written:]
+ os.fsync(fd); os.close(fd); fd=-1
+ os.link(tmp,target,follow_symlinks=False)
+ directory=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+ try: os.fsync(directory)
+ finally: os.close(directory)
+finally:
+ if fd>=0: os.close(fd)
+ try: os.unlink(tmp)
+ except FileNotFoundError: pass
 PY
 set +e
 "${COMMAND[@]}" >"$TMP/response.stdout" 2>"$TMP/response.stderr"
 STATUS=$?
 set -e
+COMPLETED_AT="$(date +%s)"
+RESPONSE_SHA256="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()+open(sys.argv[2],"rb").read()).hexdigest())' "$TMP/response.stdout" "$TMP/response.stderr")"
+REQUEST_ID="$(python3 -c '
+import re,sys
+text=open(sys.argv[1],errors="replace").read()+open(sys.argv[2],errors="replace").read()
+matches={value.lower() for value in re.findall(r"request[_ -]?id[^0-9a-fA-F]*(?:0x)?([0-9a-fA-F]{64})",text,re.I)}
+if len(matches)!=1: raise SystemExit(1)
+print(matches.pop())
+' "$TMP/response.stdout" "$TMP/response.stderr")" || REQUEST_ID=""
 if [[ $STATUS -ne 0 ]]; then
-  COMPLETED_AT="$(date +%s)"
-  RESPONSE_SHA256="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()+open(sys.argv[2],"rb").read()).hexdigest())' "$TMP/response.stdout" "$TMP/response.stderr")"
-  python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$STATUS" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/pre-send-checkpoint.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
+  python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$STATUS" "$REQUEST_ID" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/pre-send-checkpoint.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
 import hashlib,json,os,sys,tempfile
-target,canister,root,caller,status,response_sha,completed,preflight,checkpoint_path,stdout_path,stderr_path,*argv=sys.argv[1:]
+target,canister,root,caller,status,request_id,response_sha,completed,preflight,checkpoint_path,stdout_path,stderr_path,*argv=sys.argv[1:]
 checkpoint=open(checkpoint_path,'rb').read()
 value={'schema_version':4,'stage':'controller_update_uncertain','observed_at_unix':int(completed),
        'bridge_canister_id':canister,'sns_root_canister_id':root,'executing_principal':caller,
-       'command_argv':argv,'request_id':'','response_exit_code':int(status),
+       'command_argv':argv,'request_id':request_id,'response_exit_code':int(status),
        'response_stdout_hex':open(stdout_path,'rb').read().hex(),'response_stderr_hex':open(stderr_path,'rb').read().hex(),
        'response_sha256':response_sha,'pre_send_checkpoint_json_hex':checkpoint.hex(),
        'pre_send_checkpoint_sha256':hashlib.sha256(checkpoint).hexdigest(),**json.load(open(preflight))}
@@ -260,15 +291,7 @@ PY
   echo "INCIDENT: controller handover result is uncertain; durable checkpoint retained and automatic retry is forbidden" >&2
   exit 1
 fi
-COMPLETED_AT="$(date +%s)"
-RESPONSE_SHA256="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()+open(sys.argv[2],"rb").read()).hexdigest())' "$TMP/response.stdout" "$TMP/response.stderr")"
-REQUEST_ID="$(python3 -c '
-import re,sys
-text=open(sys.argv[1],errors="replace").read()+open(sys.argv[2],errors="replace").read()
-matches={value.lower() for value in re.findall(r"request[_ -]?id[^0-9a-fA-F]*(?:0x)?([0-9a-fA-F]{64})",text,re.I)}
-if len(matches)!=1: raise SystemExit(1)
-print(matches.pop())
-' "$TMP/response.stdout" "$TMP/response.stderr")" || {
+if [[ -z "$REQUEST_ID" ]]; then
   python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$STATUS" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/pre-send-checkpoint.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
 import hashlib,json,os,sys,tempfile
 target,canister,root,caller,status,response_sha,completed,preflight,checkpoint_path,stdout_path,stderr_path,*argv=sys.argv[1:]
@@ -286,7 +309,7 @@ fd=os.open(os.path.dirname(os.path.abspath(target)) or '.',os.O_RDONLY); os.fsyn
 PY
   echo "INCIDENT: controller handover succeeded but the ICP CLI omitted the request ID; durable uncertain checkpoint retained" >&2
   exit 1
-}
+fi
 # Persist the irreversible request before attempting the public postcondition.
 python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$REQUEST_ID" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/pre-send-checkpoint.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
 import hashlib,json,os,sys,tempfile
@@ -419,32 +442,40 @@ for path,prefix in [(status_path,'after_management_status'),(bridge_path,'after_
 print(json.dumps(snapshot,sort_keys=True,separators=(',',':')))
 PY
 COMPLETED_AT="$(date +%s)"
-python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$REQUEST_ID" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/postcondition.json" "$TMP/pre-send-checkpoint.json" "$TMP/response.stdout" "$TMP/response.stderr" "$BRIDGE_HANDOVER_MODE" "${COMMAND[@]:-}" <<'PY'
+COMPLETION_CANDIDATE="$(python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$REQUEST_ID" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/postcondition.json" "$TMP/pre-send-checkpoint.json" "$TMP/response.stdout" "$TMP/response.stderr" "$BRIDGE_HANDOVER_MODE" "${COMMAND[@]:-}" <<'PY'
 import hashlib,json,os,sys,tempfile
-target,canister,root,caller,request_id,response_sha,completed,preflight,postcondition,checkpoint_path,stdout_path,stderr_path,mode,*argv=sys.argv[1:]
+source_path,canister,root,caller,request_id,response_sha,completed,preflight,postcondition,checkpoint_path,stdout_path,stderr_path,mode,*argv=sys.argv[1:]
 metrics=json.load(open(preflight))
 post=json.load(open(postcondition)); final_controllers=post['final_controllers']
 checkpoint=open(checkpoint_path,'rb').read()
+recovery_source=open(source_path,'rb').read()
+recovery_value=json.loads(recovery_source)
 if mode=='recover': argv=metrics['command_argv']
 value={**metrics,**post,'schema_version':4,'stage':'complete','observed_at_unix':int(completed),'bridge_canister_id':canister,
        'sns_root_canister_id':root,'executing_principal':caller,'command_argv':argv,
-       'request_id':request_id,'response_exit_code':0,
+       'request_id':request_id,'response_exit_code':int(recovery_value['response_exit_code']),
        'response_stdout_hex':open(stdout_path,'rb').read().hex(),
        'response_stderr_hex':open(stderr_path,'rb').read().hex(),
        'response_sha256':response_sha,'final_controllers':final_controllers,
        'pre_send_checkpoint_json_hex':checkpoint.hex(),
        'pre_send_checkpoint_sha256':hashlib.sha256(checkpoint).hexdigest(),
+       'recovery_source_checkpoint_json_hex':recovery_source.hex(),
+       'recovery_source_checkpoint_sha256':hashlib.sha256(recovery_source).hexdigest(),
        'recovered_without_request_id':mode=='recover' and not request_id}
-parent=os.path.dirname(os.path.abspath(target)) or '.'
-fd,tmp=tempfile.mkstemp(prefix='.handover-evidence.',dir=parent)
-out=os.fdopen(fd,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
-fd=os.open(os.path.dirname(os.path.abspath(target)) or '.',os.O_RDONLY); os.fsync(fd); os.close(fd)
+parent=os.path.dirname(os.path.abspath(source_path)) or '.'
+fd,candidate=tempfile.mkstemp(prefix='.handover-completion.',dir=parent)
+os.fchmod(fd,0o400)
+out=os.fdopen(fd,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close()
+print(candidate)
 PY
+)"
 if ! "$BRIDGE_HANDOVER_VALIDATOR_BIN" validate-controller-handover-completion \
   "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
   "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT" \
-  "$BRIDGE_HANDOVER_EVIDENCE_FILE"; then
-  echo "INCIDENT: controller handover completed but durable completion evidence failed typed validation" >&2
+  "$COMPLETION_CANDIDATE"; then
+  echo "INCIDENT: controller handover completed but completion evidence failed validation; recovery checkpoint retained" >&2
   exit 1
 fi
+production_atomic_replace "$COMPLETION_CANDIDATE" "$BRIDGE_HANDOVER_EVIDENCE_FILE"
+COMPLETION_CANDIDATE=""
 echo "controller handover completed; evidence=$BRIDGE_HANDOVER_EVIDENCE_FILE" >&2

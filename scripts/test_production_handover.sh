@@ -42,7 +42,7 @@ version = "0.0.0"
 LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs};
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="verify-production-canister-handover"{let counter=env::var("TRACE").unwrap()+".verify";let n=fs::read_to_string(&counter).ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(0);fs::write(&counter,(n+1).to_string()).unwrap();let valid=a.len()==5&&fs::read_to_string(&a[2]).is_ok_and(|v|v.contains("\"kind\":\"seal\"")&&v.contains("\"initial_operational_parameters_sha256\":\"1111\""))&&fs::read_to_string(&a[3]).is_ok_and(|v|v.contains("\"kind\":\"schedule\"")&&v.contains("\"seal_receipt_sha256\":\"2222\""))&&fs::read_to_string(&a[4]).is_ok_and(|v|v.contains("\"kind\":\"execute\"")&&v.contains("\"schedule_receipt_sha256\":\"3333\""));if (n>0&&env::var("HANDOVER_PRE_SEND_ACTIVE_DRIFT").as_deref()==Ok("true"))||!valid||["HANDOVER_BOOTSTRAP","HANDOVER_SEALED","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_INITIAL_PARAMETERS_DRIFT","HANDOVER_SEAL_RECEIPT_DRIFT","HANDOVER_SCHEDULE_RECEIPT_DRIFT","HANDOVER_EXECUTE_RECEIPT_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_RESERVE_DRIFT","HANDOVER_STORAGE_INTEGRITY_DRIFT","HANDOVER_IC_DEPOSITS_PAUSED","HANDOVER_BASE_DEPOSITS_PAUSED","HANDOVER_BASE_WITHDRAWALS_PAUSED"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else if a[0]=="validate-production-handover-candidate"{println!("production_handover_candidate=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-bundle"&&env::var("REJECT_CURRENT_GATE_B").as_deref()==Ok("true"){std::process::exit(1)}else{println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","a".repeat(64))}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="verify-production-canister-handover"{let counter=env::var("TRACE").unwrap()+".verify";let n=fs::read_to_string(&counter).ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(0);fs::write(&counter,(n+1).to_string()).unwrap();let valid=a.len()==5&&fs::read_to_string(&a[2]).is_ok_and(|v|v.contains("\"kind\":\"seal\"")&&v.contains("\"initial_operational_parameters_sha256\":\"1111\""))&&fs::read_to_string(&a[3]).is_ok_and(|v|v.contains("\"kind\":\"schedule\"")&&v.contains("\"seal_receipt_sha256\":\"2222\""))&&fs::read_to_string(&a[4]).is_ok_and(|v|v.contains("\"kind\":\"execute\"")&&v.contains("\"schedule_receipt_sha256\":\"3333\""));if (n>0&&env::var("HANDOVER_PRE_SEND_ACTIVE_DRIFT").as_deref()==Ok("true"))||!valid||["HANDOVER_BOOTSTRAP","HANDOVER_SEALED","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_INITIAL_PARAMETERS_DRIFT","HANDOVER_SEAL_RECEIPT_DRIFT","HANDOVER_SCHEDULE_RECEIPT_DRIFT","HANDOVER_EXECUTE_RECEIPT_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_RESERVE_DRIFT","HANDOVER_STORAGE_INTEGRITY_DRIFT","HANDOVER_IC_DEPOSITS_PAUSED","HANDOVER_BASE_DEPOSITS_PAUSED","HANDOVER_BASE_WITHDRAWALS_PAUSED"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else if a[0]=="validate-production-handover-candidate"{println!("production_handover_candidate=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-controller-handover-recovery"{println!("controller_handover_recovery=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-controller-handover-completion"&&env::var("HANDOVER_COMPLETION_VALIDATOR_FAIL").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="validate-bundle"&&env::var("REJECT_CURRENT_GATE_B").as_deref()==Ok("true"){std::process::exit(1)}else{println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","a".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -109,6 +109,11 @@ elif [[ "$*" == *'status bridge-canister -e production --public --json'* ]]; the
   [[ "${HANDOVER_POSTCONDITION_FAIL:-false}" != true ]] || exit 1
   printf '{"controllers":%s,"module_hash":"%s"}\n' "${HANDOVER_FINAL_CONTROLLERS:-[\"7jkta-eyaaa-aaaaq-aaarq-cai\"]}" "${HANDOVER_POST_MODULE:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
 elif [[ "$*" == *'settings update bridge-canister'* ]]; then
+  if [[ "${HANDOVER_FAIL_AFTER_UPDATE:-false}" == true ]]; then
+    : >"$TRACE.updated"
+    echo 'request_id=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' >&2
+    exit 1
+  fi
   [[ "${HANDOVER_FAIL:-false}" != true ]] || exit 1
   : >"$TRACE.updated"
   [[ "${HANDOVER_NO_REQUEST_ID:-false}" == true ]] || echo 'request_id=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' >&2
@@ -149,6 +154,9 @@ assert v['schema_version']==4 and v['stage']=='complete'
 checkpoint=bytes.fromhex(v['pre_send_checkpoint_json_hex'])
 assert hashlib.sha256(checkpoint).hexdigest()==v['pre_send_checkpoint_sha256']
 assert json.loads(checkpoint)['stage']=='pre_send_checkpoint'
+source=bytes.fromhex(v['recovery_source_checkpoint_json_hex'])
+assert hashlib.sha256(source).hexdigest()==v['recovery_source_checkpoint_sha256']
+assert json.loads(source)['stage']=='controller_update_submitted'
 assert v['source_revision'] and len(v['source_tree_sha256'])==64
 assert v['gate_b_manifest_sha256']==sys.argv[2]
 assert v['operational_config_seal_receipt_sha256']==hashlib.sha256(open(sys.argv[1].replace('handover.json','operational-config-seal-receipt.json'),'rb').read()).hexdigest()
@@ -346,6 +354,27 @@ import json,sys
 v=json.load(open(sys.argv[1]))
 assert v['schema_version']==4 and v['stage']=='complete'
 assert v['request_id']=='' and v['recovered_without_request_id'] is True
+source=json.loads(bytes.fromhex(v['recovery_source_checkpoint_json_hex']))
+assert source['stage']=='controller_update_uncertain' and source['response_exit_code']!=0
+PY
+if HANDOVER_FAIL_AFTER_UPDATE=true run_handover "$T/failed-after-update.json" >/dev/null 2>&1; then
+  echo "handover accepted a nonzero response after submitting the controller update" >&2; exit 1
+fi
+python3 - "$T/failed-after-update.json" <<'PY'
+import json,sys
+v=json.load(open(sys.argv[1]))
+assert v['stage']=='controller_update_uncertain' and v['response_exit_code']!=0
+assert v['request_id']=='b'*64
+PY
+updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+BRIDGE_HANDOVER_MODE=recover run_handover "$T/failed-after-update.json"
+updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+[[ "$updates_before" == "$updates_after" ]]
+python3 - "$T/failed-after-update.json" <<'PY'
+import json,sys
+v=json.load(open(sys.argv[1]))
+assert v['stage']=='complete' and v['request_id']=='b'*64
+assert v['response_exit_code']!=0 and v['recovered_without_request_id'] is False
 PY
 if HANDOVER_NO_REQUEST_ID=true run_handover "$T/missing-request-id.json" >/dev/null 2>&1; then
   echo "handover accepted a success response without a request ID" >&2; exit 1
@@ -366,4 +395,23 @@ v=json.load(open(sys.argv[1]))
 assert v['schema_version']==4 and v['stage']=='complete'
 assert v['request_id']=='' and v['recovered_without_request_id'] is True
 assert v['final_controllers']==['7jkta-eyaaa-aaaaq-aaarq-cai']
+PY
+if HANDOVER_POSTCONDITION_FAIL=true run_handover "$T/recover-validator-source.json" >/dev/null 2>&1; then
+  echo "handover unexpectedly completed without a postcondition" >&2; exit 1
+fi
+checkpoint_before="$(shasum -a 256 "$T/recover-validator-source.json" | awk '{print $1}')"
+if HANDOVER_COMPLETION_VALIDATOR_FAIL=true BRIDGE_HANDOVER_MODE=recover \
+  run_handover "$T/recover-validator-source.json" >/dev/null 2>&1; then
+  echo "handover accepted a rejected completion candidate" >&2; exit 1
+fi
+[[ "$checkpoint_before" == "$(shasum -a 256 "$T/recover-validator-source.json" | awk '{print $1}')" ]]
+[[ -z "$(find "$T" -maxdepth 1 -name '.handover-completion.*' -print -quit)" ]]
+updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+BRIDGE_HANDOVER_MODE=recover run_handover "$T/recover-validator-source.json"
+updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+[[ "$updates_before" == "$updates_after" ]]
+[[ -z "$(find "$T" -maxdepth 1 -name '.handover-completion.*' -print -quit)" ]]
+python3 - "$T/recover-validator-source.json" <<'PY'
+import json,sys
+assert json.load(open(sys.argv[1]))['stage']=='complete'
 PY

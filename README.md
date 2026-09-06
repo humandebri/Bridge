@@ -15,7 +15,7 @@ KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
 | Production | Base／ICともpause配置済み | 13 artifact Gate Bと本番activation完了まで資産受付禁止 |
 
 `bridge-core`はDeposit、Withdrawal、Mint Authorization、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v35・record wire v30の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
+`bridge-canister`はstable schema v36・record wire v30の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
 ICP→BaseではCanisterはFinalized Base snapshotで状態・fee・pauseを確認し、IC合意時刻の発行時点から10分を期限とするEIP-712 Mint Authorizationへ署名する。署名install時に5分以上残っていなければservice feeを計上せず停止し、Base transactionは生成・送信しない。任意のBase walletが残り5分以上で`mintDepositWithAuthorization`を送り、そのwalletがgasを支払う。Solidityは別途、現在のBase時刻から最大15分のdeadline上限を強制する。
 期限後、既存のBase Finalized snapshotを使うdeadline順の上限付きローカル走査でmint予約だけを解放する。Depositごとのtimerや個別Base照合、自動返金は行わない。任意の非anonymous Principalが`request_deposit_refund`を明示実行すると、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を照合し、未処理ならrecordに固定された元account・金額・transfer identityでLedger refund、処理済みならexact `DepositMinted` eventとcanonical receiptを保存して`Minted`へ進む。RPC不一致、event欠落、digest不一致では資金を動かさない。
 Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacementは存在しない。Base governanceではCanisterがGovernance Operatorのtransactionをthreshold署名し、外部`governance-relayer` CLIだけがbroadcast、Finalized待機、確定通知を行う。自動replacementはなく、Governanceの明示要求時だけ同一nonceを最大3回、12.5%以上fee bumpして再署名する。
@@ -172,7 +172,7 @@ python3 scripts/protocol_vectors.py --check
 
 1. 新規networkの起動時だけ、port 8000が使用中なら`gateway.port`を一時的に空きportへ変更する。
 2. ICP CLI内蔵のローカルPocketIC networkを起動する。
-3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 35、全count 0を確認する。
+3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 36、全count 0を確認する。
 4. Anvilをchain ID 31337で起動する。
 5. 24時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
 6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
@@ -196,4 +196,4 @@ icp network stop --project-root-override .
 
 手動実行の`prepare_local_network.py --write`は`icp.yaml`を永続的に変更する。必要なら停止後に利用者が元のportへ戻す。
 
-本番初回deployまではstable schemaを直接置換し、旧schema migration、dual-read、fallbackを追加しない。現行v35／wire v30以外はfail closedとする。現在のstagingは、一度限りのreinstall履歴を監査証跡へ固定した同じCanister・deployment instance・Base contract bindingを維持し、今後はcurrent-schema upgradeだけを許可する。v7 staging evidenceは読取専用とし、resumeまたはv8へのmigrationを行わない。
+本番初回deployでv35／wire v30が配置済みである。確定activation証跡を追加する現行v36へはpost-upgradeで一度だけ原子的に移行し、通常reopen、その他の旧・未知schema、dual-read、fallbackはfail closedとする。現在のstagingも同じCanister・deployment instance・Base contract bindingを維持したreview済みv35→v36 upgradeだけを受理し、その後はcurrent-schema upgradeだけを許可する。v7 staging evidenceは読取専用とし、resumeまたはv8へのmigrationを行わない。

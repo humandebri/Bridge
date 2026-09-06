@@ -411,22 +411,33 @@ production_validate_gate() {
       [[ -f "$handover_checkpoint" && ! -L "$handover_checkpoint" ]] || {
         rm -rf "$target"; echo "handover recovery requires a regular checkpoint" >&2; return 1;
       }
-      "$profile_bin" validate-controller-handover-recovery \
+      output="$("$profile_bin" validate-controller-handover-recovery \
         "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
-        "$handover_execute_receipt" "$handover_checkpoint" || {
+        "$handover_execute_receipt" "$handover_checkpoint")" || {
           rm -rf "$target"; echo "controller handover recovery checkpoint is invalid" >&2; return 1;
         }
+      [[ "$output" =~ ^controller_handover_recovery=pass[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || {
+        rm -rf "$target"
+        echo "controller handover recovery result is malformed" >&2
+        return 1
+      }
+    else
+      output="$("$profile_bin" validate-production-handover-candidate \
+        "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
+        "$handover_execute_receipt")" || {
+        rm -rf "$target"
+        echo "controller handover activation lineage is invalid" >&2
+        return 1
+      }
+      [[ "$output" =~ ^production_handover_candidate=pass[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || {
+        rm -rf "$target"
+        echo "controller handover candidate result is malformed" >&2
+        return 1
+      }
     fi
-    output="$("$profile_bin" validate-production-handover-candidate \
-      "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
-      "$handover_execute_receipt")" || {
+    [[ -n "${BASH_REMATCH[1]:-}" ]] || {
       rm -rf "$target"
-      echo "controller handover activation lineage is invalid" >&2
-      return 1
-    }
-    [[ "$output" =~ ^production_handover_candidate=pass[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || {
-      rm -rf "$target"
-      echo "controller handover candidate result is malformed" >&2
+      echo "controller handover validation omitted the manifest hash" >&2
       return 1
     }
     actual_hash="${BASH_REMATCH[1]}"

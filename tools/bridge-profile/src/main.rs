@@ -33,7 +33,8 @@ const PRODUCTION_PAUSE_PRINCIPAL: &str =
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
 const MAX_ACTIVATION_ATTESTATION_AGE_SECS: u64 = 5 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 35;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 36;
+const PREVIOUS_STABLE_SCHEMA_VERSION: u16 = 35;
 const RELEASE_PROFILE_SCHEMA_VERSION: u8 = 5;
 const PRODUCTION_CANISTER_INSTALL_RECEIPT_SCHEMA_VERSION: u8 = 3;
 const PRODUCTION_UPGRADE_CHUNK_SIZE: usize = 1024 * 1024;
@@ -1164,6 +1165,10 @@ struct ControllerHandover {
     pre_send_checkpoint_json_hex: String,
     #[serde(default)]
     pre_send_checkpoint_sha256: String,
+    #[serde(default)]
+    recovery_source_checkpoint_json_hex: String,
+    #[serde(default)]
+    recovery_source_checkpoint_sha256: String,
     #[serde(default)]
     recovered_without_request_id: bool,
 }
@@ -4769,7 +4774,7 @@ fn validate_controller_handover_recovery_files(
     schedule_receipt_path: &Path,
     execute_receipt_path: &Path,
     checkpoint_path: &Path,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let (bundle, gate_a_receipt, _) = validate_production_handover_evidence_files(
         bundle_path,
         seal_receipt_path,
@@ -4882,7 +4887,7 @@ fn validate_controller_handover_recovery_files(
     {
         return Err("controller handover recovery command is not the fixed transfer".into());
     }
-    Ok(())
+    Ok(bundle.manifest_sha256)
 }
 
 fn controller_handover_lineage_fields_match(
@@ -4983,6 +4988,54 @@ fn controller_handover_checkpoint_matches(
             "pre_send_activation_attestation_response_sha256",
             &handover.pre_send_activation_attestation_response_sha256,
         )
+}
+
+fn controller_handover_recovery_source_matches(
+    handover: &ControllerHandover,
+    source: &Value,
+) -> bool {
+    let Some(source) = source.as_object() else {
+        return false;
+    };
+    let Some(stage) = source.get("stage").and_then(Value::as_str) else {
+        return false;
+    };
+    if ![
+        "pre_send_checkpoint",
+        "controller_update_uncertain",
+        "controller_update_submitted",
+    ]
+    .contains(&stage)
+        || source.get("schema_version").and_then(Value::as_u64) != Some(4)
+    {
+        return false;
+    }
+    let Ok(completion) = serde_json::to_value(handover) else {
+        return false;
+    };
+    let Some(completion) = completion.as_object() else {
+        return false;
+    };
+    if source.iter().any(|(key, value)| {
+        !matches!(key.as_str(), "stage" | "observed_at_unix") && completion.get(key) != Some(value)
+    }) {
+        return false;
+    }
+    if stage == "pre_send_checkpoint" {
+        return serde_json::from_slice::<Value>(
+            &decode_hex(&handover.pre_send_checkpoint_json_hex).unwrap_or_default(),
+        )
+        .ok()
+            == Some(Value::Object(source.clone()));
+    }
+    source
+        .get("pre_send_checkpoint_json_hex")
+        .and_then(Value::as_str)
+        == Some(handover.pre_send_checkpoint_json_hex.as_str())
+        && source
+            .get("pre_send_checkpoint_sha256")
+            .and_then(Value::as_str)
+            == Some(handover.pre_send_checkpoint_sha256.as_str())
 }
 
 fn validate_controller_handover_continuity(
@@ -5243,30 +5296,29 @@ fn validate_controller_handover_completion(
         .trim_start_matches("0x")
         .to_ascii_lowercase();
     let response_request_ids = handover_request_ids(&response_text)?;
-    let schema_is_supported = handover.schema_version == 3 || handover.schema_version == 4;
-    let checkpoint_is_valid = if handover.schema_version == 4 {
-        let checkpoint = decode_hex(&handover.pre_send_checkpoint_json_hex)?;
-        valid_sha256(&handover.pre_send_checkpoint_sha256)
-            && hex(&Sha256::digest(&checkpoint))
-                .eq_ignore_ascii_case(&handover.pre_send_checkpoint_sha256)
-            && serde_json::from_slice::<Value>(&checkpoint)
-                .ok()
-                .is_some_and(|value| controller_handover_checkpoint_matches(handover, &value))
-    } else {
-        handover.pre_send_checkpoint_json_hex.is_empty()
-            && handover.pre_send_checkpoint_sha256.is_empty()
-            && !handover.recovered_without_request_id
-    };
+    let checkpoint = decode_hex(&handover.pre_send_checkpoint_json_hex)?;
+    let recovery_source = decode_hex(&handover.recovery_source_checkpoint_json_hex)?;
+    let checkpoint_is_valid = valid_sha256(&handover.pre_send_checkpoint_sha256)
+        && hex(&Sha256::digest(&checkpoint))
+            .eq_ignore_ascii_case(&handover.pre_send_checkpoint_sha256)
+        && serde_json::from_slice::<Value>(&checkpoint)
+            .ok()
+            .is_some_and(|value| controller_handover_checkpoint_matches(handover, &value));
+    let recovery_source_is_valid = valid_sha256(&handover.recovery_source_checkpoint_sha256)
+        && hex(&Sha256::digest(&recovery_source))
+            .eq_ignore_ascii_case(&handover.recovery_source_checkpoint_sha256)
+        && serde_json::from_slice::<Value>(&recovery_source)
+            .ok()
+            .is_some_and(|value| controller_handover_recovery_source_matches(handover, &value));
     let request_binding_is_valid = if handover.request_id.is_empty() {
-        handover.schema_version == 4
-            && handover.recovered_without_request_id
-            && response_request_ids.is_empty()
+        handover.recovered_without_request_id && response_request_ids.is_empty()
     } else {
         (valid_sha256(&handover.request_id) || valid_hash32(&handover.request_id))
             && response_request_ids == BTreeSet::from([request_id_text])
     };
-    if !schema_is_supported
+    if handover.schema_version != 4
         || !checkpoint_is_valid
+        || !recovery_source_is_valid
         || handover.stage != "complete"
         || handover.bridge_canister_id != profile.bridge_canister_id
         || handover.sns_root_canister_id != KINIC_ROOT
@@ -5287,7 +5339,6 @@ fn validate_controller_handover_completion(
             .iter()
             .any(|value| value == "--network" || value == "-n")
         || !request_binding_is_valid
-        || handover.response_exit_code != 0
         || !response_digest.eq_ignore_ascii_case(&handover.response_sha256)
         || !valid_sha256(&handover.response_sha256)
         || handover.final_controllers != [KINIC_ROOT.to_string()]
@@ -5478,6 +5529,39 @@ fn production_upgrade_status_preserved(
         && before.counts.pruned_audit_events == after.counts.pruned_audit_events
         && before.counts.retained_deposit_index_entries
             == after.counts.retained_deposit_index_entries
+}
+
+fn production_upgrade_schema_transition(
+    expected_before: u16,
+    before: u16,
+    after: u16,
+) -> Option<u16> {
+    if before != expected_before {
+        return None;
+    }
+    match (before, after) {
+        (PREVIOUS_STABLE_SCHEMA_VERSION, PREVIOUS_STABLE_SCHEMA_VERSION)
+        | (PREVIOUS_STABLE_SCHEMA_VERSION, CURRENT_STABLE_SCHEMA_VERSION)
+        | (CURRENT_STABLE_SCHEMA_VERSION, CURRENT_STABLE_SCHEMA_VERSION) => Some(after),
+        _ => None,
+    }
+}
+
+fn production_upgrade_schema_migration_matches(
+    before_status: &BridgeStatusLiveView,
+    after_status: &BridgeStatusLiveView,
+    before_runtime: &RuntimeBindingView,
+    after_runtime: &RuntimeBindingView,
+) -> bool {
+    if before_runtime.schema_version != PREVIOUS_STABLE_SCHEMA_VERSION
+        || after_runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || !production_upgrade_status_preserved(before_status, after_status)
+    {
+        return false;
+    }
+    let mut expected_after = live_runtime_binding_from_view(before_runtime);
+    expected_after.schema_version = CURRENT_STABLE_SCHEMA_VERSION;
+    live_runtime_binding_from_view(after_runtime) == expected_after
 }
 
 fn production_upgrade_status_matches_pause_migration(
@@ -5759,6 +5843,7 @@ fn validate_post_gate_a_policy_transition(
         && profile.pause_principal == PRODUCTION_PAUSE_PRINCIPAL;
     let mut migration_seen = false;
     let mut expected_runtime = receipt.canister_install.runtime_binding.clone();
+    let mut expected_schema_version = receipt.canister_install.runtime_binding.schema_version;
     for (entry, _) in &upgrades {
         validate_evidence_time(entry.executed_at_unix, manifest.created_at_unix, now)?;
         validate_evidence_time(entry.verified_at_unix, manifest.created_at_unix, now)?;
@@ -5814,6 +5899,19 @@ fn validate_post_gate_a_policy_transition(
                 &entry_before_runtime,
                 &entry_after_runtime,
             )?;
+        let schema_migration = production_upgrade_schema_migration_matches(
+            &entry_before_status,
+            &entry_after_status,
+            &entry_before_runtime,
+            &entry_after_runtime,
+        );
+        let Some(next_schema_version) = production_upgrade_schema_transition(
+            expected_schema_version,
+            entry.before_schema_version,
+            entry.after_schema_version,
+        ) else {
+            return Err("production upgrade chain schema transition is invalid".into());
+        };
         if entry.install_mode != "upgrade" {
             return Err("production upgrade management metadata is incomplete".into());
         }
@@ -5838,8 +5936,6 @@ fn validate_post_gate_a_policy_transition(
                 .eq_ignore_ascii_case(&entry_after_module)
             || !entry_after_module.eq_ignore_ascii_case(&wasm_sha256)
             || !entry.wasm_sha256.eq_ignore_ascii_case(&wasm_sha256)
-            || entry.before_schema_version != CURRENT_STABLE_SCHEMA_VERSION
-            || entry.after_schema_version != CURRENT_STABLE_SCHEMA_VERSION
             || entry_before_runtime.schema_version != entry.before_schema_version
             || entry_after_runtime.schema_version != entry.after_schema_version
             || entry.before_lifecycle != "Bootstrap"
@@ -5850,7 +5946,7 @@ fn validate_post_gate_a_policy_transition(
             || !entry_after_status.deposits_paused
             || !entry.before_storage_validation_complete
             || !entry.after_storage_validation_complete
-            || (!unchanged_runtime && !pause_migration)
+            || (!unchanged_runtime && !pause_migration && !schema_migration)
             || entry.before_lifecycle_response_hex != entry.after_lifecycle_response_hex
             || entry.before_storage_integrity_response_hex
                 != entry.after_storage_integrity_response_hex
@@ -5875,9 +5971,11 @@ fn validate_post_gate_a_policy_transition(
         }
         migration_seen |= pause_migration;
         expected_runtime = entry_after_binding;
+        expected_schema_version = next_schema_version;
         expected_before_module = entry_after_module;
     }
     if migration_seen != migration_required
+        || expected_schema_version != CURRENT_STABLE_SCHEMA_VERSION
         || !expected_before_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
     {
         return Err("production upgrade chain does not reach the current profile".into());
@@ -5918,8 +6016,14 @@ fn validate_post_gate_a_policy_transition(
             &before_runtime,
             &after_runtime,
         )?;
-    let last_runtime_transition_valid =
-        last_unchanged_transition || last_pause_migration_transition;
+    let last_runtime_transition_valid = last_unchanged_transition
+        || last_pause_migration_transition
+        || production_upgrade_schema_migration_matches(
+            &before_status,
+            &after_status,
+            &before_runtime,
+            &after_runtime,
+        );
     let submission_bytes = decode_hex(&upgrade.submission_json_hex)?;
     let current_wasm =
         fs::read(root.join("bridge-canister.wasm")).map_err(|error| error.to_string())?;
@@ -6023,7 +6127,12 @@ fn validate_post_gate_a_policy_transition(
     {
         return Err("production upgrade management metadata is incomplete".into());
     }
-    if upgrade.before_schema_version != CURRENT_STABLE_SCHEMA_VERSION
+    if production_upgrade_schema_transition(
+        upgrade.before_schema_version,
+        upgrade.before_schema_version,
+        upgrade.after_schema_version,
+    )
+    .is_none()
         || upgrade.after_schema_version != CURRENT_STABLE_SCHEMA_VERSION
         || before_runtime.schema_version != upgrade.before_schema_version
         || after_runtime.schema_version != upgrade.after_schema_version
@@ -6128,7 +6237,12 @@ fn validate_post_gate_a_policy_transition(
         || !upgrade
             .wasm_sha256
             .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
-        || upgrade.before_schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || production_upgrade_schema_transition(
+            upgrade.before_schema_version,
+            upgrade.before_schema_version,
+            upgrade.after_schema_version,
+        )
+        .is_none()
         || upgrade.after_schema_version != CURRENT_STABLE_SCHEMA_VERSION
         || before_runtime.schema_version != upgrade.before_schema_version
         || after_runtime.schema_version != upgrade.after_schema_version
@@ -10714,13 +10828,16 @@ fn run() -> Result<(), String> {
             )?;
         }
         Some("validate-controller-handover-recovery") if args.len() == 7 => {
-            validate_controller_handover_recovery_files(
+            let manifest_sha256 = validate_controller_handover_recovery_files(
                 Path::new(&args[2]),
                 Path::new(&args[3]),
                 Path::new(&args[4]),
                 Path::new(&args[5]),
                 Path::new(&args[6]),
             )?;
+            println!(
+                "controller_handover_recovery=pass manifest_sha256={manifest_sha256}"
+            );
         }
         Some("verify-production-canister-handover") if args.len() == 6 => {
             verify_production_canister_handover(
@@ -12932,6 +13049,17 @@ mod tests {
     }
 
     #[test]
+    fn production_upgrade_schema_chain_allows_only_the_deployed_migration() {
+        assert_eq!(production_upgrade_schema_transition(35, 35, 35), Some(35));
+        assert_eq!(production_upgrade_schema_transition(35, 35, 36), Some(36));
+        assert_eq!(production_upgrade_schema_transition(36, 36, 36), Some(36));
+        assert_eq!(production_upgrade_schema_transition(35, 36, 36), None);
+        assert_eq!(production_upgrade_schema_transition(36, 36, 35), None);
+        assert_eq!(production_upgrade_schema_transition(35, 35, 37), None);
+        assert_eq!(production_upgrade_schema_transition(34, 34, 35), None);
+    }
+
+    #[test]
     fn bundle_gate_validates_hashes_and_slo() {
         let root = env::temp_dir().join(format!(
             "bridge-profile-{}-{}",
@@ -13099,8 +13227,8 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         let attestation = json_bytes(serde_json::json!({
             "Ok":{"deposits_paused":false,"withdrawals_paused":false}
         }));
-        let handover = ControllerHandover {
-            schema_version: 3,
+        let mut handover = ControllerHandover {
+            schema_version: 4,
             stage: "complete".into(),
             observed_at_unix: now - 95,
             source_revision: "1".repeat(40),
@@ -13193,8 +13321,57 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             pre_send_required_freezing_cycles: 1_000,
             pre_send_checkpoint_json_hex: String::new(),
             pre_send_checkpoint_sha256: String::new(),
+            recovery_source_checkpoint_json_hex: String::new(),
+            recovery_source_checkpoint_sha256: String::new(),
             recovered_without_request_id: false,
         };
+        let bind_checkpoints = |handover: &mut ControllerHandover, source_stage: &str| {
+            let mut checkpoint = serde_json::to_value(&*handover).unwrap();
+            let object = checkpoint.as_object_mut().unwrap();
+            object.insert("stage".into(), Value::from("pre_send_checkpoint"));
+            object.insert("request_id".into(), Value::from(""));
+            object.insert("response_exit_code".into(), Value::from(0));
+            object.insert("response_stdout_hex".into(), Value::from(""));
+            object.insert("response_stderr_hex".into(), Value::from(""));
+            object.insert(
+                "response_sha256".into(),
+                Value::from(hex(&Sha256::digest([]))),
+            );
+            object.retain(|key, _| {
+                !key.starts_with("after_")
+                    && !matches!(
+                        key.as_str(),
+                        "final_controllers"
+                            | "recovery_source_checkpoint_json_hex"
+                            | "recovery_source_checkpoint_sha256"
+                            | "recovered_without_request_id"
+                    )
+            });
+            let checkpoint = serde_json::to_vec(&checkpoint).unwrap();
+            handover.pre_send_checkpoint_json_hex = hex(&checkpoint);
+            handover.pre_send_checkpoint_sha256 = hex(&Sha256::digest(&checkpoint));
+            let mut source = if source_stage == "pre_send_checkpoint" {
+                serde_json::from_slice::<Value>(&checkpoint).unwrap()
+            } else {
+                serde_json::to_value(&*handover).unwrap()
+            };
+            let object = source.as_object_mut().unwrap();
+            object.insert("stage".into(), Value::from(source_stage));
+            object.retain(|key, _| {
+                !key.starts_with("after_")
+                    && !matches!(
+                        key.as_str(),
+                        "final_controllers"
+                            | "recovery_source_checkpoint_json_hex"
+                            | "recovery_source_checkpoint_sha256"
+                            | "recovered_without_request_id"
+                    )
+            });
+            let source = serde_json::to_vec(&source).unwrap();
+            handover.recovery_source_checkpoint_json_hex = hex(&source);
+            handover.recovery_source_checkpoint_sha256 = hex(&Sha256::digest(&source));
+        };
+        bind_checkpoints(&mut handover, "controller_update_submitted");
         assert!(validate_controller_handover_continuity(&handover, &profile, &installer).is_ok());
         assert!(validate_controller_handover_completion(
             &handover,
@@ -13204,28 +13381,17 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             now,
         )
         .is_ok());
-        let mut schema4 = handover.clone();
-        schema4.schema_version = 4;
-        let mut checkpoint = serde_json::to_value(&handover).unwrap();
-        checkpoint["schema_version"] = Value::from(4);
-        checkpoint["stage"] = Value::from("pre_send_checkpoint");
-        let checkpoint = serde_json::to_vec(&checkpoint).unwrap();
-        schema4.pre_send_checkpoint_json_hex = hex(&checkpoint);
-        schema4.pre_send_checkpoint_sha256 = hex(&Sha256::digest(&checkpoint));
-        assert!(validate_controller_handover_completion(
-            &schema4,
-            &profile,
-            &installer,
-            now - 100,
-            now,
-        )
-        .is_ok());
-        let mut recovered_without_request = schema4.clone();
+        let mut recovered_without_request = handover.clone();
         recovered_without_request.request_id.clear();
         recovered_without_request.response_stdout_hex.clear();
         recovered_without_request.response_stderr_hex.clear();
         recovered_without_request.response_sha256 = hex(&Sha256::digest([]));
+        recovered_without_request.response_exit_code = 1;
         recovered_without_request.recovered_without_request_id = true;
+        bind_checkpoints(
+            &mut recovered_without_request,
+            "controller_update_uncertain",
+        );
         assert!(validate_controller_handover_completion(
             &recovered_without_request,
             &profile,
@@ -13234,11 +13400,28 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             now,
         )
         .is_ok());
-        let mut checkpoint_drift = schema4.clone();
+        let mut checkpoint_drift = handover.clone();
         checkpoint_drift.pre_send_checkpoint_json_hex = hex(b"{}");
         checkpoint_drift.pre_send_checkpoint_sha256 = hex(&Sha256::digest(b"{}"));
         assert!(validate_controller_handover_completion(
             &checkpoint_drift,
+            &profile,
+            &installer,
+            now - 100,
+            now,
+        )
+        .is_err());
+        let mut recovery_source_drift = handover.clone();
+        let mut source = serde_json::from_slice::<Value>(
+            &decode_hex(&recovery_source_drift.recovery_source_checkpoint_json_hex).unwrap(),
+        )
+        .unwrap();
+        source["before_module_sha256"] = Value::from("9".repeat(64));
+        let source = serde_json::to_vec(&source).unwrap();
+        recovery_source_drift.recovery_source_checkpoint_json_hex = hex(&source);
+        recovery_source_drift.recovery_source_checkpoint_sha256 = hex(&Sha256::digest(&source));
+        assert!(validate_controller_handover_completion(
+            &recovery_source_drift,
             &profile,
             &installer,
             now - 100,

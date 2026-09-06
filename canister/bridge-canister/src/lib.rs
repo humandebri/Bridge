@@ -607,6 +607,7 @@ fn post_upgrade(args: config::StagingUpgradeArgs) {
             args.confirmation_relayer_principal,
         ),
     );
+    migrate_confirmed_activation_history(&mut store);
     store
         .migrate_staging_bootstrap_activation_controller()
         .unwrap_or_else(|error| {
@@ -614,7 +615,6 @@ fn post_upgrade(args: config::StagingUpgradeArgs) {
                 "staging bootstrap activation controller migration failed: {error}"
             ))
         });
-    migrate_confirmed_activation_history(&mut store);
     validate_staging_upgrade_status_counts(&store, &args)
         .unwrap_or_else(|error| ic_cdk::trap(error));
     apply_staging_rpc_provider_update(&mut store, &args)

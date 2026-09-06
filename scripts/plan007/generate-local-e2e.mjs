@@ -8,7 +8,7 @@ import { runtimeTemplateSha256FromFile } from "./runtime-template-hash.mjs"
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 export const LOCAL_E2E_SCHEMA_VERSION = 8
 export const STAGING_ACTIVATION_DELAY_SECONDS = 300
-export const CURRENT_STABLE_SCHEMA_VERSION = 35
+export const CURRENT_STABLE_SCHEMA_VERSION = 36
 export const CURRENT_RECORD_WIRE_VERSION = 30
 
 export function validateDeploymentInstanceBinding(upgrade, expectedDeploymentInstanceId) {

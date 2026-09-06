@@ -435,6 +435,7 @@ export async function writeJsonExclusiveAtomic(
   value: unknown,
   path: string,
   checkpoint: (stage: AtomicWriteCheckpoint) => Promise<void> = async () => {},
+  removeTemporary: (path: string) => Promise<void> = unlink,
 ): Promise<void> {
   const serialized = JSON.stringify(value, null, 2)
   if (serialized === undefined) throw new Error("Evidence is not JSON serializable")
@@ -442,6 +443,7 @@ export async function writeJsonExclusiveAtomic(
   const parent = dirname(path)
   const temporary = join(parent, `.${basename(path)}.tmp-${process.pid}-${randomUUID()}`)
   let handle: Awaited<ReturnType<typeof open>> | undefined
+  let primaryError: unknown
   try {
     handle = await open(temporary, "wx", 0o400)
     await handle.writeFile(body, { encoding: "utf8" })
@@ -451,18 +453,59 @@ export async function writeJsonExclusiveAtomic(
     await checkpoint("temporary-synced")
     await link(temporary, path)
     await checkpoint("published")
-    const directory = await open(parent, "r")
-    try {
-      await directory.sync()
-    } finally {
-      await directory.close()
-    }
+    await syncDirectory(parent)
+  } catch (error) {
+    primaryError = error
+    throw error
   } finally {
-    await handle?.close().catch(() => {})
-    await unlink(temporary).catch((error: unknown) => {
-      if (!hasErrorCode(error, "ENOENT")) throw error
-    })
+    let cleanupError: unknown
+    try {
+      await handle?.close()
+    } catch (error) {
+      cleanupError = error
+    }
+    try {
+      await removeTemporary(temporary)
+    } catch (error) {
+      if (!hasErrorCode(error, "ENOENT")) cleanupError ??= error
+    }
+    if (cleanupError !== undefined) {
+      if (primaryError !== undefined) attachCleanupError(primaryError, cleanupError)
+      else throw cleanupError
+    }
   }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const directory = await open(path, "r")
+  let primaryError: unknown
+  try {
+    await directory.sync()
+  } catch (error) {
+    primaryError = error
+    throw error
+  } finally {
+    try {
+      await directory.close()
+    } catch (error) {
+      if (primaryError !== undefined) attachCleanupError(primaryError, error)
+      else throw error
+    }
+  }
+}
+
+function attachCleanupError(primary: unknown, cleanup: unknown): void {
+  if (primary && typeof primary === "object" && !("cleanupError" in primary)) {
+    try {
+      Object.defineProperty(primary, "cleanupError", { value: cleanup, enumerable: false })
+    } catch {
+      // Preserve the primary failure even when a foreign error object is non-extensible.
+    }
+  }
+}
+
+function hasCleanupError(error: unknown): boolean {
+  return !!error && typeof error === "object" && "cleanupError" in error
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {
@@ -486,7 +529,7 @@ async function writeOrMatchArtifact(
   try {
     await writeArtifactNew(artifact, path)
   } catch (error) {
-    if (!hasErrorCode(error, "EEXIST")) throw error
+    if (!hasErrorCode(error, "EEXIST") || hasCleanupError(error)) throw error
     const stored = await readExistingJson(path)
     if (!storedArtifactMatches(stored, artifact)) throw error
   }
@@ -519,7 +562,7 @@ export async function writeOrMatchConfirmationEvidence(
   try {
     await writeJsonNew(value, path)
   } catch (error) {
-    if (!hasErrorCode(error, "EEXIST")) throw error
+    if (!hasErrorCode(error, "EEXIST") || hasCleanupError(error)) throw error
     const stored = await readExistingJson(path)
     if (!confirmationEvidenceMatches(stored, value)) throw error
   }
@@ -628,7 +671,8 @@ async function writeOrMatchActivationBinding(
   try {
     await writeJsonNew(value, path)
   } catch (error) {
-    const existing = JSON.parse((await readFile(path)).toString("utf8")) as Record<string, unknown>
+    if (!hasErrorCode(error, "EEXIST") || hasCleanupError(error)) throw error
+    const existing = await readExistingJson(path) as Record<string, unknown>
     if (!activationBindingMatches(
       existing,
       value.artifact_sha256,

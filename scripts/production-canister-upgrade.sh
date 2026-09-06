@@ -148,17 +148,18 @@ REPRO_WASM="$REPRO_TARGET/wasm32-unknown-unknown/release/bridge_canister.wasm"
   echo "upgrade Wasm is not reproducible from the current clean source" >&2; exit 1;
 }
 require_source_identity
-read -r CANISTER GATE_A_WASM INSTALLER RECEIPT_SOURCE RECEIPT_TREE INSTALL_SOURCE INSTALL_TREE IC_HOST < <(python3 -I -S - "$GATE_A_PROFILE" "$GATE_A_RECEIPT" <<'PY'
+read -r CANISTER GATE_A_WASM GATE_A_SCHEMA INSTALLER RECEIPT_SOURCE RECEIPT_TREE INSTALL_SOURCE INSTALL_TREE IC_HOST < <(python3 -I -S - "$GATE_A_PROFILE" "$GATE_A_RECEIPT" <<'PY'
 import json,sys
 profile=json.load(open(sys.argv[1],encoding='utf-8')); receipt=json.load(open(sys.argv[2],encoding='utf-8'))
 install=receipt.get('canister_install',{})
 expected=(profile.get('bridge_canister_id'),profile.get('bridge_canister_wasm_sha256'))
 actual=(install.get('canister_id'),receipt.get('bridge_canister_wasm_sha256'))
 if expected != actual: raise SystemExit('Gate A profile and receipt identity differ')
-print(expected[0],expected[1],install.get('installer_principal',''),receipt.get('source_revision',''),receipt.get('source_tree_sha256',''),install.get('source_revision',''),install.get('source_tree_sha256',''),profile.get('ic_host',''))
+print(expected[0],expected[1],install.get('runtime_binding',{}).get('schema_version',''),install.get('installer_principal',''),receipt.get('source_revision',''),receipt.get('source_tree_sha256',''),install.get('source_revision',''),install.get('source_tree_sha256',''),profile.get('ic_host',''))
 PY
 )
 OLD_WASM="$GATE_A_WASM"
+OLD_SCHEMA="$GATE_A_SCHEMA"
 if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
   CHAIN_MODULES="$(python3 -I -S - "$PRIOR_UPGRADE_EVIDENCE" <<'PY'
 import hashlib,json,sys
@@ -177,20 +178,28 @@ else:
   if entry.get('sequence')!=index or entry.get('previous_receipt_sha256')!=previous or entry.get('receipt_sha256','').lower()!=digest: raise SystemExit('invalid prior upgrade chain linkage')
   receipts.append(json.loads(raw)); previous=digest
 expected_before=receipts[0].get('before_module_sha256','')
+expected_schema=receipts[0].get('before_schema_version')
 for receipt in receipts:
  if receipt.get('schema_version')!=1 or receipt.get('kind')!='production-controller-bootstrap-upgrade': raise SystemExit('invalid prior upgrade receipt')
  before=receipt.get('before_module_sha256',''); after=receipt.get('after_module_sha256','')
  if not isinstance(before,str) or not isinstance(after,str) or len(before)!=64 or len(after)!=64 or before.lower()!=expected_before.lower(): raise SystemExit('prior upgrade module chain is not contiguous')
+ before_schema=receipt.get('before_schema_version'); after_schema=receipt.get('after_schema_version')
+ if before_schema!=expected_schema or (before_schema,after_schema) not in ((35,35),(35,36),(36,36)): raise SystemExit('prior upgrade schema chain is not contiguous')
  int(before,16); int(after,16); expected_before=after
-print(receipts[0].get('before_module_sha256',''),receipts[-1].get('after_module_sha256',''))
+ expected_schema=after_schema
+print(receipts[0].get('before_module_sha256',''),receipts[-1].get('after_module_sha256',''),receipts[0].get('before_schema_version',''),receipts[-1].get('after_schema_version',''))
 PY
 )" || { echo "prior upgrade evidence is invalid" >&2; exit 1; }
-  read -r CHAIN_FIRST_WASM OLD_WASM <<<"$CHAIN_MODULES"
+  read -r CHAIN_FIRST_WASM OLD_WASM CHAIN_FIRST_SCHEMA OLD_SCHEMA <<<"$CHAIN_MODULES"
   [[ "$(printf '%s' "$CHAIN_FIRST_WASM" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$GATE_A_WASM" | tr '[:upper:]' '[:lower:]')" ]] || {
     echo "prior upgrade chain does not start at the Gate A Wasm" >&2; exit 1;
   }
+  [[ "$CHAIN_FIRST_SCHEMA" == "$GATE_A_SCHEMA" ]] || {
+    echo "prior upgrade chain does not start at the Gate A schema" >&2; exit 1;
+  }
 fi
 [[ "$CANISTER" == "lb5i5-ziaaa-aaaar-qcgwq-cai" && "$OLD_WASM" =~ ^[0-9a-fA-F]{64}$ \
+  && "$GATE_A_SCHEMA" == "35" && ( "$OLD_SCHEMA" == "35" || "$OLD_SCHEMA" == "36" ) \
   && "$INSTALLER" =~ ^[a-z0-9-]+$ && "$RECEIPT_SOURCE" =~ ^[0-9a-f]{40}$ \
   && "$RECEIPT_TREE" =~ ^[0-9a-fA-F]{64}$ && "$INSTALL_SOURCE" =~ ^[0-9a-f]{40}$ \
   && "$INSTALL_TREE" =~ ^[0-9a-fA-F]{64}$ \
@@ -302,6 +311,7 @@ write_json() {
   local target="$1" kind="$2" stdout_file="${3:-}" stderr_file="${4:-}" request_id="${5:-}"
   TARGET="$target" KIND="$kind" SOURCE_REVISION="$SOURCE_REVISION" SOURCE_TREE="$SOURCE_TREE" \
   CANISTER="$CANISTER" INSTALLER="$INSTALLER" OLD_WASM="$OLD_WASM" WASM_SHA256="$WASM_SHA256" \
+  OLD_SCHEMA="$OLD_SCHEMA" \
   EXECUTING_PRINCIPAL="$EXECUTING_PRINCIPAL" BEFORE_MANAGEMENT="$BEFORE_MANAGEMENT" BEFORE_MODULE="$BEFORE_MODULE" \
   BEFORE_BRIDGE_STATUS="$BEFORE_BRIDGE_STATUS" BEFORE_LIFECYCLE="$BEFORE_LIFECYCLE" \
   BEFORE_RUNTIME="$BEFORE_RUNTIME" BEFORE_INTEGRITY="$BEFORE_INTEGRITY" \
@@ -325,7 +335,7 @@ value={'schema_version':1,'kind':os.environ['KIND'],'source_revision':os.environ
  'source_tree_sha256':os.environ['SOURCE_TREE'],'bridge_canister_id':os.environ['CANISTER'],
  'install_mode':'upgrade','executing_principal':os.environ['EXECUTING_PRINCIPAL'],
  'wasm_sha256':os.environ['WASM_SHA256'],'before_module_sha256':os.environ['BEFORE_MODULE'],
- 'before_controllers':[os.environ['INSTALLER']],'before_schema_version':35,'before_lifecycle':'Bootstrap',
+ 'before_controllers':[os.environ['INSTALLER']],'before_schema_version':int(os.environ['OLD_SCHEMA']),'before_lifecycle':'Bootstrap',
  'before_deposits_paused':True,'before_storage_validation_complete':True,
  'before_management_status_json_hex':hx(raw('BEFORE_MANAGEMENT')),
  'before_management_status_json_sha256':h(raw('BEFORE_MANAGEMENT')),
@@ -346,7 +356,7 @@ if os.environ['KIND']=='production-controller-bootstrap-upgrade':
  value.update({'executed_at_unix':int(os.environ['EXECUTED_AT']),'verified_at_unix':now,
   'recovered':recovered,'recovered_at_unix':now if recovered else None,
   'after_controllers':[os.environ['INSTALLER']],'after_module_sha256':os.environ['AFTER_MODULE'],
-  'after_schema_version':35,'after_lifecycle':'Bootstrap','after_deposits_paused':True,
+  'after_schema_version':36,'after_lifecycle':'Bootstrap','after_deposits_paused':True,
   'after_storage_validation_complete':True,'after_management_status_json_hex':hx(raw('AFTER_MANAGEMENT')),
   'after_management_status_json_sha256':h(raw('AFTER_MANAGEMENT')),
   'after_bridge_status_response_hex':hx(after[0]),'after_bridge_status_response_sha256':h(after[0]),

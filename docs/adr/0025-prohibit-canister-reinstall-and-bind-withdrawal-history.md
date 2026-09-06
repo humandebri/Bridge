@@ -10,7 +10,7 @@ Bridge Canisterのreinstallはstable stateを失う一方、Base Bridge contract
 
 ## 決定
 
-初期化済みの永続Canisterは、同じdeployment instanceを保つreview済みstable schema v35／record wire v30から同じ現行形式へのupgradeだけで更新する。reinstall、instance変更、旧schema、未知schema、未登録wireはdeployment gateとstorage reopenで拒否する。
+初期化済みの永続Canisterは、同じdeployment instanceを保つreview済みupgradeだけで更新する。配置済みstable schema v35／record wire v30から現行v36へは、確定activation証跡を復元する一度限りのpost-upgrade migrationだけを許可する。reinstall、instance変更、その他の旧schema、未知schema、未登録wireはdeployment gateとstorage reopenで拒否する。
 
 現在のBase Sepolia stagingは、2026-08-27/28に明示承認され完了した一度限りのdestructive reinstallとfresh-stack作成を履歴証跡として固定する。そのCanister ID、deployment instance、minimum Withdrawal ID、Base contracts、signerをactive stackとして維持し、この履歴を再実行、resume、別stackの認可に使わない。staging evidence schema v8の`bootstrap_attestation`は履歴artifactのhashとactive bindingの一致だけを検証する。今後の更新にも上記same-instance current-schema upgrade規則を適用する。
 

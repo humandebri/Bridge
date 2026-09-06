@@ -267,7 +267,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 35, 30);
+INSERT INTO bridge_metadata VALUES (1, 36, 30);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -407,6 +407,8 @@ const MIGRATIONS: &[Migration] = &[Migration {
     version: SCHEMA_VERSION as u64,
     sql: SQLITE_SCHEMA,
 }];
+
+const PREVIOUS_SCHEMA_VERSION: u16 = 35;
 
 #[cfg(test)]
 const OBSOLETE_SCHEMA_VERSION_V32: u16 = 32;
@@ -2409,6 +2411,73 @@ fn verify_metadata(handle: DbHandle) -> Result<(), StorageError> {
     Ok(())
 }
 
+fn migrate_previous_schema(handle: DbHandle) -> Result<(), StorageError> {
+    let (schema, wire) = stored_metadata(handle)?;
+    if (schema, wire) != (PREVIOUS_SCHEMA_VERSION, WIRE_VERSION) {
+        return Err(if schema != PREVIOUS_SCHEMA_VERSION {
+            StorageError::UnsupportedSchemaVersion(schema)
+        } else {
+            StorageError::UnsupportedWireVersion(wire)
+        });
+    }
+    verify_current_schema_shape(handle)?;
+    StableStore::attach_handle(handle)?.validate_singletons()?;
+    let previous_admission = handle.query(|connection| {
+        connection.query_scalar::<Vec<u8>>(
+            "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+            params![],
+        )
+    })?;
+    let mut admission =
+        decode::<DepositAdmissionControl>(&StableBlob::new(previous_admission.clone())?)?;
+    if admission.last_confirmed_activation.is_none() {
+        admission.last_confirmed_activation = admission
+            .last_completed_governance_transaction
+            .as_ref()
+            .map(confirmed_activation_record)
+            .transpose()?
+            .flatten();
+    }
+    if admission.operational_config_sealed
+        && admission.bootstrap_activation_controller.is_none()
+        && admission
+            .last_confirmed_activation
+            .as_ref()
+            .is_none_or(|record| record.phase != "execute")
+    {
+        return Err(StorageError::DecodeFailed);
+    }
+    let next_admission = encode(&admission)?;
+    handle.update(|connection| {
+        let (persisted_schema, persisted_wire): (i64, i64) = connection.query_one(
+            "SELECT application_schema_version, record_wire_version FROM bridge_metadata WHERE id = 1",
+            params![],
+            |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
+        )?;
+        let persisted_admission = connection.query_scalar::<Vec<u8>>(
+            "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+            params![],
+        )?;
+        if persisted_schema != i64::from(PREVIOUS_SCHEMA_VERSION)
+            || persisted_wire != i64::from(WIRE_VERSION)
+            || persisted_admission != previous_admission
+        {
+            return Err(DbError::Constraint(
+                "stale stable schema migration input".into(),
+            ));
+        }
+        connection.execute(
+            "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
+            params![next_admission.to_sql_bytes()],
+        )?;
+        connection.execute(
+            "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
+            params![i64::from(SCHEMA_VERSION)],
+        )
+    })?;
+    Ok(())
+}
+
 fn verify_current_schema_shape(handle: DbHandle) -> Result<(), StorageError> {
     handle
         .query(|connection| {
@@ -3090,6 +3159,9 @@ impl StableStore {
         #[cfg(test)]
         reset_sqlite_test_runtime();
         let handle = open_database(memory)?;
+        if stored_metadata(handle)?.0 == PREVIOUS_SCHEMA_VERSION {
+            migrate_previous_schema(handle)?;
+        }
         Self::reopen_handle(handle)
     }
 
@@ -3101,6 +3173,9 @@ impl StableStore {
         #[cfg(test)]
         reset_sqlite_test_runtime();
         let handle = open_database(memory)?;
+        if stored_metadata(handle)?.0 == PREVIOUS_SCHEMA_VERSION {
+            migrate_previous_schema(handle)?;
+        }
         let (schema, wire) = stored_metadata(handle)?;
         if (schema, wire) != (SCHEMA_VERSION, WIRE_VERSION) {
             return Err(if schema != SCHEMA_VERSION {
@@ -6302,9 +6377,19 @@ impl StableStore {
             return Ok(false);
         }
         let Some(transaction) = admission.last_completed_governance_transaction.clone() else {
+            if admission.operational_config_sealed
+                && admission.bootstrap_activation_controller.is_none()
+            {
+                return Err(StorageError::DecodeFailed);
+            }
             return Ok(false);
         };
         let Some(record) = confirmed_activation_record(&transaction)? else {
+            if admission.operational_config_sealed
+                && admission.bootstrap_activation_controller.is_none()
+            {
+                return Err(StorageError::DecodeFailed);
+            }
             return Ok(false);
         };
         admission.last_confirmed_activation = Some(record);
@@ -6318,6 +6403,13 @@ impl StableStore {
     ) -> Result<bool, StorageError> {
         let mut admission = self.deposit_admission()?;
         if admission.bootstrap_activation_controller != Some(Principal::anonymous()) {
+            return Ok(false);
+        }
+        if admission
+            .last_confirmed_activation
+            .as_ref()
+            .is_none_or(|record| record.phase != "execute")
+        {
             return Ok(false);
         }
         admission.bootstrap_activation_controller = None;
@@ -11166,11 +11258,11 @@ mod tests {
             .expect("persist legacy state");
 
         assert!(store
-            .migrate_staging_bootstrap_activation_controller()
-            .expect("migrate staging marker"));
-        assert!(store
             .migrate_confirmed_activation_history()
             .expect("backfill activation history"));
+        assert!(store
+            .migrate_staging_bootstrap_activation_controller()
+            .expect("migrate staging marker"));
         assert!(!store
             .migrate_staging_bootstrap_activation_controller()
             .expect("repeat staging marker migration"));
@@ -11231,6 +11323,45 @@ mod tests {
         assert_eq!(
             store.bootstrap_activation_controller().expect("controller"),
             Some(real_controller)
+        );
+
+        admission.bootstrap_activation_controller = Some(Principal::anonymous());
+        admission.last_confirmed_activation = None;
+        store
+            .set_deposit_admission(&admission)
+            .expect("persist unconfirmed sentinel");
+        assert!(!store
+            .migrate_staging_bootstrap_activation_controller()
+            .expect("preserve fail-closed sentinel"));
+        assert_eq!(
+            store.bootstrap_activation_controller().expect("sentinel"),
+            Some(Principal::anonymous())
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn activated_legacy_state_without_confirmed_activation_fails_closed() {
+        let mut store =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        let mut admission = store.deposit_admission().expect("admission");
+        admission.operational_config_sealed = true;
+        admission.bootstrap_activation_controller = None;
+        admission.last_completed_governance_transaction = None;
+        admission.last_confirmed_activation = None;
+        store
+            .set_deposit_admission(&admission)
+            .expect("persist incomplete activated state");
+
+        assert_eq!(
+            store.migrate_confirmed_activation_history(),
+            Err(StorageError::DecodeFailed)
+        );
+        assert_eq!(
+            store
+                .last_confirmed_activation()
+                .expect("activation history remains absent"),
+            None
         );
     }
 
@@ -13212,23 +13343,23 @@ mod tests {
         assert_eq!(store.schema_version(), SCHEMA_VERSION);
     }
 
+    fn without_field<T: Serialize>(value: &T, field: &str) -> StableBlob {
+        let encoded = encode(value).expect("encode current value");
+        let mut cbor: ciborium::value::Value =
+            ciborium::from_reader(&encoded.as_slice()[1..]).expect("decode CBOR value");
+        let ciborium::value::Value::Map(entries) = &mut cbor else {
+            panic!("serialized struct must be a CBOR map");
+        };
+        let before = entries.len();
+        entries.retain(|(key, _)| key != &ciborium::value::Value::Text(field.to_string()));
+        assert_eq!(entries.len() + 1, before, "field must exist before removal");
+        let mut bytes = vec![WIRE_VERSION];
+        ciborium::into_writer(&cbor, &mut bytes).expect("encode legacy CBOR value");
+        StableBlob::new(bytes).expect("bounded legacy value")
+    }
+
     #[test]
     fn controller_authority_fields_default_when_reopening_pre_upgrade_cbor() {
-        fn without_field<T: Serialize>(value: &T, field: &str) -> StableBlob {
-            let encoded = encode(value).expect("encode current value");
-            let mut cbor: ciborium::value::Value =
-                ciborium::from_reader(&encoded.as_slice()[1..]).expect("decode CBOR value");
-            let ciborium::value::Value::Map(entries) = &mut cbor else {
-                panic!("serialized struct must be a CBOR map");
-            };
-            let before = entries.len();
-            entries.retain(|(key, _)| key != &ciborium::value::Value::Text(field.to_string()));
-            assert_eq!(entries.len() + 1, before, "field must exist before removal");
-            let mut bytes = vec![WIRE_VERSION];
-            ciborium::into_writer(&cbor, &mut bytes).expect("encode legacy CBOR value");
-            StableBlob::new(bytes).expect("bounded legacy value")
-        }
-
         let admission = DepositAdmissionControl {
             operational_config_sealed: true,
             bootstrap_activation_controller: Some(Principal::from_slice(&[0x99])),
@@ -13268,7 +13399,7 @@ mod tests {
     #[serial]
     fn non_current_schema_is_rejected_without_migration() {
         assert_ne!(SCHEMA_VERSION, 2);
-        assert_eq!(SCHEMA_VERSION, 35);
+        assert_eq!(SCHEMA_VERSION, 36);
         assert_eq!(WIRE_VERSION, 30);
     }
 
@@ -13358,6 +13489,103 @@ mod tests {
                 )
             })
             .expect("mark stored schema");
+    }
+
+    fn write_v35_admission(store: &StableStore, admission: &DepositAdmissionControl) {
+        let legacy = without_field(admission, "last_confirmed_activation");
+        store
+            .handle
+            .0
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
+                    params![legacy.to_sql_bytes()],
+                )?;
+                connection.execute(
+                    "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
+                    params![i64::from(PREVIOUS_SCHEMA_VERSION)],
+                )
+            })
+            .expect("write schema 35 admission");
+    }
+
+    #[test]
+    #[serial]
+    fn schema_v35_is_migrated_only_by_upgrade_reopen() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let (execute, _) = confirmed_activation_transaction(&mut store);
+        store
+            .complete_governance_transaction(execute.clone())
+            .expect("complete activation");
+        let expected = confirmed_activation_record(&execute)
+            .expect("derive activation evidence")
+            .expect("execute evidence");
+        let admission = store.deposit_admission().expect("admission");
+        write_v35_admission(&store, &admission);
+        drop(store);
+
+        assert!(matches!(
+            StableStore::reopen(memory.clone()),
+            Err(StorageError::UnsupportedSchemaVersion(
+                PREVIOUS_SCHEMA_VERSION
+            ))
+        ));
+        let reopened = StableStore::reopen_after_upgrade(memory).expect("migrate schema 35");
+        assert_eq!(reopened.schema_version(), SCHEMA_VERSION);
+        assert_eq!(
+            reopened
+                .last_confirmed_activation()
+                .expect("migrated activation evidence"),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn failed_schema_v35_migration_keeps_schema_and_admission_unchanged() {
+        let memory = VectorMemory::default();
+        let store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let mut admission = store.deposit_admission().expect("admission");
+        admission.operational_config_sealed = true;
+        admission.bootstrap_activation_controller = None;
+        admission.last_completed_governance_transaction = None;
+        admission.last_confirmed_activation = None;
+        write_v35_admission(&store, &admission);
+        let before = store
+            .handle
+            .query(|connection| {
+                connection.query_scalar::<Vec<u8>>(
+                    "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                    params![],
+                )
+            })
+            .expect("read legacy admission");
+        drop(store);
+
+        assert_eq!(
+            StableStore::reopen_after_upgrade(memory.clone()).err(),
+            Some(StorageError::DecodeFailed)
+        );
+        reset_sqlite_test_runtime();
+        let handle = open_database(memory).expect("open failed migration state");
+        assert_eq!(
+            stored_metadata(handle).expect("stored metadata"),
+            (PREVIOUS_SCHEMA_VERSION, WIRE_VERSION)
+        );
+        assert_eq!(
+            handle
+                .query(|connection| {
+                    connection.query_scalar::<Vec<u8>>(
+                        "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                        params![],
+                    )
+                })
+                .expect("unchanged admission"),
+            before
+        );
     }
 
     #[test]

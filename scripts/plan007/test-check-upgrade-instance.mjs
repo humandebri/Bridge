@@ -34,6 +34,14 @@ assert.deepEqual(
     next: previousHex,
   },
 )
+assert.equal(
+  verifyUpgradeInstance(
+    currentProfile,
+    { schema_version: 36, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
+    currentStatus,
+  ).live_schema_version,
+  36,
+)
 assert.throws(
   () => verifyUpgradeInstance(
     { ...currentProfile, deploymentInstanceId: changedHex },
@@ -42,14 +50,14 @@ assert.throws(
   ),
   /reinstall is prohibited/,
 )
-for (const schemaVersion of [38, 37, 36, 34, 33, 32, 31, 30]) {
+for (const schemaVersion of [38, 37, 34, 33, 32, 31, 30]) {
   assert.throws(
     () => verifyUpgradeInstance(
       currentProfile,
       { schema_version: schemaVersion, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
       currentStatus,
     ),
-    /requires current schema v35; old and unknown schemas are unsupported/,
+    /requires deployed schema v35 or current schema v36/,
   )
 }
 
@@ -59,7 +67,7 @@ assert.throws(
     { schema_version: 33, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
     currentStatus,
   ),
-  /old and unknown schemas are unsupported/,
+  /all other schemas are unsupported/,
 )
 assert.throws(() => verifyUpgradeInstance(
   currentProfile,

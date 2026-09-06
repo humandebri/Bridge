@@ -35,7 +35,7 @@ import {
   writeOrMatchConfirmationEvidence,
 } from "./cli.ts"
 
-test("publishes receipts atomically and recovers at each crash boundary", async () => {
+test("publishes receipts atomically across pre- and post-publish failures", async () => {
   const root = await mkdtemp(join(tmpdir(), "bridge-atomic-receipt-"))
   const path = join(root, "receipt.json")
   const value = { schema_version: 1, payload: "fixed" }
@@ -53,6 +53,48 @@ test("publishes receipts atomically and recovers at each crash boundary", async 
     }))
     assert.deepEqual(JSON.parse(await readFile(published, "utf8")), value)
     await assert.rejects(() => writeJsonExclusiveAtomic(value, published), { code: "EEXIST" })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("reports temporary cleanup failures without masking the primary publish error", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bridge-atomic-cleanup-"))
+  const path = join(root, "receipt.json")
+  const value = { schema_version: 1, payload: "fixed" }
+  const cleanupFailure = new Error("injected temporary cleanup failure")
+  try {
+    await writeJsonExclusiveAtomic(value, path)
+    const error = await writeJsonExclusiveAtomic(
+      value,
+      path,
+      async () => {},
+      async () => { throw cleanupFailure },
+    ).then(() => undefined, (failure: unknown) => failure)
+    assert.ok(error && typeof error === "object")
+    assert.equal((error as { code?: unknown }).code, "EEXIST")
+    assert.equal((error as { cleanupError?: unknown }).cleanupError, cleanupFailure)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("fails after a complete publish when temporary cleanup fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bridge-published-cleanup-"))
+  const path = join(root, "receipt.json")
+  const value = { schema_version: 1, payload: "fixed" }
+  const cleanupFailure = new Error("injected temporary cleanup failure")
+  try {
+    await assert.rejects(
+      () => writeJsonExclusiveAtomic(
+        value,
+        path,
+        async () => {},
+        async () => { throw cleanupFailure },
+      ),
+      cleanupFailure,
+    )
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), value)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
