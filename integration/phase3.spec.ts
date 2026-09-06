@@ -15,7 +15,7 @@ const bridgeWasm = resolve(root, "target/test-deployment/staging/bridge_canister
 const schema35BridgeWasm = resolve(root, "target/test-deployment/predecessor-v35/bridge_canister.wasm");
 const schema35Revision = "e0b426e7465531d2e572b5b741509f1889e6def8";
 const schema35ArchiveSha256 = "24dfae12273dd04c899b058f2665610fb8c273b9099f0574838898d686f14866";
-const schema35WasmSha256 = "36ef79de32b67cbc28d4a52572a285a4d2ec7967034b621893ba4253c9b607ae";
+const schema35WasmSha256 = "621e864035988f1f47169576d68251c80fe369ff155aa17ab55d201c07669730";
 const mockWasm = resolve(root, "target/wasm32-unknown-unknown/release/mock_external.wasm");
 const testLedgerFee = 10_000n;
 
