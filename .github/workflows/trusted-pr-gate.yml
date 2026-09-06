@@ -209,8 +209,12 @@ jobs:
         run: icp project show --project-root-override . >/dev/null
       - name: Initialize candidate dependency root
         run: |
-          mkdir -p "$RUNNER_TEMP/bridge-trusted-dependencies"
-          echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$RUNNER_TEMP/bridge-trusted-dependencies" >> "$GITHUB_ENV"
+          dependency_root="$RUNNER_TEMP/bridge-trusted-dependencies"
+          case "${{ matrix.area }}" in
+            rust|proofs|ui|real) ;;
+            *) mkdir "$dependency_root" ;;
+          esac
+          echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$dependency_root" >> "$GITHUB_ENV"
       - name: Check out exact candidate head as reviewed data input
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:

@@ -190,6 +190,12 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("ICP_TELEMETRY_DISABLED: \"1\"", workflow)
         self.assertIn("prepare_candidate_dependencies.py", workflow)
         self.assertIn("BRIDGE_TRUSTED_DEPENDENCY_ROOT", workflow)
+        self.assertIn('case "${{ matrix.area }}" in', workflow)
+        self.assertIn('rust|proofs|ui|real) ;;', workflow)
+        self.assertIn('*) mkdir "$dependency_root" ;;', workflow)
+        self.assertNotIn(
+            'mkdir -p "$RUNNER_TEMP/bridge-trusted-dependencies"', workflow
+        )
         self.assertIn(
             'pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts',
             workflow,
@@ -337,6 +343,10 @@ class TrustedPrGateTests(unittest.TestCase):
             '"$SCRATCH/home/.local/share/icp-cli/pkg/"',
             wrapper,
         )
+        self.assertIn("NEEDS_ICP_PACKAGE_CACHE=false", wrapper)
+        self.assertIn('if [[ "$MODE" == "icp" ]]', wrapper)
+        self.assertIn("NEEDS_ICP_PACKAGE_CACHE=true", wrapper)
+        self.assertIn('if [[ "$NEEDS_ICP_PACKAGE_CACHE" == true ]]', wrapper)
         self.assertNotIn("/home/runner/.local/share/icp-cli/identity", wrapper)
         self.assertIn("ICP_CLI_DISABLE_UPDATE=1", wrapper)
         self.assertIn("ICP_TELEMETRY_DISABLED=1", wrapper)
