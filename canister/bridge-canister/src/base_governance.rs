@@ -391,9 +391,17 @@ pub fn activation_status() -> Result<ActivationStatus, BaseGovernanceError> {
                 salt: pending.salt.to_vec(),
             });
         let last_confirmed_activation = store
-            .last_completed_governance_transaction()
+            .last_confirmed_activation()
             .map_err(|_| BaseGovernanceError::StorageFailure)?
-            .and_then(|transaction| activation_confirmation_view(&transaction));
+            .map(|record| ActivationConfirmationView {
+                phase: record.phase,
+                governance_operation_id: record.governance_operation_id,
+                timelock_operation_id: record.timelock_operation_id.to_vec(),
+                transaction_hash: record.transaction_hash.to_vec(),
+                receipt_block_number: record.receipt_block_number,
+                generation: record.generation,
+                signed_at_ns: record.signed_at_ns,
+            });
         Ok(ActivationStatus {
             deposits_paused,
             pending_timelock_operation,
@@ -402,7 +410,7 @@ pub fn activation_status() -> Result<ActivationStatus, BaseGovernanceError> {
     })
 }
 
-fn activation_confirmation_view(
+pub(crate) fn activation_confirmation_view(
     transaction: &storage::GovernanceTransaction,
 ) -> Option<ActivationConfirmationView> {
     let (phase, timelock_operation_id) = match &transaction.kind {

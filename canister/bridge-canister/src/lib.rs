@@ -490,6 +490,16 @@ fn apply_production_bootstrap_pause_principal_migration(store: &mut StableStore)
         });
 }
 
+fn migrate_confirmed_activation_history(store: &mut StableStore) {
+    store
+        .migrate_confirmed_activation_history()
+        .unwrap_or_else(|error| {
+            ic_cdk::trap(format!(
+                "confirmed activation history migration failed: {error}"
+            ))
+        });
+}
+
 fn finish_post_upgrade(store: StableStore) {
     install_store(store);
     ensure_supported_schema();
@@ -514,6 +524,7 @@ fn finish_post_upgrade(store: StableStore) {
 fn post_upgrade() {
     let mut store = reopen_store_after_upgrade();
     apply_production_bootstrap_pause_principal_migration(&mut store);
+    migrate_confirmed_activation_history(&mut store);
     finish_post_upgrade(store);
 }
 
@@ -596,6 +607,14 @@ fn post_upgrade(args: config::StagingUpgradeArgs) {
             args.confirmation_relayer_principal,
         ),
     );
+    store
+        .migrate_staging_bootstrap_activation_controller()
+        .unwrap_or_else(|error| {
+            ic_cdk::trap(format!(
+                "staging bootstrap activation controller migration failed: {error}"
+            ))
+        });
+    migrate_confirmed_activation_history(&mut store);
     validate_staging_upgrade_status_counts(&store, &args)
         .unwrap_or_else(|error| ic_cdk::trap(error));
     apply_staging_rpc_provider_update(&mut store, &args)

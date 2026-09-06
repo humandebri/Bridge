@@ -906,6 +906,13 @@ describe("Phase 3 PocketIC saga", () => {
       .toBe(originalScheduleTransaction.signed_at_ns);
     expect(activationStatus.Ok.last_confirmed_activation[0].transaction_hash)
       .toEqual(originalScheduleTransaction.transaction_hash);
+    await upgradeBridge(bridge);
+    const activationAfterUpgrade: any = await (bridge.actor as any).get_activation_status();
+    expect(activationAfterUpgrade).toHaveProperty("Ok.last_confirmed_activation.0.generation", 0);
+    expect(activationAfterUpgrade.Ok.last_confirmed_activation[0].signed_at_ns)
+      .toBe(originalScheduleTransaction.signed_at_ns);
+    expect(activationAfterUpgrade.Ok.last_confirmed_activation[0].transaction_hash)
+      .toEqual(originalScheduleTransaction.transaction_hash);
     expect(await (bridge.actor as any).prepare_base_governance_action({ PauseDepositMints: null }))
       .toEqual({ Err: { Unauthorized: null } });
     expect(await (bridge.actor as any).prepare_next_emergency_base_action())
@@ -954,6 +961,11 @@ describe("Phase 3 PocketIC saga", () => {
       .toEqual({ Ok: [] });
     expect(await (bridge.actor as any).prepare_next_emergency_base_action())
       .toEqual({ Err: { Unauthorized: null } });
+    const activationAfterLaterGovernance: any = await (bridge.actor as any).get_activation_status();
+    expect(activationAfterLaterGovernance)
+      .toHaveProperty("Ok.last_confirmed_activation.0.generation", 0);
+    expect(activationAfterLaterGovernance.Ok.last_confirmed_activation[0].transaction_hash)
+      .toEqual(originalScheduleTransaction.transaction_hash);
   }
 
   it(

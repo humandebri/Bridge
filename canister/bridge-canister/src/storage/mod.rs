@@ -1156,6 +1156,8 @@ pub struct DepositAdmissionControl {
     pub last_completed_governance_transaction: Option<GovernanceTransaction>,
     pub last_completed_runtime_administrator_transaction: Option<GovernanceTransaction>,
     pub last_completed_independent_canceller_transaction: Option<GovernanceTransaction>,
+    #[serde(default)]
+    pub last_confirmed_activation: Option<ConfirmedActivationRecord>,
     pub pending_timelock_operation: Option<PendingTimelockOperation>,
     pub pending_control_plane_rotation: Option<ControlPlaneRotation>,
     pub emergency_pause_deposit_required: bool,
@@ -1413,6 +1415,49 @@ pub struct GovernanceTransaction {
     pub state: GovernanceTransactionState,
     #[serde(default)]
     pub activation_controller_authority: Option<ActivationControllerAuthority>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfirmedActivationRecord {
+    pub phase: String,
+    pub governance_operation_id: u64,
+    pub timelock_operation_id: [u8; 32],
+    pub transaction_hash: [u8; 32],
+    pub receipt_block_number: u64,
+    pub generation: u8,
+    pub signed_at_ns: u64,
+}
+
+fn confirmed_activation_record(
+    transaction: &GovernanceTransaction,
+) -> Result<Option<ConfirmedActivationRecord>, StorageError> {
+    let (phase, timelock_operation_id) = match transaction.kind {
+        GovernanceTransactionKind::ScheduleActivation { operation_id, .. } => {
+            ("schedule", operation_id)
+        }
+        GovernanceTransactionKind::ExecuteActivation { operation_id, .. } => {
+            ("execute", operation_id)
+        }
+        _ => return Ok(None),
+    };
+    let GovernanceTransactionState::Confirmed {
+        transaction_hash,
+        receipt_block_number,
+    } = transaction.state
+    else {
+        return Ok(None);
+    };
+    let view = crate::base_governance::activation_confirmation_view(transaction)
+        .ok_or(StorageError::DecodeFailed)?;
+    Ok(Some(ConfirmedActivationRecord {
+        phase: phase.into(),
+        governance_operation_id: transaction.id,
+        timelock_operation_id,
+        transaction_hash,
+        receipt_block_number,
+        generation: view.generation,
+        signed_at_ns: view.signed_at_ns,
+    }))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -5328,6 +5373,12 @@ impl StableStore {
             .last_completed_governance_transaction)
     }
 
+    pub fn last_confirmed_activation(
+        &self,
+    ) -> Result<Option<ConfirmedActivationRecord>, StorageError> {
+        Ok(self.deposit_admission()?.last_confirmed_activation)
+    }
+
     pub fn completed_governance_transactions(
         &self,
     ) -> Result<Vec<GovernanceTransaction>, StorageError> {
@@ -5941,7 +5992,11 @@ impl StableStore {
             }
             _ => {}
         }
+        let confirmed_activation = confirmed_activation_record(transaction)?;
         admission.set_completed_transaction(lane, transaction.clone());
+        if let Some(record) = confirmed_activation {
+            admission.last_confirmed_activation = Some(record);
+        }
         admission.set_pending_transaction(lane, None);
         match transaction.kind {
             GovernanceTransactionKind::PauseDepositMints if confirmed => {
@@ -6238,6 +6293,36 @@ impl StableStore {
             Ok(())
         })?;
         Ok(Apply)
+    }
+
+    pub(crate) fn migrate_confirmed_activation_history(&mut self) -> Result<bool, StorageError> {
+        let previous = self.deposit_admission.get()?;
+        let mut admission = decode::<DepositAdmissionControl>(&previous)?;
+        if admission.last_confirmed_activation.is_some() {
+            return Ok(false);
+        }
+        let Some(transaction) = admission.last_completed_governance_transaction.clone() else {
+            return Ok(false);
+        };
+        let Some(record) = confirmed_activation_record(&transaction)? else {
+            return Ok(false);
+        };
+        admission.last_confirmed_activation = Some(record);
+        self.set_deposit_admission(&admission)?;
+        Ok(true)
+    }
+
+    #[cfg(any(feature = "test-deployment", test))]
+    pub(crate) fn migrate_staging_bootstrap_activation_controller(
+        &mut self,
+    ) -> Result<bool, StorageError> {
+        let mut admission = self.deposit_admission()?;
+        if admission.bootstrap_activation_controller != Some(Principal::anonymous()) {
+            return Ok(false);
+        }
+        admission.bootstrap_activation_controller = None;
+        self.set_deposit_admission(&admission)?;
+        Ok(true)
     }
 
     pub fn rotate_fee_recipient_with_audit(
@@ -9504,8 +9589,8 @@ mod tests {
         MintAuthorizationOrigin, MintAuthorizationRecord, ReconciliationArchiveRange,
         ReconciliationHoldRecord, ReconciliationHoldState, ReconciliationLedgerPage,
         ReconciliationScanPhase, ReconciliationScanProgress, ReconciliationTarget,
-        RequestReference, Settlement, TransferAttempt, WithdrawalEvent, WithdrawalHoldResolution,
-        WithdrawalId,
+        RequestReference, Settlement, SignedGovernanceTransaction, TransferAttempt,
+        WithdrawalEvent, WithdrawalHoldResolution, WithdrawalId,
     };
     use ic_sqlite_vfs::DefaultMemoryImpl as VectorMemory;
 
@@ -9848,6 +9933,37 @@ mod tests {
         }
     }
 
+    fn signed_attempt(transaction_hash: [u8; 32], generation: u8) -> SignedGovernanceTransaction {
+        SignedGovernanceTransaction {
+            raw_transaction: vec![generation; 32],
+            transaction_hash,
+            max_fee_per_gas: 2,
+            max_priority_fee_per_gas: 1,
+            generation,
+            signed_at_ns: 100 + u64::from(generation),
+        }
+    }
+
+    fn record_confirmed_attempt(
+        store: &mut StableStore,
+        transaction: &mut GovernanceTransaction,
+        transaction_hash: [u8; 32],
+        receipt_block_number: u64,
+        generation: u8,
+    ) {
+        transaction
+            .envelope
+            .signed_transactions
+            .push(signed_attempt(transaction_hash, generation));
+        transaction.state = GovernanceTransactionState::Confirmed {
+            transaction_hash,
+            receipt_block_number,
+        };
+        store
+            .update_governance_transaction(transaction.clone())
+            .expect("record confirmed transaction");
+    }
+
     fn confirmed_activation_transaction(
         store: &mut StableStore,
     ) -> (GovernanceTransaction, Principal) {
@@ -9867,10 +9983,7 @@ mod tests {
         store
             .prepare_governance_transaction(schedule.clone())
             .expect("prepare activation schedule");
-        schedule.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [0x44; 32],
-            receipt_block_number: 10,
-        };
+        record_confirmed_attempt(store, &mut schedule, [0x44; 32], 10, 0);
         store
             .complete_governance_transaction(schedule)
             .expect("complete activation schedule");
@@ -9885,10 +9998,7 @@ mod tests {
         store
             .prepare_governance_transaction(execute.clone())
             .expect("prepare activation execute");
-        execute.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [0x46; 32],
-            receipt_block_number: 20,
-        };
+        record_confirmed_attempt(store, &mut execute, [0x46; 32], 20, 2);
         (execute, governance)
     }
 
@@ -10687,10 +10797,7 @@ mod tests {
         store
             .prepare_governance_transaction(governance.clone())
             .expect("prepare governance transaction");
-        governance.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [0xb4; 32],
-            receipt_block_number: 2,
-        };
+        record_confirmed_attempt(&mut store, &mut governance, [0xb4; 32], 2, 0);
         store
             .complete_governance_transaction(governance.clone())
             .expect("complete governance transaction");
@@ -10832,10 +10939,7 @@ mod tests {
         store
             .prepare_governance_transaction(scheduled.clone())
             .expect("prepare activation schedule");
-        scheduled.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [3; 32],
-            receipt_block_number: 5,
-        };
+        record_confirmed_attempt(&mut store, &mut scheduled, [3; 32], 5, 0);
         store
             .complete_governance_transaction(scheduled)
             .expect("complete activation schedule");
@@ -10885,13 +10989,7 @@ mod tests {
         store
             .prepare_governance_transaction(confirmed.clone())
             .expect("prepare mature execute");
-        confirmed.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [2; 32],
-            receipt_block_number: 20,
-        };
-        store
-            .update_governance_transaction(confirmed.clone())
-            .expect("record confirmed execute");
+        record_confirmed_attempt(&mut store, &mut confirmed, [2; 32], 20, 0);
         store
             .complete_governance_transaction(confirmed)
             .expect("complete confirmed execute");
@@ -10942,7 +11040,11 @@ mod tests {
         assert_eq!(events[0].kind, AuditEventKind::DepositsResumed);
         let completed = rpc_atomic_snapshot(&store, None);
         assert!(store
-            .complete_confirmed_activation_and_resume_if_clear(transaction, governance, 2_000)
+            .complete_confirmed_activation_and_resume_if_clear(
+                transaction.clone(),
+                governance,
+                2_000,
+            )
             .is_err());
         assert_eq!(rpc_atomic_snapshot(&store, None), completed);
 
@@ -10952,10 +11054,220 @@ mod tests {
         assert_eq!(storage_revision(&reopened), revision_before + 1);
         assert_eq!(
             reopened
+                .last_confirmed_activation()
+                .expect("reopened activation history"),
+            Some(confirmed_activation_record(&transaction).unwrap().unwrap())
+        );
+        assert_eq!(
+            reopened
                 .bootstrap_activation_controller()
                 .expect("reopened consumed bootstrap authority"),
             None
         );
+    }
+
+    #[test]
+    #[serial]
+    fn confirmed_activation_history_survives_later_governance_completion_and_reopen() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let (activation, governance) = confirmed_activation_transaction(&mut store);
+        store
+            .complete_confirmed_activation_and_resume_if_clear(
+                activation.clone(),
+                governance,
+                1_000,
+            )
+            .expect("complete activation");
+
+        let operation_id = [0x31; 32];
+        let salt = [0x32; 32];
+        let rotation = ControlPlaneRotation {
+            generation: 2,
+            bridge_signer: [0x41; 20],
+            governance_operator: [0x42; 20],
+            runtime_administrator: [0x43; 20],
+            independent_canceller: [0x44; 20],
+        };
+        let mut later = GovernanceTransaction {
+            id: activation.id + 1,
+            kind: GovernanceTransactionKind::ScheduleControlPlaneRotation {
+                operation_id,
+                salt,
+                generation: rotation.generation,
+                bridge_signer: rotation.bridge_signer,
+                governance_operator: rotation.governance_operator,
+                runtime_administrator: rotation.runtime_administrator,
+                independent_canceller: rotation.independent_canceller,
+            },
+            envelope: governance_intent(GovernanceOperationId::new(activation.id + 1), [0x51; 32])
+                .assign_nonce(activation.envelope.nonce + 1),
+            activation_controller_authority: None,
+            state: GovernanceTransactionState::Prepared,
+        };
+        let mut admission = store.deposit_admission().expect("activation admission");
+        admission.pending_governance_transaction = Some(later.clone());
+        admission.pending_timelock_operation =
+            Some(PendingTimelockOperation { operation_id, salt });
+        admission.pending_control_plane_rotation = Some(rotation);
+        later.state = GovernanceTransactionState::Reverted {
+            transaction_hash: [0x52; 32],
+            receipt_block_number: 200,
+        };
+        admission.pending_governance_transaction = Some(later.clone());
+        StableStore::apply_governance_completion(&mut admission, &later)
+            .expect("complete later governance transaction");
+        store
+            .set_deposit_admission(&admission)
+            .expect("persist later completion");
+
+        assert_eq!(
+            store
+                .last_completed_governance_transaction()
+                .expect("generic completion"),
+            Some(later.clone())
+        );
+        assert_eq!(
+            store
+                .last_confirmed_activation()
+                .expect("activation completion"),
+            confirmed_activation_record(&activation).unwrap()
+        );
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen store");
+        assert_eq!(
+            reopened
+                .last_confirmed_activation()
+                .expect("reopened activation completion"),
+            confirmed_activation_record(&activation).unwrap()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn upgrade_migrations_backfill_activation_history_and_consume_staging_sentinel() {
+        let memory = VectorMemory::default();
+        let mut store =
+            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
+        let (activation, governance) = confirmed_activation_transaction(&mut store);
+        store
+            .complete_confirmed_activation_and_resume_if_clear(
+                activation.clone(),
+                governance,
+                1_000,
+            )
+            .expect("complete activation");
+        let mut admission = store.deposit_admission().expect("activation admission");
+        admission.last_confirmed_activation = None;
+        admission.bootstrap_activation_controller = Some(Principal::anonymous());
+        store
+            .set_deposit_admission(&admission)
+            .expect("persist legacy state");
+
+        assert!(store
+            .migrate_staging_bootstrap_activation_controller()
+            .expect("migrate staging marker"));
+        assert!(store
+            .migrate_confirmed_activation_history()
+            .expect("backfill activation history"));
+        assert!(!store
+            .migrate_staging_bootstrap_activation_controller()
+            .expect("repeat staging marker migration"));
+        assert!(!store
+            .migrate_confirmed_activation_history()
+            .expect("repeat activation backfill"));
+        assert_eq!(
+            store
+                .bootstrap_activation_controller()
+                .expect("migrated controller marker"),
+            None
+        );
+        assert_eq!(
+            store
+                .last_confirmed_activation()
+                .expect("backfilled activation history"),
+            confirmed_activation_record(&activation).unwrap()
+        );
+
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen migrated store");
+        assert_eq!(
+            reopened
+                .last_confirmed_activation()
+                .expect("reopened activation history"),
+            confirmed_activation_record(&activation).unwrap()
+        );
+        assert_eq!(
+            reopened
+                .bootstrap_activation_controller()
+                .expect("reopened controller marker"),
+            None
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn staging_sentinel_migration_preserves_absence_and_real_controller() {
+        let mut store =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        let mut admission = store.deposit_admission().expect("admission");
+        admission.bootstrap_activation_controller = None;
+        store
+            .set_deposit_admission(&admission)
+            .expect("persist absent controller");
+        assert!(!store
+            .migrate_staging_bootstrap_activation_controller()
+            .expect("preserve absence"));
+
+        let real_controller = Principal::self_authenticating([0x77; 32]);
+        admission.bootstrap_activation_controller = Some(real_controller);
+        store
+            .set_deposit_admission(&admission)
+            .expect("persist real controller");
+        assert!(!store
+            .migrate_staging_bootstrap_activation_controller()
+            .expect("preserve real controller"));
+        assert_eq!(
+            store.bootstrap_activation_controller().expect("controller"),
+            Some(real_controller)
+        );
+    }
+
+    #[test]
+    fn confirmed_activation_record_requires_one_exact_signed_attempt() {
+        let mut transaction = GovernanceTransaction {
+            id: 9,
+            kind: GovernanceTransactionKind::ExecuteActivation {
+                operation_id: [0x61; 32],
+                salt: [0x62; 32],
+            },
+            envelope: governance_intent(GovernanceOperationId::new(9), [0x63; 32]).assign_nonce(4),
+            activation_controller_authority: None,
+            state: GovernanceTransactionState::Confirmed {
+                transaction_hash: [0x64; 32],
+                receipt_block_number: 22,
+            },
+        };
+        assert!(confirmed_activation_record(&transaction).is_err());
+        transaction
+            .envelope
+            .signed_transactions
+            .push(signed_attempt([0x64; 32], 2));
+        transaction
+            .envelope
+            .signed_transactions
+            .push(signed_attempt([0x65; 32], 3));
+        let record = confirmed_activation_record(&transaction)
+            .expect("valid history")
+            .expect("activation record");
+        assert_eq!(record.generation, 2);
+        assert_eq!(record.signed_at_ns, 102);
+        transaction
+            .envelope
+            .signed_transactions
+            .push(signed_attempt([0x64; 32], 4));
+        assert!(confirmed_activation_record(&transaction).is_err());
     }
 
     #[test]
@@ -11225,10 +11537,7 @@ mod tests {
         store
             .prepare_governance_transaction(schedule.clone())
             .expect("prepare schedule");
-        schedule.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [0x54; 32],
-            receipt_block_number: 1,
-        };
+        record_confirmed_attempt(&mut store, &mut schedule, [0x54; 32], 1, 0);
         store
             .complete_governance_transaction(schedule)
             .expect("confirm schedule");
@@ -11293,10 +11602,7 @@ mod tests {
         store
             .prepare_governance_transaction(schedule.clone())
             .expect("prepare schedule");
-        schedule.state = GovernanceTransactionState::Confirmed {
-            transaction_hash: [0x34; 32],
-            receipt_block_number: 1,
-        };
+        record_confirmed_attempt(&mut store, &mut schedule, [0x34; 32], 1, 0);
         store
             .complete_governance_transaction(schedule)
             .expect("confirm schedule");

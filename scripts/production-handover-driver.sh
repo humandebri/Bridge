@@ -16,14 +16,27 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 : "${BRIDGE_CONTROLLER_SCHEDULE_RECEIPT:?missing controller schedule receipt}"
 : "${BRIDGE_CONTROLLER_ACTIVATION_RECEIPT:?missing controller execute receipt}"
 : "${BRIDGE_ICP_IDENTITY:?missing reviewed ICP CLI identity}"
+[[ "$BRIDGE_ICP_IDENTITY" == production ]] || {
+  echo "controller handover requires BRIDGE_ICP_IDENTITY=production" >&2; exit 1;
+}
 : "${BRIDGE_HANDOVER_EVIDENCE_FILE:?missing handover evidence output path}"
 : "${BRIDGE_HANDOVER_CONFIRMATION:?set BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY}"
+BRIDGE_HANDOVER_MODE="${BRIDGE_HANDOVER_MODE:-submit}"
+[[ "$BRIDGE_HANDOVER_MODE" == submit || "$BRIDGE_HANDOVER_MODE" == recover ]] || {
+  echo "BRIDGE_HANDOVER_MODE must be submit or recover" >&2; exit 1;
+}
 [[ "$BRIDGE_HANDOVER_CONFIRMATION" == TRANSFER_TO_KINIC_SNS_ROOT_ONLY ]] || {
   echo "controller handover requires the exact confirmation phrase" >&2; exit 1;
 }
-[[ ! -e "$BRIDGE_HANDOVER_EVIDENCE_FILE" && ! -L "$BRIDGE_HANDOVER_EVIDENCE_FILE" ]] || {
-  echo "handover evidence output already exists or is a symlink" >&2; exit 1;
-}
+if [[ "$BRIDGE_HANDOVER_MODE" == submit ]]; then
+  [[ ! -e "$BRIDGE_HANDOVER_EVIDENCE_FILE" && ! -L "$BRIDGE_HANDOVER_EVIDENCE_FILE" ]] || {
+    echo "handover evidence output already exists or is a symlink" >&2; exit 1;
+  }
+else
+  [[ -f "$BRIDGE_HANDOVER_EVIDENCE_FILE" && ! -L "$BRIDGE_HANDOVER_EVIDENCE_FILE" ]] || {
+    echo "handover recovery requires an existing regular checkpoint" >&2; exit 1;
+  }
+fi
 for tool in icp python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/bridge-handover.XXXXXX")"
@@ -44,6 +57,7 @@ BRIDGE_CONTROLLER_SCHEDULE_RECEIPT="$TMP/schedule-receipt.json"
 BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$TMP/execute-receipt.json"
 BRIDGE_HANDOVER_VALIDATOR_BIN="$TMP/bridge-profile"
 
+if [[ "$BRIDGE_HANDOVER_MODE" == submit ]]; then
 production_validate_gate handover "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" "" \
   "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" \
   "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT"
@@ -121,10 +135,6 @@ for path,prefix in [(bridge_path,'before_bridge_status'),(status_path,'before_ma
                     (attestation_path,'before_activation_attestation')]: snapshot.update(evidence(path,prefix))
 print(json.dumps(snapshot,sort_keys=True,separators=(',',':')))
 PY
-
-# Prove that the durable evidence target supports create, fsync and atomic
-# replacement before changing the controller set.
-production_reserve_output "$BRIDGE_HANDOVER_EVIDENCE_FILE" "handover evidence"
 
 # Re-read and persist the complete live state after every filesystem preparation
 # step. This is the snapshot that authorizes the irreversible settings update.
@@ -204,6 +214,27 @@ mv "$TMP/preflight-final.json" "$TMP/preflight.json"
   >/dev/null
 
 COMMAND=(icp canister settings update bridge-canister -e production --remove-all-controllers --add-controller "$ROOT" --force --identity "$BRIDGE_ICP_IDENTITY" --debug)
+python3 - "$TMP/preflight.json" "$TMP/pre-send-checkpoint.json" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "${COMMAND[@]}" <<'PY'
+import json,os,sys,tempfile
+preflight_path,target,canister,root,caller,*argv=sys.argv[1:]
+value={'schema_version':4,'stage':'pre_send_checkpoint','observed_at_unix':int(__import__('time').time()),
+       'bridge_canister_id':canister,'sns_root_canister_id':root,'executing_principal':caller,
+       'command_argv':argv,'request_id':'','response_exit_code':0,'response_stdout_hex':'',
+       'response_stderr_hex':'','response_sha256':__import__('hashlib').sha256(b'').hexdigest(),
+       **json.load(open(preflight_path))}
+with open(target,'w') as out:
+ json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno())
+PY
+python3 - "$TMP/pre-send-checkpoint.json" "$BRIDGE_HANDOVER_EVIDENCE_FILE" <<'PY'
+import os,sys
+source,target=sys.argv[1:]
+parent=os.path.dirname(os.path.abspath(target)) or '.'
+if not os.path.isdir(parent): raise SystemExit('handover evidence parent directory does not exist')
+os.link(source,target)
+fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY)
+try: os.fsync(fd)
+finally: os.close(fd)
+PY
 set +e
 "${COMMAND[@]}" >"$TMP/response.stdout" 2>"$TMP/response.stderr"
 STATUS=$?
@@ -211,14 +242,16 @@ set -e
 if [[ $STATUS -ne 0 ]]; then
   COMPLETED_AT="$(date +%s)"
   RESPONSE_SHA256="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()+open(sys.argv[2],"rb").read()).hexdigest())' "$TMP/response.stdout" "$TMP/response.stderr")"
-  python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$STATUS" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
-import json,os,sys,tempfile
-target,canister,root,caller,status,response_sha,completed,preflight,stdout_path,stderr_path,*argv=sys.argv[1:]
-value={'schema_version':3,'stage':'controller_update_uncertain','observed_at_unix':int(completed),
+  python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$STATUS" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/pre-send-checkpoint.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
+import hashlib,json,os,sys,tempfile
+target,canister,root,caller,status,response_sha,completed,preflight,checkpoint_path,stdout_path,stderr_path,*argv=sys.argv[1:]
+checkpoint=open(checkpoint_path,'rb').read()
+value={'schema_version':4,'stage':'controller_update_uncertain','observed_at_unix':int(completed),
        'bridge_canister_id':canister,'sns_root_canister_id':root,'executing_principal':caller,
        'command_argv':argv,'request_id':'','response_exit_code':int(status),
        'response_stdout_hex':open(stdout_path,'rb').read().hex(),'response_stderr_hex':open(stderr_path,'rb').read().hex(),
-       'response_sha256':response_sha,**json.load(open(preflight))}
+       'response_sha256':response_sha,'pre_send_checkpoint_json_hex':checkpoint.hex(),
+       'pre_send_checkpoint_sha256':hashlib.sha256(checkpoint).hexdigest(),**json.load(open(preflight))}
 parent=os.path.dirname(os.path.abspath(target)) or '.'
 fd,tmp=tempfile.mkstemp(prefix='.handover-evidence.',dir=parent)
 out=os.fdopen(fd,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
@@ -236,14 +269,16 @@ matches={value.lower() for value in re.findall(r"request[_ -]?id[^0-9a-fA-F]*(?:
 if len(matches)!=1: raise SystemExit(1)
 print(matches.pop())
 ' "$TMP/response.stdout" "$TMP/response.stderr")" || {
-  python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$STATUS" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
-import json,os,sys,tempfile
-target,canister,root,caller,status,response_sha,completed,preflight,stdout_path,stderr_path,*argv=sys.argv[1:]
-value={'schema_version':3,'stage':'controller_update_uncertain','observed_at_unix':int(completed),
+  python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$STATUS" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/pre-send-checkpoint.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
+import hashlib,json,os,sys,tempfile
+target,canister,root,caller,status,response_sha,completed,preflight,checkpoint_path,stdout_path,stderr_path,*argv=sys.argv[1:]
+checkpoint=open(checkpoint_path,'rb').read()
+value={'schema_version':4,'stage':'controller_update_uncertain','observed_at_unix':int(completed),
        'bridge_canister_id':canister,'sns_root_canister_id':root,'executing_principal':caller,
        'command_argv':argv,'request_id':'','response_exit_code':int(status),
        'response_stdout_hex':open(stdout_path,'rb').read().hex(),'response_stderr_hex':open(stderr_path,'rb').read().hex(),
-       'response_sha256':response_sha,**json.load(open(preflight))}
+       'response_sha256':response_sha,'pre_send_checkpoint_json_hex':checkpoint.hex(),
+       'pre_send_checkpoint_sha256':hashlib.sha256(checkpoint).hexdigest(),**json.load(open(preflight))}
 parent=os.path.dirname(os.path.abspath(target)) or '.'
 fd,tmp=tempfile.mkstemp(prefix='.handover-evidence.',dir=parent)
 out=os.fdopen(fd,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
@@ -253,19 +288,62 @@ PY
   exit 1
 }
 # Persist the irreversible request before attempting the public postcondition.
-python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$REQUEST_ID" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
-import json,os,sys,tempfile
-target,canister,root,caller,request_id,response_sha,completed,preflight,stdout_path,stderr_path,*argv=sys.argv[1:]
-value={'schema_version':3,'stage':'controller_update_submitted','observed_at_unix':int(completed),
+python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$REQUEST_ID" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/pre-send-checkpoint.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
+import hashlib,json,os,sys,tempfile
+target,canister,root,caller,request_id,response_sha,completed,preflight,checkpoint_path,stdout_path,stderr_path,*argv=sys.argv[1:]
+checkpoint=open(checkpoint_path,'rb').read()
+value={'schema_version':4,'stage':'controller_update_submitted','observed_at_unix':int(completed),
        'bridge_canister_id':canister,'sns_root_canister_id':root,'executing_principal':caller,
        'command_argv':argv,'request_id':request_id,'response_exit_code':0,
        'response_stdout_hex':open(stdout_path,'rb').read().hex(),'response_stderr_hex':open(stderr_path,'rb').read().hex(),
-       'response_sha256':response_sha,**json.load(open(preflight))}
+       'response_sha256':response_sha,'pre_send_checkpoint_json_hex':checkpoint.hex(),
+       'pre_send_checkpoint_sha256':hashlib.sha256(checkpoint).hexdigest(),**json.load(open(preflight))}
 parent=os.path.dirname(os.path.abspath(target)) or '.'
 fd,tmp=tempfile.mkstemp(prefix='.handover-evidence.',dir=parent)
 out=os.fdopen(fd,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)
 fd=os.open(os.path.dirname(os.path.abspath(target)) or '.',os.O_RDONLY); os.fsync(fd); os.close(fd)
 PY
+else
+  production_validate_gate handover-recover "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
+    "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
+    "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT"
+  PROFILE="$BRIDGE_RELEASE_BUNDLE/profile.json"
+  read -r CANISTER ROOT EXPECTED_WASM < <(python3 -c '
+import json,sys
+p=json.load(open(sys.argv[1])); print(p["bridge_canister_id"],p["root_canister_id"],p["bridge_canister_wasm_sha256"])
+' "$PROFILE")
+  [[ "$(icp canister status bridge-canister -e production -i --identity "$BRIDGE_ICP_IDENTITY")" == "$CANISTER" ]] || {
+    echo "production ICP environment does not map the reviewed Bridge Canister" >&2; exit 1;
+  }
+  python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$TMP/preflight.json" "$TMP/pre-send-checkpoint.json" "$TMP/response.stdout" "$TMP/response.stderr" "$TMP/recovery.env" <<'PY'
+import hashlib,json,sys
+source,preflight_path,checkpoint_path,stdout_path,stderr_path,env_path=sys.argv[1:]
+raw=open(source,'rb').read(); value=json.loads(raw)
+if value.get('schema_version')!=4 or value.get('stage') not in {'pre_send_checkpoint','controller_update_uncertain','controller_update_submitted'}:
+ raise SystemExit('handover recovery stage is invalid')
+if value['stage']=='pre_send_checkpoint': checkpoint=raw
+else:
+ checkpoint=bytes.fromhex(value.get('pre_send_checkpoint_json_hex',''))
+ if hashlib.sha256(checkpoint).hexdigest()!=value.get('pre_send_checkpoint_sha256'):
+  raise SystemExit('embedded pre-send checkpoint digest mismatch')
+ original=json.loads(checkpoint)
+ if original.get('stage')!='pre_send_checkpoint': raise SystemExit('embedded pre-send checkpoint stage is invalid')
+open(preflight_path,'wb').write(raw)
+open(checkpoint_path,'wb').write(checkpoint)
+open(stdout_path,'wb').write(bytes.fromhex(value.get('response_stdout_hex','')))
+open(stderr_path,'wb').write(bytes.fromhex(value.get('response_stderr_hex','')))
+with open(env_path,'w') as out:
+ for key in ('executing_principal','request_id','response_sha256'):
+  item=str(value.get(key,''))
+  if any(ch in item for ch in "\n\r'"): raise SystemExit(f'invalid recovery {key}')
+  out.write(f"{key}='{item}'\n")
+PY
+  # shellcheck disable=SC1090
+  source "$TMP/recovery.env"
+  EXECUTING_PRINCIPAL="$executing_principal"
+  REQUEST_ID="$request_id"
+  RESPONSE_SHA256="$response_sha256"
+fi
 if ! icp canister status bridge-canister -e production --public --json >"$TMP/postcondition-status.json"; then
   echo "INCIDENT: controller handover succeeded but the public postcondition could not be read; submitted checkpoint retained" >&2
   exit 1
@@ -341,17 +419,22 @@ for path,prefix in [(status_path,'after_management_status'),(bridge_path,'after_
 print(json.dumps(snapshot,sort_keys=True,separators=(',',':')))
 PY
 COMPLETED_AT="$(date +%s)"
-python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$REQUEST_ID" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/postcondition.json" "$TMP/response.stdout" "$TMP/response.stderr" "${COMMAND[@]}" <<'PY'
-import json,os,sys,tempfile
-target,canister,root,caller,request_id,response_sha,completed,preflight,postcondition,stdout_path,stderr_path,*argv=sys.argv[1:]
+python3 - "$BRIDGE_HANDOVER_EVIDENCE_FILE" "$CANISTER" "$ROOT" "$EXECUTING_PRINCIPAL" "$REQUEST_ID" "$RESPONSE_SHA256" "$COMPLETED_AT" "$TMP/preflight.json" "$TMP/postcondition.json" "$TMP/pre-send-checkpoint.json" "$TMP/response.stdout" "$TMP/response.stderr" "$BRIDGE_HANDOVER_MODE" "${COMMAND[@]:-}" <<'PY'
+import hashlib,json,os,sys,tempfile
+target,canister,root,caller,request_id,response_sha,completed,preflight,postcondition,checkpoint_path,stdout_path,stderr_path,mode,*argv=sys.argv[1:]
 metrics=json.load(open(preflight))
 post=json.load(open(postcondition)); final_controllers=post['final_controllers']
-value={'schema_version':3,'stage':'complete','observed_at_unix':int(completed),'bridge_canister_id':canister,
+checkpoint=open(checkpoint_path,'rb').read()
+if mode=='recover': argv=metrics['command_argv']
+value={**metrics,**post,'schema_version':4,'stage':'complete','observed_at_unix':int(completed),'bridge_canister_id':canister,
        'sns_root_canister_id':root,'executing_principal':caller,'command_argv':argv,
        'request_id':request_id,'response_exit_code':0,
        'response_stdout_hex':open(stdout_path,'rb').read().hex(),
        'response_stderr_hex':open(stderr_path,'rb').read().hex(),
-       'response_sha256':response_sha,'final_controllers':final_controllers,**metrics,**post}
+       'response_sha256':response_sha,'final_controllers':final_controllers,
+       'pre_send_checkpoint_json_hex':checkpoint.hex(),
+       'pre_send_checkpoint_sha256':hashlib.sha256(checkpoint).hexdigest(),
+       'recovered_without_request_id':mode=='recover' and not request_id}
 parent=os.path.dirname(os.path.abspath(target)) or '.'
 fd,tmp=tempfile.mkstemp(prefix='.handover-evidence.',dir=parent)
 out=os.fdopen(fd,'w'); json.dump(value,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno()); out.close(); os.replace(tmp,target)

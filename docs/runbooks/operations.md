@@ -162,7 +162,7 @@ preflight、execute、recoverはいずれも固定clean HEADからproduction Was
 
 現行production install templateのようにunsealed・pausedでpause principalが既にproduction identity、bootstrap markerが未束縛、role分離済みの場合、upgrade hookはstateとauditを変更しないfresh-install no-opとして扱う。旧SNS Rootからの実移行だけがpause principal、marker、auditを更新する。
 
-handover driverは全live responseを再取得してpre-send evidenceへ保存した後、認証済みlive verifierをもう一度通し、直後にsettings updateを送る。この最終検証から送信までの短い区間は、pause・activation・runtime・reserve・storage・module・controllerを書き換える別operatorが存在しないことを外部仮定とする。
+handover driverは全live responseを再取得して完全なschema 4 pre-send checkpointを原子的に保存した後、認証済みlive verifierをもう一度通し、直後にsettings updateを送る。この最終検証から送信までの短い区間は、pause・activation・runtime・reserve・storage・module・controllerを書き換える別operatorが存在しないことを外部仮定とする。送信結果が不明またはrequest IDを取得できない場合はcheckpointを削除・上書きせず、同じ証跡pathへ`BRIDGE_HANDOVER_MODE=recover`を指定して再実行する。recoverはsettings updateを再送せず、checkpointのsource・Gate B・activation receipt・pre-send snapshotを検証したうえで、live controllerがSNS Root一件でありmodule、RuntimeBinding、storage integrity、active運用状態が連続している場合だけcompletion receiptへ昇格する。
 
 ## Mint証拠不一致
 

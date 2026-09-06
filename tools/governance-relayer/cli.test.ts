@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { generateKeyPairSync } from "node:crypto"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -31,8 +31,80 @@ import {
   validateCommandOptions,
   validateStoredArtifact,
   waitForFinalized,
+  writeJsonExclusiveAtomic,
   writeOrMatchConfirmationEvidence,
 } from "./cli.ts"
+
+test("publishes receipts atomically and recovers at each crash boundary", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bridge-atomic-receipt-"))
+  const path = join(root, "receipt.json")
+  const value = { schema_version: 1, payload: "fixed" }
+  try {
+    await assert.rejects(() => writeJsonExclusiveAtomic(value, path, async (stage) => {
+      if (stage === "temporary-synced") throw new Error("injected pre-publish stop")
+    }))
+    await assert.rejects(() => readFile(path))
+    await writeJsonExclusiveAtomic(value, path)
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), value)
+
+    const published = join(root, "published.json")
+    await assert.rejects(() => writeJsonExclusiveAtomic(value, published, async (stage) => {
+      if (stage === "published") throw new Error("injected post-publish stop")
+    }))
+    assert.deepEqual(JSON.parse(await readFile(published, "utf8")), value)
+    await assert.rejects(() => writeJsonExclusiveAtomic(value, published), { code: "EEXIST" })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("never replaces partial or symlinked receipt paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bridge-fixed-receipt-"))
+  const partial = join(root, "partial.json")
+  const target = join(root, "target.json")
+  const linked = join(root, "linked.json")
+  try {
+    await writeFile(partial, "{\n")
+    await assert.rejects(() => writeOrMatchConfirmationEvidence({ confirmed_at_unix: 1 }, partial))
+    assert.equal(await readFile(partial, "utf8"), "{\n")
+
+    await writeFile(target, JSON.stringify({ confirmed_at_unix: 1 }))
+    await symlink(target, linked)
+    await assert.rejects(
+      () => writeOrMatchConfirmationEvidence({ confirmed_at_unix: 1 }, linked),
+      /not a regular file/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("concurrent receipt writers publish exactly one complete value", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bridge-concurrent-receipt-"))
+  const samePath = join(root, "same.json")
+  const differentPath = join(root, "different.json")
+  const first = { schema_version: 1, confirmed_at_unix: 10, operation_id: "1" }
+  const second = { schema_version: 1, confirmed_at_unix: 10, operation_id: "2" }
+  try {
+    await Promise.all([
+      writeOrMatchConfirmationEvidence(first, samePath),
+      writeOrMatchConfirmationEvidence(first, samePath),
+    ])
+    assert.deepEqual(JSON.parse(await readFile(samePath, "utf8")), first)
+
+    const results = await Promise.allSettled([
+      writeOrMatchConfirmationEvidence(first, differentPath),
+      writeOrMatchConfirmationEvidence(second, differentPath),
+    ])
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1)
+    assert.equal(results.filter((result) => result.status === "rejected").length, 1)
+    const stored = JSON.parse(await readFile(differentPath, "utf8"))
+    assert.ok(JSON.stringify(stored) === JSON.stringify(first)
+      || JSON.stringify(stored) === JSON.stringify(second))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 test("accepts only the fixed initial governance operation ID", () => {
   assert.equal(parseExpectedGovernanceOperationId(0), 0n)

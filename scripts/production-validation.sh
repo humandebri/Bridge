@@ -378,6 +378,7 @@ production_validate_gate() {
   local handover_seal_receipt="${5:-}"
   local handover_schedule_receipt="${6:-}"
   local handover_execute_receipt="${7:-}"
+  local handover_checkpoint="${4:-}"
   local source_root target profile_bin output actual_hash revision tree manifest_revision manifest_tree
   local expected_relayer resolved_relayer bridge_canister refresh_output final_output
   source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -393,8 +394,8 @@ production_validate_gate() {
   profile_bin="$target/release/bridge-profile"
   if [[ "$mode" == gate-a ]]; then output="$("$profile_bin" validate-bundle --offline "$bundle")" || { rm -rf "$target"; return 1; }
   elif [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }
-  elif [[ "$mode" == handover ]]; then
-    [[ -z "$canister_install_receipt" ]] || {
+  elif [[ "$mode" == handover || "$mode" == handover-recover ]]; then
+    [[ "$mode" == handover-recover || -z "$canister_install_receipt" ]] || {
       rm -rf "$target"
       echo "handover mode does not accept an install receipt" >&2
       return 1
@@ -406,6 +407,16 @@ production_validate_gate() {
         return 1
       }
     done
+    if [[ "$mode" == handover-recover ]]; then
+      [[ -f "$handover_checkpoint" && ! -L "$handover_checkpoint" ]] || {
+        rm -rf "$target"; echo "handover recovery requires a regular checkpoint" >&2; return 1;
+      }
+      "$profile_bin" validate-controller-handover-recovery \
+        "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
+        "$handover_execute_receipt" "$handover_checkpoint" || {
+          rm -rf "$target"; echo "controller handover recovery checkpoint is invalid" >&2; return 1;
+        }
+    fi
     output="$("$profile_bin" validate-production-handover-candidate \
       "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
       "$handover_execute_receipt")" || {
@@ -424,12 +435,12 @@ production_validate_gate() {
   if [[ "$mode" == gate-a ]]; then
     [[ "$output" =~ ^gate_a=pass[[:space:]]authorizing=true[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver Gate A result is not authorizing" >&2; return 1; }
     actual_hash="${BASH_REMATCH[1]}"
-  elif [[ "$mode" != handover ]]; then
+  elif [[ "$mode" != handover && "$mode" != handover-recover ]]; then
     [[ "$output" =~ ^gate_b=pre_seal-pass[[:space:]]authorizing=seal[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver pre-seal Gate B result is malformed" >&2; return 1; }
     actual_hash="${BASH_REMATCH[1]}"
   fi
   [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "driver Gate manifest hash mismatch" >&2; return 1; }
-  if [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live || "$mode" == handover ]]; then
+  if [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live || "$mode" == handover || "$mode" == handover-recover ]]; then
     production_validate_gate_b_source_chain "$source_root" "$bundle" || { rm -rf "$target"; return 1; }
   fi
   production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
@@ -439,7 +450,18 @@ production_validate_gate() {
     rm -rf "$target"
     return 0
   fi
-  if [[ "$mode" == handover ]]; then
+  if [[ "$mode" == handover || "$mode" == handover-recover ]]; then
+    if [[ "$mode" == handover-recover ]]; then
+      if [[ -n "${BRIDGE_HANDOVER_VALIDATOR_BIN:-}" ]]; then
+        [[ ! -e "$BRIDGE_HANDOVER_VALIDATOR_BIN" && ! -L "$BRIDGE_HANDOVER_VALIDATOR_BIN" ]] || {
+          rm -rf "$target"; echo "handover validator output already exists or is a symlink" >&2; return 1;
+        }
+        cp "$profile_bin" "$BRIDGE_HANDOVER_VALIDATOR_BIN" || { rm -rf "$target"; return 1; }
+        chmod 500 "$BRIDGE_HANDOVER_VALIDATOR_BIN" || { rm -rf "$target"; return 1; }
+      fi
+      rm -rf "$target"
+      return 0
+    fi
     "$profile_bin" verify-production-canister-handover \
       "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
       "$handover_execute_receipt" >/dev/null || {

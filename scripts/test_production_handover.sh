@@ -145,7 +145,10 @@ python3 - "$T/handover.json" "$GATE_B_HASH" <<'PY'
 import hashlib,json,sys
 v=json.load(open(sys.argv[1]))
 assert v['final_controllers']==['7jkta-eyaaa-aaaaq-aaarq-cai']
-assert v['schema_version']==3 and v['stage']=='complete'
+assert v['schema_version']==4 and v['stage']=='complete'
+checkpoint=bytes.fromhex(v['pre_send_checkpoint_json_hex'])
+assert hashlib.sha256(checkpoint).hexdigest()==v['pre_send_checkpoint_sha256']
+assert json.loads(checkpoint)['stage']=='pre_send_checkpoint'
 assert v['source_revision'] and len(v['source_tree_sha256'])==64
 assert v['gate_b_manifest_sha256']==sys.argv[2]
 assert v['operational_config_seal_receipt_sha256']==hashlib.sha256(open(sys.argv[1].replace('handover.json','operational-config-seal-receipt.json'),'rb').read()).hexdigest()
@@ -239,7 +242,7 @@ if HANDOVER_PRE_SEND_ACTIVE_DRIFT=true run_handover "$T/pre-send-active-drift.js
 fi
 updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
 [[ "$updates_before" == "$updates_after" ]]
-[[ -f "$T/pre-send-active-drift.json" && ! -s "$T/pre-send-active-drift.json" ]]
+[[ ! -e "$T/pre-send-active-drift.json" ]]
 
 for scenario in RESERVE_DRIFT IC_PAUSE_DRIFT LIFECYCLE_DRIFT RUNTIME_DRIFT STORAGE_DRIFT ACTIVATION_DRIFT BASE_PAUSE_DRIFT; do
   evidence="$T/pre-send-$(printf '%s' "$scenario" | tr '[:upper:]_' '[:lower:]-').json"
@@ -250,7 +253,7 @@ for scenario in RESERVE_DRIFT IC_PAUSE_DRIFT LIFECYCLE_DRIFT RUNTIME_DRIFT STORA
   fi
   updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
   unset "HANDOVER_PRE_SEND_${scenario}"
-  [[ "$updates_before" == "$updates_after" && -f "$evidence" && ! -s "$evidence" ]]
+  [[ "$updates_before" == "$updates_after" && ! -e "$evidence" ]]
 done
 
 if HANDOVER_CANISTER_ID=rrkah-fqaaa-aaaaa-aaaaq-cai run_handover "$T/wrong-canister.json" >/dev/null 2>&1; then
@@ -271,48 +274,48 @@ if HANDOVER_SECOND_CONTROLLER=2vxsx-fae run_handover "$T/pre-send-controller-rac
 fi
 updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
 [[ "$updates_before" == "$updates_after" ]]
-[[ -f "$T/pre-send-controller-race.json" && ! -s "$T/pre-send-controller-race.json" ]]
+[[ ! -e "$T/pre-send-controller-race.json" ]]
 if HANDOVER_FINAL_CONTROLLERS='["7jkta-eyaaa-aaaaq-aaarq-cai","aaaaa-aa"]' run_handover "$T/extra-controller.json" >/dev/null 2>&1; then
   echo "handover accepted an extra live controller" >&2; exit 1
 fi
 python3 - "$T/extra-controller.json" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==3 and v['stage']=='controller_update_submitted'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_submitted'
 PY
 if HANDOVER_FINAL_CONTROLLERS='["aaaaa-aa"]' run_handover "$T/missing-root.json" >/dev/null 2>&1; then
   echo "handover accepted a live controller set without SNS Root" >&2; exit 1
 fi
 python3 - "$T/missing-root.json" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==3 and v['stage']=='controller_update_submitted'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_submitted'
 PY
 if HANDOVER_POST_MODULE="$(printf 'b%.0s' {1..64})" run_handover "$T/post-module-drift.json" >/dev/null 2>&1; then
   echo "handover accepted a module change across controller handover" >&2; exit 1
 fi
 python3 - "$T/post-module-drift.json" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==3 and v['stage']=='controller_update_submitted'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_submitted'
 PY
 if HANDOVER_POST_RUNTIME=drifted run_handover "$T/post-runtime-drift.json" >/dev/null 2>&1; then
   echo "handover accepted RuntimeBinding drift across controller handover" >&2; exit 1
 fi
 python3 - "$T/post-runtime-drift.json" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==3 and v['stage']=='controller_update_submitted'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_submitted'
 PY
 if HANDOVER_POST_STORAGE_RESULT=corrupt run_handover "$T/post-storage-drift.json" >/dev/null 2>&1; then
   echo "handover accepted storage integrity drift across controller handover" >&2; exit 1
 fi
 python3 - "$T/post-storage-drift.json" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==3 and v['stage']=='controller_update_submitted'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_submitted'
 PY
 if HANDOVER_POSTCONDITION_FAIL=true run_handover "$T/postcondition-failed.json" >/dev/null 2>&1; then
   echo "handover wrote evidence without a live controller postcondition" >&2; exit 1
 fi
 python3 - "$T/postcondition-failed.json" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==3 and v['stage']=='controller_update_submitted'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_submitted'
 PY
 printf '\n' >>"$T/source/src/main.rs"
 if run_handover "$T/dirty.json" >/dev/null 2>&1; then
@@ -329,17 +332,38 @@ if HANDOVER_FAIL=true run_handover "$T/failed.json" >/dev/null 2>&1; then
 fi
 python3 - "$T/failed.json" <<'PY'
 import hashlib,json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==3 and v['stage']=='controller_update_uncertain'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_uncertain'
 assert v['response_exit_code']!=0
 transcript=bytes.fromhex(v['response_stdout_hex'])+bytes.fromhex(v['response_stderr_hex'])
 assert hashlib.sha256(transcript).hexdigest()==v['response_sha256']
+PY
+updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+BRIDGE_HANDOVER_MODE=recover run_handover "$T/failed.json"
+updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+[[ "$updates_before" == "$updates_after" ]]
+python3 - "$T/failed.json" <<'PY'
+import json,sys
+v=json.load(open(sys.argv[1]))
+assert v['schema_version']==4 and v['stage']=='complete'
+assert v['request_id']=='' and v['recovered_without_request_id'] is True
 PY
 if HANDOVER_NO_REQUEST_ID=true run_handover "$T/missing-request-id.json" >/dev/null 2>&1; then
   echo "handover accepted a success response without a request ID" >&2; exit 1
 fi
 python3 - "$T/missing-request-id.json" <<'PY'
 import hashlib,json,sys
-v=json.load(open(sys.argv[1])); assert v['stage']=='controller_update_uncertain' and v['response_exit_code']==0 and v['request_id']==''
+v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_uncertain' and v['response_exit_code']==0 and v['request_id']==''
 transcript=bytes.fromhex(v['response_stdout_hex'])+bytes.fromhex(v['response_stderr_hex'])
 assert hashlib.sha256(transcript).hexdigest()==v['response_sha256']
+PY
+updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+BRIDGE_HANDOVER_MODE=recover run_handover "$T/missing-request-id.json"
+updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+[[ "$updates_before" == "$updates_after" ]]
+python3 - "$T/missing-request-id.json" <<'PY'
+import json,sys
+v=json.load(open(sys.argv[1]))
+assert v['schema_version']==4 and v['stage']=='complete'
+assert v['request_id']=='' and v['recovered_without_request_id'] is True
+assert v['final_controllers']==['7jkta-eyaaa-aaaaq-aaarq-cai']
 PY

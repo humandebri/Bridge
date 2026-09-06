@@ -1160,6 +1160,12 @@ struct ControllerHandover {
     required_freezing_cycles: u128,
     pre_send_cycles_balance: u128,
     pre_send_required_freezing_cycles: u128,
+    #[serde(default)]
+    pre_send_checkpoint_json_hex: String,
+    #[serde(default)]
+    pre_send_checkpoint_sha256: String,
+    #[serde(default)]
+    recovered_without_request_id: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -4757,6 +4763,128 @@ fn validate_controller_handover_lineage(
     Ok(())
 }
 
+fn validate_controller_handover_recovery_files(
+    bundle_path: &Path,
+    seal_receipt_path: &Path,
+    schedule_receipt_path: &Path,
+    execute_receipt_path: &Path,
+    checkpoint_path: &Path,
+) -> Result<(), String> {
+    let (bundle, gate_a_receipt, _) = validate_production_handover_evidence_files(
+        bundle_path,
+        seal_receipt_path,
+        schedule_receipt_path,
+        execute_receipt_path,
+        SealReceiptLiveContext::HandoverPostTransfer,
+    )?;
+    let checkpoint: Value = read_json(checkpoint_path)?;
+    let object = checkpoint
+        .as_object()
+        .ok_or("controller handover recovery checkpoint is not an object")?;
+    let text = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("controller handover recovery checkpoint lacks {key}"))
+    };
+    let strings = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("controller handover recovery checkpoint lacks {key}"))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("controller handover recovery {key} is malformed"))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    };
+    let digest = |path: &Path| -> Result<String, String> {
+        Ok(hex(&Sha256::digest(
+            fs::read(path).map_err(|error| error.to_string())?,
+        )))
+    };
+    let installer = &gate_a_receipt.canister_install.installer_principal;
+    let stage = text("stage")?;
+    if object.get("schema_version").and_then(Value::as_u64) != Some(4)
+        || ![
+            "pre_send_checkpoint",
+            "controller_update_uncertain",
+            "controller_update_submitted",
+        ]
+        .contains(&stage)
+        || text("source_revision")? != bundle.manifest.source_revision
+        || !text("source_tree_sha256")?.eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
+        || !text("gate_b_manifest_sha256")?.eq_ignore_ascii_case(&bundle.manifest_sha256)
+        || !text("operational_config_seal_receipt_sha256")?
+            .eq_ignore_ascii_case(&digest(seal_receipt_path)?)
+        || !text("controller_schedule_receipt_sha256")?
+            .eq_ignore_ascii_case(&digest(schedule_receipt_path)?)
+        || !text("controller_execute_receipt_sha256")?
+            .eq_ignore_ascii_case(&digest(execute_receipt_path)?)
+        || text("bridge_canister_id")? != bundle.profile.bridge_canister_id
+        || text("sns_root_canister_id")? != KINIC_ROOT
+        || text("executing_principal")? != installer
+        || strings("pre_send_controllers")? != [installer.clone()]
+        || !text("pre_send_module_sha256")?
+            .eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+    {
+        return Err("controller handover recovery checkpoint lineage is invalid".into());
+    }
+    for prefix in [
+        "pre_send_management_status",
+        "pre_send_bridge_status",
+        "pre_send_lifecycle",
+        "pre_send_runtime_binding",
+        "pre_send_storage_integrity",
+        "pre_send_activation_status",
+        "pre_send_activation_attestation",
+    ] {
+        let raw = text(&format!("{prefix}_response_json_hex"))?;
+        let digest = text(&format!("{prefix}_response_sha256"))?;
+        handover_json_evidence(raw, digest)?;
+    }
+    let mut response = decode_hex(text("response_stdout_hex")?)?;
+    response.extend_from_slice(&decode_hex(text("response_stderr_hex")?)?);
+    if !valid_sha256(text("response_sha256")?)
+        || !hex(&Sha256::digest(&response)).eq_ignore_ascii_case(text("response_sha256")?)
+    {
+        return Err("controller handover recovery response digest is invalid".into());
+    }
+    let request_id = text("request_id")?.trim_start_matches("0x");
+    if stage == "controller_update_submitted"
+        && (!valid_sha256(request_id)
+            || handover_request_ids(&String::from_utf8_lossy(&response))?
+                != BTreeSet::from([request_id.to_ascii_lowercase()]))
+    {
+        return Err("controller handover submitted checkpoint request ID is invalid".into());
+    }
+    let command = strings("command_argv")?;
+    if command
+        != [
+            "icp",
+            "canister",
+            "settings",
+            "update",
+            "bridge-canister",
+            "-e",
+            "production",
+            "--remove-all-controllers",
+            "--add-controller",
+            KINIC_ROOT,
+            "--force",
+            "--identity",
+            "production",
+            "--debug",
+        ]
+    {
+        return Err("controller handover recovery command is not the fixed transfer".into());
+    }
+    Ok(())
+}
+
 fn controller_handover_lineage_fields_match(
     handover: &ControllerHandover,
     source_revision: &str,
@@ -4782,6 +4910,79 @@ fn controller_handover_lineage_fields_match(
         && handover
             .controller_execute_receipt_sha256
             .eq_ignore_ascii_case(execute_receipt_sha256)
+}
+
+fn controller_handover_checkpoint_matches(
+    handover: &ControllerHandover,
+    checkpoint: &Value,
+) -> bool {
+    let Some(checkpoint) = checkpoint.as_object() else {
+        return false;
+    };
+    let string_matches =
+        |key: &str, expected: &str| checkpoint.get(key).and_then(Value::as_str) == Some(expected);
+    let strings_match = |key: &str, expected: &[String]| {
+        checkpoint
+            .get(key)
+            .and_then(Value::as_array)
+            .is_some_and(|values| {
+                values
+                    .iter()
+                    .map(Value::as_str)
+                    .eq(expected.iter().map(|value| Some(value.as_str())))
+            })
+    };
+    checkpoint.get("schema_version").and_then(Value::as_u64) == Some(4)
+        && string_matches("stage", "pre_send_checkpoint")
+        && string_matches("source_revision", &handover.source_revision)
+        && string_matches("source_tree_sha256", &handover.source_tree_sha256)
+        && string_matches("gate_b_manifest_sha256", &handover.gate_b_manifest_sha256)
+        && string_matches(
+            "operational_config_seal_receipt_sha256",
+            &handover.operational_config_seal_receipt_sha256,
+        )
+        && string_matches(
+            "controller_schedule_receipt_sha256",
+            &handover.controller_schedule_receipt_sha256,
+        )
+        && string_matches(
+            "controller_execute_receipt_sha256",
+            &handover.controller_execute_receipt_sha256,
+        )
+        && string_matches("bridge_canister_id", &handover.bridge_canister_id)
+        && string_matches("sns_root_canister_id", &handover.sns_root_canister_id)
+        && string_matches("executing_principal", &handover.executing_principal)
+        && strings_match("command_argv", &handover.command_argv)
+        && strings_match("pre_send_controllers", &handover.pre_send_controllers)
+        && string_matches("pre_send_module_sha256", &handover.pre_send_module_sha256)
+        && string_matches(
+            "pre_send_management_status_response_sha256",
+            &handover.pre_send_management_status_response_sha256,
+        )
+        && string_matches(
+            "pre_send_bridge_status_response_sha256",
+            &handover.pre_send_bridge_status_response_sha256,
+        )
+        && string_matches(
+            "pre_send_lifecycle_response_sha256",
+            &handover.pre_send_lifecycle_response_sha256,
+        )
+        && string_matches(
+            "pre_send_runtime_binding_response_sha256",
+            &handover.pre_send_runtime_binding_response_sha256,
+        )
+        && string_matches(
+            "pre_send_storage_integrity_response_sha256",
+            &handover.pre_send_storage_integrity_response_sha256,
+        )
+        && string_matches(
+            "pre_send_activation_status_response_sha256",
+            &handover.pre_send_activation_status_response_sha256,
+        )
+        && string_matches(
+            "pre_send_activation_attestation_response_sha256",
+            &handover.pre_send_activation_attestation_response_sha256,
+        )
 }
 
 fn validate_controller_handover_continuity(
@@ -5042,7 +5243,30 @@ fn validate_controller_handover_completion(
         .trim_start_matches("0x")
         .to_ascii_lowercase();
     let response_request_ids = handover_request_ids(&response_text)?;
-    if handover.schema_version != 3
+    let schema_is_supported = handover.schema_version == 3 || handover.schema_version == 4;
+    let checkpoint_is_valid = if handover.schema_version == 4 {
+        let checkpoint = decode_hex(&handover.pre_send_checkpoint_json_hex)?;
+        valid_sha256(&handover.pre_send_checkpoint_sha256)
+            && hex(&Sha256::digest(&checkpoint))
+                .eq_ignore_ascii_case(&handover.pre_send_checkpoint_sha256)
+            && serde_json::from_slice::<Value>(&checkpoint)
+                .ok()
+                .is_some_and(|value| controller_handover_checkpoint_matches(handover, &value))
+    } else {
+        handover.pre_send_checkpoint_json_hex.is_empty()
+            && handover.pre_send_checkpoint_sha256.is_empty()
+            && !handover.recovered_without_request_id
+    };
+    let request_binding_is_valid = if handover.request_id.is_empty() {
+        handover.schema_version == 4
+            && handover.recovered_without_request_id
+            && response_request_ids.is_empty()
+    } else {
+        (valid_sha256(&handover.request_id) || valid_hash32(&handover.request_id))
+            && response_request_ids == BTreeSet::from([request_id_text])
+    };
+    if !schema_is_supported
+        || !checkpoint_is_valid
         || handover.stage != "complete"
         || handover.bridge_canister_id != profile.bridge_canister_id
         || handover.sns_root_canister_id != KINIC_ROOT
@@ -5062,10 +5286,9 @@ fn validate_controller_handover_completion(
             .command_argv
             .iter()
             .any(|value| value == "--network" || value == "-n")
-        || !(valid_sha256(&handover.request_id) || valid_hash32(&handover.request_id))
+        || !request_binding_is_valid
         || handover.response_exit_code != 0
         || !response_digest.eq_ignore_ascii_case(&handover.response_sha256)
-        || response_request_ids != BTreeSet::from([request_id_text])
         || !valid_sha256(&handover.response_sha256)
         || handover.final_controllers != [KINIC_ROOT.to_string()]
         || handover.freezing_threshold_seconds == 0
@@ -10490,6 +10713,15 @@ fn run() -> Result<(), String> {
                 Path::new(&args[6]),
             )?;
         }
+        Some("validate-controller-handover-recovery") if args.len() == 7 => {
+            validate_controller_handover_recovery_files(
+                Path::new(&args[2]),
+                Path::new(&args[3]),
+                Path::new(&args[4]),
+                Path::new(&args[5]),
+                Path::new(&args[6]),
+            )?;
+        }
         Some("verify-production-canister-handover") if args.len() == 6 => {
             verify_production_canister_handover(
                 Path::new(&args[2]),
@@ -12959,6 +13191,9 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             required_freezing_cycles: 1_000,
             pre_send_cycles_balance: 10_000_000,
             pre_send_required_freezing_cycles: 1_000,
+            pre_send_checkpoint_json_hex: String::new(),
+            pre_send_checkpoint_sha256: String::new(),
+            recovered_without_request_id: false,
         };
         assert!(validate_controller_handover_continuity(&handover, &profile, &installer).is_ok());
         assert!(validate_controller_handover_completion(
@@ -12969,6 +13204,47 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             now,
         )
         .is_ok());
+        let mut schema4 = handover.clone();
+        schema4.schema_version = 4;
+        let mut checkpoint = serde_json::to_value(&handover).unwrap();
+        checkpoint["schema_version"] = Value::from(4);
+        checkpoint["stage"] = Value::from("pre_send_checkpoint");
+        let checkpoint = serde_json::to_vec(&checkpoint).unwrap();
+        schema4.pre_send_checkpoint_json_hex = hex(&checkpoint);
+        schema4.pre_send_checkpoint_sha256 = hex(&Sha256::digest(&checkpoint));
+        assert!(validate_controller_handover_completion(
+            &schema4,
+            &profile,
+            &installer,
+            now - 100,
+            now,
+        )
+        .is_ok());
+        let mut recovered_without_request = schema4.clone();
+        recovered_without_request.request_id.clear();
+        recovered_without_request.response_stdout_hex.clear();
+        recovered_without_request.response_stderr_hex.clear();
+        recovered_without_request.response_sha256 = hex(&Sha256::digest([]));
+        recovered_without_request.recovered_without_request_id = true;
+        assert!(validate_controller_handover_completion(
+            &recovered_without_request,
+            &profile,
+            &installer,
+            now - 100,
+            now,
+        )
+        .is_ok());
+        let mut checkpoint_drift = schema4.clone();
+        checkpoint_drift.pre_send_checkpoint_json_hex = hex(b"{}");
+        checkpoint_drift.pre_send_checkpoint_sha256 = hex(&Sha256::digest(b"{}"));
+        assert!(validate_controller_handover_completion(
+            &checkpoint_drift,
+            &profile,
+            &installer,
+            now - 100,
+            now,
+        )
+        .is_err());
         let mut pre_manifest = handover.clone();
         pre_manifest.observed_at_unix = now - 101;
         assert!(validate_controller_handover_completion(

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { createHash, createPrivateKey } from "node:crypto"
-import { readFile, writeFile } from "node:fs/promises"
+import { createHash, createPrivateKey, randomUUID } from "node:crypto"
+import { link, lstat, open, readFile, unlink } from "node:fs/promises"
+import { basename, dirname, join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { Actor, HttpAgent } from "@icp-sdk/core/agent"
 import { Ed25519KeyIdentity } from "@icp-sdk/core/identity"
@@ -425,8 +426,56 @@ async function writeArtifactNew(
   path: string,
 ): Promise<void> {
   await validateArtifact(artifact)
-  const body = `${JSON.stringify(jsonValue(artifact), null, 2)}\n`
-  await writeFile(path, body, { encoding: "utf8", flag: "wx", mode: 0o400 })
+  await writeJsonExclusiveAtomic(jsonValue(artifact), path)
+}
+
+type AtomicWriteCheckpoint = "temporary-synced" | "published"
+
+export async function writeJsonExclusiveAtomic(
+  value: unknown,
+  path: string,
+  checkpoint: (stage: AtomicWriteCheckpoint) => Promise<void> = async () => {},
+): Promise<void> {
+  const serialized = JSON.stringify(value, null, 2)
+  if (serialized === undefined) throw new Error("Evidence is not JSON serializable")
+  const body = `${serialized}\n`
+  const parent = dirname(path)
+  const temporary = join(parent, `.${basename(path)}.tmp-${process.pid}-${randomUUID()}`)
+  let handle: Awaited<ReturnType<typeof open>> | undefined
+  try {
+    handle = await open(temporary, "wx", 0o400)
+    await handle.writeFile(body, { encoding: "utf8" })
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await checkpoint("temporary-synced")
+    await link(temporary, path)
+    await checkpoint("published")
+    const directory = await open(parent, "r")
+    try {
+      await directory.sync()
+    } finally {
+      await directory.close()
+    }
+  } finally {
+    await handle?.close().catch(() => {})
+    await unlink(temporary).catch((error: unknown) => {
+      if (!hasErrorCode(error, "ENOENT")) throw error
+    })
+  }
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return !!error && typeof error === "object" && "code" in error
+    && (error as { code?: unknown }).code === code
+}
+
+async function readExistingJson(path: string): Promise<unknown> {
+  const status = await lstat(path)
+  if (!status.isFile() || status.isSymbolicLink()) {
+    throw new Error("Fixed evidence path is not a regular file")
+  }
+  return JSON.parse((await readFile(path)).toString("utf8"))
 }
 
 async function writeOrMatchArtifact(
@@ -437,22 +486,14 @@ async function writeOrMatchArtifact(
   try {
     await writeArtifactNew(artifact, path)
   } catch (error) {
-    let stored: unknown
-    try {
-      stored = JSON.parse((await readFile(path)).toString("utf8"))
-    } catch {
-      throw error
-    }
+    if (!hasErrorCode(error, "EEXIST")) throw error
+    const stored = await readExistingJson(path)
     if (!storedArtifactMatches(stored, artifact)) throw error
   }
 }
 
 async function writeJsonNew(value: unknown, path: string): Promise<void> {
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o400,
-  })
+  await writeJsonExclusiveAtomic(value, path)
 }
 
 export function confirmationEvidenceMatches(stored: unknown, candidate: unknown): boolean {
@@ -478,12 +519,8 @@ export async function writeOrMatchConfirmationEvidence(
   try {
     await writeJsonNew(value, path)
   } catch (error) {
-    let stored: unknown
-    try {
-      stored = JSON.parse((await readFile(path)).toString("utf8"))
-    } catch {
-      throw error
-    }
+    if (!hasErrorCode(error, "EEXIST")) throw error
+    const stored = await readExistingJson(path)
     if (!confirmationEvidenceMatches(stored, value)) throw error
   }
 }
