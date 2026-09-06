@@ -28,6 +28,15 @@ class TrustedPrGateTests(unittest.TestCase):
         repository_gate = workflow.index("run: scripts/ci-local.sh all")
         self.assertLess(root_install, repository_gate)
 
+    def test_main_push_caches_are_reusable_across_commits(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "main-push.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("bridge-main-rust-${{ github.ref_name }}-", workflow)
+        self.assertIn("bridge-main-pnpm-${{ github.ref_name }}-", workflow)
+        self.assertNotIn("bridge-main-rust-${{ github.sha }}-", workflow)
+        self.assertNotIn("bridge-main-pnpm-${{ github.sha }}-", workflow)
+
     def test_staging_keeps_only_current_schema_upgrade_and_historical_reinstall_evidence(self) -> None:
         policy_dir = ROOT / "deployments" / "sepolia-staging"
         evidence_dir = policy_dir / "evidence"
@@ -202,6 +211,27 @@ class TrustedPrGateTests(unittest.TestCase):
             "contains(fromJSON(needs.classify.outputs.matrix), 'real')",
             workflow,
         )
+        self.assertIn(
+            "matrix.area == 'rust' || matrix.area == 'real'",
+            workflow,
+        )
+        self.assertIn(
+            "matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'",
+            workflow,
+        )
+
+    def test_real_prefetch_uses_only_ui_dependency_tree(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        rust_start = workflow.index("Prefetch PocketIC runtime for Rust integration checks")
+        real_start = workflow.index("Prefetch PocketIC runtime for real E2E checks")
+        image_start = workflow.index("Build the pinned isolation image", real_start)
+        rust_step = workflow[rust_start:real_start]
+        real_step = workflow[real_start:image_start]
+        self.assertIn("matrix.area == 'rust'", rust_step)
+        self.assertIn("$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic", rust_step)
+        self.assertIn("matrix.area == 'real'", real_step)
+        self.assertNotIn("$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic", real_step)
+        self.assertIn("$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic", real_step)
         self.assertIn("trusted-policy/.github/trusted-pr/Dockerfile", workflow)
         self.assertIn("trusted-policy/scripts/trusted-pr-container.sh", workflow)
         self.assertIn('source trusted-policy "$1" "$BRIDGE_TRUSTED_DEPENDENCY_ROOT"', workflow)
@@ -255,8 +285,11 @@ class TrustedPrGateTests(unittest.TestCase):
             "dst=/workspace/scripts/plan007/test-generate-local-e2e.mjs,readonly",
             wrapper,
         )
+        self.assertIn("DEPENDENCY_MOUNTS=()", wrapper)
         self.assertIn("dst=/workspace/node_modules,readonly", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules,readonly", wrapper)
+        self.assertIn('if [[ "$NEEDS_WORKSPACE_DEPS" == true ]]', wrapper)
+        self.assertIn('if [[ "$NEEDS_UI_DEPS" == true ]]', wrapper)
         self.assertIn("DEPENDENCY_ROOT", wrapper)
         self.assertNotIn("src=$POLICY_ROOT/node_modules", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.tmp", wrapper)
@@ -274,7 +307,11 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("dst=/workspace/.tools,readonly", wrapper)
         self.assertIn("BRIDGE_EXPECTED_HEAD_SHA", wrapper)
         self.assertNotIn("src=/home/runner,dst=/home/runner", wrapper)
-        self.assertIn(".cargo .rustup .local .elan .foundry setup-pnpm", wrapper)
+        self.assertIn("TOOL_PATHS=(.local)", wrapper)
+        self.assertIn("TOOL_PATHS+=(.cargo .rustup)", wrapper)
+        self.assertIn("TOOL_PATHS+=(.elan)", wrapper)
+        self.assertIn("TOOL_PATHS+=(.foundry)", wrapper)
+        self.assertIn("TOOL_PATHS+=(setup-pnpm)", wrapper)
         self.assertIn("/home/runner/.cache/ms-playwright", wrapper)
         self.assertIn("src=/home/runner/.svm,dst=/scratch/home/.svm,readonly", wrapper)
         self.assertIn(
@@ -462,6 +499,11 @@ class TrustedPrGateTests(unittest.TestCase):
 
     def test_aggregate_gate_requires_each_applicable_job_to_succeed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("fail-fast: false", workflow)
+        self.assertIn("area: ${{ fromJSON(needs.classify.outputs.matrix) }}", workflow)
+        self.assertIn("name: test (${{ matrix.area }})", workflow)
+        self.assertIn("needs.classify.outputs.any == 'true'", workflow)
+        self.assertIn("*) exit 2", workflow)
         self.assertIn('if [[ "$ANY" == true ]]; then', workflow)
         self.assertIn('test "$TEST_RESULT" = success', workflow)
         self.assertNotIn("POLICY", workflow)
@@ -511,6 +553,14 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("pr-gate:", workflow)
         self.assertNotIn("ci_changed_areas.py", workflow)
+
+        main_push = (ROOT / ".github" / "workflows" / "main-push.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("pull_request:", main_push)
+        self.assertIn("push-classify:", main_push)
+        self.assertIn("scripts/ci_changed_areas.py", main_push)
+        self.assertIn("needs.push-classify.outputs.any == 'true'", main_push)
 
 
 if __name__ == "__main__":
