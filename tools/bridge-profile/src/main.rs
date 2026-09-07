@@ -7623,6 +7623,7 @@ struct ProductionHandoverActivationBinding<'a> {
     transaction_hash: &'a str,
     confirmed_generation: u8,
     confirmed_signed_at_ns: &'a str,
+    expected_module_sha256: &'a str,
 }
 
 fn validate_production_handover_canister_state(
@@ -7631,7 +7632,6 @@ fn validate_production_handover_canister_state(
     gate_a_receipt: &GateAReceipt,
     activation: &ProductionHandoverActivationBinding<'_>,
     observation: &ProductionHandoverCanisterObservation<'_>,
-    expected_module_sha256: &str,
     manifest_created_at_unix: u64,
     now: u64,
 ) -> Result<(), String> {
@@ -7639,7 +7639,7 @@ fn validate_production_handover_canister_state(
         return Err("production Canister must be Activated before handover".into());
     }
     if observation.controllers != [installer]
-        || !hex(observation.module_hash).eq_ignore_ascii_case(expected_module_sha256)
+        || !hex(observation.module_hash).eq_ignore_ascii_case(activation.expected_module_sha256)
     {
         return Err(
             "production Canister module or sole controller differs from authorized evidence".into(),
@@ -7938,6 +7938,7 @@ fn verify_production_canister_handover_state(
         transaction_hash: &execute_receipt.transaction_hash,
         confirmed_generation: execute_receipt.confirmed_generation,
         confirmed_signed_at_ns: &execute_receipt.confirmed_signed_at_ns,
+        expected_module_sha256: &authorized_module_sha256,
     };
     validate_production_handover_canister_state(
         &bundle.profile,
@@ -7945,7 +7946,6 @@ fn verify_production_canister_handover_state(
         &gate_a_receipt,
         &activation,
         &observation,
-        &authorized_module_sha256,
         bundle.manifest.created_at_unix,
         now_unix()?,
     )?;
@@ -13435,6 +13435,7 @@ mod tests {
             transaction_hash: &transaction_hash,
             confirmed_generation: 0,
             confirmed_signed_at_ns: "123",
+            expected_module_sha256: &profile.bridge_canister_wasm_sha256,
         };
         let validate = |lifecycle: &ProductionLifecycleView,
                         attestation: Option<&ActivationAttestationView>,
@@ -13456,7 +13457,6 @@ mod tests {
                 &gate_a_receipt,
                 &activation,
                 &observation,
-                &profile.bridge_canister_wasm_sha256,
                 created,
                 now,
             )
@@ -13502,6 +13502,7 @@ mod tests {
                 transaction_hash: &transaction_hash,
                 confirmed_generation: generation,
                 confirmed_signed_at_ns: signed_at_ns,
+                expected_module_sha256: &profile.bridge_canister_wasm_sha256,
             };
             let observation = ProductionHandoverCanisterObservation {
                 lifecycle: &ProductionLifecycleView::Activated,
@@ -13519,7 +13520,6 @@ mod tests {
                 &gate_a_receipt,
                 &drifted_activation,
                 &observation,
-                &profile.bridge_canister_wasm_sha256,
                 created,
                 now,
             )
@@ -13646,7 +13646,6 @@ mod tests {
                     &gate_a_receipt,
                     &activation,
                     &observation,
-                    &candidate_profile.bridge_canister_wasm_sha256,
                     created,
                     now,
                 )
@@ -13696,7 +13695,6 @@ mod tests {
             &gate_a_receipt,
             &activation,
             &observation,
-            &profile.bridge_canister_wasm_sha256,
             created,
             now,
         )
