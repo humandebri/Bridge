@@ -68,7 +68,7 @@ function fixture(profileOverrides = {}) {
     cargo,
     `#!/usr/bin/env node
 const a=process.argv.slice(2); const i=a.indexOf('verify-production-ui-live');
-if(i<0 || a[i+1]!==process.env.BRIDGE_RELEASE_BUNDLE || a[i+2]!==process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT || a[i+3]!==process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT || a[i+4]!==process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT || a[i+5]!==process.env.BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE || a[i+6]!==process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE || process.env.FAKE_VERIFY_FAIL) process.exit(1);
+if(process.cwd()!==process.env.EXPECTED_CARGO_CWD || i<0 || a[i+1]!==process.env.BRIDGE_RELEASE_BUNDLE || a[i+2]!==process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT || a[i+3]!==process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT || a[i+4]!==process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT || a[i+5]!==process.env.BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE || a[i+6]!==process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE || process.env.FAKE_VERIFY_FAIL) process.exit(1);
 console.log('production_ui=live-pass schema=35 activation=execute manifest_sha256=${gate}');
 `,
   )
@@ -90,6 +90,7 @@ const walletConnectProjectId = "0123456789abcdef0123456789abcdef"
 function validEnv(f, overrides = {}) {
   return {
     PATH: `${f.bin}:${process.env.PATH}`,
+    EXPECTED_CARGO_CWD: resolve(import.meta.dirname, "../.."),
     BRIDGE_RELEASE_BUNDLE: f.bundle,
     BRIDGE_UI_RUNTIME_PROFILE_FILE: f.paths.profile,
     BRIDGE_UI_ASSET_RECEIPT: f.paths.asset,

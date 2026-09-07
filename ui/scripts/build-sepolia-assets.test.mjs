@@ -78,6 +78,7 @@ describe("Base Sepolia asset profile template", () => {
     expect(productionAssets).toContain("readOrdinaryFile(profileFile)")
     expect(productionAssets).toContain("releaseProfileSchema.parse(JSON.parse(raw))")
     expect(productionAssets).toContain("const manifestSha256 = verifyProductionUiLive(profileFile)")
+    expect(productionAssets).toContain('{ cwd: sourceRoot, encoding: "utf8" }')
     expect(productionAssets).toContain("assertProductionUiProfile(releaseProfile, manifestSha256)")
     expect(productionAssets).toContain(
       "await deployFrozenAssets(receipt, raw, releaseProfile, profileFile, identity)",

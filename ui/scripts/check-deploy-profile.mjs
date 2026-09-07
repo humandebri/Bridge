@@ -64,7 +64,7 @@ try {
       postActivationUpgradeEvidence,
       profileFile,
     ],
-    { encoding: "utf8" },
+    { cwd: sourceRoot, encoding: "utf8" },
   )
   const verifiedManifestSha256 =
     /^production_ui=live-pass schema=35 activation=execute manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
