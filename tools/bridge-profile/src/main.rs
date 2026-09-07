@@ -5204,7 +5204,6 @@ fn production_upgrade_public_state_sha256(
     Ok(hex(&digest.finalize()))
 }
 
-#[cfg(test)]
 fn production_upgrade_query_state(
     status_hex: &str,
     lifecycle_hex: &str,
