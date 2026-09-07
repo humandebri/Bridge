@@ -142,9 +142,7 @@ describe("patched OISY signer certificate verification", () => {
       "utf8",
     )
 
-    expect(signerRuntime).toMatch(
-      /rootKey:[^,]+,principal:\{canisterId:[^}]+\}/,
-    )
+    expect(signerRuntime).toMatch(/rootKey:[^,]+,principal:\{canisterId:[^}]+\}/)
     expect(signerRuntime).not.toMatch(/rootKey:[^,]+,canisterId:/)
   })
 })
