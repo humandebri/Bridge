@@ -152,6 +152,7 @@ post-activation production UI公開では、運用証跡とUI source証跡の役
 BaseScanのsource verification、contract-created BSNSのownership確認、Token Update申請は[`token-publication.md`](token-publication.md)に従う。この外部申請と審査はGate A、Gate B、activationの認可条件ではない。
 
 deployとactivation schedule/executeの固定driverは各操作の直前に、controller handover driverは実施時期が別途承認された後のhandover直前に、clean sourceから`scripts/ci-local.sh proofs`を再実行する。
+release candidateは対象commit SHAを指定したGitHub Actionsの手動`bridge-full-ci`が成功していることを運用証跡とする。main pushも同じ再利用可能workflowで`scripts/ci-local.sh all`を一度実行する。cronによる定期full gateは使用しない。GitHub上のfull成功はproduction driverの完全proof receiptを代替せず、driverは操作直前に全10 stageを再実行する。
 proof失敗、実行前後のsource/tree/submodule drift、またはobsoleteな`proof-attestation.json`を含むbundleはfail closedとする。
 
 `execute` prepare前はproofと再build後のattestation更新・`verify-live`に続けて`verify-controller-schedule-receipt-live`を実行し、schedule receipt内部のdigest、sole production controller、module hash、Canisterのpending Timelock operationを再照合する。その後、Base両flowのunpause確定後にCanisterがICをresumeする。ProductionのBase状態は公式EVM RPC Canisterの`BaseMainnet`観測を保存したactivation attestationと認証済みCanister queryで確認し、直接Custom RPC URLは使用しない。3-provider直接照合はstaging monitor drillだけに限定する。

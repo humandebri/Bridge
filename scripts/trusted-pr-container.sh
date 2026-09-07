@@ -6,12 +6,20 @@ SOURCE_ROOT="$(cd "${1:?missing candidate source}" && pwd)"
 POLICY_ROOT="$(cd "${2:?missing trusted policy}" && pwd)"
 MODE="${3:?missing CI mode}"
 DEPENDENCY_ROOT="$(cd "${4:?missing reviewed dependencies}" && pwd)"
+CHANGED_PATHS_FILE="${5:-}"
 IMAGE="${BRIDGE_TRUSTED_PR_IMAGE:-kinic-bridge-trusted-pr:local}"
 
 case "$MODE" in
-  rust-fast|rust-integration|contracts-fast|contracts-coverage|proofs|ui-fast|ui-e2e|real|icp|certora) ;;
+  policy|rust-fast|rust-integration|contracts-fast|proofs|proofs-impacted|ui-fast|ui-e2e|real|icp|certora) ;;
   *) echo "unapproved trusted PR mode: $MODE" >&2; exit 2 ;;
 esac
+if [[ "$MODE" == "proofs-impacted" ]]; then
+  [[ -f "$CHANGED_PATHS_FILE" && ! -L "$CHANGED_PATHS_FILE" ]] \
+    || { echo "proofs-impacted requires a regular changed-paths JSON file" >&2; exit 2; }
+else
+  [[ -z "$CHANGED_PATHS_FILE" ]] \
+    || { echo "changed-paths input is only valid for proofs-impacted" >&2; exit 2; }
+fi
 
 NEEDS_WORKSPACE_DEPS=false
 NEEDS_UI_DEPS=false
@@ -19,13 +27,14 @@ NEEDS_RUST_TOOLCHAIN=false
 NEEDS_FOUNDRY=false
 NEEDS_ICP_PACKAGE_CACHE=false
 case "$MODE" in
-  rust-fast|rust-integration|proofs|real|icp) NEEDS_RUST_TOOLCHAIN=true ;;
+  policy|rust-fast|rust-integration|proofs|proofs-impacted|real|icp) NEEDS_RUST_TOOLCHAIN=true ;;
 esac
 case "$MODE" in
-  contracts-fast|contracts-coverage|proofs|certora|real) NEEDS_FOUNDRY=true ;;
+  policy|contracts-fast|proofs|proofs-impacted|certora|real) NEEDS_FOUNDRY=true ;;
 esac
 case "$MODE" in
-  rust-integration|proofs) NEEDS_WORKSPACE_DEPS=true; NEEDS_UI_DEPS=true ;;
+  policy) NEEDS_WORKSPACE_DEPS=true ;;
+  rust-integration|proofs|proofs-impacted) NEEDS_WORKSPACE_DEPS=true; NEEDS_UI_DEPS=true ;;
   ui-fast|ui-e2e|real) NEEDS_UI_DEPS=true ;;
 esac
 if [[ "$MODE" == "icp" ]]; then
@@ -77,7 +86,7 @@ done
 
 WRITABLE_UI_MOUNTS=()
 case "$MODE" in
-  proofs|ui-fast|ui-e2e|real)
+  proofs|proofs-impacted|ui-fast|ui-e2e|real)
     bridge_prepare_mountpoint "$DEPENDENCY_ROOT/ui/node_modules" .tmp
     bridge_prepare_mountpoint "$DEPENDENCY_ROOT/ui/node_modules" .vite-temp
     bridge_prepare_mountpoint "$DEPENDENCY_ROOT/ui/node_modules" .vite
@@ -113,7 +122,7 @@ if [[ "$NEEDS_UI_DEPS" == true ]]; then
 fi
 
 WRITABLE_BUILD_MOUNTS=()
-if [[ "$MODE" == "proofs" ]]; then
+if [[ "$MODE" == "proofs" || "$MODE" == "proofs-impacted" ]]; then
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/output
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/lean/.lake
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/smt/out
@@ -148,12 +157,19 @@ if [[ "$MODE" == "real" ]]; then
   CACHE_MOUNTS+=(--mount "type=bind,src=$POLICY_ROOT/ui/.e2e-cache,dst=/workspace/ui/.e2e-cache,readonly")
 fi
 
+CHANGED_PATHS_MOUNTS=()
+CI_MODE_ARGS=("$MODE")
+if [[ "$MODE" == "proofs-impacted" ]]; then
+  CHANGED_PATHS_MOUNTS+=(--mount "type=bind,src=$CHANGED_PATHS_FILE,dst=/scratch/changed-paths.json,readonly")
+  CI_MODE_ARGS+=(/scratch/changed-paths.json)
+fi
+
 TOOL_MOUNTS=()
 TOOL_PATHS=(.local)
 if [[ "$NEEDS_RUST_TOOLCHAIN" == true ]]; then
   TOOL_PATHS+=(.cargo .rustup)
 fi
-if [[ "$MODE" == "proofs" ]]; then
+if [[ "$MODE" == "proofs" || "$MODE" == "proofs-impacted" ]]; then
   TOOL_PATHS+=(.elan)
 fi
 if [[ "$NEEDS_FOUNDRY" == true ]]; then
@@ -171,7 +187,7 @@ if [[ "$NEEDS_FOUNDRY" == true ]]; then
     || { echo "trusted Solidity compiler is missing" >&2; exit 1; }
   TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.svm,dst=/scratch/home/.svm,readonly")
 fi
-if [[ "$MODE" == "proofs" ]]; then
+if [[ "$MODE" == "proofs" || "$MODE" == "proofs-impacted" ]]; then
   [[ -d /home/runner/.elan/toolchains && ! -L /home/runner/.elan/toolchains ]] \
     || { echo "trusted Lean toolchains are missing" >&2; exit 1; }
   TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.elan/toolchains,dst=/scratch/home/.elan/toolchains,readonly")
@@ -211,6 +227,7 @@ docker run --rm \
   "${TOOL_MOUNTS[@]}" \
   --mount type=bind,src=/opt/hostedtoolcache,dst=/opt/hostedtoolcache,readonly \
   "${CACHE_MOUNTS[@]}" \
+  "${CHANGED_PATHS_MOUNTS[@]}" \
   --env CI=true \
   --env BRIDGE_TRUSTED_DEPS_READY=1 \
   --env BRIDGE_EXPECTED_HEAD_SHA="${BRIDGE_EXPECTED_HEAD_SHA:?missing expected head SHA}" \
@@ -231,4 +248,4 @@ docker run --rm \
   --env PATH="${PATH:?}" \
   --workdir /workspace \
   "$IMAGE" \
-  /workspace/scripts/ci-local.sh "$MODE"
+  /workspace/scripts/ci-local.sh "${CI_MODE_ARGS[@]}"

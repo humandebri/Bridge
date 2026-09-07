@@ -24,6 +24,7 @@ jobs:
       matrix: ${{ steps.classify.outputs.matrix }}
       any: ${{ steps.classify.outputs.any }}
       review_required: ${{ steps.classify.outputs.review_required }}
+      changed_paths_json: ${{ steps.classify.outputs.changed_paths_json }}
     steps:
       - name: Check out trusted base
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -54,6 +55,7 @@ jobs:
           CLASSIFY_ANY: ${{ steps.classify.outputs.any }}
           CLASSIFY_MATRIX: ${{ steps.classify.outputs.matrix }}
           REVIEW_REQUIRED: ${{ steps.classify.outputs.review_required }}
+          CHANGED_PATHS_JSON: ${{ steps.classify.outputs.changed_paths_json }}
         run: |
           case "$CLASSIFY_ANY" in
             true|false) ;;
@@ -64,6 +66,7 @@ jobs:
             *) echo "trusted classifier did not emit a boolean review_required output" >&2; exit 1 ;;
           esac
           test -n "$CLASSIFY_MATRIX"
+          python3 -c 'import json,os; value=json.loads(os.environ["CHANGED_PATHS_JSON"]); assert isinstance(value, list) and all(isinstance(path, str) for path in value)'
       - name: Install trusted classifier dependencies
         run: |
           sudo apt-get update
@@ -117,22 +120,22 @@ jobs:
           path: trusted-policy
           persist-credentials: false
       - name: Install pinned Rust toolchain
-        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'real' || matrix.area == 'icp'
+        if: matrix.area == 'policy' || matrix.area == 'rust-fast' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'real' || matrix.area == 'icp'
         working-directory: trusted-policy
         run: rustup show
       - name: Install Node.js 24.14.0
-        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
+        if: matrix.area == 'policy' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.14.0
       - name: Install pnpm 11.0.8
-        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
+        if: matrix.area == 'policy' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
         uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
         with:
           version: 11.0.8
           run_install: false
       - name: Restore Rust registry cache
-        if: matrix.area == 'rust' || matrix.area == 'real' || matrix.area == 'icp'
+        if: matrix.area == 'policy' || matrix.area == 'rust-fast' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'real' || matrix.area == 'icp'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -140,25 +143,25 @@ jobs:
             /home/runner/.cargo/git
           key: bridge-trusted-pr-rust-${{ needs.classify.outputs.base_sha }}-${{ hashFiles('trusted-policy/Cargo.lock', 'trusted-policy/rust-toolchain.toml') }}
       - name: Restore pnpm store cache
-        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
+        if: matrix.area == 'policy' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /home/runner/.local/share/pnpm/store
           key: bridge-trusted-pr-pnpm-${{ needs.classify.outputs.base_sha }}-${{ hashFiles('trusted-policy/pnpm-lock.yaml', 'trusted-policy/ui/pnpm-lock.yaml', 'trusted-policy/.node-version') }}
       - name: Install Foundry 1.7.1
-        if: matrix.area == 'contracts' || matrix.area == 'proofs' || matrix.area == 'certora' || matrix.area == 'real'
+        if: matrix.area == 'policy' || matrix.area == 'contracts-fast' || matrix.area == 'proofs-impacted' || matrix.area == 'certora' || matrix.area == 'real'
         uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
         with:
           version: v1.7.1
       - name: Install uv 0.8.4
-        if: matrix.area == 'proofs'
+        if: matrix.area == 'proofs-impacted'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: 0.8.4
           enable-cache: false
       - name: Restore cached proof toolchain
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: matrix.area == 'proofs'
+        if: matrix.area == 'proofs-impacted'
         with:
           path: |
             /home/runner/.elan
@@ -174,14 +177,14 @@ jobs:
           mode="ci"
           while IFS= read -r area; do
             case "$area" in
-              proofs) mode="all"; break ;;
+              proofs-impacted) mode="all"; break ;;
               *) mode="ci" ;;
             esac
           done < <(jq -r '.[]' <<< "$AREAS")
           trusted-policy/scripts/install-ci-tools.sh "$mode"
       - name: Save cached proof toolchain
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: matrix.area == 'proofs'
+        if: matrix.area == 'proofs-impacted'
         with:
           path: |
             /home/runner/.elan
@@ -193,15 +196,12 @@ jobs:
       - name: Prefetch locked Rust dependencies from trusted policy
         # Keep the trusted base's aggregate rust/real guard while limiting work to the active shard.
         if: >-
-          matrix.area == 'icp' ||
-          ((contains(fromJSON(needs.classify.outputs.matrix), 'rust') || contains(fromJSON(needs.classify.outputs.matrix), 'real')) &&
-          (matrix.area == 'rust' || matrix.area == 'real'))
+          matrix.area == 'policy' || matrix.area == 'rust-fast' || matrix.area == 'rust-integration' ||
+          matrix.area == 'proofs-impacted' || matrix.area == 'real' || matrix.area == 'icp'
         run: cargo fetch --locked --manifest-path trusted-policy/Cargo.toml
       - name: Prefetch pinned ICP recipes from trusted policy
         if: >-
-          matrix.area == 'icp' ||
-          ((contains(fromJSON(needs.classify.outputs.matrix), 'rust') || contains(fromJSON(needs.classify.outputs.matrix), 'real')) &&
-          (matrix.area == 'rust' || matrix.area == 'real'))
+          matrix.area == 'rust-integration' || matrix.area == 'real' || matrix.area == 'icp'
         working-directory: trusted-policy
         env:
           ICP_CLI_DISABLE_UPDATE: "1"
@@ -211,7 +211,7 @@ jobs:
         run: |
           dependency_root="$RUNNER_TEMP/bridge-trusted-dependencies"
           case "${{ matrix.area }}" in
-            rust|proofs|ui|real) ;;
+            policy|rust-integration|proofs-impacted|ui-fast|ui-e2e|real) ;;
             *) mkdir "$dependency_root" ;;
           esac
           echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$dependency_root" >> "$GITHUB_ENV"
@@ -225,26 +225,26 @@ jobs:
           submodules: recursive
           persist-credentials: false
       - name: Isolate reviewed candidate dependency inputs
-        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
+        if: matrix.area == 'policy' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
         run: |
           dependency_root="$RUNNER_TEMP/bridge-trusted-dependencies"
           python3 trusted-policy/scripts/prepare_candidate_dependencies.py \
             --source source --destination "$dependency_root"
           echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$dependency_root" >> "$GITHUB_ENV"
       - name: Install reviewed workspace dependencies without lifecycle scripts
-        if: matrix.area == 'rust' || matrix.area == 'proofs'
+        if: matrix.area == 'policy' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted'
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts
       - name: Install reviewed UI dependencies without lifecycle scripts
-        if: matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'
+        if: matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" install --frozen-lockfile --ignore-scripts
       - name: Install Chromium when required
-        if: matrix.area == 'ui' || matrix.area == 'real'
+        if: matrix.area == 'ui-e2e' || matrix.area == 'real'
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui" exec playwright install --with-deps chromium
       - name: Prefetch verified real-E2E ledger artifacts
         if: matrix.area == 'real'
         run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
       - name: Prefetch PocketIC runtime for Rust integration checks
-        if: matrix.area == 'rust'
+        if: matrix.area == 'rust-integration'
         run: |
           node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic/postinstall.mjs"
           node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"
@@ -259,26 +259,26 @@ jobs:
         env:
           AREAS: '["${{ matrix.area }}"]'
           BRIDGE_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGED_PATHS_JSON: ${{ needs.classify.outputs.changed_paths_json }}
         run: |
           run_check() {
             trusted-policy/scripts/trusted-pr-container.sh \
-              source trusted-policy "$1" "$BRIDGE_TRUSTED_DEPENDENCY_ROOT"
+              source trusted-policy "$1" "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" "${2:-}"
           }
           case "${{ matrix.area }}" in
-            rust)
-              run_check rust-fast
-              run_check rust-integration
-              ;;
-            contracts)
-              run_check contracts-fast
-              run_check contracts-coverage
-              ;;
+            policy) run_check policy ;;
+            rust-fast) run_check rust-fast ;;
+            rust-integration) run_check rust-integration ;;
+            contracts-fast) run_check contracts-fast ;;
             certora) run_check certora ;;
-            proofs) run_check proofs ;;
-            ui)
-              run_check ui-fast
-              run_check ui-e2e
+            proofs-impacted)
+              changed_paths_file="$RUNNER_TEMP/bridge-changed-paths.json"
+              CHANGED_PATHS_FILE="$changed_paths_file" \
+                python3 -c 'import json,os,pathlib; value=json.loads(os.environ["CHANGED_PATHS_JSON"]); pathlib.Path(os.environ["CHANGED_PATHS_FILE"]).write_text(json.dumps(value), encoding="utf-8")'
+              run_check proofs-impacted "$changed_paths_file"
               ;;
+            ui-fast) run_check ui-fast ;;
+            ui-e2e) run_check ui-e2e ;;
             real) run_check real ;;
             icp) run_check icp ;;
             *) exit 2 ;;

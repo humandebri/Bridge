@@ -111,10 +111,10 @@ Phase 1Eで検証を閉じ、ABIを凍結済みである。
 - Foundryのfuzzを1000 runs、stateful invariantを256 runs・depth 100・`fail_on_revert`で実行する。
 - Deposit mint、Withdrawal exposure、terminal state、roleとfee safetyをproduction共有library、unit test、stateful invariantで検証する。
 - EIP-3009 authorizationのnonce namespaceとrollbackをunit・fuzz testで検証する。
-- coverage summaryを情報表示として保存し、数値閾値ではなく未検証経路を検査対象として管理する。
+- LCOVでlines 76.00%、branches 74.00%、functions 68.00%以上を要求し、空・欠損・不正LCOVを拒否する。statement値は使用しない。
 - 証明義務と外部仮定を`verification/obligations.md`へ記録する。
 
-**完了条件**：ABI snapshot、selector/topic fixture、Foundry fuzz/invariant、SMT pass/negative、coverage summary、local smoke、CIが同一判定で通り、Phase 1E以後のABI変更は別計画と再レビューを要する。
+**完了条件**：ABI snapshot、selector/topic fixture、Foundry fuzz/invariant、SMT pass/negative、LCOV coverage閾値、local smoke、CIが同一判定で通り、Phase 1E以後のABI変更は別計画と再レビューを要する。
 
 ## Phase 2: Bridge canister の状態機械
 
