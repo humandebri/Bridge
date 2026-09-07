@@ -2108,6 +2108,28 @@ describe("Phase 3 PocketIC saga", () => {
     refreshes_activation_evidence_after_activation_without_pausing_traffic,
   );
 
+  async function refreshes_activation_evidence_at_a_two_provider_common_finalized_checkpoint() {
+    const { evm, bridge, confirmationRelayerPrincipal } = await setup(true);
+    await pic!.advanceTime(31_000);
+    await (evm.actor as any).set_finalized_block_sequence([100n, 101n, 102n]);
+    await (evm.actor as any).set_block_mode({ FinalizedInconsistent: null });
+    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
+
+    const refreshed: any = await (bridge.actor as any).refresh_activation_attestation();
+
+    expect(refreshed).toHaveProperty("Ok.deposits_paused", false);
+    expect(refreshed).toHaveProperty("Ok.withdrawals_paused", false);
+    expect(refreshed).toHaveProperty("Ok.finalized_block_number", 101n);
+    expect((await (bridge.actor as any).get_bridge_status()).deposits_paused).toBe(false);
+    expect(await (bridge.actor as any).get_production_lifecycle())
+      .toEqual({ Ok: { Activated: null } });
+  }
+
+  it(
+    "refreshes activation evidence at a two-provider common finalized checkpoint",
+    refreshes_activation_evidence_at_a_two_provider_common_finalized_checkpoint,
+  );
+
   it.each([
     { mode: { FinalizedUnavailable: null }, error: "RpcUnavailable", tag: 0x9c },
     { mode: { CanonicalInconsistent: null }, error: "RpcInconsistent", tag: 0x9f },
