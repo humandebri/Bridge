@@ -198,9 +198,16 @@ function verifyProductionUiLive(profileFile) {
   const sealReceipt = process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT
   const scheduleReceipt = process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT
   const executeReceipt = process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT
-  if (!bundle || !sealReceipt || !scheduleReceipt || !executeReceipt) {
+  const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
+  if (
+    !bundle ||
+    !sealReceipt ||
+    !scheduleReceipt ||
+    !executeReceipt ||
+    !productionInstallerIdentity
+  ) {
     throw new Error(
-      "Production UI deploy requires the historical Gate B and seal, schedule, and execute receipts",
+      "Production UI deploy requires the historical Gate B, activation receipts, and production installer identity",
     )
   }
   const cargoArgs = [

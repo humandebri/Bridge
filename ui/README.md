@@ -113,6 +113,7 @@ BRIDGE_UI_ASSET_RECEIPT=<current-source-ui-assets-receipt> \
 BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT=<seal-receipt> \
 BRIDGE_CONTROLLER_SCHEDULE_RECEIPT=<schedule-receipt> \
 BRIDGE_CONTROLLER_EXECUTE_RECEIPT=<execute-receipt> \
+BRIDGE_PRODUCTION_INSTALLER_IDENTITY=<local-identity-name-for-sole-controller> \
 VITE_DEPLOYMENT_PROFILE_JSON="$(cat <gate-b-ui-runtime-profile>)" \
 VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id> \
 pnpm run deploy
@@ -121,6 +122,9 @@ pnpm run deploy
 Run this command only from the clean source revision bound by the standalone UI asset receipt.
 The current post-activation path accepts only the already-deployed stable schema v35 Gate B and
 its immutable seal/schedule/execute lineage; the normal current-release Gate B path remains v36.
+The installer identity name is resolved locally and must match the sole controller recorded by
+Gate B; it is used only for the controller-protected storage-integrity query and no key material is
+written to release evidence or deployment output.
 Publishing this UI does not resubmit either activation proposal or upgrade the Canister.
 
 Production profiles intentionally omit a custom browser RPC. The UI derives Base Mainnet's

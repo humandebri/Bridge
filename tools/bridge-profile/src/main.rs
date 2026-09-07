@@ -7696,7 +7696,6 @@ fn verify_production_canister_handover_state(
         activation_status_raw,
         runtime_raw,
         status_raw,
-        storage_integrity_raw,
         controllers,
         module_hash,
     ) = async_runtime()?.block_on(async {
@@ -7731,12 +7730,6 @@ fn verify_production_canister_handover_state(
             .call_with_verification()
             .await
             .map_err(|error| error.to_string())?;
-        let storage_integrity = agent
-            .query(&bridge, "storage_integrity_check")
-            .with_arg(Encode!().map_err(|error| error.to_string())?)
-            .call_with_verification()
-            .await
-            .map_err(|error| error.to_string())?;
         let controllers = agent
             .read_state_canister_controllers(bridge)
             .await
@@ -7751,7 +7744,6 @@ fn verify_production_canister_handover_state(
             activation_status,
             runtime,
             status,
-            storage_integrity,
             controllers,
             module_hash,
         ))
@@ -7780,8 +7772,8 @@ fn verify_production_canister_handover_state(
     };
     let runtime = Decode!(&runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
     let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
-    let storage_integrity = Decode!(&storage_integrity_raw, StorageIntegrityResultView)
-        .map_err(|error| error.to_string())?;
+    let installer = gate_b_controller(&bundle)?;
+    let storage_integrity = production_installer_storage_integrity(bridge, installer)?;
     let observation = ProductionHandoverCanisterObservation {
         lifecycle: &lifecycle,
         attestation: attestation.as_deref(),
@@ -7806,7 +7798,6 @@ fn verify_production_canister_handover_state(
         confirmed_generation: execute_receipt.confirmed_generation,
         confirmed_signed_at_ns: &execute_receipt.confirmed_signed_at_ns,
     };
-    let installer = gate_b_controller(&bundle)?;
     validate_production_handover_canister_state(
         &bundle.profile,
         installer,
@@ -7900,6 +7891,77 @@ fn mainnet_agent(host: &str, evidence_window: bool) -> Result<Agent, String> {
             builder.with_ingress_expiry(std::time::Duration::from_secs(MAX_EVIDENCE_AGE_SECS));
     }
     builder.build().map_err(|error| error.to_string())
+}
+
+fn validate_production_installer_principal(
+    expected_installer: Principal,
+    principal_output: &[u8],
+) -> Result<(), String> {
+    let resolved = Principal::from_text(
+        std::str::from_utf8(principal_output)
+            .map_err(|_| "production installer identity returned non-UTF-8 principal")?
+            .trim(),
+    )
+    .map_err(|_| "production installer identity returned an invalid principal")?;
+    if resolved != expected_installer {
+        return Err("production installer identity differs from the Gate B sole controller".into());
+    }
+    Ok(())
+}
+
+fn decode_production_storage_integrity(
+    response_hex: &[u8],
+) -> Result<StorageIntegrityResultView, String> {
+    let response_hex = std::str::from_utf8(response_hex)
+        .map_err(|_| "production storage integrity query returned non-UTF-8 output")?;
+    let response = decode_hex(response_hex.trim())?;
+    Decode!(&response, StorageIntegrityResultView)
+        .map_err(|error| format!("invalid production storage integrity response: {error}"))
+}
+
+fn production_installer_storage_integrity(
+    bridge: Principal,
+    expected_installer: Principal,
+) -> Result<StorageIntegrityResultView, String> {
+    let identity = env::var("BRIDGE_PRODUCTION_INSTALLER_IDENTITY")
+        .map_err(|_| "missing BRIDGE_PRODUCTION_INSTALLER_IDENTITY for controller-authenticated storage integrity query")?;
+    if identity.trim().is_empty() {
+        return Err("BRIDGE_PRODUCTION_INSTALLER_IDENTITY must not be empty".into());
+    }
+    let principal_output = Command::new("icp")
+        .args(["identity", "principal", "--identity", identity.as_str()])
+        .output()
+        .map_err(|error| format!("failed to resolve production installer identity: {error}"))?;
+    if !principal_output.status.success() {
+        return Err("failed to resolve production installer identity".into());
+    }
+    validate_production_installer_principal(expected_installer, &principal_output.stdout)?;
+
+    let candid =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../canister/bridge-canister/bridge.did");
+    let bridge_text = bridge.to_text();
+    let integrity_output = Command::new("icp")
+        .args([
+            "canister",
+            "call",
+            bridge_text.as_str(),
+            "storage_integrity_check",
+            "()",
+            "-n",
+            "ic",
+            "--identity",
+            identity.as_str(),
+            "--query",
+            "--candid",
+        ])
+        .arg(candid)
+        .args(["-o", "hex"])
+        .output()
+        .map_err(|error| format!("failed to query production storage integrity: {error}"))?;
+    if !integrity_output.status.success() {
+        return Err("controller-authenticated production storage integrity query failed".into());
+    }
+    decode_production_storage_integrity(&integrity_output.stdout)
 }
 
 fn async_runtime() -> Result<tokio::runtime::Runtime, String> {
@@ -13144,6 +13206,29 @@ mod tests {
             timelock_deployment_block_hash: format!("0x{}", "44".repeat(32)),
             canister_install: install_receipt,
         }
+    }
+
+    #[test]
+    fn production_storage_integrity_requires_the_gate_b_installer_identity_and_ok_response() {
+        let installer = Principal::from_text("aaaaa-aa").unwrap();
+        validate_production_installer_principal(installer, b"aaaaa-aa\n").unwrap();
+        assert!(
+            validate_production_installer_principal(installer, b"2vxsx-fae\n")
+                .unwrap_err()
+                .contains("differs from the Gate B sole controller")
+        );
+        assert!(validate_production_installer_principal(installer, &[0xff]).is_err());
+
+        let ok = Encode!(&StorageIntegrityResultView::Ok("ok".into())).unwrap();
+        assert!(matches!(
+            decode_production_storage_integrity(hex(&ok).as_bytes()).unwrap(),
+            StorageIntegrityResultView::Ok(value) if value == "ok"
+        ));
+        let unauthorized = Encode!(&StorageIntegrityResultView::Err(Reserved)).unwrap();
+        assert!(matches!(
+            decode_production_storage_integrity(hex(&unauthorized).as_bytes()).unwrap(),
+            StorageIntegrityResultView::Err(_)
+        ));
     }
 
     #[test]

@@ -20,16 +20,18 @@ try {
   const scheduleReceipt = process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT
   const executeReceipt = process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT
   const assetReceipt = process.env.BRIDGE_UI_ASSET_RECEIPT
+  const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
   if (
     !profileFile ||
     !bundle ||
     !sealReceipt ||
     !scheduleReceipt ||
     !executeReceipt ||
-    !assetReceipt
+    !assetReceipt ||
+    !productionInstallerIdentity
   )
     throw new Error(
-      "Production UI deploy requires the UI asset receipt, historical Gate B, activation receipts, and runtime profile",
+      "Production UI deploy requires the UI asset receipt, historical Gate B, activation receipts, runtime profile, and production installer identity",
     )
   if (!/^[0-9a-f]{32}$/i.test(process.env.VITE_WALLETCONNECT_PROJECT_ID?.trim() ?? "")) {
     throw new Error(

@@ -95,6 +95,7 @@ function validEnv(f, overrides = {}) {
     BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT: f.paths.seal,
     BRIDGE_CONTROLLER_SCHEDULE_RECEIPT: f.paths.schedule,
     BRIDGE_CONTROLLER_EXECUTE_RECEIPT: f.paths.execute,
+    BRIDGE_PRODUCTION_INSTALLER_IDENTITY: "production-installer",
     VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
     VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
     ...overrides,
@@ -130,6 +131,12 @@ describe("production UI live binding", () => {
     const result = run(validEnv(fixture(), { BRIDGE_UI_ASSET_RECEIPT: "" }))
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain("requires the UI asset receipt")
+  })
+
+  it("requires the production installer identity for the controller-only storage check", () => {
+    const result = run(validEnv(fixture(), { BRIDGE_PRODUCTION_INSTALLER_IDENTITY: "" }))
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("production installer identity")
   })
 
   it("rejects a runtime profile that the live verifier does not authorize", () => {

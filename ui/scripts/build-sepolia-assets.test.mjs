@@ -72,6 +72,7 @@ describe("Base Sepolia asset profile template", () => {
     expect(productionAssets).toContain("BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT")
     expect(productionAssets).toContain("BRIDGE_CONTROLLER_SCHEDULE_RECEIPT")
     expect(productionAssets).toContain("BRIDGE_CONTROLLER_EXECUTE_RECEIPT")
+    expect(productionAssets).toContain("BRIDGE_PRODUCTION_INSTALLER_IDENTITY")
     expect(productionAssets).not.toContain("BRIDGE_RELEASE_INPUTS_MANIFEST")
     expect(productionAssets).toContain("readOrdinaryFile(profileFile)")
     expect(productionAssets).toContain("releaseProfileSchema.parse(JSON.parse(raw))")
