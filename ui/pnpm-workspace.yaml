@@ -1,6 +1,8 @@
 overrides:
   # Security override until @coinbase/cdp-sdk permits axios 1.18.0 or newer.
   axios: 1.18.0
+  # Security override for GHSA-73wf-gq98-2v4g until upstream dependency trees require a fixed browserslist.
+  browserslist: 4.28.7
   brace-expansion: 5.0.8
   postcss: 8.5.23
   # Security override until miniflare no longer pins undici 7.28.0.
