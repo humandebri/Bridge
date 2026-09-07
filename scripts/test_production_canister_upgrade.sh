@@ -56,6 +56,14 @@ fn main() {
             }
             println!("{}", "b".repeat(64));
         }
+        Some("production-upgrade-snapshot-metadata") => {
+            println!(
+                "{}\t{}\t{}",
+                env::var("TEST_LIVE_LIFECYCLE").unwrap(),
+                env::var("TEST_LIVE_PAUSED").unwrap(),
+                env::var("TEST_LIVE_SCHEMA").unwrap(),
+            );
+        }
         Some("verify-production-upgrade-state-preserved") => println!("{}", "a".repeat(64)),
         Some("prepare-production-canister-upgrade") => {
             let mut artifact = OpenOptions::new().write(true).create_new(true).open(&args[7]).unwrap();
@@ -122,6 +130,7 @@ printf '%s\n' "$OLD_SHA" >"$T/live-module"
 printf '0\n' >"$T/submit-count"
 printf '0\n' >"$T/status-call-count"
 printf 'true\n' >"$T/reserve-sufficient"
+export TEST_LIVE_LIFECYCLE=Activated TEST_LIVE_PAUSED=false TEST_LIVE_SCHEMA=35
 printf 'dummy production identity\n' >"$T/production.pem"
 printf '{"bridge_canister_id":"%s","bridge_canister_wasm_sha256":"%s","ic_host":"https://icp-api.io"}\n' \
   "$CANISTER" "$OLD_SHA" >"$T/gate-a-profile.json"
@@ -173,6 +182,16 @@ if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade
   exit 1
 fi
 [[ ! -e "$T/evidence/not-reproducible.json" ]]
+
+if TEST_LIVE_LIFECYCLE=OperationalConfigSealed TEST_LIVE_PAUSED=false \
+  BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
+  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" \
+  --evidence "$T/evidence/inconsistent-lifecycle.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted an inconsistent lifecycle and pause state" >&2
+  exit 1
+fi
+[[ ! -e "$T/evidence/inconsistent-lifecycle.json" ]]
 
 for field in source_tree_sha256 canister_install.source_tree_sha256; do
   receipt="$T/gate-a-receipt-${field//./-}-drift.json"
@@ -360,6 +379,9 @@ assert value['kind']=='production-controller-bootstrap-upgrade'
 assert value['install_mode']=='upgrade'
 assert value['before_module_sha256']==sys.argv[2]
 assert value['after_module_sha256']==sys.argv[3]
+assert value['before_schema_version']==value['after_schema_version']==35
+assert value['before_lifecycle']==value['after_lifecycle']=='Activated'
+assert value['before_deposits_paused'] is value['after_deposits_paused'] is False
 assert value['before_controllers']==value['after_controllers']==[sys.argv[4]]
 assert 'before_canister_version' not in value and 'after_canister_version' not in value
 assert value['request_id']=='9'*64

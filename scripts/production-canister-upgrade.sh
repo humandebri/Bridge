@@ -286,7 +286,7 @@ query_hex() {
 }
 
 snapshot() {
-  local prefix="$1" status controllers module
+  local prefix="$1" status controllers module lifecycle paused schema
   status="$(icp canister status "$CANISTER" -n ic --json --identity production)"
   read -r controllers module < <(status_fields "$status")
   [[ "$controllers" == "$INSTALLER" ]] || { echo "production Canister is not controlled solely by the installer" >&2; return 1; }
@@ -296,6 +296,20 @@ snapshot() {
   printf -v "${prefix}_LIFECYCLE" '%s' "$(query_hex get_production_lifecycle)"
   printf -v "${prefix}_RUNTIME" '%s' "$(query_hex get_runtime_binding)"
   printf -v "${prefix}_INTEGRITY" '%s' "$(query_hex storage_integrity_check)"
+  local status_var="${prefix}_BRIDGE_STATUS" lifecycle_var="${prefix}_LIFECYCLE"
+  local runtime_var="${prefix}_RUNTIME" integrity_var="${prefix}_INTEGRITY"
+  read -r lifecycle paused schema < <("$PROFILE_BIN" production-upgrade-snapshot-metadata \
+    "${!status_var}" "${!lifecycle_var}" "${!runtime_var}" "${!integrity_var}")
+  [[ "$schema" == 35 && ( "$paused" == true || "$paused" == false ) ]] || {
+    echo "production upgrade snapshot metadata is malformed" >&2; return 1;
+  }
+  case "$lifecycle:$paused" in
+    Bootstrap:true|OperationalConfigSealed:true|Activated:true|Activated:false) ;;
+    *) echo "production lifecycle and pause state are inconsistent" >&2; return 1 ;;
+  esac
+  printf -v "${prefix}_LIFECYCLE_NAME" '%s' "$lifecycle"
+  printf -v "${prefix}_DEPOSITS_PAUSED" '%s' "$paused"
+  printf -v "${prefix}_SCHEMA" '%s' "$schema"
 }
 
 write_json() {
@@ -305,10 +319,14 @@ write_json() {
   EXECUTING_PRINCIPAL="$EXECUTING_PRINCIPAL" BEFORE_MANAGEMENT="$BEFORE_MANAGEMENT" BEFORE_MODULE="$BEFORE_MODULE" \
   BEFORE_BRIDGE_STATUS="$BEFORE_BRIDGE_STATUS" BEFORE_LIFECYCLE="$BEFORE_LIFECYCLE" \
   BEFORE_RUNTIME="$BEFORE_RUNTIME" BEFORE_INTEGRITY="$BEFORE_INTEGRITY" \
+  BEFORE_LIFECYCLE_NAME="$BEFORE_LIFECYCLE_NAME" BEFORE_DEPOSITS_PAUSED="$BEFORE_DEPOSITS_PAUSED" \
+  BEFORE_SCHEMA="$BEFORE_SCHEMA" \
   BEFORE_PUBLIC_STATE="$BEFORE_PUBLIC_STATE" \
   AFTER_MANAGEMENT="${AFTER_MANAGEMENT:-}" AFTER_MODULE="${AFTER_MODULE:-}" \
   AFTER_BRIDGE_STATUS="${AFTER_BRIDGE_STATUS:-}" AFTER_LIFECYCLE="${AFTER_LIFECYCLE:-}" \
   AFTER_RUNTIME="${AFTER_RUNTIME:-}" AFTER_INTEGRITY="${AFTER_INTEGRITY:-}" \
+  AFTER_LIFECYCLE_NAME="${AFTER_LIFECYCLE_NAME:-}" AFTER_DEPOSITS_PAUSED="${AFTER_DEPOSITS_PAUSED:-}" \
+  AFTER_SCHEMA="${AFTER_SCHEMA:-}" \
   AFTER_PUBLIC_STATE="${AFTER_PUBLIC_STATE:-}" IC_HOST="$IC_HOST" \
   RESPONSE_STDOUT_FILE="$stdout_file" RESPONSE_STDERR_FILE="$stderr_file" \
   SUBMISSION_FILE="${SUBMISSION_FILE:-}" UPLOAD_EVIDENCE_FILE="${UPLOAD_EVIDENCE_FILE:-}" \
@@ -325,8 +343,9 @@ value={'schema_version':1,'kind':os.environ['KIND'],'source_revision':os.environ
  'source_tree_sha256':os.environ['SOURCE_TREE'],'bridge_canister_id':os.environ['CANISTER'],
  'install_mode':'upgrade','executing_principal':os.environ['EXECUTING_PRINCIPAL'],
  'wasm_sha256':os.environ['WASM_SHA256'],'before_module_sha256':os.environ['BEFORE_MODULE'],
- 'before_controllers':[os.environ['INSTALLER']],'before_schema_version':35,'before_lifecycle':'Bootstrap',
- 'before_deposits_paused':True,'before_storage_validation_complete':True,
+ 'before_controllers':[os.environ['INSTALLER']],'before_schema_version':int(os.environ['BEFORE_SCHEMA']),
+ 'before_lifecycle':os.environ['BEFORE_LIFECYCLE_NAME'],
+ 'before_deposits_paused':os.environ['BEFORE_DEPOSITS_PAUSED']=='true','before_storage_validation_complete':True,
  'before_management_status_json_hex':hx(raw('BEFORE_MANAGEMENT')),
  'before_management_status_json_sha256':h(raw('BEFORE_MANAGEMENT')),
  'before_bridge_status_response_hex':hx(before[0]),'before_bridge_status_response_sha256':h(before[0]),
@@ -346,7 +365,8 @@ if os.environ['KIND']=='production-controller-bootstrap-upgrade':
  value.update({'executed_at_unix':int(os.environ['EXECUTED_AT']),'verified_at_unix':now,
   'recovered':recovered,'recovered_at_unix':now if recovered else None,
   'after_controllers':[os.environ['INSTALLER']],'after_module_sha256':os.environ['AFTER_MODULE'],
-  'after_schema_version':35,'after_lifecycle':'Bootstrap','after_deposits_paused':True,
+  'after_schema_version':int(os.environ['AFTER_SCHEMA']),'after_lifecycle':os.environ['AFTER_LIFECYCLE_NAME'],
+  'after_deposits_paused':os.environ['AFTER_DEPOSITS_PAUSED']=='true',
   'after_storage_validation_complete':True,'after_management_status_json_hex':hx(raw('AFTER_MANAGEMENT')),
   'after_management_status_json_sha256':h(raw('AFTER_MANAGEMENT')),
   'after_bridge_status_response_hex':hx(after[0]),'after_bridge_status_response_sha256':h(after[0]),
@@ -370,6 +390,7 @@ preflight_value() {
 import json,sys
 value=json.load(open(sys.argv[1],encoding='utf-8'))[sys.argv[2]]
 if sys.argv[3]=='hex': value=bytes.fromhex(value).decode()
+if isinstance(value,bool): value='true' if value else 'false'
 print(value,end='')
 PY
 }
@@ -421,6 +442,9 @@ if [[ "$MODE" == recover ]]; then
   BEFORE_RUNTIME="$(preflight_value before_runtime_binding_response_hex)"
   BEFORE_INTEGRITY="$(preflight_value before_storage_integrity_response_hex)"
   BEFORE_PUBLIC_STATE="$(preflight_value before_public_state_sha256)"
+  BEFORE_LIFECYCLE_NAME="$(preflight_value before_lifecycle)"
+  BEFORE_DEPOSITS_PAUSED="$(preflight_value before_deposits_paused)"
+  BEFORE_SCHEMA="$(preflight_value before_schema_version)"
   read -r RECORDED_CONTROLLERS RECORDED_MODULE < <(status_fields "$BEFORE_MANAGEMENT")
   [[ "$RECORDED_CONTROLLERS" == "$INSTALLER" && "$RECORDED_MODULE" == "$OLD_WASM" ]] || {
     echo "reviewed preflight does not bind the sole controller and immutable Gate A Wasm" >&2; exit 1;
@@ -490,6 +514,9 @@ BEFORE_LIFECYCLE="$(preflight_value before_lifecycle_response_hex)"
 BEFORE_RUNTIME="$(preflight_value before_runtime_binding_response_hex)"
 BEFORE_INTEGRITY="$(preflight_value before_storage_integrity_response_hex)"
 BEFORE_PUBLIC_STATE="$(preflight_value before_public_state_sha256)"
+BEFORE_LIFECYCLE_NAME="$(preflight_value before_lifecycle)"
+BEFORE_DEPOSITS_PAUSED="$(preflight_value before_deposits_paused)"
+BEFORE_SCHEMA="$(preflight_value before_schema_version)"
 
 STDOUT_FILE="$OUTPUT.stdout"
 STDERR_FILE="$OUTPUT.stderr"

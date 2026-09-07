@@ -1827,7 +1827,7 @@ enum StorageIntegrityResultView {
     Err(Reserved),
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum ProductionLifecycleView {
     Bootstrap,
     OperationalConfigSealed,
@@ -5204,22 +5204,45 @@ fn production_upgrade_public_state_sha256(
     Ok(hex(&digest.finalize()))
 }
 
+#[cfg(test)]
 fn production_upgrade_query_state(
     status_hex: &str,
     lifecycle_hex: &str,
     runtime_hex: &str,
     integrity_hex: &str,
 ) -> Result<(BridgeStatusLiveView, RuntimeBindingView, String), String> {
+    let (status, lifecycle, runtime, digest) =
+        production_upgrade_query_state_any(status_hex, lifecycle_hex, runtime_hex, integrity_hex)?;
+    if lifecycle != ProductionLifecycleView::Bootstrap {
+        return Err("production upgrade requires Bootstrap lifecycle".into());
+    }
+    Ok((status, runtime, digest))
+}
+
+fn production_upgrade_query_state_any(
+    status_hex: &str,
+    lifecycle_hex: &str,
+    runtime_hex: &str,
+    integrity_hex: &str,
+) -> Result<
+    (
+        BridgeStatusLiveView,
+        ProductionLifecycleView,
+        RuntimeBindingView,
+        String,
+    ),
+    String,
+> {
     let status = decode_candid_hex::<BridgeStatusLiveView>(status_hex)?;
     if !status.reserve.sufficient {
         return Err("production upgrade requires a sufficient cycles reserve".into());
     }
-    if !matches!(
-        decode_candid_hex::<ProductionLifecycleResultView>(lifecycle_hex)?,
-        ProductionLifecycleResultView::Ok(ProductionLifecycleView::Bootstrap)
-    ) {
-        return Err("production upgrade requires Bootstrap lifecycle".into());
-    }
+    let lifecycle = match decode_candid_hex::<ProductionLifecycleResultView>(lifecycle_hex)? {
+        ProductionLifecycleResultView::Ok(value) => value,
+        ProductionLifecycleResultView::Err(_) => {
+            return Err("production upgrade lifecycle response is not ok".into())
+        }
+    };
     let runtime = decode_candid_hex::<RuntimeBindingView>(runtime_hex)?;
     match decode_candid_hex::<StorageIntegrityResultView>(integrity_hex)? {
         StorageIntegrityResultView::Ok(value) if value == "ok" => {}
@@ -5229,7 +5252,27 @@ fn production_upgrade_query_state(
         &status,
         &[lifecycle_hex, runtime_hex, integrity_hex],
     )?;
-    Ok((status, runtime, public_state_sha256))
+    Ok((status, lifecycle, runtime, public_state_sha256))
+}
+
+fn production_lifecycle_name(value: ProductionLifecycleView) -> &'static str {
+    match value {
+        ProductionLifecycleView::Bootstrap => "Bootstrap",
+        ProductionLifecycleView::OperationalConfigSealed => "OperationalConfigSealed",
+        ProductionLifecycleView::Activated => "Activated",
+    }
+}
+
+fn production_lifecycle_pause_valid(
+    lifecycle: ProductionLifecycleView,
+    deposits_paused: bool,
+) -> bool {
+    match lifecycle {
+        ProductionLifecycleView::Bootstrap | ProductionLifecycleView::OperationalConfigSealed => {
+            deposits_paused
+        }
+        ProductionLifecycleView::Activated => true,
+    }
 }
 
 fn production_upgrade_status_preserved(
@@ -10758,18 +10801,31 @@ fn run() -> Result<(), String> {
             )?;
         }
         Some("production-upgrade-public-state-sha256") if args.len() == 6 => {
-            let (_, _, digest) = production_upgrade_query_state(
+            let (_, _, _, digest) = production_upgrade_query_state_any(
                 &args[2], &args[3], &args[4], &args[5],
             )?;
             println!("{digest}");
         }
-        Some("verify-production-upgrade-state-preserved") if args.len() == 12 => {
-            let (before, before_runtime, before_digest) = production_upgrade_query_state(
+        Some("production-upgrade-snapshot-metadata") if args.len() == 6 => {
+            let (status, lifecycle, runtime, _) = production_upgrade_query_state_any(
                 &args[2], &args[3], &args[4], &args[5],
             )?;
-            let (after, after_runtime, after_digest) = production_upgrade_query_state(
-                &args[6], &args[7], &args[8], &args[9],
-            )?;
+            println!(
+                "{}\t{}\t{}",
+                production_lifecycle_name(lifecycle),
+                status.deposits_paused,
+                runtime.schema_version
+            );
+        }
+        Some("verify-production-upgrade-state-preserved") if args.len() == 12 => {
+            let (before, before_lifecycle, before_runtime, before_digest) =
+                production_upgrade_query_state_any(
+                    &args[2], &args[3], &args[4], &args[5],
+                )?;
+            let (after, after_lifecycle, after_runtime, after_digest) =
+                production_upgrade_query_state_any(
+                    &args[6], &args[7], &args[8], &args[9],
+                )?;
             let gate_a_profile_source =
                 fs::read(&args[10]).map_err(|error| error.to_string())?;
             let gate_a_profile: Profile = serde_json::from_slice(&gate_a_profile_source)
@@ -10787,6 +10843,10 @@ fn run() -> Result<(), String> {
                 && before_digest.eq_ignore_ascii_case(&after_digest);
             let pause_migration = gate_a_receipt.canister_install.runtime_binding
                 == live_runtime_binding_from_view(&before_runtime)
+                && before_lifecycle == ProductionLifecycleView::Bootstrap
+                && after_lifecycle == ProductionLifecycleView::Bootstrap
+                && before.deposits_paused
+                && after.deposits_paused
                 && production_upgrade_pause_migration_matches(
                     &gate_a_profile,
                     &gate_a_receipt.canister_install.runtime_binding,
@@ -10797,7 +10857,12 @@ fn run() -> Result<(), String> {
                 )?
                 && args[3] == args[7]
                 && args[5] == args[9];
-            if !unchanged && !pause_migration {
+            if before_lifecycle != after_lifecycle
+                || before.deposits_paused != after.deposits_paused
+                || !production_lifecycle_pause_valid(before_lifecycle, before.deposits_paused)
+                || !production_lifecycle_pause_valid(after_lifecycle, after.deposits_paused)
+                || (!unchanged && !pause_migration)
+            {
                 return Err("production public state was not preserved across upgrade".into());
             }
             println!("{after_digest}");
@@ -11626,6 +11691,34 @@ mod tests {
         .err()
         .expect("insufficient reserve must fail closed");
         assert!(error.contains("sufficient cycles reserve"));
+    }
+
+    #[test]
+    fn production_upgrade_query_state_accepts_activated_unpaused_state() {
+        let profile = valid_profile();
+        let status = matching_handover_status();
+        let runtime = matching_handover_runtime(&profile, &status);
+        let (_, lifecycle, decoded_runtime, _) = production_upgrade_query_state_any(
+            &hex(&Encode!(&status).unwrap()),
+            &hex(&Encode!(&ProductionLifecycleResultView::Ok(
+                ProductionLifecycleView::Activated,
+            ))
+            .unwrap()),
+            &hex(&Encode!(&runtime).unwrap()),
+            &hex(&Encode!(&StorageIntegrityResultView::Ok("ok".into())).unwrap()),
+        )
+        .expect("activated production state is a valid upgrade snapshot");
+
+        assert_eq!(lifecycle, ProductionLifecycleView::Activated);
+        assert!(decoded_runtime == runtime);
+        assert!(production_lifecycle_pause_valid(
+            lifecycle,
+            status.deposits_paused
+        ));
+        assert!(!production_lifecycle_pause_valid(
+            ProductionLifecycleView::OperationalConfigSealed,
+            false
+        ));
     }
 
     #[test]
