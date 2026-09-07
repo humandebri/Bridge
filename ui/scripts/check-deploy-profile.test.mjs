@@ -59,6 +59,7 @@ function fixture(profileOverrides = {}) {
     seal: join(inputs, "seal.json"),
     schedule: join(inputs, "schedule.json"),
     execute: join(inputs, "execute.json"),
+    upgrade: join(inputs, "post-activation-upgrade.json"),
   }
   writeFileSync(paths.profile, profile)
   for (const path of Object.values(paths).slice(1)) writeFileSync(path, "{}\n")
@@ -67,7 +68,7 @@ function fixture(profileOverrides = {}) {
     cargo,
     `#!/usr/bin/env node
 const a=process.argv.slice(2); const i=a.indexOf('verify-production-ui-live');
-if(i<0 || a[i+1]!==process.env.BRIDGE_RELEASE_BUNDLE || a[i+2]!==process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT || a[i+3]!==process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT || a[i+4]!==process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT || a[i+5]!==process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE || process.env.FAKE_VERIFY_FAIL) process.exit(1);
+if(i<0 || a[i+1]!==process.env.BRIDGE_RELEASE_BUNDLE || a[i+2]!==process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT || a[i+3]!==process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT || a[i+4]!==process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT || a[i+5]!==process.env.BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE || a[i+6]!==process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE || process.env.FAKE_VERIFY_FAIL) process.exit(1);
 console.log('production_ui=live-pass schema=35 activation=execute manifest_sha256=${gate}');
 `,
   )
@@ -95,6 +96,7 @@ function validEnv(f, overrides = {}) {
     BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT: f.paths.seal,
     BRIDGE_CONTROLLER_SCHEDULE_RECEIPT: f.paths.schedule,
     BRIDGE_CONTROLLER_EXECUTE_RECEIPT: f.paths.execute,
+    BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE: f.paths.upgrade,
     BRIDGE_PRODUCTION_INSTALLER_IDENTITY: "production-installer",
     VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
     VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
@@ -137,6 +139,12 @@ describe("production UI live binding", () => {
     const result = run(validEnv(fixture(), { BRIDGE_PRODUCTION_INSTALLER_IDENTITY: "" }))
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain("production installer identity")
+  })
+
+  it("requires post-activation upgrade evidence", () => {
+    const result = run(validEnv(fixture(), { BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE: "" }))
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("post-activation upgrade evidence")
   })
 
   it("rejects a runtime profile that the live verifier does not authorize", () => {

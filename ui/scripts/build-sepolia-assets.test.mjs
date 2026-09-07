@@ -60,6 +60,7 @@ describe("Base Sepolia asset profile template", () => {
     expect(manifest.scripts.deploy).toContain("production-assets.mjs deploy")
     expect(manifest.scripts.deploy).toContain("$BRIDGE_UI_ASSET_RECEIPT")
     expect(manifest.scripts.deploy).toContain("$BRIDGE_UI_RUNTIME_PROFILE_FILE")
+    expect(manifest.scripts.deploy).not.toContain("pnpm run deploy:check")
     expect(manifest.scripts["deploy:check"]).toContain("$BRIDGE_UI_ASSET_RECEIPT")
     expect(manifest.scripts.deploy).not.toContain("pnpm run build && wrangler deploy")
     expect(manifest.scripts["deploy:preactivation"]).toBeUndefined()
@@ -76,12 +77,12 @@ describe("Base Sepolia asset profile template", () => {
     expect(productionAssets).not.toContain("BRIDGE_RELEASE_INPUTS_MANIFEST")
     expect(productionAssets).toContain("readOrdinaryFile(profileFile)")
     expect(productionAssets).toContain("releaseProfileSchema.parse(JSON.parse(raw))")
+    expect(productionAssets).toContain("const manifestSha256 = verifyProductionUiLive(profileFile)")
     expect(productionAssets).toContain("assertProductionUiProfile(releaseProfile, manifestSha256)")
     expect(productionAssets).toContain(
-      "await deployFrozenAssets(receipt, rawProfile, profileFile, identity)",
+      "await deployFrozenAssets(receipt, raw, releaseProfile, profileFile, identity)",
     )
     expect(productionAssets).toContain("await requireUnchangedSourceIdentity(identity)")
-    expect(productionAssets).toContain("verifyProductionUiLive(profileFile)")
     expect(productionAssets).toContain("walletconnect_project_id: projectId")
     expect(productionAssets).toContain(
       "receipt.walletconnect_project_id?.toLowerCase() !== projectId",

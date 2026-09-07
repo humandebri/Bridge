@@ -198,16 +198,18 @@ function verifyProductionUiLive(profileFile) {
   const sealReceipt = process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT
   const scheduleReceipt = process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT
   const executeReceipt = process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT
+  const postActivationUpgradeEvidence = process.env.BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE
   const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
   if (
     !bundle ||
     !sealReceipt ||
     !scheduleReceipt ||
     !executeReceipt ||
+    !postActivationUpgradeEvidence ||
     !productionInstallerIdentity
   ) {
     throw new Error(
-      "Production UI deploy requires the historical Gate B, activation receipts, and production installer identity",
+      "Production UI deploy requires the historical Gate B, activation receipts, post-activation upgrade evidence, and production installer identity",
     )
   }
   const cargoArgs = [
@@ -229,6 +231,7 @@ function verifyProductionUiLive(profileFile) {
       sealReceipt,
       scheduleReceipt,
       executeReceipt,
+      postActivationUpgradeEvidence,
       profileFile,
     ],
     { encoding: "utf8" },
@@ -245,7 +248,6 @@ function verifyProductionUiLive(profileFile) {
 
 /** @param {string} profileFile */
 async function validateProductionProfile(profileFile) {
-  const manifestSha256 = verifyProductionUiLive(profileFile)
   const rawBuffer = readOrdinaryFile(profileFile)
   const raw = rawBuffer.toString("utf8")
   if (process.env.VITE_DEPLOYMENT_PROFILE_JSON?.trim() !== raw.trim()) {
@@ -254,13 +256,9 @@ async function validateProductionProfile(profileFile) {
   /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
   const deploymentGlobal = globalThis
   deploymentGlobal.__KINIC_DEPLOYMENT_PROFILE_JSON__ = raw.trim()
-  const [{ releaseProfileSchema }, { assertProductionUiProfile }] = await Promise.all([
-    import("../src/config/profile.ts"),
-    import("../src/config/deploy-safety.ts"),
-  ])
+  const { releaseProfileSchema } = await import("../src/config/profile.ts")
   const releaseProfile = releaseProfileSchema.parse(JSON.parse(raw))
-  assertProductionUiProfile(releaseProfile, manifestSha256)
-  return raw
+  return { raw, releaseProfile }
 }
 
 /** @param {SourceIdentity} expected */
@@ -274,8 +272,8 @@ async function requireUnchangedSourceIdentity(expected) {
   }
 }
 
-/** @param {ArtifactReceipt} receipt @param {string} rawProfile @param {string} profileFile @param {SourceIdentity} identity */
-async function deployFrozenAssets(receipt, rawProfile, profileFile, identity) {
+/** @param {ArtifactReceipt} receipt @param {string} rawProfile @param {import("zod").output<typeof import("../src/config/profile.ts").releaseProfileSchema>} releaseProfile @param {string} profileFile @param {SourceIdentity} identity */
+async function deployFrozenAssets(receipt, rawProfile, releaseProfile, profileFile, identity) {
   const frozenRoot = mkdtempSync(resolve(tmpdir(), "kinic-ui-deploy."))
   const frozen = resolve(frozenRoot, "assets")
   const frozenConfig = resolve(frozenRoot, "wrangler.production.jsonc")
@@ -311,7 +309,9 @@ async function deployFrozenAssets(receipt, rawProfile, profileFile, identity) {
     }
     chmodSync(frozen, 0o500)
     await requireUnchangedSourceIdentity(identity)
-    verifyProductionUiLive(profileFile)
+    const manifestSha256 = verifyProductionUiLive(profileFile)
+    const { assertProductionUiProfile } = await import("../src/config/deploy-safety.ts")
+    assertProductionUiProfile(releaseProfile, manifestSha256)
     const deployArgs = ["exec", "wrangler", "deploy", "--config", frozenConfig, "--assets", frozen]
     const deployed = spawnSync("pnpm", deployArgs, {
       cwd: uiRoot,
@@ -358,8 +358,8 @@ try {
     validateReceipt(receipt, identity, built, projectId)
     if (mode === "deploy") {
       if (!profileFile) throw new Error("deploy requires the UI runtime profile")
-      const rawProfile = await validateProductionProfile(profileFile)
-      await deployFrozenAssets(receipt, rawProfile, profileFile, identity)
+      const { raw, releaseProfile } = await validateProductionProfile(profileFile)
+      await deployFrozenAssets(receipt, raw, releaseProfile, profileFile, identity)
     }
     process.stdout.write(`ui_artifact_set_sha256=${built.artifact_set_sha256}\n`)
   }
