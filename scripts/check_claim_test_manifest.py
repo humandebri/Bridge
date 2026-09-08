@@ -69,6 +69,7 @@ def runner_accepts(test: ClaimTest) -> bool:
             and test.target.startswith("canister/bridge-canister/src/")
             and test.target.endswith(".rs")
         )
+        or (test.runner == "rust-profile" and test.target == "tools/bridge-profile/src/main.rs")
         or (
             test.runner == "foundry"
             and test.target.startswith("contracts/test/")
@@ -218,8 +219,8 @@ def execute_test(
             re.findall(expected, output, re.MULTILINE)
         ) != 1:
             raise ValueError(f"Rust claim test did not pass exactly once: {test.selector}")
-    elif test.runner in {"rust-canister", "rust-canister-test-deployment"}:
-        command = ["cargo", "test", "--locked", "-p", "bridge-canister"]
+    elif test.runner in {"rust-canister", "rust-canister-test-deployment", "rust-profile"}:
+        command = ["cargo", "test", "--locked", "-p", "bridge-profile" if test.runner == "rust-profile" else "bridge-canister"]
         if test.runner == "rust-canister-test-deployment":
             command.extend(["--features", "test-deployment"])
         command.append(test.selector)

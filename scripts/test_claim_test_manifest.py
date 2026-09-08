@@ -143,6 +143,19 @@ class ClaimTestManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "did not pass exactly once"):
             claim_tests.execute_test(test, Path("."), runner)
 
+    def test_profile_runner_binds_package_and_rejects_missing_pass(self) -> None:
+        test = claim_tests.ClaimTest("rust-profile", "tools/bridge-profile/src/main.rs", "exact_test", "exact_test")
+        self.assertTrue(claim_tests.runner_accepts(test))
+        self.assertFalse(claim_tests.runner_accepts(claim_tests.ClaimTest("rust-profile", "other.rs", "exact_test", "exact_test")))
+        def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(command[command.index("-p") + 1], "bridge-profile")
+            return subprocess.CompletedProcess(command, 0, "test tests::exact_test ... ok\n", "")
+        claim_tests.execute_test(test, Path("."), runner)
+        def missing(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(command, 0, "running 0 tests\n", "")
+        with self.assertRaisesRegex(ValueError, "did not pass exactly once"):
+            claim_tests.execute_test(test, Path("."), missing)
+
     def test_json_report_tolerates_package_manager_warning_prefix(self) -> None:
         report = claim_tests.parse_json_report(
             '[WARN] Unsupported engine: wanted node 24\n{"success":true}\n'

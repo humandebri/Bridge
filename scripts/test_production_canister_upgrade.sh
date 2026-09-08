@@ -86,6 +86,10 @@ fn main() {
             let schema = fs::read_to_string(env::var("TEST_LIVE_SCHEMA").unwrap()).unwrap();
             println!("{}\t{}\t{}", lifecycle.trim(), paused.trim(), schema.trim());
         }
+        Some("validate-operational-epoch-snapshot") => {
+            if env::var("TEST_REJECT_OPERATIONAL_SNAPSHOT").is_ok() { std::process::exit(1); }
+            println!("operational_epoch_snapshot=verified");
+        },
         Some("verify-production-upgrade-state-preserved") => println!("{}", "a".repeat(64)),
         Some("prepare-production-canister-upgrade") => {
             let mut artifact = OpenOptions::new().write(true).create_new(true).open(&args[7]).unwrap();
@@ -157,7 +161,7 @@ printf 'Bootstrap\n' >"$T/live-lifecycle"
 printf 'true\n' >"$T/live-paused"
 printf '35\n' >"$T/live-schema"
 printf 'dummy production identity\n' >"$T/production.pem"
-printf '{"bridge_canister_id":"%s","bridge_canister_wasm_sha256":"%s","ic_host":"https://icp-api.io"}\n' \
+printf '{"bridge_canister_id":"%s","bridge_canister_wasm_sha256":"%s","ic_host":"https://icp-api.io","parameters":{"ledger_fee":100000}}\n' \
   "$CANISTER" "$OLD_SHA" >"$T/gate-a-profile.json"
 printf '{"source_revision":"%s","source_tree_sha256":"%s","bridge_canister_wasm_sha256":"%s","canister_install":{"source_revision":"%s","source_tree_sha256":"%s","canister_id":"%s","installer_principal":"%s","runtime_binding":{"schema_version":35}}}\n' \
   "$REVISION" "$SOURCE_TREE" "$OLD_SHA" "$INSTALL_REVISION" "$INSTALL_TREE" "$CANISTER" "$INSTALLER" >"$T/gate-a-receipt.json"
@@ -550,6 +554,16 @@ if TEST_REJECT_LIVE_PREDECESSOR=1 BRIDGE_ICP_IDENTITY=production \
   exit 1
 fi
 [[ ! -e "$T/evidence/rejected-live-predecessor.json" && "$(<"$T/submit-count")" == 1 ]]
+if TEST_REJECT_OPERATIONAL_SNAPSHOT=1 BRIDGE_ICP_IDENTITY=production \
+  "$T/source/scripts/production-canister-upgrade.sh" preflight \
+  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
+  --gate-a-receipt "$T/gate-a-receipt.json" \
+  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
+  --evidence "$T/evidence/rejected-operational-snapshot.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted an invalid operational epoch snapshot" >&2
+  exit 1
+fi
+[[ ! -e "$T/evidence/rejected-operational-snapshot.json" && "$(<"$T/submit-count")" == 1 ]]
 for source_mode in TEST_FAIL_HISTORY_SOURCES TEST_EMPTY_HISTORY_SOURCES; do
   if env "$source_mode=1" BRIDGE_ICP_IDENTITY=production \
     "$T/source/scripts/production-canister-upgrade.sh" preflight \

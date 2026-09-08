@@ -205,3 +205,9 @@ fee payoutは既存のpayout権限で`continue_fee_payout(payout_id)`を実行�
 ## Gate CのRPC・monitor証跡
 
 `rpc-e2e.json`と`monitor-drill.json`はunpause後に収集するGate C運用証跡であり、13 artifactのGate B、seal、schedule、execute、controller handoverの認可入力にはしない。7日・各10件の計測も同様にhandoverを認可しない。現行templateにはproduction/rehearsal Wasm hashとpause principalの混同、staging v8の10 scenario必須条件、`quorum_loss` injectorとvalidatorのoperation不一致、固定URLでのfault control不能が残るため、Gate C収集前にschemaとcapture経路を置換して別レビューする。これらを迂回した証跡は受理しない。quorum-lossの必須negative evidenceは、それまでPocketICとproof gateを正本とする。
+
+### Upgrade間のmint epoch観測
+
+アップグレード履歴の終端とlive runtimeで変わり得る観測値は、deposit admissionが保存したmint authorization epochである。Activatedかつunpaused、その他のruntime fields完全一致、TTL不変、epoch正値かつ単調増加の場合に限り、controller認証済み`get_operational_config`の同じ型付きpreimageから旧epochと現epochの両digestを再計算する。任意digestや設定変更は受理しない。driverはpreflightとreceiptの`before_operational_config`にraw CandidとSHA-256を保存し、snapshot status/runtimeとの一致も検証する。v36へ到達するreceipt（36→36を含む）は証拠必須であり、既存公開済み35→35 receiptだけが省略可能。upgradeそのものの前後runtime一致条件は維持する。
+
+`bridge-profile operational-epoch-digests OPERATIONAL_HEX_FILE LEDGER_FEE OLD_EPOCH NEW_EPOCH`はRustの正本Candid encodingで2つのdigestだけを表示する診断コマンド。UI live検証もGate B controllerに束縛した`BRIDGE_PRODUCTION_INSTALLER_IDENTITY`で設定preimageを取得し、同じ条件で履歴終端との一致を確認する。これは外部観測の真正性とICの応答・controller認証に依存する実装検証であり、抽象モデルによる外部事実の証明ではない。

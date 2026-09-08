@@ -158,6 +158,7 @@ if expected != actual: raise SystemExit('Gate A profile and receipt identity dif
 print(expected[0],expected[1],install.get('runtime_binding',{}).get('schema_version',''),install.get('installer_principal',''),receipt.get('source_revision',''),receipt.get('source_tree_sha256',''),install.get('source_revision',''),install.get('source_tree_sha256',''),profile.get('ic_host',''))
 PY
 )
+LEDGER_FEE="$(python3 -I -S -c 'import json,sys; print(json.load(open(sys.argv[1]))["parameters"]["ledger_fee"])' "$GATE_A_PROFILE")"
 OLD_WASM="$GATE_A_WASM"
 OLD_SCHEMA="$GATE_A_SCHEMA"
 if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
@@ -335,8 +336,10 @@ snapshot() {
   printf -v "${prefix}_LIFECYCLE" '%s' "$(query_hex get_production_lifecycle)"
   printf -v "${prefix}_RUNTIME" '%s' "$(query_hex get_runtime_binding)"
   printf -v "${prefix}_INTEGRITY" '%s' "$(query_hex storage_integrity_check)"
+  printf -v "${prefix}_OPERATIONAL" '%s' "$(query_hex get_operational_config)"
   local status_var="${prefix}_BRIDGE_STATUS" lifecycle_var="${prefix}_LIFECYCLE"
-  local runtime_var="${prefix}_RUNTIME" integrity_var="${prefix}_INTEGRITY"
+  local runtime_var="${prefix}_RUNTIME" integrity_var="${prefix}_INTEGRITY" operational_var="${prefix}_OPERATIONAL"
+  "$PROFILE_BIN" validate-operational-epoch-snapshot "${!operational_var}" "${!runtime_var}" "${!status_var}" "$LEDGER_FEE" >/dev/null
   read -r lifecycle paused schema < <("$PROFILE_BIN" production-upgrade-snapshot-metadata \
     "${!status_var}" "${!lifecycle_var}" "${!runtime_var}" "${!integrity_var}")
   printf -v "${prefix}_LIFECYCLE_NAME" '%s' "$lifecycle"
@@ -353,7 +356,7 @@ write_json() {
   BEFORE_BRIDGE_STATUS="$BEFORE_BRIDGE_STATUS" BEFORE_LIFECYCLE="$BEFORE_LIFECYCLE" \
   BEFORE_RUNTIME="$BEFORE_RUNTIME" BEFORE_INTEGRITY="$BEFORE_INTEGRITY" \
   BEFORE_LIFECYCLE_NAME="$BEFORE_LIFECYCLE_NAME" BEFORE_DEPOSITS_PAUSED="$BEFORE_DEPOSITS_PAUSED" \
-  BEFORE_SCHEMA="$BEFORE_SCHEMA" \
+  BEFORE_SCHEMA="$BEFORE_SCHEMA" BEFORE_OPERATIONAL="$BEFORE_OPERATIONAL" \
   BEFORE_PUBLIC_STATE="$BEFORE_PUBLIC_STATE" \
   AFTER_MANAGEMENT="${AFTER_MANAGEMENT:-}" AFTER_MODULE="${AFTER_MODULE:-}" \
   AFTER_BRIDGE_STATUS="${AFTER_BRIDGE_STATUS:-}" AFTER_LIFECYCLE="${AFTER_LIFECYCLE:-}" \
@@ -386,6 +389,7 @@ value={'schema_version':1,'kind':os.environ['KIND'],'source_revision':os.environ
  'before_runtime_binding_response_hex':hx(before[2]),'before_runtime_binding_response_sha256':h(before[2]),
  'before_storage_integrity_response_hex':hx(before[3]),'before_storage_integrity_response_sha256':h(before[3]),
  'before_public_state_sha256':os.environ['BEFORE_PUBLIC_STATE'],'observed_at_unix':int(time.time())}
+value['before_operational_config']={'response_hex':hx(candid('BEFORE_OPERATIONAL')),'response_sha256':h(candid('BEFORE_OPERATIONAL'))}
 value['prior_upgrade_evidence_sha256']=os.environ['PRIOR_UPGRADE_EVIDENCE_SHA256'] or None
 if os.environ['KIND']=='production-controller-bootstrap-upgrade':
  value.pop('observed_at_unix',None)
@@ -420,8 +424,12 @@ PY
 
 preflight_value() {
   python3 -I -S - "$PREFLIGHT" "$1" "${2:-text}" <<'PY'
-import json,sys
-value=json.load(open(sys.argv[1],encoding='utf-8'))[sys.argv[2]]
+import hashlib,json,sys
+value=json.load(open(sys.argv[1],encoding='utf-8'))
+proof=value['before_operational_config']
+if hashlib.sha256(bytes.fromhex(proof['response_hex'])).hexdigest()!=proof['response_sha256']:
+ raise SystemExit('preflight operational config evidence digest mismatch')
+for key in sys.argv[2].split('.'): value=value[key]
 if sys.argv[3]=='hex': value=bytes.fromhex(value).decode()
 if isinstance(value,bool): value='true' if value else 'false'
 print(value,end='')
@@ -474,6 +482,8 @@ if [[ "$MODE" == recover ]]; then
   BEFORE_LIFECYCLE="$(preflight_value before_lifecycle_response_hex)"
   BEFORE_RUNTIME="$(preflight_value before_runtime_binding_response_hex)"
   BEFORE_INTEGRITY="$(preflight_value before_storage_integrity_response_hex)"
+  BEFORE_OPERATIONAL="$(preflight_value before_operational_config.response_hex)"
+  "$PROFILE_BIN" validate-operational-epoch-snapshot "$BEFORE_OPERATIONAL" "$BEFORE_RUNTIME" "$BEFORE_BRIDGE_STATUS" "$LEDGER_FEE" >/dev/null
   BEFORE_PUBLIC_STATE="$(preflight_value before_public_state_sha256)"
   BEFORE_LIFECYCLE_NAME="$(preflight_value before_lifecycle)"
   BEFORE_DEPOSITS_PAUSED="$(preflight_value before_deposits_paused)"
@@ -523,7 +533,7 @@ snapshot BEFORE
 "$PROFILE_BIN" validate-production-upgrade-live-predecessor \
   "$GATE_A_PROFILE" "$GATE_A_RECEIPT" "${PRIOR_UPGRADE_EVIDENCE:--}" \
   "$OLD_WASM" "$OLD_SCHEMA" "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" \
-  "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY" >/dev/null
+  "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY" "$BEFORE_OPERATIONAL" >/dev/null
 BEFORE_PUBLIC_STATE="$($PROFILE_BIN production-upgrade-public-state-sha256 \
   "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY")"
 
@@ -550,6 +560,8 @@ BEFORE_BRIDGE_STATUS="$(preflight_value before_bridge_status_response_hex)"
 BEFORE_LIFECYCLE="$(preflight_value before_lifecycle_response_hex)"
 BEFORE_RUNTIME="$(preflight_value before_runtime_binding_response_hex)"
 BEFORE_INTEGRITY="$(preflight_value before_storage_integrity_response_hex)"
+BEFORE_OPERATIONAL="$(preflight_value before_operational_config.response_hex)"
+"$PROFILE_BIN" validate-operational-epoch-snapshot "$BEFORE_OPERATIONAL" "$BEFORE_RUNTIME" "$BEFORE_BRIDGE_STATUS" "$LEDGER_FEE" >/dev/null
 BEFORE_PUBLIC_STATE="$(preflight_value before_public_state_sha256)"
 BEFORE_LIFECYCLE_NAME="$(preflight_value before_lifecycle)"
 BEFORE_DEPOSITS_PAUSED="$(preflight_value before_deposits_paused)"
