@@ -251,7 +251,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
 
   const beforeWithdrawal = await controlState(request)
   const bridgeUpdateGate = await holdIcUpdateMethod(page, "continue_withdrawal")
-  const bridgeUpdateObserver = observeIcUpdateMethods(page)
+  const bridgeUpdateObserver = observeWithdrawalUpdateMethods(page)
   await page.getByRole("link", { name: "KINIC Bridge home" }).click()
   await page.getByRole("button", { name: "Reverse bridge direction" }).click()
   await refreshBridgeData(page)
@@ -488,7 +488,7 @@ async function waitForMintRecording(request: APIRequestContext): Promise<void> {
   await postControl(request, "/test/clear-mint-proof", {})
 }
 
-function observeIcUpdateMethods(page: Page): {
+function observeWithdrawalUpdateMethods(page: Page): {
   attempts: Array<{ method: string; requestId: string }>
   acceptedCalls: Array<{ method: string; requestId: string }>
   stop: () => void
@@ -497,12 +497,13 @@ function observeIcUpdateMethods(page: Page): {
   const acceptedCalls: Array<{ method: string; requestId: string }> = []
   const requestListener = (request: Request) => {
     const call = decodeIcUpdateRequest(request)
-    if (call) attempts.push(call)
+    // Other deposits can resume their idempotent recording after reload.
+    if (call && call.method !== "notify_deposit_mint") attempts.push(call)
   }
   const responseListener = (response: Response) => {
     if (response.status() !== 200 && response.status() !== 202) return
     const call = decodeIcUpdateRequest(response.request())
-    if (call) acceptedCalls.push(call)
+    if (call && call.method !== "notify_deposit_mint") acceptedCalls.push(call)
   }
   page.on("request", requestListener)
   page.on("response", responseListener)
