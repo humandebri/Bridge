@@ -20,6 +20,7 @@ try {
   const scheduleReceipt = process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT
   const executeReceipt = process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT
   const postActivationUpgradeEvidence = process.env.BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE
+  const uiRpcConfig = process.env.BRIDGE_UI_RPC_CONFIG
   const assetReceipt = process.env.BRIDGE_UI_ASSET_RECEIPT
   const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
   if (
@@ -29,11 +30,12 @@ try {
     !scheduleReceipt ||
     !executeReceipt ||
     !postActivationUpgradeEvidence ||
+    !uiRpcConfig ||
     !assetReceipt ||
     !productionInstallerIdentity
   )
     throw new Error(
-      "Production UI deploy requires the UI asset receipt, historical Gate B, activation receipts, post-activation upgrade evidence, runtime profile, and production installer identity",
+      "Production UI deploy requires the UI asset receipt, historical Gate B, activation receipts, post-activation upgrade evidence, reviewed UI RPC configuration, runtime profile, and production installer identity",
     )
   if (!/^[0-9a-f]{32}$/i.test(process.env.VITE_WALLETCONNECT_PROJECT_ID?.trim() ?? "")) {
     throw new Error(
@@ -63,11 +65,12 @@ try {
       executeReceipt,
       postActivationUpgradeEvidence,
       profileFile,
+      uiRpcConfig,
     ],
     { cwd: sourceRoot, encoding: "utf8" },
   )
   const verifiedManifestSha256 =
-    /^production_ui=live-pass schema=35 activation=execute manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
+    /^production_ui=live-pass schema=36 activation=execute manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
       gateOutput,
     )?.[1]
   if (!verifiedManifestSha256)

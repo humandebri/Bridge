@@ -32,6 +32,10 @@ function fixture(profileOverrides = {}) {
       gateBManifestSha256: gate,
       profileFileSha256: "1".repeat(64),
       profileCanonicalSha256: "2".repeat(64),
+      canisterSchemaVersion: 36,
+      canisterModuleSha256: "3".repeat(64),
+      postActivationUpgradeSha256: "4".repeat(64),
+      uiRpcConfigSha256: "5".repeat(64),
       icHost: "https://icp-api.io",
       baseRpcUrl: "https://rpc.example",
       chainId: 8453,
@@ -60,6 +64,7 @@ function fixture(profileOverrides = {}) {
     schedule: join(inputs, "schedule.json"),
     execute: join(inputs, "execute.json"),
     upgrade: join(inputs, "post-activation-upgrade.json"),
+    rpc: join(inputs, "ui-rpc.json"),
   }
   writeFileSync(paths.profile, profile)
   for (const path of Object.values(paths).slice(1)) writeFileSync(path, "{}\n")
@@ -68,8 +73,8 @@ function fixture(profileOverrides = {}) {
     cargo,
     `#!/usr/bin/env node
 const a=process.argv.slice(2); const i=a.indexOf('verify-production-ui-live');
-if(process.cwd()!==process.env.EXPECTED_CARGO_CWD || i<0 || a[i+1]!==process.env.BRIDGE_RELEASE_BUNDLE || a[i+2]!==process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT || a[i+3]!==process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT || a[i+4]!==process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT || a[i+5]!==process.env.BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE || a[i+6]!==process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE || process.env.FAKE_VERIFY_FAIL) process.exit(1);
-console.log('production_ui=live-pass schema=35 activation=execute manifest_sha256=${gate}');
+if(process.cwd()!==process.env.EXPECTED_CARGO_CWD || i<0 || a[i+1]!==process.env.BRIDGE_RELEASE_BUNDLE || a[i+2]!==process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT || a[i+3]!==process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT || a[i+4]!==process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT || a[i+5]!==process.env.BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE || a[i+6]!==process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE || a[i+7]!==process.env.BRIDGE_UI_RPC_CONFIG || process.env.FAKE_VERIFY_FAIL) process.exit(1);
+console.log('production_ui=live-pass schema='+ (process.env.FAKE_VERIFY_SCHEMA ?? '36') +' activation=execute manifest_sha256=${gate}');
 `,
   )
   chmodSync(cargo, 0o755)
@@ -98,6 +103,7 @@ function validEnv(f, overrides = {}) {
     BRIDGE_CONTROLLER_SCHEDULE_RECEIPT: f.paths.schedule,
     BRIDGE_CONTROLLER_EXECUTE_RECEIPT: f.paths.execute,
     BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE: f.paths.upgrade,
+    BRIDGE_UI_RPC_CONFIG: f.paths.rpc,
     BRIDGE_PRODUCTION_INSTALLER_IDENTITY: "production-installer",
     VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
     VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
@@ -106,6 +112,12 @@ function validEnv(f, overrides = {}) {
 }
 
 describe("production UI live binding", () => {
+  it("rejects the old live v35 gate and missing reviewed RPC configuration", () => {
+    const f = fixture()
+    expect(run(validEnv(f, { FAKE_VERIFY_SCHEMA: "35" })).status).not.toBe(0)
+    expect(run(validEnv(f, { BRIDGE_UI_RPC_CONFIG: "" })).status).not.toBe(0)
+  })
+
   it("rejects an arbitrary environment value without the required evidence", () => {
     const result = run({ BRIDGE_GATE_B_MANIFEST_SHA256: "f".repeat(64) })
     expect(result.status).not.toBe(0)

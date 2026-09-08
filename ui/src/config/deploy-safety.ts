@@ -12,6 +12,10 @@ export interface UiDeploymentMode {
   deploymentBlock?: bigint | number | string | null
   profileFileSha256?: string | null
   profileCanonicalSha256?: string | null
+  canisterSchemaVersion?: number
+  canisterModuleSha256?: string
+  postActivationUpgradeSha256?: string
+  uiRpcConfigSha256?: string
   timelockAddress?: string | null
 }
 
@@ -95,5 +99,17 @@ export function assertProductionUiProfile(
     )
   ) {
     throw new Error("Production UI profile requires nonzero source profile hashes")
+  }
+  if (
+    profile.canisterSchemaVersion !== 36 ||
+    ![
+      profile.canisterModuleSha256,
+      profile.postActivationUpgradeSha256,
+      profile.uiRpcConfigSha256,
+    ].every((value) => /^[0-9a-f]{64}$/i.test(value ?? "") && !/^0+$/.test(value ?? ""))
+  ) {
+    throw new Error(
+      "Production UI requires the v36 module, upgrade chain, and reviewed RPC bindings",
+    )
   }
 }

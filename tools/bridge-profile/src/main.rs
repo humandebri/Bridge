@@ -5685,6 +5685,41 @@ fn production_upgrade_schema_transition(
     }
 }
 
+// Gate A predates operational sealing. Only the operational digest may advance
+// before an activated same-instance schema migration; the migration itself keeps it exact.
+fn production_upgrade_schema_predecessor_bound(
+    gate_a_profile: &Profile,
+    gate_a_runtime: &LiveRuntimeBinding,
+    status: &BridgeStatusLiveView,
+    lifecycle: ProductionLifecycleView,
+    runtime: &RuntimeBindingView,
+) -> Result<bool, String> {
+    if runtime.expected_bridge_runtime_sha256
+        != decode_hex(&gate_a_profile.bridge_runtime_bytecode_sha256)?
+    {
+        return Ok(false);
+    }
+    let observed = live_runtime_binding_from_view(runtime);
+    if *gate_a_runtime == observed
+        || production_upgrade_post_pause_runtime_matches(
+            gate_a_profile,
+            gate_a_runtime,
+            status,
+            runtime,
+        )?
+    {
+        return Ok(true);
+    }
+    let terminal = ProductionUpgradeTerminal {
+        runtime: gate_a_runtime.clone(),
+        lifecycle: ProductionLifecycleView::Bootstrap,
+        deposits_paused: true,
+    };
+    Ok(production_upgrade_live_predecessor_matches(
+        &terminal, status, lifecycle, &observed,
+    ))
+}
+
 fn production_upgrade_schema_migration_matches(
     before_status: &BridgeStatusLiveView,
     after_status: &BridgeStatusLiveView,
@@ -5693,6 +5728,8 @@ fn production_upgrade_schema_migration_matches(
 ) -> bool {
     if before_runtime.schema_version != PREVIOUS_STABLE_SCHEMA_VERSION
         || after_runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || before_runtime.expected_bridge_runtime_sha256
+            != after_runtime.expected_bridge_runtime_sha256
         || !production_upgrade_status_preserved(before_status, after_status)
     {
         return false;
@@ -7717,11 +7754,11 @@ fn validate_production_ui_upgrade_extension(
     gate_a_receipt: &GateAReceipt,
     execute_receipt: &ControllerActivationReceipt,
     upgrade_evidence_path: &Path,
-) -> Result<(String, ProductionUpgradeTerminal), String> {
+) -> Result<(String, ProductionUpgradeTerminal, Vec<u8>), String> {
     let extension_bytes = fs::read(upgrade_evidence_path).map_err(|error| error.to_string())?;
     let extension = production_upgrade_chain_receipts(&extension_bytes)?;
-    if extension.len() != 1 {
-        return Err("production UI requires exactly one post-activation upgrade receipt".into());
+    if bundle.profile.canister_schema_version != PREVIOUS_STABLE_SCHEMA_VERSION {
+        return Err("post-activation UI requires the immutable deployed v35 Gate B lineage".into());
     }
 
     let first = &extension[0].0;
@@ -7762,7 +7799,12 @@ fn validate_production_ui_upgrade_extension(
         return Err("post-activation upgrade runtime code differs from Gate B".into());
     }
 
-    let terminal_module_sha256 = first.after_module_sha256.clone();
+    let terminal_module_sha256 = extension
+        .last()
+        .ok_or("empty post-activation upgrade chain")?
+        .0
+        .after_module_sha256
+        .clone();
     let continuation = ProductionUpgradeContinuation {
         prefix_len: 0,
         before_module_sha256: bundle.profile.bridge_canister_wasm_sha256.clone(),
@@ -7779,13 +7821,26 @@ fn validate_production_ui_upgrade_extension(
         gate_a_receipt,
         &extension_bytes,
         &terminal_module_sha256,
-        PREVIOUS_STABLE_SCHEMA_VERSION,
+        CURRENT_STABLE_SCHEMA_VERSION,
         Some(&continuation),
     )?;
     if terminal.lifecycle != ProductionLifecycleView::Activated || terminal.deposits_paused {
         return Err("post-activation upgrade does not preserve active traffic".into());
     }
-    Ok((terminal_module_sha256, terminal))
+    Ok((terminal_module_sha256, terminal, extension_bytes))
+}
+
+#[derive(CandidType, Deserialize)]
+struct ProductionUiHistoryProbe {
+    requester: Vec<u8>,
+    before_cursor: Option<Vec<u8>>,
+    limit: u16,
+}
+
+#[derive(CandidType, Deserialize)]
+enum ProductionUiHistoryResult {
+    Ok(Reserved),
+    Err(Reserved),
 }
 
 fn verify_production_canister_handover_state(
@@ -7793,7 +7848,7 @@ fn verify_production_canister_handover_state(
     seal_receipt_path: &Path,
     schedule_receipt_path: &Path,
     execute_receipt_path: &Path,
-    production_ui_runtime_profile: Option<&Path>,
+    production_ui_runtime_profile: Option<(&Path, &Path)>,
     production_ui_upgrade_evidence: Option<&Path>,
 ) -> Result<ValidatedBundle, String> {
     let live_context = if production_ui_upgrade_evidence.is_some() {
@@ -7808,26 +7863,35 @@ fn verify_production_canister_handover_state(
         execute_receipt_path,
         live_context,
     )?;
-    if let Some(runtime_profile_path) = production_ui_runtime_profile {
-        validate_production_ui_runtime_profile(
-            &bundle.profile,
-            &bundle.root.join("profile.json"),
-            &bundle.manifest_sha256,
-            runtime_profile_path,
-        )?;
-    }
-    let authorized_module_sha256 =
-        if let Some(upgrade_evidence_path) = production_ui_upgrade_evidence {
+    let upgrade_terminal = production_ui_upgrade_evidence
+        .map(|path| {
             validate_production_ui_upgrade_extension(
                 &bundle,
                 &gate_a_receipt,
                 &execute_receipt,
-                upgrade_evidence_path,
-            )?
-            .0
-        } else {
-            bundle.profile.bridge_canister_wasm_sha256.clone()
-        };
+                path,
+            )
+        })
+        .transpose()?;
+    if let Some((runtime_profile_path, rpc_config_path)) = production_ui_runtime_profile {
+        let (module, terminal, upgrade_bytes) = upgrade_terminal
+            .as_ref()
+            .ok_or("production UI requires upgrade evidence")?;
+        validate_production_ui_runtime_profile(
+            &bundle.profile,
+            &bundle.root.join("profile.json"),
+            &bundle.manifest_sha256,
+            upgrade_bytes,
+            module,
+            terminal,
+            rpc_config_path,
+            runtime_profile_path,
+        )?;
+    }
+    let authorized_module_sha256 = upgrade_terminal
+        .as_ref()
+        .map(|(module, _, _)| module.clone())
+        .unwrap_or_else(|| bundle.profile.bridge_canister_wasm_sha256.clone());
     let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
     let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
@@ -7940,8 +8004,38 @@ fn verify_production_canister_handover_state(
         confirmed_signed_at_ns: &execute_receipt.confirmed_signed_at_ns,
         expected_module_sha256: &authorized_module_sha256,
     };
+    let mut live_profile = bundle.profile.clone();
+    if let Some((_, terminal, _)) = &upgrade_terminal {
+        if live_runtime_binding_from_view(&runtime) != terminal.runtime {
+            return Err(
+                "live production UI runtime differs from the verified upgrade terminal".into(),
+            );
+        }
+        live_profile.canister_schema_version = terminal.runtime.schema_version;
+        let response = async_runtime()?.block_on(async {
+            agent
+                .query(&bridge, "list_withdrawals")
+                .with_arg(
+                    Encode!(&ProductionUiHistoryProbe {
+                        requester: vec![0; 20],
+                        before_cursor: None,
+                        limit: 1,
+                    })
+                    .map_err(|error| error.to_string())?,
+                )
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())
+        })?;
+        if !matches!(
+            Decode!(&response, ProductionUiHistoryResult).map_err(|error| error.to_string())?,
+            ProductionUiHistoryResult::Ok(_)
+        ) {
+            return Err("production UI withdrawal history index is not ready".into());
+        }
+    }
     validate_production_handover_canister_state(
-        &bundle.profile,
+        &live_profile,
         installer,
         &gate_a_receipt,
         &activation,
@@ -7973,34 +8067,136 @@ fn verify_production_canister_handover(
     Ok(())
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionUiRpcConfig {
+    schema_version: u16,
+    base_rpc_url: String,
+}
+
+fn production_ui_runtime_profile(
+    profile: &Profile,
+    profile_bytes: &[u8],
+    manifest_sha256: &str,
+    upgrade_bytes: &[u8],
+    terminal_module_sha256: &str,
+    terminal: &ProductionUpgradeTerminal,
+    rpc_config_bytes: &[u8],
+) -> Result<Value, String> {
+    if profile.canister_schema_version != PREVIOUS_STABLE_SCHEMA_VERSION
+        || terminal.runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || terminal.lifecycle != ProductionLifecycleView::Activated
+        || terminal.deposits_paused
+        || !valid_sha256(terminal_module_sha256)
+    {
+        return Err("production UI requires the verified activated v36 upgrade terminal".into());
+    }
+    let rpc: ProductionUiRpcConfig = serde_json::from_slice(rpc_config_bytes)
+        .map_err(|_| "invalid reviewed production UI RPC configuration")?;
+    // This release uses the separately Origin-restricted Base mainnet Alchemy app.
+    // Do not surface the key or accept a generic endpoint override at deploy time.
+    let key = rpc
+        .base_rpc_url
+        .strip_prefix("https://base-mainnet.g.alchemy.com/v2/")
+        .ok_or("production UI RPC must be the reviewed Base mainnet Alchemy endpoint")?;
+    if rpc.schema_version != 1
+        || key.is_empty()
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err("invalid reviewed production UI RPC configuration".into());
+    }
+    let mut ui = ui_runtime_profile(profile, profile_bytes, true, Some(manifest_sha256))?;
+    let fields = ui
+        .as_object_mut()
+        .ok_or("UI runtime profile must be an object")?;
+    fields.insert("baseRpcUrl".into(), serde_json::json!(rpc.base_rpc_url));
+    fields.insert(
+        "canisterSchemaVersion".into(),
+        serde_json::json!(terminal.runtime.schema_version),
+    );
+    fields.insert(
+        "canisterModuleSha256".into(),
+        serde_json::json!(terminal_module_sha256),
+    );
+    fields.insert(
+        "postActivationUpgradeSha256".into(),
+        serde_json::json!(hex(&Sha256::digest(upgrade_bytes))),
+    );
+    fields.insert(
+        "uiRpcConfigSha256".into(),
+        serde_json::json!(hex(&Sha256::digest(rpc_config_bytes))),
+    );
+    Ok(ui)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn validate_production_ui_runtime_profile(
     profile: &Profile,
     gate_b_profile_path: &Path,
     manifest_sha256: &str,
+    upgrade_bytes: &[u8],
+    terminal_module_sha256: &str,
+    terminal: &ProductionUpgradeTerminal,
+    rpc_config_path: &Path,
     runtime_profile_path: &Path,
 ) -> Result<(), String> {
-    if profile.canister_schema_version != PREVIOUS_STABLE_SCHEMA_VERSION {
-        return Err(
-            "production UI authorization currently requires deployed stable schema version 35"
-                .into(),
-        );
-    }
-    let profile_bytes = fs::read(gate_b_profile_path)
-        .map_err(|e| format!("{}: {e}", gate_b_profile_path.display()))?;
-    let expected = canonical_bytes(&ui_runtime_profile(
+    let expected = canonical_bytes(&production_ui_runtime_profile(
         profile,
-        &profile_bytes,
-        true,
-        Some(manifest_sha256),
+        &fs::read(gate_b_profile_path).map_err(|error| error.to_string())?,
+        manifest_sha256,
+        upgrade_bytes,
+        terminal_module_sha256,
+        terminal,
+        &fs::read(rpc_config_path).map_err(|error| error.to_string())?,
     )?)?;
-    let supplied = fs::read(runtime_profile_path)
-        .map_err(|e| format!("{}: {e}", runtime_profile_path.display()))?;
-    if supplied != expected {
-        return Err(
-            "supplied UI runtime profile is not the deterministic historical Gate B rendering"
-                .into(),
-        );
+    if fs::read(runtime_profile_path).map_err(|error| error.to_string())? != expected {
+        return Err("supplied UI runtime profile differs from the verified v36 upgrade and reviewed RPC rendering".into());
     }
+    Ok(())
+}
+
+fn render_production_ui_runtime(
+    bundle_path: &Path,
+    seal_receipt_path: &Path,
+    schedule_receipt_path: &Path,
+    execute_receipt_path: &Path,
+    upgrade_evidence_path: &Path,
+    rpc_config_path: &Path,
+    output_path: &Path,
+) -> Result<(), String> {
+    let (bundle, gate_a, execute) = validate_production_handover_evidence_files(
+        bundle_path,
+        seal_receipt_path,
+        schedule_receipt_path,
+        execute_receipt_path,
+        SealReceiptLiveContext::ProductionUiPostUpgrade,
+    )?;
+    let (module, terminal, upgrade_bytes) = validate_production_ui_upgrade_extension(
+        &bundle,
+        &gate_a,
+        &execute,
+        upgrade_evidence_path,
+    )?;
+    let rendered = production_ui_runtime_profile(
+        &bundle.profile,
+        &fs::read(bundle.root.join("profile.json")).map_err(|error| error.to_string())?,
+        &bundle.manifest_sha256,
+        &upgrade_bytes,
+        &module,
+        &terminal,
+        &fs::read(rpc_config_path).map_err(|error| error.to_string())?,
+    )?;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(output_path)
+        .map_err(|error| error.to_string())?
+        .write_all(&canonical_bytes(&rendered)?)
+        .map_err(|error| error.to_string())?;
+    println!("production_ui_runtime=rendered schema=36");
     Ok(())
 }
 
@@ -8011,18 +8207,19 @@ fn verify_production_ui_live(
     execute_receipt_path: &Path,
     upgrade_evidence_path: &Path,
     runtime_profile_path: &Path,
+    rpc_config_path: &Path,
 ) -> Result<(), String> {
     let bundle = verify_production_canister_handover_state(
         bundle_path,
         seal_receipt_path,
         schedule_receipt_path,
         execute_receipt_path,
-        Some(runtime_profile_path),
+        Some((runtime_profile_path, rpc_config_path)),
         Some(upgrade_evidence_path),
     )?;
     println!(
-        "production_ui=live-pass schema={} activation=execute manifest_sha256={}",
-        bundle.profile.canister_schema_version, bundle.manifest_sha256
+        "production_ui=live-pass schema=36 activation=execute manifest_sha256={}",
+        bundle.manifest_sha256
     );
     Ok(())
 }
@@ -11797,7 +11994,7 @@ fn run() -> Result<(), String> {
                 Path::new(&args[5]),
             )?;
         }
-        Some("verify-production-ui-live") if args.len() == 8 => {
+        Some("verify-production-ui-live") if args.len() == 9 => {
             verify_production_ui_live(
                 Path::new(&args[2]),
                 Path::new(&args[3]),
@@ -11805,6 +12002,13 @@ fn run() -> Result<(), String> {
                 Path::new(&args[5]),
                 Path::new(&args[6]),
                 Path::new(&args[7]),
+                Path::new(&args[8]),
+            )?;
+        }
+        Some("render-production-ui-runtime") if args.len() == 9 => {
+            render_production_ui_runtime(
+                Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]),
+                Path::new(&args[5]), Path::new(&args[6]), Path::new(&args[7]), Path::new(&args[8]),
             )?;
         }
         Some("storage-validation-complete") if args.len() == 3 => {
@@ -12155,14 +12359,13 @@ fn run() -> Result<(), String> {
                 )?
                 && args[3] == args[7]
                 && args[5] == args[9];
-            let schema_before_is_bound = gate_a_receipt.canister_install.runtime_binding
-                == live_runtime_binding_from_view(&before_runtime)
-                || production_upgrade_post_pause_runtime_matches(
-                    &gate_a_profile,
-                    &gate_a_receipt.canister_install.runtime_binding,
-                    &before,
-                    &before_runtime,
-                )?;
+            let schema_before_is_bound = production_upgrade_schema_predecessor_bound(
+                &gate_a_profile,
+                &gate_a_receipt.canister_install.runtime_binding,
+                &before,
+                before_lifecycle,
+                &before_runtime,
+            )?;
             let schema_migration = schema_before_is_bound
                 && production_upgrade_schema_migration_matches(
                     &before,
@@ -12750,50 +12953,183 @@ mod tests {
     }
 
     #[test]
-    fn production_ui_runtime_profile_requires_exact_v35_rendering() {
+    fn production_ui_runtime_profile_binds_v36_terminal_chain_and_reviewed_rpc() {
         let root = env::temp_dir().join(format!("bridge-ui-runtime-{}", process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let mut profile = valid_profile();
         profile.canister_schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
+        let profile_bytes = canonical_bytes(&profile).unwrap();
         let gate_b_profile = root.join("profile.json");
         let runtime_profile = root.join("ui-runtime-profile.json");
-        let profile_bytes = canonical_bytes(&profile).unwrap();
-        fs::write(&gate_b_profile, &profile_bytes).unwrap();
-        let manifest_sha256 = "a".repeat(64);
+        let upgrade_path = root.join("upgrade.json");
+        let rpc_path = root.join("rpc.json");
+        let manifest = "a".repeat(64);
+        let module = "b".repeat(64);
+        let upgrade = b"verified post-activation chain";
+        let rpc = br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/test-key"}"#;
+        let mut terminal = ProductionUpgradeTerminal {
+            runtime: live_runtime_binding(&profile),
+            lifecycle: ProductionLifecycleView::Activated,
+            deposits_paused: false,
+        };
+        terminal.runtime.schema_version = CURRENT_STABLE_SCHEMA_VERSION;
         let expected = canonical_bytes(
-            &ui_runtime_profile(&profile, &profile_bytes, true, Some(&manifest_sha256)).unwrap(),
+            &production_ui_runtime_profile(
+                &profile,
+                &profile_bytes,
+                &manifest,
+                upgrade,
+                &module,
+                &terminal,
+                rpc,
+            )
+            .unwrap(),
         )
         .unwrap();
+        fs::write(&gate_b_profile, &profile_bytes).unwrap();
+        fs::write(&upgrade_path, upgrade).unwrap();
+        fs::write(&rpc_path, rpc).unwrap();
         fs::write(&runtime_profile, &expected).unwrap();
-        assert!(validate_production_ui_runtime_profile(
-            &profile,
-            &gate_b_profile,
-            &manifest_sha256,
-            &runtime_profile,
-        )
-        .is_ok());
-
-        let mut drifted = expected;
+        let validate = || {
+            validate_production_ui_runtime_profile(
+                &profile,
+                &gate_b_profile,
+                &manifest,
+                &fs::read(&upgrade_path).unwrap(),
+                &module,
+                &terminal,
+                &rpc_path,
+                &runtime_profile,
+            )
+        };
+        assert!(validate().is_ok());
+        let parsed: Value = serde_json::from_slice(&expected).unwrap();
+        assert_eq!(parsed["canisterSchemaVersion"], 36);
+        assert_eq!(parsed["canisterModuleSha256"], module);
+        assert_eq!(
+            parsed["profileFileSha256"],
+            hex(&Sha256::digest(&profile_bytes))
+        );
+        assert_eq!(
+            parsed["postActivationUpgradeSha256"],
+            hex(&Sha256::digest(upgrade))
+        );
+        assert_eq!(parsed["uiRpcConfigSha256"], hex(&Sha256::digest(rpc)));
+        fs::write(&upgrade_path, b"different chain").unwrap();
+        assert!(validate().is_err());
+        fs::write(&upgrade_path, upgrade).unwrap();
+        fs::write(&rpc_path, br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/changed-key"}"#).unwrap();
+        assert!(validate().is_err());
+        fs::write(&rpc_path, rpc).unwrap();
+        let mut drifted = expected.clone();
         drifted.push(b' ');
         fs::write(&runtime_profile, drifted).unwrap();
-        assert!(validate_production_ui_runtime_profile(
+        assert!(validate().is_err());
+        for schema in [34, 35, 37] {
+            terminal.runtime.schema_version = schema;
+            assert!(production_ui_runtime_profile(
+                &profile,
+                &profile_bytes,
+                &manifest,
+                upgrade,
+                &module,
+                &terminal,
+                rpc
+            )
+            .is_err());
+        }
+        terminal.runtime.schema_version = 36;
+        for invalid_rpc in [
+            br#"{"schema_version":1,"base_rpc_url":"https://mainnet.base.org"}"#.as_slice(),
+            br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/key?secret=1"}"#.as_slice(),
+            br#"{"schema_version":2,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/key"}"#.as_slice(),
+            br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/key","override":true}"#.as_slice(),
+        ] {
+            assert!(production_ui_runtime_profile(&profile, &profile_bytes, &manifest, upgrade, &module, &terminal, invalid_rpc).is_err());
+        }
+        terminal.deposits_paused = true;
+        assert!(production_ui_runtime_profile(
             &profile,
-            &gate_b_profile,
-            &manifest_sha256,
-            &runtime_profile,
-        )
-        .is_err());
-
-        profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
-        assert!(validate_production_ui_runtime_profile(
-            &profile,
-            &gate_b_profile,
-            &manifest_sha256,
-            &runtime_profile,
+            &profile_bytes,
+            &manifest,
+            upgrade,
+            &module,
+            &terminal,
+            rpc
         )
         .is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn production_upgrade_activated_schema_migration_preserves_sealed_binding() {
+        let mut profile = valid_profile();
+        profile.canister_schema_version = 35;
+        let status = matching_handover_status();
+        let gate_a_runtime = live_runtime_binding(&profile);
+        let mut before = matching_handover_runtime(&profile, &status);
+        before.operational_config_sha256 = vec![9; 32];
+        let mut after = before.clone();
+        after.schema_version = 36;
+        assert!(production_upgrade_schema_predecessor_bound(
+            &profile,
+            &gate_a_runtime,
+            &status,
+            ProductionLifecycleView::Activated,
+            &before
+        )
+        .unwrap());
+        assert!(production_upgrade_schema_migration_matches(
+            &status, &status, &before, &after
+        ));
+        assert!(!production_upgrade_schema_predecessor_bound(
+            &profile,
+            &gate_a_runtime,
+            &status,
+            ProductionLifecycleView::Bootstrap,
+            &before
+        )
+        .unwrap());
+        let mut drifted = before.clone();
+        drifted.deployment_instance_id = vec![8; 32];
+        assert!(!production_upgrade_schema_predecessor_bound(
+            &profile,
+            &gate_a_runtime,
+            &status,
+            ProductionLifecycleView::Activated,
+            &drifted
+        )
+        .unwrap());
+        drifted = before.clone();
+        drifted.schema_version = 36;
+        assert!(!production_upgrade_schema_predecessor_bound(
+            &profile,
+            &gate_a_runtime,
+            &status,
+            ProductionLifecycleView::Activated,
+            &drifted
+        )
+        .unwrap());
+        after.expected_bridge_runtime_sha256 = vec![8; 32];
+        assert!(!production_upgrade_schema_migration_matches(
+            &status, &status, &before, &after
+        ));
+        after.expected_bridge_runtime_sha256 = before.expected_bridge_runtime_sha256.clone();
+        after.operational_config_sha256 = vec![8; 32];
+        assert!(!production_upgrade_schema_migration_matches(
+            &status, &status, &before, &after
+        ));
+        after = before.clone();
+        after.schema_version = 36;
+        let mut changed_status = status.clone();
+        changed_status.counts.deposits += 1;
+        assert!(!production_upgrade_schema_migration_matches(
+            &status,
+            &changed_status,
+            &before,
+            &after
+        ));
     }
 
     fn live_runtime_binding(profile: &Profile) -> LiveRuntimeBinding {

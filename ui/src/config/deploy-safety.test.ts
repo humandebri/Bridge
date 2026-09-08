@@ -6,7 +6,7 @@ import {
 } from "./deploy-safety"
 
 describe("UI deployment safety", () => {
-  it("requires a production profile bound to the verified Gate B manifest", () => {
+  it("requires_a_production_profile_bound_to_the_verified_Gate_B_manifest", () => {
     const manifest = "a".repeat(64)
     const hashes = { profileFileSha256: "b".repeat(64), profileCanonicalSha256: "c".repeat(64) }
     const production = {
@@ -17,8 +17,22 @@ describe("UI deployment safety", () => {
       gateBManifestSha256: manifest,
       deploymentBlock: 1n,
       ...hashes,
+      canisterSchemaVersion: 36,
+      canisterModuleSha256: "d".repeat(64),
+      postActivationUpgradeSha256: "e".repeat(64),
+      uiRpcConfigSha256: "f".repeat(64),
     }
     expect(() => assertProductionUiProfile(production, manifest)).not.toThrow()
+    for (const drift of [
+      { canisterSchemaVersion: 35 },
+      { canisterModuleSha256: undefined },
+      { postActivationUpgradeSha256: undefined },
+      { uiRpcConfigSha256: undefined },
+    ]) {
+      expect(() => assertProductionUiProfile({ ...production, ...drift }, manifest)).toThrow(
+        "v36 module",
+      )
+    }
     expect(() =>
       assertProductionUiProfile({ testOnly: true, gateBManifestSha256: manifest }, manifest),
     ).toThrow("Production UI deploy rejects test-only")

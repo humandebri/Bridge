@@ -19,3 +19,5 @@ UI の RPC は検証済み runtime profile に指定する。Alchemy UI キー�
 ## 証拠と検証範囲
 
 状態遷移の安全性は既存の authorization_binding、exact_mint_finalization、expiry_refund、refund_evidence_enforcement と withdrawal_finalization の production kernel に従う。通知の資源制限は既存の notification_quota_isolation を再利用する。UI の再開情報は pending_queue に結び付ける。新しい RPC receipt adapter と履歴索引の接続は回帰テストで検証するが、索引の全 SQL 実装を抽象定理だけで証明済みとは扱わない。RPC の canonicality、固定 provider の chain binding、暗号学的真正性、IC message atomicity、ブラウザ永続化の可用性は外部仮定として残る。
+
+公開用UIは、immutableなv35 Gate Bとactivation後のhash-linked upgrade chainからv36終端を検証する。runtime profileに終端module/schema、upgrade chain digest、明示的なUI RPC設定digestを束縛し、配置直前にlive RuntimeBindingと完全一致させる。Alchemy URLはこの公開設定からのみ決定的に描画する。索引再構築中は`list_withdrawals`の失敗で公開ゲートを拒否する。既存v35 UIはCanister更新まで配信を継続し、v35に新UIを公開する互換経路は設けない。

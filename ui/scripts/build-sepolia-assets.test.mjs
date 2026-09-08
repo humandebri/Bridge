@@ -49,7 +49,7 @@ describe("Base Sepolia asset profile template", () => {
     expect(manifest.scripts["deploy:test:artifact"]).not.toContain("build:sepolia")
   })
 
-  it("deploys production from a standalone UI receipt and live v35 evidence", async () => {
+  it("deploys production from a standalone UI receipt and live v36 upgrade evidence", async () => {
     const manifest = JSON.parse(
       await readFile(path.resolve(import.meta.dirname, "../package.json"), "utf8"),
     )
