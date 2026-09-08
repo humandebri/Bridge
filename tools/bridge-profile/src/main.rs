@@ -3719,7 +3719,7 @@ fn validate_production_upgrade_gate_a_binding(
     profile_source: &[u8],
     receipt: &GateAReceipt,
 ) -> Result<(), String> {
-    validate_profile(profile, true)?;
+    validate_profile_with_schema_policy(profile, true, ProfileSchemaPolicy::Historical)?;
     validate_production_canister_receipt(profile, &receipt.canister_install)?;
     let expected_post_deploy_profile_sha256 =
         post_deploy_profile_sha256(profile_source, receipt.bridge_deployment_block_number)?;
@@ -15684,6 +15684,42 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             &receipt,
         )
         .is_ok());
+        for schema in [34, 35, 36, 37] {
+            let mut historical_profile = gate_a_profile.clone();
+            historical_profile.canister_schema_version = schema;
+            let source = serde_json::to_vec(&historical_profile).unwrap();
+            let mut historical_receipt = receipt.clone();
+            historical_receipt
+                .canister_install
+                .runtime_binding
+                .schema_version = schema;
+            historical_receipt.gate_a_profile_sha256 =
+                hex(&canonical_sha256(&historical_profile).unwrap());
+            historical_receipt.post_deploy_profile_sha256 = super::post_deploy_profile_sha256(
+                &source,
+                historical_receipt.bridge_deployment_block_number,
+            )
+            .unwrap();
+            assert_eq!(
+                validate_production_upgrade_gate_a_binding(
+                    &historical_profile,
+                    &source,
+                    &historical_receipt,
+                )
+                .is_ok(),
+                matches!(schema, 35 | 36),
+            );
+            historical_receipt
+                .canister_install
+                .runtime_binding
+                .schema_version = schema + 1;
+            assert!(validate_production_upgrade_gate_a_binding(
+                &historical_profile,
+                &source,
+                &historical_receipt,
+            )
+            .is_err());
+        }
         let mut independently_installed_receipt = receipt.clone();
         independently_installed_receipt
             .canister_install
