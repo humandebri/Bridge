@@ -1172,7 +1172,7 @@ def rawStep (state : ProtocolState) : ProtocolEvent → Option ProtocolState
             requirement := 0 } }
       else none
   | .mintReconciled =>
-      if state.deposit.phase = .refundAvailable ∧ state.deposit.feeCounted = true then
+      if (state.deposit.phase = .authorizationAvailable ∨ state.deposit.phase = .refundAvailable) ∧ state.deposit.feeCounted = true then
         some { state with deposit := {
           state.deposit with
             phase := .minted

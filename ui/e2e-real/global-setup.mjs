@@ -536,7 +536,42 @@ async function setup() {
       mock.actor.set_mint_authorization_epoch(snapshot.mintAuthorizationEpoch),
     ])
   }
+  const prepareLatestMint = async () => {
+    const logs = await publicClient.getContractEvents({
+      address: bridgeAddress,
+      abi: bridgeAbi,
+      eventName: "DepositMinted",
+      fromBlock: deploymentBlock,
+    })
+    const minted = logs.at(-1)
+    if (!minted?.transactionHash) throw new Error("DepositMinted log is unavailable")
+    const receipt = await publicClient.getTransactionReceipt({ hash: minted.transactionHash })
+    await mock.actor.set_mint_log([
+      {
+        deposit_id: hexToBytes(minted.args.depositId),
+        recipient: hexToBytes(minted.args.recipient),
+        authorization_digest: hexToBytes(minted.args.authorizationDigest),
+        gross_amount: minted.args.grossAmount,
+        charged_service_fee: minted.args.serviceFee,
+        minted_amount: minted.args.mintedAmount,
+        transaction_hash: hexToBytes(minted.transactionHash),
+      },
+    ])
+    await mock.actor.set_receipt_mint_log_index([BigInt(minted.logIndex)])
+    const observed = await mock.actor.set_observed_transaction(
+      hexToBytes(minted.transactionHash),
+      hexToBytes(bridgeAddress),
+      hexToBytes(receipt.from),
+      receipt.blockNumber,
+    )
+    if ("Err" in observed) throw new Error(observed.Err)
+    await syncObservedHeads()
+    await mock.actor.set_processed_deposit(true)
+    return { depositId: minted.args.depositId, transactionHash: minted.transactionHash }
+  }
   const prepareLatestWithdrawal = async () => {
+    await mock.actor.set_mint_log([])
+    await mock.actor.set_receipt_mint_log_index([])
     const logs = await publicClient.getContractEvents({
       address: bridgeAddress,
       abi: bridgeAbi,
@@ -1054,6 +1089,24 @@ async function setup() {
       }
       if (request.url === "/test/prepare-latest-withdrawal") {
         return send(response, 200, { transactionHash: await prepareLatestWithdrawal() })
+      }
+      if (request.url === "/test/prepare-latest-mint") {
+        return send(response, 200, await prepareLatestMint())
+      }
+      if (request.url === "/test/mint-state") {
+        const record = (await bridge.actor.get_deposit(hexToBytes(body.depositId)))[0]
+        return send(response, 200, {
+          phase: record ? Object.keys(record.state)[0] : "Missing",
+          transactionHash: record?.mint_receipt[0]
+            ? bytesHex(record.mint_receipt[0].transaction_hash)
+            : null,
+        })
+      }
+      if (request.url === "/test/clear-mint-proof") {
+        await mock.actor.set_processed_deposit(false)
+        await mock.actor.set_mint_log([])
+        await mock.actor.set_receipt_mint_log_index([])
+        return send(response, 200, null)
       }
       if (request.url === "/test/prepare-refundable-deposit") {
         return send(response, 200, await prepareRefundableDeposit())

@@ -62,6 +62,7 @@ function authorizationRecord(): DepositView {
     ],
     max_service_fee: authorization.max_service_fee,
     state: { AuthorizationAvailable: null },
+    mint_receipt: [],
     mint_authorization: [authorization],
     gross_amount: authorization.gross_amount,
   } as DepositView

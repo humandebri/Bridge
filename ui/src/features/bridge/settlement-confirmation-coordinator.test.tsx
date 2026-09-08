@@ -37,6 +37,18 @@ const mocks = vi.hoisted(() => ({
   pendingEntries: [] as PendingWithdrawal[],
 }))
 
+vi.mock("@/lib/base-transaction-observation", async () => {
+  const { basePublicClient } = await import("@/lib/evm/client")
+  return {
+    readBaseReceipt: (hash: `0x${string}`) => basePublicClient.getTransactionReceipt({ hash }),
+    readBaseBlock: (block: bigint | "finalized" | "latest") =>
+      basePublicClient.getBlock(
+        typeof block === "bigint" ? { blockNumber: block } : { blockTag: block },
+      ),
+  }
+})
+vi.mock("@/lib/transaction-recovery", () => ({ withdrawalReceiptDetails: async () => ({}) }))
+
 vi.mock("@/features/bridge/bridge-progress-provider", () => ({
   useBridgeProgress: () => ({
     progress: mocks.progress,
@@ -204,6 +216,30 @@ describe("SettlementConfirmationCoordinator", () => {
       phase: "base-withdrawal-finalizing",
       finalizedBlockNumber: "9",
     })
+    expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
+    expect(mocks.removePending).not.toHaveBeenCalled()
+
+    mocks.update.mockClear()
+    mocks.getReceipt.mockRejectedValue(new Error("RPC unavailable"))
+    await act(() => {
+      document.dispatchEvent(new Event("visibilitychange"))
+    })
+    await waitFor(() => expect(mocks.getReceipt).toHaveBeenCalledTimes(2))
+    expect(mocks.update).not.toHaveBeenCalled()
+
+    const missing = new Error("Receipt missing")
+    missing.name = "TransactionReceiptNotFoundError"
+    mocks.getReceipt.mockRejectedValue(missing)
+    await act(() => {
+      document.dispatchEvent(new Event("visibilitychange"))
+    })
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenCalledWith("withdraw:1", {
+        phase: "base-withdrawal-submitted",
+        baseTransactionOutcome: undefined,
+        receiptBlockNumber: undefined,
+      }),
+    )
     expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
     expect(mocks.removePending).not.toHaveBeenCalled()
   })
@@ -450,7 +486,7 @@ describe("SettlementConfirmationCoordinator", () => {
     expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce()
   })
 
-  it("restores_a_manual_notification_retry_without_automatic_RPC", async () => {
+  it("resumes_restored_notification_after_backoff", async () => {
     mocks.progress = { ...mocks.progress, phase: "attention" }
     mocks.pendingEntries = [
       {
@@ -479,6 +515,14 @@ describe("SettlementConfirmationCoordinator", () => {
     )
     expect(mocks.getReceipt).not.toHaveBeenCalled()
     expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31_000)
+    try {
+      document.dispatchEvent(new Event("visibilitychange"))
+      await waitFor(() => expect(mocks.notifyWithdrawal).toHaveBeenCalledOnce())
+    } finally {
+      clock.mockRestore()
+    }
   })
 
   it("runs_a_restored_manual_notification_retry_and_clears_the_action_on_success", async () => {

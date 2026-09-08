@@ -99,6 +99,7 @@ function deposit(sequence: number): DepositView {
     base_recipient: new Uint8Array(20),
     state: { Minted: null },
     last_settlement_stop_reason: [],
+    mint_receipt: [],
     mint_authorization: [],
     automatic_progress: [],
   }

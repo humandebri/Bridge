@@ -441,6 +441,11 @@ export const idlFactory = ({ IDL }) => {
     'net_amount' : IDL.Nat,
     'service_fee' : IDL.Nat,
   });
+  const MintReceiptView = IDL.Record({
+    'transaction_hash' : IDL.Vec(IDL.Nat8),
+    'log_index' : IDL.Nat64,
+    'receipt_block_number' : IDL.Nat64,
+  });
   const MintAuthorizationView = IDL.Record({
     'finalized_block_number' : IDL.Nat64,
     'signature' : IDL.Opt(IDL.Vec(IDL.Nat8)),
@@ -498,6 +503,7 @@ export const idlFactory = ({ IDL }) => {
     'funding_ledger_block_index' : IDL.Opt(IDL.Nat),
     'from_subaccount' : IDL.Opt(IDL.Vec(IDL.Nat8)),
     'last_settlement_stop_reason' : IDL.Opt(SettlementStopReason),
+    'mint_receipt' : IDL.Opt(MintReceiptView),
     'created_at_ns' : IDL.Nat64,
     'state' : DepositPhase,
     'available_refund_amount' : IDL.Opt(IDL.Nat),
@@ -662,6 +668,63 @@ export const idlFactory = ({ IDL }) => {
     'Ok' : NonterminalDepositRefPage,
     'Err' : ListDepositIdsError,
   });
+  const ListWithdrawalsArgs = IDL.Record({
+    'requester' : IDL.Vec(IDL.Nat8),
+    'limit' : IDL.Nat16,
+    'before_cursor' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+  });
+  const WithdrawalHistoryView = IDL.Record({
+    'transaction_hash' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'requester' : IDL.Vec(IDL.Nat8),
+    'owner' : IDL.Principal,
+    'observed_at_ns' : IDL.Nat64,
+    'subaccount' : IDL.Vec(IDL.Nat8),
+    'withdrawal' : WithdrawalView,
+  });
+  const WithdrawalHistoryPage = IDL.Record({
+    'history_truncated' : IDL.Bool,
+    'next_cursor' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'items' : IDL.Vec(WithdrawalHistoryView),
+  });
+  const ListWithdrawalsError = IDL.Variant({
+    'InvalidRequester' : IDL.Null,
+    'IndexNotReady' : IDL.Null,
+    'InvalidCursor' : IDL.Null,
+    'StorageFailure' : IDL.Null,
+    'InvalidLimit' : IDL.Null,
+  });
+  const Result_17 = IDL.Variant({
+    'Ok' : WithdrawalHistoryPage,
+    'Err' : ListWithdrawalsError,
+  });
+  const NotifyDepositMintArgs = IDL.Record({
+    'transaction_hash' : IDL.Vec(IDL.Nat8),
+    'deposit_id' : IDL.Vec(IDL.Nat8),
+  });
+  const NotifyDepositMintReceipt = IDL.Variant({
+    'Duplicate' : IDL.Record({ 'deposit_id' : IDL.Vec(IDL.Nat8) }),
+    'Recorded' : IDL.Record({ 'deposit_id' : IDL.Vec(IDL.Nat8) }),
+  });
+  const NotifyDepositMintError = IDL.Variant({
+    'Busy' : IDL.Null,
+    'RpcUnavailable' : IDL.Null,
+    'IdentityConflict' : IDL.Null,
+    'NotAdmissible' : IDL.Null,
+    'InvalidDepositId' : IDL.Null,
+    'TransactionNotConfirmed' : IDL.Null,
+    'NotFound' : IDL.Null,
+    'InsufficientCycles' : IDL.Null,
+    'RpcInconsistent' : IDL.Null,
+    'RateLimited' : IDL.Null,
+    'InvalidTransactionHash' : IDL.Null,
+    'TransactionReverted' : IDL.Null,
+    'StorageFailure' : IDL.Null,
+    'AnonymousCaller' : IDL.Null,
+  });
+  const Result_18 = IDL.Variant({
+    'Ok' : NotifyDepositMintReceipt,
+    'Err' : NotifyDepositMintError,
+  });
   const NotifyWithdrawalArgs = IDL.Record({
     'transaction_hash' : IDL.Vec(IDL.Nat8),
   });
@@ -697,11 +760,11 @@ export const idlFactory = ({ IDL }) => {
     'AnonymousCaller' : IDL.Null,
     'InvalidBaseResponse' : IDL.Null,
   });
-  const Result_17 = IDL.Variant({
+  const Result_19 = IDL.Variant({
     'Ok' : NotifyWithdrawalReceipt,
     'Err' : NotifyWithdrawalError,
   });
-  const Result_18 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : AdminError });
+  const Result_20 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : AdminError });
   const BaseGovernanceAction = IDL.Variant({
     'ExecuteControlPlaneRotation' : IDL.Null,
     'PauseDepositMints' : IDL.Null,
@@ -722,7 +785,7 @@ export const idlFactory = ({ IDL }) => {
     'complete' : IDL.Bool,
     'checksum' : IDL.Nat64,
   });
-  const Result_19 = IDL.Variant({
+  const Result_21 = IDL.Variant({
     'Ok' : ChecksumRefreshStatus,
     'Err' : StorageMaintenanceError,
   });
@@ -762,7 +825,7 @@ export const idlFactory = ({ IDL }) => {
       'retry_after_seconds' : IDL.Nat64,
     }),
   });
-  const Result_20 = IDL.Variant({
+  const Result_22 = IDL.Variant({
     'Ok' : DepositReceipt,
     'Err' : DepositError,
   });
@@ -783,7 +846,7 @@ export const idlFactory = ({ IDL }) => {
     'FinalityUnavailable' : IDL.Null,
     'AnonymousCaller' : IDL.Null,
   });
-  const Result_21 = IDL.Variant({
+  const Result_23 = IDL.Variant({
     'Ok' : DepositView,
     'Err' : RequestDepositRefundError,
   });
@@ -792,7 +855,7 @@ export const idlFactory = ({ IDL }) => {
     'state' : FeePayoutState,
     'amount' : IDL.Nat,
   });
-  const Result_22 = IDL.Variant({
+  const Result_24 = IDL.Variant({
     'Ok' : FeePayoutReceipt,
     'Err' : AdminError,
   });
@@ -808,11 +871,11 @@ export const idlFactory = ({ IDL }) => {
     'activation_attestation' : ActivationAttestation,
     'lifecycle' : ProductionLifecycle,
   });
-  const Result_23 = IDL.Variant({
+  const Result_25 = IDL.Variant({
     'Ok' : OperationalConfigSealReceipt,
     'Err' : BaseGovernanceError,
   });
-  const Result_24 = IDL.Variant({
+  const Result_26 = IDL.Variant({
     'Ok' : IDL.Text,
     'Err' : StorageMaintenanceError,
   });
@@ -887,8 +950,14 @@ export const idlFactory = ({ IDL }) => {
         [Result_16],
         ['query'],
       ),
-    'notify_withdrawal' : IDL.Func([NotifyWithdrawalArgs], [Result_17], []),
-    'pause_new_deposits' : IDL.Func([], [Result_18], []),
+    'list_withdrawals' : IDL.Func(
+        [ListWithdrawalsArgs],
+        [Result_17],
+        ['query'],
+      ),
+    'notify_deposit_mint' : IDL.Func([NotifyDepositMintArgs], [Result_18], []),
+    'notify_withdrawal' : IDL.Func([NotifyWithdrawalArgs], [Result_19], []),
+    'pause_new_deposits' : IDL.Func([], [Result_20], []),
     'prepare_base_governance_action' : IDL.Func(
         [BaseGovernanceAction],
         [Result_5],
@@ -901,24 +970,24 @@ export const idlFactory = ({ IDL }) => {
       ),
     'prepare_next_emergency_base_action' : IDL.Func([], [Result_5], []),
     'refresh_activation_attestation' : IDL.Func([], [Result_6], []),
-    'refresh_storage_checksum' : IDL.Func([IDL.Nat64], [Result_19], []),
-    'request_deposit' : IDL.Func([DepositArgs], [Result_20], []),
-    'request_deposit_refund' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_21], []),
-    'request_fee_payout' : IDL.Func([IDL.Nat], [Result_22], []),
-    'rotate_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_18], []),
+    'refresh_storage_checksum' : IDL.Func([IDL.Nat64], [Result_21], []),
+    'request_deposit' : IDL.Func([DepositArgs], [Result_22], []),
+    'request_deposit_refund' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_23], []),
+    'request_fee_payout' : IDL.Func([IDL.Nat], [Result_24], []),
+    'rotate_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_20], []),
     'rotate_pause_principal' : IDL.Func(
         [RotatePausePrincipalArgs],
-        [Result_18],
+        [Result_20],
         [],
       ),
     'schedule_activation' : IDL.Func([], [Result_5], []),
     'seal_operational_config' : IDL.Func(
         [OperationalConfigArgs],
-        [Result_23],
+        [Result_25],
         [],
       ),
     'start_storage_validation' : IDL.Func([], [Result_3], []),
-    'storage_integrity_check' : IDL.Func([], [Result_24], ['query']),
+    'storage_integrity_check' : IDL.Func([], [Result_26], ['query']),
   });
 };
 export const init = ({ IDL }) => {

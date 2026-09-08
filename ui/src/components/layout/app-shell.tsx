@@ -1,3 +1,4 @@
+import { MintConfirmationCoordinator } from "@/features/bridge/mint-confirmation-coordinator"
 import { Link, Outlet } from "@tanstack/react-router"
 import { BookOpen, History, Menu, ShieldCheck } from "lucide-react"
 import { WalletCenter, WalletDialogProvider } from "@/features/wallet/wallet-controls"
@@ -30,6 +31,7 @@ export function AppShell() {
         <RiskAcknowledgementDialog />
         <DepositProgressCoordinator />
         <SettlementConfirmationCoordinator />
+        <MintConfirmationCoordinator />
         <div className="flex min-h-screen flex-col">
           {deploymentProfile.testOnly ? (
             <div

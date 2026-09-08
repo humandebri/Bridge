@@ -117,6 +117,7 @@ function depositItem(
     state: { AuthorizationPending: null },
     available_refund_amount: [100n],
     owner_sequence: 1n,
+    mint_receipt: [],
     mint_authorization: [
       {
         finalized_block_number: 10n,

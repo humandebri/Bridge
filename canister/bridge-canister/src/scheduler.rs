@@ -165,8 +165,33 @@ impl SettlementLease {
 }
 #[cfg(target_arch = "wasm32")]
 thread_local! {
+    static HISTORY_INDEX_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
     static SETTLEMENT_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
     static FUNDING_RECOVERY_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
+}
+
+// History maintenance has durable progress but must also run while asset operations are paused.
+// Its own timer slot keeps index work from delaying or replacing settlement wakeups.
+pub fn arm_history_index_rebuild() {
+    #[cfg(target_arch = "wasm32")]
+    HISTORY_INDEX_TIMER.with(|slot| {
+        if slot.borrow().is_some() {
+            return;
+        }
+        let timer = ic_cdk_timers::set_timer(Duration::from_secs(1), async {
+            HISTORY_INDEX_TIMER.with(|slot| {
+                slot.borrow_mut().take();
+            });
+            match STORE.with(|store| store.borrow_mut().advance_history_indexes()) {
+                Ok(true) => {}
+                Ok(false) => arm_history_index_rebuild(),
+                Err(_) => {
+                    ic_cdk::println!("History index rebuild failed; history remains unavailable")
+                }
+            }
+        });
+        *slot.borrow_mut() = Some(timer);
+    });
 }
 
 pub fn arm_funding_recovery() {

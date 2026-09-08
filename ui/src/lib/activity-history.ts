@@ -8,11 +8,12 @@ export interface WithdrawalHistoryItem {
   id?: bigint
   amount?: bigint
   amountOut?: bigint
-  hash: `0x${string}`
-  blockNumber: bigint
-  logIndex: number
+  hash?: `0x${string}`
+  blockNumber?: bigint
+  logIndex?: number
   createdAtNs: bigint
   destinationAccount: WithdrawalDestinationAccount
+  baseNeedsReview?: boolean
   canister?: WithdrawalView
 }
 
@@ -58,7 +59,7 @@ export function mergeActivityItems(
     unique.set(key, { key, direction: "to-base", createdAtNs: deposit.created_at_ns, deposit })
   }
   for (const withdrawal of withdrawals) {
-    const key = `withdrawal:${withdrawal.hash.toLowerCase()}:${withdrawal.logIndex}`
+    const key = `withdrawal:${withdrawal.id?.toString() ?? withdrawal.hash?.toLowerCase()}`
     unique.set(key, { key, direction: "to-ic", createdAtNs: withdrawal.createdAtNs, withdrawal })
   }
   return [...unique.values()].sort((left, right) => {

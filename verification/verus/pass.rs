@@ -1070,9 +1070,9 @@ proof fn deposit_fee_is_charged_only_on_authorization_signature(state: int, even
         <==> state == 2 && event == 5
 {}
 
-proof fn deposit_reservation_is_released_at_local_expiry(state: int, event: int)
+proof fn deposit_reservation_is_released_at_expiry_or_recorded_mint(state: int, event: int)
     ensures kernel::deposit_releases_reservation_spec(state, event)
-        <==> (state == 2 && event == 4) || (state == 3 && event == 4)
+        <==> (state == 2 && event == 4) || (state == 3 && (event == 4 || event == 6))
 {}
 
 proof fn deposit_numeric_effects_match_every_economic_transition(
@@ -1086,6 +1086,8 @@ proof fn deposit_numeric_effects_match_every_economic_transition(
             == (reserved, 0int, 0int, fee, fee, 0int, 0int),
         kernel::deposit_numeric_effects_spec(3, 4, gross, net, fee, reserved)
             == (0int, 0int, reserved, 0int, 0int, 0int, 0int),
+        kernel::deposit_numeric_effects_spec(3, 6, gross, net, fee, reserved)
+            == (0int, 0int, reserved, 0int, net, 0int, net),
         kernel::deposit_numeric_effects_spec(4, 6, gross, net, fee, 0)
             == (0int, 0int, 0int, 0int, net, 0int, net),
         kernel::deposit_numeric_effects_spec(6, 8, gross, 0, fee, 0)
@@ -1106,6 +1108,8 @@ fn deposit_transition_effects_match_every_economic_transition(
             (reserved, 0u128, 0u128, fee, fee, 0u128, 0u128),
         state == 3 && event == 4 ==> result ==
             (0u128, 0u128, reserved, 0u128, 0u128, 0u128, 0u128),
+        state == 3 && event == 6 && net != 0 ==> result ==
+            (0u128, 0u128, reserved, 0u128, net, 0u128, net),
         state == 4 && event == 6 && net != 0 ==> result ==
             (0u128, 0u128, 0u128, 0u128, net, 0u128, net),
         state == 6 && event == 8 && net == 0 ==>

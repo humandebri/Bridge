@@ -1,3 +1,4 @@
+import { clearMintObservations } from "@/lib/mint-observation"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
@@ -5,10 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { DepositView } from "@/generated/bridge.did"
 import { deploymentProfile } from "@/config/profile"
 import { MintAuthorizationAction } from "./mint-authorization-action"
+import { DepositActivityRow } from "@/routes/history"
 
 const mocks = vi.hoisted(() => ({
   getTransactionReceipt: vi.fn(),
+  notifyMint: vi.fn(),
   getBlock: vi.fn(),
+  simulateContract: vi.fn().mockResolvedValue({}),
   readPendingMint: vi.fn(),
   removePendingMint: vi.fn(),
   validateMintAuthorization: vi.fn(),
@@ -20,13 +24,30 @@ const mocks = vi.hoisted(() => ({
   savePendingMint: vi.fn(),
   useAccount: vi.fn(),
   exactMintReceiptFinalization: vi.fn(),
+  receiptMatches: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  toastWarning: vi.fn(),
   heartbeatAgeMs: { value: 0 },
   heartbeatTimestamp: { value: 1_000n },
   latestTimestamp: { value: 1_000n },
   latestUnavailable: { value: false },
   authorizationDeadline: { value: 2_000n },
+}))
+
+vi.mock("@/lib/base-transaction-observation", () => ({
+  readBaseReceipt: (hash: string) => mocks.getTransactionReceipt({ hash }),
+  readBaseBlock: (block: bigint | string) =>
+    mocks.getBlock(typeof block === "bigint" ? { blockNumber: block } : { blockTag: block }),
+  sharedBaseRead: (_key: string, read: () => Promise<unknown>) => read(),
+}))
+vi.mock("@/lib/ic/bridge", () => ({
+  createBridgeActor: async () => ({
+    notify_deposit_mint: mocks.notifyMint,
+  }),
+}))
+vi.mock("@/lib/ic/withdrawal-notification-client", () => ({
+  getWithdrawalNotificationIdentity: async () => ({}),
 }))
 
 vi.mock("wagmi", () => ({
@@ -79,6 +100,7 @@ vi.mock("@/lib/runtime-validation", () => ({
 vi.mock("@/lib/evm/client", () => ({
   basePublicClient: {
     getBlock: mocks.getBlock,
+    simulateContract: mocks.simulateContract,
     getTransactionReceipt: mocks.getTransactionReceipt,
   },
 }))
@@ -98,6 +120,7 @@ vi.mock("@/lib/mint-authorization", () => ({
 
 vi.mock("@/lib/deposit-mint-finalization", () => ({
   exactMintReceiptFinalization: mocks.exactMintReceiptFinalization,
+  receiptContainsExactDepositMint: mocks.receiptMatches,
 }))
 
 vi.mock("@/lib/pending-confirmations", () => ({
@@ -110,7 +133,9 @@ vi.mock("@/lib/browser-lock", () => ({
   withBrowserLock: mocks.withBrowserLock,
 }))
 
-vi.mock("sonner", () => ({ toast: { error: mocks.toastError, success: mocks.toastSuccess } }))
+vi.mock("sonner", () => ({
+  toast: { error: mocks.toastError, success: mocks.toastSuccess, warning: mocks.toastWarning },
+}))
 
 const pendingHash = `0x${"22".repeat(32)}`
 const finalizedBlockHash = `0x${"aa".repeat(32)}`
@@ -147,6 +172,10 @@ describe("MintAuthorizationAction pending retry", () => {
   })
 
   beforeEach(() => {
+    clearMintObservations()
+    mocks.notifyMint
+      .mockReset()
+      .mockResolvedValue({ Ok: { Recorded: { deposit_id: new Uint8Array(32).fill(0x11) } } })
     deploymentProfile.bridgeAddress = "0x1111111111111111111111111111111111111111"
     mocks.getBlock
       .mockReset()
@@ -184,10 +213,12 @@ describe("MintAuthorizationAction pending retry", () => {
       },
     })
     mocks.writeContractAsync.mockReset().mockResolvedValue(pendingHash)
+    mocks.receiptMatches.mockReset().mockReturnValue(true)
     mocks.exactMintReceiptFinalization.mockReset().mockReturnValue("finalized")
     mocks.savePendingMint.mockReset().mockResolvedValue(undefined)
     mocks.toastSuccess.mockReset()
     mocks.toastError.mockReset()
+    mocks.toastWarning.mockReset()
     mocks.heartbeatAgeMs.value = 0
     mocks.heartbeatTimestamp.value = 1_000n
     mocks.latestTimestamp.value = 1_000n
@@ -243,6 +274,8 @@ describe("MintAuthorizationAction pending retry", () => {
       wrapper: Wrapper,
     })
 
+    await waitFor(() => expect(mocks.exactMintReceiptFinalization).toHaveBeenCalled())
+    fireEvent(document, new Event("visibilitychange"))
     await waitFor(() => expect(onMintConfirmed).toHaveBeenCalledOnce())
     expect(mocks.writeContractAsync).not.toHaveBeenCalled()
     expect(mocks.removePendingMint).not.toHaveBeenCalled()
@@ -251,7 +284,9 @@ describe("MintAuthorizationAction pending retry", () => {
   it("keeps retry recovery out of the compact History action cell", async () => {
     render(<MintAuthorizationAction record={record} compact />, { wrapper: Wrapper })
 
-    expect(await screen.findByText("Base receipt unavailable; checking")).toBeInTheDocument()
+    expect(
+      await screen.findByText("Submitted on Base; refreshing transaction status."),
+    ).toBeInTheDocument()
     expect(screen.queryByText("Review saved transaction")).not.toBeInTheDocument()
     expect(screen.queryByRole("button")).not.toBeInTheDocument()
   })
@@ -279,6 +314,7 @@ describe("MintAuthorizationAction pending retry", () => {
       blockHash: finalizedBlockHash,
       logs: [],
     })
+    mocks.receiptMatches.mockReturnValue(false)
     mocks.exactMintReceiptFinalization.mockReturnValue("conflict")
     render(<MintAuthorizationAction record={record} onMintConfirmed={onMintConfirmed} />, {
       wrapper: Wrapper,
@@ -294,6 +330,10 @@ describe("MintAuthorizationAction pending retry", () => {
 
   it("keeps_a_mined_transaction_pending_until_its_block_is_finalized", async () => {
     const onMintConfirmed = vi.fn()
+    const readBlock = mocks.getBlock.getMockImplementation()!
+    mocks.getBlock.mockImplementation((args: { blockTag?: string; blockNumber?: bigint }) =>
+      args.blockTag === "finalized" ? new Promise(() => undefined) : readBlock(args),
+    )
     const onProgress = vi.fn()
     mocks.getTransactionReceipt.mockResolvedValue({
       status: "success",
@@ -302,7 +342,7 @@ describe("MintAuthorizationAction pending retry", () => {
       logs: [],
     })
 
-    render(
+    const view = render(
       <MintAuthorizationAction
         record={record}
         onMintConfirmed={onMintConfirmed}
@@ -321,8 +361,35 @@ describe("MintAuthorizationAction pending retry", () => {
       blockNumber: 101n,
       outcome: "success",
     })
-    expect(screen.getByText("Included on Base; awaiting finality")).toBeInTheDocument()
+    expect(screen.getByText("Success")).toBeInTheDocument()
     expect(screen.queryByText("Review saved transaction")).not.toBeInTheDocument()
+
+    mocks.getTransactionReceipt.mockRejectedValue(new Error("RPC unavailable"))
+    view.rerender(
+      <MintAuthorizationAction
+        record={record}
+        onMintConfirmed={onMintConfirmed}
+        onProgress={vi.fn()}
+      />,
+    )
+    await waitFor(() => expect(mocks.getTransactionReceipt).toHaveBeenCalledTimes(2))
+    expect(screen.getByText("Success")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Mint on Base" })).not.toBeInTheDocument()
+    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
+
+    const missing = new Error("Receipt missing")
+    missing.name = "TransactionReceiptNotFoundError"
+    mocks.getTransactionReceipt.mockRejectedValue(missing)
+    const correctedProgress = vi.fn()
+    view.rerender(<MintAuthorizationAction record={record} onProgress={correctedProgress} />)
+    await waitFor(() =>
+      expect(correctedProgress).toHaveBeenCalledWith({
+        phase: "submitted",
+        transactionHash: pendingHash,
+      }),
+    )
+    expect(screen.queryByText("Success")).not.toBeInTheDocument()
+    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
   })
 
   it("does not offer a retry for a reverted receipt before its block is finalized", async () => {
@@ -338,7 +405,7 @@ describe("MintAuthorizationAction pending retry", () => {
       wrapper: Wrapper,
     })
 
-    expect(await screen.findByText("Transaction reverted; awaiting finality")).toBeInTheDocument()
+    expect(await screen.findByText("Transaction reverted")).toBeInTheDocument()
     expect(screen.queryByText("Review saved transaction")).not.toBeInTheDocument()
     expect(mocks.removePendingMint).not.toHaveBeenCalled()
     expect(onProgress).toHaveBeenCalledWith({
@@ -369,7 +436,10 @@ describe("MintAuthorizationAction pending retry", () => {
       { wrapper: Wrapper },
     )
 
-    await waitFor(() => expect(mocks.removePendingMint).toHaveBeenCalledWith(pendingExpectation))
+    await waitFor(() => expect(mocks.exactMintReceiptFinalization).toHaveBeenCalled())
+    fireEvent(document, new Event("visibilitychange"))
+    expect(await screen.findByRole("button", { name: "Review saved transaction" })).toBeEnabled()
+    expect(mocks.removePendingMint).not.toHaveBeenCalled()
     expect(onMintConfirmed).not.toHaveBeenCalled()
     expect(mocks.writeContractAsync).not.toHaveBeenCalled()
     expect(onProgress).toHaveBeenCalledWith(
@@ -378,11 +448,16 @@ describe("MintAuthorizationAction pending retry", () => {
         transactionHash: pendingHash,
       }),
     )
+    fireEvent.click(screen.getByRole("button", { name: "Review saved transaction" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Clear and retry" }))
+    await waitFor(() => expect(mocks.removePendingMint).toHaveBeenCalledWith(pendingExpectation))
     expect(await screen.findByRole("button", { name: "Mint on Base" })).toBeEnabled()
   })
 
   it("reports a saved transaction exactly once after its exact receipt is confirmed", async () => {
     const onMintConfirmed = vi.fn()
+    const onProgress = vi.fn()
+    mocks.notifyMint.mockImplementation(() => new Promise(() => undefined))
     mocks.getTransactionReceipt.mockResolvedValue({
       status: "success",
       blockNumber: 99n,
@@ -390,10 +465,19 @@ describe("MintAuthorizationAction pending retry", () => {
       logs: [],
     })
 
-    render(<MintAuthorizationAction record={record} onMintConfirmed={onMintConfirmed} />, {
-      wrapper: Wrapper,
-    })
+    render(
+      <MintAuthorizationAction
+        record={record}
+        onMintConfirmed={onMintConfirmed}
+        onProgress={onProgress}
+      />,
+      {
+        wrapper: Wrapper,
+      },
+    )
 
+    await waitFor(() => expect(mocks.exactMintReceiptFinalization).toHaveBeenCalled())
+    fireEvent(document, new Event("visibilitychange"))
     await waitFor(() => expect(onMintConfirmed).toHaveBeenCalledOnce())
     expect(onMintConfirmed).toHaveBeenCalledWith({
       transactionHash: pendingHash,
@@ -401,6 +485,24 @@ describe("MintAuthorizationAction pending retry", () => {
       mintedAmount: 450_000_000n,
     })
     expect(mocks.toastSuccess).not.toHaveBeenCalled()
+    const readBlock = mocks.getBlock.getMockImplementation()!
+    mocks.getBlock.mockImplementation((args: { blockTag?: string; blockNumber?: bigint }) =>
+      args.blockNumber === 99n
+        ? Promise.resolve({ number: 99n, hash: `0x${"bb".repeat(32)}`, timestamp: 1_000n })
+        : readBlock(args),
+    )
+    const previousChecks = mocks.exactMintReceiptFinalization.mock.calls.length
+    fireEvent(document, new Event("visibilitychange"))
+    await waitFor(() =>
+      expect(mocks.exactMintReceiptFinalization.mock.calls.length).toBeGreaterThan(previousChecks),
+    )
+    mocks.getTransactionReceipt.mockRejectedValue(new Error("RPC unavailable after reorg"))
+    fireEvent(document, new Event("visibilitychange"))
+    await waitFor(() =>
+      expect(onProgress).toHaveBeenCalledWith({ phase: "submitted", transactionHash: pendingHash }),
+    )
+    expect(screen.queryByText("Success")).not.toBeInTheDocument()
+    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
   })
 
   it("clears the hash only after successful revalidation and explicit confirmation", async () => {
@@ -423,6 +525,7 @@ describe("MintAuthorizationAction pending retry", () => {
 
   it("opens the Base wallet once and does not request an IC success confirmation", async () => {
     mocks.readPendingMint.mockReturnValue(undefined)
+    mocks.savePendingMint.mockRejectedValue(new Error("browser storage unavailable"))
     mocks.getTransactionReceipt.mockResolvedValue({
       status: "success",
       blockNumber: 99n,
@@ -438,7 +541,11 @@ describe("MintAuthorizationAction pending retry", () => {
 
     await waitFor(() => expect(mocks.writeContractAsync).toHaveBeenCalledOnce())
     expect(mocks.refetchRuntimeWriteReady).toHaveBeenCalledOnce()
-    expect(await screen.findByText("Minted on Base")).toBeInTheDocument()
+    await waitFor(() =>
+      expect(mocks.toastWarning).toHaveBeenCalledWith(expect.stringContaining(pendingHash)),
+    )
+    expect(mocks.toastError).not.toHaveBeenCalled()
+    expect(await screen.findByText("Success")).toBeInTheDocument()
     expect(screen.queryByText("Confirm mint on IC")).not.toBeInTheDocument()
     expect(mocks.writeContractAsync).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -535,6 +642,8 @@ describe("MintAuthorizationAction pending retry", () => {
     await waitFor(() => expect(mintButton).toBeEnabled())
     fireEvent.click(mintButton)
 
+    await waitFor(() => expect(mocks.exactMintReceiptFinalization).toHaveBeenCalled())
+    fireEvent(document, new Event("visibilitychange"))
     await waitFor(() => expect(onMintConfirmed).toHaveBeenCalledOnce())
     expect(onMintConfirmed).toHaveBeenCalledWith({
       transactionHash: pendingHash,
@@ -544,25 +653,43 @@ describe("MintAuthorizationAction pending retry", () => {
     expect(mocks.toastSuccess).not.toHaveBeenCalled()
   })
 
-  it("blocks a new mint while finalized history is unavailable", async () => {
-    mocks.readPendingMint.mockReturnValue(undefined)
-    render(
-      <MintAuthorizationAction
-        record={record}
-        mintBlockedReason="Finalized Base mint history is unavailable. Refresh before minting."
-      />,
-      { wrapper: Wrapper },
-    )
+  it.each(["unavailable", "checking"] as const)(
+    "allows mint validation when history is %s and rejects a processed deposit",
+    async (mintFinalization) => {
+      mocks.readPendingMint.mockReturnValue(undefined)
+      mocks.validateMintAuthorization.mockRejectedValue(new Error("Deposit already processed"))
+      const deposit = {
+        ...record,
+        deposit_id: new Uint8Array(32).fill(0x11),
+        quote: [],
+        refund: [],
+        gross_amount: 500_000_000n,
+        created_at_ns: 1n,
+        funding_ledger_block_index: [],
+        automatic_progress: [],
+        last_settlement_stop_reason: [],
+      } as unknown as DepositView
+      render(
+        <DepositActivityRow
+          item={{ key: "deposit:history-outage", direction: "to-base", createdAtNs: 1n, deposit }}
+          mintFinalization={mintFinalization}
+          writesEnabled
+          onRequestRefund={vi.fn()}
+          onContinue={vi.fn()}
+        />,
+        { wrapper: Wrapper },
+      )
 
-    expect(
-      await screen.findByText(
-        "Finalized Base mint history is unavailable. Refresh before minting.",
-      ),
-    ).toBeInTheDocument()
-    expect(screen.getByText("Mint on Base")).toBeDisabled()
-    fireEvent.click(screen.getByText("Mint on Base"))
-    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
-  })
+      const button = await screen.findByRole("button", { name: "Mint on Base" })
+      expect(button).toBeEnabled()
+      expect(
+        screen.queryByText(/Refresh before minting|Checking finalized Base mint history/),
+      ).not.toBeInTheDocument()
+      fireEvent.click(button)
+      await waitFor(() => expect(mocks.validateMintAuthorization).toHaveBeenCalledOnce())
+      expect(mocks.writeContractAsync).not.toHaveBeenCalled()
+    },
+  )
 
   it("does not enable refund from a locally extrapolated timestamp", async () => {
     mocks.readPendingMint.mockReturnValue(undefined)

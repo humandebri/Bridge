@@ -1,9 +1,11 @@
+import { readBaseReceipt, readBaseBlock } from "@/lib/base-transaction-observation"
+import { TransactionEvidenceMismatch, withdrawalReceiptDetails } from "@/lib/transaction-recovery"
 import { useEffect, useRef } from "react"
 import { hexToBytes } from "viem"
 import { toast } from "sonner"
 import { deploymentProfile } from "@/config/profile"
 import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
-import { basePublicClient, hasIndependentFinalizedRevertQuorum } from "@/lib/evm/client"
+import { hasIndependentFinalizedRevertQuorum } from "@/lib/evm/client"
 import { finalizedCheckpointMatches } from "@/lib/finalized-checkpoint"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import {
@@ -38,6 +40,7 @@ export function SettlementConfirmationCoordinator() {
   const runningRef = useRef(new Set<string>())
   const tickRef = useRef<() => void>(() => undefined)
   const notificationRunsRef = useRef(new Set<string>())
+  const notificationRetryAfterRef = useRef(new Map<string, number>())
   const observerGenerationRef = useRef(0)
   const update = bridgeProgress.update
   const setAction = bridgeProgress.setAction
@@ -100,9 +103,20 @@ export function SettlementConfirmationCoordinator() {
         return true
       })
       for (const entry of entries) {
+        const transactionKey = entry.transactionHash.toLowerCase()
+        let resumeNotification = false
         if (entry.notification.status === "awaiting-notification") {
           const failure = entry.notification.failure
-          if (failure?.disposition === "manual-retry" || failure?.disposition === "terminal") {
+          if (failure?.disposition === "manual-retry") {
+            const retryAfter = notificationRetryAfterRef.current.get(transactionKey)
+            if (retryAfter === undefined)
+              notificationRetryAfterRef.current.set(transactionKey, Date.now() + 30_000)
+            resumeNotification = retryAfter !== undefined && Date.now() >= retryAfter
+          }
+          if (
+            (failure?.disposition === "manual-retry" && !resumeNotification) ||
+            failure?.disposition === "terminal"
+          ) {
             presentNotificationFailure(
               entry,
               failure,
@@ -113,29 +127,17 @@ export function SettlementConfirmationCoordinator() {
             )
             continue
           }
-          if (entry.notification.automaticAttemptUsed && !failure) {
-            const interrupted = {
-              code: "Interrupted",
-              message: "The automatic IC notification was interrupted. Retry it explicitly.",
-              disposition: "manual-retry" as const,
-            }
-            void setPendingConfirmationNotificationFailure(entry, interrupted)
-            presentNotificationFailure(
-              entry,
-              interrupted,
-              recoverableProgressFor(entry)?.id,
-              update,
-              setAction,
-              observeWithdrawal,
-            )
-            continue
-          }
-          if (matchingProgressFor(entry)?.phase === "attention") continue
+          if (matchingProgressFor(entry)?.phase === "attention" && !resumeNotification) continue
         }
-        const transactionKey = entry.transactionHash.toLowerCase()
         if (runningRef.current.has(transactionKey)) continue
         runningRef.current.add(transactionKey)
-        void observeWithdrawal(entry, activeProgressFor(entry)?.id, "automatic")
+        if (resumeNotification)
+          notificationRetryAfterRef.current.set(transactionKey, Date.now() + 120_000)
+        void observeWithdrawal(
+          entry,
+          (resumeNotification ? recoverableProgressFor(entry) : activeProgressFor(entry))?.id,
+          resumeNotification ? "manual" : "automatic",
+        )
           .catch(() => undefined)
           .finally(() => {
             runningRef.current.delete(transactionKey)
@@ -180,18 +182,48 @@ export function SettlementConfirmationCoordinator() {
         }
         return
       }
-      const receipt = await basePublicClient.getTransactionReceipt({ hash: entry.transactionHash })
+      const receipt = await readBaseReceipt(entry.transactionHash).catch((error: unknown) => {
+        if (
+          error instanceof Error &&
+          error.name === "TransactionReceiptNotFoundError" &&
+          isCurrent()
+        ) {
+          const progress = progressForTrigger(entry, trigger)
+          if (progress)
+            update(progress.id, {
+              phase: "base-withdrawal-submitted",
+              baseTransactionOutcome: undefined,
+              receiptBlockNumber: undefined,
+            })
+        }
+        throw error
+      })
       if (!isCurrent()) return
       if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId)
         return
       let latest = progressForTrigger(entry, trigger)
       if (receipt.blockHash === null) return
+      if (receipt.status === "success") {
+        try {
+          await withdrawalReceiptDetails(entry.transactionHash, entry.owner)
+        } catch (error) {
+          if (error instanceof TransactionEvidenceMismatch && latest) {
+            update(latest.id, {
+              phase: "attention",
+              attentionMessage:
+                "The Base receipt does not match this withdrawal. Review its transaction hash before continuing.",
+            })
+          }
+          return
+        }
+      }
       if (latest)
         update(latest.id, {
           phase: "base-withdrawal-included",
+          baseTransactionOutcome: receipt.status,
           receiptBlockNumber: receipt.blockNumber.toString(),
         })
-      const finalized = await basePublicClient.getBlock({ blockTag: "finalized" })
+      const finalized = await readBaseBlock("finalized")
       if (!isCurrent()) return
       if (observedProgressId && progressForTrigger(entry, trigger)?.id !== observedProgressId)
         return
@@ -214,7 +246,7 @@ export function SettlementConfirmationCoordinator() {
         checkpointBlock: receipt.blockNumber,
         checkpointBlockHash: receipt.blockHash,
         fetchCheckpointBlockHash: async (blockNumber) => {
-          const block = await basePublicClient.getBlock({ blockNumber })
+          const block = await readBaseBlock(blockNumber)
           return block.hash
         },
       })
@@ -225,7 +257,14 @@ export function SettlementConfirmationCoordinator() {
         finalized.number,
         canonical,
       )
-      if (decision === "retry") return
+      if (decision === "retry") {
+        if (!canonical && latest)
+          update(latest.id, {
+            phase: "base-withdrawal-submitted",
+            baseTransactionOutcome: undefined,
+          })
+        return
+      }
       if (decision === "discard-reverted") {
         if (!(await hasIndependentFinalizedRevertQuorum(entry.transactionHash))) return
         if (!isCurrent()) return
@@ -266,7 +305,7 @@ export function SettlementConfirmationCoordinator() {
         )
           return
         attemptKind = "finality-readvance"
-      } else if (!refreshed.notification.automaticAttemptUsed) {
+      } else if (!refreshed.notification.automaticAttemptUsed || !refreshed.notification.failure) {
         attemptKind = "automatic"
       } else {
         return

@@ -75,10 +75,28 @@ pub fn supported_standards() -> Vec<Icrc10SupportedStandard> {
     }]
 }
 
-pub fn resource_limited() -> Icrc21ConsentMessageResponse {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsentAdmissionError {
+    InsufficientCycles,
+    RequestsDisabled,
+    ConfigurationUnavailable,
+    StorageUnavailable,
+    BudgetCalculationFailed,
+    RateLimited { retry_after_seconds: u64 },
+}
+
+pub fn admission_error(reason: ConsentAdmissionError) -> Icrc21ConsentMessageResponse {
+    let (code, description) = match reason {
+        ConsentAdmissionError::InsufficientCycles => (4601, "Bridge operating cycles are low. The bridge does not have enough available cycles to process this request. The bridge operator needs to top it up. This is not a shortage in your wallet.".to_owned()),
+        ConsentAdmissionError::RequestsDisabled => (4602, "Bridge requests are currently disabled. The bridge is not accepting this operation. Check Bridge Status for updates.".to_owned()),
+        ConsentAdmissionError::ConfigurationUnavailable => (4603, "The bridge could not prepare the approval message. Its configuration could not be loaded. Check Bridge Status or share error code 4603 with support.".to_owned()),
+        ConsentAdmissionError::StorageUnavailable => (4604, "The bridge could not prepare the approval message. An internal storage operation failed. Check Bridge Status or share error code 4604 with support.".to_owned()),
+        ConsentAdmissionError::BudgetCalculationFailed => (4605, "The bridge could not prepare the approval message. Its operating budget could not be calculated. Check Bridge Status or share error code 4605 with support.".to_owned()),
+        ConsentAdmissionError::RateLimited { retry_after_seconds } => (429, format!("Too many consent requests. The bridge has reached its consent-request limit. Try again in {retry_after_seconds} seconds.")),
+    };
     Icrc21ConsentMessageResponse::Err(Icrc21Error::GenericError(Icrc21GenericError {
-        description: "Consent message capacity is temporarily unavailable.".into(),
-        error_code: Nat::from(429u16),
+        description,
+        error_code: Nat::from(code as u16),
     }))
 }
 
@@ -102,6 +120,25 @@ pub fn consent_message(
     }
     if request.method == "continue_fee_payout" {
         return fee_payout_consent(caller, canister, request);
+    }
+    if request.method == "notify_deposit_mint" {
+        if caller == Principal::anonymous() {
+            return unavailable("anonymous caller is not allowed");
+        }
+        let args = match Decode!(&request.arg, api::NotifyDepositMintArgs) {
+            Ok(args) if args.deposit_id.len() == 32 && args.transaction_hash.len() == 32 => args,
+            _ => {
+                return unavailable(
+                    "mint notification requires a deposit ID and transaction hash of 32 bytes",
+                )
+            }
+        };
+        return Icrc21ConsentMessageResponse::Ok(Icrc21ConsentInfo {
+            metadata: request.user_preferences.metadata,
+            consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
+                "# Record a Base mint\n\nDeposit: `0x{}`\n\nTransaction: `0x{}`\n\nThe canister independently verifies the finalized mint receipt. This notification does not send tokens or request a refund.",
+                hex(&args.deposit_id), hex(&args.transaction_hash))),
+        });
     }
     if request.method == "notify_withdrawal" {
         return withdrawal_consent(caller, canister, request);
@@ -505,6 +542,55 @@ mod tests {
                 to: account(1),
                 spender: None,
             },
+        }
+    }
+
+    #[test]
+    fn consent_admission_errors_have_distinct_codes_and_safe_english_messages() {
+        use ConsentAdmissionError::*;
+        let cases = [
+            (
+                InsufficientCycles,
+                4601u16,
+                "Bridge operating cycles are low.",
+            ),
+            (
+                RequestsDisabled,
+                4602,
+                "Bridge requests are currently disabled.",
+            ),
+            (
+                ConfigurationUnavailable,
+                4603,
+                "Its configuration could not be loaded.",
+            ),
+            (
+                StorageUnavailable,
+                4604,
+                "An internal storage operation failed.",
+            ),
+            (
+                BudgetCalculationFailed,
+                4605,
+                "Its operating budget could not be calculated.",
+            ),
+            (
+                RateLimited {
+                    retry_after_seconds: 17,
+                },
+                429,
+                "Try again in 17 seconds.",
+            ),
+        ];
+        for (reason, code, message) in cases {
+            let Icrc21ConsentMessageResponse::Err(Icrc21Error::GenericError(error)) =
+                admission_error(reason)
+            else {
+                panic!("expected the existing ICRC-21 generic error shape");
+            };
+            assert_eq!(error.error_code, Nat::from(code));
+            assert!(error.description.contains(message));
+            assert!(!error.description.contains("SQL"));
         }
     }
 

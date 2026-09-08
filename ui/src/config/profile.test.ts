@@ -54,14 +54,14 @@ describe("reviewed deployment profile", () => {
     expect(() => resolvedBaseRpcUrl({ chainId: 31_337 })).toThrow("no default RPC URL")
   })
 
-  it("ignores a custom browser RPC on Base Mainnet", () => {
+  it("uses the reviewed browser RPC on Base Mainnet", () => {
     const profile = deploymentProfileSchema.parse({
       ...deploymentProfile,
       testOnly: false,
       chainId: 8453,
-      baseRpcUrl: "https://untrusted.example",
+      baseRpcUrl: "https://base-mainnet.g.alchemy.com/v2/test-ui-key",
     })
-    expect(resolvedBaseRpcUrl(profile)).toBe(DEFAULT_BASE_MAINNET_RPC_URL)
+    expect(resolvedBaseRpcUrl(profile)).toBe(profile.baseRpcUrl)
   })
 
   it("requires release evidence fields only in the release schema", () => {

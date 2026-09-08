@@ -507,6 +507,94 @@ describe("Phase 3 PocketIC saga", () => {
     expect(authorization.signature).toHaveLength(1);
     expect(await mintAuthorizedDeposit(bridge, evm, result.Ok.deposit_id)).toHaveProperty("Ok.state.Minted");
   });
+  it("records_an_exact_finalized_mint_notification_without_refunding_and_rejects_forgery", async () => {
+    const { evm, bridge, ledger, runtimePrincipal } = await setup();
+    const deposit: any = await requestDefaultDeposit(bridge);
+    const id = deposit.Ok.deposit_id;
+    const authorization = await awaitMintAuthorization(bridge, id);
+    const transactionHash = new Uint8Array(32).fill(0x42);
+    const args = {deposit_id:id, transaction_hash:transactionHash};
+    const notifier = Principal.selfAuthenticating(new Uint8Array(32).fill(0x65));
+    bridge.actor.setPrincipal(Principal.anonymous());
+    expect(await (bridge.actor as any).notify_deposit_mint(args)).toEqual({Err:{AnonymousCaller:null}});
+    bridge.actor.setPrincipal(notifier);
+    await evm.actor.set_observed_transaction(transactionHash, authorization.verifying_contract,
+      new Uint8Array(20).fill(0x77), authorization.finalized_block_number);
+    await evm.actor.set_receipt_mode({Confirmed:null});
+    await evm.actor.set_processed_deposit(false);
+    expect(await (bridge.actor as any).notify_deposit_mint(args)).toEqual({Err:{TransactionNotConfirmed:null}});
+    expect(phaseName((await bridge.actor.get_deposit(id))[0].state)).toBe("AuthorizationAvailable");
+    await pic!.advanceTime(31_000);
+    await evm.actor.set_processed_deposit(true);
+    const mint = {deposit_id:id, recipient:authorization.recipient, authorization_digest:authorization.digest,
+      gross_amount:authorization.gross_amount, charged_service_fee:authorization.charged_service_fee,
+      minted_amount:BigInt(authorization.gross_amount) - BigInt(authorization.charged_service_fee), transaction_hash:transactionHash};
+    await evm.actor.set_mint_log([{...mint, minted_amount:mint.minted_amount + 1n}]);
+    expect(await (bridge.actor as any).notify_deposit_mint(args)).toEqual({Err:{IdentityConflict:null}});
+    await pic!.advanceTime(31_000);
+    await evm.actor.set_mint_log([mint]);
+    const transfers = await (ledger.actor as any).ledger_transfer_calls();
+    await evm.actor.set_receipt_mode({DelayedConfirmed:null});
+    const deferred = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
+    deferred.setPrincipal(notifier);
+    const completeNotification = await deferred.notify_deposit_mint(args);
+    let barrier: Awaited<ReturnType<NonNullable<typeof pic>["getPendingHttpsOutcalls"]>>[number] | undefined;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await pic!.tick(1);
+      barrier = (await pic!.getPendingHttpsOutcalls()).find(outcall => outcall.url === "https://receipt-delay.invalid/");
+      if (barrier) break;
+    }
+    expect(barrier).toBeDefined();
+    expect(await (bridge.actor as any).notify_deposit_mint(args)).toEqual({Err:{Busy:null}});
+    bridge.actor.setPrincipal(runtimePrincipal);
+    expect(await bridge.actor.request_deposit_refund(id)).toEqual({Err:{Busy:null}});
+    bridge.actor.setPrincipal(notifier);
+    await pic!.mockPendingHttpsOutcall({requestId:barrier!.requestId,subnetId:barrier!.subnetId,
+      response:{type:"success",statusCode:200,headers:[],body:new Uint8Array()}});
+    expect(await completeNotification()).toEqual({Ok:{Recorded:{deposit_id:id}}});
+    const stored = (await bridge.actor.get_deposit(id))[0];
+    expect(phaseName(stored.state)).toBe("Minted");
+    expect(stored.mint_receipt[0].transaction_hash).toEqual(transactionHash);
+    expect(stored.refund).toEqual([]);
+    const receipts = await (evm.actor as any).receipt_call_count();
+    expect(await (bridge.actor as any).notify_deposit_mint(args)).toEqual({Ok:{Duplicate:{deposit_id:id}}});
+    expect(await (evm.actor as any).receipt_call_count()).toBe(receipts);
+    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(transfers);
+    expect(await (bridge.actor as any).notify_deposit_mint({...args,transaction_hash:new Uint8Array(32).fill(0x43)}))
+      .toEqual({Err:{IdentityConflict:null}});
+  });
+
+  it("rebuilds_requester_history_from_deployed_v35_records_and_transaction_index", async () => {
+    const { evm, bridge, runtimePrincipal } = await setup(true, {}, schema35BridgeWasm);
+    const id = new Uint8Array(32).fill(6);
+    const transactionHash = new Uint8Array(32).fill(9);
+    const requester = new Uint8Array(20).fill(0x22);
+    await evm.actor.set_observed_transaction(transactionHash,new Uint8Array(20).fill(1),requester,99n);
+    await evm.actor.set_withdrawal([{id,owner:runtimePrincipal.toUint8Array(),subaccount:new Uint8Array(32),
+      amount:1_000_000n,max_service_fee:100_000n,charged_service_fee:100_000n,amount_out:900_000n}]);
+    expect(await bridge.actor.notify_withdrawal({transaction_hash:transactionHash})).toHaveProperty("Ok.Ingested");
+    await upgradeBridge(bridge);
+    let page: any;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await pic!.advanceTime(1_001); await pic!.tick(10);
+      page = await (bridge.actor as any).list_withdrawals({requester,before_cursor:[],limit:20});
+      if ("Ok" in page) break;
+      expect(page).toEqual({Err:{IndexNotReady:null}});
+    }
+    expect(page).toHaveProperty("Ok.items");
+    expect(page.Ok.items).toHaveLength(1);
+    expect(page.Ok.items[0].withdrawal.withdrawal_id).toEqual(id);
+    expect(page.Ok.items[0].transaction_hash).toEqual([transactionHash]);
+    expect(page.Ok.items[0].requester).toEqual(requester);
+    expect(page.Ok.items[0].owner.toText()).toBe(runtimePrincipal.toText());
+    expect(await (bridge.actor as any).list_withdrawals({requester:new Uint8Array(20).fill(0x23),before_cursor:[],limit:20}))
+      .toEqual({Ok:{items:[],next_cursor:[],history_truncated:false}});
+    expect(await (bridge.actor as any).list_withdrawals({requester,before_cursor:[],limit:101}))
+      .toEqual({Err:{InvalidLimit:null}});
+    expect(await (bridge.actor as any).list_withdrawals({requester,before_cursor:[new Uint8Array(1)],limit:20}))
+      .toEqual({Err:{InvalidCursor:null}});
+  });
+
   async function notifyFixtureWithdrawal(bridge: any, transactionHash = new Uint8Array(32).fill(9)) {
     const result = await bridge.actor.notify_withdrawal({ transaction_hash: transactionHash });
     expect(result).toHaveProperty("Ok");
@@ -2668,8 +2756,8 @@ describe("Phase 3 PocketIC saga", () => {
     refund_observation_preserves_global_runtime_attestation,
   );
 
-  it("has no success confirmation API and persists exact Mint evidence only during a refund claim", async () => {
-    const { evm, bridge } = await setup();
+  it("preserves refund-claim reconciliation of exact mint evidence without a prior notification", async () => {
+    const { ledger, evm, bridge } = await setup();
     const result: any = await requestDefaultDeposit(bridge);
     const authorization = await awaitMintAuthorization(bridge, result.Ok.deposit_id);
     const transactionHash = new Uint8Array(32).fill(0x52);
@@ -2688,13 +2776,13 @@ describe("Phase 3 PocketIC saga", () => {
       minted_amount: authorization.gross_amount - authorization.charged_service_fee,
       transaction_hash: transactionHash,
     }]);
-    expect((bridge.actor as any).notify_deposit_mint).toBeUndefined();
     expect(phaseName((await bridge.actor.get_deposit(result.Ok.deposit_id))[0].state)).toBe("AuthorizationAvailable");
     await evm.actor.set_processed_deposit(true);
     await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
     expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id))
       .toEqual({ Err: { NotClaimable: null } });
     expect(phaseName((await bridge.actor.get_deposit(result.Ok.deposit_id))[0].state)).toBe("Minted");
+    expect(await (ledger.actor as any).ledger_transactions()).toHaveLength(1);
   });
 
   async function fails_closed_when_processed_is_true_but_exact_Mint_evidence_is_missing() {

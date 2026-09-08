@@ -403,7 +403,10 @@ impl DepositRecord {
                 Amount::ZERO,
             ),
             (
-                State::RefundAvailable {
+                State::AuthorizationAvailable {
+                    funding_ledger_block_index,
+                }
+                | State::RefundAvailable {
                     funding_ledger_block_index,
                     ..
                 },

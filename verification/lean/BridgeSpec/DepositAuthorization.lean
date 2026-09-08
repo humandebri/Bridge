@@ -242,8 +242,8 @@ def completeMint (state : DepositState) (evidence : MintEvidence) : Option Depos
   match state.authorization with
   | none => none
   | some authorization =>
-      if state.phase = .refundAvailable ∧ evidence.valid authorization ∧
-          authorization.grossAmount ≤ state.pendingDepositLiability ∧
+      if (state.phase = .authorizationAvailable ∨ state.phase = .refundAvailable) ∧ evidence.valid authorization ∧
+          authorization.netAmount ≤ state.pendingDepositLiability ∧
           state.feeCounted = true then
         some { state with
           phase := .minted

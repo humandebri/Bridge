@@ -23,9 +23,9 @@ describe("activity history", () => {
     )
 
     expect(items.map((item) => item.key)).toEqual([
-      "withdrawal:0xbb:0",
+      "withdrawal:187000",
       `deposit:${"01".repeat(32)}`,
-      "withdrawal:0xaa:1",
+      "withdrawal:170001",
       `deposit:${"02".repeat(32)}`,
     ])
   })
@@ -97,6 +97,7 @@ function deposit(sequence: number, createdAtNs: bigint): DepositView {
     state: { Minted: null },
     last_settlement_stop_reason: [],
     automatic_progress: [],
+    mint_receipt: [],
     mint_authorization: [],
   }
 }
@@ -107,7 +108,7 @@ function withdrawal(
   createdAtNs: bigint,
 ): WithdrawalHistoryItem {
   return {
-    id: BigInt(logIndex),
+    id: BigInt(hash) * 1000n + BigInt(logIndex),
     amount: 100n,
     amountOut: 90n,
     hash,

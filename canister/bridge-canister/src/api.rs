@@ -107,7 +107,45 @@ pub struct DepositView {
     pub state: DepositPhase,
     pub last_settlement_stop_reason: Option<crate::tasks::SettlementStopReason>,
     pub mint_authorization: Option<MintAuthorizationView>,
+    pub mint_receipt: Option<MintReceiptView>,
     pub automatic_progress: Option<AutomaticProgressView>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct MintReceiptView {
+    pub transaction_hash: Vec<u8>,
+    pub receipt_block_number: u64,
+    pub log_index: u64,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct NotifyDepositMintArgs {
+    pub deposit_id: Vec<u8>,
+    pub transaction_hash: Vec<u8>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum NotifyDepositMintReceipt {
+    Recorded { deposit_id: Vec<u8> },
+    Duplicate { deposit_id: Vec<u8> },
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum NotifyDepositMintError {
+    AnonymousCaller,
+    InvalidDepositId,
+    InvalidTransactionHash,
+    NotFound,
+    NotAdmissible,
+    TransactionNotConfirmed,
+    TransactionReverted,
+    IdentityConflict,
+    RpcUnavailable,
+    RpcInconsistent,
+    Busy,
+    RateLimited,
+    InsufficientCycles,
+    StorageFailure,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1899,6 +1937,13 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
             last_settlement_stop_reason: record
                 .last_settlement_stop_reason
                 .map(crate::tasks::settlement_stop_reason_from_text),
+            mint_receipt: record.mint_finalization_evidence.as_ref().map(|evidence| {
+                MintReceiptView {
+                    transaction_hash: evidence.transaction_hash.to_vec(),
+                    receipt_block_number: evidence.receipt_block_number,
+                    log_index: evidence.log_index,
+                }
+            }),
             mint_authorization: record
                 .mint_authorization
                 .as_ref()
@@ -2073,6 +2118,107 @@ pub fn get_withdrawal(id: Vec<u8>) -> Option<WithdrawalView> {
                 .last_settlement_stop_reason
                 .map(crate::tasks::settlement_stop_reason_from_text),
         })
+    })
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ListWithdrawalsArgs {
+    pub requester: Vec<u8>,
+    pub before_cursor: Option<Vec<u8>>,
+    pub limit: u16,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct WithdrawalHistoryView {
+    pub withdrawal: WithdrawalView,
+    pub requester: Vec<u8>,
+    pub owner: Principal,
+    pub subaccount: Vec<u8>,
+    pub observed_at_ns: u64,
+    pub transaction_hash: Option<Vec<u8>>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct WithdrawalHistoryPage {
+    pub items: Vec<WithdrawalHistoryView>,
+    pub next_cursor: Option<Vec<u8>>,
+    pub history_truncated: bool,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum ListWithdrawalsError {
+    InvalidRequester,
+    InvalidCursor,
+    InvalidLimit,
+    IndexNotReady,
+    StorageFailure,
+}
+
+pub fn list_withdrawals(
+    args: ListWithdrawalsArgs,
+) -> Result<WithdrawalHistoryPage, ListWithdrawalsError> {
+    use ListWithdrawalsError as Error;
+    let requester = args
+        .requester
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::InvalidRequester)?;
+    if args
+        .before_cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.len() != 40)
+    {
+        return Err(Error::InvalidCursor);
+    }
+    if args.limit == 0 || args.limit > 100 {
+        return Err(Error::InvalidLimit);
+    }
+    let mut rows = STORE.with(|store| {
+        let store = store.borrow();
+        if !store
+            .history_indexes_ready()
+            .map_err(|_| Error::StorageFailure)?
+        {
+            return Err(Error::IndexNotReady);
+        }
+        store
+            .withdrawal_history_page(requester, args.before_cursor.as_deref(), args.limit + 1)
+            .map_err(|_| Error::StorageFailure)
+    })?;
+    let more = rows.len() > usize::from(args.limit);
+    rows.truncate(usize::from(args.limit));
+    let next_cursor = if more {
+        rows.last().map(|(cursor, _)| cursor.clone())
+    } else {
+        None
+    };
+    let items = rows
+        .into_iter()
+        .map(|(_, record)| {
+            let withdrawal =
+                get_withdrawal(record.id.bytes().to_vec()).ok_or(Error::StorageFailure)?;
+            let transaction_hash = STORE
+                .with(|store| {
+                    store
+                        .borrow()
+                        .withdrawal_transaction_hash(record.id.bytes())
+                })
+                .map_err(|_| Error::StorageFailure)?;
+            Ok(WithdrawalHistoryView {
+                withdrawal,
+                requester: record.base_requester.to_vec(),
+                owner: Principal::from_slice(&record.owner),
+                subaccount: record.subaccount.to_vec(),
+                observed_at_ns: record.observed_at_ns,
+                transaction_hash,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    // Withdrawals currently have no pruning path; all retained records are indexed.
+    Ok(WithdrawalHistoryPage {
+        items,
+        next_cursor,
+        history_truncated: false,
     })
 }
 

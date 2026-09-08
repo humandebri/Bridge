@@ -865,7 +865,7 @@ macro_rules! deposit_transition_body {
             Some($three)
         } else if $state == $three && $event == $four {
             Some($four)
-        } else if $state == $four && $event == $six {
+        } else if ($state == $three || $state == $four) && $event == $six {
             Some($ten)
         } else if $state == $four && $event == $seven {
             Some($six)
@@ -955,7 +955,7 @@ macro_rules! deposit_numeric_effects_body {
             None => false,
         };
         let authorization_signed = deposit_charge_fee_body!($state, $event, $two, $five);
-        let mint_completed = $state == $four && $event == $six;
+        let mint_completed = ($state == $three || $state == $four) && $event == $six;
         let refund_completed = $state == $six && $event == $eight;
         let terminal_liability = if $net == $amount_zero { $gross } else { $net };
         (

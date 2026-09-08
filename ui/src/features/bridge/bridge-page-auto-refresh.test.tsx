@@ -124,7 +124,10 @@ vi.mock("@/lib/ic/ledger", () => ({
 }))
 
 vi.mock("@/lib/evm/client", () => ({
-  basePublicClient: { readContract: mocks.bsnsBalance },
+  basePublicClient: {
+    readContract: mocks.bsnsBalance,
+    simulateContract: vi.fn().mockResolvedValue({}),
+  },
 }))
 
 vi.mock("@/lib/deposit-intents", () => ({
@@ -767,8 +770,9 @@ describe("BridgePage automatic wallet refresh", () => {
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
 
-    expect(await screen.findByText("Deposit status unavailable")).toBeVisible()
-    fireEvent.click(screen.getByRole("button", { name: "Retry same deposit" }))
+    expect(await screen.findByText("Previous deposit outcome is unconfirmed")).toBeVisible()
+    expect(screen.getByText(/To prevent duplicate deposits/)).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "Retry the same deposit" }))
     expect(screen.getByRole("heading", { name: "Review bridge to Base" })).toBeVisible()
     expect(
       screen.getByText("Checking your wallets, balance, fees, and bridge availability…"),
@@ -813,8 +817,8 @@ describe("BridgePage automatic wallet refresh", () => {
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
 
-    expect(await screen.findByText("Deposit status unavailable")).toBeVisible()
-    expect(screen.getByRole("button", { name: "Check status" })).toBeEnabled()
+    expect(await screen.findByText("Previous deposit outcome is unconfirmed")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Check previous deposit" })).toBeEnabled()
     expect(requestDeposit).not.toHaveBeenCalled()
     expect(mocks.saveDepositIntent).not.toHaveBeenCalled()
   })
@@ -859,7 +863,7 @@ describe("BridgePage automatic wallet refresh", () => {
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
 
-    fireEvent.click(await screen.findByRole("button", { name: "Check status" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Check previous deposit" }))
 
     expect(await screen.findByRole("heading", { name: "Bridge to Base" })).toBeVisible()
     expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent(
@@ -907,13 +911,13 @@ describe("BridgePage automatic wallet refresh", () => {
     ])
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
-    fireEvent.click(await screen.findByRole("button", { name: "Check status" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Check previous deposit" }))
 
     await waitFor(() => expect(mocks.getDepositByOwnerSequence).toHaveBeenCalledOnce())
     expect(mocks.getDepositByOwnerSequence.mock.calls[0]?.[1]).toBe(3n)
     expect(mocks.removeDepositIntent).not.toHaveBeenCalled()
     expect(screen.queryByRole("button", { name: /Open transfer progress/ })).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Check status" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Check previous deposit" })).toBeEnabled()
   })
 
   it("does not replace an unrelated active transfer while recovering a saved Deposit", async () => {
@@ -972,7 +976,7 @@ describe("BridgePage automatic wallet refresh", () => {
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
 
-    fireEvent.click(await screen.findByRole("button", { name: "Check status" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Check previous deposit" }))
 
     expect(
       await screen.findByRole("button", {
@@ -1340,12 +1344,12 @@ describe("BridgePage automatic wallet refresh", () => {
     })
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
-    fireEvent.click(await screen.findByRole("button", { name: "Retry same deposit" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Retry the same deposit" }))
     fireEvent.click(await screen.findByRole("button", { name: "Continue to IC wallet" }))
 
     await waitFor(() => expect(closeWallet).toHaveBeenCalledOnce())
     fireEvent.click(screen.getByRole("button", { name: "Close" }))
-    expect(screen.getByRole("button", { name: "Retry same deposit" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Retry the same deposit" })).toBeEnabled()
   })
 
   it("keeps the accepted Deposit in the global progress dialog and allows minimizing", async () => {

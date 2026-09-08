@@ -1,6 +1,9 @@
 import { cleanup, render, screen, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+vi.mock("@/features/bridge/mint-confirmation-coordinator", () => ({
+  MintConfirmationCoordinator: () => null,
+}))
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
   Outlet: () => null,

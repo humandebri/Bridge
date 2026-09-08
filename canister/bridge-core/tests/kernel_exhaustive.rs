@@ -572,6 +572,7 @@ fn compact_phase_kernels_match_the_legal_transition_graphs() {
         (2, 4, 4),
         (2, 5, 3),
         (3, 4, 4),
+        (3, 6, 10),
         (4, 6, 10),
         (4, 7, 6),
         (6, 8, 8),
@@ -699,7 +700,7 @@ fn deposit_transition_decision_effects_cover_every_state_event_and_idempotency()
                     assert_eq!(effects.reservation_active, matches!(next_state, 2..=3));
                     assert_eq!(
                         effects.release_reservation,
-                        (state == 3 && event == 4) || (state == 2 && event == 4)
+                        (state == 3 && (event == 4 || event == 6)) || (state == 2 && event == 4)
                     );
                     assert_eq!(effects.charge_service_fee, state == 2 && event == 5);
                     assert_eq!(effects.fee_credit, u128::from(effects.charge_service_fee));
@@ -721,7 +722,9 @@ fn deposit_transition_decision_effects_cover_every_state_event_and_idempotency()
                         effects.pending_liability_debit,
                         if state == 2 && event == 5 {
                             1
-                        } else if (state == 4 && event == 6) || (state == 6 && event == 8) {
+                        } else if ((state == 3 || state == 4) && event == 6)
+                            || (state == 6 && event == 8)
+                        {
                             10
                         } else {
                             0
@@ -733,7 +736,11 @@ fn deposit_transition_decision_effects_cover_every_state_event_and_idempotency()
                     );
                     assert_eq!(
                         effects.mint_supply_increase,
-                        if state == 4 && event == 6 { 10 } else { 0 }
+                        if (state == 3 || state == 4) && event == 6 {
+                            10
+                        } else {
+                            0
+                        }
                     );
                 }
                 pair => panic!("transition decision mismatch: {pair:?}"),

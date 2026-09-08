@@ -48,6 +48,7 @@ import {
 } from "@/lib/amounts"
 import { shortenWalletAddress } from "@/lib/wallet-address"
 import { classifyDepositRecoverySequence } from "@/lib/deposit-recovery"
+import { transferErrorMessage } from "@/lib/transfer-error"
 import { createLedgerActor, ledgerAccount } from "@/lib/ic/ledger"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import type { DepositCall, IcAccount } from "@/lib/ic/wallet"
@@ -495,16 +496,9 @@ export function BridgePage({
       setDepositProgress("idle")
       bridgeProgress.update(progressId, {
         phase: "attention",
-        attentionMessage:
-          error instanceof Error
-            ? `${error.message}. Check History before starting another deposit.`
-            : "The deposit response is unresolved. Check History before starting another deposit.",
+        attentionMessage: `${transferErrorMessage(error)} Check the previous deposit before starting another one.`,
       })
-      toast.error(
-        error instanceof Error
-          ? `${error.message}. Retry the same deposit or check whether it was accepted.`
-          : "Deposit response is unresolved",
-      )
+      toast.error(`${transferErrorMessage(error)} Check the previous deposit before trying again.`)
     },
   })
 
@@ -595,10 +589,9 @@ export function BridgePage({
       setDepositProgress("idle")
       bridgeProgress.update(progressId, {
         phase: "attention",
-        attentionMessage:
-          error instanceof Error ? error.message : "The deposit could not continue.",
+        attentionMessage: transferErrorMessage(error),
       })
-      toast.error(error instanceof Error ? error.message : "Deposit failed")
+      toast.error(transferErrorMessage(error))
     } finally {
       await closeWalletSession?.().catch(() => undefined)
       setReviewedDeposit(undefined)
@@ -887,7 +880,9 @@ export function BridgePage({
         )
         await removeDepositIntent(unresolvedDeposit.account)
         setUnresolvedDeposit(undefined)
-        toast.info("The deposit was not accepted. You can edit the form or submit a new request.")
+        toast.info(
+          "The previous deposit was not accepted. You can now edit the form or start a new deposit.",
+        )
       } else if (status === "accepted-or-conflicted") {
         const record = await actor.get_deposit_by_owner_sequence(
           Principal.fromText(unresolvedDeposit.account.owner),
@@ -902,7 +897,9 @@ export function BridgePage({
           bytesHex(record[0].from_subaccount[0] ?? new Uint8Array(32)) !==
             bytesHex(unresolvedDeposit.account.subaccount ?? new Uint8Array(32))
         ) {
-          throw new Error("Canonical deposit does not match the saved intent")
+          throw new Error(
+            "The recorded deposit does not match the saved request. Do not start another deposit. Review its details in History.",
+          )
         }
         const canonical = record[0]
         const existingProgress = bridgeProgress.progress
@@ -952,15 +949,17 @@ export function BridgePage({
         )
         await removeDepositIntent(unresolvedDeposit.account)
         setUnresolvedDeposit(undefined)
-        toast.success("The accepted deposit was recovered from canonical history.")
+        toast.success(
+          "The previous deposit was accepted. Continue this deposit instead of starting another one.",
+        )
       } else {
-        toast.error("This deposit needs attention. Check History before continuing.")
+        toast.error(
+          "We still could not confirm the previous deposit. New deposits remain blocked. Review its details in History.",
+        )
       }
     } catch (error) {
       toast.error(
-        error instanceof Error
-          ? error.message
-          : "The deposit could not be checked. Try again from History.",
+        `We still could not confirm the previous deposit. New deposits remain blocked. ${transferErrorMessage(error)}`,
       )
     } finally {
       setCheckingDeposit(false)
@@ -1072,15 +1071,17 @@ export function BridgePage({
           if (finalBalance < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
         },
         createWithdrawal: ({ serviceFee }) =>
-          withBrowserLock(`kinic-wallet-prompt:base:${snapshotAddress.toLowerCase()}`, () =>
-            write.writeContractAsync({
+          withBrowserLock(`kinic-wallet-prompt:base:${snapshotAddress.toLowerCase()}`, async () => {
+            const request = {
               account: snapshotAddress,
               address: deploymentProfile.bridgeAddress as `0x${string}`,
               abi: bridgeAbi,
               functionName: "createWithdrawal",
               args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)],
-            }),
-          ),
+            } as const
+            await basePublicClient.simulateContract(request)
+            return write.writeContractAsync(request)
+          }),
         onBroadcast: async (transactionHash) => {
           bridgeProgress.update(progressId, { phase: "base-withdrawal-submitted", transactionHash })
           return savePendingConfirmation({
@@ -1103,10 +1104,9 @@ export function BridgePage({
     } catch (error) {
       bridgeProgress.update(progressId, {
         phase: "attention",
-        attentionMessage:
-          error instanceof Error ? error.message : "The withdrawal could not continue.",
+        attentionMessage: transferErrorMessage(error),
       })
-      toast.error(error instanceof Error ? error.message : "Withdrawal failed")
+      toast.error(transferErrorMessage(error))
     } finally {
       setSubmittingWithdrawal(false)
     }
@@ -1300,7 +1300,7 @@ export function BridgePage({
         : effectiveDepositProgress === "authorization" || awaitingDepositAuthorization
           ? "Generating authorization…"
           : unresolvedDeposit
-            ? "Retry same deposit"
+            ? "Retry the same deposit"
             : "Bridge to Base"
   return (
     <div className="route-enter mx-auto w-full max-w-[620px] pb-6 pt-4 lg:pb-10 lg:pt-10">
@@ -1432,10 +1432,18 @@ export function BridgePage({
             />
           )}
         {unresolvedDeposit && !deposit.isPending && (
-          <div className="mt-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm text-[#8a4b08]">
-            <p className="font-bold text-black">Deposit status unavailable</p>
+          <div
+            role="alert"
+            className="mt-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm text-[#8a4b08]"
+          >
+            <p className="font-bold text-black">Previous deposit outcome is unconfirmed</p>
             <p className="mt-1 leading-5">
-              Check whether the deposit was accepted before starting another one.
+              We could not confirm whether your previous deposit request was accepted. To prevent
+              duplicate deposits, starting a new deposit is blocked until this check is resolved.
+            </p>
+            <p className="mt-1 leading-5">
+              Retrying the same deposit uses the saved request without changing its details. A
+              previous token approval may still be active.
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
               <Button
@@ -1444,13 +1452,13 @@ export function BridgePage({
                 disabled={checkingDeposit}
                 onClick={() => void checkUnresolvedDeposit()}
               >
-                {checkingDeposit ? "Checking…" : "Check status"}
+                {checkingDeposit ? "Checking previous deposit…" : "Check previous deposit"}
               </Button>
               <Link
                 to="/history"
                 className="inline-flex h-9 items-center rounded-xl px-3 text-sm font-bold underline underline-offset-4"
               >
-                Open History
+                View deposit history
               </Link>
             </div>
           </div>

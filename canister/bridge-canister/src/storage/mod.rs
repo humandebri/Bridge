@@ -1,4 +1,5 @@
 mod admission;
+mod history;
 mod schema;
 mod settlement;
 mod transaction;
@@ -9,6 +10,7 @@ use admission::{
     release_deposit_funding_reservation, rollback_failed_deposit_admission,
 };
 pub use admission::{DepositAdmissionOutcome, DepositCycleAdmission, DepositQuotaAdmission};
+use history::{withdrawal_history_key, write_withdrawal_history, write_withdrawal_transaction};
 pub use schema::{RETIRED_STABLE_STRUCTURE_MEMORY_IDS, SCHEMA_VERSION, SQLITE_MEMORY_ID};
 use schema::{VALIDATION_TABLES, WIRE_VERSION};
 use settlement::settlement_record_key;
@@ -318,6 +320,10 @@ CREATE TABLE release_pending_withdrawal_index (key BLOB PRIMARY KEY NOT NULL, va
 CREATE TABLE open_hold_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE owner_deposit_sequences (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE withdrawal_liability_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
+CREATE TABLE withdrawal_requester_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
+CREATE TABLE withdrawal_transaction_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
+CREATE TABLE history_index_progress (id INTEGER PRIMARY KEY CHECK(id=1), stage INTEGER NOT NULL, cursor BLOB NOT NULL) STRICT;
+INSERT INTO history_index_progress VALUES (1, 2, X'');
 CREATE TABLE withdrawal_notification_index (
     key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
     value BLOB NOT NULL CHECK (length(value) = 32)
@@ -400,6 +406,8 @@ INSERT INTO table_counts(name, count) VALUES
  ('owner_deposit_sequences', X'0000000000000000'),
  ('withdrawal_liability_index', X'0000000000000000'),
  ('withdrawal_notification_index', X'0000000000000000'),
+ ('withdrawal_requester_index', X'0000000000000000'),
+ ('withdrawal_transaction_index', X'0000000000000000'),
  ('withdrawal_stop_reason_counts', X'0000000000000000');
 "#;
 
@@ -745,6 +753,14 @@ fn replace_withdrawal_row(
         .map_err(|_| DbError::Constraint("invalid withdrawal liability amount".into()))?;
     let old_record = persisted.map(decode_withdrawal_blob).transpose()?;
     let next_record = decode_withdrawal_blob(next.to_sql_bytes())?;
+    if old_record
+        .as_ref()
+        .is_some_and(|old| withdrawal_history_key(old) != withdrawal_history_key(&next_record))
+    {
+        return Err(DbError::Constraint(
+            "withdrawal history identity changed".into(),
+        ));
+    }
     let previous_liability_key = old_record
         .as_ref()
         .filter(|record| is_nonterminal_withdrawal(record))
@@ -774,6 +790,7 @@ fn replace_withdrawal_row(
         )?;
         increment_table_count(connection, "withdrawals")?;
     }
+    write_withdrawal_history(connection, &next_record)?;
     adjust_withdrawal_liability_record(connection, &next_record, true, &mut amount)?;
     connection.execute(
         "UPDATE singleton_state SET withdrawal_liability_amount = ?1 WHERE id = 1",
@@ -2430,7 +2447,7 @@ fn migrate_previous_schema(
             StorageError::UnsupportedWireVersion(wire)
         });
     }
-    verify_current_schema_shape(handle)?;
+    verify_schema_shape(handle, true)?;
     StableStore::attach_handle(handle)?.validate_singletons()?;
     let previous_admission = handle.query(|connection| {
         connection.query_scalar::<Vec<u8>>(
@@ -2542,6 +2559,7 @@ fn migrate_previous_schema(
             "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
             params![next_admission.to_sql_bytes()],
         )?;
+        history::create_history_indexes(connection)?;
         connection.execute(
             "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
             params![i64::from(SCHEMA_VERSION)],
@@ -2551,9 +2569,21 @@ fn migrate_previous_schema(
 }
 
 fn verify_current_schema_shape(handle: DbHandle) -> Result<(), StorageError> {
+    verify_schema_shape(handle, false)
+}
+
+fn verify_schema_shape(handle: DbHandle, predecessor: bool) -> Result<(), StorageError> {
     handle
         .query(|connection| {
             for table in VALIDATION_TABLES {
+                if predecessor
+                    && matches!(
+                        *table,
+                        "withdrawal_requester_index" | "withdrawal_transaction_index"
+                    )
+                {
+                    continue;
+                }
                 let count = connection.query_scalar::<i64>(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
                     params![*table],
@@ -2562,6 +2592,19 @@ fn verify_current_schema_shape(handle: DbHandle) -> Result<(), StorageError> {
                     return Err(DbError::Constraint(format!(
                         "missing current-schema table: {table}"
                     )));
+                }
+            }
+            if !predecessor {
+                let (stage, cursor) = connection.query_one(
+                    "SELECT stage, cursor FROM history_index_progress WHERE id = 1",
+                    params![],
+                    |row| Ok((row.get::<i64>(0)?, row.get::<Vec<u8>>(1)?)),
+                )?;
+                if !(0..=2).contains(&stage)
+                    || (!cursor.is_empty() && cursor.len() != 32)
+                    || (stage == 2 && !cursor.is_empty())
+                {
+                    return Err(DbError::Constraint("invalid history index progress".into()));
                 }
             }
             let count = connection.query_scalar::<i64>(
@@ -2813,6 +2856,21 @@ fn validate_storage_row(
             if key != record.id.bytes() {
                 return Err(DbError::Constraint("withdrawal key mismatch".into()));
             }
+            let history_ready = connection.query_scalar::<i64>(
+                "SELECT stage FROM history_index_progress WHERE id = 1",
+                params![],
+            )? == 2;
+            if history_ready
+                && !referenced_row_exists(
+                    connection,
+                    "withdrawal_requester_index",
+                    &withdrawal_history_key(&record),
+                )?
+            {
+                return Err(DbError::Constraint(
+                    "missing withdrawal requester index".into(),
+                ));
+            }
             if is_pending_withdrawal_ledger(&record) {
                 progress.pending_ledger_operations = progress
                     .pending_ledger_operations
@@ -3021,12 +3079,52 @@ fn validate_storage_row(
                 return Err(DbError::Constraint("stale withdrawal liability".into()));
             }
         }
+        "withdrawal_requester_index" => {
+            expect_row_shape(key, value, 60, 32, "invalid withdrawal requester index")?;
+            let raw = connection.query_scalar::<Vec<u8>>(
+                "SELECT value FROM withdrawals WHERE key = ?1",
+                params![value],
+            )?;
+            let record = decode_withdrawal_blob(raw)?;
+            if key != withdrawal_history_key(&record) {
+                return Err(DbError::Constraint(
+                    "withdrawal requester binding mismatch".into(),
+                ));
+            }
+        }
+        "withdrawal_transaction_index" => {
+            expect_row_shape(key, value, 32, 32, "invalid withdrawal transaction index")?;
+            let id = connection.query_scalar::<Vec<u8>>(
+                "SELECT value FROM withdrawal_notification_index WHERE key = ?1",
+                params![value],
+            )?;
+            if id != key {
+                return Err(DbError::Constraint(
+                    "withdrawal transaction binding mismatch".into(),
+                ));
+            }
+        }
         "withdrawal_notification_index" => {
             expect_row_shape(key, value, 32, 32, "invalid withdrawal notification index")?;
             if !referenced_row_exists(connection, "withdrawals", value)? {
                 return Err(DbError::Constraint(
                     "orphan withdrawal notification index".into(),
                 ));
+            }
+            let history_ready = connection.query_scalar::<i64>(
+                "SELECT stage FROM history_index_progress WHERE id = 1",
+                params![],
+            )? == 2;
+            if history_ready {
+                let hash = connection.query_optional_scalar::<Vec<u8>>(
+                    "SELECT value FROM withdrawal_transaction_index WHERE key = ?1",
+                    params![value],
+                )?;
+                if hash.as_deref() != Some(key) {
+                    return Err(DbError::Constraint(
+                        "missing withdrawal transaction index".into(),
+                    ));
+                }
             }
         }
         "withdrawal_stop_reason_counts" => {
@@ -8718,6 +8816,7 @@ impl StableStore {
                     transaction_hash.to_sql_bytes(),
                     key.clone(),
                 )?;
+                write_withdrawal_transaction(connection, &key, &transaction_hash)?;
             }
             insert_tracked_entry(
                 connection,
@@ -8857,6 +8956,7 @@ impl StableStore {
                 transaction_hash.to_sql_bytes(),
                 key.clone(),
             )?;
+            write_withdrawal_transaction(connection, &key, &transaction_hash)?;
             rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
             commit_audit_batch(connection, &audit)?;
             rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
@@ -13657,6 +13757,15 @@ mod tests {
             .handle
             .0
             .update(|connection| {
+                for table in [
+                    "withdrawal_requester_index",
+                    "withdrawal_transaction_index",
+                    "history_index_progress",
+                ] {
+                    connection.execute(&format!("DROP TABLE IF EXISTS {table}"), params![])?;
+                    connection
+                        .execute("DELETE FROM table_counts WHERE name = ?1", params![table])?;
+                }
                 connection.execute(
                     "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
                     params![i64::from(version)],
@@ -13671,6 +13780,15 @@ mod tests {
             .handle
             .0
             .update(|connection| {
+                for table in [
+                    "withdrawal_requester_index",
+                    "withdrawal_transaction_index",
+                    "history_index_progress",
+                ] {
+                    connection.execute(&format!("DROP TABLE IF EXISTS {table}"), params![])?;
+                    connection
+                        .execute("DELETE FROM table_counts WHERE name = ?1", params![table])?;
+                }
                 connection.execute(
                     "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
                     params![legacy.to_sql_bytes()],
@@ -13699,6 +13817,15 @@ mod tests {
             .handle
             .0
             .update(|connection| {
+                for table in [
+                    "withdrawal_requester_index",
+                    "withdrawal_transaction_index",
+                    "history_index_progress",
+                ] {
+                    connection.execute(&format!("DROP TABLE IF EXISTS {table}"), params![])?;
+                    connection
+                        .execute("DELETE FROM table_counts WHERE name = ?1", params![table])?;
+                }
                 connection.execute(
                     "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
                     params![legacy.to_sql_bytes()],
@@ -16910,6 +17037,81 @@ mod tests {
             transfer: transfer(LedgerOperation::FeePayout, 100, 30),
             state: crate::admin::FeePayoutState::Pending,
         }
+    }
+
+    #[test]
+    #[serial]
+    fn withdrawal_history_is_requester_bound_paginated_and_rebuilt_after_reopen() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        for tag in 1..=103 {
+            let mut record = withdrawal();
+            record.id = WithdrawalId::new([tag; 32]);
+            record.base_requester = if tag == 3 { [9; 20] } else { [8; 20] };
+            record.observed_at_ns = u64::from(tag);
+            store
+                .commit_new_withdrawal_release_bundle_with_rpc_audit(
+                    &record,
+                    &ExternalProgress::default(),
+                    Principal::anonymous(),
+                    u64::from(tag),
+                    vec![],
+                    [tag + 10; 32],
+                    600,
+                    200,
+                )
+                .expect("record");
+        }
+        let first = store
+            .withdrawal_history_page([8; 20], None, 1)
+            .expect("page");
+        assert_eq!(first[0].1.id.bytes(), [103; 32]);
+        let second = store
+            .withdrawal_history_page([8; 20], Some(&first[0].0), 1)
+            .expect("page");
+        assert_eq!(second[0].1.id.bytes(), [102; 32]);
+        assert_eq!(
+            store.withdrawal_transaction_hash([2; 32]).expect("hash"),
+            Some(vec![12; 32])
+        );
+        store
+            .handle
+            .update(|c| {
+                for table in ["withdrawal_requester_index", "withdrawal_transaction_index"] {
+                    c.execute(&format!("DELETE FROM {table}"), params![])?;
+                    c.execute(
+                        "UPDATE table_counts SET count = ?1 WHERE name = ?2",
+                        params![0u64.to_sql_bytes(), table],
+                    )?;
+                }
+                c.execute(
+                    "UPDATE history_index_progress SET stage = 0, cursor = X'' WHERE id = 1",
+                    params![],
+                )
+            })
+            .expect("simulate pending migration");
+        assert!(!store.history_indexes_ready().unwrap());
+        assert!(!store.advance_history_indexes().unwrap());
+        drop(store);
+        let mut store = StableStore::reopen(memory).expect("reopen");
+        assert!(!store.advance_history_indexes().unwrap());
+        assert!(!store.advance_history_indexes().unwrap());
+        assert!(store.advance_history_indexes().unwrap());
+        assert_eq!(
+            store
+                .withdrawal_history_page([8; 20], None, 200)
+                .unwrap()
+                .len(),
+            102
+        );
+        assert_eq!(
+            store
+                .withdrawal_history_page([9; 20], None, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        store.validate_relations().expect("relations");
     }
 
     #[test]

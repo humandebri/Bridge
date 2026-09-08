@@ -58,29 +58,27 @@ export function receiptContainsExactDepositMint(
   logs: readonly { address: Hex; data: Hex; topics: readonly Hex[] }[],
   expectedBridgeAddress: Hex,
 ): boolean {
-  return logs.some((log) => {
-    if (log.address.toLowerCase() !== expectedBridgeAddress.toLowerCase()) return false
+  const candidates = logs.flatMap((log) => {
+    if (log.address.toLowerCase() !== expectedBridgeAddress.toLowerCase()) return []
     try {
       const decoded = decodeEventLog({
         abi: bridgeAbi,
         eventName: "DepositMinted",
         data: log.data,
-        topics: log.topics as [signature: Hex, ...args: Hex[]],
+        topics: log.topics as [Hex, ...Hex[]],
         strict: true,
       })
-      const args = decoded.args
-      return depositMintEventMatches(expected, {
-        depositId: args.depositId,
-        recipient: args.recipient,
-        authorizationDigest: args.authorizationDigest,
-        grossAmount: args.grossAmount,
-        serviceFee: args.serviceFee,
-        mintedAmount: args.mintedAmount,
-      })
+      if (
+        decoded.eventName !== "DepositMinted" ||
+        decoded.args.depositId.toLowerCase() !== expected.depositId.toLowerCase()
+      )
+        return []
+      return [decoded.args]
     } catch {
-      return false
+      return []
     }
   })
+  return candidates.length === 1 && depositMintEventMatches(expected, candidates[0]!)
 }
 
 export function exactMintReceiptFinalization({

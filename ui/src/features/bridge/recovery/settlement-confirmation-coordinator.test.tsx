@@ -14,6 +14,18 @@ const mocks = vi.hoisted(() => ({
   progress: undefined as undefined | Record<string, unknown>,
 }))
 
+vi.mock("@/lib/base-transaction-observation", async () => {
+  const { basePublicClient } = await import("@/lib/evm/client")
+  return {
+    readBaseReceipt: (hash: `0x${string}`) => basePublicClient.getTransactionReceipt({ hash }),
+    readBaseBlock: (block: bigint | "finalized" | "latest") =>
+      basePublicClient.getBlock(
+        typeof block === "bigint" ? { blockNumber: block } : { blockTag: block },
+      ),
+  }
+})
+vi.mock("@/lib/transaction-recovery", () => ({ withdrawalReceiptDetails: async () => ({}) }))
+
 vi.mock("@/features/bridge/bridge-progress-provider", () => ({
   useBridgeProgress: () => ({
     progress: mocks.progress,

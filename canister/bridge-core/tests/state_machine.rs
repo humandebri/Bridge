@@ -278,39 +278,45 @@ fn minted_state_requires_and_persists_exact_canonical_evidence() {
             observed_timestamp: 1,
         })
         .expect("signed");
-    deposit
-        .apply(DepositEvent::MarkRefundAvailable {
-            reason: bridge_core::DepositRefundReason::AuthorizationExpired,
-            finalized_timestamp: Some(
-                MintAuthorization::deadline_from_issued_at_timestamp(1).expect("deadline") + 1,
-            ),
-        })
-        .expect("release reservation");
-    let mut invalid = finalization_evidence();
-    invalid.rpc_response_digest = [0; 32];
-    let snapshot = deposit.clone();
-    assert_eq!(
-        deposit.apply(DepositEvent::MintReconciled {
-            evidence: Box::new(invalid),
-        }),
-        Err(CoreError::ConflictingReplay)
-    );
-    assert_eq!(deposit, snapshot);
+    for expired in [false, true] {
+        let mut deposit = deposit.clone();
+        if expired {
+            deposit
+                .apply(DepositEvent::MarkRefundAvailable {
+                    reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+                    finalized_timestamp: Some(
+                        MintAuthorization::deadline_from_issued_at_timestamp(1).expect("deadline")
+                            + 1,
+                    ),
+                })
+                .expect("release reservation");
+        }
+        let mut invalid = finalization_evidence();
+        invalid.rpc_response_digest = [0; 32];
+        let snapshot = deposit.clone();
+        assert_eq!(
+            deposit.apply(DepositEvent::MintReconciled {
+                evidence: Box::new(invalid),
+            }),
+            Err(CoreError::ConflictingReplay)
+        );
+        assert_eq!(deposit, snapshot);
 
-    let evidence = finalization_evidence();
-    let event = DepositEvent::MintReconciled {
-        evidence: Box::new(evidence.clone()),
-    };
-    assert_eq!(
-        deposit.apply(event.clone()).expect("mint proof").outcome,
-        ApplyOutcome::Applied
-    );
-    assert_eq!(
-        deposit.apply(event).expect("exact replay").outcome,
-        ApplyOutcome::Idempotent
-    );
-    assert_eq!(deposit.mint_finalization_evidence, Some(evidence));
-    assert!(matches!(deposit.state, DepositState::Minted { .. }));
+        let evidence = finalization_evidence();
+        let event = DepositEvent::MintReconciled {
+            evidence: Box::new(evidence.clone()),
+        };
+        assert_eq!(
+            deposit.apply(event.clone()).expect("mint proof").outcome,
+            ApplyOutcome::Applied
+        );
+        assert_eq!(
+            deposit.apply(event).expect("exact replay").outcome,
+            ApplyOutcome::Idempotent
+        );
+        assert_eq!(deposit.mint_finalization_evidence, Some(evidence));
+        assert!(matches!(deposit.state, DepositState::Minted { .. }));
+    }
 }
 
 #[test]

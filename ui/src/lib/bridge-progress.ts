@@ -1,5 +1,6 @@
 import { deploymentProfile } from "@/config/profile"
 import { browserLocalStorage } from "@/lib/browser-lock"
+import { transferAttentionTitle } from "@/lib/transfer-error"
 
 export type BridgeProgressDirection = "deposit" | "withdraw"
 
@@ -183,8 +184,12 @@ export function removeLatestBridgeProgress(id?: string): void {
 
 export function bridgeProgressLabel(record: BridgeProgressRecord): string {
   if (
-    record.direction === "deposit" &&
-    record.phase === "base-mint-included" &&
+    [
+      "base-mint-included",
+      "base-mint-finalizing",
+      "base-withdrawal-included",
+      "base-withdrawal-finalizing",
+    ].includes(record.phase) &&
     record.baseTransactionOutcome === "reverted"
   ) {
     return "Base transaction reverted"
@@ -204,18 +209,18 @@ export function bridgeProgressLabel(record: BridgeProgressRecord): string {
     "authorization-generating": "Bridge is preparing the Base mint",
     "awaiting-base-mint": "Confirm the mint in your Base wallet",
     "base-mint-submitted": "Waiting for the Base transaction",
-    "base-mint-included": "Base transaction included",
-    "base-mint-finalizing": "Waiting for Base finality",
+    "base-mint-included": "Success",
+    "base-mint-finalizing": "Success",
     "awaiting-base-allowance": "Confirm token access in your Base wallet",
     "awaiting-base-withdrawal": "Confirm the withdrawal in your Base wallet",
     "base-withdrawal-submitted": "Waiting for the Base transaction",
-    "base-withdrawal-included": "Base transaction included",
-    "base-withdrawal-finalizing": "Waiting for Base finality",
+    "base-withdrawal-included": "Base: Success",
+    "base-withdrawal-finalizing": "Base: Success",
     "awaiting-ic-notification": "Recording the finalized withdrawal on the Internet Computer",
     "ic-notification-recorded": "Withdrawal recorded on the Internet Computer",
     "ledger-payout": "Sending tokens to your IC wallet",
     complete: "Bridge complete",
-    attention: "This transfer needs attention",
+    attention: transferAttentionTitle(record.attentionMessage),
   }
   return labels[record.phase]
 }

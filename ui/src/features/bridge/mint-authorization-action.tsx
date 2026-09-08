@@ -1,3 +1,5 @@
+import { redactRpcUrls } from "@/lib/transfer-error"
+import { observeMint } from "@/lib/mint-observation"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
@@ -27,10 +29,6 @@ import { refetchRuntimeAttestedWriteReady } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
 import { contractAuthorization, validateMintAuthorization } from "@/lib/mint-authorization"
 import { mintAuthorizationWindow } from "@/lib/mint-authorization-window"
-import {
-  exactMintReceiptFinalization,
-  type ExpectedDepositMint,
-} from "@/lib/deposit-mint-finalization"
 import {
   readPendingMint,
   removePendingMint,
@@ -65,7 +63,6 @@ export function MintAuthorizationAction({
   onRequestRefund,
   claimingRefund = false,
   autoPromptOwner,
-  mintBlockedReason,
   onMintConfirmed,
   onProgress,
   headless = false,
@@ -76,7 +73,6 @@ export function MintAuthorizationAction({
   onRequestRefund?: () => void
   claimingRefund?: boolean
   autoPromptOwner?: string
-  mintBlockedReason?: string
   onMintConfirmed?: (confirmation: MintConfirmation) => void
   onProgress?: (event: MintProgressEvent) => void
   headless?: boolean
@@ -132,6 +128,9 @@ export function MintAuthorizationAction({
     pendingExpectation ? readPendingMint(pendingExpectation) : undefined,
   )
   const [receiptConfirmed, setReceiptConfirmed] = useState(false)
+  const [mintRecorded, setMintRecorded] = useState(false)
+  const [terminalReverted, setTerminalReverted] = useState(false)
+  const [notificationUnavailable, setNotificationUnavailable] = useState(false)
   const [identityConflict, setIdentityConflict] = useState(false)
   const [receiptObservation, setReceiptObservation] = useState<
     "checking" | "unavailable" | "sequencer-success" | "sequencer-reverted"
@@ -153,92 +152,74 @@ export function MintAuthorizationAction({
     if (
       !pendingExpectation ||
       !pending ||
-      receiptConfirmed ||
+      mintRecorded ||
+      terminalReverted ||
       identityConflict ||
       !authorizationAvailable
     )
       return
     let active = true
     const checkReceipt = async () => {
-      try {
-        const receipt = await basePublicClient.getTransactionReceipt({
-          hash: pending.transactionHash,
+      if (document.visibilityState !== "visible") return
+      const observation = await observeMint(pending)
+      if (!active) return
+      setReceiptConfirmed(observation.status === "success" && observation.finalized)
+      setMintRecorded(observation.recorded)
+      setNotificationUnavailable(Boolean(observation.notificationError))
+      if (observation.status === "success") {
+        setReceiptObservation("sequencer-success")
+        onProgress?.({
+          phase: "included",
+          transactionHash: pending.transactionHash,
+          blockNumber: observation.blockNumber!,
+          outcome: "success",
         })
-        if (receipt.blockNumber === null || receipt.blockHash === null) return
-        if (active)
-          setReceiptObservation(
-            receipt.status === "success" ? "sequencer-success" : "sequencer-reverted",
-          )
-        if (active)
+        if (observation.finalized) {
+          setReceiptConfirmed(true)
           onProgress?.({
-            phase: "included",
+            phase: "finalized",
             transactionHash: pending.transactionHash,
-            blockNumber: receipt.blockNumber,
-            outcome: receipt.status === "success" ? "success" : "reverted",
+            blockNumber: observation.blockNumber!,
           })
-        const finalized = await basePublicClient.getBlock({ blockTag: "finalized" })
-        if (finalized.number === null || receipt.blockNumber > finalized.number) return
-        if (active)
+        }
+      } else if (observation.status === "reverted") {
+        setReceiptObservation("sequencer-reverted")
+        onProgress?.({
+          phase: "included",
+          transactionHash: pending.transactionHash,
+          blockNumber: observation.blockNumber!,
+          outcome: "reverted",
+        })
+        if (observation.finalized) {
+          setTerminalReverted(true)
           onProgress?.({
-            phase: "finalizing",
+            phase: "attention",
             transactionHash: pending.transactionHash,
-            blockNumber: receipt.blockNumber,
+            message: "The Base transaction reverted. Review the authorization before retrying.",
           })
-        const canonicalReceiptBlock = await basePublicClient.getBlock({
-          blockNumber: receipt.blockNumber,
-        })
-        const finalization = exactMintReceiptFinalization({
-          expected: expectedDepositMint(pendingExpectation),
-          expectedBridgeAddress: deploymentProfile.bridgeAddress as `0x${string}`,
-          receipt,
-          finalizedBlockNumber: finalized.number,
-          canonicalReceiptBlockHash: canonicalReceiptBlock.hash,
-        })
-        if (active) {
-          if (finalization === "finalized") {
-            setReceiptConfirmed(true)
-            onProgress?.({
-              phase: "finalized",
-              transactionHash: pending.transactionHash,
-              blockNumber: receipt.blockNumber,
-            })
-          } else if (finalization === "conflict") {
-            setIdentityConflict(true)
-            onProgress?.({
-              phase: "attention",
-              transactionHash: pending.transactionHash,
-              message:
-                "The finalized Base transaction does not match this Mint Authorization. Do not submit another transaction; review it in History.",
-            })
-          } else if (finalization === "reverted") {
-            await removePendingMint(pendingExpectation)
-            setPending(undefined)
-            setReceiptObservation("checking")
-            onProgress?.({
-              phase: "attention",
-              transactionHash: pending.transactionHash,
-              message:
-                "The Base mint transaction reverted. The authorization can be reviewed before retrying.",
-            })
-          } else {
-            setReceiptObservation("checking")
-          }
         }
-      } catch {
-        if (active) {
-          setReceiptObservation((current) =>
-            current === "sequencer-success" || current === "sequencer-reverted"
-              ? current
-              : "unavailable",
-          )
-        }
+      } else if (observation.status === "conflict") {
+        setIdentityConflict(true)
+        onProgress?.({
+          phase: "attention",
+          transactionHash: pending.transactionHash,
+          message: "The Base receipt does not match this mint authorization.",
+        })
+      } else {
+        // The observer already preserves success through transport errors. A submitted
+        // status here can carry newer reorg evidence even when the next read failed.
+        setReceiptObservation(observation.unavailable ? "unavailable" : "checking")
+        onProgress?.({ phase: "submitted", transactionHash: pending.transactionHash })
       }
     }
+
     void checkReceipt()
     const timer = window.setInterval(() => void checkReceipt(), 10_000)
+    document.addEventListener("visibilitychange", checkReceipt)
     return () => {
       active = false
       window.clearInterval(timer)
+      document.removeEventListener("visibilitychange", checkReceipt)
     }
   }, [
     authorizationAvailable,
@@ -246,13 +227,19 @@ export function MintAuthorizationAction({
     onProgress,
     pending,
     pendingExpectation,
-    receiptConfirmed,
+    mintRecorded,
+    terminalReverted,
   ])
 
   useEffect(() => {
-    if (!pendingExpectation || !pending || authorizationAvailable) return
+    if (
+      !pendingExpectation ||
+      !pending ||
+      !("Minted" in record.state || "Refunded" in record.state)
+    )
+      return
     void removePendingMint(pendingExpectation).then(() => setPending(undefined))
-  }, [authorizationAvailable, pending, pendingExpectation])
+  }, [record.state, pending, pendingExpectation])
 
   useEffect(() => {
     if (!receiptConfirmed || !pending || !pendingExpectation) return
@@ -285,6 +272,19 @@ export function MintAuthorizationAction({
             heartbeat.refetch,
           )
           const validated = await validateMintAuthorization(record, observation)
+          if (
+            !pendingExpectation ||
+            validated.digest.toLowerCase() !== pendingExpectation.authorizationDigest.toLowerCase()
+          ) {
+            throw new Error("Mint authorization changed before submission")
+          }
+          await basePublicClient.simulateContract({
+            account: address,
+            address: deploymentProfile.bridgeAddress as `0x${string}`,
+            abi: bridgeAbi,
+            functionName: "mintDepositWithAuthorization",
+            args: [validated.authorization, validated.signature],
+          })
           onProgress?.({ phase: "awaiting-wallet" })
           const hash = await write.writeContractAsync({
             account: address,
@@ -296,26 +296,28 @@ export function MintAuthorizationAction({
           return { hash, validated }
         },
       )
-      const expected = pendingExpectation
-      if (
-        !expected ||
-        validated.digest.toLowerCase() !== expected.authorizationDigest.toLowerCase()
-      ) {
-        throw new Error("Mint authorization changed before transaction persistence")
-      }
-      const pendingMint = { ...expected, transactionHash: hash }
-      await savePendingMint(pendingMint)
-      onProgress?.({ phase: "submitted", transactionHash: hash })
-      setReceiptObservation("checking")
+      const pendingMint = { ...pendingExpectation!, transactionHash: hash }
       setPending(pendingMint)
+      setReceiptObservation("checking")
+      onProgress?.({ phase: "submitted", transactionHash: hash })
+      await savePendingMint(pendingMint).catch(() => {
+        toast.warning(
+          `Transaction submitted: ${hash}. Keep this hash; browser storage is unavailable.`,
+        )
+      })
       return { hash, recipient: validated.recipient }
     },
     onError: (error) => {
       onProgress?.({
         phase: "attention",
-        message: error instanceof Error ? error.message : "The Base mint could not be submitted.",
+        message:
+          error instanceof Error
+            ? redactRpcUrls(error.message)
+            : "The Base mint could not be submitted.",
       })
-      toast.error(error instanceof Error ? error.message : "Base mint could not be submitted")
+      toast.error(
+        error instanceof Error ? redactRpcUrls(error.message) : "Base mint could not be submitted",
+      )
     },
   })
   const verifyRetry = useMutation({
@@ -331,12 +333,18 @@ export function MintAuthorizationAction({
     },
     onSuccess: () => setRetryDialogOpen(true),
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "Pending mint could not be verified")
+      toast.error(
+        error instanceof Error
+          ? redactRpcUrls(error.message)
+          : "Pending mint could not be verified",
+      )
     },
   })
 
   const releasePendingForRetry = async () => {
     if (!pendingExpectation) return
+    if (autoPromptKey) attemptedAutoMintPrompts.add(autoPromptKey)
+    setTerminalReverted(false)
     await removePendingMint(pendingExpectation)
     setPending(undefined)
     setReceiptConfirmed(false)
@@ -373,7 +381,6 @@ export function MintAuthorizationAction({
       pending ||
       identityConflict ||
       submissionWindowTooShort ||
-      mintBlockedReason ||
       !address ||
       latestClockUnavailable
     ) {
@@ -392,7 +399,6 @@ export function MintAuthorizationAction({
     address,
     identityConflict,
     latestClockUnavailable,
-    mintBlockedReason,
     mintPending,
     pending,
     registerAction,
@@ -422,7 +428,6 @@ export function MintAuthorizationAction({
       latestBaseClock.isError ||
       latestBaseClock.isStale ||
       submissionWindowTooShort ||
-      mintBlockedReason ||
       identityConflict ||
       pending ||
       mint.isPending ||
@@ -441,7 +446,6 @@ export function MintAuthorizationAction({
     latestBaseClock.isError,
     latestBaseClock.isStale,
     mint,
-    mintBlockedReason,
     pending,
     recipient,
     submissionWindowTooShort,
@@ -458,11 +462,11 @@ export function MintAuthorizationAction({
   const payerDiffers = Boolean(address && address.toLowerCase() !== recipient.toLowerCase())
   const pendingLabel =
     receiptObservation === "sequencer-success"
-      ? "Included on Base; awaiting finality"
+      ? "Success"
       : receiptObservation === "sequencer-reverted"
-        ? "Transaction reverted; awaiting finality"
+        ? "Transaction reverted"
         : receiptObservation === "unavailable"
-          ? "Base receipt unavailable; checking"
+          ? "Submitted on Base; refreshing transaction status."
           : "Waiting for inclusion"
 
   if (headless) return null
@@ -499,7 +503,9 @@ export function MintAuthorizationAction({
                   : receiptObservation === "sequencer-success"
                     ? "Included; waiting for Base finality."
                     : receiptObservation === "sequencer-reverted"
-                      ? "Included as reverted; waiting for Base finality."
+                      ? terminalReverted
+                        ? "Finalized as reverted."
+                        : "Included as reverted; waiting for Base finality."
                       : "Waiting for inclusion."}
             </p>
           )}
@@ -510,7 +516,16 @@ export function MintAuthorizationAction({
           Deposit identity conflict. Do not submit another transaction.
         </p>
       ) : receiptConfirmed && pending ? (
-        <p className="font-bold text-[#176b3a]">Minted on Base</p>
+        <div>
+          <p className="font-bold text-[#176b3a]">Success</p>
+          <p className="text-xs text-[var(--muted)]">
+            {mintRecorded
+              ? "Recorded on IC"
+              : notificationUnavailable
+                ? "IC recording will retry automatically"
+                : "Waiting for IC recording"}
+          </p>
+        </div>
       ) : finalizedDeadlinePassed && !pending ? (
         <div className="space-y-2">
           <p className="text-xs font-bold text-[#8a4b08]">
@@ -558,9 +573,6 @@ export function MintAuthorizationAction({
               before clearing it.
             </p>
           )}
-          {mintBlockedReason && (
-            <p className="text-xs font-bold text-[#8a4b08]">{mintBlockedReason}</p>
-          )}
           {pending ? (
             <p
               className={`text-xs font-bold ${receiptObservation === "sequencer-success" ? "text-[#176b3a]" : receiptObservation === "sequencer-reverted" ? "text-[#8a4b08]" : "text-[var(--muted)]"}`}
@@ -571,13 +583,7 @@ export function MintAuthorizationAction({
             <Button
               size={compact ? "sm" : "lg"}
               className={compact ? "" : "mt-3 w-full"}
-              disabled={
-                Boolean(mintBlockedReason) ||
-                identityConflict ||
-                !address ||
-                mint.isPending ||
-                write.isPending
-              }
+              disabled={identityConflict || !address || mint.isPending || write.isPending}
               onClick={() => {
                 if (autoPromptKey) attemptedAutoMintPrompts.add(autoPromptKey)
                 mint.mutate()
@@ -588,9 +594,9 @@ export function MintAuthorizationAction({
           )}
         </div>
       )}
-      {!compact &&
+      {(!compact || terminalReverted) &&
         pending &&
-        receiptObservation === "unavailable" &&
+        (receiptObservation === "unavailable" || terminalReverted) &&
         !receiptConfirmed &&
         !identityConflict && (
           <Button
@@ -607,10 +613,9 @@ export function MintAuthorizationAction({
           <DialogHeader>
             <DialogTitle>Clear the saved transaction reference?</DialogTitle>
             <DialogDescription>
-              No receipt is currently available and the Deposit ID is still unprocessed on Base.
-              Clearing this browser's saved transaction reference enables another submission. If the
-              original transaction is mined later, the retry will revert and may cost additional
-              gas.
+              {terminalReverted
+                ? "The Base transaction finalized as reverted. Clearing this reference enables an explicit new submission."
+                : "No receipt is currently available and the Deposit ID is still unprocessed on Base. Clearing this browser's saved transaction reference enables another submission. If the original transaction is mined later, the retry will revert and may cost additional gas."}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -623,17 +628,6 @@ export function MintAuthorizationAction({
       </Dialog>
     </div>
   )
-}
-
-function expectedDepositMint(expected: PendingMintExpectation): ExpectedDepositMint {
-  return {
-    depositId: expected.depositId,
-    recipient: expected.recipient,
-    authorizationDigest: expected.authorizationDigest,
-    grossAmount: BigInt(expected.grossAmount),
-    serviceFee: BigInt(expected.chargedServiceFee),
-    mintedAmount: BigInt(expected.mintedAmount),
-  }
 }
 
 function formatRemaining(seconds: bigint): string {
