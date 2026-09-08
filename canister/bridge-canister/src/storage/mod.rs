@@ -12642,6 +12642,96 @@ mod tests {
 
     #[test]
     #[serial]
+    fn unsigned_authorization_checks_refund_and_attested_recipient_before_signing() {
+        use crate::api::{
+            deposit_recipient_allowed, unsigned_authorization_rejection, DepositError,
+        };
+        let memory = VectorMemory::default();
+        let mut config = config();
+        config.expected_bridge_runtime_sha256 = vec![3; 32];
+        let mut store = StableStore::init_configured(memory, &config).unwrap();
+        assert_eq!(
+            deposit_recipient_allowed(&store, &config, [9; 20]),
+            Err(DepositError::BaseObservationUnavailable)
+        );
+        store
+            .seal_operational_config(
+                &config,
+                0,
+                Principal::from_slice(&[0x99]),
+                activation_attestation(),
+                activation_finalized_observation(),
+            )
+            .unwrap();
+        for recipient in [[0; 20], [1; 20], [7; 20]] {
+            assert_eq!(
+                deposit_recipient_allowed(&store, &config, recipient),
+                Ok(false)
+            );
+        }
+        assert_eq!(
+            deposit_recipient_allowed(&store, &config, [9; 20]),
+            Ok(true)
+        );
+        let mut wrong = config.clone();
+        wrong.base_chain_id += 1;
+        assert_eq!(
+            deposit_recipient_allowed(&store, &wrong, [9; 20]),
+            Err(DepositError::BaseObservationUnavailable)
+        );
+        wrong = config.clone();
+        wrong.expected_bsns_runtime_sha256 = vec![0; 32];
+        assert_eq!(
+            deposit_recipient_allowed(&store, &wrong, [9; 20]),
+            Err(DepositError::BaseObservationUnavailable)
+        );
+        let fee = crate::ledger::KINIC_LEDGER_FEE.get();
+        let domain = MintAuthorizationDomain::bridge(8453, [1; 20]);
+        let mut authorization = MintAuthorizationRecord {
+            authorization: MintAuthorization {
+                deposit_id: [1; 32],
+                recipient: [9; 20],
+                gross_amount: Amount::new(fee * 2 + 1),
+                max_service_fee: Amount::new(fee),
+                charged_service_fee: Amount::new(fee),
+                deadline: 600,
+                authorization_epoch: 1,
+            },
+            domain,
+            digest: [2; 32],
+            origin: MintAuthorizationOrigin {
+                finalized_block_number: 1,
+                finalized_block_hash: [1; 32],
+                finalized_block_timestamp: 0,
+                issued_at_timestamp: 0,
+            },
+            signature_dispatch_attempt: 0,
+            signature_dispatched: false,
+            signature: None,
+        };
+        assert_eq!(
+            unsigned_authorization_rejection(&store, &config, &authorization),
+            Ok(None)
+        );
+        authorization.authorization.gross_amount = Amount::new(fee * 2);
+        assert_eq!(
+            unsigned_authorization_rejection(&store, &config, &authorization),
+            Ok(Some(bridge_core::DepositRefundReason::RefundAmountTooSmall))
+        );
+        authorization.authorization.recipient = [7; 20];
+        assert_eq!(
+            unsigned_authorization_rejection(&store, &config, &authorization),
+            Ok(Some(bridge_core::DepositRefundReason::InvalidRecipient))
+        );
+        authorization.signature = Some(vec![1; 65]);
+        assert_eq!(
+            unsigned_authorization_rejection(&store, &config, &authorization),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    #[serial]
     fn deposit_authorization_persists_exact_committed_quote() {
         let memory = VectorMemory::default();
         let mut store =

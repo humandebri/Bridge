@@ -1127,6 +1127,16 @@ export function DepositActivityRow({
               : depositPhaseName(record.state)}
         </Badge>
         {!mintedOnBase && !mintSubmitted && progress && <AutomaticProgress progress={progress} />}
+        {!mintedOnBase && refund && "RefundAmountTooSmall" in refund.reason && (
+          <p className="mt-1 text-xs font-bold text-[var(--muted)]">
+            The amount cannot cover a refund after the service fee. No service fee was charged.
+          </p>
+        )}
+        {!mintedOnBase && refund && "InvalidRecipient" in refund.reason && (
+          <p className="mt-1 text-xs font-bold text-[var(--muted)]">
+            The recipient cannot receive a mint. No service fee was charged.
+          </p>
+        )}
         {!mintedOnBase && refund && "ReconciliationRequired" in refund.status && (
           <p className="mt-1 text-xs font-bold text-[#b42318]">
             Ledger result is uncertain — requesting again checks the same transfer.

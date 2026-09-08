@@ -84,3 +84,9 @@ WithdrawalにCanister発Base transaction、Base refund、release acknowledgement
 - Deposit refund: `request_deposit_refund`
 - Withdrawal: Base `approve` → `createWithdrawal` → `notify_withdrawal` → 必要に応じて`continue_withdrawal`
 - 状態照会: `get_deposit`、`get_withdrawal`、`get_bridge_status`
+
+## 署名前の返金可能性と宛先
+
+新規DepositはLedger pull前に、固定Bridgeおよび検証済みactivation attestationのBSNSアドレスを宛先から除外する。必要なbindingが欠ける場合は停止する。すでに開始されたfundingの照合は継続する。
+
+署名対象の見積もりには `gross − chargedServiceFee > ledgerFee` を要求する。満たさない未署名Depositは `RefundAmountTooSmall`、不正宛先は `InvalidRecipient` として返金へ進み、サービス手数料を計上しない。返金額は `gross − ledgerFee`。署名発行後の金額・期限・手数料は変更せず、既存の署名済みDepositの救済はこの変更に含めない。

@@ -821,6 +821,12 @@ verus! {
 
 }
 
+macro_rules! deposit_recipient_allowed_body {
+    ($zero:expr, $bridge:expr, $token:expr) => {
+        !$zero && !$bridge && !$token
+    };
+}
+
 macro_rules! deposit_refund_body {
     ($gross:expr, $service_fee:expr, $ledger_fee:expr) => {{
         if $gross <= $service_fee || $gross - $service_fee <= $ledger_fee {
@@ -1852,6 +1858,10 @@ verus! {
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn deposit_recipient_allowed(is_zero: bool, is_bridge: bool, is_token: bool) -> bool {
+    deposit_recipient_allowed_body!(is_zero, is_bridge, is_token)
+}
+
 pub const fn deposit_refund_amount(
     gross: u128,
     service_fee: u128,
@@ -2739,6 +2749,10 @@ verus! {
         active_generation: int, outcome_generation: int, active: bool,
     ) -> bool {
         lease_outcome_is_current_body!(active_generation, outcome_generation, active)
+    }
+
+    pub open spec fn deposit_recipient_allowed_spec(is_zero: bool, is_bridge: bool, is_token: bool) -> bool {
+        deposit_recipient_allowed_body!(is_zero, is_bridge, is_token)
     }
 
     pub open spec fn deposit_refund_amount_spec(

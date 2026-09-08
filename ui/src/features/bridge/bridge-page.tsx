@@ -94,19 +94,31 @@ interface DepositWriteGate {
 }
 
 export function validatedDepositWriteGate(input: {
+  recipient: string
   amount: bigint
   expectedSequence: bigint
   observation: FinalizedRuntimeObservation
   ledger: DepositWriteGate["ledger"]
   sequence: bigint
 }): DepositWriteGate {
-  const { amount, expectedSequence, observation, ledger, sequence } = input
+  const { amount, expectedSequence, observation, ledger, sequence, recipient } = input
+  if (
+    !/^0x[0-9a-fA-F]{40}$/.test(recipient) ||
+    [
+      "0x0000000000000000000000000000000000000000",
+      deploymentProfile.bridgeAddress,
+      deploymentProfile.bsnsAddress,
+    ].some((address) => address?.toLowerCase() === recipient.toLowerCase())
+  )
+    throw new Error("Recipient cannot be zero, the Bridge contract, or the token contract")
   const quote = observation.snapshot
   if (!quote) throw new Error("Finalized Base snapshot is unavailable")
   if (quote.depositsPaused) throw new Error("Deposits are paused on Base")
   if (amount > quote.perDepositLimit)
     throw new Error("Amount exceeds the current per-deposit limit")
   if (amount <= quote.serviceFee) throw new Error("Amount must exceed the current service fee")
+  if (amount - quote.serviceFee <= ledger.fee)
+    throw new Error("Amount must exceed the service fee plus the refund ledger fee")
   const windowEndsAt = quote.startedAt + quote.duration
   if (quote.blockTimestamp === windowEndsAt)
     throw new Error(
@@ -533,6 +545,7 @@ export function BridgePage({
         const beforeApproval = await refetchDepositWriteGate(
           reviewed.amount,
           reviewed.gate.sequence,
+          confirmedRecipient,
         )
         const requiredAllowance = reviewed.amount + beforeApproval.ledger.fee
         if (beforeApproval.ledger.allowance < requiredAllowance) {
@@ -558,6 +571,7 @@ export function BridgePage({
         const final = await refetchDepositWriteGate(
           reviewed.amount,
           beforeApproval.sequence,
+          confirmedRecipient,
           undefined,
         )
         const attempt: UnresolvedDepositAttempt = {
@@ -594,6 +608,7 @@ export function BridgePage({
   const refetchDepositWriteGate = async (
     amount: bigint,
     expectedSequence: bigint,
+    recipient: string,
     reusableObservation?: FinalizedRuntimeObservation,
   ): Promise<DepositWriteGate> => {
     const observationPromise =
@@ -618,6 +633,7 @@ export function BridgePage({
     return validatedDepositWriteGate({
       amount,
       expectedSequence,
+      recipient,
       observation,
       ledger: ledgerResult.data,
       sequence: sequenceResult.data,
@@ -731,6 +747,7 @@ export function BridgePage({
           throw new Error("Deposit amount or financial information is unavailable")
         return validatedDepositWriteGate({
           amount: depositParsed.value,
+          recipient: walletSnapshot.recipient,
           expectedSequence: financials.sequence,
           observation,
           ledger: financials.ledger,

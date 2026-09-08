@@ -285,8 +285,10 @@ type DepositReceipt = record {
 };
 type DepositRefundReasonView = variant {
   ServiceFeeRejected;
+  InvalidRecipient;
   MintWindowLimitExceeded;
   BasePaused;
+  RefundAmountTooSmall;
   AuthorizationExpired;
   PerDepositLimitExceeded;
 };

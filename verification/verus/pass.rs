@@ -7,6 +7,10 @@ use vstd::prelude::*;
 mod kernel;
 
 verus! {
+pub proof fn deposit_recipient_excludes_protocol_contracts(zero: bool, bridge: bool, token: bool)
+    ensures kernel::deposit_recipient_allowed_spec(zero, bridge, token) == (!zero && !bridge && !token),
+{}
+
 pub open spec fn settlement_decision_view(
     result: Option<kernel::SettlementDecision>,
 ) -> Option<(int, int, int)> {

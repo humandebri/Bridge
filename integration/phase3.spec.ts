@@ -623,6 +623,40 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(0n);
   });
 
+  async function rejects_protocol_recipients_before_ledger_or_sequence_use() {
+    const { ledger, bridge, runtimePrincipal } = await setup();
+    for (const tag of [0, 1, 9]) {
+      expect(await bridge.actor.request_deposit({ owner_sequence: 0n,
+        base_recipient: new Uint8Array(20).fill(tag), from_subaccount: [],
+        gross_amount: 200_000n, max_service_fee: 10n })).toHaveProperty("Err.InvalidRequest");
+    }
+    expect(await bridge.actor.get_next_deposit_sequence(runtimePrincipal)).toBe(0n);
+    expect(await ledger.actor.ledger_transactions()).toHaveLength(0);
+    expect(await ledger.actor.ledger_transfer_calls()).toBe(0n);
+  }
+  it("rejects protocol recipients before ledger or sequence use", rejects_protocol_recipients_before_ledger_or_sequence_use);
+
+  async function refunds_unsigned_dust_without_service_fee_and_without_duplicate_transfer() {
+    const { ledger, bridge } = await setup();
+    const request = { owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4),
+      from_subaccount: [], gross_amount: testLedgerFee + 1n, max_service_fee: 10n };
+    const accepted: any = await bridge.actor.request_deposit(request);
+    expect(accepted).toHaveProperty("Ok.deposit_id");
+    await advanceDepositJobs(bridge, accepted.Ok.deposit_id);
+    const before: any = (await bridge.actor.get_deposit(accepted.Ok.deposit_id))[0];
+    expect(before.state).toEqual({ RefundAvailable: null });
+    expect(before.mint_authorization).toEqual([]);
+    const refunded: any = await bridge.actor.request_deposit_refund(accepted.Ok.deposit_id);
+    expect(refunded).toHaveProperty("Ok.state.Refunded");
+    expect(refunded.Ok.refund[0].reason).toEqual({ RefundAmountTooSmall: null });
+    expect(refunded.Ok.refund[0].amount).toBe(1n);
+    const count = (await ledger.actor.ledger_transactions()).length;
+    expect(await bridge.actor.request_deposit(request)).toHaveProperty("Ok.deposit_id");
+    expect(await bridge.actor.request_deposit_refund(accepted.Ok.deposit_id)).toEqual({ Err: { NotClaimable: null } });
+    expect(await ledger.actor.ledger_transactions()).toHaveLength(count);
+  }
+  it("refunds unsigned dust without service fee and without duplicate transfer", refunds_unsigned_dust_without_service_fee_and_without_duplicate_transfer);
+
   async function authenticated_relayer_refund_preserves_fixed_identity() {
     const { bridge, evm, ledger } = await setup();
     const owner = Principal.selfAuthenticating(new Uint8Array(32).fill(31));
@@ -1309,7 +1343,7 @@ describe("Phase 3 PocketIC saga", () => {
     const selectedSubaccount = new Uint8Array(32).fill(8);
     const request = {
       owner_sequence: 0n,
-      base_recipient: new Uint8Array(20).fill(9),
+      base_recipient: new Uint8Array(20).fill(4),
       from_subaccount: [selectedSubaccount],
       gross_amount: 200_000n,
       max_service_fee: 10n,
@@ -2050,27 +2084,22 @@ describe("Phase 3 PocketIC saga", () => {
     expect(phaseName((await (bridge.actor as any).get_withdrawal(id))[0].state)).toBe("Paid");
   });
 
-  it("returns notification observation failures immediately and never retries them from timers", async () => {
-    const cases = [
-      [{ Missing: null }, "TransactionNotFound"],
-      [{ Reverted: null }, "TransactionReverted"],
-      [{ RpcFailure: null }, "RpcUnavailable"],
-      [{ Inconsistent: null }, "RpcInconsistent"],
-      [{ DecodeFailure: null }, "InvalidBaseResponse"],
-      [{ Orphaned: null }, "InvalidBaseResponse"],
-    ] as const;
-    for (const [mode, error] of cases) {
-      const { evm, bridge, runtimePrincipal } = await setup();
-      const id = new Uint8Array(32).fill(80 + cases.findIndex(([candidate]) => candidate === mode));
-      await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 1_000_000n, max_service_fee: 100_000n, charged_service_fee: 100_000n, amount_out: 900_000n }]);
-      await (evm.actor as any).set_receipt_mode(mode);
-      const result: any = await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) });
-      expect(result).toHaveProperty(`Err.${error}`);
-      await advanceTimeWithoutSettlement(2);
-      expect(await (bridge.actor as any).get_withdrawal(id)).toEqual([]);
-      await pic!.tearDown();
-      pic = await PocketIc.create(serverUrl, { nns: { state: { type: SubnetStateType.New } }, fiduciary: { state: { type: SubnetStateType.New } } });
-    }
+  it.each([
+    [{ Missing: null }, "TransactionNotFound"],
+    [{ Reverted: null }, "TransactionReverted"],
+    [{ RpcFailure: null }, "RpcUnavailable"],
+    [{ Inconsistent: null }, "RpcInconsistent"],
+    [{ DecodeFailure: null }, "InvalidBaseResponse"],
+    [{ Orphaned: null }, "InvalidBaseResponse"],
+  ] as const)("returns notification observation failures immediately and never retries them from timers: %j", async (mode, error) => {
+    const { evm, bridge, runtimePrincipal } = await setup();
+    const id = new Uint8Array(32).fill(80);
+    await (evm.actor as any).set_withdrawal([{ id, owner: runtimePrincipal.toUint8Array(), subaccount: new Uint8Array(32), amount: 1_000_000n, max_service_fee: 100_000n, charged_service_fee: 100_000n, amount_out: 900_000n }]);
+    await (evm.actor as any).set_receipt_mode(mode);
+    const result: any = await (bridge.actor as any).notify_withdrawal({ transaction_hash: new Uint8Array(32).fill(9) });
+    expect(result).toHaveProperty(`Err.${error}`);
+    await advanceTimeWithoutSettlement(2);
+    expect(await (bridge.actor as any).get_withdrawal(id)).toEqual([]);
   });
 
   it("binds withdrawal state reads to the current canonical finalized block with EIP-1898", async () => {

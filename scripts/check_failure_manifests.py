@@ -14,7 +14,8 @@ from check_claim_manifest import checked_link
 ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_LEAN_FAILURE_SHA256 = {
-    "AccountingDeltaViolation.lean": "42c3cd975297018b3f37963910957eae30d8a5910b18aba483ee7e24a27151dd",
+    "RefundAfterReservationReplay.lean": "398008e4f37597fc27cdc61909bfe32312895afa6bb84128a5d01a252b164afd",
+    "AccountingDeltaViolation.lean": "638f8837d8c221d828fed5162973b4215af39c61984c6aba3220f8b8b3dd7a08",
     "AnonymousRefundRequest.lean": "beae263600cfc9307feadae225b64983f34e11bfdfa04adae6316ec7a1869552",
     "AuthorizationReissue.lean": (
         "ee67fee642f47c1d116fc94f8a5f9387"
@@ -42,7 +43,7 @@ REQUIRED_LEAN_FAILURE_SHA256 = {
     "MissingUserLiveness.lean": "285ee5520011c8603f7db684c1a6365bef69da98d9e38c6ed60a4f0b69bbe07e",
     "ProcessedExpiryRefund.lean": "4dcff1642961a5f622a762ac1b4748b990a5b4ee6a480d4e6a42abf76f7e0773",
     "RefundBeforeFunding.lean": "47ac92b520aef0fc257bf1a3fa956af2ce6130b9bf676b56d8936e62c2bd56f0",
-    "StaleCrossRecordCallback.lean": "22dc013ef440ee7341088666b13309141a4fd135931b167481741248a4720989",
+    "StaleCrossRecordCallback.lean": "0394bec7a1db4833940a74de7386b6150db5753b09b2cae5b8d5ebb8c64330b1",
     "StaleLeaseCallback.lean": "060d4a6c2845d57c76dc64427eca5be79f8444c0472b7191a2ffffe4f34c2dae",
     "TerminalAuthorizationReopen.lean": "c7ba272a6f81dfcd0c4333bd325bcea1f41c1ce618cd1a645cd3dddea5daa29f",
     "TerminalDepositIndexed.lean": "5a740f2449b4ebd506b9d3095378f2226f253b9fd4ec96442422a0adbcbd91d7",

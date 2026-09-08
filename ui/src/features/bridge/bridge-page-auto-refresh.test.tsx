@@ -2,7 +2,7 @@ import { StrictMode, useState, type ReactNode } from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { BridgePage } from "./bridge-page"
+import { BridgePage, validatedDepositWriteGate } from "./bridge-page"
 import { BridgeProgressProvider } from "./bridge-progress-provider"
 import { browserLocalStorage } from "@/lib/browser-lock"
 import type * as BrowserLockModule from "@/lib/browser-lock"
@@ -1447,4 +1447,57 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(screen.getByRole<HTMLInputElement>("textbox", { name: "You send" }).value).toBe("3")
     expect(screen.queryByRole("heading", { name: "Bridge complete" })).not.toBeInTheDocument()
   })
+})
+
+describe("deposit refund and recipient admission", () => {
+  const gate = (amount: bigint, recipient = `0x${"99".repeat(20)}`) =>
+    validatedDepositWriteGate({
+      recipient,
+      amount,
+      expectedSequence: 0n,
+      sequence: 0n,
+      ledger: { balance: 100000n, fee: 10n, allowance: 100000n },
+      observation: {
+        ready: true,
+        blockers: [],
+        checkedAt: 1,
+        snapshot: {
+          serviceFee: 20n,
+          maxServiceFee: 30n,
+          perDepositLimit: 1000n,
+          minted: 0n,
+          limit: 1000n,
+          startedAt: 100n,
+          duration: 1000n,
+          depositsPaused: false,
+          withdrawalsPaused: false,
+          bridgeSigner: `0x${"99".repeat(20)}`,
+          mintAuthorizationEpoch: 1n,
+          blockTimestamp: 101n,
+        },
+      },
+    })
+  it(
+    "rejects a net amount equal to the refund fee and accepts one unit above",
+    rejects_a_net_amount_equal_to_the_refund_fee_and_accepts_one_unit_above,
+  )
+  function rejects_a_net_amount_equal_to_the_refund_fee_and_accepts_one_unit_above() {
+    expect(() => gate(20n)).toThrow("service fee")
+    expect(() => gate(30n)).toThrow("refund ledger fee")
+    expect(() => gate(31n)).not.toThrow()
+  }
+  it(
+    "rejects zero and protocol contract recipients before wallet work",
+    rejects_zero_and_protocol_contract_recipients_before_wallet_work,
+  )
+  async function rejects_zero_and_protocol_contract_recipients_before_wallet_work() {
+    const { deploymentProfile } = await import("@/config/profile")
+    for (const recipient of [
+      "0x0000000000000000000000000000000000000000",
+      deploymentProfile.bridgeAddress,
+      deploymentProfile.bsnsAddress,
+    ]) {
+      if (recipient) expect(() => gate(31n, recipient)).toThrow("Recipient")
+    }
+  }
 })

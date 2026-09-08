@@ -253,8 +253,10 @@ export interface DepositReceipt {
   'owner_sequence' : bigint,
 }
 export type DepositRefundReasonView = { 'ServiceFeeRejected' : null } |
+  { 'InvalidRecipient' : null } |
   { 'MintWindowLimitExceeded' : null } |
   { 'BasePaused' : null } |
+  { 'RefundAmountTooSmall' : null } |
   { 'AuthorizationExpired' : null } |
   { 'PerDepositLimitExceeded' : null };
 export type DepositRefundStatusView = { 'Sending' : null } |

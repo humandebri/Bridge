@@ -17,10 +17,11 @@ function Harness() {
   const [boundaryError, setBoundaryError] = useState("")
   const item = depositItem({ AuthorizationWindowTooShort: null })
 
-  const attemptBoundaryDeposit = () => {
+  const attemptBoundaryDeposit = (amount = 100n, recipient: string = ADDRESS) => {
     try {
       validatedDepositWriteGate({
-        amount: 100n,
+        recipient,
+        amount,
         expectedSequence: 1n,
         sequence: 1n,
         ledger: { balance: 1_000n, fee: 1n, allowance: 0n },
@@ -70,8 +71,17 @@ function Harness() {
         Advance finalized Base time
       </button>
       <p data-testid="refund-requests">Refund requests: {refundRequests}</p>
-      <button type="button" onClick={attemptBoundaryDeposit}>
+      <button type="button" onClick={() => attemptBoundaryDeposit()}>
         Attempt boundary deposit
+      </button>
+      <button type="button" onClick={() => attemptBoundaryDeposit(11n)}>
+        Attempt deposit with no refundable remainder
+      </button>
+      <button
+        type="button"
+        onClick={() => attemptBoundaryDeposit(100n, "0x0000000000000000000000000000000000000000")}
+      >
+        Attempt zero recipient deposit
       </button>
       <p role="alert">{boundaryError}</p>
       <dl>

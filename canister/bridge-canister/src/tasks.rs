@@ -577,6 +577,21 @@ async fn prepare_escrowed_deposit(
             }
             (observation.finalized, observation.snapshot)
         };
+    let recipient = STORE.with(|store| {
+        let store = store.borrow();
+        let recipient = store
+            .deposit_intent(deposit.id.bytes())
+            .map_err(|_| SettlementActionError::StorageFailure)?
+            .ok_or(SettlementActionError::StorageFailure)?
+            .base_recipient;
+        crate::api::deposit_recipient_allowed(&store, config, recipient)
+            .map_err(|_| SettlementActionError::StorageFailure)
+    })?;
+    if !recipient {
+        return Ok(EscrowPreparation::RefundAvailable(
+            DepositRefundReason::InvalidRecipient,
+        ));
+    }
     let snapshot = observed_snapshot.mint;
     if observed_snapshot.deposits_paused {
         return Ok(EscrowPreparation::RefundAvailable(
@@ -615,6 +630,17 @@ async fn prepare_escrowed_deposit(
         }
         Err(_) => return Err(SettlementActionError::StorageFailure),
     };
+    if ::bridge_core::kernel::deposit_refund_amount(
+        deposit.gross_amount.get(),
+        snapshot.service_fee.get(),
+        ledger::KINIC_LEDGER_FEE.get(),
+    )
+    .is_none()
+    {
+        return Ok(EscrowPreparation::RefundAvailable(
+            DepositRefundReason::RefundAmountTooSmall,
+        ));
+    }
     let quote = DepositQuote {
         service_fee: snapshot.service_fee,
         net_amount,
@@ -884,6 +910,40 @@ pub(crate) async fn advance_deposit(
                 }
             }
             bridge_core::DepositState::AuthorizationPending { .. } => {
+                let rejection = STORE.with(|store| {
+                    let mut store = store.borrow_mut();
+                    let mut current = store
+                        .deposit(deposit_id)
+                        .map_err(|_| SettlementActionError::StorageFailure)?
+                        .ok_or(SettlementActionError::NotFound)?;
+                    let authorization = current
+                        .mint_authorization
+                        .as_ref()
+                        .ok_or(SettlementActionError::StorageFailure)?;
+                    let reason = crate::api::unsigned_authorization_rejection(
+                        &store,
+                        &config,
+                        authorization,
+                    )
+                    .map_err(|_| SettlementActionError::StorageFailure)?;
+                    if let Some(reason) = reason {
+                        let result = current
+                            .apply(DepositEvent::MarkRefundAvailable {
+                                reason,
+                                finalized_timestamp: None,
+                            })
+                            .map_err(|_| SettlementActionError::StorageFailure)?;
+                        store
+                            .put_deposit_transition(&current, result)
+                            .map_err(|_| SettlementActionError::StorageFailure)?;
+                    }
+                    Ok::<_, SettlementActionError>(reason)
+                })?;
+                if rejection.is_some() {
+                    return Ok(SettlementActionResult::Complete {
+                        state: SettlementState::Deposit(DepositPhase::RefundAvailable),
+                    });
+                }
                 let observed_timestamp = ic_cdk::api::time() / 1_000_000_000;
                 let pending_authorization = deposit
                     .mint_authorization
@@ -1008,6 +1068,16 @@ pub(crate) async fn advance_deposit(
                         })
                     {
                         return Ok::<_, SettlementActionError>(false);
+                    }
+                    let authorization = current
+                        .mint_authorization
+                        .as_ref()
+                        .ok_or(SettlementActionError::StorageFailure)?;
+                    if crate::api::unsigned_authorization_rejection(&store, &config, authorization)
+                        .map_err(|_| SettlementActionError::StorageFailure)?
+                        .is_some()
+                    {
+                        return Err(SettlementActionError::StorageFailure);
                     }
                     let result = current
                         .apply(DepositEvent::AuthorizationSigned {

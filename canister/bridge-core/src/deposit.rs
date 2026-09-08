@@ -46,6 +46,8 @@ impl DepositQuote {
 pub enum DepositRefundReason {
     BasePaused,
     ServiceFeeRejected,
+    RefundAmountTooSmall,
+    InvalidRecipient,
     PerDepositLimitExceeded,
     MintWindowLimitExceeded,
     AuthorizationExpired,
@@ -689,6 +691,15 @@ impl DepositRecord {
                                 DepositRefundReason::AuthorizationExpired,
                                 Some(finalized_timestamp),
                             ) => deadline.is_some_and(|deadline| *finalized_timestamp > deadline),
+                            (
+                                State::AuthorizationPending { .. },
+                                DepositRefundReason::RefundAmountTooSmall
+                                | DepositRefundReason::InvalidRecipient,
+                                None,
+                            ) => self
+                                .mint_authorization
+                                .as_ref()
+                                .is_some_and(|record| record.signature.is_none()),
                             _ => false,
                         },
                     },

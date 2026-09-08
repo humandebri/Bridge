@@ -475,8 +475,10 @@ export const idlFactory = ({ IDL }) => {
   });
   const DepositRefundReasonView = IDL.Variant({
     'ServiceFeeRejected' : IDL.Null,
+    'InvalidRecipient' : IDL.Null,
     'MintWindowLimitExceeded' : IDL.Null,
     'BasePaused' : IDL.Null,
+    'RefundAmountTooSmall' : IDL.Null,
     'AuthorizationExpired' : IDL.Null,
     'PerDepositLimitExceeded' : IDL.Null,
   });

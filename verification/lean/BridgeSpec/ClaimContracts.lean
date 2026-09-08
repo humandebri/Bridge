@@ -299,7 +299,7 @@ def ReservationLifecycle : Prop :=
   (∀ {record next : GlobalHistory.Record},
       GlobalHistory.applyRecord record (.releaseReservation record.id) = some next →
         next.economic.reservedMint = 0) ∧
-    (∀ {record : GlobalHistory.Record}, record.releaseApplied = true →
+    (∀ {record : GlobalHistory.Record}, record.reservationReleased = true →
       record.phase.terminal = false →
         GlobalHistory.applyRecord record (.releaseReservation record.id) = none)
 

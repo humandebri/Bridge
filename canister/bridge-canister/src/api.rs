@@ -159,6 +159,8 @@ pub struct DepositQuoteView {
 pub enum DepositRefundReasonView {
     BasePaused,
     ServiceFeeRejected,
+    RefundAmountTooSmall,
+    InvalidRecipient,
     PerDepositLimitExceeded,
     MintWindowLimitExceeded,
     AuthorizationExpired,
@@ -169,6 +171,8 @@ impl From<DepositRefundReason> for DepositRefundReasonView {
         match value {
             DepositRefundReason::BasePaused => Self::BasePaused,
             DepositRefundReason::ServiceFeeRejected => Self::ServiceFeeRejected,
+            DepositRefundReason::RefundAmountTooSmall => Self::RefundAmountTooSmall,
+            DepositRefundReason::InvalidRecipient => Self::InvalidRecipient,
             DepositRefundReason::PerDepositLimitExceeded => Self::PerDepositLimitExceeded,
             DepositRefundReason::MintWindowLimitExceeded => Self::MintWindowLimitExceeded,
             DepositRefundReason::AuthorizationExpired => Self::AuthorizationExpired,
@@ -1163,6 +1167,15 @@ pub async fn request_deposit(
             .deposit_funding_attempt(deposit_id)
             .map_err(|_| DepositError::StorageFailure)
     })?;
+    // Existing funding attempts must finish reconciliation even if admission policy changed.
+    if existing_attempt.is_none()
+        && !STORE
+            .with(|store| deposit_recipient_allowed(&store.borrow(), &config, base_recipient))?
+    {
+        return Err(DepositError::InvalidRequest(
+            "Base recipient cannot be zero, Bridge, or BSNS".into(),
+        ));
+    }
     let ledger_fee = ledger::KINIC_LEDGER_FEE;
     let memo = hash_concat(&[b"KINIC-DEPOSIT-MEMO-V3", &deposit_id]);
     let canister = ic_cdk::api::canister_self();
@@ -1732,6 +1745,55 @@ fn validate_base_deposit_snapshot(
     Ok(snapshot)
 }
 
+pub(crate) fn deposit_recipient_allowed(
+    store: &crate::storage::StableStore,
+    config: &BridgeInitArgs,
+    recipient: [u8; 20],
+) -> Result<bool, DepositError> {
+    let attestation = store
+        .activation_attestation()
+        .map_err(|_| DepositError::StorageFailure)?
+        .ok_or(DepositError::BaseObservationUnavailable)?;
+    if attestation.chain_id != config.base_chain_id
+        || attestation.bridge_runtime_sha256 != config.expected_bridge_runtime_sha256
+        || attestation.bsns_runtime_sha256 != config.expected_bsns_runtime_sha256
+        || attestation.bsns_bridge != config.bridge_contract
+        || attestation.bsns_address.len() != 20
+        || attestation.bsns_address.iter().all(|byte| *byte == 0)
+        || config.bridge_contract.len() != 20
+    {
+        return Err(DepositError::BaseObservationUnavailable);
+    }
+    Ok(::bridge_core::kernel::deposit_recipient_allowed(
+        recipient == [0; 20],
+        recipient.as_slice() == config.bridge_contract.as_slice(),
+        recipient.as_slice() == attestation.bsns_address.as_slice(),
+    ))
+}
+
+pub(crate) fn unsigned_authorization_rejection(
+    store: &crate::storage::StableStore,
+    config: &BridgeInitArgs,
+    authorization: &bridge_core::MintAuthorizationRecord,
+) -> Result<Option<DepositRefundReason>, DepositError> {
+    if authorization.signature.is_some() {
+        return Ok(None);
+    }
+    if !deposit_recipient_allowed(store, config, authorization.authorization.recipient)? {
+        return Ok(Some(DepositRefundReason::InvalidRecipient));
+    }
+    if ::bridge_core::kernel::deposit_refund_amount(
+        authorization.authorization.gross_amount.get(),
+        authorization.authorization.charged_service_fee.get(),
+        ledger::KINIC_LEDGER_FEE.get(),
+    )
+    .is_none()
+    {
+        return Ok(Some(DepositRefundReason::RefundAmountTooSmall));
+    }
+    Ok(None)
+}
+
 pub(crate) fn commit_deposit_authorization(
     store: &mut crate::storage::StableStore,
     deposit_id: [u8; 32],
@@ -1746,6 +1808,9 @@ pub(crate) fn commit_deposit_authorization(
         .config()
         .map_err(|_| DepositError::StorageFailure)?
         .ok_or(DepositError::StorageFailure)?;
+    if let Some(reason) = unsigned_authorization_rejection(store, &config, &authorization)? {
+        return Err(DepositError::Rejected(format!("{reason:?}")));
+    }
     let expected_contract: [u8; 20] = config
         .bridge_contract
         .as_slice()
