@@ -2910,12 +2910,13 @@ describe("Phase 3 PocketIC saga", () => {
 
   it("keeps funds fixed when a processed Deposit ID has only another authorization digest", processed_id_with_another_digest_cannot_move_refund_funds);
 
-  it("does not refund when finalized Base RPC observations disagree", async () => {
+  async function refund_rejects_a_checkpoint_quorum_without_two_finalized_providers() {
     const { evm, bridge } = await setup();
     const result: any = await requestDefaultDeposit(bridge);
     const authorization = await awaitMintAuthorization(bridge, result.Ok.deposit_id);
     await setExpiredBlockTimestamp(evm, authorization.deadline + 1n);
-    await evm.actor.set_block_mode({ FinalizedInconsistent: null });
+    await (evm.actor as any).set_finalized_block_sequence([90n, 100n, 110n]);
+    await evm.actor.set_block_mode({ FinalizedCheckpointFork: null });
     expect(await (bridge.actor as any).request_deposit_refund(result.Ok.deposit_id))
       .toEqual({ Err: { RpcInconsistent: null } });
     const stored: any = await bridge.actor.get_deposit(result.Ok.deposit_id);
@@ -2925,7 +2926,12 @@ describe("Phase 3 PocketIC saga", () => {
     expect(audit.Ok.events.some((event: any) =>
       event.kind.EvmRpcDecision?.operation === "request_deposit_refund_recovery"
     )).toBe(true);
-  });
+  }
+
+  it(
+    "does not refund without two finalized providers agreeing on the checkpoint",
+    refund_rejects_a_checkpoint_quorum_without_two_finalized_providers,
+  );
 
   it("persists the public notification budget across upgrade and protects six recovery slots", async () => {
     const { evm, bridge } = await setup();
