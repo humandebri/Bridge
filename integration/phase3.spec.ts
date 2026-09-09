@@ -517,6 +517,7 @@ describe("Phase 3 PocketIC saga", () => {
     return result;
   }
 
+  // Cold CI workers compile the pinned predecessor before starting PocketIC.
   beforeAll(async () => {
     buildSchema35Predecessor();
     const probe = createServer();
@@ -539,7 +540,7 @@ describe("Phase 3 PocketIC saga", () => {
       }
     }
     throw new Error("PocketIC server did not become ready");
-  });
+  }, 600_000);
 
   afterAll(async () => {
     server?.kill();
