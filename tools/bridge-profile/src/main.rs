@@ -1,5 +1,7 @@
 #![recursion_limit = "256"]
 
+mod production_checkpoint;
+
 use candid::{CandidType, Decode, Encode, Nat, Principal, Reserved};
 use ic_agent::{
     agent::CallResponse,
@@ -404,6 +406,8 @@ struct PostGateAPolicyTransition {
 #[serde(deny_unknown_fields)]
 struct ProductionCanisterUpgradeReceipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint_evidence_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     before_operational_config: Option<OperationalEpochEvidence>,
     schema_version: u8,
     kind: String,
@@ -581,6 +585,8 @@ struct ProductionUpgradeSendError {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProductionUpgradeSubmission {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint_evidence_sha256: Option<String>,
     schema_version: u8,
     install_method: String,
     ic_host: String,
@@ -1840,7 +1846,7 @@ enum StorageIntegrityResultView {
     Err(Reserved),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize, Serialize)]
 enum ProductionLifecycleView {
     Bootstrap,
     OperationalConfigSealed,
@@ -6125,6 +6131,7 @@ fn production_upgrade_wasm(receipt: &ProductionCanisterUpgradeReceipt) -> Result
     Ok(wasm)
 }
 
+#[derive(Clone)]
 struct ProductionUpgradeTerminal {
     observed_epoch: (u64, u64),
     runtime: LiveRuntimeBinding,
@@ -6138,6 +6145,15 @@ struct ProductionUpgradeContinuation {
     terminal: ProductionUpgradeTerminal,
     schema_version: u16,
     minimum_executed_at_unix: u64,
+}
+
+struct ProductionUpgradeStart {
+    installer: String,
+    module_sha256: String,
+    terminal: ProductionUpgradeTerminal,
+    minimum_executed_at_unix: u64,
+    install_request_ids: BTreeSet<String>,
+    signed_install_updates: BTreeSet<String>,
 }
 
 fn validate_production_upgrade_history_bytes(
@@ -6177,29 +6193,104 @@ fn validate_production_upgrade_history_bytes_with_continuation(
     if continuation.is_some_and(|value| value.prefix_len >= upgrades.len()) {
         return Err("production upgrade continuation has no appended receipt".into());
     }
-    let installer = &gate_a_receipt.canister_install.installer_principal;
+    validate_production_upgrade_receipts(
+        gate_a_profile,
+        gate_a_receipt,
+        upgrades.into_iter().map(|(receipt, _)| Ok(receipt)),
+        expected_terminal_module,
+        expected_terminal_schema,
+        continuation,
+    )
+}
+
+// Migration supplies one bounded receipt at a time. Keep the state machine and
+// replay sets in this shared loop so splitting the input cannot reset validation.
+fn validate_production_upgrade_receipts(
+    gate_a_profile: &Profile,
+    gate_a_receipt: &GateAReceipt,
+    upgrades: impl IntoIterator<Item = Result<ProductionCanisterUpgradeReceipt, String>>,
+    expected_terminal_module: &str,
+    expected_terminal_schema: u16,
+    continuation: Option<&ProductionUpgradeContinuation>,
+) -> Result<ProductionUpgradeTerminal, String> {
+    let start = ProductionUpgradeStart {
+        installer: gate_a_receipt.canister_install.installer_principal.clone(),
+        module_sha256: gate_a_profile.bridge_canister_wasm_sha256.clone(),
+        terminal: ProductionUpgradeTerminal {
+            runtime: gate_a_receipt.canister_install.runtime_binding.clone(),
+            lifecycle: ProductionLifecycleView::Bootstrap,
+            deposits_paused: true,
+            observed_epoch: (
+                gate_a_receipt.canister_install.mint_authorization_epoch,
+                gate_a_receipt
+                    .canister_install
+                    .mint_authorization_ttl_seconds,
+            ),
+        },
+        minimum_executed_at_unix: 0,
+        install_request_ids: BTreeSet::new(),
+        signed_install_updates: BTreeSet::new(),
+    };
+    validate_production_upgrade_receipts_from_start(
+        gate_a_profile,
+        &start,
+        upgrades,
+        expected_terminal_module,
+        expected_terminal_schema,
+        continuation,
+    )
+}
+
+fn validate_production_upgrade_receipts_from_start(
+    gate_a_profile: &Profile,
+    start: &ProductionUpgradeStart,
+    upgrades: impl IntoIterator<Item = Result<ProductionCanisterUpgradeReceipt, String>>,
+    expected_terminal_module: &str,
+    expected_terminal_schema: u16,
+    continuation: Option<&ProductionUpgradeContinuation>,
+) -> Result<ProductionUpgradeTerminal, String> {
+    if !valid_sha256(expected_terminal_module)
+        || !matches!(
+            expected_terminal_schema,
+            PREVIOUS_STABLE_SCHEMA_VERSION | CURRENT_STABLE_SCHEMA_VERSION
+        )
+    {
+        return Err("production upgrade history terminal is malformed".into());
+    }
+    let installer = &start.installer;
     let expected_controllers = vec![installer.clone()];
     let canister = Principal::from_text(&gate_a_profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
     let sender = Principal::from_text(installer).map_err(|error| error.to_string())?;
-    let mut expected_before_module = gate_a_profile.bridge_canister_wasm_sha256.clone();
-    let mut expected_runtime = gate_a_receipt.canister_install.runtime_binding.clone();
+    let mut expected_before_module = start.module_sha256.clone();
+    let mut expected_runtime = start.terminal.runtime.clone();
     let mut expected_schema = expected_runtime.schema_version;
-    let mut terminal_lifecycle = ProductionLifecycleView::Bootstrap;
-    let mut terminal_deposits_paused = true;
-    let mut terminal_epoch = (
-        gate_a_receipt.canister_install.mint_authorization_epoch,
-        gate_a_receipt
-            .canister_install
-            .mint_authorization_ttl_seconds,
-    );
+    let mut terminal_lifecycle = start.terminal.lifecycle;
+    let mut terminal_deposits_paused = start.terminal.deposits_paused;
+    let mut terminal_epoch = start.terminal.observed_epoch;
     let migration_required = gate_a_profile.pause_principal == KINIC_ROOT;
     let mut pause_migration_seen = false;
-    let mut install_request_ids = BTreeSet::new();
-    let mut signed_install_updates = BTreeSet::new();
+    let mut install_request_ids = start.install_request_ids.clone();
+    let mut signed_install_updates = start.signed_install_updates.clone();
+    let mut minimum_executed_at_unix = start.minimum_executed_at_unix;
 
-    for (index, (entry, _)) in upgrades.into_iter().enumerate() {
+    let mut receipt_count = 0;
+    for (index, entry) in upgrades.into_iter().enumerate() {
+        let entry = entry?;
+        if entry.executed_at_unix < minimum_executed_at_unix {
+            return Err("production upgrade history is not chronological".into());
+        }
+        minimum_executed_at_unix = entry.verified_at_unix;
+        receipt_count += 1;
         if let Some(value) = continuation.filter(|value| value.prefix_len == index) {
+            if index > 0
+                && (expected_before_module != value.before_module_sha256
+                    || expected_schema != value.schema_version)
+            {
+                return Err(
+                    "production upgrade prefix does not reach the activation boundary".into(),
+                );
+            }
             expected_before_module = value.before_module_sha256.clone();
             expected_runtime = value.terminal.runtime.clone();
             expected_schema = value.schema_version;
@@ -6292,10 +6383,10 @@ fn validate_production_upgrade_history_bytes_with_continuation(
             && before_status.deposits_paused
             && after_status.deposits_paused
             && before_binding == expected_runtime
-            && expected_runtime == gate_a_receipt.canister_install.runtime_binding
+            && expected_runtime == start.terminal.runtime
             && production_upgrade_pause_migration_matches(
                 gate_a_profile,
-                &gate_a_receipt.canister_install.runtime_binding,
+                &start.terminal.runtime,
                 &before_status,
                 &after_status,
                 &before_runtime,
@@ -6317,7 +6408,7 @@ fn validate_production_upgrade_history_bytes_with_continuation(
             && before_binding == expected_runtime
             && production_upgrade_pause_and_schema_migration_matches(
                 gate_a_profile,
-                &gate_a_receipt.canister_install.runtime_binding,
+                &start.terminal.runtime,
                 &before_status,
                 &after_status,
                 &before_runtime,
@@ -6466,11 +6557,13 @@ fn validate_production_upgrade_history_bytes_with_continuation(
             after_status.mint_authorization_ttl_seconds,
         );
     }
-    if !expected_before_module.eq_ignore_ascii_case(expected_terminal_module)
+    if receipt_count == 0
+        || continuation.is_some_and(|value| value.prefix_len >= receipt_count)
+        || !expected_before_module.eq_ignore_ascii_case(expected_terminal_module)
         || expected_schema != expected_terminal_schema
         || (migration_required
             && !pause_migration_seen
-            && expected_runtime != gate_a_receipt.canister_install.runtime_binding)
+            && expected_runtime != start.terminal.runtime)
     {
         return Err("production upgrade history does not reach the live predecessor".into());
     }
@@ -7848,6 +7941,28 @@ fn validate_production_handover_canister_state(
     manifest_created_at_unix: u64,
     now: u64,
 ) -> Result<(), String> {
+    validate_production_handover_observation(
+        profile,
+        installer,
+        gate_a_receipt
+            .bridge_deployment_block_number
+            .max(gate_a_receipt.timelock_deployment_block_number),
+        activation,
+        observation,
+        manifest_created_at_unix,
+        now,
+    )
+}
+
+fn validate_production_handover_observation(
+    profile: &Profile,
+    installer: Principal,
+    minimum_deployment_block: u64,
+    activation: &ProductionHandoverActivationBinding<'_>,
+    observation: &ProductionHandoverCanisterObservation<'_>,
+    manifest_created_at_unix: u64,
+    now: u64,
+) -> Result<(), String> {
     if !matches!(observation.lifecycle, ProductionLifecycleView::Activated) {
         return Err("production Canister must be Activated before handover".into());
     }
@@ -7917,9 +8032,7 @@ fn validate_production_handover_canister_state(
         profile,
         attestation,
         manifest_created_at_unix,
-        gate_a_receipt
-            .bridge_deployment_block_number
-            .max(gate_a_receipt.timelock_deployment_block_number),
+        minimum_deployment_block,
         now,
         Some(false),
     )
@@ -7933,11 +8046,42 @@ fn validate_production_ui_upgrade_extension(
 ) -> Result<(String, ProductionUpgradeTerminal, Vec<u8>), String> {
     let extension_bytes = fs::read(upgrade_evidence_path).map_err(|error| error.to_string())?;
     let extension = production_upgrade_chain_receipts(&extension_bytes)?;
+    let continuation = production_ui_upgrade_continuation(
+        bundle,
+        gate_a_receipt,
+        execute_receipt,
+        &extension[0].0,
+    )?;
+    let terminal_module_sha256 = extension
+        .last()
+        .ok_or("empty post-activation upgrade chain")?
+        .0
+        .after_module_sha256
+        .clone();
+    let terminal = validate_production_upgrade_history_bytes_with_continuation(
+        &read_json(&bundle.root.join("gate-a-profile.json"))?,
+        gate_a_receipt,
+        &extension_bytes,
+        &terminal_module_sha256,
+        CURRENT_STABLE_SCHEMA_VERSION,
+        Some(&continuation),
+    )?;
+    if terminal.lifecycle != ProductionLifecycleView::Activated || terminal.deposits_paused {
+        return Err("post-activation upgrade does not preserve active traffic".into());
+    }
+    Ok((terminal_module_sha256, terminal, extension_bytes))
+}
+
+fn production_ui_upgrade_continuation(
+    bundle: &ValidatedBundle,
+    gate_a_receipt: &GateAReceipt,
+    execute_receipt: &ControllerActivationReceipt,
+    first: &ProductionCanisterUpgradeReceipt,
+) -> Result<ProductionUpgradeContinuation, String> {
     if bundle.profile.canister_schema_version != PREVIOUS_STABLE_SCHEMA_VERSION {
         return Err("post-activation UI requires the immutable deployed v35 Gate B lineage".into());
     }
 
-    let first = &extension[0].0;
     let installer = gate_a_receipt.canister_install.installer_principal.as_str();
     let (before_controllers, before_module) =
         production_upgrade_management_state(&first.before_management_status_json_hex)?;
@@ -7975,13 +8119,7 @@ fn validate_production_ui_upgrade_extension(
         return Err("post-activation upgrade runtime code differs from Gate B".into());
     }
 
-    let terminal_module_sha256 = extension
-        .last()
-        .ok_or("empty post-activation upgrade chain")?
-        .0
-        .after_module_sha256
-        .clone();
-    let continuation = ProductionUpgradeContinuation {
+    Ok(ProductionUpgradeContinuation {
         prefix_len: 0,
         before_module_sha256: bundle.profile.bridge_canister_wasm_sha256.clone(),
         terminal: ProductionUpgradeTerminal {
@@ -7995,19 +8133,7 @@ fn validate_production_ui_upgrade_extension(
         },
         schema_version: PREVIOUS_STABLE_SCHEMA_VERSION,
         minimum_executed_at_unix: execute_receipt.verified_at_unix,
-    };
-    let terminal = validate_production_upgrade_history_bytes_with_continuation(
-        &read_json(&bundle.root.join("gate-a-profile.json"))?,
-        gate_a_receipt,
-        &extension_bytes,
-        &terminal_module_sha256,
-        CURRENT_STABLE_SCHEMA_VERSION,
-        Some(&continuation),
-    )?;
-    if terminal.lifecycle != ProductionLifecycleView::Activated || terminal.deposits_paused {
-        return Err("post-activation upgrade does not preserve active traffic".into());
-    }
-    Ok((terminal_module_sha256, terminal, extension_bytes))
+    })
 }
 
 #[derive(CandidType, Deserialize)]
@@ -8072,9 +8198,45 @@ fn verify_production_canister_handover_state(
         .as_ref()
         .map(|(module, _, _)| module.clone())
         .unwrap_or_else(|| bundle.profile.bridge_canister_wasm_sha256.clone());
-    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
-        .map_err(|error| error.to_string())?;
-    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let activation = ProductionHandoverActivationBinding {
+        governance_operation_id: execute_receipt
+            .governance_operation_id
+            .parse()
+            .map_err(|_| "invalid execute governance operation ID")?,
+        finalized_block_number: execute_receipt
+            .finalized_block_number
+            .parse()
+            .map_err(|_| "invalid execute Finalized block")?,
+        timelock_operation_id: &execute_receipt.timelock_operation_id,
+        transaction_hash: &execute_receipt.transaction_hash,
+        confirmed_generation: execute_receipt.confirmed_generation,
+        confirmed_signed_at_ns: &execute_receipt.confirmed_signed_at_ns,
+        expected_module_sha256: &authorized_module_sha256,
+    };
+    verify_production_live_state(
+        &bundle.profile,
+        gate_b_controller(&bundle)?,
+        &activation,
+        upgrade_terminal.as_ref().map(|(_, terminal, _)| terminal),
+        bundle.manifest.created_at_unix,
+        gate_a_receipt
+            .bridge_deployment_block_number
+            .max(gate_a_receipt.timelock_deployment_block_number),
+    )?;
+    Ok(bundle)
+}
+
+fn verify_production_live_state(
+    profile: &Profile,
+    installer: Principal,
+    activation: &ProductionHandoverActivationBinding<'_>,
+    upgrade_terminal: Option<&ProductionUpgradeTerminal>,
+    manifest_created_at_unix: u64,
+    minimum_deployment_block: u64,
+) -> Result<(), String> {
+    let bridge =
+        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&profile.ic_host, false)?;
     let (
         lifecycle_raw,
         attestation_raw,
@@ -8157,7 +8319,6 @@ fn verify_production_canister_handover_state(
     };
     let runtime = Decode!(&runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
     let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
-    let installer = gate_b_controller(&bundle)?;
     let storage_integrity = production_installer_storage_integrity(bridge, installer)?;
     let observation = ProductionHandoverCanisterObservation {
         lifecycle: &lifecycle,
@@ -8169,23 +8330,8 @@ fn verify_production_canister_handover_state(
         controllers: &controllers,
         module_hash: &module_hash,
     };
-    let activation = ProductionHandoverActivationBinding {
-        governance_operation_id: execute_receipt
-            .governance_operation_id
-            .parse::<u64>()
-            .map_err(|_| "invalid execute governance operation ID")?,
-        finalized_block_number: execute_receipt
-            .finalized_block_number
-            .parse::<u64>()
-            .map_err(|_| "invalid execute Finalized block")?,
-        timelock_operation_id: &execute_receipt.timelock_operation_id,
-        transaction_hash: &execute_receipt.transaction_hash,
-        confirmed_generation: execute_receipt.confirmed_generation,
-        confirmed_signed_at_ns: &execute_receipt.confirmed_signed_at_ns,
-        expected_module_sha256: &authorized_module_sha256,
-    };
-    let mut live_profile = bundle.profile.clone();
-    if let Some((_, terminal, _)) = &upgrade_terminal {
+    let mut live_profile = profile.clone();
+    if let Some(terminal) = upgrade_terminal {
         let operational_response =
             production_installer_query(bridge, installer, "get_operational_config")?;
         let operational_evidence = OperationalEpochEvidence::from_response(
@@ -8199,7 +8345,7 @@ fn verify_production_canister_handover_state(
             lifecycle,
             &live_runtime_binding_from_view(&runtime),
             Some(&operational_evidence),
-            bundle.profile.parameters.ledger_fee,
+            profile.parameters.ledger_fee,
         )? {
             return Err(
                 "live production UI runtime differs from the verified upgrade terminal".into(),
@@ -8228,16 +8374,16 @@ fn verify_production_canister_handover_state(
             return Err("production UI withdrawal history index is not ready".into());
         }
     }
-    validate_production_handover_canister_state(
+    validate_production_handover_observation(
         &live_profile,
         installer,
-        &gate_a_receipt,
-        &activation,
+        minimum_deployment_block,
+        activation,
         &observation,
-        bundle.manifest.created_at_unix,
+        manifest_created_at_unix,
         now_unix()?,
     )?;
-    Ok(bundle)
+    Ok(())
 }
 
 fn verify_production_canister_handover(
@@ -8277,11 +8423,32 @@ fn production_ui_runtime_profile(
     terminal: &ProductionUpgradeTerminal,
     rpc_config_bytes: &[u8],
 ) -> Result<Value, String> {
+    production_ui_runtime_profile_from_digest(
+        profile,
+        profile_bytes,
+        manifest_sha256,
+        &hex(&Sha256::digest(upgrade_bytes)),
+        terminal_module_sha256,
+        terminal,
+        rpc_config_bytes,
+    )
+}
+
+fn production_ui_runtime_profile_from_digest(
+    profile: &Profile,
+    profile_bytes: &[u8],
+    manifest_sha256: &str,
+    upgrade_sha256: &str,
+    terminal_module_sha256: &str,
+    terminal: &ProductionUpgradeTerminal,
+    rpc_config_bytes: &[u8],
+) -> Result<Value, String> {
     if profile.canister_schema_version != PREVIOUS_STABLE_SCHEMA_VERSION
         || terminal.runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
         || terminal.lifecycle != ProductionLifecycleView::Activated
         || terminal.deposits_paused
         || !valid_sha256(terminal_module_sha256)
+        || !valid_sha256(upgrade_sha256)
     {
         return Err("production UI requires the verified activated v36 upgrade terminal".into());
     }
@@ -8316,7 +8483,7 @@ fn production_ui_runtime_profile(
     );
     fields.insert(
         "postActivationUpgradeSha256".into(),
-        serde_json::json!(hex(&Sha256::digest(upgrade_bytes))),
+        serde_json::json!(upgrade_sha256),
     );
     fields.insert(
         "uiRpcConfigSha256".into(),
@@ -11708,6 +11875,7 @@ fn prepare_production_canister_upgrade(
             .sign()
             .map_err(|error| error.to_string())?;
         let submission = ProductionUpgradeSubmission {
+            checkpoint_evidence_sha256: None,
             schema_version: 2,
             install_method: "install_chunked_code".into(),
             ic_host: host.to_string(),
@@ -12017,6 +12185,48 @@ fn submit_production_canister_upgrade(
 fn run() -> Result<(), String> {
     let args = env::args().collect::<Vec<_>>();
     match args.get(1).map(String::as_str) {
+        Some("validate-production-checkpoint-candidate") if args.len() == 3 => {
+            let (_, digest) = production_checkpoint::read_candidate(Path::new(&args[2]))?;
+            println!("unapproved_checkpoint_sha256={digest}");
+        }
+        Some("render-production-checkpoint-ui-runtime") if args.len() == 5 => {
+            production_checkpoint::render_ui(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
+        }
+        Some("verify-production-checkpoint-ui-live") if args.len() == 5 => {
+            production_checkpoint::verify_ui(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
+        }
+        Some("generate-production-checkpoint-candidate") if args.len() == 5 => {
+            production_checkpoint::generate_candidate(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
+        }
+        Some("rotate-production-checkpoint-candidate") if args.len() == 5 => {
+            production_checkpoint::rotate_candidate(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
+        }
+        Some("validate-production-checkpoint") if args.len() == 3 => {
+            let (_, digest) = production_checkpoint::read_approved(Path::new(&args[2]))?;
+            println!("approved_checkpoint_sha256={digest}");
+        }
+        Some("validate-production-checkpoint-evidence") if args.len() == 3 => {
+            let verified = production_checkpoint::read_evidence(Path::new(&args[2]))?;
+            println!("{}", serde_json::json!({
+                "evidence_sha256": verified.evidence_sha256,
+                "canister": verified.checkpoint.canister,
+                "controller": verified.checkpoint.controller,
+                "network": verified.checkpoint.network,
+                "ledger_fee": verified.checkpoint.roots.gate_b_profile.parameters.ledger_fee.to_string(),
+                "module_sha256": verified.module_sha256,
+                "runtime": verified.terminal.runtime,
+                "source": verified.source,
+            }));
+        }
+        Some("validate-production-checkpoint-predecessor") if args.len() == 9 => {
+            production_checkpoint::predecessor(Path::new(&args[2]), &args[3], &args[4..])?;
+        }
+        Some("verify-production-checkpoint-state-preserved") if args.len() == 12 => {
+            production_checkpoint::preserved(Path::new(&args[2]), &args[3..])?;
+        }
+        Some("make-production-checkpoint-evidence") if args.len() >= 4 => {
+            production_checkpoint::make_evidence(Path::new(&args[2]), &args[4..], Path::new(&args[3]))?;
+        }
         Some("derive") if args.len() == 3 => {
             let evidence: Evidence = read_json(Path::new(&args[2]))?;
             println!("{}", serde_json::to_string_pretty(&derive(&evidence)?).map_err(|e| e.to_string())?);
@@ -12499,6 +12709,21 @@ fn run() -> Result<(), String> {
                 &wasm,
                 Path::new(&args[6]),
             )?;
+            println!("{}", submission.request_id);
+        }
+        Some("validate-production-checkpoint-submission") if args.len() == 8 => {
+            let checkpoint = production_checkpoint::read_evidence(Path::new(&args[7]))?;
+            if checkpoint.checkpoint.network != args[2] || checkpoint.checkpoint.canister != args[3]
+                || checkpoint.checkpoint.controller != args[4]
+            { return Err("submission identity differs from checkpoint evidence".into()); }
+            let submission = validate_production_upgrade_submission(
+                &args[2], Principal::from_text(&args[3]).map_err(|error| error.to_string())?,
+                Principal::from_text(&args[4]).map_err(|error| error.to_string())?,
+                &fs::read(&args[5]).map_err(|error| error.to_string())?, Path::new(&args[6]),
+            )?;
+            if submission.checkpoint_evidence_sha256.as_ref() != Some(&checkpoint.evidence_sha256) {
+                return Err("signed submission does not bind frozen checkpoint evidence".into());
+            }
             println!("{}", submission.request_id);
         }
         Some("submit-production-canister-upgrade") if args.len() == 10 => {
@@ -13015,7 +13240,7 @@ mod tests {
         );
     }
 
-    fn valid_profile() -> Profile {
+    pub(super) fn valid_profile() -> Profile {
         let bridge_contract = create_address(address_bytes(7), 1);
         Profile {
             schema_version: RELEASE_PROFILE_SCHEMA_VERSION,
@@ -16140,6 +16365,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         )
         .unwrap();
         let production_upgrade = ProductionCanisterUpgradeReceipt {
+            checkpoint_evidence_sha256: None,
             before_operational_config: None,
             // These raw responses are produced by the tracked production upgrade
             // driver; the fixture uses the same Candid and management-status shapes.
@@ -16433,6 +16659,7 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
             .sign()
             .unwrap();
         let submission = ProductionUpgradeSubmission {
+            checkpoint_evidence_sha256: None,
             schema_version: 2,
             install_method: "install_chunked_code".into(),
             ic_host: profile.ic_host.clone(),
@@ -16863,6 +17090,31 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         .is_err());
         let first_receipt_sha256 = hex(&Sha256::digest(&production_upgrade_bytes));
         let sealed_receipt_sha256 = hex(&Sha256::digest(&sealed_upgrade_bytes));
+        production_checkpoint::exercise_signed_suffix_fixture(&profile, &sealed_upgrade_bytes);
+        let streamed = validate_production_upgrade_receipts(
+            &gate_a_profile,
+            &receipt,
+            [&production_upgrade_bytes, &sealed_upgrade_bytes]
+                .into_iter()
+                .map(|bytes| serde_json::from_slice(bytes).map_err(|error| error.to_string())),
+            &profile.bridge_canister_wasm_sha256,
+            CURRENT_STABLE_SCHEMA_VERSION,
+            None,
+        )
+        .expect("streaming must preserve the existing history validation");
+        assert_eq!(
+            streamed.runtime.schema_version,
+            CURRENT_STABLE_SCHEMA_VERSION
+        );
+        assert!(validate_production_upgrade_receipts(
+            &gate_a_profile,
+            &receipt,
+            std::iter::empty(),
+            &profile.bridge_canister_wasm_sha256,
+            CURRENT_STABLE_SCHEMA_VERSION,
+            None,
+        )
+        .is_err());
         let chain_bytes = serde_json::to_vec(&ProductionCanisterUpgradeChain {
             schema_version: 1,
             kind: "production-controller-bootstrap-upgrade-chain".into(),
@@ -16953,6 +17205,19 @@ with open(sys.argv[2],'w',encoding='utf-8') as f: json.dump(value,f,sort_keys=Tr
         .err()
         .expect("duplicate install request must fail closed");
         assert!(duplicate_error.contains("repeats an install request"));
+        let streamed_duplicate_error = validate_production_upgrade_receipts(
+            &gate_a_profile,
+            &receipt,
+            [&production_upgrade_bytes, &duplicate_request_bytes]
+                .into_iter()
+                .map(|bytes| serde_json::from_slice(bytes).map_err(|error| error.to_string())),
+            &profile.bridge_canister_wasm_sha256,
+            CURRENT_STABLE_SCHEMA_VERSION,
+            None,
+        )
+        .err()
+        .expect("streaming must retain replay detection across receipt boundaries");
+        assert!(streamed_duplicate_error.contains("repeats an install request"));
         let mut drifted_upgrade: ProductionCanisterUpgradeReceipt =
             serde_json::from_slice(&sealed_upgrade_bytes).unwrap();
         let mut drifted_runtime_view = sealed_runtime_view;
