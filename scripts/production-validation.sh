@@ -62,7 +62,8 @@ production_run_proof_gate() {
     echo "proof gate source does not match the release manifest" >&2
     return 1
   }
-  "$proof_script" proofs || {
+  # Execution consent belongs to the driver, not nested validation fixtures.
+  env -u BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE "$proof_script" proofs || {
     echo "release proof gate failed" >&2
     return 1
   }

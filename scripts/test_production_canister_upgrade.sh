@@ -11,6 +11,10 @@ cat >"$T/source/scripts/ci-local.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$#" == 1 && "$1" == proofs ]]
+[[ "${BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE+x}" != x ]] || {
+  echo "proof gate inherited production upgrade confirmation" >&2
+  exit 1
+}
 [[ "${TEST_REJECT_PROOFS:-0}" == 0 ]]
 EOF
 chmod +x "$T/source/scripts/ci-local.sh"
