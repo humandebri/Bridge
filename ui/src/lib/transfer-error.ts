@@ -1,7 +1,20 @@
+import { BaseError, ContractFunctionRevertedError } from "viem"
 import { RelyingPartyResponseError } from "@dfinity/oisy-wallet-signer"
 
 // Presentation only: never use these messages to infer submission or clear a saved intent.
 export function transferErrorMessage(error: unknown): string {
+  const revert =
+    error instanceof BaseError
+      ? error.walk((cause) => cause instanceof ContractFunctionRevertedError)
+      : undefined
+  if (
+    revert instanceof ContractFunctionRevertedError &&
+    revert.data?.errorName === "ERC20InsufficientAllowance"
+  ) {
+    const args = revert.data.args
+    if (args && typeof args[1] === "bigint" && typeof args[2] === "bigint")
+      return `Token allowance is insufficient. Allowed: ${args[1]}; required: ${args[2]} (token base units). Check the previous request before trying again.`
+  }
   const raw = error instanceof Error ? redactRpcUrls(error.message) : ""
   const message = raw.replace(/^Error:\s*/, "")
   if (/^Consent message capacity is temporarily unavailable\.(?: \(Code: 429\))?$/.test(message))

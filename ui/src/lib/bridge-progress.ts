@@ -15,6 +15,7 @@ export type BridgeProgressPhase =
   | "base-mint-included"
   | "base-mint-finalizing"
   | "awaiting-base-allowance"
+  | "awaiting-base-approval-reflection"
   | "awaiting-base-withdrawal"
   | "base-withdrawal-submitted"
   | "base-withdrawal-included"
@@ -212,6 +213,7 @@ export function bridgeProgressLabel(record: BridgeProgressRecord): string {
     "base-mint-included": "Success",
     "base-mint-finalizing": "Success",
     "awaiting-base-allowance": "Confirm token access in your Base wallet",
+    "awaiting-base-approval-reflection": "Confirming token approval",
     "awaiting-base-withdrawal": "Confirm the withdrawal in your Base wallet",
     "base-withdrawal-submitted": "Waiting for the Base transaction",
     "base-withdrawal-included": "Base: Success",
@@ -242,6 +244,8 @@ export function bridgeProgressDetail(record: BridgeProgressRecord): string {
     return `${record.receiveAmount} ${record.receiveSymbol} will be minted to ${shortDestination(record.destination)}. Your connected Base wallet pays gas.`
   if (record.phase === "awaiting-base-allowance")
     return `Allow the bridge to use the ${record.sendSymbol} required for this withdrawal.`
+  if (record.phase === "awaiting-base-approval-reflection")
+    return "Waiting for token approval to be visible. No wallet action is needed."
   if (record.phase === "awaiting-base-withdrawal")
     return `${record.sendAmount} ${record.sendSymbol} will be burned and sent to ${shortDestination(record.destination)}.`
   if (record.phase === "awaiting-ic-notification")
@@ -293,7 +297,7 @@ export function bridgeProgressSteps(record: BridgeProgressRecord): BridgeProgres
   ] as const
   const withdrawal = [
     ["IC destination verification", ["verifying-ic-destination"]],
-    ["Base token approval", ["awaiting-base-allowance"]],
+    ["Base token approval", ["awaiting-base-allowance", "awaiting-base-approval-reflection"]],
     [
       "Base withdrawal transaction",
       ["awaiting-base-withdrawal", "base-withdrawal-submitted", "base-withdrawal-included"],
@@ -334,6 +338,10 @@ export function bridgeProgressSteps(record: BridgeProgressRecord): BridgeProgres
                 : "waiting",
     }
     if (approvalNotRequired) step.note = "Not required"
+    if (record.phase === "awaiting-base-approval-reflection" && label === "Base token approval") {
+      step.status = "current"
+      step.note = "Confirming token approval. No wallet action is needed."
+    }
     return step
   })
 }
@@ -489,6 +497,7 @@ function validOptionalActivePhase(value: unknown): value is ActiveBridgeProgress
         "base-mint-included",
         "base-mint-finalizing",
         "awaiting-base-allowance",
+        "awaiting-base-approval-reflection",
         "awaiting-base-withdrawal",
         "base-withdrawal-submitted",
         "base-withdrawal-included",

@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   ledgerFee: vi.fn(),
   ledgerAllowance: vi.fn(),
   bsnsBalance: vi.fn(),
+  simulateWithdrawal: vi.fn().mockResolvedValue({}),
+  approvalReceipt: vi.fn(),
   readDepositIntent: vi.fn(),
   runtimeWriteReadiness: vi.fn(),
   runtimeHeartbeatHook: vi.fn(),
@@ -126,7 +128,9 @@ vi.mock("@/lib/ic/ledger", () => ({
 vi.mock("@/lib/evm/client", () => ({
   basePublicClient: {
     readContract: mocks.bsnsBalance,
-    simulateContract: vi.fn().mockResolvedValue({}),
+    simulateContract: mocks.simulateWithdrawal,
+    waitForTransactionReceipt: mocks.approvalReceipt,
+    getBlock: vi.fn().mockResolvedValue({ number: 10n, hash: "0xabc" }),
   },
 }))
 
@@ -520,67 +524,109 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(screen.queryByText(/no Base refund/)).not.toBeInTheDocument()
   })
 
-  it("submits the reviewed IC destination without reopening OISY", async () => {
-    const account = { owner: "2vxsx-fae", subaccount: new Uint8Array(32).fill(0x55) }
-    const events: string[] = []
-    const close = vi.fn().mockResolvedValue(undefined)
-    const prepare = vi.fn(() => {
-      events.push("prepare")
-      return Promise.resolve(close)
-    })
-    const getAccount = vi.fn(() => {
-      events.push("getAccount")
-      return Promise.resolve({ owner: account.owner, subaccount: account.subaccount.slice() })
-    })
-    mocks.writeContractAsync.mockImplementation(() => {
-      events.push("baseWrite")
-      return Promise.resolve(`0x${"77".repeat(32)}`)
-    })
-    mocks.useAccount.mockReturnValue({
-      address: "0x0000000000000000000000000000000000000002",
-      isConnected: true,
-    })
-    mocks.useIcWallet.mockReturnValue({
-      account,
-      provider: "oisy",
-      adapter: { prepare, getAccount },
-      connecting: undefined,
-      connect: vi.fn(),
-      disconnect: vi.fn(),
-    })
+  it.each([false, true])(
+    "submits the reviewed IC destination without reopening OISY (approval: %s)",
+    async (needsApproval) => {
+      mocks.simulateWithdrawal.mockClear()
+      mocks.approvalReceipt.mockClear()
+      let resolveApproval!: (value: unknown) => void
+      let approved = !needsApproval
+      if (needsApproval) {
+        mocks.bsnsBalance.mockImplementation(({ functionName }: { functionName: string }) =>
+          Promise.resolve(functionName === "allowance" && !approved ? 0n : 500_000_000n),
+        )
+        mocks.approvalReceipt.mockReturnValue(
+          new Promise((resolve) => {
+            resolveApproval = resolve
+          }),
+        )
+      }
+      const account = { owner: "2vxsx-fae", subaccount: new Uint8Array(32).fill(0x55) }
+      const events: string[] = []
+      const close = vi.fn().mockResolvedValue(undefined)
+      const prepare = vi.fn(() => {
+        events.push("prepare")
+        return Promise.resolve(close)
+      })
+      const getAccount = vi.fn(() => {
+        events.push("getAccount")
+        return Promise.resolve({ owner: account.owner, subaccount: account.subaccount.slice() })
+      })
+      mocks.writeContractAsync.mockImplementation(() => {
+        events.push("baseWrite")
+        return Promise.resolve(`0x${"77".repeat(32)}`)
+      })
+      mocks.useAccount.mockReturnValue({
+        address: "0x0000000000000000000000000000000000000002",
+        isConnected: true,
+      })
+      mocks.useIcWallet.mockReturnValue({
+        account,
+        provider: "oisy",
+        adapter: { prepare, getAccount },
+        connecting: undefined,
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+      })
 
-    render(<BridgePage direction="withdraw" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
-    await waitFor(() => expect(mocks.bsnsBalance).toHaveBeenCalled())
-    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
-    fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
-    fireEvent.click(await screen.findByRole("button", { name: "Continue to Base wallet" }))
+      render(<BridgePage direction="withdraw" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+      await waitFor(() => expect(mocks.bsnsBalance).toHaveBeenCalled())
+      fireEvent.change(screen.getByRole("textbox", { name: "You send" }), {
+        target: { value: "2" },
+      })
+      fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
+      fireEvent.click(await screen.findByRole("button", { name: "Continue to Base wallet" }))
 
-    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent(
-      "IC destination verification",
-    )
-    await waitFor(() => expect(mocks.writeContractAsync).toHaveBeenCalledOnce())
-    expect(screen.getByText("Base token approval").parentElement).toHaveTextContent("Not required")
-    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent(
-      "Base withdrawal transaction",
-    )
-    expect(prepare).toHaveBeenCalledOnce()
-    expect(close).toHaveBeenCalledOnce()
-    expect(events.indexOf("getAccount")).toBeLessThan(events.indexOf("baseWrite"))
-    expect(mocks.writeContractAsync).toHaveBeenCalledWith(
-      expect.objectContaining({
-        functionName: "createWithdrawal",
-        args: [200_000_000n, 50_000_000n, "0x04", `0x${"55".repeat(32)}`],
-      }),
-    )
-    await waitFor(() =>
-      expect(mocks.savePendingConfirmation).toHaveBeenCalledWith(
+      expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent(
+        "IC destination verification",
+      )
+      if (needsApproval) {
+        await waitFor(() => expect(mocks.approvalReceipt).toHaveBeenCalledOnce())
+        expect(mocks.writeContractAsync).toHaveBeenCalledOnce()
+        expect(mocks.writeContractAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ functionName: "approve" }),
+        )
+        expect(mocks.simulateWithdrawal).not.toHaveBeenCalled()
+        await act(async () => {
+          approved = true
+          resolveApproval({ status: "success", blockNumber: 10n, blockHash: "0xabc" })
+        })
+      }
+      await waitFor(() =>
+        expect(mocks.writeContractAsync).toHaveBeenCalledTimes(needsApproval ? 2 : 1),
+      )
+      expect(mocks.simulateWithdrawal).toHaveBeenCalledWith(
+        expect.objectContaining({ blockNumber: 10n }),
+      )
+      expect(mocks.bsnsBalance).toHaveBeenCalledWith(
+        expect.objectContaining({ functionName: "allowance", blockNumber: 10n }),
+      )
+      if (!needsApproval)
+        expect(screen.getByText("Base token approval").parentElement).toHaveTextContent(
+          "Not required",
+        )
+      expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent(
+        "Base withdrawal transaction",
+      )
+      expect(prepare).toHaveBeenCalledOnce()
+      expect(close).toHaveBeenCalledOnce()
+      expect(events.indexOf("getAccount")).toBeLessThan(events.indexOf("baseWrite"))
+      expect(mocks.writeContractAsync).toHaveBeenCalledWith(
         expect.objectContaining({
-          kind: "withdrawal",
-          owner: account.owner,
+          functionName: "createWithdrawal",
+          args: [200_000_000n, 50_000_000n, "0x04", `0x${"55".repeat(32)}`],
         }),
-      ),
-    )
-  })
+      )
+      await waitFor(() =>
+        expect(mocks.savePendingConfirmation).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: "withdrawal",
+            owner: account.owner,
+          }),
+        ),
+      )
+    },
+  )
 
   it("rejects_a_changed_OISY_account_before_reviewing_the_irreversible_destination", async () => {
     const remembered = { owner: "aaaaa-aa" }

@@ -38,7 +38,6 @@ import { useWalletDialog } from "@/features/wallet/wallet-controls"
 import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
 import type { DepositView } from "@/generated/bridge.did"
 import { bsnsAbi } from "@/generated/abi/bsns.generated"
-import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import {
   estimatedAmountOut,
   formatTokenAmount,
@@ -60,7 +59,11 @@ import {
   type FinalizedRuntimeObservation,
 } from "@/lib/runtime-validation"
 import { currentInjectedWallet, requireWalletSnapshot, sameIcAccount } from "@/lib/wallet-snapshot"
-import { createWithdrawalAfterRevalidation } from "@/lib/withdrawal-submit"
+import {
+  createWithdrawalAfterRevalidation,
+  withdrawalAbi,
+  type ApprovalReceipt,
+} from "@/lib/withdrawal-submit"
 import { savePendingConfirmation } from "@/lib/pending-confirmations"
 import { readDepositIntent, removeDepositIntent, saveDepositIntent } from "@/lib/deposit-intents"
 import { withBrowserLock } from "@/lib/browser-lock"
@@ -1012,6 +1015,7 @@ export function BridgePage({
         functionName: "allowance",
         args: [snapshotAddress, deploymentProfile.bridgeAddress as `0x${string}`],
       })
+      let approvalReceipt: ApprovalReceipt | undefined
       if (allowance < withdrawParsed.value) {
         bridgeProgress.update(progressId, {
           phase: "awaiting-base-allowance",
@@ -1028,7 +1032,7 @@ export function BridgePage({
               args: [deploymentProfile.bridgeAddress as `0x${string}`, withdrawParsed.value],
             }),
         )
-        const approvalReceipt = await client.waitForTransactionReceipt({ hash: approvalHash })
+        approvalReceipt = await client.waitForTransactionReceipt({ hash: approvalHash })
         if (approvalReceipt.status !== "success") throw new Error("Token approval failed")
         bridgeProgress.update(progressId, { phase: "awaiting-base-withdrawal" })
       } else {
@@ -1037,60 +1041,91 @@ export function BridgePage({
           tokenApproval: "not-required",
         })
       }
-      const broadcast = await createWithdrawalAfterRevalidation({
-        expectedWallets,
-        refetchRuntime: async () => ({
-          data: await refetchRuntimeAttestedWriteReady(
-            runtime.data,
-            runtime.refetch,
-            heartbeat.refetch,
-          ),
-        }),
-        currentEvmWallet: currentBaseWallet,
-        currentIcAccount: () =>
-          Promise.resolve({
-            owner: confirmedIcAccount.owner,
-            subaccount: confirmedIcAccount.subaccount?.slice(),
+      bridgeProgress.update(progressId, { phase: "awaiting-base-approval-reflection" })
+      const withdrawalRequest = (serviceFee: bigint) =>
+        ({
+          account: snapshotAddress,
+          address: deploymentProfile.bridgeAddress as `0x${string}`,
+          abi: withdrawalAbi,
+          functionName: "createWithdrawal",
+          args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)],
+        }) as const
+      const broadcast = await withBrowserLock(
+        `kinic-wallet-prompt:base:${snapshotAddress.toLowerCase()}`,
+        () =>
+          createWithdrawalAfterRevalidation({
+            approval: {
+              receipt: approvalReceipt,
+              amount: withdrawParsed.value,
+              getBlock: (blockNumber) =>
+                client.getBlock(
+                  blockNumber === undefined ? { blockTag: "latest" } : { blockNumber },
+                ),
+              readAllowance: (blockNumber) =>
+                client.readContract({
+                  address: deploymentProfile.bsnsAddress as `0x${string}`,
+                  abi: bsnsAbi,
+                  functionName: "allowance",
+                  args: [snapshotAddress, deploymentProfile.bridgeAddress as `0x${string}`],
+                  blockNumber,
+                }),
+            },
+            expectedWallets,
+            refetchRuntime: async () => ({
+              data: await refetchRuntimeAttestedWriteReady(
+                runtime.data,
+                runtime.refetch,
+                heartbeat.refetch,
+              ),
+            }),
+            currentEvmWallet: currentBaseWallet,
+            currentIcAccount: () =>
+              Promise.resolve({
+                owner: confirmedIcAccount.owner,
+                subaccount: confirmedIcAccount.subaccount?.slice(),
+              }),
+            refetchFinancials: async (observation) => {
+              const quote = observation.snapshot
+              if (!quote) throw new Error("Finalized Base snapshot is unavailable")
+              const balanceResult = await bsnsBalance.refetch()
+              if (
+                balanceResult.isError ||
+                balanceResult.isStale ||
+                balanceResult.data === undefined
+              )
+                throw new Error("Fee or balance data changed and could not be verified")
+              return {
+                serviceFee: quote.serviceFee,
+                balance: balanceResult.data,
+                withdrawalsPaused: quote.withdrawalsPaused,
+              }
+            },
+            validateFinancials: ({ serviceFee, balance: finalBalance, withdrawalsPaused }) => {
+              if (withdrawalsPaused) throw new Error("Withdrawals are paused on Base")
+              if (withdrawParsed.value <= serviceFee)
+                throw new Error("Amount must be greater than the current service fee")
+              if (finalBalance < withdrawParsed.value)
+                throw new Error("bSNS balance is insufficient")
+            },
+            simulateWithdrawal: ({ serviceFee }, blockNumber) =>
+              client.simulateContract({ ...withdrawalRequest(serviceFee), blockNumber }),
+            createWithdrawal: ({ serviceFee }) => {
+              bridgeProgress.update(progressId, { phase: "awaiting-base-withdrawal" })
+              return write.writeContractAsync(withdrawalRequest(serviceFee))
+            },
+            onBroadcast: async (transactionHash) => {
+              bridgeProgress.update(progressId, {
+                phase: "base-withdrawal-submitted",
+                transactionHash,
+              })
+              return savePendingConfirmation({
+                kind: "withdrawal",
+                transactionHash,
+                owner: confirmedIcAccount.owner,
+              })
+            },
           }),
-        refetchFinancials: async (observation) => {
-          const quote = observation.snapshot
-          if (!quote) throw new Error("Finalized Base snapshot is unavailable")
-          const balanceResult = await bsnsBalance.refetch()
-          if (balanceResult.isError || balanceResult.isStale || balanceResult.data === undefined)
-            throw new Error("Fee or balance data changed and could not be verified")
-          return {
-            serviceFee: quote.serviceFee,
-            balance: balanceResult.data,
-            withdrawalsPaused: quote.withdrawalsPaused,
-          }
-        },
-        validateFinancials: ({ serviceFee, balance: finalBalance, withdrawalsPaused }) => {
-          if (withdrawalsPaused) throw new Error("Withdrawals are paused on Base")
-          if (withdrawParsed.value <= serviceFee)
-            throw new Error("Amount must be greater than the current service fee")
-          if (finalBalance < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
-        },
-        createWithdrawal: ({ serviceFee }) =>
-          withBrowserLock(`kinic-wallet-prompt:base:${snapshotAddress.toLowerCase()}`, async () => {
-            const request = {
-              account: snapshotAddress,
-              address: deploymentProfile.bridgeAddress as `0x${string}`,
-              abi: bridgeAbi,
-              functionName: "createWithdrawal",
-              args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)],
-            } as const
-            await basePublicClient.simulateContract(request)
-            return write.writeContractAsync(request)
-          }),
-        onBroadcast: async (transactionHash) => {
-          bridgeProgress.update(progressId, { phase: "base-withdrawal-submitted", transactionHash })
-          return savePendingConfirmation({
-            kind: "withdrawal",
-            transactionHash,
-            owner: confirmedIcAccount.owner,
-          })
-        },
-      })
+      )
       setWithdrawAmount("")
       if (broadcast.pendingSaved) {
         toast.success(
