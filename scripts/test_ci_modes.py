@@ -99,11 +99,16 @@ class CiModeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             impact = root / "impact.py"
+            claim_tests = root / "claim-tests.py"
             paths = root / "paths.json"
             stages = root / "stages.txt"
             receipt = root / "proof-receipt.json"
             impact.write_text(
                 'print(\'{"stages":["claim-manifest","claim-transaction-tests"]}\')\n',
+                encoding="utf-8",
+            )
+            claim_tests.write_text(
+                'import sys\nprint("claim-test " + " ".join(sys.argv[1:]))\n',
                 encoding="utf-8",
             )
             paths.write_text('[]\n', encoding="utf-8")
@@ -113,17 +118,27 @@ set -euo pipefail
 run_impacted_proofs() {{
 {body}
 }}
-initialize_proof_context() {{ PROOF_IMPACT_CHECK={shlex.quote(str(impact))}; }}
+initialize_proof_context() {{
+  PROOF_IMPACT_CHECK={shlex.quote(str(impact))}
+  CLAIM_TEST_CHECK={shlex.quote(str(claim_tests))}
+}}
 run_proof_stage_command() {{ printf '%s\\n' "$1" >>{shlex.quote(str(stages))}; }}
 TMP_ROOT={shlex.quote(str(root))}
 run_impacted_proofs {shlex.quote(str(paths))}
 test "$(cat {shlex.quote(str(receipt))})" = "formal receipt sentinel"
-test "$(cat {shlex.quote(str(stages))})" = $'claim-manifest\\nclaim-transaction-tests'
+test "$(cat {shlex.quote(str(stages))})" = 'claim-manifest'
 """
             result = subprocess.run(
                 ["bash", "-c", script], capture_output=True, text=True
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                [line for line in result.stdout.splitlines() if line.startswith("claim-test ")],
+                [
+                    f"claim-test --impact-json {root / 'proof-impact.json'} --plan-only",
+                    f"claim-test --impact-json {root / 'proof-impact.json'}",
+                ],
+            )
 
     def test_full_proofs_still_emit_complete_ten_stage_receipt(self) -> None:
         body = function_body("run_proofs")

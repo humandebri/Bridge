@@ -322,9 +322,6 @@ export function MintAuthorizationAction({
   })
   const verifyRetry = useMutation({
     mutationFn: async () => {
-      // A finalized revert permits clearing the reference even when minting has expired.
-      // Any subsequent mint still goes through its own authorization validation.
-      if (terminalReverted) return
       if (chainId !== deploymentProfile.chainId)
         throw new Error("Switch the gas-paying wallet to Base")
       const observation = await refetchRuntimeAttestedWriteReady(
@@ -606,7 +603,12 @@ export function MintAuthorizationAction({
             size="sm"
             variant="ghost"
             disabled={verifyRetry.isPending}
-            onClick={() => verifyRetry.mutate()}
+            onClick={() => {
+              // A finalized revert permits clearing the reference without revalidating an
+              // expired authorization. Any subsequent mint still validates independently.
+              if (terminalReverted) setRetryDialogOpen(true)
+              else verifyRetry.mutate()
+            }}
           >
             {verifyRetry.isPending ? "Checking saved transaction…" : "Review saved transaction"}
           </Button>
