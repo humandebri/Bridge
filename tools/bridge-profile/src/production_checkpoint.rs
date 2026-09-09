@@ -1,12 +1,16 @@
 //! A checkpoint is an approved validation result, not a proof of its history.
-//! The registry is deliberately empty until a candidate has been reviewed.
+//! Only the reviewed active checkpoint for each deployment instance is trusted.
 use super::{hex, valid_sha256, LiveRuntimeBinding, ProductionLifecycleView, Profile};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, io::Read, path::Path};
 
 const MAX_BYTES: u64 = 1024 * 1024;
-const APPROVED: &[(&str, &str, &str)] = &[];
+const APPROVED: &[(&str, &str, &str)] = &[(
+    "lb5i5-ziaaa-aaaar-qcgwq-cai",
+    "0x7b72801ae91badc13e721f869a65464d350790e6e521f3a9c948b1de5e67ecce",
+    "58a14e603e51e9a6e00feaad1c5c2b4be965b8031b5300f7138224e207a890a9",
+)];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

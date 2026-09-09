@@ -1,8 +1,11 @@
 # Production upgrade checkpoint implementation status
 
-The checkpoint migration is **not yet enabled for production**. The existing
-upgrade and UI drivers still require their historical evidence. Do not remove
-or make those archives unavailable in a real deployment.
+The initial checkpoint has been reviewed and approved with SHA-256
+`58a14e603e51e9a6e00feaad1c5c2b4be965b8031b5300f7138224e207a890a9`.
+Its five upgrade receipts reach the live-confirmed v36 module below. Generation
+used source `731c71d54bed08c4a54d919c569d92c5dac484ff`; the audit manifest retains
+the 23 input artifact hashes and original locations. Keep the formal archives.
+Production driver cutover and final release verification are separate steps.
 
 Production was queried on 2026-09-09: schema v36, module SHA-256
 `6192841b3c2b5c28c6decea307e7c8e23700ab9bb00e6e593d74857478563c75`.
@@ -17,7 +20,7 @@ Implemented foundations:
   not validate the original historical signatures or grant approval.
 - `validate-production-checkpoint FILE` additionally requires the exact active
   source-controlled hash for the canister and deployment instance. The registry
-  is currently empty; therefore no candidate is approved.
+  admits only the approved hash above for this deployment instance.
 - Candidate input is bounded to 1 MiB, including during file reading. Unknown
   and duplicate fields are rejected recursively through typed deserialization.
 - Legacy receipt validation now delegates to a shared iterator-based state
