@@ -135,7 +135,7 @@ v36 upgrade前後では永続public stateの継続を要求する。
 recoverは署名とcheckpoint束縛を検証するがupdateを再送しない。
 chunk storeのclearは別の明示操作とし、このdriverでは行わない。
 
-正式receiptは元の位置に監査用として保持する。
+正式receiptはbyte不変で監査用として保持する。移設後は[production証跡のローカル配置](../../deployments/README.md#production証跡のローカル配置)とGit対象外の`relocation-manifest.json`を正本の保存先一覧とする。元の監査manifestに埋め込まれたpathは書き換えない。
 `bridge-profile make-production-checkpoint-evidence CHECKPOINT OUTPUT [RECEIPT...]`にはcheckpoint以後のreceiptだけを時系列順に渡す。
 追加0件を受理し、追加履歴は最大16件、decoded合計256 MiB、各receipt128 MiBを維持する。
 各receiptのhash link、署名、Wasm、source ancestry、runtime、lifecycle、pause、storage継続を検証し、checkpoint以前のrequest IDと署名済みinstall digestの再使用も拒否する。

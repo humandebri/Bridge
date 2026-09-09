@@ -5,6 +5,10 @@
 .DS_Store
 .claude/settings.local.json
 
+# Local production and historical audit evidence; never include credentials in Git.
+/artifacts/production/
+/artifacts/audit/
+
 # Environment secrets; commit only the documented example file.
 .env
 .env.*

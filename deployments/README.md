@@ -72,7 +72,7 @@ Gate Aはpre-deploy profileとBridge/BSNSの5 build artifact、合計6 artifact�
 
 `validate-bundle --offline`はGate Aの正式なoffline認可判定として`gate_a=pass authorizing=true`だけを成功出力する。`verify-live`はGate Bの構造に加え、5分以内のactivation attestation、公開RuntimeBinding、reserve、production installer identity単独controller、live module hashを認証済みCanister応答で照合する。schedule/execute receiptの検証も初回activationでは同じcontroller条件を使用する。SNS Root単独controllerと同一Wasm SNS upgradeは、ユーザーが時期を別途判断した場合の独立したhandover検証へ分離する。権限principal、rate/cycles policy、Governance fee、固定Ledger feeは、公開RuntimeBindingの`operational_config_sha256`をrelease profileから再構成した値と照合する。実値の確認はcontroller/governance限定`get_operational_config`を使う。認証またはpostconditionが欠ければ非ゼロ終了する。
 
-production Bridge Canisterはstable schema v36で稼働しており、次は修正版v36へのupgradeを準備する。
+production Bridge Canisterはstable schema v36で稼働している。修正版v36とUIの公開済み証跡は以下のローカル配置で管理する。
 通常のcurrent Gate Bはv36限定を維持する。
 upgradeとUI公開は、sourceにSHA-256を固定した承認済みcheckpointと追加receiptを使用する。
 `BRIDGE_CHECKPOINT_EVIDENCE`はcheckpoint本体と順序付き追加履歴を含み、通常公開で古いGate Bやactivation receiptを再読込しない。
@@ -85,6 +85,32 @@ UI asset receiptは公開するclean sourceとWalletConnect project IDから新�
 手順と停止点は[運用runbook](../docs/runbooks/operations.md)を参照する。
 
 credential、seed、private key、hardware wallet backup、credential入りRPC URLはprofileやevidenceへ記録しない。
+
+## production証跡のローカル配置
+
+| 配置 | 内容 | Git |
+| --- | --- | --- |
+| `deployments/checkpoints/` | sourceでhash承認済みのcheckpoint本体 | 管理する |
+| `artifacts/production/80d9ebb/` | 公開済みWasm、UI file ledgerとassets、preflight、完全gate証跡 | 管理しない |
+| `artifacts/production/80d9ebb/execution/` | 成功upgrade receipt・署名済みsidecar・追加evidence・UI公開記録 | 管理しない |
+| `artifacts/production/80d9ebb/private/` | 秘密を含み得るレビュー済みRPC設定 | 管理しない、directory 700／file 600 |
+| `artifacts/audit/checkpoint-migration-20260910/` | 過去の正式証跡、元の監査manifest、新旧pathとhashの配置manifest | 管理しない、別途backup |
+
+通常の追加upgrade・UI検証で使う既存履歴は次の1ファイルであり、audit directoryは入力にしない。
+
+```sh
+BRIDGE_CHECKPOINT_EVIDENCE="$PWD/artifacts/production/80d9ebb/execution/checkpoint-evidence-after-upgrade.json"
+BRIDGE_UI_RUNTIME_PROFILE_FILE="$PWD/artifacts/production/80d9ebb/execution/ui-runtime-after-upgrade.json"
+BRIDGE_UI_RPC_CONFIG="$PWD/artifacts/production/80d9ebb/private/ui-rpc-config.json"
+```
+
+これは公開済みreleaseの参照先である。次のreleaseは別のdirectoryに新しいWasm、preflight、UI receiptを生成する。過去のreceipt中のsource revisionやpathを現在値へ書き換えない。新しいcommitではclean source／tree bindingを改めて満たす必要があり、過去のpreflightをそのままexecuteに渡さない。
+
+署名済みreceiptと元監査manifestはbyte不変で保管し、`relocation-manifest.json`で旧pathから新path・backup先へ対応付ける。今回のレポ外backupは同一KINGSTONボリューム上であり、媒体障害への備えには別媒体への追加backupが必要。唯一の正式receiptは削除しない。
+
+`artifacts/production/`と`artifacts/audit/`はroot `.gitignore`で除外し、現行proof fingerprintの探索対象外である。除外設定は検証契約を弱めるために拡張しない。Git管理のcheckpointはsource内の承認hashで検証する。配置変更後はfingerprint不変・ignore・commit後のclean-treeを確認する。
+
+buildやPocketICのTMPDIRはこれらの深いdirectoryに置かず、十分な空き容量のある外部ボリューム上の短いpathを使う（macOS Unix socket長制限）。固定ツール、active worktree、秘密鍵は証跡整理の削除対象に含めない。
 
 ## IC mainnet × Base Sepolia test staging
 
