@@ -1,10 +1,19 @@
-# GitHub Actions: complete nightly and manually dispatched repository gate.
+# GitHub Actions: reusable complete gate for main and manual release candidates.
 name: bridge-full-ci
 
 on:
-  schedule:
-    - cron: "17 3 * * *"
+  workflow_call:
+    inputs:
+      target_sha:
+        description: Exact commit to validate; defaults to the caller SHA
+        required: false
+        type: string
   workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact release-candidate commit SHA
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -15,7 +24,7 @@ concurrency:
 
 env:
   CI: "true"
-  BRIDGE_EXPECTED_HEAD_SHA: ${{ github.sha }}
+  BRIDGE_EXPECTED_HEAD_SHA: ${{ inputs.target_sha || github.sha }}
 
 jobs:
   full:
@@ -25,9 +34,16 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
+          ref: ${{ inputs.target_sha || github.sha }}
           submodules: recursive
           fetch-depth: 0
           persist-credentials: false
+      - name: Fetch the pinned schema 35 upgrade predecessor
+        run: git fetch --no-tags --no-recurse-submodules https://github.com/humandebri/Bridge.git e0b426e7465531d2e572b5b741509f1889e6def8
+      - name: Bind full validation to the requested commit
+        run: |
+          [[ "$BRIDGE_EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$BRIDGE_EXPECTED_HEAD_SHA"
       - name: Verify OpenZeppelin revision
         run: test "$(git -C contracts/lib/openzeppelin-contracts rev-parse HEAD)" = "5fd1781b1454fd1ef8e722282f86f9293cacf256"
       - name: Install pinned Rust toolchain

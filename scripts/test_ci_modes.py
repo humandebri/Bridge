@@ -72,6 +72,76 @@ class CiModeTests(unittest.TestCase):
         self.assert_calls("run_contracts", ["run_contracts_fast", "run_contracts_coverage"])
         self.assert_calls("run_ui", ["run_ui_fast", "run_ui_e2e"])
 
+    def test_contract_coverage_uses_thresholded_lcov(self) -> None:
+        body = function_body("run_contracts_coverage")
+        self.assertIn("--report lcov", body)
+        self.assertIn('--report-file "$coverage_file"', body)
+        self.assertIn('check_contract_coverage.py" "$coverage_file"', body)
+        self.assertNotIn("--report summary", body)
+        self.assertIn("BridgeTimelockController", body)
+
+    def test_impacted_proofs_run_only_selected_stage_commands_without_receipt(self) -> None:
+        body = function_body("run_impacted_proofs")
+        self.assertIn('--paths-json "$changed_paths_json"', body)
+        self.assertIn('run_proof_stage_command "$stage"', body)
+        self.assertIn("no formal proof receipt was generated", body)
+        self.assertNotIn("run_proof_stage ", body)
+        self.assertNotIn("PROOF_RECEIPT", body)
+
+        mode = mode_body("proofs-impacted")
+        self.assertIn("run_step proof-preflight run_proof_preflight", mode)
+        self.assertIn('run_step proofs-impacted run_impacted_proofs "$2"', mode)
+        self.assertNotIn("run_step versions", mode)
+        self.assertNotIn("run_step proofs run_proofs", mode)
+
+    def test_impacted_proof_execution_does_not_write_a_formal_receipt(self) -> None:
+        body = function_body("run_impacted_proofs")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            impact = root / "impact.py"
+            paths = root / "paths.json"
+            stages = root / "stages.txt"
+            receipt = root / "proof-receipt.json"
+            impact.write_text(
+                'print(\'{"stages":["claim-manifest","claim-transaction-tests"]}\')\n',
+                encoding="utf-8",
+            )
+            paths.write_text('[]\n', encoding="utf-8")
+            receipt.write_text("formal receipt sentinel\n", encoding="utf-8")
+            script = f"""
+set -euo pipefail
+run_impacted_proofs() {{
+{body}
+}}
+initialize_proof_context() {{ PROOF_IMPACT_CHECK={shlex.quote(str(impact))}; }}
+run_proof_stage_command() {{ printf '%s\\n' "$1" >>{shlex.quote(str(stages))}; }}
+TMP_ROOT={shlex.quote(str(root))}
+run_impacted_proofs {shlex.quote(str(paths))}
+test "$(cat {shlex.quote(str(receipt))})" = "formal receipt sentinel"
+test "$(cat {shlex.quote(str(stages))})" = $'claim-manifest\\nclaim-transaction-tests'
+"""
+            result = subprocess.run(
+                ["bash", "-c", script], capture_output=True, text=True
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_full_proofs_still_emit_complete_ten_stage_receipt(self) -> None:
+        body = function_body("run_proofs")
+        for stage in (
+            "claim-manifest",
+            "lean",
+            "lean-negative",
+            "policy-vector-consumers",
+            "refinement-gate",
+            "claim-transaction-tests",
+            "known-answer-consumers",
+            "smt-and-negative",
+            "halmos-and-negative",
+            "verus-and-negative",
+        ):
+            self.assertIn(f"run_proof_stage {stage}", body)
+        self.assertIn('receipt["complete"] is True', body)
+
     def test_proofs_use_independent_claim_stages(self) -> None:
         body = function_body("run_proofs")
         receipt_regression = body.index('python3 "$ROOT/scripts/test_write_proof_receipt.py"')
@@ -210,11 +280,13 @@ grep -q $'^sample\\tfail\\t' "$PROOF_STAGE_RECEIPT"
 
     def test_new_modes_are_exposed(self) -> None:
         for mode in (
+            "policy",
             "rust-fast",
             "rust-integration",
             "contracts-fast",
             "contracts-coverage",
             "certora",
+            "proofs-impacted",
             "ui-fast",
             "ui-e2e",
         ):

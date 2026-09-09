@@ -44,11 +44,12 @@ class ChangedAreaTests(unittest.TestCase):
         self.assertEqual(values["any"], "false")
         self.assertEqual(json.loads(values["matrix"]), ["none"])
 
-    def test_rust_change_runs_rust_real_and_icp(self) -> None:
+    def test_rust_change_runs_atomic_runtime_gates(self) -> None:
         self.assert_areas(
             ["canister/bridge-canister/src/api.rs"],
-            "rust",
-            "proofs",
+            "rust-fast",
+            "rust-integration",
+            "proofs-impacted",
             "real",
             "icp",
         )
@@ -56,24 +57,41 @@ class ChangedAreaTests(unittest.TestCase):
     def test_contract_change_runs_contract_ui_and_real(self) -> None:
         self.assert_areas(
             ["contracts/src/Bridge.sol"],
-            "contracts",
-            "proofs",
-            "ui",
+            "contracts-fast",
+            "proofs-impacted",
+            "ui-fast",
+            "ui-e2e",
             "real",
         )
 
     def test_visual_ui_change_avoids_real_integration(self) -> None:
-        self.assert_areas(["ui/src/styles.css"], "ui")
+        self.assert_areas(["ui/src/styles.css"], "ui-fast", "ui-e2e")
 
-    def test_ui_dependency_only_change_runs_ui(self) -> None:
-        self.assert_areas(["ui/pnpm-lock.yaml"], "ui")
-        self.assert_areas(["ui/src/styles.css"], "ui")
+    def test_ui_dependency_change_runs_runtime_and_impacted_proofs(self) -> None:
+        self.assert_areas(
+            ["ui/pnpm-lock.yaml"],
+            "policy",
+            "ui-fast",
+            "ui-e2e",
+            "real",
+            "proofs-impacted",
+        )
+        self.assert_areas(["ui/src/styles.css"], "ui-fast", "ui-e2e")
 
     def test_ui_real_e2e_change_runs_ui_and_real(self) -> None:
-        self.assert_areas(["ui/e2e-real/bridge-real.spec.ts"], "ui", "real")
+        self.assert_areas(["ui/e2e-real/bridge-real.spec.ts"], "real")
+
+    def test_test_only_changes_run_their_own_atomic_gate(self) -> None:
+        self.assert_areas(["ui/src/widget.test.jsx"], "ui-fast")
+        self.assert_areas(["ui/e2e/bridge.spec.ts"], "ui-e2e")
+        self.assert_areas(["integration/phase3.spec.ts"], "rust-integration", "proofs-impacted")
+        self.assert_areas(["canister/bridge-core/tests/kernel_exhaustive.rs"], "rust-fast", "proofs-impacted")
+        self.assert_areas(["contracts/test/Bridge.t.sol"], "contracts-fast")
 
     def test_integration_ui_change_runs_real(self) -> None:
-        self.assert_areas(["ui/src/lib/ic/bridge.ts"], "ui", "real")
+        self.assert_areas(
+            ["ui/src/lib/ic/bridge.ts"], "ui-fast", "ui-e2e", "real"
+        )
 
     def test_shared_runtime_ui_changes_run_real(self) -> None:
         for path in (
@@ -85,9 +103,9 @@ class ChangedAreaTests(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 expected = (
-                    ("ui", "real", "proofs")
+                    ("ui-fast", "ui-e2e", "real", "proofs-impacted")
                     if path == "ui/src/lib/withdrawal-submit.ts"
-                    else ("ui", "real")
+                    else ("ui-fast", "ui-e2e", "real")
                 )
                 self.assert_areas([path], *expected)
 
@@ -158,19 +176,21 @@ class ChangedAreaTests(unittest.TestCase):
     def test_proof_owned_runtime_validation_runs_proofs_and_real(self) -> None:
         self.assert_areas(
             ["ui/src/lib/runtime-validation.ts"],
-            "proofs",
-            "ui",
+            "proofs-impacted",
+            "ui-fast",
+            "ui-e2e",
             "real",
         )
 
     def test_proof_change_runs_proofs_only(self) -> None:
-        self.assert_areas(["verification/lean/Bridge.lean"], "proofs")
+        self.assert_areas(["verification/lean/Bridge.lean"], "proofs-impacted")
 
     def test_safety_kernel_and_proof_manifest_keep_safety_areas(self) -> None:
         self.assert_areas(
             ["tools/bridge-profile/src/main.rs", "verification/proof-impact.tsv"],
-            "rust",
-            "proofs",
+            "policy",
+            "rust-fast",
+            "proofs-impacted",
         )
 
     def test_certora_only_change_runs_only_advisory_checks(self) -> None:
@@ -187,8 +207,8 @@ class ChangedAreaTests(unittest.TestCase):
     def test_shared_timelock_test_keeps_release_checks(self) -> None:
         self.assert_areas(
             ["contracts/test/BridgeTimelock.t.sol"],
-            "contracts",
-            "proofs",
+            "contracts-fast",
+            "proofs-impacted",
         )
 
     def test_certora_and_production_mix_keeps_both_boundaries(self) -> None:
@@ -198,58 +218,85 @@ class ChangedAreaTests(unittest.TestCase):
                 "contracts/src/Bridge.sol",
             ],
             "certora",
-            "contracts",
-            "proofs",
-            "ui",
+            "contracts-fast",
+            "proofs-impacted",
+            "ui-fast",
+            "ui-e2e",
             "real",
         )
 
-    def test_certora_transitive_python_dependencies_run_proofs_and_certora(self) -> None:
+    def test_certora_transitive_python_dependencies_run_certora_and_policy(self) -> None:
         for path in ci_changed_areas._certora_python_dependencies():
             with self.subTest(path=path):
                 areas = ci_changed_areas.classify([path])
                 self.assertTrue(areas["certora"])
                 if path not in ci_changed_areas.CERTORA_ADVISORY_EXACT_PATHS:
-                    self.assertTrue(areas["proofs"])
+                    self.assertTrue(areas["policy"])
 
     def test_proof_owned_ui_adapter_runs_proofs_and_runtime_checks(self) -> None:
         self.assert_areas(
             ["ui/src/lib/pending-confirmations.ts"],
-            "proofs",
-            "ui",
+            "proofs-impacted",
+            "ui-fast",
+            "ui-e2e",
             "real",
         )
 
     def test_ci_infrastructure_runs_every_area(self) -> None:
-        self.assert_areas([".github/workflows/ci.yml"], *ci_changed_areas.AREAS)
+        self.assert_areas([".github/workflows/ci.yml"], *ci_changed_areas.GATES)
 
     def test_submodule_change_runs_every_area(self) -> None:
-        self.assert_areas([".gitmodules"], *ci_changed_areas.AREAS)
+        self.assert_areas([".gitmodules"], *ci_changed_areas.GATES)
 
     def test_bridge_profile_tool_runs_rust_and_owned_proofs(self) -> None:
-        self.assert_areas(["tools/bridge-profile/src/main.rs"], "rust", "proofs")
+        self.assert_areas(
+            ["tools/bridge-profile/src/main.rs"],
+            "policy",
+            "rust-fast",
+            "proofs-impacted",
+        )
 
     def test_every_proof_owned_source_enables_proofs(self) -> None:
         for path in ci_changed_areas._proof_owned_paths():
             with self.subTest(path=path):
-                self.assertTrue(ci_changed_areas.classify([path])["proofs"])
+                self.assertTrue(ci_changed_areas.classify([path])["proofs-impacted"])
 
-    def test_deployment_profiles_and_icp_mappings_run_every_area(self) -> None:
+    def test_deployment_profiles_are_targeted_but_icp_mappings_fail_closed(self) -> None:
         self.assert_areas(
-            [
-                "deployments/sepolia-staging/frontend-profile.json",
-                ".icp/data/mappings/sepolia-staging.ids.json",
-            ],
-            *ci_changed_areas.AREAS,
+            ["deployments/sepolia-staging/frontend-profile.json"],
+            "policy",
+            "proofs-impacted",
+            "rust-integration",
+            "ui-fast",
+            "ui-e2e",
+            "real",
+            "icp",
+        )
+        self.assert_areas(
+            [".icp/data/mappings/sepolia-staging.ids.json"], *ci_changed_areas.GATES
         )
 
+    def test_sensitive_documentation_requires_review_without_compute(self) -> None:
+        for path in ("deployments/README.md", "verification/README.md"):
+            with self.subTest(path=path):
+                self.assert_areas([path])
+                self.assert_review([path], True)
+
+    def test_classifier_regression_test_runs_policy_only(self) -> None:
+        self.assert_areas(["scripts/test_ci_changed_areas.py"], "policy")
+
     def test_unknown_non_documentation_path_runs_every_area(self) -> None:
-        self.assert_areas(["config/new-policy.toml"], *ci_changed_areas.AREAS)
+        self.assert_areas(["config/new-policy.toml"], *ci_changed_areas.GATES)
+
+    def test_unregistered_production_source_runs_every_area(self) -> None:
+        path = "canister/bridge-core/src/new_policy.rs"
+        self.assert_areas([path], *ci_changed_areas.GATES)
+        self.assert_review([path], True)
 
     def test_unknown_path_mixed_with_docs_runs_every_area(self) -> None:
         self.assert_areas(
             ["docs/bridge-flow.md", "config/new-policy.toml"],
-            *ci_changed_areas.AREAS,
+            *ci_changed_areas.GATES,
         )
 
     def test_github_output_contains_enabled_area_matrix(self) -> None:
@@ -274,14 +321,15 @@ class ChangedAreaTests(unittest.TestCase):
             )
         self.assertEqual(
             json.loads(values["matrix"]),
-            ["rust", "proofs", "real", "icp"],
+            ["rust-fast", "rust-integration", "proofs-impacted", "real", "icp"],
         )
 
     def test_production_source_alone_remains_eligible_for_isolated_checks(self) -> None:
         self.assert_areas(
             ["canister/bridge-canister/src/api.rs"],
-            "rust",
-            "proofs",
+            "rust-fast",
+            "rust-integration",
+            "proofs-impacted",
             "real",
             "icp",
         )
@@ -291,7 +339,7 @@ class ChangedAreaTests(unittest.TestCase):
             "scripts/ci-local.sh",
             "canister/bridge-canister/src/api.rs",
         ]
-        self.assert_areas(paths, *ci_changed_areas.AREAS)
+        self.assert_areas(paths, *ci_changed_areas.GATES)
 
     def test_cli_emits_matrix_for_policy_source_mix(self) -> None:
         with tempfile.NamedTemporaryFile() as output:
@@ -315,9 +363,31 @@ class ChangedAreaTests(unittest.TestCase):
                 for line in output.read().decode("utf-8").splitlines()
             )
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(json.loads(values["matrix"]), list(ci_changed_areas.AREAS))
+        self.assertEqual(json.loads(values["matrix"]), list(ci_changed_areas.GATES))
         self.assertEqual(values["any"], "true")
         self.assertEqual(values["review_required"], "true")
+
+    def test_cli_preserves_changed_paths_as_json(self) -> None:
+        path = "scripts/strange\nname.py"
+        with tempfile.NamedTemporaryFile() as output:
+            subprocess.run(
+                [
+                    sys.executable,
+                    ci_changed_areas.__file__,
+                    "--github-output",
+                    output.name,
+                    path,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            output.seek(0)
+            values = dict(
+                line.rstrip().split("=", 1)
+                for line in output.read().decode("utf-8").splitlines()
+            )
+        self.assertEqual(json.loads(values["changed_paths_json"]), [path])
 
 
 if __name__ == "__main__":

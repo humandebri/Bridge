@@ -192,40 +192,25 @@ async function installRuntimeProfile(targetRoot, raw) {
   )
 }
 
-/** @param {string} raw */
-async function validatePreActivationProfile(raw) {
-  const releaseProfile = JSON.parse(raw)
-  /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
-  const deploymentGlobal = globalThis
-  deploymentGlobal.__KINIC_DEPLOYMENT_PROFILE_JSON__ = raw.trim()
-  const [{ deploymentProfile, profileCompleteness }, { assertPreActivationUiProfile }] =
-    await Promise.all([
-      import("../src/config/profile.ts"),
-      import("../src/config/deploy-safety.ts"),
-    ])
-  assertPreActivationUiProfile(releaseProfile)
-  const expectedBlockers = ["Deployment history start block is missing"]
-  const blockers = profileCompleteness(deploymentProfile)
-  if (JSON.stringify(blockers) !== JSON.stringify(expectedBlockers)) {
-    throw new Error(`Pre-activation UI profile has unexpected blockers: ${blockers.join("; ")}`)
-  }
-}
-
-/** @param {string} profileFile @param {SourceIdentity} identity */
-async function validateProductionProfile(profileFile, identity) {
+/** @param {string} profileFile */
+function verifyProductionUiLive(profileFile) {
   const bundle = process.env.BRIDGE_RELEASE_BUNDLE
-  const inputsManifestFile = process.env.BRIDGE_RELEASE_INPUTS_MANIFEST
-  if (!bundle || !inputsManifestFile) {
-    throw new Error(
-      "Production UI deploy requires a signed Gate B bundle and reviewed release inputs",
-    )
-  }
-  const releaseManifest = JSON.parse(readFileSync(resolve(bundle, "release-manifest.json"), "utf8"))
+  const sealReceipt = process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT
+  const scheduleReceipt = process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT
+  const executeReceipt = process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT
+  const postActivationUpgradeEvidence = process.env.BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE
+  const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
   if (
-    releaseManifest.source_revision !== identity.source_revision ||
-    releaseManifest.source_tree_sha256?.toLowerCase() !== identity.source_tree_sha256
+    !bundle ||
+    !sealReceipt ||
+    !scheduleReceipt ||
+    !executeReceipt ||
+    !postActivationUpgradeEvidence ||
+    !productionInstallerIdentity
   ) {
-    throw new Error("Production UI checkout differs from the Gate B source revision or tree")
+    throw new Error(
+      "Production UI deploy requires the historical Gate B, activation receipts, post-activation upgrade evidence, and production installer identity",
+    )
   }
   const cargoArgs = [
     "run",
@@ -237,58 +222,43 @@ async function validateProductionProfile(profileFile, identity) {
     "bridge-profile",
     "--",
   ]
-  const gateOutput = execFileSync("cargo", [...cargoArgs, "verify-live", "schedule", bundle], {
-    encoding: "utf8",
-  })
+  const gateOutput = execFileSync(
+    "cargo",
+    [
+      ...cargoArgs,
+      "verify-production-ui-live",
+      bundle,
+      sealReceipt,
+      scheduleReceipt,
+      executeReceipt,
+      postActivationUpgradeEvidence,
+      profileFile,
+    ],
+    { cwd: sourceRoot, encoding: "utf8" },
+  )
   const manifestSha256 =
-    /^gate_b=live-pass authorizing=schedule manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
+    /^production_ui=live-pass schema=35 activation=execute manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
       gateOutput,
     )?.[1]
-  if (!manifestSha256) throw new Error("Fixed bridge-profile did not verify the Gate B manifest")
+  if (!manifestSha256) {
+    throw new Error("Fixed bridge-profile did not authorize the live production UI")
+  }
+  return manifestSha256
+}
+
+/** @param {string} profileFile */
+async function validateProductionProfile(profileFile) {
   const rawBuffer = readOrdinaryFile(profileFile)
-  const inputsManifestBuffer = readOrdinaryFile(inputsManifestFile)
-  const rendered = mkdtempSync(resolve(tmpdir(), "bridge-ui-release-inputs."))
-  try {
-    execFileSync("cargo", [...cargoArgs, "render-bundle-inputs", bundle, rendered], {
-      stdio: "pipe",
-    })
-    const reviewedRoot = dirname(inputsManifestFile)
-    for (const name of ["canister-init.json", "contract-constructor-args.json"]) {
-      if (
-        !readFileSync(resolve(rendered, name)).equals(readOrdinaryFile(resolve(reviewedRoot, name)))
-      ) {
-        throw new Error(`Production release input drift: ${name}`)
-      }
-    }
-    if (!readFileSync(resolve(rendered, "ui-runtime-profile.json")).equals(rawBuffer)) {
-      throw new Error("Production release input drift: ui-runtime-profile.json")
-    }
-    if (
-      !readFileSync(resolve(rendered, "release-inputs-manifest.json")).equals(inputsManifestBuffer)
-    ) {
-      throw new Error("Production release input drift: release-inputs-manifest.json")
-    }
-  } finally {
-    rmSync(rendered, { recursive: true, force: true })
-  }
   const raw = rawBuffer.toString("utf8")
-  const inputsManifest = JSON.parse(inputsManifestBuffer.toString("utf8"))
-  if (inputsManifest.artifacts?.["ui-runtime-profile.json"] !== sha256(rawBuffer)) {
-    throw new Error("Production UI profile hash differs from the reviewed release inputs")
-  }
   if (process.env.VITE_DEPLOYMENT_PROFILE_JSON?.trim() !== raw.trim()) {
     throw new Error("VITE_DEPLOYMENT_PROFILE_JSON must be the reviewed UI runtime profile verbatim")
   }
   /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
   const deploymentGlobal = globalThis
   deploymentGlobal.__KINIC_DEPLOYMENT_PROFILE_JSON__ = raw.trim()
-  const [{ releaseProfileSchema }, { assertProductionUiProfile }] = await Promise.all([
-    import("../src/config/profile.ts"),
-    import("../src/config/deploy-safety.ts"),
-  ])
+  const { releaseProfileSchema } = await import("../src/config/profile.ts")
   const releaseProfile = releaseProfileSchema.parse(JSON.parse(raw))
-  assertProductionUiProfile(releaseProfile, manifestSha256)
-  return raw
+  return { raw, releaseProfile }
 }
 
 /** @param {SourceIdentity} expected */
@@ -302,8 +272,8 @@ async function requireUnchangedSourceIdentity(expected) {
   }
 }
 
-/** @param {ArtifactReceipt} receipt @param {string} rawProfile @param {SourceIdentity} identity @param {boolean} [dryRun] */
-async function deployFrozenAssets(receipt, rawProfile, identity, dryRun = false) {
+/** @param {ArtifactReceipt} receipt @param {string} rawProfile @param {import("zod").output<typeof import("../src/config/profile.ts").releaseProfileSchema>} releaseProfile @param {string} profileFile @param {SourceIdentity} identity */
+async function deployFrozenAssets(receipt, rawProfile, releaseProfile, profileFile, identity) {
   const frozenRoot = mkdtempSync(resolve(tmpdir(), "kinic-ui-deploy."))
   const frozen = resolve(frozenRoot, "assets")
   const frozenConfig = resolve(frozenRoot, "wrangler.production.jsonc")
@@ -339,8 +309,10 @@ async function deployFrozenAssets(receipt, rawProfile, identity, dryRun = false)
     }
     chmodSync(frozen, 0o500)
     await requireUnchangedSourceIdentity(identity)
+    const manifestSha256 = verifyProductionUiLive(profileFile)
+    const { assertProductionUiProfile } = await import("../src/config/deploy-safety.ts")
+    assertProductionUiProfile(releaseProfile, manifestSha256)
     const deployArgs = ["exec", "wrangler", "deploy", "--config", frozenConfig, "--assets", frozen]
-    if (dryRun) deployArgs.push("--dry-run")
     const deployed = spawnSync("pnpm", deployArgs, {
       cwd: uiRoot,
       env: process.env,
@@ -360,10 +332,10 @@ async function deployFrozenAssets(receipt, rawProfile, identity, dryRun = false)
 
 const [, , mode, receiptPath, profileFile] = process.argv
 try {
-  const modes = ["generate", "verify", "deploy", "verify-preactivation", "deploy-preactivation"]
+  const modes = ["generate", "verify", "deploy"]
   if (!receiptPath || !modes.includes(mode)) {
     throw new Error(
-      "usage: production-assets.mjs {generate|verify|deploy|verify-preactivation|deploy-preactivation} RECEIPT [UI_RUNTIME_PROFILE]",
+      "usage: production-assets.mjs {generate|verify|deploy} RECEIPT [UI_RUNTIME_PROFILE]",
     )
   }
   const identity = await sourceIdentity()
@@ -384,14 +356,10 @@ try {
   } else {
     const receipt = JSON.parse(readFileSync(receiptPath, "utf8"))
     validateReceipt(receipt, identity, built, projectId)
-    if (["deploy", "verify-preactivation", "deploy-preactivation"].includes(mode)) {
-      if (!profileFile) throw new Error(`${mode} requires the UI runtime profile`)
-      const rawProfile =
-        mode === "deploy"
-          ? await validateProductionProfile(profileFile, identity)
-          : readOrdinaryFile(profileFile).toString("utf8")
-      if (mode !== "deploy") await validatePreActivationProfile(rawProfile)
-      await deployFrozenAssets(receipt, rawProfile, identity, mode === "verify-preactivation")
+    if (mode === "deploy") {
+      if (!profileFile) throw new Error("deploy requires the UI runtime profile")
+      const { raw, releaseProfile } = await validateProductionProfile(profileFile)
+      await deployFrozenAssets(receipt, raw, releaseProfile, profileFile, identity)
     }
     process.stdout.write(`ui_artifact_set_sha256=${built.artifact_set_sha256}\n`)
   }

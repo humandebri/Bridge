@@ -2,6 +2,8 @@
 """Regression tests for logic-to-proof impact enforcement."""
 
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,7 +54,7 @@ class ProofImpactTests(unittest.TestCase):
         self.assertIn("epoch_invalidation", impact["claims"])
         self.assertNotIn("payment_identity", impact["claims"])
 
-    def test_production_ui_deploy_precheck_routes_to_complete_proofs(self) -> None:
+    def test_production_ui_deploy_precheck_routes_to_consuming_stages(self) -> None:
         for path in (
             "ui/scripts/check-deploy-profile.mjs",
             "ui/scripts/check-deploy-profile.test.mjs",
@@ -62,8 +64,99 @@ class ProofImpactTests(unittest.TestCase):
                 self.assertEqual(impact["areas"], ["production_ui_deployment"])
                 self.assertIn("activation_preflight", impact["claims"])
                 self.assertEqual(
-                    impact["stages"], list(check_proof_impact.REQUIRED_STAGES)
+                    impact["stages"],
+                    [
+                        "claim-manifest",
+                        "refinement-gate",
+                        "claim-transaction-tests",
+                        "known-answer-consumers",
+                    ],
                 )
+
+    def test_wallet_dependency_change_excludes_solver_stages(self) -> None:
+        impact = check_proof_impact.classify_paths(
+            ["ui/pnpm-lock.yaml"], self.manifest
+        )
+        self.assertEqual(impact["areas"], ["ui_wallet_binding"])
+        self.assertEqual(
+            impact["stages"], ["claim-manifest", "claim-transaction-tests"]
+        )
+
+    def test_release_driver_change_excludes_unconsumed_solver_stages(self) -> None:
+        impact = check_proof_impact.classify_paths(
+            ["scripts/production-release.sh"], self.manifest
+        )
+        self.assertEqual(impact["areas"], ["production_release_drivers"])
+        self.assertEqual(
+            impact["stages"],
+            [
+                "claim-manifest",
+                "refinement-gate",
+                "claim-transaction-tests",
+                "known-answer-consumers",
+            ],
+        )
+
+    def test_stage_union_keeps_required_order(self) -> None:
+        impact = check_proof_impact.classify_paths(
+            [
+                "ui/pnpm-lock.yaml",
+                "ui/src/lib/deposit-mint-finalization.ts",
+            ],
+            self.manifest,
+        )
+        self.assertEqual(
+            impact["stages"],
+            [
+                "claim-manifest",
+                "policy-vector-consumers",
+                "refinement-gate",
+                "claim-transaction-tests",
+                "known-answer-consumers",
+            ],
+        )
+
+    def test_stage_policy_rejects_empty_duplicate_unknown_and_unpaired(self) -> None:
+        invalid = {
+            "empty": (),
+            "duplicate": ("claim-manifest", "claim-manifest"),
+            "unknown": ("claim-manifest", "future-stage"),
+            "unpaired": ("claim-manifest", "lean"),
+        }
+        for name, stages in invalid.items():
+            with self.subTest(name=name):
+                area = check_proof_impact.ImpactArea("test", (), (), stages)
+                with self.assertRaises(ValueError):
+                    check_proof_impact.validate_impact_stages((area,))
+
+    def test_stage_policy_accepts_positive_negative_pair(self) -> None:
+        area = check_proof_impact.ImpactArea(
+            "test", (), (), ("claim-manifest", "lean", "lean-negative")
+        )
+        check_proof_impact.validate_impact_stages((area,))
+
+    def test_paths_json_cli_preserves_git_paths_and_selects_union(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "changed-paths.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        "ui/pnpm-lock.yaml",
+                        "docs/path-with-a-newline\ninside.md",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, check_proof_impact.__file__, "--paths-json", str(path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        impact = json.loads(result.stdout)
+        self.assertEqual(
+            impact["stages"], ["claim-manifest", "claim-transaction-tests"]
+        )
 
     def test_new_safety_source_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "unregistered"):

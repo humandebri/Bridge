@@ -18,7 +18,20 @@ from certora_fingerprint import certora_python_dependency_paths
 from proof_fingerprint import CERTORA_ONLY_RELEASE_EXCLUSIONS
 
 
-AREAS = ("rust", "contracts", "proofs", "ui", "real", "icp", "certora")
+GATES = (
+    "policy",
+    "rust-fast",
+    "rust-integration",
+    "contracts-fast",
+    "proofs-impacted",
+    "ui-fast",
+    "ui-e2e",
+    "real",
+    "icp",
+    "certora",
+)
+# Compatibility alias for callers that only need the ordered classifier domain.
+AREAS = GATES
 ROOT = Path(__file__).resolve().parents[1]
 CERTORA_ADVISORY_EXACT_PATHS = CERTORA_ONLY_RELEASE_EXCLUSIONS
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
@@ -81,6 +94,11 @@ SAFE_SOURCE_PREFIXES = (
     "ui/public/",
     "ui/src/",
 )
+WATCHED_PRODUCTION_SOURCES = (
+    ("canister/bridge-core/src/", ".rs"),
+    ("canister/bridge-canister/src/", ".rs"),
+    ("contracts/src/", ".sol"),
+)
 
 
 @lru_cache(maxsize=1)
@@ -103,15 +121,19 @@ def _matches(path: str, prefixes: tuple[str, ...], exact: tuple[str, ...] = ()) 
 
 
 def _enable_all(result: dict[str, bool]) -> None:
-    for area in AREAS:
-        result[area] = True
+    for gate in GATES:
+        result[gate] = True
 
 
 def _is_documentation(path: str) -> bool:
     name = PurePosixPath(path).name
     return (
-        path.startswith("docs/")
+        path.startswith(("docs/", "plans/"))
         or path in {"README.md", "AGENTS.md", ".gitignore"}
+        or (
+            path.startswith(("deployments/", "verification/", ".github/"))
+            and name.endswith(".md")
+        )
         or ("/" not in path and name.startswith("LICENSE"))
     )
 
@@ -171,12 +193,13 @@ def gitlink_changed(base_sha: str, head_sha: str, root: Path = ROOT) -> bool:
 def review_required(paths: list[str]) -> bool:
     """Require an exact-head review when a PR changes its validation boundary."""
     for raw_path in paths:
-        path = PurePosixPath(raw_path.strip()).as_posix()
+        path = PurePosixPath(raw_path).as_posix()
         if not path or path == ".":
             continue
         name = PurePosixPath(path).name
         if (
-            path in SENSITIVE_EXACT_PATHS
+            _is_unregistered_production_source(path)
+            or path in SENSITIVE_EXACT_PATHS
             or path.startswith(SENSITIVE_PREFIXES)
             or _is_test_path(path)
             or name in SENSITIVE_FILENAMES
@@ -202,13 +225,28 @@ def _certora_python_dependencies() -> frozenset[str]:
     return certora_python_dependency_paths(ROOT)
 
 
+def _enable(result: dict[str, bool], *gates: str) -> None:
+    for gate in gates:
+        result[gate] = True
+
+
+def _is_unregistered_production_source(path: str) -> bool:
+    return any(
+        path.startswith(prefix) and path.endswith(suffix)
+        for prefix, suffix in WATCHED_PRODUCTION_SOURCES
+    ) and path not in _proof_owned_paths()
+
+
 def classify(paths: list[str]) -> dict[str, bool]:
-    result = {area: False for area in AREAS}
+    result = {gate: False for gate in GATES}
     for raw_path in paths:
-        path = PurePosixPath(raw_path.strip()).as_posix()
+        path = PurePosixPath(raw_path).as_posix()
         if not path or path == ".":
             continue
         if _is_documentation(path):
+            continue
+        if _is_unregistered_production_source(path):
+            _enable_all(result)
             continue
         if _is_certora_advisory_only(path):
             result["certora"] = True
@@ -216,37 +254,102 @@ def classify(paths: list[str]) -> dict[str, bool]:
         if path in _certora_python_dependencies():
             result["certora"] = True
 
-        infrastructure = _matches(
-            path,
-            (".github/", "scripts/"),
-            (
-                ".gitmodules",
-                "Cargo.toml",
-                "Cargo.lock",
-                "rust-toolchain.toml",
-                "package.json",
-                "pnpm-lock.yaml",
-            ),
-        )
-        if infrastructure:
+        if path.startswith(".github/") or path in {
+            ".gitmodules",
+            "scripts/ci-local.sh",
+            "scripts/ci_changed_areas.py",
+            "scripts/trusted-pr-container.sh",
+            "scripts/trusted-pr-mountpoints.sh",
+        }:
             _enable_all(result)
             continue
-        if _matches(path, ("deployments/", ".icp/data/mappings/")):
+
+        if path in {"scripts/test_ci_changed_areas.py", "scripts/test_ci_modes.py"}:
+            result["policy"] = True
+            continue
+
+        if path in {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"}:
+            _enable(
+                result,
+                "policy",
+                "rust-fast",
+                "rust-integration",
+                "proofs-impacted",
+                "icp",
+            )
+            continue
+        if path in {"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"}:
+            _enable(result, "policy", "rust-integration", "proofs-impacted")
+            continue
+        if path in {
+            "ui/package.json",
+            "ui/pnpm-lock.yaml",
+            "ui/pnpm-workspace.yaml",
+            "ui/vite.config.ts",
+            "ui/vitest.config.ts",
+            "ui/playwright.config.ts",
+            "ui/playwright.real.config.ts",
+        }:
+            _enable(result, "policy", "ui-fast", "ui-e2e", "real")
+            if path in _proof_owned_paths():
+                result["proofs-impacted"] = True
+            continue
+        if _is_test_path(path):
+            if path in _proof_owned_paths():
+                result["proofs-impacted"] = True
+            if path.startswith("ui/e2e-real/"):
+                result["real"] = True
+            elif path.startswith("ui/e2e/"):
+                result["ui-e2e"] = True
+            elif path.startswith("ui/"):
+                result["ui-fast"] = True
+            elif path.startswith("integration/"):
+                result["rust-integration"] = True
+            elif path.startswith("canister/"):
+                result["rust-fast"] = True
+            elif path.startswith("contracts/"):
+                result["contracts-fast"] = True
+            elif path.startswith("scripts/"):
+                result["policy"] = True
+            else:
+                _enable_all(result)
+            continue
+        if path.startswith(".icp/data/mappings/"):
             _enable_all(result)
+            continue
+
+        if path.startswith("deployments/"):
+            _enable(result, "policy", "proofs-impacted")
+            if path.startswith("deployments/sepolia-staging/"):
+                _enable(
+                    result, "rust-integration", "ui-fast", "ui-e2e", "real", "icp"
+                )
+            continue
+
+        if path.startswith("scripts/"):
+            result["policy"] = True
+            if path in _proof_owned_paths():
+                result["proofs-impacted"] = True
+            if path.startswith("scripts/plan007/"):
+                _enable(result, "rust-integration", "ui-fast", "real", "icp")
+            elif path.startswith("scripts/evm-rpc-rehearsal/"):
+                _enable(result, "rust-integration", "real")
+            elif path.startswith("scripts/production-canister-"):
+                _enable(result, "rust-integration", "icp")
             continue
 
         classified = False
         if path in _proof_owned_paths():
-            result["proofs"] = True
+            result["proofs-impacted"] = True
             classified = True
         if _matches(path, ("tools/",)):
-            result["rust"] = True
+            _enable(result, "rust-fast", "policy")
             classified = True
         if _matches(path, ("canister/", "integration/")):
-            result["rust"] = True
+            _enable(result, "rust-fast", "rust-integration")
             classified = True
         if _matches(path, ("contracts/",)):
-            result["contracts"] = True
+            result["contracts-fast"] = True
             classified = True
         if _matches(path, ("verification/", "canister/", "contracts/src/")) or path in {
             "canister/bridge-core/tests/protocol_vectors.rs",
@@ -255,13 +358,13 @@ def classify(paths: list[str]) -> dict[str, bool]:
             "ui/src/lib/protocol-vectors.test.ts",
             "ui/src/lib/withdrawal-confirmation-state.ts",
         }:
-            result["proofs"] = True
+            result["proofs-impacted"] = True
             classified = True
         if _matches(path, ("ui/",)) or path in {
             "canister/bridge-canister/bridge.did",
             "canister/mock-external/mock.did",
         } or _matches(path, ("contracts/abi/", "contracts/src/")):
-            result["ui"] = True
+            _enable(result, "ui-fast", "ui-e2e")
             classified = True
         if _matches(
             path,
@@ -329,6 +432,13 @@ def main() -> int:
         "matrix="
         + json.dumps(
             workflow_areas,
+            separators=(",", ":"),
+        )
+    )
+    lines.append(
+        "changed_paths_json="
+        + json.dumps(
+            [PurePosixPath(path).as_posix() for path in paths if path],
             separators=(",", ":"),
         )
     )

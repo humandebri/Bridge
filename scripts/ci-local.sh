@@ -161,6 +161,7 @@ run_versions() {
     "$ROOT/README.md" "$ROOT/docs" "$ROOT/verification"
   python3 "$ROOT/scripts/check_sqlite_transaction_boundaries.py"
   python3 "$ROOT/scripts/test_ci_changed_areas.py"
+  python3 "$ROOT/scripts/test_contract_coverage.py"
   forge build --root "$ROOT/contracts" --ast
   python3 "$ROOT/scripts/check_certora_manifest.py"
   python3 "$ROOT/scripts/test_certora_manifest.py"
@@ -389,15 +390,18 @@ run_contracts_fast() {
 }
 
 run_contracts_coverage() {
+  local coverage_file="$TMP_ROOT/contracts.lcov"
   forge coverage \
     --root "$CONTRACTS" \
     --ir-minimum \
-    --report summary \
+    --report lcov \
+    --report-file "$coverage_file" \
     --no-match-coverage 'BridgeTimelockController\.sol' \
     --ignored-error-codes 2394 \
     --ignored-error-codes 6335 \
     --ignored-error-codes 3860 \
     --ignored-error-codes 5574
+  python3 "$ROOT/scripts/check_contract_coverage.py" "$coverage_file"
 }
 
 run_contracts() {
@@ -689,6 +693,58 @@ run_refinement_gate() {
   python3 "$PROOF_IMPACT_CHECK"
 }
 
+initialize_proof_context() {
+  python3 "$ROOT/scripts/trusted_execution_context.py" --check >/dev/null
+  CLAIM_CHECK="$ROOT/scripts/check_claim_manifest.py"
+  CLAIM_TEST_CHECK="$ROOT/scripts/check_claim_test_manifest.py"
+  PROOF_IMPACT_CHECK="$ROOT/scripts/check_proof_impact.py"
+  REFINEMENT_GENERATOR="$ROOT/scripts/generate_refinement_harness.py"
+  REFINEMENT_MANIFEST_CHECK="$ROOT/scripts/check_refinement_manifest.py"
+  REFINEMENT_MANIFEST_TEST="$ROOT/scripts/test_refinement_manifest.py"
+  TRANSITION_MANIFEST_CHECK="$ROOT/scripts/check_transition_manifest.py"
+  TRANSITION_MANIFEST_TEST="$ROOT/scripts/test_transition_manifest.py"
+}
+
+run_proof_stage_command() {
+  case "$1" in
+    claim-manifest) python3 "$CLAIM_CHECK" ;;
+    lean) run_lean_proofs ;;
+    lean-negative) run_lean_failure_fixtures ;;
+    policy-vector-consumers) run_policy_vector_consumers ;;
+    refinement-gate) run_refinement_gate ;;
+    claim-transaction-tests) python3 "$CLAIM_TEST_CHECK" ;;
+    known-answer-consumers) python3 "$ROOT/scripts/check_known_answer_manifest.py" ;;
+    smt-and-negative) run_smt ;;
+    halmos-and-negative) run_halmos ;;
+    verus-and-negative) run_verus ;;
+    *) echo "unknown proof stage: $1" >&2; return 2 ;;
+  esac
+}
+
+run_impacted_proofs() {
+  local changed_paths_json="$1"
+  local impact_json="$TMP_ROOT/proof-impact.json"
+  local selected_stages
+  local stage
+
+  initialize_proof_context
+  python3 "$PROOF_IMPACT_CHECK" --paths-json "$changed_paths_json" >"$impact_json"
+  selected_stages="$(
+    python3 -c \
+      'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["stages"]))' \
+      "$impact_json"
+  )"
+  if [[ -z "$selected_stages" ]]; then
+    echo "no impacted proof stages" >&2
+    return
+  fi
+  while IFS= read -r stage; do
+    echo "==> proof-stage:$stage" >&2
+    run_proof_stage_command "$stage"
+  done <<<"$selected_stages"
+  echo "impacted proofs complete; no formal proof receipt was generated" >&2
+}
+
 run_proof_stage() {
   local stage="$1"
   shift
@@ -726,20 +782,13 @@ run_proof_stage() {
 }
 
 run_proofs() {
-  python3 "$ROOT/scripts/trusted_execution_context.py" --check >/dev/null
-  CLAIM_CHECK="$ROOT/scripts/check_claim_manifest.py"
+  initialize_proof_context
   CLAIM_TEST_CHECK="$ROOT/scripts/check_claim_test_manifest.py"
   CLAIM_TEST_TEST="$ROOT/scripts/test_claim_test_manifest.py"
   CONCRETE_RUNTIME_TEST="$ROOT/scripts/test_concrete_runtime.sh"
   FAILURE_MANIFEST_CHECK="$ROOT/scripts/check_failure_manifests.py"
-  PROOF_IMPACT_CHECK="$ROOT/scripts/check_proof_impact.py"
   PROOF_FINGERPRINT="$ROOT/scripts/proof_fingerprint.py"
   PROOF_RECEIPT_WRITER="$ROOT/scripts/write_proof_receipt.py"
-  REFINEMENT_GENERATOR="$ROOT/scripts/generate_refinement_harness.py"
-  REFINEMENT_MANIFEST_CHECK="$ROOT/scripts/check_refinement_manifest.py"
-  REFINEMENT_MANIFEST_TEST="$ROOT/scripts/test_refinement_manifest.py"
-  TRANSITION_MANIFEST_CHECK="$ROOT/scripts/check_transition_manifest.py"
-  TRANSITION_MANIFEST_TEST="$ROOT/scripts/test_transition_manifest.py"
   PROOF_STAGE_RECEIPT="$TMP_ROOT/proof-stages.tsv"
   PROOF_SOURCE_BASELINE="$TMP_ROOT/proof-source-fingerprint.json"
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
@@ -773,6 +822,10 @@ run_proofs() {
     "$PROOF_RECEIPT"
   python3 "$PROOF_IMPACT_CHECK" --receipt "$PROOF_RECEIPT"
   echo "proof_receipt=$PROOF_RECEIPT" >&2
+}
+
+run_policy() {
+  run_versions
 }
 
 require_ui_dependencies() {
@@ -1627,6 +1680,9 @@ case "$MODE" in
   versions)
     run_step versions run_versions
     ;;
+  policy)
+    run_step policy run_policy
+    ;;
   rust)
     run_step rust run_rust
     ;;
@@ -1653,6 +1709,11 @@ case "$MODE" in
     run_step versions run_versions
     run_step proofs run_proofs
     ;;
+  proofs-impacted)
+    [[ $# -eq 2 ]] || { echo "proofs-impacted requires one changed-paths JSON file" >&2; exit 2; }
+    run_step proof-preflight run_proof_preflight
+    run_step proofs-impacted run_impacted_proofs "$2"
+    ;;
   ui)
     run_step versions run_versions
     run_step ui run_ui
@@ -1673,7 +1734,7 @@ case "$MODE" in
     run_step real run_real
     ;;
   *)
-    echo "usage: $0 {all|checks|versions|rust|rust-fast|rust-integration|contracts|contracts-fast|contracts-coverage|proofs|ui|ui-fast|ui-e2e|icp|smoke|real}" >&2
+    echo "usage: $0 {all|checks|versions|policy|rust|rust-fast|rust-integration|contracts|contracts-fast|contracts-coverage|proofs|proofs-impacted <changed-paths.json>|ui|ui-fast|ui-e2e|icp|smoke|real}" >&2
     exit 2
     ;;
 esac

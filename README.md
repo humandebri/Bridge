@@ -88,11 +88,14 @@ scripts/ci-local.sh contracts-coverage
 scripts/ci-local.sh ui-e2e
 ```
 
-安全性関連変更では、次の3つを別の終端として扱う。
+Solidity coverageはLCOVのlines 76.00%、branches 74.00%、functions 68.00%以上を要求する。LCOVの欠損、空入力、ゼロ母数、不正値は失敗とし、Timelock除外は維持する。statement coverageは合否にも表示にも使用しない。
+
+安全性関連変更では、次の4つを別の終端として扱う。
 
 1. 実装完了: code、test、manifest、documentationの変更が揃っている。
-2. 検証完了: current source fingerprintと一致するcomplete proof receiptがある。
-3. deploy承認: Canister upgrade、frontend publish、Base transactionなどの外部変更が明示承認されている。
+2. PR検証完了: 変更pathから選ばれたproof stageと対象testが成功している。これは正式なproof receiptを生成しない。
+3. release検証完了: current source fingerprintと一致する全10 stageのcomplete proof receiptがある。
+4. deploy承認: Canister upgrade、frontend publish、Base transactionなどの外部変更が明示承認されている。
 
 proof合格は自動deployを意味しない。高コストproofの前に、登録driftを含む軽量検査を完了させる。
 
@@ -107,19 +110,27 @@ python3 scripts/check_claim_manifest.py
 python3 scripts/check_claim_test_manifest.py --validate-only
 ```
 
-軽量検査と対象testが成功し、重複gateとwriterがないことを確認してから、current fingerprintのproofを一度実行する。長時間実行時は完全ログを保持する。
+PRではclassifierが出力したchanged-paths JSONを使い、影響stageだけを実行する。
+
+```bash
+scripts/ci-local.sh proofs-impacted /path/to/changed-paths.json
+```
+
+このmodeは`verification/proof-impact.tsv`のstage unionだけを実行し、正式なproof receiptを作らない。production kernel、状態遷移、Solidity policy、proof実行基盤の変更はmanifestにより全10 stageが選択される。positive Lean stageはnegative fixture stageと常に対で実行される。
+
+軽量検査と対象testが成功し、重複gateとwriterがないことを確認してから、release candidateまたはproduction driverでcurrent fingerprintの完全proofを一度実行する。長時間実行時は完全ログを保持する。
 
 ```bash
 qrun -- scripts/ci-local.sh proofs
 ```
 
-PR前はdeployと実Ledger統合を除く全検証を実行する。
+PRは`trusted-pr-gate`のatomic gate matrixに任せる。手元で全検証が必要な場合だけ次を使う。
 
 ```bash
 scripts/ci-local.sh checks
 ```
 
-main更新時、夜間、リリース前は全検証とローカルdeploy smokeを実行する。
+main pushと手動release candidateでは全検証とローカルdeploy smokeを実行する。
 
 ```bash
 scripts/ci-local.sh all
@@ -138,10 +149,10 @@ scripts/ci-local.sh smoke
 scripts/ci-local.sh real
 ```
 
-GitHub Actionsの`trusted-pr-gate`は`pull_request_target`でbase branch版classifierだけを実行し、PRの正確なhead SHAをread-only・secretなしのephemeral runnerで検証する。docsと既知のproduction sourceだけの変更は自動検証し、workflow、script、proof、test、dependency、toolchain、build設定、submodule、未知pathの変更は同じrunの`trusted-change-review` Environmentでexact headの承認を1回要求する。head更新時は旧runをcancelし、新しいSHAを再承認する。
-bootstrap merge後にBranch ProtectionまたはRulesetで`trusted-pr-gate`をrequiredかつstrictに設定する必要がある。旧`pr-gate`はrequired判定から外し、`main`へのpush、夜間schedule、手動実行では完全な`all` gateを実行する。
+GitHub Actionsの`trusted-pr-gate`は`pull_request_target`でbase branch版classifierだけを実行し、PRの正確なhead SHAをread-only・secretなしのephemeral runnerで検証する。classifierは`policy`、`rust-fast`、`rust-integration`、`contracts-fast`、`proofs-impacted`、`ui-fast`、`ui-e2e`、`real`、`icp`、`certora`のatomic gateを選ぶ。文書だけなら計算gateはなく、deployment文書はexact-head reviewだけを要求する。workflow、CI中枢、未登録production source、submodule、未知pathは全gateへfail closedする。test、validation、dependency変更は対象gateに加えてexact-head reviewを要求する。PRでは`contracts-coverage`を実行しない。
+bootstrap merge後にBranch ProtectionまたはRulesetで`trusted-pr-gate`をrequiredかつstrictに設定する必要がある。`main`へのpushはclassifierを使わず、再利用可能な`bridge-full-ci`で`scripts/ci-local.sh all`を1回実行する。定期cronはなく、障害調査とrelease candidateには`workflow_dispatch`で対象SHAを指定する。
 
-`contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、coverage summaryを検証する。
+`contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、LCOV coverage閾値を検証する。
 `proofs`はLeanをcross-chain protocolの正式な抽象仕様としてビルドし、`sorry`・`admit`を拒否する。
 Leanから生成した追跡対象のconformance vectorをRust、Solidity、TypeScriptの実装に適用し、各vector sectionについてmanifestにない仕様・定理・consumerのdriftを拒否する。
 manifestに登録したconsumerはsectionとproduction symbolへの構造的な結合を検査してから許可済みrunnerで個別実行し、対象testが正確に1件成功した場合だけ対応済みと判定する。

@@ -7,14 +7,15 @@ database, KV namespace, or secret.
 The primary `/` route combines both directions and stores the selected flow in
 `?direction=deposit|withdraw`. Wallet-specific activity is available at `/history`, while
 reviewed runtime and settlement evidence is isolated at `/status`. There are intentionally no
-legacy `/deposit` or `/withdraw` routes because this UI has not been deployed to production.
+legacy `/deposit` or `/withdraw` routes.
 
-Production assets are built without an embedded deployment profile. The sorted per-file digest
-receipt (`ui-assets.json`) is a mandatory Gate B artifact and is reproduced from the exact clean
-source before activation and again before deployment. `deployment-profile.js` is excluded from
-that generic code digest and is generated only from the UI runtime profile rendered by the
-verified Gate B bundle. Production deployment rejects a dirty source tree, receipt drift, or a
-runtime profile that differs from the reviewed release inputs.
+Production assets are built without an embedded deployment profile. A standalone schema 2 receipt
+binds the current clean UI source, reviewed WalletConnect project ID, sorted per-file digests, and
+aggregate digest. The historical Gate B separately binds the deployed Canister, runtime, and
+activation evidence. `deployment-profile.js` is excluded from the generic code digest and is
+generated only from the runtime profile deterministically rendered from that Gate B. Production
+deployment rejects a dirty source tree, either evidence-lineage drift, or an unauthorized runtime
+profile.
 
 ## Requirements
 
@@ -108,38 +109,23 @@ Deployment is manual:
 ```sh
 BRIDGE_RELEASE_BUNDLE=<verified-gate-b-bundle> \
 BRIDGE_UI_RUNTIME_PROFILE_FILE=<gate-b-ui-runtime-profile> \
-BRIDGE_RELEASE_INPUTS_MANIFEST=<release-inputs-manifest> \
+BRIDGE_UI_ASSET_RECEIPT=<current-source-ui-assets-receipt> \
+BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT=<seal-receipt> \
+BRIDGE_CONTROLLER_SCHEDULE_RECEIPT=<schedule-receipt> \
+BRIDGE_CONTROLLER_EXECUTE_RECEIPT=<execute-receipt> \
+BRIDGE_PRODUCTION_INSTALLER_IDENTITY=<local-identity-name-for-sole-controller> \
 VITE_DEPLOYMENT_PROFILE_JSON="$(cat <gate-b-ui-runtime-profile>)" \
 VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id> \
 pnpm run deploy
 ```
 
-Run this command only from the clean source revision bound by the Gate B bundle. The runtime
-profile and release-input manifest must be the files rendered from that same verified bundle.
-
-Before Gate B exists, a separately reviewed fail-closed UI may be published with:
-
-```sh
-VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id> \
-node scripts/production-assets.mjs generate <clean-build-receipt>
-BRIDGE_UI_PREACTIVATION_RECEIPT=<clean-build-receipt> \
-BRIDGE_UI_RUNTIME_PROFILE_FILE=<pre-activation-profile> \
-VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id> \
-pnpm run deploy:preactivation
-```
-
-Generate the receipt from the pinned Node/pnpm environment in a clean checkout. The public
-WalletConnect project ID is part of the schema 2 receipt and must remain identical for every
-verify and deploy. Use the reviewed
-Gate A release inputs' `ui-runtime-profile.json` as the pre-activation profile, verify its hash,
-and keep the receipt and profile unchanged between the check and deploy commands.
-
-Use `pnpm run deploy:preactivation:check` with the same variables for the non-mutating Wrangler
-dry run immediately before requesting deployment approval.
-
-This path accepts only a Base Mainnet production profile whose Gate B manifest hash is unset and
-whose deployment block is zero. Runtime validation therefore disables all bridge writes. After
-Gate B passes, replace it with the normal Gate-B-bound deployment above.
+Run this command only from the clean source revision bound by the standalone UI asset receipt.
+The current post-activation path accepts only the already-deployed stable schema v35 Gate B and
+its immutable seal/schedule/execute lineage; the normal current-release Gate B path remains v36.
+The installer identity name is resolved locally and must match the sole controller recorded by
+Gate B; it is used only for the controller-protected storage-integrity query and no key material is
+written to release evidence or deployment output.
+Publishing this UI does not resubmit either activation proposal or upgrade the Canister.
 
 Production profiles intentionally omit a custom browser RPC. The UI derives Base Mainnet's
 standard `https://mainnet.base.org` endpoint from chain ID 8453; this is separate from the

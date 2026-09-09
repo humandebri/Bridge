@@ -137,6 +137,6 @@ role rotation成立後は旧addressの権限を即時失効する。
 
 ## Phase境界
 
-Phase 1DではService Fee変更、pause、固定limit、role rotationと24時間Timelock統合までを実装し、Phase 1Eではconcrete ABI、stateful invariant、SMT証明義務、coverage summaryを閉じる。
+Phase 1DではService Fee変更、pause、固定limit、role rotationと24時間Timelock統合までを実装し、Phase 1Eではconcrete ABI、stateful invariant、SMT証明義務、LCOV coverage閾値を閉じる。
 Baseにはfee reserveとFee Recipientを持たせない。
 Phase 1E完了時点でconcrete Bridge・BSNS ABIをsnapshotとfixtureにより凍結する。現段階のcontractは本番資産を受け付けない。

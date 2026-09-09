@@ -12,13 +12,38 @@ WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
 
 
 class TrustedPrGateTests(unittest.TestCase):
+    def test_upgrade_jobs_fetch_the_pinned_predecessor_outside_candidate_execution(self) -> None:
+        revision = "e0b426e7465531d2e572b5b741509f1889e6def8"
+        fixture = (ROOT / "integration" / "phase3.spec.ts").read_text(encoding="utf-8")
+        self.assertIn(f'const schema35Revision = "{revision}";', fixture)
+        fetch = (
+            "run: git fetch --no-tags --no-recurse-submodules "
+            f"https://github.com/humandebri/Bridge.git {revision}"
+        )
+        for path in (WORKFLOW, ROOT / ".github" / "workflows" / "ci.yml"):
+            with self.subTest(workflow=path.name):
+                workflow = path.read_text(encoding="utf-8")
+                self.assertEqual(workflow.count(fetch), 1)
+                self.assertLess(workflow.index("persist-credentials: false"), workflow.index(fetch))
+                if path == WORKFLOW:
+                    self.assertIn(
+                        "if: matrix.area == 'rust-integration'\n"
+                        "        working-directory: source\n"
+                        f"        {fetch}",
+                        workflow,
+                    )
+                    self.assertLess(workflow.index(fetch), workflow.index("Isolate reviewed candidate dependency inputs"))
+                else:
+                    self.assertLess(workflow.index(fetch), workflow.index("scripts/ci-local.sh all"))
+
     def test_main_gate_binds_ci_to_the_exact_checkout_head(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
-        binding = "BRIDGE_EXPECTED_HEAD_SHA: ${{ github.sha }}"
+        binding = "BRIDGE_EXPECTED_HEAD_SHA: ${{ inputs.target_sha || github.sha }}"
         self.assertIn(binding, workflow)
         self.assertLess(workflow.index(binding), workflow.index("scripts/ci-local.sh all"))
+        self.assertIn('test "$(git rev-parse HEAD)" = "$BRIDGE_EXPECTED_HEAD_SHA"', workflow)
 
     def test_main_gate_installs_root_dependencies_before_repository_gate(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
@@ -28,14 +53,14 @@ class TrustedPrGateTests(unittest.TestCase):
         repository_gate = workflow.index("run: scripts/ci-local.sh all")
         self.assertLess(root_install, repository_gate)
 
-    def test_main_push_caches_are_reusable_across_commits(self) -> None:
+    def test_main_push_calls_the_reusable_full_gate_once(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "main-push.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("bridge-main-rust-${{ github.ref_name }}-", workflow)
-        self.assertIn("bridge-main-pnpm-${{ github.ref_name }}-", workflow)
-        self.assertNotIn("bridge-main-rust-${{ github.sha }}-", workflow)
-        self.assertNotIn("bridge-main-pnpm-${{ github.sha }}-", workflow)
+        self.assertIn("uses: ./.github/workflows/ci.yml", workflow)
+        self.assertIn("target_sha: ${{ github.sha }}", workflow)
+        self.assertEqual(workflow.count("uses: ./.github/workflows/ci.yml"), 1)
+        self.assertNotIn("ci_changed_areas.py", workflow)
 
     def test_staging_keeps_only_current_schema_upgrade_and_historical_reinstall_evidence(self) -> None:
         policy_dir = ROOT / "deployments" / "sepolia-staging"
@@ -169,7 +194,7 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn("path: trusted-policy", workflow)
         self.assertIn("path: source", workflow)
         self.assertIn("trusted-policy/scripts/install-ci-tools.sh \"$mode\"", workflow)
-        self.assertIn("proofs) mode=\"all\"", workflow)
+        self.assertIn("proofs-impacted) mode=\"all\"", workflow)
         self.assertIn("*) mode=\"ci\"", workflow)
         self.assertEqual(workflow.count("docker build --file"), 1)
         self.assertIn("actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830", workflow)
@@ -211,9 +236,9 @@ class TrustedPrGateTests(unittest.TestCase):
                 "Install reviewed UI dependencies without lifecycle scripts"
             )
         ]
-        self.assertIn("matrix.area == 'proofs'", workspace_dependencies_step)
+        self.assertIn("matrix.area == 'proofs-impacted'", workspace_dependencies_step)
         self.assertIn('case "${{ matrix.area }}" in', workflow)
-        self.assertIn('rust|proofs|ui|real) ;;', workflow)
+        self.assertIn('rust-integration|proofs-impacted|ui-fast|ui-e2e|real) ;;', workflow)
         self.assertIn('*) mkdir "$dependency_root" ;;', workflow)
         self.assertNotIn(
             'mkdir -p "$RUNNER_TEMP/bridge-trusted-dependencies"', workflow
@@ -235,16 +260,7 @@ class TrustedPrGateTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "contains(fromJSON(needs.classify.outputs.matrix), 'rust') || "
-            "contains(fromJSON(needs.classify.outputs.matrix), 'real')",
-            workflow,
-        )
-        self.assertIn(
-            "matrix.area == 'rust' || matrix.area == 'real'",
-            workflow,
-        )
-        self.assertIn(
-            "matrix.area == 'rust' || matrix.area == 'proofs' || matrix.area == 'ui' || matrix.area == 'real'",
+            "matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'",
             workflow,
         )
 
@@ -255,14 +271,14 @@ class TrustedPrGateTests(unittest.TestCase):
         image_start = workflow.index("Build the pinned isolation image", real_start)
         rust_step = workflow[rust_start:real_start]
         real_step = workflow[real_start:image_start]
-        self.assertIn("matrix.area == 'rust'", rust_step)
+        self.assertIn("matrix.area == 'rust-integration'", rust_step)
         self.assertIn("$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic", rust_step)
         self.assertIn("matrix.area == 'real'", real_step)
         self.assertNotIn("$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic", real_step)
         self.assertIn("$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic", real_step)
         self.assertIn("trusted-policy/.github/trusted-pr/Dockerfile", workflow)
         self.assertIn("trusted-policy/scripts/trusted-pr-container.sh", workflow)
-        self.assertIn('source trusted-policy "$1" "$BRIDGE_TRUSTED_DEPENDENCY_ROOT"', workflow)
+        self.assertIn('source trusted-policy "$1" "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" "${2:-}"', workflow)
         self.assertIn("certora) run_check certora", workflow)
         self.assertIn(
             "node trusted-policy/ui/scripts/download-ledger-artifacts.mjs",
@@ -319,7 +335,7 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn('if [[ "$NEEDS_WORKSPACE_DEPS" == true ]]', wrapper)
         self.assertIn('if [[ "$NEEDS_UI_DEPS" == true ]]', wrapper)
         self.assertIn(
-            "rust-integration|proofs) NEEDS_WORKSPACE_DEPS=true; NEEDS_UI_DEPS=true ;;",
+            "rust-integration|proofs|proofs-impacted) NEEDS_WORKSPACE_DEPS=true; NEEDS_UI_DEPS=true ;;",
             wrapper,
         )
         self.assertIn("DEPENDENCY_ROOT", wrapper)
@@ -371,11 +387,11 @@ class TrustedPrGateTests(unittest.TestCase):
         )
         self.assertIn("NEEDS_ICP_PACKAGE_CACHE=false", wrapper)
         self.assertIn(
-            "rust-fast|rust-integration|proofs|real|icp) NEEDS_RUST_TOOLCHAIN=true",
+            "rust-fast|rust-integration|proofs|proofs-impacted|real|icp) NEEDS_RUST_TOOLCHAIN=true",
             wrapper,
         )
         self.assertIn(
-            "contracts-fast|contracts-coverage|proofs|certora|real) NEEDS_FOUNDRY=true",
+            "contracts-fast|proofs|proofs-impacted|certora|real) NEEDS_FOUNDRY=true",
             wrapper,
         )
         self.assertIn('if [[ "$MODE" == "icp" ]]', wrapper)
@@ -389,6 +405,8 @@ class TrustedPrGateTests(unittest.TestCase):
             wrapper.index('chmod 0700 "$SCRATCH/tmp"'),
         )
         self.assertIn("TMPDIR=/scratch/tmp", wrapper)
+        self.assertIn("dst=/scratch/changed-paths.json,readonly", wrapper)
+        self.assertIn('CI_MODE_ARGS+=(/scratch/changed-paths.json)', wrapper)
         self.assertNotIn("GITHUB_TOKEN", wrapper)
         self.assertNotIn("GH_TOKEN", wrapper)
 
@@ -558,18 +576,21 @@ class TrustedPrGateTests(unittest.TestCase):
     def test_ci_sensitive_paths_fail_closed_to_the_full_matrix(self) -> None:
         import ci_changed_areas
 
-        malicious_paths = [
+        fail_closed_paths = [
             ".github/workflows/trusted-pr-gate.yml",
             "scripts/ci_changed_areas.py",
-            "scripts/test_ci_changed_areas.py",
-            "Cargo.lock",
-            "pnpm-lock.yaml",
             ".gitmodules",
             "unknown/security-policy.toml",
         ]
-        for path in malicious_paths:
+        for path in fail_closed_paths:
             with self.subTest(path=path):
                 self.assertTrue(all(ci_changed_areas.classify([path]).values()))
+        self.assertEqual(
+            [gate for gate, enabled in ci_changed_areas.classify(["scripts/test_ci_changed_areas.py"]).items() if enabled],
+            ["policy"],
+        )
+        self.assertFalse(all(ci_changed_areas.classify(["Cargo.lock"]).values()))
+        self.assertFalse(all(ci_changed_areas.classify(["pnpm-lock.yaml"]).values()))
 
     def test_trusted_driver_accepts_the_reviewed_pr2_layout(self) -> None:
         driver = (ROOT / "scripts" / "ci-local.sh").read_text(encoding="utf-8")
@@ -602,9 +623,46 @@ class TrustedPrGateTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertNotIn("pull_request:", main_push)
-        self.assertIn("push-classify:", main_push)
-        self.assertIn("scripts/ci_changed_areas.py", main_push)
-        self.assertIn("needs.push-classify.outputs.any == 'true'", main_push)
+        self.assertIn("uses: ./.github/workflows/ci.yml", main_push)
+        self.assertIn("target_sha: ${{ github.sha }}", main_push)
+        self.assertNotIn("ci_changed_areas.py", main_push)
+
+    def test_pr_uses_atomic_gates_and_excludes_coverage(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        for gate in (
+            "policy",
+            "rust-fast",
+            "rust-integration",
+            "contracts-fast",
+            "proofs-impacted",
+            "ui-fast",
+            "ui-e2e",
+            "real",
+            "icp",
+            "certora",
+        ):
+            self.assertIn(f"{gate})", workflow)
+        self.assertNotIn("contracts-coverage", workflow)
+        self.assertIn("changed_paths_json", workflow)
+        self.assertIn('run_check proofs-impacted "$changed_paths_file"', workflow)
+
+    def test_full_workflow_has_no_schedule_and_supports_manual_exact_sha(self) -> None:
+        workflow = (ROOT / ".github/workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("schedule:", workflow)
+        self.assertNotIn("cron:", workflow)
+        self.assertIn("workflow_call:", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("target_sha:", workflow)
+
+    def test_certora_preflight_runs_once_before_three_cloud_targets(self) -> None:
+        workflow = (ROOT / ".github/workflows" / "certora-advisory.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(workflow.count("Validate advisory evidence once"), 1)
+        self.assertIn("needs: preflight", workflow)
+        self.assertIn("target: [bridge, bsns, timelock]", workflow)
 
 
 if __name__ == "__main__":

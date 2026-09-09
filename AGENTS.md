@@ -1,11 +1,12 @@
 # AGENTS.md
 
-## Pre-deployment compatibility policy
+## Production compatibility policy
 
-- This repository has not been deployed to production yet. Until the first production deployment, do not preserve backward compatibility for obsolete public APIs, configuration shapes, stable-memory schemas, fixtures, or upgrade paths.
-- Prefer replacing pre-deployment formats directly and updating all callers, tests, fixtures, and documentation in the same change. Do not add legacy migrations, compatibility shims, dual-read paths, or fallbacks unless the user explicitly requests them.
-- Unknown or obsolete stable schema versions must fail closed. Test upgrades and stable-memory reopen behavior only for the current schema unless an earlier schema has actually been deployed.
-- Revisit and explicitly tighten this policy when the first production deployment is approved.
+- The production Bridge Canister is deployed and activated at stable schema v35. The source tree's current schema v36 has not yet been deployed to production.
+- Normal current-release Gate B validation must accept only v36. Historical verification may accept exactly the deployed v35 or current v36 only when every profile, Gate A receipt, upgrade-chain terminal, Wasm binding, and live RuntimeBinding converges on the same version.
+- The post-activation production UI authorization is temporarily restricted to the deployed v35 evidence lineage. This is not a general legacy fallback; v34, v37, mixed-version evidence, aliases, shims, and dual-read paths must fail closed.
+- For formats and APIs that have not been deployed, replace obsolete shapes directly and update all callers, tests, fixtures, and documentation in the same change. Do not add compatibility shims or fallbacks unless the user explicitly requests them.
+- Revisit the v35-only UI authorization when the production Canister is upgraded to v36.
 
 ## RPC chain binding review policy
 
@@ -22,7 +23,8 @@
 - Register every new safety-related source file, kernel, state, event, reject reason, fixture, and vector consumer in the applicable manifest in the same change. Watched source roots fail closed when a source is unregistered.
 - A logic change does not require a cosmetic proof-file edit when the existing theorem still applies. It does require rerunning all impacted proof stages against the current source and preserving the implementation refinement link.
 - Keep claims that depend on external assumptions or unsupported prover boundaries at `partial`. Record the reason instead of weakening or bypassing the proof gate.
-- A safety-related logic change is not complete until `python3 scripts/check_proof_impact.py`, `python3 scripts/check_claim_manifest.py`, `scripts/ci-local.sh proofs`, and the applicable unit, negative, refinement, and transaction tests pass.
+- A safety-related PR change is not complete until `python3 scripts/check_proof_impact.py`, `python3 scripts/check_claim_manifest.py`, `scripts/ci-local.sh proofs-impacted <changed-paths.json>`, and the applicable unit, negative, refinement, and transaction tests pass. The impacted run is not a complete proof receipt.
+- Main and release-candidate validation must run `scripts/ci-local.sh all`. Production drivers must continue to rerun `scripts/ci-local.sh proofs` and require its complete current-source receipt.
 - The proof receipt must contain a source fingerprint matching the current checkout. Missing stages, stale fingerprints, unregistered safety sources, unregistered fixtures, model-only implementation claims, and production kernels without claim ownership must fail closed.
 - In the final report for a safety-related change, list the affected claims, executed proof stages, and remaining external assumptions.
 
@@ -41,7 +43,7 @@
 - Ensure no equivalent expensive gate is already running for the checkout. Do not start duplicate `scripts/ci-local.sh proofs`, PocketIC, Jest, Cargo, or deployment-driver suites. If another valid run already owns the checkout, wait for it and verify its receipt or result instead of competing for locks and temporary space.
 - If an expensive gate can exceed the command runner's approximately 15-minute session limit, start it in an approved persistent terminal session such as `tmux` from the outset and monitor that session. Do not let the runner timeout terminate a valid gate, and do not treat timeout exit 143 or a partial receipt as a code failure or completed evidence.
 - Freeze validation inputs for the duration of an expensive gate. If an input changes after the gate starts, treat that run as invalid, identify and stop the writer through the applicable coordination or approval path, and wait for a stable checkout before rerunning. Do not repeatedly restart a full gate while writes are still possible.
-- Diagnose a failing proof stage with that stage's direct command or focused fixture first. After the final source edit, run the required full proof gate once to produce a complete current-fingerprint receipt. Reuse prior results only through the repository verifier; never infer stage reuse from partial console output.
+- Diagnose a failing proof stage with that stage's direct command or focused fixture first. PR validation runs the impacted stage union; after the release-candidate source is frozen, run the required full proof gate once to produce a complete current-fingerprint receipt. Reuse prior results only through the repository verifier; never infer stage reuse from partial console output.
 - Put large temporary artifacts on a repository-external directory on a volume with adequate free space. Do not place a copied Cargo source tree below this repository, because Cargo can misclassify it as a workspace member. Check free space before long Jest, PocketIC, SMT, Halmos, Verus, coverage, or deployment-validation runs.
 - When a long-running command exceeds its expected duration or produces no progress for two minutes, inspect its child process, lock contention, concurrent writers, and disk space before waiting longer. Do not kill an unknown process or delete caches until ownership and recoverability are established.
 - Record the command, checkout fingerprint, start time, active owner, temporary directory, and final receipt or failure stage for an expensive gate. The final report must distinguish code failures from invalidated runs, resource exhaustion, sandbox restrictions, and concurrent-process interference.

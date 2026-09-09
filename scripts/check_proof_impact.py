@@ -37,6 +37,7 @@ REQUIRED_STAGES = (
     "halmos-and-negative",
     "verus-and-negative",
 )
+PAIRED_STAGES = (("lean", "lean-negative"),)
 RECEIPT_SCHEMA = 7
 EXPECTED_CLAIM_SUMMARY = {
     "total": len(REQUIRED_CLAIM_IDS),
@@ -148,6 +149,27 @@ def _resolve_claims(
     return tuple(sorted(resolved))
 
 
+def validate_impact_stages(areas: tuple[ImpactArea, ...]) -> None:
+    expected_stages = set(REQUIRED_STAGES)
+    for area in areas:
+        stages = set(area.stages)
+        if not stages or len(stages) != len(area.stages):
+            raise ValueError(
+                f"impact area stages must be non-empty and unique: {area.identifier}"
+            )
+        unknown_stages = stages - expected_stages
+        if unknown_stages:
+            raise ValueError(
+                f"impact area contains unknown proof stages: {area.identifier}: "
+                f"{sorted(unknown_stages)}"
+            )
+        for positive, negative in PAIRED_STAGES:
+            if (positive in stages) != (negative in stages):
+                raise ValueError(
+                    f"impact area must pair {positive} with {negative}: {area.identifier}"
+                )
+
+
 def load_manifest(repo_root: Path = ROOT) -> ImpactManifest:
     manifest_path = repo_root / "verification" / "proof-impact.tsv"
     roots: list[WatchedRoot] = []
@@ -189,14 +211,7 @@ def load_manifest(repo_root: Path = ROOT) -> ImpactManifest:
         )
         for area in raw_areas
     )
-    expected_stages = set(REQUIRED_STAGES)
-    for area in areas:
-        if set(area.stages) != expected_stages or len(area.stages) != len(
-            expected_stages
-        ):
-            raise ValueError(
-                f"impact area must require the complete proof suite: {area.identifier}"
-            )
+    validate_impact_stages(areas)
 
     registered_sources = [source for area in areas for source in area.sources]
     if len(registered_sources) != len(set(registered_sources)):
@@ -238,7 +253,7 @@ def classify_paths(
     selected: set[ImpactArea] = set()
     unregistered: list[str] = []
     for raw_path in paths:
-        path = PurePosixPath(raw_path.strip()).as_posix()
+        path = PurePosixPath(raw_path).as_posix()
         if not path or path == ".":
             continue
         area = source_to_area.get(path)
@@ -359,10 +374,26 @@ def check_receipt(receipt_path: Path, repo_root: Path = ROOT) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("paths", nargs="*", help="changed paths to classify")
+    parser.add_argument(
+        "--paths-json",
+        type=Path,
+        help="JSON file containing the changed path list",
+    )
     parser.add_argument("--receipt", type=Path, help="validate a completed proof receipt")
     args = parser.parse_args()
+    if args.paths and args.paths_json is not None:
+        parser.error("paths and --paths-json cannot be combined")
+    paths = args.paths
+    if args.paths_json is not None:
+        try:
+            value = json.loads(args.paths_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            parser.error(f"changed paths JSON is unreadable: {error}")
+        if not isinstance(value, list) or not all(isinstance(path, str) for path in value):
+            parser.error("changed paths JSON must be an array of strings")
+        paths = value
     manifest = load_manifest()
-    impact = classify_paths(args.paths, manifest)
+    impact = classify_paths(paths, manifest)
     if args.receipt is not None:
         check_receipt(args.receipt)
     print(json.dumps(impact, sort_keys=True))
