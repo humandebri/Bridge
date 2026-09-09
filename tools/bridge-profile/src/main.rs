@@ -9316,11 +9316,14 @@ enum SealReceiptLiveContext {
     HandoverPreTransfer,
     HandoverPostTransfer,
     ProductionUiPostUpgrade,
+    HistoricalCheckpoint,
 }
 
 fn live_activation_pause_requirement(context: SealReceiptLiveContext) -> Option<bool> {
     match context {
-        SealReceiptLiveContext::PrePrepare | SealReceiptLiveContext::ConfirmationInput => None,
+        SealReceiptLiveContext::PrePrepare
+        | SealReceiptLiveContext::ConfirmationInput
+        | SealReceiptLiveContext::HistoricalCheckpoint => None,
         SealReceiptLiveContext::PendingResume | SealReceiptLiveContext::ScheduleFinalization => {
             Some(true)
         }
@@ -9350,6 +9353,7 @@ fn validate_operational_config_seal_receipt(
         SealReceiptLiveContext::HandoverPreTransfer
             | SealReceiptLiveContext::HandoverPostTransfer
             | SealReceiptLiveContext::ProductionUiPostUpgrade
+            | SealReceiptLiveContext::HistoricalCheckpoint
     ) {
         validate_historical_evidence_window(
             bundle.manifest.created_at_unix,
@@ -9366,6 +9370,7 @@ fn validate_operational_config_seal_receipt(
         SealReceiptLiveContext::HandoverPreTransfer
             | SealReceiptLiveContext::HandoverPostTransfer
             | SealReceiptLiveContext::ProductionUiPostUpgrade
+            | SealReceiptLiveContext::HistoricalCheckpoint
     ) {
         validate_initial_operational_parameter_lineage(
             &parameters,
@@ -9509,6 +9514,11 @@ fn validate_operational_config_seal_receipt(
     {
         return Err("operational config seal receipt contains unsafe live state".into());
     }
+    // Candidate generation validates historical observations at receipt time.
+    // It grants no live authorization; production/UI paths still query current state.
+    if matches!(live_context, SealReceiptLiveContext::HistoricalCheckpoint) {
+        return Ok(hex(&Sha256::digest(&bytes)));
+    }
     if matches!(live_context, SealReceiptLiveContext::PrePrepare) {
         verify_live(bundle, true)?;
     } else if let Some(expected_paused) = live_activation_pause_requirement(live_context) {
@@ -9589,7 +9599,9 @@ fn validate_operational_config_seal_receipt(
                     ProductionLifecycleResultView::Ok(ProductionLifecycleView::Activated)
                 ) && !live_status.deposits_paused
             }
-            SealReceiptLiveContext::PrePrepare | SealReceiptLiveContext::ConfirmationInput => {
+            SealReceiptLiveContext::PrePrepare
+            | SealReceiptLiveContext::ConfirmationInput
+            | SealReceiptLiveContext::HistoricalCheckpoint => {
                 unreachable!()
             }
         };
@@ -13130,6 +13142,14 @@ mod tests {
 
     #[test]
     fn historical_seal_evidence_must_stay_within_the_original_gate_b_window() {
+        assert_eq!(
+            live_activation_pause_requirement(SealReceiptLiveContext::HistoricalCheckpoint),
+            None
+        );
+        assert_eq!(
+            live_activation_pause_requirement(SealReceiptLiveContext::ProductionUiPostUpgrade),
+            Some(false)
+        );
         let created = 1_000_000;
         let expires = created + 100;
 

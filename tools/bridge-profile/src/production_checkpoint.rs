@@ -147,7 +147,7 @@ pub(super) fn generate_candidate(
         &input.seal_receipt,
         &input.schedule_receipt,
         &input.execute_receipt,
-        super::SealReceiptLiveContext::ProductionUiPostUpgrade,
+        super::SealReceiptLiveContext::HistoricalCheckpoint,
     )?;
     let gate_a_profile: Profile = super::read_json(&bundle.root.join("gate-a-profile.json"))?;
     let (first_active, _) = read_receipt(&input.receipts[input.activation_after_receipts])?;

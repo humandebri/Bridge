@@ -4,11 +4,11 @@ The checkpoint migration is **not yet enabled for production**. The existing
 upgrade and UI drivers still require their historical evidence. Do not remove
 or make those archives unavailable in a real deployment.
 
-Production cutover order: use the existing historical-evidence upgrade driver
-to reach v36 from the deployed v35, generate and review the resulting checkpoint,
-and pin its approved hash in a separate commit. Only then switch the production
-upgrade and UI drivers to checkpoint evidence. An empty approval registry must
-not become a prerequisite for the first v35-to-v36 upgrade.
+Production was queried on 2026-09-09: schema v36, module SHA-256
+`6192841b3c2b5c28c6decea307e7c8e23700ab9bb00e6e593d74857478563c75`.
+This release prepares a corrected v36 upgrade, not the initial v35-to-v36
+migration. Generate and review the historical checkpoint, pin its approved hash
+in a separate commit, then switch the production upgrade and UI drivers.
 
 Implemented foundations:
 
@@ -26,18 +26,27 @@ Implemented foundations:
 
 Still required before enabling the contract:
 
-1. Finish the continuation data contract, including initial-install replay
-   identity, historical profile and live activation validation inputs.
-2. Generate candidates and audit manifests from bounded, ordered receipt files;
-   verify source ancestry and the actual archived production history.
-3. Implement checkpoint plus suffix evidence, including empty suffix, rotation,
-   and cross-checkpoint replay/chronology checks.
+1. Review the typed continuation data and historical profile. Replay identities
+   come from all historical upgrade receipts; the original Gate A install receipt
+   does not contain its signed request identity, so no genesis ID is invented.
+2. Run `generate-production-checkpoint-candidate INPUT OUTPUT AUDIT` against the
+   actual archived history. INPUT supplies ordered raw receipt paths and the
+   number of receipts before activation. Generation requires clean committed
+   source and validates historical attestation freshness at receipt time, not
+   against the current clock. It grants no live authorization.
+3. Exercise `make-production-checkpoint-evidence CHECKPOINT OUTPUT [RECEIPT...]`
+   and `rotate-production-checkpoint-candidate EVIDENCE OUTPUT AUDIT` after
+   approval. Empty suffix, rotation, replay/chronology and source checks are
+   implemented; neither command registers a trusted hash.
 4. Connect upgrade preflight/execute/recover and UI rendering/live validation;
    bind frozen evidence and eliminate archive reads in those runtime paths.
 5. Pass archive-inaccessible acceptance fixtures, review the actual candidate,
    and pin its exact hash in a separate approval commit.
 6. Complete impacted and final clean-source release validation and assemble
-   deployment artifacts. No production execution is authorized by these commands.
+deployment artifacts. No production execution is authorized by these commands.
+
+Live activation attestation freshness remains five minutes. Refreshing it is a
+production update call, not a read-only query; obtain execution authorization.
 
 Checkpoint approval will attest to a reviewed historical validation result. It
 will not replace current-source proof receipts, live canister validation, or
