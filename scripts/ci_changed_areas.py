@@ -264,8 +264,12 @@ def classify(paths: list[str]) -> dict[str, bool]:
             _enable_all(result)
             continue
 
-        if path in {"scripts/test_ci_changed_areas.py", "scripts/test_ci_modes.py"}:
+        if path == "scripts/test_ci_changed_areas.py":
             result["policy"] = True
+            continue
+
+        if path == "scripts/test_ci_modes.py":
+            _enable(result, "policy", "proofs-impacted")
             continue
 
         if path in {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"}:
