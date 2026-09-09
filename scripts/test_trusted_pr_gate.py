@@ -12,6 +12,30 @@ WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
 
 
 class TrustedPrGateTests(unittest.TestCase):
+    def test_upgrade_jobs_fetch_the_pinned_predecessor_outside_candidate_execution(self) -> None:
+        revision = "e0b426e7465531d2e572b5b741509f1889e6def8"
+        fixture = (ROOT / "integration" / "phase3.spec.ts").read_text(encoding="utf-8")
+        self.assertIn(f'const schema35Revision = "{revision}";', fixture)
+        fetch = (
+            "run: git fetch --no-tags --no-recurse-submodules "
+            f"https://github.com/humandebri/Bridge.git {revision}"
+        )
+        for path in (WORKFLOW, ROOT / ".github" / "workflows" / "ci.yml"):
+            with self.subTest(workflow=path.name):
+                workflow = path.read_text(encoding="utf-8")
+                self.assertEqual(workflow.count(fetch), 1)
+                self.assertLess(workflow.index("persist-credentials: false"), workflow.index(fetch))
+                if path == WORKFLOW:
+                    self.assertIn(
+                        "if: matrix.area == 'rust-integration'\n"
+                        "        working-directory: source\n"
+                        f"        {fetch}",
+                        workflow,
+                    )
+                    self.assertLess(workflow.index(fetch), workflow.index("Isolate reviewed candidate dependency inputs"))
+                else:
+                    self.assertLess(workflow.index(fetch), workflow.index("scripts/ci-local.sh all"))
+
     def test_main_gate_binds_ci_to_the_exact_checkout_head(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
