@@ -7932,6 +7932,7 @@ struct ProductionHandoverActivationBinding<'a> {
     expected_module_sha256: &'a str,
 }
 
+#[cfg(test)]
 fn validate_production_handover_canister_state(
     profile: &Profile,
     installer: Principal,
