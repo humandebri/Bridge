@@ -15,27 +15,19 @@ function readOrdinaryFile(path) {
 
 try {
   const profileFile = process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE
-  const bundle = process.env.BRIDGE_RELEASE_BUNDLE
-  const sealReceipt = process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT
-  const scheduleReceipt = process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT
-  const executeReceipt = process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT
-  const postActivationUpgradeEvidence = process.env.BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE
+  const checkpointEvidence = process.env.BRIDGE_CHECKPOINT_EVIDENCE
   const uiRpcConfig = process.env.BRIDGE_UI_RPC_CONFIG
   const assetReceipt = process.env.BRIDGE_UI_ASSET_RECEIPT
   const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
   if (
     !profileFile ||
-    !bundle ||
-    !sealReceipt ||
-    !scheduleReceipt ||
-    !executeReceipt ||
-    !postActivationUpgradeEvidence ||
+    !checkpointEvidence ||
     !uiRpcConfig ||
     !assetReceipt ||
     !productionInstallerIdentity
   )
     throw new Error(
-      "Production UI deploy requires the UI asset receipt, historical Gate B, activation receipts, post-activation upgrade evidence, reviewed UI RPC configuration, runtime profile, and production installer identity",
+      "Production UI deploy requires the UI asset receipt, approved checkpoint evidence, reviewed UI RPC configuration, runtime profile, and production installer identity",
     )
   if (!/^[0-9a-f]{32}$/i.test(process.env.VITE_WALLETCONNECT_PROJECT_ID?.trim() ?? "")) {
     throw new Error(
@@ -58,14 +50,10 @@ try {
     "cargo",
     [
       ...cargoArgs,
-      "verify-production-ui-live",
-      bundle,
-      sealReceipt,
-      scheduleReceipt,
-      executeReceipt,
-      postActivationUpgradeEvidence,
-      profileFile,
+      "verify-production-checkpoint-ui-live",
+      checkpointEvidence,
       uiRpcConfig,
+      profileFile,
     ],
     { cwd: sourceRoot, encoding: "utf8" },
   )

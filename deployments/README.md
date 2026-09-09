@@ -72,7 +72,17 @@ Gate Aはpre-deploy profileとBridge/BSNSの5 build artifact、合計6 artifact�
 
 `validate-bundle --offline`はGate Aの正式なoffline認可判定として`gate_a=pass authorizing=true`だけを成功出力する。`verify-live`はGate Bの構造に加え、5分以内のactivation attestation、公開RuntimeBinding、reserve、production installer identity単独controller、live module hashを認証済みCanister応答で照合する。schedule/execute receiptの検証も初回activationでは同じcontroller条件を使用する。SNS Root単独controllerと同一Wasm SNS upgradeは、ユーザーが時期を別途判断した場合の独立したhandover検証へ分離する。権限principal、rate/cycles policy、Governance fee、固定Ledger feeは、公開RuntimeBindingの`operational_config_sha256`をrelease profileから再構成した値と照合する。実値の確認はcontroller/governance限定`get_operational_config`を使う。認証またはpostconditionが欠ければ非ゼロ終了する。
 
-production Bridge Canisterはstable schema v35で配置・activation済みで、sourceのcurrent schema v36は未配置である。通常のcurrent Gate Bはv36限定のまま維持する。次のpost-activation UI公開はCanisterのv36更新完了後に限る。`verify-production-ui-live`はimmutableなhistorical Gate B v35、seal／schedule／execute、post-activation upgrade chainを検証し、chain終端のv36 RuntimeBinding/moduleとActivated live stateを完全一致させる。公開用runtime profileはこのchain digestと`BRIDGE_UI_RPC_CONFIG`のレビュー済みAlchemy設定digestを含む決定的描画とし、`list_withdrawals`が索引完成を示すまで新UIを公開しない。現在公開中のv35 UIはこの更新操作を行うまで維持する。controller専用storage integrity queryには`BRIDGE_PRODUCTION_INSTALLER_IDENTITY`で指定したローカルidentityを使い、そのprincipalがGate Bの単独controllerと一致することを要求する。UI code/assetsはGate B内の旧receiptを再利用せず、今回のclean sourceとreview済みWalletConnect project IDから生成したstandalone schema 2 receiptで独立に束縛する。この公開は完了済みactivation proposalを再送せず、Canister upgrade、controller handover、資産受付状態の変更も行わない。
+production Bridge Canisterはstable schema v36で稼働しており、次は修正版v36へのupgradeを準備する。
+通常のcurrent Gate Bはv36限定を維持する。
+upgradeとUI公開は、sourceにSHA-256を固定した承認済みcheckpointと追加receiptを使用する。
+`BRIDGE_CHECKPOINT_EVIDENCE`はcheckpoint本体と順序付き追加履歴を含み、通常公開で古いGate Bやactivation receiptを再読込しない。
+`verify-production-checkpoint-ui-live`はv36終端、認証済みRuntimeBindingとmodule、Activated、unpaused、索引完成、fresh attestationを検証する。
+公開用runtime profileはevidence全体と`BRIDGE_UI_RPC_CONFIG`のレビュー済み設定へ束縛する。
+controller専用queryには`BRIDGE_PRODUCTION_INSTALLER_IDENTITY`を使い、承認済みの単独controllerと一致させる。
+UI asset receiptは公開するclean sourceとWalletConnect project IDから新規生成する。
+正式履歴は監査用に保持し、checkpointの生成とrotationは自動承認しない。
+実際のupgrade receiptと更新後のlive公開認可が得られるまで新UIを公開しない。
+手順と停止点は[運用runbook](../docs/runbooks/operations.md)を参照する。
 
 credential、seed、private key、hardware wallet backup、credential入りRPC URLはprofileやevidenceへ記録しない。
 

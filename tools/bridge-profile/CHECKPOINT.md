@@ -27,7 +27,7 @@ Implemented foundations:
   machine. Runtime, module, signature, chunk, schema and replay validation stay
   in the same loop. The existing legacy chain limits have not changed.
 
-Still required before enabling the contract:
+Migration and execution contract:
 
 1. Review the typed continuation data and historical profile. Replay identities
    come from all historical upgrade receipts; the original Gate A install receipt
@@ -41,12 +41,17 @@ Still required before enabling the contract:
    and `rotate-production-checkpoint-candidate EVIDENCE OUTPUT AUDIT` after
    approval. Empty suffix, rotation, replay/chronology and source checks are
    implemented; neither command registers a trusted hash.
-4. Connect upgrade preflight/execute/recover and UI rendering/live validation;
-   bind frozen evidence and eliminate archive reads in those runtime paths.
-5. Pass archive-inaccessible acceptance fixtures, review the actual candidate,
-   and pin its exact hash in a separate approval commit.
-6. Complete impacted and final clean-source release validation and assemble
-deployment artifacts. No production execution is authorized by these commands.
+4. Upgrade preflight/execute/recover requires `--checkpoint-evidence`. The frozen
+   envelope hash is bound into preflight, submission and receipt. Old Gate A
+   arguments and raw/chain fallback are not accepted by the production driver.
+5. UI scripts require `BRIDGE_CHECKPOINT_EVIDENCE`, the reviewed RPC config and
+   current-source assets. Use `render-production-checkpoint-ui-runtime EVIDENCE
+   RPC_CONFIG OUTPUT` and `verify-production-checkpoint-ui-live EVIDENCE
+   RPC_CONFIG RUNTIME`. Historical rendering/live inspection commands are named
+   `audit-render-production-ui-runtime` and `audit-verify-production-ui-live`;
+   production scripts never call them.
+6. Complete impacted and final clean-source release validation before declaring
+   deployment readiness. Candidate approval does not authorize production calls.
 
 Live activation attestation freshness remains five minutes. Refreshing it is a
 production update call, not a read-only query; obtain execution authorization.

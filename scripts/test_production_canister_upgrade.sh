@@ -6,6 +6,14 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/bridge-production-upgrade-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/source/scripts" "$T/source/canister/bridge-canister" "$T/source/tools/bridge-profile/src" "$T/bin" "$T/evidence"
 cp "$ROOT/scripts/production-canister-upgrade.sh" "$T/source/scripts/"
+cp "$ROOT/scripts/production-validation.sh" "$T/source/scripts/"
+cat >"$T/source/scripts/ci-local.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$#" == 1 && "$1" == proofs ]]
+[[ "${TEST_REJECT_PROOFS:-0}" == 0 ]]
+EOF
+chmod +x "$T/source/scripts/ci-local.sh"
 printf 'service : {}\n' >"$T/source/canister/bridge-canister/bridge.did"
 cat >"$T/source/Cargo.toml" <<'EOF'
 [workspace]
@@ -47,38 +55,21 @@ fn main() {
             }
             println!("{}", "a".repeat(64));
         }
-        Some("validate-production-upgrade-gate-a-binding") => {
+        Some("validate-production-checkpoint-evidence") => {
+            if env::var("TEST_REJECT_CHECKPOINT").is_ok() { std::process::exit(1); }
             if let (Ok(path), Ok(marker)) = (env::var("TEST_MUTATE_SOURCE_ON_VALIDATE"), env::var("TEST_SOURCE_MUTATION_MARKER")) {
                 if !Path::new(&marker).exists() {
                     fs::write(path, b"service : { changed : () -> (); }\n").unwrap();
                     fs::write(marker, b"mutated\n").unwrap();
                 }
             }
-            println!("{}", "b".repeat(64));
+            let output = std::process::Command::new("python3").args(["-I", "-S", "-c", "import json,hashlib,sys; raw=open(sys.argv[1],'rb').read(); value=json.loads(raw); value['evidence_sha256']=hashlib.sha256(raw).hexdigest(); print(json.dumps(value))", &args[2]]).output().unwrap();
+            if !output.status.success() { std::process::exit(1); }
+            print!("{}", String::from_utf8(output.stdout).unwrap());
         }
-        Some("validate-production-upgrade-history") => {
-            if env::var("TEST_REJECT_PRIOR_HISTORY").is_ok() {
-                eprintln!("production upgrade history entry is incomplete");
-                std::process::exit(1);
-            }
-            println!("{}", "c".repeat(64));
-        }
-        Some("validate-production-upgrade-live-predecessor") => {
-            if env::var("TEST_REJECT_LIVE_PREDECESSOR").is_ok() {
-                eprintln!("live predecessor differs from the typed upgrade history");
-                std::process::exit(1);
-            }
-            println!("{}", "d".repeat(64));
-        }
-        Some("production-upgrade-history-sources") => {
-            if env::var("TEST_FAIL_HISTORY_SOURCES").is_ok() {
-                eprintln!("history source enumeration failed");
-                std::process::exit(1);
-            }
-            if env::var("TEST_EMPTY_HISTORY_SOURCES").is_ok() {
-                return;
-            }
-            println!("{}\t{}", env::var("TEST_REVISION").unwrap(), env::var("TEST_SOURCE_TREE").unwrap());
+        Some("validate-production-checkpoint-predecessor") => {
+            if env::var("TEST_REJECT_LIVE_PREDECESSOR").is_ok() { std::process::exit(1); }
+            println!("checkpoint_predecessor=verified");
         }
         Some("production-upgrade-snapshot-metadata") => {
             let lifecycle = fs::read_to_string(env::var("TEST_LIVE_LIFECYCLE").unwrap()).unwrap();
@@ -90,14 +81,14 @@ fn main() {
             if env::var("TEST_REJECT_OPERATIONAL_SNAPSHOT").is_ok() { std::process::exit(1); }
             println!("operational_epoch_snapshot=verified");
         },
-        Some("verify-production-upgrade-state-preserved") => println!("{}", "a".repeat(64)),
+        Some("verify-production-checkpoint-state-preserved") => println!("{}", "a".repeat(64)),
         Some("prepare-production-canister-upgrade") => {
             let mut artifact = OpenOptions::new().write(true).create_new(true).open(&args[7]).unwrap();
             artifact.write_all(b"{\"schema_version\":2}\n").unwrap();
             artifact.sync_all().unwrap();
             println!("request_id={}", "9".repeat(64));
         }
-        Some("validate-production-upgrade-submission") => println!("{}", "9".repeat(64)),
+        Some("validate-production-checkpoint-submission") => println!("{}", "9".repeat(64)),
         Some("upload-production-canister-upgrade-chunks") => {
             fs::create_dir_all(&args[8]).unwrap();
             if let Ok(marker) = env::var("TEST_UPLOAD_FAIL_ONCE") {
@@ -157,14 +148,14 @@ printf '%s\n' "$OLD_SHA" >"$T/live-module"
 printf '0\n' >"$T/submit-count"
 printf '0\n' >"$T/status-call-count"
 printf 'true\n' >"$T/reserve-sufficient"
-printf 'Bootstrap\n' >"$T/live-lifecycle"
-printf 'true\n' >"$T/live-paused"
-printf '35\n' >"$T/live-schema"
+printf 'Activated\n' >"$T/live-lifecycle"
+printf 'false\n' >"$T/live-paused"
+printf '36\n' >"$T/live-schema"
 printf 'dummy production identity\n' >"$T/production.pem"
-printf '{"bridge_canister_id":"%s","bridge_canister_wasm_sha256":"%s","ic_host":"https://icp-api.io","parameters":{"ledger_fee":100000}}\n' \
-  "$CANISTER" "$OLD_SHA" >"$T/gate-a-profile.json"
-printf '{"source_revision":"%s","source_tree_sha256":"%s","bridge_canister_wasm_sha256":"%s","canister_install":{"source_revision":"%s","source_tree_sha256":"%s","canister_id":"%s","installer_principal":"%s","runtime_binding":{"schema_version":35}}}\n' \
-  "$REVISION" "$SOURCE_TREE" "$OLD_SHA" "$INSTALL_REVISION" "$INSTALL_TREE" "$CANISTER" "$INSTALLER" >"$T/gate-a-receipt.json"
+# This fixture is the verifier's public metadata, not a self-approved checkpoint.
+# Cryptographic approval and suffix validation are exercised by bridge-profile tests.
+printf '{"canister":"%s","module_sha256":"%s","network":"https://icp-api.io","ledger_fee":"100000","controller":"%s","runtime":{"schema_version":36},"source":{"revision":"%s"}}\n' \
+  "$CANISTER" "$OLD_SHA" "$INSTALLER" "$REVISION" >"$T/checkpoint-evidence.json"
 
 cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
@@ -207,39 +198,24 @@ export TEST_LIVE_LIFECYCLE="$T/live-lifecycle" TEST_LIVE_PAUSED="$T/live-paused"
 
 printf wrong-wasm >"$T/not-reproducible.wasm"
 if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
-  --wasm "$T/not-reproducible.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --evidence "$T/evidence/not-reproducible.json" >/dev/null 2>&1; then
+  --wasm "$T/not-reproducible.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --evidence "$T/evidence/not-reproducible.json" >/dev/null 2>&1; then
   echo "production upgrade accepted a Wasm not built from the current source" >&2
   exit 1
 fi
 [[ ! -e "$T/evidence/not-reproducible.json" ]]
 
-for field in source_tree_sha256 canister_install.source_tree_sha256; do
-  receipt="$T/gate-a-receipt-${field//./-}-drift.json"
-  python3 - "$T/gate-a-receipt.json" "$receipt" "$field" <<'PY'
-import json,sys
-value=json.load(open(sys.argv[1],encoding='utf-8'))
-target=value
-parts=sys.argv[3].split('.')
-for part in parts[:-1]: target=target[part]
-target[parts[-1]]='f'*64
-with open(sys.argv[2],'w',encoding='utf-8') as output: json.dump(value,output)
-PY
-  if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
-    --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-    --gate-a-receipt "$receipt" --evidence "$T/evidence/${field//./-}-drift.json" >/dev/null 2>&1; then
-    echo "production upgrade accepted $field drift" >&2
-    exit 1
-  fi
-  [[ ! -e "$T/evidence/${field//./-}-drift.json" ]]
-done
+if TEST_REJECT_CHECKPOINT=1 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --evidence "$T/evidence/rejected-checkpoint.json" >/dev/null 2>&1; then
+  echo "production upgrade accepted an unapproved checkpoint" >&2; exit 1
+fi
+[[ ! -e "$T/evidence/rejected-checkpoint.json" ]]
+# There are deliberately no archived Gate A, Gate B, or activation files here.
 
 if BRIDGE_ICP_IDENTITY=production \
   TEST_MUTATE_SOURCE_ON_VALIDATE="$T/source/canister/bridge-canister/bridge.did" \
   TEST_SOURCE_MUTATION_MARKER="$T/source-mutated-on-validate" \
   "$T/source/scripts/production-canister-upgrade.sh" preflight \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --evidence "$T/evidence/source-drift.json" >/dev/null 2>&1; then
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --evidence "$T/evidence/source-drift.json" >/dev/null 2>&1; then
   echo "production upgrade accepted source drift after validator build" >&2
   exit 1
 fi
@@ -247,11 +223,19 @@ fi
 git -C "$T/source" checkout -q -- canister/bridge-canister/bridge.did
 
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --evidence "$T/evidence/preflight.json" >/dev/null
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --evidence "$T/evidence/preflight.json" >/dev/null
+if TEST_REJECT_PROOFS=1 BRIDGE_ICP_IDENTITY=production \
+  BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+  "$T/source/scripts/production-canister-upgrade.sh" execute \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" \
+  --preflight "$T/evidence/preflight.json" --controller-pem "$T/production.pem" \
+  --receipt "$T/evidence/rejected-proof.json" >/dev/null 2>&1; then
+  echo "failed proofs authorized a production upgrade" >&2; exit 1
+fi
+[[ ! -e "$T/evidence/rejected-proof.json.submission.json" ]]
+[[ "$(<"$T/submit-count")" == 0 ]]
 if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/receipt.json" >/dev/null 2>&1; then
   echo "production upgrade accepted a missing explicit confirmation" >&2
@@ -261,8 +245,7 @@ fi
 [[ "$(<"$T/submit-count")" == 0 ]]
 if BRIDGE_ICP_IDENTITY=production BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=WRONG \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/receipt.json" >/dev/null 2>&1; then
   echo "production upgrade accepted an incorrect explicit confirmation" >&2
@@ -274,8 +257,7 @@ printf 'false\n' >"$T/reserve-sufficient"
 if BRIDGE_ICP_IDENTITY=production \
   BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/insufficient-receipt.json" >/dev/null 2>&1; then
   echo "production upgrade accepted an insufficient live cycles reserve" >&2
@@ -288,8 +270,7 @@ printf 'partial signed submission\n' >"$T/evidence/preparing-receipt.json.submis
 BRIDGE_ICP_IDENTITY=production \
 BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/preparing-receipt.json" >/dev/null
 [[ -f "$T/evidence/preparing-receipt.json" && "$(<"$T/submit-count")" == 1 ]]
@@ -299,8 +280,7 @@ printf '{"schema_version":2}\n' >"$T/evidence/submission-candidate.json.submissi
 BRIDGE_ICP_IDENTITY=production \
 BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/submission-candidate.json" >/dev/null
 python3 -I -S - "$T/evidence/submission-candidate.json.execution.json" "$T/evidence/submission-candidate.json.submission.json" <<'PY'
@@ -316,8 +296,7 @@ mkdir -m 700 "$T/evidence/resume-receipt.json.uploads"
 if BRIDGE_ICP_IDENTITY=production TEST_UPLOAD_FAIL_ONCE="$T/upload-failed-once" \
   BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/resume-receipt.json" >/dev/null 2>&1; then
   echo "production upgrade did not stop after an incomplete chunk upload" >&2
@@ -333,8 +312,7 @@ printf 'tampered\n' >>"$T/evidence/resume-receipt.json.submission.json"
 if BRIDGE_ICP_IDENTITY=production TEST_UPLOAD_FAIL_ONCE="$T/upload-failed-once" \
   BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/resume-receipt.json" >/dev/null 2>&1; then
   echo "production upgrade resumed with a submission not bound by its marker" >&2
@@ -345,8 +323,7 @@ cp "$T/resume-submission.approved" "$T/evidence/resume-receipt.json.submission.j
 BRIDGE_ICP_IDENTITY=production TEST_UPLOAD_FAIL_ONCE="$T/upload-failed-once" \
 BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/resume-receipt.json" >/dev/null
 [[ -f "$T/evidence/resume-receipt.json" && "$(<"$T/submit-count")" == 1 ]]
@@ -356,8 +333,7 @@ printf 'true\n' >"$T/reserve-sufficient"
 if BRIDGE_ICP_IDENTITY=production TEST_DROP_RESERVE_AFTER_UPLOAD="$T/reserve-sufficient" \
   BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/post-upload-insufficient.json" >/dev/null 2>&1; then
   echo "production upgrade accepted a reserve drop after chunk upload" >&2
@@ -370,8 +346,7 @@ printf 'true\n' >"$T/reserve-sufficient"
 if BRIDGE_ICP_IDENTITY=production TEST_MUTATE_SOURCE_AFTER_UPLOAD="$T/source/canister/bridge-canister/bridge.did" \
   BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/source-drift-after-upload.json" >/dev/null 2>&1; then
   echo "production upgrade sent the final install after source drift" >&2
@@ -389,8 +364,7 @@ BRIDGE_ICP_IDENTITY=production TEST_MUTATE_PREFLIGHT_PATH="$T/evidence/preflight
 TEST_MUTATION_MARKER="$T/preflight-mutated" \
 BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/receipt.json" >/dev/null
 python3 -I -S - "$T/evidence/receipt.json" "$OLD_SHA" "$NEW_SHA" "$INSTALLER" <<'PY'
@@ -400,7 +374,7 @@ assert value['kind']=='production-controller-bootstrap-upgrade'
 assert value['install_mode']=='upgrade'
 assert value['before_module_sha256']==sys.argv[2]
 assert value['after_module_sha256']==sys.argv[3]
-assert value['before_schema_version']==35
+assert value['before_schema_version']==36
 assert value['after_schema_version']==36
 assert value['before_controllers']==value['after_controllers']==[sys.argv[4]]
 assert 'before_canister_version' not in value and 'after_canister_version' not in value
@@ -424,8 +398,7 @@ PY
 
 mv "$T/evidence/receipt.json" "$T/evidence/receipt.initial.json"
 if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" recover \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" --receipt "$T/evidence/receipt.json" >/dev/null 2>&1; then
   echo "production upgrade recovery accepted a different preflight" >&2
   exit 1
@@ -455,8 +428,7 @@ else:
   json.dump(marker,output,sort_keys=True,separators=(',',':')); output.write('\n')
 PY
   if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" recover \
-    --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-    --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+    --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
     --controller-pem "$T/production.pem" --receipt "$recovery" >/dev/null 2>&1; then
     echo "production upgrade recovery accepted $case_name marker/submission drift" >&2
     exit 1
@@ -464,8 +436,7 @@ PY
   [[ ! -e "$recovery" && "$(<"$T/submit-count")" == 1 ]]
 done
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" recover \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" --receipt "$T/evidence/receipt.json" >/dev/null
 python3 -I -S - "$T/evidence/receipt.initial.json" "$T/evidence/receipt.json" <<'PY'
 import json,sys
@@ -481,171 +452,50 @@ PY
 
 printf third-wasm >"$T/third.wasm"
 THIRD_SHA="$(shasum -a 256 "$T/third.wasm" | awk '{print $1}')"
-export TEST_NEW_SHA="$THIRD_SHA"
-export TEST_REPRO_WASM="$T/third.wasm"
-python3 - "$T/evidence/receipt.initial.json" "$T/evidence/prior-upgrade-large-chain.json" "$T/evidence/prior-upgrade-large-raw.json" "$T/evidence/prior-upgrade-oversized-entry.json" <<'PY'
-import hashlib,json,sys
-source,chain_path,raw_path,oversized_entry_path=sys.argv[1:]
-receipt=json.load(open(source,encoding='utf-8'))
-large_chain_receipt={**receipt,'padding':'0'*(65*1024*1024)}
-raw=json.dumps(large_chain_receipt,sort_keys=True,separators=(',',':')).encode()
-digest=hashlib.sha256(raw).hexdigest()
-chain={
- 'schema_version':1,
- 'kind':'production-controller-bootstrap-upgrade-chain',
- 'entries':[{
-  'sequence':0,
-  'previous_receipt_sha256':None,
-  'receipt_sha256':digest,
-  'receipt_json_hex':raw.hex(),
- }],
-}
-with open(chain_path,'w',encoding='utf-8') as output:
- json.dump(chain,output,sort_keys=True,separators=(',',':')); output.write('\n')
-large_raw={**receipt,'padding':'0'*(129*1024*1024)}
-with open(raw_path,'w',encoding='utf-8') as output:
- json.dump(large_raw,output,sort_keys=True,separators=(',',':')); output.write('\n')
-oversized_entry={**receipt,'padding':'0'*(129*1024*1024)}
-oversized_raw=json.dumps(oversized_entry,sort_keys=True,separators=(',',':')).encode()
-oversized_chain={
- 'schema_version':1,
- 'kind':'production-controller-bootstrap-upgrade-chain',
- 'entries':[{
-  'sequence':0,
-  'previous_receipt_sha256':None,
-  'receipt_sha256':hashlib.sha256(oversized_raw).hexdigest(),
-  'receipt_json_hex':oversized_raw.hex(),
- }],
-}
-with open(oversized_entry_path,'w',encoding='utf-8') as output:
- json.dump(oversized_chain,output,sort_keys=True,separators=(',',':')); output.write('\n')
+export TEST_NEW_SHA="$THIRD_SHA" TEST_REPRO_WASM="$T/third.wasm"
+python3 - "$T/checkpoint-evidence.json" "$T/checkpoint-next.json" "$NEW_SHA" <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1])); value['module_sha256']=sys.argv[3]
+with open(sys.argv[2],'w') as output: json.dump(value,output)
 PY
-BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
-  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" \
-  --prior-upgrade-evidence "$T/evidence/prior-upgrade-large-chain.json" \
-  --evidence "$T/evidence/large-chain-preflight.json" >/dev/null
-if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
-  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" \
-  --prior-upgrade-evidence "$T/evidence/prior-upgrade-large-raw.json" \
-  --evidence "$T/evidence/large-raw-preflight.json" >/dev/null 2>&1; then
-  echo "production upgrade accepted oversized raw prior evidence" >&2
-  exit 1
-fi
-if BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
-  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" \
-  --prior-upgrade-evidence "$T/evidence/prior-upgrade-oversized-entry.json" \
-  --evidence "$T/evidence/oversized-entry-preflight.json" >/dev/null 2>&1; then
-  echo "production upgrade accepted an oversized receipt inside prior chain evidence" >&2
-  exit 1
-fi
-cp "$T/evidence/receipt.initial.json" "$T/evidence/prior-upgrade.json"
-cp "$T/evidence/prior-upgrade.json" "$T/evidence/prior-upgrade.approved.json"
-printf 'OperationalConfigSealed\n' >"$T/live-lifecycle"
-if TEST_REJECT_LIVE_PREDECESSOR=1 BRIDGE_ICP_IDENTITY=production \
-  "$T/source/scripts/production-canister-upgrade.sh" preflight \
-  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" \
-  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
-  --evidence "$T/evidence/rejected-live-predecessor.json" >/dev/null 2>&1; then
-  echo "production upgrade accepted live state outside the typed upgrade history" >&2
-  exit 1
-fi
-[[ ! -e "$T/evidence/rejected-live-predecessor.json" && "$(<"$T/submit-count")" == 1 ]]
-if TEST_REJECT_OPERATIONAL_SNAPSHOT=1 BRIDGE_ICP_IDENTITY=production \
-  "$T/source/scripts/production-canister-upgrade.sh" preflight \
-  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" \
-  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
-  --evidence "$T/evidence/rejected-operational-snapshot.json" >/dev/null 2>&1; then
-  echo "production upgrade accepted an invalid operational epoch snapshot" >&2
-  exit 1
-fi
-[[ ! -e "$T/evidence/rejected-operational-snapshot.json" && "$(<"$T/submit-count")" == 1 ]]
-for source_mode in TEST_FAIL_HISTORY_SOURCES TEST_EMPTY_HISTORY_SOURCES; do
-  if env "$source_mode=1" BRIDGE_ICP_IDENTITY=production \
-    "$T/source/scripts/production-canister-upgrade.sh" preflight \
-    --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-    --gate-a-receipt "$T/gate-a-receipt.json" \
-    --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
-    --evidence "$T/evidence/rejected-history-sources-$source_mode.json" >/dev/null 2>&1; then
-    echo "production upgrade accepted unavailable prior source identities" >&2
-    exit 1
+for rejection in TEST_REJECT_CHECKPOINT TEST_REJECT_LIVE_PREDECESSOR TEST_REJECT_OPERATIONAL_SNAPSHOT; do
+  if env "$rejection=1" BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
+    --wasm "$T/third.wasm" --checkpoint-evidence "$T/checkpoint-next.json" \
+    --evidence "$T/evidence/rejected-$rejection.json" >/dev/null 2>&1; then
+    echo "production upgrade ignored $rejection" >&2; exit 1
   fi
-  [[ ! -e "$T/evidence/rejected-history-sources-$source_mode.json" && "$(<"$T/submit-count")" == 1 ]]
 done
-if TEST_SOURCE_TREE="$(printf '0%.0s' {1..64})" BRIDGE_ICP_IDENTITY=production \
-  "$T/source/scripts/production-canister-upgrade.sh" preflight \
-  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" \
-  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
-  --evidence "$T/evidence/rejected-prior-tree.json" >/dev/null 2>&1; then
-  echo "production upgrade accepted a prior source tree hash mismatch" >&2
-  exit 1
-fi
-[[ ! -e "$T/evidence/rejected-prior-tree.json" && "$(<"$T/submit-count")" == 1 ]]
-if TEST_REJECT_PRIOR_HISTORY=1 BRIDGE_ICP_IDENTITY=production \
-  "$T/source/scripts/production-canister-upgrade.sh" preflight \
-  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" \
-  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
-  --evidence "$T/evidence/rejected-prior-history.json" >/dev/null 2>&1; then
-  echo "production upgrade accepted semantically invalid prior evidence" >&2
-  exit 1
-fi
-[[ ! -e "$T/evidence/rejected-prior-history.json" && "$(<"$T/submit-count")" == 1 ]]
 BRIDGE_ICP_IDENTITY=production "$T/source/scripts/production-canister-upgrade.sh" preflight \
-  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" \
-  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
+  --wasm "$T/third.wasm" --checkpoint-evidence "$T/checkpoint-next.json" \
   --evidence "$T/evidence/second-preflight.json" >/dev/null
-python3 -I -S - "$T/evidence/second-preflight.json" "$T/evidence/prior-upgrade.approved.json" "$NEW_SHA" <<'PY'
-import hashlib,json,sys
-value=json.load(open(sys.argv[1],encoding='utf-8'))
-assert value['before_module_sha256']==sys.argv[3]
-assert value['before_schema_version']==36
-assert value['before_lifecycle']=='OperationalConfigSealed'
-assert value['before_deposits_paused'] is True
-assert value['prior_upgrade_evidence_sha256']==hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest()
-PY
-printf ' \n' >>"$T/evidence/prior-upgrade.json"
-if BRIDGE_ICP_IDENTITY=production \
-  BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+cp "$T/checkpoint-next.json" "$T/checkpoint-next.approved.json"
+printf ' \n' >>"$T/checkpoint-next.json"
+if BRIDGE_ICP_IDENTITY=production BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" \
-  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
+  --wasm "$T/third.wasm" --checkpoint-evidence "$T/checkpoint-next.json" \
   --preflight "$T/evidence/second-preflight.json" --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/second-receipt.json" >/dev/null 2>&1; then
-  echo "production upgrade accepted prior evidence changed after preflight" >&2
-  exit 1
+  echo "production upgrade accepted checkpoint evidence changed after preflight" >&2; exit 1
 fi
 [[ "$(<"$T/submit-count")" == 1 ]]
-cp "$T/evidence/prior-upgrade.approved.json" "$T/evidence/prior-upgrade.json"
-BRIDGE_ICP_IDENTITY=production \
-BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
+cp "$T/checkpoint-next.approved.json" "$T/checkpoint-next.json"
+BRIDGE_ICP_IDENTITY=production BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" execute \
-  --wasm "$T/third.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" \
-  --prior-upgrade-evidence "$T/evidence/prior-upgrade.json" \
+  --wasm "$T/third.wasm" --checkpoint-evidence "$T/checkpoint-next.json" \
   --preflight "$T/evidence/second-preflight.json" --controller-pem "$T/production.pem" \
   --receipt "$T/evidence/second-receipt.json" >/dev/null
-python3 -I -S - "$T/evidence/second-receipt.json" "$NEW_SHA" "$THIRD_SHA" <<'PY'
-import json,sys
-value=json.load(open(sys.argv[1],encoding='utf-8'))
-assert value['before_module_sha256']==sys.argv[2]
-assert value['after_module_sha256']==sys.argv[3]
-assert value['before_schema_version']==36
-assert value['after_schema_version']==36
-assert value.get('prior_upgrade_evidence_sha256') is None
+python3 -I -S - "$T/evidence/second-receipt.json" "$T/checkpoint-next.json" "$NEW_SHA" "$THIRD_SHA" <<'PY'
+import json,hashlib,sys
+value=json.load(open(sys.argv[1]))
+assert value['before_module_sha256']==sys.argv[3]
+assert value['after_module_sha256']==sys.argv[4]
+assert value['before_schema_version']==value['after_schema_version']==36
+assert value['checkpoint_evidence_sha256']==hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest()
 PY
 [[ "$(<"$T/submit-count")" == 2 ]]
 
 if BRIDGE_ICP_IDENTITY=anonymous "$T/source/scripts/production-canister-upgrade.sh" preflight \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --evidence "$T/evidence/anonymous.json" >/dev/null 2>&1; then
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --evidence "$T/evidence/anonymous.json" >/dev/null 2>&1; then
   echo "production upgrade accepted a non-production identity" >&2
   exit 1
 fi
@@ -653,8 +503,7 @@ fi
 if BRIDGE_ICP_IDENTITY=production \
   BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER \
   "$T/source/scripts/production-canister-upgrade.sh" recover \
-  --wasm "$T/new.wasm" --gate-a-profile "$T/gate-a-profile.json" \
-  --gate-a-receipt "$T/gate-a-receipt.json" --preflight "$T/evidence/preflight.json" \
+  --wasm "$T/new.wasm" --checkpoint-evidence "$T/checkpoint-evidence.json" --preflight "$T/evidence/preflight.json" \
   --controller-pem "$T/production.pem" --receipt "$T/evidence/unexpected-confirmation.json" \
   >/dev/null 2>&1; then
   echo "production upgrade recovery accepted an execute-only confirmation" >&2

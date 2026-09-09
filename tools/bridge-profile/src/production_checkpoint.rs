@@ -1182,6 +1182,26 @@ mod tests {
         let verified = verify_evidence(&bytes, &registry, |_, _| Ok(())).unwrap();
         assert_eq!(verified.module_sha256, receipt.after_module_sha256);
         assert_eq!(verified.terminal.runtime.schema_version, 36);
+        let submission: super::super::ProductionUpgradeSubmission = serde_json::from_slice(
+            &super::super::decode_hex(&receipt.submission_json_hex).unwrap(),
+        )
+        .unwrap();
+        let mut digest_replay = parse(&checkpoint_bytes).unwrap();
+        digest_replay.installs[0].signed_install_sha256 = submission.signed_update_sha256;
+        let replay_evidence = build(&digest_replay, &receipt_bytes);
+        let replay_registry = [(
+            digest_replay.canister.as_str(),
+            digest_replay.deployment_instance_id.as_str(),
+            replay_evidence.checkpoint_sha256.as_str(),
+        )];
+        assert!(verify_evidence(
+            &super::super::canonical_bytes(&replay_evidence).unwrap(),
+            &replay_registry,
+            |_, _| Ok(())
+        )
+        .err()
+        .unwrap()
+        .contains("repeats an install request"));
         assert!(
             verify_evidence(&bytes, &registry, |_, previous| if previous.is_some() {
                 Err("nonancestor".into())
@@ -1307,6 +1327,17 @@ mod tests {
         assert_eq!(calls.get(), 1);
         assert_eq!(verified.module_sha256, checkpoint.module_sha256);
         assert_eq!(verified.terminal.runtime.schema_version, 36);
+        let rendered = ui_runtime(
+            &verified,
+            br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/reviewed_fixture"}"#,
+        )
+        .unwrap();
+        let rendered: serde_json::Value = serde_json::from_slice(&rendered).unwrap();
+        assert_eq!(
+            rendered["postActivationUpgradeSha256"],
+            verified.evidence_sha256
+        );
+        assert_eq!(rendered["canisterModuleSha256"], checkpoint.module_sha256);
         assert!(verify_evidence(&bytes, &[], |_, _| panic!(
             "unapproved checkpoint must fail before source access"
         ))

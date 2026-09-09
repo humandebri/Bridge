@@ -6,8 +6,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-}"
 shift || true
 WASM=""
-GATE_A_PROFILE=""
-GATE_A_RECEIPT=""
 PREFLIGHT=""
 OUTPUT=""
 CONTROLLER_PEM=""
@@ -16,20 +14,18 @@ RECOVERED=false
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --wasm) WASM="$2"; shift 2 ;;
-    --gate-a-profile) GATE_A_PROFILE="$2"; shift 2 ;;
-    --gate-a-receipt) GATE_A_RECEIPT="$2"; shift 2 ;;
     --preflight) PREFLIGHT="$2"; shift 2 ;;
     --controller-pem) CONTROLLER_PEM="$2"; shift 2 ;;
-    --prior-upgrade-evidence) PRIOR_UPGRADE_EVIDENCE="$2"; shift 2 ;;
+    --checkpoint-evidence) PRIOR_UPGRADE_EVIDENCE="$2"; shift 2 ;;
     --evidence|--receipt) OUTPUT="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 usage() {
-  echo "usage: BRIDGE_ICP_IDENTITY=production $0 preflight --wasm ABS --gate-a-profile ABS --gate-a-receipt ABS [--prior-upgrade-evidence ABS] --evidence ABS" >&2
-  echo "       BRIDGE_ICP_IDENTITY=production $0 execute --wasm ABS --gate-a-profile ABS --gate-a-receipt ABS [--prior-upgrade-evidence ABS] --preflight ABS --controller-pem ABS --receipt ABS" >&2
-  echo "       BRIDGE_ICP_IDENTITY=production $0 recover --wasm ABS --gate-a-profile ABS --gate-a-receipt ABS [--prior-upgrade-evidence ABS] --preflight ABS --controller-pem ABS --receipt ABS" >&2
+  echo "usage: BRIDGE_ICP_IDENTITY=production $0 preflight --wasm ABS --checkpoint-evidence ABS --evidence ABS" >&2
+  echo "       BRIDGE_ICP_IDENTITY=production $0 execute --wasm ABS --checkpoint-evidence ABS --preflight ABS --controller-pem ABS --receipt ABS" >&2
+  echo "       BRIDGE_ICP_IDENTITY=production $0 recover --wasm ABS --checkpoint-evidence ABS --preflight ABS --controller-pem ABS --receipt ABS" >&2
   exit 2
 }
 [[ "$MODE" == preflight || "$MODE" == execute || "$MODE" == recover ]] || usage
@@ -41,7 +37,7 @@ if [[ "$MODE" == execute ]]; then
 elif [[ -n "${BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE:-}" ]]; then
   echo "production upgrade confirmation is accepted only in execute mode" >&2; exit 1
 fi
-for path in "$WASM" "$GATE_A_PROFILE" "$GATE_A_RECEIPT"; do
+for path in "$WASM" "$PRIOR_UPGRADE_EVIDENCE"; do
   [[ "$path" == /* && -f "$path" && ! -L "$path" ]] || { echo "upgrade inputs must be absolute regular files" >&2; exit 1; }
 done
 if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
@@ -77,8 +73,7 @@ require_source_identity() {
 PROFILE_TARGET="$(mktemp -d "${TMPDIR:-/tmp}/bridge-upgrade-profile-target.XXXXXX")"
 trap 'rm -rf "$PROFILE_TARGET"' EXIT
 python3 -I -S - "$WASM" "$PROFILE_TARGET/bridge-canister.wasm" \
-  "$GATE_A_PROFILE" "$PROFILE_TARGET/gate-a-profile.json" \
-  "$GATE_A_RECEIPT" "$PROFILE_TARGET/gate-a-receipt.json" \
+  "$PRIOR_UPGRADE_EVIDENCE" "$PROFILE_TARGET/checkpoint-evidence.json" \
   "$ROOT/canister/bridge-canister/bridge.did" "$PROFILE_TARGET/bridge.did" <<'PY'
 import os,stat,sys
 for source,target in zip(sys.argv[1::2],sys.argv[2::2]):
@@ -87,6 +82,8 @@ for source,target in zip(sys.argv[1::2],sys.argv[2::2]):
  try:
   before=os.fstat(fd)
   if not stat.S_ISREG(before.st_mode): raise SystemExit('upgrade input is not a regular file')
+  limit=(516 if target.endswith('checkpoint-evidence.json') else 128)*1024*1024
+  if before.st_size>limit: raise SystemExit('upgrade input exceeds its size limit')
   chunks=[]
   while True:
    chunk=os.read(fd,1024*1024)
@@ -108,33 +105,24 @@ for source,target in zip(sys.argv[1::2],sys.argv[2::2]):
 PY
 require_source_identity
 WASM="$PROFILE_TARGET/bridge-canister.wasm"
-GATE_A_PROFILE="$PROFILE_TARGET/gate-a-profile.json"
-GATE_A_RECEIPT="$PROFILE_TARGET/gate-a-receipt.json"
-if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
-  python3 -I -S - "$PRIOR_UPGRADE_EVIDENCE" "$PROFILE_TARGET/prior-upgrade-evidence.json" <<'PY'
-import json,os,stat,sys
-source,target=sys.argv[1:]
-fd=os.open(source,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
-try:
- before=os.fstat(fd)
- if not stat.S_ISREG(before.st_mode) or before.st_size>513*1024*1024: raise SystemExit('prior upgrade evidence is unsafe')
- data=os.read(fd,before.st_size+1); after=os.fstat(fd)
- if len(data)!=before.st_size or (before.st_dev,before.st_ino,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_mtime_ns,after.st_ctime_ns): raise SystemExit('prior upgrade evidence changed while frozen')
-finally: os.close(fd)
-try: evidence=json.loads(data)
-except Exception as error: raise SystemExit(f'prior upgrade evidence JSON is invalid: {error}')
-if evidence.get('kind')=='production-controller-bootstrap-upgrade' and len(data)>128*1024*1024:
- raise SystemExit('raw prior upgrade receipt is too large')
-out=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400)
-try: os.write(out,data); os.fsync(out)
-finally: os.close(out)
+PRIOR_UPGRADE_EVIDENCE="$PROFILE_TARGET/checkpoint-evidence.json"
+PRIOR_UPGRADE_EVIDENCE_SHA256="$(shasum -a 256 "$PRIOR_UPGRADE_EVIDENCE" | awk '{print tolower($1)}')"
+CARGO_TARGET_DIR="$PROFILE_TARGET" cargo build --quiet --locked --manifest-path "$ROOT/Cargo.toml" -p bridge-profile
+PROFILE_BIN="$PROFILE_TARGET/debug/bridge-profile"
+require_source_identity
+CHECKPOINT_METADATA="$(cd "$ROOT" && "$PROFILE_BIN" validate-production-checkpoint-evidence "$PRIOR_UPGRADE_EVIDENCE")"
+read -r CANISTER OLD_WASM OLD_SCHEMA INSTALLER PREDECESSOR_SOURCE IC_HOST LEDGER_FEE VERIFIED_EVIDENCE_SHA256 < <(python3 -I -S - "$CHECKPOINT_METADATA" <<'PY'
+import json,sys
+value=json.loads(sys.argv[1])
+print(value['canister'],value['module_sha256'],value['runtime']['schema_version'],value['controller'],value['source']['revision'],value['network'],value['ledger_fee'],value['evidence_sha256'])
 PY
-  PRIOR_UPGRADE_EVIDENCE="$PROFILE_TARGET/prior-upgrade-evidence.json"
-fi
-PRIOR_UPGRADE_EVIDENCE_SHA256=""
-if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
-  PRIOR_UPGRADE_EVIDENCE_SHA256="$(shasum -a 256 "$PRIOR_UPGRADE_EVIDENCE" | awk '{print tolower($1)}')"
-fi
+)
+[[ "$VERIFIED_EVIDENCE_SHA256" == "$PRIOR_UPGRADE_EVIDENCE_SHA256" && "$CANISTER" == lb5i5-ziaaa-aaaar-qcgwq-cai && "$OLD_SCHEMA" == 36 && "$IC_HOST" == https://icp-api.io ]] || {
+  echo "approved checkpoint upgrade identity differs" >&2; exit 1;
+}
+git -C "$ROOT" merge-base --is-ancestor "$PREDECESSOR_SOURCE" "$SOURCE_REVISION" || {
+  echo "current source is not descended from the checkpoint evidence terminal" >&2; exit 1;
+}
 WASM_SHA256="$(shasum -a 256 "$WASM" | awk '{print tolower($1)}')"
 REPRO_TARGET="$PROFILE_TARGET/reproducible-build"
 mkdir -p "$REPRO_TARGET"
@@ -148,82 +136,11 @@ REPRO_WASM="$REPRO_TARGET/wasm32-unknown-unknown/release/bridge_canister.wasm"
   echo "upgrade Wasm is not reproducible from the current clean source" >&2; exit 1;
 }
 require_source_identity
-read -r CANISTER GATE_A_WASM GATE_A_SCHEMA INSTALLER RECEIPT_SOURCE RECEIPT_TREE INSTALL_SOURCE INSTALL_TREE IC_HOST < <(python3 -I -S - "$GATE_A_PROFILE" "$GATE_A_RECEIPT" <<'PY'
-import json,sys
-profile=json.load(open(sys.argv[1],encoding='utf-8')); receipt=json.load(open(sys.argv[2],encoding='utf-8'))
-install=receipt.get('canister_install',{})
-expected=(profile.get('bridge_canister_id'),profile.get('bridge_canister_wasm_sha256'))
-actual=(install.get('canister_id'),receipt.get('bridge_canister_wasm_sha256'))
-if expected != actual: raise SystemExit('Gate A profile and receipt identity differ')
-print(expected[0],expected[1],install.get('runtime_binding',{}).get('schema_version',''),install.get('installer_principal',''),receipt.get('source_revision',''),receipt.get('source_tree_sha256',''),install.get('source_revision',''),install.get('source_tree_sha256',''),profile.get('ic_host',''))
-PY
-)
-LEDGER_FEE="$(python3 -I -S -c 'import json,sys; print(json.load(open(sys.argv[1]))["parameters"]["ledger_fee"])' "$GATE_A_PROFILE")"
-OLD_WASM="$GATE_A_WASM"
-OLD_SCHEMA="$GATE_A_SCHEMA"
-if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
-  CHAIN_MODULES="$(python3 -I -S - "$PRIOR_UPGRADE_EVIDENCE" <<'PY'
-import hashlib,json,sys
-value=json.load(open(sys.argv[1],encoding='utf-8'))
-if value.get('kind')=='production-controller-bootstrap-upgrade': receipts=[value]
-else:
- entries=value.get('entries')
- if value.get('schema_version')!=1 or value.get('kind')!='production-controller-bootstrap-upgrade-chain' or not isinstance(entries,list) or not 1<=len(entries)<=16: raise SystemExit('invalid prior upgrade chain')
- receipts=[]; previous=None; total=0
- for index,entry in enumerate(entries):
-  if set(entry)!={'sequence','previous_receipt_sha256','receipt_sha256','receipt_json_hex'}: raise SystemExit('invalid prior upgrade chain entry')
-  raw=bytes.fromhex(entry.get('receipt_json_hex','')); digest=hashlib.sha256(raw).hexdigest()
-  if len(raw)>128*1024*1024: raise SystemExit('prior upgrade receipt is too large')
-  total+=len(raw)
-  if total>256*1024*1024: raise SystemExit('prior upgrade chain is too large')
-  if entry.get('sequence')!=index or entry.get('previous_receipt_sha256')!=previous or entry.get('receipt_sha256','').lower()!=digest: raise SystemExit('invalid prior upgrade chain linkage')
-  receipts.append(json.loads(raw)); previous=digest
-expected_before=receipts[0].get('before_module_sha256','')
-expected_schema=receipts[0].get('before_schema_version')
-for receipt in receipts:
- if receipt.get('schema_version')!=1 or receipt.get('kind')!='production-controller-bootstrap-upgrade': raise SystemExit('invalid prior upgrade receipt')
- before=receipt.get('before_module_sha256',''); after=receipt.get('after_module_sha256','')
- if not isinstance(before,str) or not isinstance(after,str) or len(before)!=64 or len(after)!=64 or before.lower()!=expected_before.lower(): raise SystemExit('prior upgrade module chain is not contiguous')
- before_schema=receipt.get('before_schema_version'); after_schema=receipt.get('after_schema_version')
- if before_schema!=expected_schema or (before_schema,after_schema) not in ((35,35),(35,36),(36,36)): raise SystemExit('prior upgrade schema chain is not contiguous')
- int(before,16); int(after,16); expected_before=after
- expected_schema=after_schema
-print(receipts[0].get('before_module_sha256',''),receipts[-1].get('after_module_sha256',''),receipts[0].get('before_schema_version',''),receipts[-1].get('after_schema_version',''))
-PY
-)" || { echo "prior upgrade evidence is invalid" >&2; exit 1; }
-  read -r CHAIN_FIRST_WASM OLD_WASM CHAIN_FIRST_SCHEMA OLD_SCHEMA <<<"$CHAIN_MODULES"
-  [[ "$(printf '%s' "$CHAIN_FIRST_WASM" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$GATE_A_WASM" | tr '[:upper:]' '[:lower:]')" ]] || {
-    echo "prior upgrade chain does not start at the Gate A Wasm" >&2; exit 1;
-  }
-  [[ "$CHAIN_FIRST_SCHEMA" == "$GATE_A_SCHEMA" ]] || {
-    echo "prior upgrade chain does not start at the Gate A schema" >&2; exit 1;
-  }
-fi
-[[ "$CANISTER" == "lb5i5-ziaaa-aaaar-qcgwq-cai" && "$OLD_WASM" =~ ^[0-9a-fA-F]{64}$ \
-  && "$GATE_A_SCHEMA" == "35" && ( "$OLD_SCHEMA" == "35" || "$OLD_SCHEMA" == "36" ) \
-  && "$INSTALLER" =~ ^[a-z0-9-]+$ && "$RECEIPT_SOURCE" =~ ^[0-9a-f]{40}$ \
-  && "$RECEIPT_TREE" =~ ^[0-9a-fA-F]{64}$ && "$INSTALL_SOURCE" =~ ^[0-9a-f]{40}$ \
-  && "$INSTALL_TREE" =~ ^[0-9a-fA-F]{64}$ \
-  && "$IC_HOST" == "https://icp-api.io" ]] || {
-  echo "Gate A upgrade identity is malformed" >&2; exit 1;
-}
-[[ "$WASM_SHA256" != "$(printf '%s' "$OLD_WASM" | tr '[:upper:]' '[:lower:]')" ]] || {
-  echo "controller-bootstrap upgrade must change the Gate A Wasm" >&2; exit 1;
-}
-git -C "$ROOT" merge-base --is-ancestor "$RECEIPT_SOURCE" "$SOURCE_REVISION" || {
-  echo "upgrade source is not descended from the Gate A source" >&2; exit 1;
-}
-git -C "$ROOT" merge-base --is-ancestor "$INSTALL_SOURCE" "$SOURCE_REVISION" || {
-  echo "upgrade source is not descended from the production install source" >&2; exit 1;
-}
-[[ "$(git -C "$ROOT" archive "$RECEIPT_SOURCE" | shasum -a 256 | awk '{print tolower($1)}')" == "$(printf '%s' "$RECEIPT_TREE" | tr '[:upper:]' '[:lower:]')" ]] || {
-  echo "Gate A receipt source tree hash mismatch" >&2; exit 1;
-}
-[[ "$(git -C "$ROOT" archive "$INSTALL_SOURCE" | shasum -a 256 | awk '{print tolower($1)}')" == "$(printf '%s' "$INSTALL_TREE" | tr '[:upper:]' '[:lower:]')" ]] || {
-  echo "production install source tree hash mismatch" >&2; exit 1;
+[[ "$WASM_SHA256" != "$OLD_WASM" ]] || {
+  echo "production upgrade must change the current Wasm" >&2; exit 1;
 }
 EXECUTING_PRINCIPAL="$(icp identity principal --identity production)"
-[[ "$EXECUTING_PRINCIPAL" == "$INSTALLER" ]] || { echo "production identity is not the Gate A installer" >&2; exit 1; }
+[[ "$EXECUTING_PRINCIPAL" == "$INSTALLER" ]] || { echo "production identity is not the checkpoint controller" >&2; exit 1; }
 DID="$PROFILE_TARGET/bridge.did"
 if [[ "$MODE" == execute || "$MODE" == recover ]]; then
   FROZEN_PREFLIGHT="$PROFILE_TARGET/preflight.json"
@@ -256,41 +173,6 @@ finally: os.close(out)
 PY
   PREFLIGHT="$FROZEN_PREFLIGHT"
   PREFLIGHT_SHA256="$(shasum -a 256 "$PREFLIGHT" | awk '{print tolower($1)}')"
-fi
-CARGO_TARGET_DIR="$PROFILE_TARGET" cargo build --quiet --locked --manifest-path "$ROOT/Cargo.toml" -p bridge-profile
-PROFILE_BIN="$PROFILE_TARGET/debug/bridge-profile"
-require_source_identity
-"$PROFILE_BIN" validate-production-upgrade-gate-a-binding \
-  "$GATE_A_PROFILE" "$GATE_A_RECEIPT" >/dev/null
-if [[ -n "$PRIOR_UPGRADE_EVIDENCE" ]]; then
-  "$PROFILE_BIN" validate-production-upgrade-history \
-    "$GATE_A_PROFILE" "$GATE_A_RECEIPT" "$PRIOR_UPGRADE_EVIDENCE" \
-    "$OLD_WASM" "$OLD_SCHEMA" >/dev/null
-  UPGRADE_SOURCE_LINES="$("$PROFILE_BIN" production-upgrade-history-sources "$PRIOR_UPGRADE_EVIDENCE")" || {
-    echo "prior upgrade source identities could not be enumerated" >&2; exit 1;
-  }
-  [[ -n "$UPGRADE_SOURCE_LINES" ]] || {
-    echo "prior upgrade source identities are empty" >&2; exit 1;
-  }
-  PREVIOUS_UPGRADE_SOURCE="$RECEIPT_SOURCE"
-  while IFS=$'\t' read -r UPGRADE_REVISION UPGRADE_TREE; do
-    [[ "$UPGRADE_REVISION" =~ ^[0-9a-f]{40}$ && "$UPGRADE_TREE" =~ ^[0-9a-fA-F]{64}$ ]] || {
-      echo "prior upgrade source identity is malformed" >&2; exit 1;
-    }
-    git -C "$ROOT" cat-file -e "$UPGRADE_REVISION^{commit}" || {
-      echo "prior upgrade source revision is unavailable" >&2; exit 1;
-    }
-    git -C "$ROOT" merge-base --is-ancestor "$PREVIOUS_UPGRADE_SOURCE" "$UPGRADE_REVISION" || {
-      echo "prior upgrade source lineage is not contiguous" >&2; exit 1;
-    }
-    [[ "$(git -C "$ROOT" archive "$UPGRADE_REVISION" | shasum -a 256 | awk '{print tolower($1)}')" == "$(printf '%s' "$UPGRADE_TREE" | tr '[:upper:]' '[:lower:]')" ]] || {
-      echo "prior upgrade source tree hash mismatch" >&2; exit 1;
-    }
-    PREVIOUS_UPGRADE_SOURCE="$UPGRADE_REVISION"
-  done <<<"$UPGRADE_SOURCE_LINES"
-  git -C "$ROOT" merge-base --is-ancestor "$PREVIOUS_UPGRADE_SOURCE" "$SOURCE_REVISION" || {
-    echo "current source is not descended from prior upgrade evidence" >&2; exit 1;
-  }
 fi
 require_source_identity
 
@@ -394,6 +276,7 @@ value['prior_upgrade_evidence_sha256']=os.environ['PRIOR_UPGRADE_EVIDENCE_SHA256
 if os.environ['KIND']=='production-controller-bootstrap-upgrade':
  value.pop('observed_at_unix',None)
  value.pop('prior_upgrade_evidence_sha256',None)
+ value['checkpoint_evidence_sha256']=os.environ['PRIOR_UPGRADE_EVIDENCE_SHA256']
  after=[candid('AFTER_BRIDGE_STATUS'),candid('AFTER_LIFECYCLE'),candid('AFTER_RUNTIME'),candid('AFTER_INTEGRITY')]
  stdout=open(os.environ['RESPONSE_STDOUT_FILE'],'rb').read(); stderr=open(os.environ['RESPONSE_STDERR_FILE'],'rb').read()
  submission=open(os.environ['SUBMISSION_FILE'],'rb').read()
@@ -476,6 +359,8 @@ if [[ "$MODE" == recover ]]; then
   for sidecar in "$STDOUT_FILE" "$STDERR_FILE" "$SUBMISSION_FILE" "$UPLOAD_EVIDENCE_FILE" "$EXECUTION_FILE"; do
     [[ -f "$sidecar" && ! -L "$sidecar" ]] || { echo "recovery sidecar is missing or unsafe: $sidecar" >&2; exit 1; }
   done
+  "$PROFILE_BIN" validate-production-checkpoint-submission \
+    "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$SUBMISSION_FILE" "$PRIOR_UPGRADE_EVIDENCE" >/dev/null
   BEFORE_MANAGEMENT="$(preflight_value before_management_status_json_hex hex)"
   BEFORE_MODULE="$(preflight_value before_module_sha256)"
   BEFORE_BRIDGE_STATUS="$(preflight_value before_bridge_status_response_hex)"
@@ -490,7 +375,7 @@ if [[ "$MODE" == recover ]]; then
   BEFORE_SCHEMA="$(preflight_value before_schema_version)"
   read -r RECORDED_CONTROLLERS RECORDED_MODULE < <(status_fields "$BEFORE_MANAGEMENT")
   [[ "$RECORDED_CONTROLLERS" == "$INSTALLER" && "$RECORDED_MODULE" == "$OLD_WASM" ]] || {
-    echo "reviewed preflight does not bind the sole controller and immutable Gate A Wasm" >&2; exit 1;
+    echo "reviewed preflight does not bind the sole controller and approved checkpoint terminal Wasm" >&2; exit 1;
   }
   python3 -I -S - "$PREFLIGHT" "$SOURCE_REVISION" "$SOURCE_TREE" "$CANISTER" "$OLD_WASM" "$WASM_SHA256" "$INSTALLER" "$PRIOR_UPGRADE_EVIDENCE_SHA256" <<'PY'
 import json,sys
@@ -515,10 +400,9 @@ PY
   [[ "$AFTER_MODULE" == "$WASM_SHA256" ]] || {
     echo "recovery requires the exact reviewed Wasm" >&2; exit 1;
   }
-  AFTER_PUBLIC_STATE="$($PROFILE_BIN verify-production-upgrade-state-preserved \
-    "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY" \
-    "$AFTER_BRIDGE_STATUS" "$AFTER_LIFECYCLE" "$AFTER_RUNTIME" "$AFTER_INTEGRITY" \
-    "$GATE_A_PROFILE" "$GATE_A_RECEIPT")"
+  AFTER_PUBLIC_STATE="$($PROFILE_BIN verify-production-checkpoint-state-preserved \
+    "$PRIOR_UPGRADE_EVIDENCE" "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY" "$BEFORE_OPERATIONAL" \
+    "$AFTER_BRIDGE_STATUS" "$AFTER_LIFECYCLE" "$AFTER_RUNTIME" "$AFTER_INTEGRITY")"
   export EXECUTED_AT
   RECOVERED=true
   write_json "$OUTPUT" production-controller-bootstrap-upgrade "$STDOUT_FILE" "$STDERR_FILE" "$REQUEST_ID"
@@ -526,13 +410,18 @@ PY
   exit 0
 fi
 
+if [[ "$MODE" == execute ]]; then
+  # Use the same complete current-source proof gate as the other production drivers.
+  source "$ROOT/scripts/production-validation.sh"
+  production_run_proof_gate "$ROOT" "$SOURCE_REVISION" "$SOURCE_TREE"
+  require_source_identity
+fi
 snapshot BEFORE
 [[ "$BEFORE_MODULE" == "$(printf '%s' "$OLD_WASM" | tr '[:upper:]' '[:lower:]')" ]] || {
-  echo "live module does not match the immutable Gate A profile" >&2; exit 1;
+  echo "live module does not match the approved checkpoint evidence" >&2; exit 1;
 }
-"$PROFILE_BIN" validate-production-upgrade-live-predecessor \
-  "$GATE_A_PROFILE" "$GATE_A_RECEIPT" "${PRIOR_UPGRADE_EVIDENCE:--}" \
-  "$OLD_WASM" "$OLD_SCHEMA" "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" \
+"$PROFILE_BIN" validate-production-checkpoint-predecessor \
+  "$PRIOR_UPGRADE_EVIDENCE" "$OLD_WASM" "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" \
   "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY" "$BEFORE_OPERATIONAL" >/dev/null
 BEFORE_PUBLIC_STATE="$($PROFILE_BIN production-upgrade-public-state-sha256 \
   "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY")"
@@ -597,9 +486,9 @@ else
     }
     require_source_identity
     "$PROFILE_BIN" prepare-production-canister-upgrade "$IC_HOST" "$CANISTER" "$INSTALLER" \
-      "$CONTROLLER_PEM" "$WASM" "$PREPARING_SUBMISSION" >/dev/null
-    "$PROFILE_BIN" validate-production-upgrade-submission \
-      "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$PREPARING_SUBMISSION" >/dev/null
+      "$CONTROLLER_PEM" "$WASM" "$PREPARING_SUBMISSION" "$PRIOR_UPGRADE_EVIDENCE" >/dev/null
+    "$PROFILE_BIN" validate-production-checkpoint-submission \
+      "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$PREPARING_SUBMISSION" "$PRIOR_UPGRADE_EVIDENCE" >/dev/null
     chmod 400 "$PREPARING_SUBMISSION"
     python3 -I -S - "$PREPARING_SUBMISSION" "$SUBMISSION_FILE" <<'PY'
 import os,sys
@@ -611,8 +500,8 @@ os.unlink(source)
 fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
 PY
   fi
-  "$PROFILE_BIN" validate-production-upgrade-submission \
-    "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$SUBMISSION_FILE" >/dev/null
+  "$PROFILE_BIN" validate-production-checkpoint-submission \
+    "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$SUBMISSION_FILE" "$PRIOR_UPGRADE_EVIDENCE" >/dev/null
   if [[ -e "$UPLOAD_DIR" ]]; then
     [[ -d "$UPLOAD_DIR" && ! -L "$UPLOAD_DIR" ]] || {
       echo "production upgrade upload directory candidate is unsafe" >&2; exit 1;
@@ -654,8 +543,8 @@ export EXECUTED_AT
 [[ "$(verify_execution_marker "$EXECUTION_FILE" "$SUBMISSION_FILE")" == "$EXECUTED_AT" ]] || {
   echo "execution marker changed before chunk upload" >&2; exit 1;
 }
-"$PROFILE_BIN" validate-production-upgrade-submission \
-  "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$SUBMISSION_FILE" >/dev/null
+"$PROFILE_BIN" validate-production-checkpoint-submission \
+  "$IC_HOST" "$CANISTER" "$INSTALLER" "$WASM" "$SUBMISSION_FILE" "$PRIOR_UPGRADE_EVIDENCE" >/dev/null
 "$PROFILE_BIN" upload-production-canister-upgrade-chunks \
   "$IC_HOST" "$CANISTER" "$INSTALLER" "$CONTROLLER_PEM" "$WASM" "$SUBMISSION_FILE" "$UPLOAD_DIR" >/dev/null
 
@@ -691,9 +580,8 @@ PY
 )" || { echo "successful upgrade response did not expose a unique request ID; preserve live state" >&2; exit 1; }
 snapshot AFTER
 [[ "$AFTER_MODULE" == "$WASM_SHA256" ]] || { echo "post-upgrade module hash differs from the reviewed Wasm" >&2; exit 1; }
-AFTER_PUBLIC_STATE="$($PROFILE_BIN verify-production-upgrade-state-preserved \
-  "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY" \
-  "$AFTER_BRIDGE_STATUS" "$AFTER_LIFECYCLE" "$AFTER_RUNTIME" "$AFTER_INTEGRITY" \
-  "$GATE_A_PROFILE" "$GATE_A_RECEIPT")"
+AFTER_PUBLIC_STATE="$($PROFILE_BIN verify-production-checkpoint-state-preserved \
+  "$PRIOR_UPGRADE_EVIDENCE" "$BEFORE_BRIDGE_STATUS" "$BEFORE_LIFECYCLE" "$BEFORE_RUNTIME" "$BEFORE_INTEGRITY" "$BEFORE_OPERATIONAL" \
+  "$AFTER_BRIDGE_STATUS" "$AFTER_LIFECYCLE" "$AFTER_RUNTIME" "$AFTER_INTEGRITY")"
 write_json "$OUTPUT" production-controller-bootstrap-upgrade "$STDOUT_FILE" "$STDERR_FILE" "$REQUEST_ID"
 echo "production controller-bootstrap upgrade verified: $OUTPUT"

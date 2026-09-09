@@ -72,8 +72,8 @@ function fixture(profileOverrides = {}) {
   writeFileSync(
     cargo,
     `#!/usr/bin/env node
-const a=process.argv.slice(2); const i=a.indexOf('verify-production-ui-live');
-if(process.cwd()!==process.env.EXPECTED_CARGO_CWD || i<0 || a[i+1]!==process.env.BRIDGE_RELEASE_BUNDLE || a[i+2]!==process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT || a[i+3]!==process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT || a[i+4]!==process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT || a[i+5]!==process.env.BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE || a[i+6]!==process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE || a[i+7]!==process.env.BRIDGE_UI_RPC_CONFIG || process.env.FAKE_VERIFY_FAIL) process.exit(1);
+const a=process.argv.slice(2); const i=a.indexOf('verify-production-checkpoint-ui-live');
+if(process.cwd()!==process.env.EXPECTED_CARGO_CWD || i<0 || a[i+1]!==process.env.BRIDGE_CHECKPOINT_EVIDENCE || a[i+2]!==process.env.BRIDGE_UI_RPC_CONFIG || a[i+3]!==process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE || process.env.FAKE_VERIFY_FAIL) process.exit(1);
 console.log('production_ui=live-pass schema='+ (process.env.FAKE_VERIFY_SCHEMA ?? '36') +' activation=execute manifest_sha256=${gate}');
 `,
   )
@@ -102,7 +102,7 @@ function validEnv(f, overrides = {}) {
     BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT: f.paths.seal,
     BRIDGE_CONTROLLER_SCHEDULE_RECEIPT: f.paths.schedule,
     BRIDGE_CONTROLLER_EXECUTE_RECEIPT: f.paths.execute,
-    BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE: f.paths.upgrade,
+    BRIDGE_CHECKPOINT_EVIDENCE: f.paths.upgrade,
     BRIDGE_UI_RPC_CONFIG: f.paths.rpc,
     BRIDGE_PRODUCTION_INSTALLER_IDENTITY: "production-installer",
     VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
@@ -154,10 +154,25 @@ describe("production UI live binding", () => {
     expect(result.stderr).toContain("production installer identity")
   })
 
-  it("requires post-activation upgrade evidence", () => {
-    const result = run(validEnv(fixture(), { BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE: "" }))
+  it("requires approved checkpoint evidence", () => {
+    const result = run(validEnv(fixture(), { BRIDGE_CHECKPOINT_EVIDENCE: "" }))
     expect(result.status).not.toBe(0)
-    expect(result.stderr).toContain("post-activation upgrade evidence")
+    expect(result.stderr).toContain("approved checkpoint evidence")
+  })
+
+  it("does not request archived Gate B and activation files", () => {
+    const f = fixture()
+    rmSync(f.bundle, { recursive: true, force: true })
+    for (const path of [f.paths.seal, f.paths.schedule, f.paths.execute]) rmSync(path)
+    const result = run(
+      validEnv(f, {
+        BRIDGE_RELEASE_BUNDLE: "",
+        BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT: "",
+        BRIDGE_CONTROLLER_SCHEDULE_RECEIPT: "",
+        BRIDGE_CONTROLLER_EXECUTE_RECEIPT: "",
+      }),
+    )
+    expect(result.status, result.stderr).toBe(0)
   })
 
   it("rejects a runtime profile that the live verifier does not authorize", () => {

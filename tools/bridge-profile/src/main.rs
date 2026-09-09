@@ -11794,7 +11794,15 @@ fn prepare_production_canister_upgrade(
     pem_path: &Path,
     wasm_path: &Path,
     submission_path: &Path,
+    checkpoint_evidence_path: &Path,
 ) -> Result<(), String> {
+    let checkpoint = production_checkpoint::read_evidence(checkpoint_evidence_path)?;
+    if checkpoint.checkpoint.network != host
+        || checkpoint.checkpoint.canister != canister_text
+        || checkpoint.checkpoint.controller != expected_principal_text
+    {
+        return Err("upgrade signing identity differs from approved checkpoint evidence".into());
+    }
     let canister = Principal::from_text(canister_text).map_err(|error| error.to_string())?;
     let expected_principal =
         Principal::from_text(expected_principal_text).map_err(|error| error.to_string())?;
@@ -11887,7 +11895,7 @@ fn prepare_production_canister_upgrade(
             .sign()
             .map_err(|error| error.to_string())?;
         let submission = ProductionUpgradeSubmission {
-            checkpoint_evidence_sha256: None,
+            checkpoint_evidence_sha256: Some(checkpoint.evidence_sha256.clone()),
             schema_version: 2,
             install_method: "install_chunked_code".into(),
             ic_host: host.to_string(),
@@ -12425,7 +12433,7 @@ fn run() -> Result<(), String> {
                 Path::new(&args[5]),
             )?;
         }
-        Some("verify-production-ui-live") if args.len() == 9 => {
+        Some("audit-verify-production-ui-live") if args.len() == 9 => {
             verify_production_ui_live(
                 Path::new(&args[2]),
                 Path::new(&args[3]),
@@ -12436,7 +12444,7 @@ fn run() -> Result<(), String> {
                 Path::new(&args[8]),
             )?;
         }
-        Some("render-production-ui-runtime") if args.len() == 9 => {
+        Some("audit-render-production-ui-runtime") if args.len() == 9 => {
             render_production_ui_runtime(
                 Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]),
                 Path::new(&args[5]), Path::new(&args[6]), Path::new(&args[7]), Path::new(&args[8]),
@@ -12689,7 +12697,7 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[3]
             );
         }
-        Some("prepare-production-canister-upgrade") if args.len() == 8 => {
+        Some("prepare-production-canister-upgrade") if args.len() == 9 => {
             prepare_production_canister_upgrade(
                 &args[2],
                 &args[3],
@@ -12697,6 +12705,7 @@ fn run() -> Result<(), String> {
                 Path::new(&args[5]),
                 Path::new(&args[6]),
                 Path::new(&args[7]),
+                Path::new(&args[8]),
             )?;
         }
         Some("upload-production-canister-upgrade-chunks") if args.len() == 9 => {
