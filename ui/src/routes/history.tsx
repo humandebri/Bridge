@@ -1164,6 +1164,7 @@ export function DepositActivityRow({
           <span className="text-sm text-[var(--muted)]">—</span>
         ) : "AuthorizationAvailable" in record.state ? (
           <MintAuthorizationAction
+            key={pendingMint?.transactionHash ?? "unsubmitted"}
             record={record}
             compact
             onRequestRefund={writesEnabled ? () => void onRequestRefund(record) : undefined}

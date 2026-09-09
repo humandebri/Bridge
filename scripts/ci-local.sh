@@ -738,9 +738,16 @@ run_impacted_proofs() {
     echo "no impacted proof stages" >&2
     return
   fi
+  if [[ "$selected_stages" == *claim-transaction-tests* ]]; then
+    python3 "$CLAIM_TEST_CHECK" --impact-json "$impact_json" --plan-only
+  fi
   while IFS= read -r stage; do
     echo "==> proof-stage:$stage" >&2
-    run_proof_stage_command "$stage"
+    if [[ "$stage" == claim-transaction-tests ]]; then
+      python3 "$CLAIM_TEST_CHECK" --impact-json "$impact_json"
+    else
+      run_proof_stage_command "$stage"
+    fi
   done <<<"$selected_stages"
   echo "impacted proofs complete; no formal proof receipt was generated" >&2
 }

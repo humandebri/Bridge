@@ -462,9 +462,14 @@ def require_mandatory_claim_catalog(manifest: ClaimManifest) -> None:
 
 
 def build_claim_report() -> dict[str, object]:
+    from check_claim_test_manifest import parse_manifest as parse_test_manifest
+
     check_solidity_wrapper_refinement()
     manifest_text = MANIFEST.read_text(encoding="utf-8")
     manifest = parse_claim_manifest(manifest_text)
+    registered_tests = parse_test_manifest(
+        manifest_text, (ROOT / "verification/claim-test-manifest.tsv").read_text(encoding="utf-8"), ROOT
+    )
     conditional_liveness = parse_conditional_liveness_manifest(
         CONDITIONAL_LIVENESS.read_text(encoding="utf-8")
     )
@@ -609,10 +614,12 @@ def build_claim_report() -> dict[str, object]:
         halmos_obligations,
         implementation_basis,
         production_links,
-        transaction_tests,
         assumption_ids,
         vectors,
     ) in rows:
+        transaction_tests = ";".join(sorted(
+            test.target + "#" + test.symbol for test in registered_tests if claim_id in test.claims
+        ))
         if kind not in {"protocol", "mint"} or not IDENTIFIER.fullmatch(claim_id):
             raise ValueError(f"invalid typed claim: {kind}/{claim_id}")
         theorem_names = (

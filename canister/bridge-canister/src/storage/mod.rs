@@ -7784,16 +7784,8 @@ impl StableStore {
             }
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
-        let lifetime_records = self.handle.query(|connection| {
-            connection.query_scalar::<i64>(
-                "SELECT (SELECT COUNT(*) FROM deposits) +
-                        (SELECT COUNT(*) FROM deposit_funding_attempts)",
-                params![],
-            )
-        })?;
-        if !lifetime_deposit_capacity_available(
-            u64::try_from(lifetime_records).map_err(|_| StorageError::DecodeFailed)?,
-        ) {
+        let lifetime_records = self.handle.query(lifetime_deposit_record_count)?;
+        if !lifetime_deposit_capacity_available(lifetime_records) {
             return Err(StorageError::LifetimeDepositCapacityExceeded);
         }
         if attempt.intent.caller != owner.as_slice()
@@ -7877,16 +7869,8 @@ impl StableStore {
                     "stale deposit funding admission".into(),
                 ));
             }
-            let lifetime_records = connection.query_scalar::<i64>(
-                "SELECT (SELECT COUNT(*) FROM deposits) +
-                        (SELECT COUNT(*) FROM deposit_funding_attempts)",
-                params![],
-            )?;
-            if !lifetime_deposit_capacity_available(
-                u64::try_from(lifetime_records).map_err(|_| {
-                    DbError::Constraint("invalid lifetime deposit record count".into())
-                })?,
-            ) {
+            let lifetime_records = lifetime_deposit_record_count(connection)?;
+            if !lifetime_deposit_capacity_available(lifetime_records) {
                 return Err(DbError::Constraint(
                     "lifetime deposit record capacity exhausted".into(),
                 ));
@@ -9869,6 +9853,232 @@ mod tests {
             MAX_LIFETIME_DEPOSIT_RECORDS
         ));
         assert!(!lifetime_deposit_capacity_available(u64::MAX));
+    }
+
+    fn funding_admission_snapshot(store: &StableStore) -> Vec<Vec<(Vec<u8>, Vec<u8>)>> {
+        store
+            .handle
+            .query(|connection| {
+                let mut snapshot = Vec::new();
+                for table in [
+                    "deposits",
+                    "deposit_funding_attempts",
+                    "nonterminal_deposit_owner_index",
+                    "owner_deposit_sequences",
+                ] {
+                    snapshot.push(connection.query_all(
+                        &format!("SELECT key, value FROM {table} ORDER BY key"),
+                        params![],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?);
+                }
+                snapshot.push(connection.query_all(
+                    "SELECT CAST(name AS BLOB), count FROM table_counts ORDER BY name",
+                    params![],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?);
+                snapshot.push(connection.query_all(
+                    "SELECT deposit_admission, storage_revision FROM singleton_state WHERE id = 1",
+                    params![],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?);
+                snapshot.push(connection.query_all(
+                    "SELECT counters, accounting FROM singleton_state WHERE id = 1",
+                    params![],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?);
+                Ok(snapshot)
+            })
+            .expect("funding admission snapshot")
+    }
+
+    fn assert_lifetime_deposit_counts(store: &StableStore, expected: u64) {
+        store
+            .handle
+            .query(|connection| {
+                for table in ["deposits", "deposit_funding_attempts"] {
+                    let actual = connection
+                        .query_scalar::<i64>(&format!("SELECT COUNT(*) FROM {table}"), params![])?;
+                    assert_eq!(
+                        read_table_count(connection, table)?,
+                        actual as u64,
+                        "{table}"
+                    );
+                }
+                assert_eq!(lifetime_deposit_record_count(connection)?, expected);
+                Ok(())
+            })
+            .expect("persisted counts match records");
+    }
+
+    #[test]
+    #[serial]
+    fn lifetime_deposit_counts_enforce_admission_boundary() {
+        for total in [99_999u64, 100_000, 100_001] {
+            for deposits in [0, total / 2, total] {
+                let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+                initialize_unpaused_admin(&mut store);
+                // Synthetic counts isolate admission boundaries from large record fixtures.
+                store
+                    .handle
+                    .update(|connection| {
+                        for (table, count) in [
+                            ("deposits", deposits),
+                            ("deposit_funding_attempts", total - deposits),
+                        ] {
+                            connection.execute(
+                                "UPDATE table_counts SET count = ?1 WHERE name = ?2",
+                                params![count.to_sql_bytes(), table],
+                            )?;
+                        }
+                        Ok(())
+                    })
+                    .expect("boundary counts");
+                let before = funding_admission_snapshot(&store);
+                let owner = Principal::self_authenticating([61; 32]);
+                let (attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
+                let quota = DepositQuotaAdmission {
+                    now_ns: 1,
+                    window_seconds: 60,
+                    global_limit: 30,
+                    per_principal_limit: 3,
+                };
+                let result = store.prepare_deposit_funding_attempt(
+                    owner,
+                    &attempt,
+                    quota,
+                    ample_cycle_admission(),
+                );
+                if total == 99_999 {
+                    assert_eq!(result, Ok(DepositAdmissionOutcome::Inserted));
+                    assert_eq!(
+                        store.handle.query(lifetime_deposit_record_count).unwrap(),
+                        100_000
+                    );
+                    let committed = funding_admission_snapshot(&store);
+                    assert_eq!(
+                        store.prepare_deposit_funding_attempt(
+                            owner,
+                            &attempt,
+                            quota,
+                            ample_cycle_admission()
+                        ),
+                        Ok(DepositAdmissionOutcome::Existing)
+                    );
+                    assert_eq!(funding_admission_snapshot(&store), committed);
+                } else {
+                    assert_eq!(result, Err(StorageError::LifetimeDepositCapacityExceeded));
+                    assert_eq!(funding_admission_snapshot(&store), before);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn lifetime_deposit_counts_reject_corruption_without_writes() {
+        for table in ["deposits", "deposit_funding_attempts"] {
+            for corruption in ["missing", "malformed", "overflow"] {
+                let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+                initialize_unpaused_admin(&mut store);
+                store.handle.update(|connection| {
+                    match corruption {
+                        "missing" => connection.execute("DELETE FROM table_counts WHERE name = ?1", params![table])?,
+                        "malformed" => {
+                            connection.execute_batch("PRAGMA ignore_check_constraints = ON")?;
+                            connection.execute("UPDATE table_counts SET count = X'00' WHERE name = ?1", params![table])?;
+                            connection.execute_batch("PRAGMA ignore_check_constraints = OFF")?;
+                        }
+                        _ => {
+                            connection.execute("UPDATE table_counts SET count = ?1 WHERE name IN ('deposits', 'deposit_funding_attempts')", params![1u64.to_sql_bytes()])?;
+                            connection.execute("UPDATE table_counts SET count = ?1 WHERE name = ?2", params![u64::MAX.to_sql_bytes(), table])?;
+                        }
+                    }
+                    Ok(())
+                }).expect("corrupt count fixture");
+                let before = funding_admission_snapshot(&store);
+                let owner = Principal::self_authenticating([61; 32]);
+                let (attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
+                let quota = DepositQuotaAdmission {
+                    now_ns: 1,
+                    window_seconds: 60,
+                    global_limit: 30,
+                    per_principal_limit: 3,
+                };
+                assert!(
+                    store
+                        .prepare_deposit_funding_attempt(
+                            owner,
+                            &attempt,
+                            quota,
+                            ample_cycle_admission()
+                        )
+                        .is_err(),
+                    "{table}: {corruption}"
+                );
+                assert_eq!(funding_admission_snapshot(&store), before);
+                assert!(store
+                    .handle
+                    .update(|connection| lifetime_deposit_record_count(connection))
+                    .is_err());
+                assert_eq!(funding_admission_snapshot(&store), before);
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn lifetime_deposit_counts_roll_back_with_failed_admission() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
+        initialize_unpaused_admin(&mut store);
+        store.handle.update(|connection| connection.execute_batch("CREATE TRIGGER reject_funding_admission BEFORE UPDATE OF deposit_admission ON singleton_state BEGIN SELECT RAISE(ABORT, 'injected admission failure'); END")).expect("late failure fixture");
+        let before = funding_admission_snapshot(&store);
+        let owner = Principal::self_authenticating([61; 32]);
+        let (attempt, _, _) = funding_attempt(owner, DepositFundingAttemptState::Prepared);
+        let quota = DepositQuotaAdmission {
+            now_ns: 1,
+            window_seconds: 60,
+            global_limit: 30,
+            per_principal_limit: 3,
+        };
+        assert!(store
+            .prepare_deposit_funding_attempt(owner, &attempt, quota, ample_cycle_admission())
+            .is_err());
+        assert_eq!(funding_admission_snapshot(&store), before);
+        assert_lifetime_deposit_counts(&store, 0);
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen after rollback");
+        assert_eq!(funding_admission_snapshot(&reopened), before);
+        assert_lifetime_deposit_counts(&reopened, 0);
+    }
+
+    #[test]
+    #[serial]
+    fn lifetime_deposit_counts_use_primary_key_lookup() {
+        let store = StableStore::init(VectorMemory::default()).expect("initialize");
+        for table in ["deposits", "deposit_funding_attempts"] {
+            let plan = store
+                .handle
+                .query(|connection| {
+                    connection.query_all(
+                        &format!("EXPLAIN QUERY PLAN {TABLE_COUNT_SQL}"),
+                        params![table],
+                        |row| row.get::<String>(3),
+                    )
+                })
+                .expect("count lookup plan");
+            assert!(
+                plan.iter()
+                    .any(|detail| detail.contains("SEARCH table_counts USING PRIMARY KEY")),
+                "{plan:?}"
+            );
+            assert!(
+                plan.iter()
+                    .all(|detail| !detail.contains("SCAN") && !detail.contains("TEMP B-TREE")),
+                "{plan:?}"
+            );
+        }
     }
 
     fn storage_revision(store: &StableStore) -> u64 {
@@ -14796,6 +15006,7 @@ mod tests {
                 .expect("reserve attempt"),
             DepositAdmissionOutcome::Inserted
         );
+        assert_lifetime_deposit_counts(&store, 1);
         store
             .remove_deposit_funding_attempt(owner, &attempt)
             .expect("release definitive failure");
@@ -14829,8 +15040,10 @@ mod tests {
         assert!(admission.caller_counts.is_empty());
         assert!(admission.funding_reservations.is_empty());
 
+        assert_lifetime_deposit_counts(&store, 0);
         drop(store);
         let reopened = StableStore::reopen(memory).expect("reopen after failed funding");
+        assert_lifetime_deposit_counts(&reopened, 0);
         let admission = reopened.deposit_admission().expect("reopened admission");
         assert_eq!(admission.global_count, 0);
         assert!(admission.caller_counts.is_empty());
@@ -15021,7 +15234,8 @@ mod tests {
     #[test]
     #[serial]
     fn funding_success_promotes_attempt_once_atomically() {
-        let mut store = StableStore::init(VectorMemory::default()).expect("initialize");
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
         initialize_unpaused_admin(&mut store);
         let owner = Principal::self_authenticating([62; 32]);
         let (attempt, record, intent) = funding_attempt(
@@ -15039,6 +15253,10 @@ mod tests {
         store
             .prepare_deposit_funding_attempt(owner, &attempt, quota, ample_cycle_admission())
             .expect("reserve attempt");
+        assert_lifetime_deposit_counts(&store, 1);
+        drop(store);
+        let mut store = StableStore::reopen(memory.clone()).expect("reopen prepared attempt");
+        assert_lifetime_deposit_counts(&store, 1);
         assert_eq!(store.deposit_funding_reservation_count(), Ok(1));
         assert_eq!(store.nonterminal_deposit_count(), Ok(0));
         assert_eq!(
@@ -15102,6 +15320,10 @@ mod tests {
             store.deposit_admission().expect("admission").global_count,
             1
         );
+        assert_lifetime_deposit_counts(&store, 1);
+        drop(store);
+        let reopened = StableStore::reopen(memory).expect("reopen promoted deposit");
+        assert_lifetime_deposit_counts(&reopened, 1);
     }
 
     #[test]

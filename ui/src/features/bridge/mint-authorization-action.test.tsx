@@ -98,6 +98,7 @@ vi.mock("@/lib/runtime-validation", () => ({
 }))
 
 vi.mock("@/lib/evm/client", () => ({
+  baseTransactionExplorerUrl: () => undefined,
   basePublicClient: {
     getBlock: mocks.getBlock,
     simulateContract: mocks.simulateContract,
@@ -449,9 +450,41 @@ describe("MintAuthorizationAction pending retry", () => {
       }),
     )
     fireEvent.click(screen.getByRole("button", { name: "Review saved transaction" }))
-    fireEvent.click(await screen.findByRole("button", { name: "Clear and retry" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Clear saved transaction" }))
     await waitFor(() => expect(mocks.removePendingMint).toHaveBeenCalledWith(pendingExpectation))
     expect(await screen.findByRole("button", { name: "Mint on Base" })).toBeEnabled()
+  })
+
+  it("allows_refund_after_a_finalized_revert_when_mint_authorization_has_expired", async () => {
+    mocks.heartbeatTimestamp.value = 2_001n
+    mocks.latestTimestamp.value = 2_001n
+    mocks.validateMintAuthorization.mockRejectedValue(new Error("Mint authorization expired"))
+    mocks.refetchRuntimeWriteReady.mockRejectedValue(new Error("Minting is paused"))
+    mocks.getTransactionReceipt.mockResolvedValue({
+      status: "reverted",
+      blockNumber: 99n,
+      blockHash: finalizedBlockHash,
+      logs: [],
+    })
+    mocks.exactMintReceiptFinalization.mockReturnValue("reverted")
+    const onRequestRefund = vi.fn()
+
+    render(<MintAuthorizationAction record={record} compact onRequestRefund={onRequestRefund} />, {
+      wrapper: Wrapper,
+    })
+
+    await waitFor(() => expect(mocks.exactMintReceiptFinalization).toHaveBeenCalled())
+    fireEvent(document, new Event("visibilitychange"))
+    fireEvent.click(await screen.findByRole("button", { name: "Review saved transaction" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Clear saved transaction" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Claim refund" }))
+
+    expect(mocks.removePendingMint).toHaveBeenCalledWith(pendingExpectation)
+    expect(onRequestRefund).toHaveBeenCalledOnce()
+    expect(mocks.refetchRuntimeWriteReady).not.toHaveBeenCalled()
+    expect(mocks.validateMintAuthorization).not.toHaveBeenCalled()
+    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
+    expect(screen.queryByRole("button", { name: "Mint on Base" })).not.toBeInTheDocument()
   })
 
   it("reports a saved transaction exactly once after its exact receipt is confirmed", async () => {
@@ -518,7 +551,7 @@ describe("MintAuthorizationAction pending retry", () => {
     expect(mocks.removePendingMint).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByText("Review saved transaction"))
-    fireEvent.click(await screen.findByText("Clear and retry"))
+    fireEvent.click(await screen.findByText("Clear saved transaction"))
     await waitFor(() => expect(mocks.removePendingMint).toHaveBeenCalledWith(pendingExpectation))
     await waitFor(() => expect(screen.getByText("Mint on Base")).toBeEnabled())
   })
@@ -690,6 +723,41 @@ describe("MintAuthorizationAction pending retry", () => {
       expect(mocks.writeContractAsync).not.toHaveBeenCalled()
     },
   )
+
+  it("removes the mint action when History discovers a saved pending transaction", async () => {
+    let savedPendingMint: typeof pendingMint | undefined
+    mocks.readPendingMint.mockImplementation(() => savedPendingMint)
+    const deposit = {
+      ...record,
+      deposit_id: new Uint8Array(32).fill(0x11),
+      quote: [{ net_amount: 450_000_000n, service_fee: 50_000_000n }],
+      refund: [],
+      gross_amount: 500_000_000n,
+      created_at_ns: 1n,
+      funding_ledger_block_index: [],
+      automatic_progress: [],
+      last_settlement_stop_reason: [],
+    } as unknown as DepositView
+    const props = {
+      item: { key: "deposit:pending-discovered", direction: "to-base", createdAtNs: 1n, deposit },
+      mintFinalization: "absent" as const,
+      writesEnabled: true,
+      onRequestRefund: vi.fn(),
+      onContinue: vi.fn(),
+    } as const
+    const view = render(<DepositActivityRow {...props} />, { wrapper: Wrapper })
+
+    expect(await screen.findByRole("button", { name: "Mint on Base" })).toBeEnabled()
+
+    savedPendingMint = pendingMint
+    view.rerender(<DepositActivityRow {...props} actioningId="refresh" />)
+
+    expect(screen.getByText("Mint pending")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Mint on Base" })).not.toBeInTheDocument()
+    expect(
+      await screen.findByText("Submitted on Base; refreshing transaction status."),
+    ).toBeVisible()
+  })
 
   it("does not enable refund from a locally extrapolated timestamp", async () => {
     mocks.readPendingMint.mockReturnValue(undefined)

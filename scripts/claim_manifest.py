@@ -7,8 +7,8 @@ import re
 from dataclasses import dataclass
 
 
-SCHEMA_VERSION = "6"
-CLAIM_FIELD_COUNT = 13
+SCHEMA_VERSION = "7"
+CLAIM_FIELD_COUNT = 12
 LEAN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 PROOF_CLASSES = {"local-safety", "history-safety", "implementation-only"}
 ASSURANCE_TARGETS = {"release-safety", "model-support"}
@@ -231,6 +231,26 @@ def parse_claim_manifest(text: str) -> ClaimManifest:
             f"extra={sorted(set(contracts) - set(claim_ids))}"
         )
     return ClaimManifest(tuple(rows), contracts)
+
+
+def parse_claim_test_links(claims_text: str, text: str) -> dict[str, set[str]]:
+    """Keep regression-test ownership separate from theorem definitions."""
+    claims = {row[1]: set() for row in parse_claim_manifest(claims_text).rows}
+    for number, line in enumerate(text.splitlines(), 1):
+        fields = line.split("\t")
+        if len(fields) != 3 or not all(fields):
+            raise ValueError(f"invalid claim test link row {number}")
+        claim, target, symbol = fields
+        if claim not in claims or "#" in target or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol):
+            raise ValueError(f"unknown or invalid claim test link row {number}")
+        link = target + "#" + symbol
+        if link in claims[claim]:
+            raise ValueError(f"duplicate claim test link: {claim} {link}")
+        claims[claim].add(link)
+    missing = sorted(claim for claim, links in claims.items() if not links)
+    if missing:
+        raise ValueError(f"claim test links do not cover claims: {missing}")
+    return claims
 
 
 def parse_conditional_liveness_manifest(

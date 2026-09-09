@@ -322,6 +322,9 @@ export function MintAuthorizationAction({
   })
   const verifyRetry = useMutation({
     mutationFn: async () => {
+      // A finalized revert permits clearing the reference even when minting has expired.
+      // Any subsequent mint still goes through its own authorization validation.
+      if (terminalReverted) return
       if (chainId !== deploymentProfile.chainId)
         throw new Error("Switch the gas-paying wallet to Base")
       const observation = await refetchRuntimeAttestedWriteReady(
@@ -614,7 +617,7 @@ export function MintAuthorizationAction({
             <DialogTitle>Clear the saved transaction reference?</DialogTitle>
             <DialogDescription>
               {terminalReverted
-                ? "The Base transaction finalized as reverted. Clearing this reference enables an explicit new submission."
+                ? "The Base transaction finalized as reverted. Clear this reference to review the available mint or refund action."
                 : "No receipt is currently available and the Deposit ID is still unprocessed on Base. Clearing this browser's saved transaction reference enables another submission. If the original transaction is mined later, the retry will revert and may cost additional gas."}
             </DialogDescription>
           </DialogHeader>
@@ -622,7 +625,7 @@ export function MintAuthorizationAction({
             <DialogClose asChild>
               <Button variant="ghost">Cancel</Button>
             </DialogClose>
-            <Button onClick={() => void releasePendingForRetry()}>Clear and retry</Button>
+            <Button onClick={() => void releasePendingForRetry()}>Clear saved transaction</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
