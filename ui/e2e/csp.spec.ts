@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { expect, test } from "@playwright/test"
 
-test("production CSP permits the Base Alchemy RPC and blocks unreviewed origins", async ({
+test("production CSP permits reviewed RPC and mint recovery while blocking unreviewed origins", async ({
   page,
 }) => {
   const headers = readFileSync(new URL("../public/_headers", import.meta.url), "utf8")
@@ -23,6 +23,15 @@ test("production CSP permits the Base Alchemy RPC and blocks unreviewed origins"
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0x2105" }),
     })
   })
+  let recoveryRequests = 0
+  await page.route("https://recovery.bridge.kinic.xyz/v1/mint-recovery", (route) => {
+    recoveryRequests += 1
+    return route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ hashes: [] }),
+    })
+  })
   let unreviewedRequests = 0
   await page.route("https://unreviewed-rpc.invalid/**", (route) => {
     unreviewedRequests += 1
@@ -39,6 +48,16 @@ test("production CSP permits the Base Alchemy RPC and blocks unreviewed origins"
   })
   expect(chainId).toBe("0x2105")
   expect(rpcRequests).toBe(1)
+  const recovery = await page.evaluate(async () => {
+    const response = await fetch("https://recovery.bridge.kinic.xyz/v1/mint-recovery", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ depositId: `0x${"ab".repeat(32)}` }),
+    })
+    return response.json()
+  })
+  expect(recovery).toEqual({ hashes: [] })
+  expect(recoveryRequests).toBe(1)
   const blocked = await page.evaluate(async () => {
     try {
       await fetch("https://unreviewed-rpc.invalid/probe")
