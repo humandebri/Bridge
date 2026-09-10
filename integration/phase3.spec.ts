@@ -1784,6 +1784,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(phaseName(pending[0].state)).toBe("AuthorizationPending");
     expect(pending[0].mint_authorization[0].signature).toEqual([]);
     const deadline = BigInt(pending[0].mint_authorization[0].deadline);
+    await pic!.advanceTime(Number((deadline - 299n) * 1_000n - BigInt(await pic!.getTime())));
     const now = BigInt(Math.floor((await pic!.getTime()) / 1_000));
     expect(deadline - now).toBeLessThan(300n);
     await (evm.actor as any).set_block_mode({ Canonical: null });
@@ -1822,8 +1823,12 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_block_mode({ FinalizedDelayed: null });
     const nextRunAtNs = BigInt(pending[0].automatic_progress[0].state.Scheduled.next_run_at_ns);
     const nowNs = BigInt(await pic!.getTime()) * 1_000_000n;
-    if (nextRunAtNs >= nowNs) {
-      const untilDueMs = Number((nextRunAtNs - nowNs + 999_999n) / 1_000_000n);
+    // Start revalidation near the signing floor so the delayed response crosses
+    // that floor without also exceeding the bounded RPC call timeout.
+    const revalidationAtNs = (BigInt(authorization.deadline) - 301n) * 1_000_000_000n;
+    expect(revalidationAtNs).toBeGreaterThan(nextRunAtNs);
+    if (revalidationAtNs >= nowNs) {
+      const untilDueMs = Number((revalidationAtNs - nowNs + 999_999n) / 1_000_000n);
       await pic!.advanceTime(untilDueMs + 1);
     }
     let finalizedBarrier: Awaited<ReturnType<NonNullable<typeof pic>["getPendingHttpsOutcalls"]>>[number] | undefined;
@@ -1883,7 +1888,9 @@ describe("Phase 3 PocketIC saga", () => {
     const nextRunAtNs = automatic.Err.AutomaticProgressPending.next_run_at_ns[0];
     expect(nextRunAtNs).toBeDefined();
     const nowNs = BigInt(await pic!.getTime()) * 1_000_000n;
-    const manualRetryAtNs = nextRunAtNs + 300_000_000_000n + 1_000_000n;
+    const overdueAtNs = nextRunAtNs + 300_000_000_000n + 1_000_000n;
+    const signingFloorAtNs = (BigInt(stopped[0].mint_authorization[0].deadline) - 299n) * 1_000_000_000n;
+    const manualRetryAtNs = overdueAtNs > signingFloorAtNs ? overdueAtNs : signingFloorAtNs;
     await (evm.actor as any).set_block_timestamp(manualRetryAtNs / 1_000_000_000n);
     await pic!.advanceTime(Number((manualRetryAtNs - nowNs) / 1_000_000n));
     expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id))
