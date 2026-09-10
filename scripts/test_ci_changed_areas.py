@@ -90,7 +90,7 @@ class ChangedAreaTests(unittest.TestCase):
 
     def test_integration_ui_change_runs_real(self) -> None:
         self.assert_areas(
-            ["ui/src/lib/ic/bridge.ts"], "ui-fast", "ui-e2e", "real"
+            ["ui/src/lib/ic/bridge.ts"], "ui-fast", "ui-e2e", "real", "proofs-impacted"
         )
 
     def test_shared_runtime_ui_changes_run_real(self) -> None:

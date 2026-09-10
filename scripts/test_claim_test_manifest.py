@@ -308,13 +308,13 @@ class ClaimTestManifestTests(unittest.TestCase):
             claim_tests.MANIFEST.read_text(encoding="utf-8"),
         )
         groups = claim_tests.group_tests(tests)
-        self.assertEqual(len(tests), 279)
-        self.assertEqual(len(groups), 44)
+        self.assertEqual(len(tests), 320)
+        self.assertEqual(len(groups), 50)
         self.assertEqual(
             sum(2 if group[0].runner.startswith("rust-") else 1 for group in groups),
-            61,
+            68,
         )
-        self.assertEqual(sum(test.runner == "rust-profile" for test in tests), 1)
+        self.assertEqual(sum(test.runner == "rust-profile" for test in tests), 2)
 
     def test_isolated_policy_requires_a_reason(self) -> None:
         root, claims, manifest = self.fixture()

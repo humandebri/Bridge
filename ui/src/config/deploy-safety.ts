@@ -1,4 +1,5 @@
 export interface UiDeploymentMode {
+  mintRecoveryUrl?: string
   environment?: string
   testOnly?: boolean
   environmentMode?: string | null
@@ -84,6 +85,8 @@ export function assertProductionUiProfile(
   if (profile.gateBManifestSha256?.toLowerCase() !== verifiedManifestSha256?.toLowerCase()) {
     throw new Error("Production UI profile does not match the verified Gate B manifest")
   }
+  if (profile.mintRecoveryUrl !== "https://recovery.bridge.kinic.xyz/v1/mint-recovery")
+    throw new Error("Production UI requires the reviewed mint recovery URL")
   let deploymentBlock: bigint
   try {
     deploymentBlock = BigInt(profile.deploymentBlock ?? 0)

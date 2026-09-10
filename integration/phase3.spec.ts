@@ -503,7 +503,7 @@ describe("Phase 3 PocketIC saga", () => {
     const authorization: any = await awaitMintAuthorization(bridge, result.Ok.deposit_id);
 
     expect(authorization.finalized_block_timestamp).toBeLessThan(authorization.issued_at_timestamp - 19n * 60n);
-    expect(authorization.deadline).toBe(authorization.issued_at_timestamp + 600n);
+    expect(authorization.deadline).toBe(authorization.issued_at_timestamp + 900n);
     expect(authorization.signature).toHaveLength(1);
     expect(await mintAuthorizedDeposit(bridge, evm, result.Ok.deposit_id)).toHaveProperty("Ok.state.Minted");
   });

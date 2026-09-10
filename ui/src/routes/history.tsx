@@ -1,9 +1,5 @@
 import { redactRpcUrls } from "@/lib/transfer-error"
-import {
-  recoverTransaction,
-  TransactionEvidenceMismatch,
-  withdrawalReceiptDetails,
-} from "@/lib/transaction-recovery"
+import { TransactionEvidenceMismatch, withdrawalReceiptDetails } from "@/lib/transaction-recovery"
 import { observeDeposit, type MintObservation } from "@/lib/mint-observation"
 import { readBaseBlock, readBaseReceipt } from "@/lib/base-transaction-observation"
 import { Principal } from "@icp-sdk/core/principal"
@@ -103,8 +99,6 @@ export function mergeWithdrawalHistoryData(
 type HistorySourceState = "disconnected" | "loading" | "ready" | "unavailable"
 
 function HistoryPage() {
-  const [recoveryHash, setRecoveryHash] = useState("")
-  const [recovering, setRecovering] = useState(false)
   const { address } = useAccount()
   const chainId = useChainId()
   const ic = useIcWallet()
@@ -506,7 +500,7 @@ function HistoryPage() {
     try {
       setRetryingHash(item.hash)
       await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
-      if (!item.hash) throw new Error("Restore this transaction using its Base transaction hash.")
+      if (!item.hash) throw new Error("The Base transaction hash is unavailable.")
       const { pending, receipt, withdrawalId } = await notifyHistoryWithdrawal(
         { ...item, hash: item.hash },
         undefined,
@@ -687,42 +681,6 @@ function HistoryPage() {
         </Button>
       </header>
 
-      <form
-        className="mb-5 flex flex-wrap gap-2"
-        onSubmit={async (event) => {
-          event.preventDefault()
-          setRecovering(true)
-          try {
-            toast.success(
-              await recoverTransaction(recoveryHash.trim(), {
-                evm: address,
-                ic: historyAccount?.owner,
-              }),
-            )
-            setRecoveryHash("")
-            await refresh()
-          } catch (error) {
-            toast.error(
-              error instanceof Error
-                ? redactRpcUrls(error.message)
-                : "Transaction recovery failed.",
-            )
-          } finally {
-            setRecovering(false)
-          }
-        }}
-      >
-        <input
-          aria-label="Base transaction hash"
-          placeholder="0x… Base transaction hash"
-          value={recoveryHash}
-          onChange={(event) => setRecoveryHash(event.target.value)}
-          className="min-w-64 flex-1 rounded-lg border p-2"
-        />
-        <Button type="submit" disabled={recovering || !recoveryHash.trim()}>
-          {recovering ? "Restoring…" : "Restore transaction"}
-        </Button>
-      </form>
       <section
         aria-label="Bridge activity"
         className="min-h-80 rounded-[20px] bg-[var(--panel)] p-4 sm:p-6"
@@ -916,6 +874,13 @@ function ActivityList({
                     : "confirming"
             }
             processedWithoutReceipt={observation?.status === "processed"}
+            mintRecoveryProblem={
+              observation?.status === "conflict"
+                ? "conflict"
+                : observation?.unavailable
+                  ? "unavailable"
+                  : undefined
+            }
             finalizedBlockTimestamp={finalizedTimestamp}
             writesEnabled={writesEnabled}
             actioningId={actioningId}
@@ -1006,6 +971,7 @@ export function DepositActivityRow({
   item,
   mintFinalization,
   processedWithoutReceipt,
+  mintRecoveryProblem,
   mintTransactionHash,
   mintRecording,
   finalizedBlockTimestamp,
@@ -1016,6 +982,7 @@ export function DepositActivityRow({
 }: {
   item: Extract<ActivityItem, { direction: "to-base" }>
   mintFinalization: DepositMintFinalizationStatus
+  mintRecoveryProblem?: "conflict" | "unavailable"
   processedWithoutReceipt?: boolean
   mintTransactionHash?: `0x${string}`
   mintRecording?: "recorded" | "retrying" | "pending" | "confirming"
@@ -1026,6 +993,7 @@ export function DepositActivityRow({
   onContinue: (record: DepositView) => Promise<void>
 }) {
   const record = item.deposit
+  const discoveryEnabled = deploymentProfile.chainId === 8453 && !!deploymentProfile.mintRecoveryUrl
   const key = bytesHex(record.deposit_id)
   const expectedMint = expectedDepositMint(record)
   const pendingMint = expectedMint
@@ -1069,16 +1037,25 @@ export function DepositActivityRow({
       </div>
       <div>
         <MobileLabel>Base tx</MobileLabel>
+        {mintRecoveryProblem && (
+          <p role="alert" className="text-xs">
+            {mintRecoveryProblem === "conflict"
+              ? "The Base receipt does not match this deposit. Review is required."
+              : "検索サービスに接続できません。再試行します"}
+          </p>
+        )}
         {processedWithoutReceipt && (
           <p className="text-xs">
-            Processed on Base. Restore with a transaction hash to link the receipt.
+            {discoveryEnabled
+              ? "Processed on Base. 取引を自動検索中"
+              : "Processed on Base. Receipt not linked; recovery without a saved transaction hash is not supported on this network."}
           </p>
         )}
         {transactionHash ? (
           <BaseTransactionLink transactionHash={transactionHash} />
         ) : (
           <p className="mt-1 text-xs text-[var(--muted)]">
-            {processedWithoutReceipt ? "Receipt not linked" : "Not submitted"}
+            {processedWithoutReceipt ? "Receipt not linked" : "Checking Base transaction"}
           </p>
         )}
       </div>
@@ -1159,7 +1136,9 @@ export function DepositActivityRow({
       <div className="min-w-0">
         <MobileLabel>Next step</MobileLabel>
         {processedWithoutReceipt ? (
-          <span className="text-sm text-[var(--muted)]">Restore with a transaction hash</span>
+          <span className="text-sm text-[var(--muted)]">
+            {discoveryEnabled ? "取引を自動検索中" : "Transaction confirmation unavailable"}
+          </span>
         ) : mintedOnBase ? (
           <span className="text-sm text-[var(--muted)]">—</span>
         ) : "AuthorizationAvailable" in record.state ? (

@@ -112,6 +112,23 @@ describe("DepositProgressCoordinator", () => {
     expect(mocks.mintAuthorizationAction).not.toHaveBeenCalled()
   })
 
+  it("preserves the receipt callback across unchanged progress renders", async () => {
+    mocks.getDeposit.mockResolvedValue([
+      {
+        state: { AuthorizationAvailable: null },
+        mint_authorization: [{}],
+        automatic_progress: [],
+        last_settlement_stop_reason: [],
+      },
+    ])
+    const view = render(<DepositProgressCoordinator />)
+    await waitFor(() => expect(mocks.mintAuthorizationAction).toHaveBeenCalled())
+    const first = mocks.mintAuthorizationAction.mock.calls.at(-1)?.[0] as { onProgress: unknown }
+    view.rerender(<DepositProgressCoordinator />)
+    const next = mocks.mintAuthorizationAction.mock.calls.at(-1)?.[0] as { onProgress: unknown }
+    expect(next.onProgress).toBe(first.onProgress)
+  })
+
   it("records successful and reverted Base receipts as distinct presentation facts", async () => {
     mocks.getDeposit.mockResolvedValue([
       {

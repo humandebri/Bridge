@@ -1,30 +1,36 @@
 import { useEffect } from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { readAllPendingMints } from "@/lib/pending-confirmations"
-import { observeMint } from "@/lib/mint-observation"
+import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
+import type { MintObservation } from "@/lib/mint-observation"
+import { runMintRecoveryCycle } from "@/lib/mint-recovery"
 
 export function MintConfirmationCoordinator() {
   const queryClient = useQueryClient()
+  const ic = useIcWallet()
+  const owner = (ic.account ?? ic.historyAccount)?.owner
   useEffect(() => {
     let active = true
     let running = false
-    const completedObservations = new Set<string>()
     const tick = async () => {
       if (!active || running || document.visibilityState !== "visible") return
       running = true
       try {
-        for (const pending of readAllPendingMints()) {
-          if (!active) break
-          if (completedObservations.has(pending.transactionHash)) continue
-          const observation = await observeMint(pending)
-          queryClient.setQueryData(["mint-observation", pending.depositId], observation)
-          if (observation.finalized && observation.status === "reverted")
-            completedObservations.add(pending.transactionHash)
-          if (observation.recorded) {
-            completedObservations.add(pending.transactionHash)
-            void queryClient.invalidateQueries({ queryKey: ["deposit-history"] })
-          }
-        }
+        const result = await runMintRecoveryCycle(owner)
+        if (!active || !result) return
+        queryClient.setQueryData(["mint-observation", result.depositId], result.observation)
+        queryClient.setQueriesData<Map<string, MintObservation>>(
+          { queryKey: ["deposit-mint-observations"] },
+          (current) => {
+            if (!current?.has(result.depositId)) return current
+            const next = new Map(current)
+            next.set(result.depositId, result.observation)
+            return next
+          },
+        )
+        if (result.observation.recorded)
+          void queryClient.invalidateQueries({ queryKey: ["deposit-history"] })
+      } catch {
+        // The shared scheduler backs off; IC discovery will resume on a later tick.
       } finally {
         running = false
       }
@@ -37,6 +43,6 @@ export function MintConfirmationCoordinator() {
       window.clearInterval(timer)
       document.removeEventListener("visibilitychange", tick)
     }
-  }, [queryClient])
+  }, [owner, queryClient])
   return null
 }

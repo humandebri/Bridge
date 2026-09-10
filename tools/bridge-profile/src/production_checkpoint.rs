@@ -574,23 +574,46 @@ pub(super) fn preserved(path: &Path, raw: &[String]) -> Result<(), String> {
         return Err("checkpoint state comparison needs nine query responses".into());
     }
     let verified = read_evidence(path)?;
-    let before_digest = validate_predecessor(&verified, &raw[..5])?;
+    let after_digest = preserved_digest(&verified, raw)?;
+    println!("{after_digest}");
+    Ok(())
+}
+
+fn preserved_digest(verified: &VerifiedEvidence, raw: &[String]) -> Result<String, String> {
+    if raw.len() != 9 {
+        return Err("checkpoint state comparison needs nine query responses".into());
+    }
+    let before_digest = validate_predecessor(verified, &raw[..5])?;
     let (before, _, before_runtime, _) =
         super::production_upgrade_query_state_any(&raw[0], &raw[1], &raw[2], &raw[3])?;
     let (after, _, after_runtime, after_digest) =
         super::production_upgrade_query_state_any(&raw[5], &raw[6], &raw[7], &raw[8])?;
+    let operational = super::OperationalEpochEvidence::from_response(&raw[4])?;
+    let ttl_migration = super::production_upgrade_ttl_migration_matches(
+        &before,
+        &after,
+        &super::live_runtime_binding_from_view(&before_runtime),
+        &super::live_runtime_binding_from_view(&after_runtime),
+        Some(&operational),
+        verified
+            .checkpoint
+            .roots
+            .gate_b_profile
+            .parameters
+            .ledger_fee,
+    )?;
+    let unchanged = super::production_upgrade_status_preserved(&before, &after)
+        && raw[2] == raw[7]
+        && before_digest == after_digest;
     if before_runtime.schema_version != super::CURRENT_STABLE_SCHEMA_VERSION
         || after_runtime.schema_version != super::CURRENT_STABLE_SCHEMA_VERSION
-        || !super::production_upgrade_status_preserved(&before, &after)
+        || (!unchanged && !ttl_migration)
         || raw[1] != raw[6]
-        || raw[2] != raw[7]
         || raw[3] != raw[8]
-        || before_digest != after_digest
     {
         return Err("checkpoint upgrade does not preserve the v36 public state".into());
     }
-    println!("{after_digest}");
-    Ok(())
+    Ok(after_digest)
 }
 
 pub(super) fn render_ui(
@@ -1092,8 +1115,72 @@ mod tests {
     }
 
     pub(super) fn exercise_signed_suffix_fixture(profile: &Profile, raw: &[u8]) {
+        for migrate_ttl in [false, true] {
+            exercise_signed_suffix_transition(profile, raw, migrate_ttl);
+        }
+    }
+
+    fn exercise_signed_suffix_transition(profile: &Profile, raw: &[u8], migrate_ttl: bool) {
         let mut receipt: super::super::ProductionCanisterUpgradeReceipt =
             serde_json::from_slice(raw).unwrap();
+        for (raw, digest) in [
+            (
+                &mut receipt.before_bridge_status_response_hex,
+                &mut receipt.before_bridge_status_response_sha256,
+            ),
+            (
+                &mut receipt.after_bridge_status_response_hex,
+                &mut receipt.after_bridge_status_response_sha256,
+            ),
+        ] {
+            let mut status: super::super::BridgeStatusLiveView =
+                super::super::decode_candid_hex(raw).unwrap();
+            status.deposits_paused = false;
+            let bytes = candid::Encode!(&status).unwrap();
+            *raw = hex(&bytes);
+            *digest = hex(&Sha256::digest(&bytes));
+        }
+        receipt.before_deposits_paused = false;
+        receipt.after_deposits_paused = false;
+        if migrate_ttl {
+            let mut status: super::super::BridgeStatusLiveView =
+                super::super::decode_candid_hex(&receipt.before_bridge_status_response_hex)
+                    .unwrap();
+            status.mint_authorization_ttl_seconds = 600;
+            let status_raw = candid::Encode!(&status).unwrap();
+            receipt.before_bridge_status_response_hex = hex(&status_raw);
+            receipt.before_bridge_status_response_sha256 = hex(&Sha256::digest(&status_raw));
+            let proof = receipt.before_operational_config.as_ref().unwrap();
+            let mut config = match super::super::decode_candid_hex::<
+                super::super::OperationalConfigResultView,
+            >(&proof.response_hex)
+            .unwrap()
+            {
+                super::super::OperationalConfigResultView::Ok(config) => config,
+                _ => panic!("fixture requires operational config"),
+            };
+            config.mint_authorization_ttl_seconds = 600;
+            let proof = super::super::OperationalEpochEvidence::from_response(&hex(
+                &candid::Encode!(&super::super::OperationalConfigResultView::Ok(config)).unwrap(),
+            ))
+            .unwrap();
+            let mut runtime: super::super::RuntimeBindingView =
+                super::super::decode_candid_hex(&receipt.before_runtime_binding_response_hex)
+                    .unwrap();
+            runtime.operational_config_sha256 = super::super::decode_hex(
+                &super::super::operational_epoch_digest(
+                    &proof.response_hex,
+                    profile.parameters.ledger_fee,
+                    status.mint_authorization_epoch,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let runtime_raw = candid::Encode!(&runtime).unwrap();
+            receipt.before_runtime_binding_response_hex = hex(&runtime_raw);
+            receipt.before_runtime_binding_response_sha256 = hex(&Sha256::digest(&runtime_raw));
+            receipt.before_operational_config = Some(proof);
+        }
         let active = candid::Encode!(&super::super::ProductionLifecycleResultView::Ok(
             ProductionLifecycleView::Activated
         ))
@@ -1182,6 +1269,47 @@ mod tests {
         let verified = verify_evidence(&bytes, &registry, |_, _| Ok(())).unwrap();
         assert_eq!(verified.module_sha256, receipt.after_module_sha256);
         assert_eq!(verified.terminal.runtime.schema_version, 36);
+        assert_eq!(verified.terminal.observed_epoch.1, 900);
+        let base_evidence =
+            super::super::canonical_bytes(&build(&checkpoint, &receipt_bytes)).unwrap();
+        let mut base: Evidence = serde_json::from_slice(&base_evidence).unwrap();
+        base.entries.clear();
+        let predecessor = verify_evidence(
+            &super::super::canonical_bytes(&base).unwrap(),
+            &registry,
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        let mut raw = vec![
+            receipt.before_bridge_status_response_hex.clone(),
+            receipt.before_lifecycle_response_hex.clone(),
+            receipt.before_runtime_binding_response_hex.clone(),
+            receipt.before_storage_integrity_response_hex.clone(),
+            receipt
+                .before_operational_config
+                .as_ref()
+                .unwrap()
+                .response_hex
+                .clone(),
+            receipt.after_bridge_status_response_hex.clone(),
+            receipt.after_lifecycle_response_hex.clone(),
+            receipt.after_runtime_binding_response_hex.clone(),
+            receipt.after_storage_integrity_response_hex.clone(),
+        ];
+        assert_eq!(
+            preserved_digest(&predecessor, &raw).unwrap(),
+            receipt.after_public_state_sha256
+        );
+        raw[6] = hex(
+            &candid::Encode!(&super::super::ProductionLifecycleResultView::Ok(
+                ProductionLifecycleView::OperationalConfigSealed
+            ))
+            .unwrap(),
+        );
+        assert!(preserved_digest(&predecessor, &raw).is_err());
+        let ui: serde_json::Value = serde_json::from_slice(&ui_runtime(&verified,
+            br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/reviewed_fixture"}"#).unwrap()).unwrap();
+        assert_eq!(ui["canisterSchemaVersion"], 36);
         let submission: super::super::ProductionUpgradeSubmission = serde_json::from_slice(
             &super::super::decode_hex(&receipt.submission_json_hex).unwrap(),
         )

@@ -35,10 +35,16 @@ export function createProfileChain(profile: DeploymentProfile) {
 
 export const profileChain = createProfileChain(deploymentProfile)
 
-export function createBasePublicClient(profile: DeploymentProfile = deploymentProfile) {
+export function createBasePublicClient(
+  profile: DeploymentProfile = deploymentProfile,
+  signal?: AbortSignal,
+) {
   return createPublicClient({
     chain: createProfileChain(profile),
-    transport: http(resolvedBaseRpcUrl(profile), { retryCount: 0 }),
+    transport: http(resolvedBaseRpcUrl(profile), {
+      retryCount: 0,
+      ...(signal ? { fetchOptions: { signal } } : {}),
+    }),
   })
 }
 

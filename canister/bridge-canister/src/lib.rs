@@ -18,6 +18,7 @@ mod api;
 mod base_governance;
 pub mod config;
 mod consent;
+mod cycles_top_up;
 mod evm_rpc;
 mod ledger;
 mod mint_authorization;
@@ -385,6 +386,7 @@ fn init(args: config::BridgeInitArgs) {
     install_store(store);
     scheduler::arm();
     scheduler::arm_funding_recovery();
+    cycles_top_up::start();
 }
 
 pub(crate) fn current_asset_operation_lifecycle_decision(
@@ -518,6 +520,7 @@ fn finish_post_upgrade(store: StableStore) {
     });
     scheduler::arm();
     scheduler::arm_funding_recovery();
+    cycles_top_up::start();
 }
 
 #[cfg(not(feature = "test-deployment"))]
@@ -621,6 +624,11 @@ fn post_upgrade(args: config::StagingUpgradeArgs) {
     apply_staging_rpc_provider_update(&mut store, &args)
         .unwrap_or_else(|error| ic_cdk::trap(error));
     finish_post_upgrade(store);
+}
+
+#[ic_cdk::update]
+async fn check_cycles_top_up() -> Result<(), String> {
+    cycles_top_up::check(ic_cdk::api::is_controller(&ic_cdk::api::msg_caller())).await
 }
 
 #[ic_cdk::update]
@@ -2586,7 +2594,7 @@ mod candid_tests {
         let mut governance_operator = vec![0; 20];
         governance_operator[19] = 3;
         let config = super::OperationalConfig {
-            mint_authorization_ttl_seconds: 600,
+            mint_authorization_ttl_seconds: 900,
             mint_authorization_epoch: 7,
             governance_operator,
             deposit_rate_limit_window_seconds: 60,
@@ -2628,9 +2636,9 @@ mod candid_tests {
         assert_eq!(
             super::operational_config_sha256(&config),
             [
-                0xef, 0xe2, 0x86, 0x2b, 0x6c, 0xfb, 0xa2, 0x8a, 0xce, 0x6b, 0x50, 0x08, 0x22, 0x19,
-                0x61, 0x55, 0x6a, 0x75, 0x49, 0x58, 0x82, 0x69, 0x00, 0x1b, 0xb5, 0xa1, 0x59, 0x04,
-                0xa5, 0xd5, 0xf0, 0xc3,
+                0x5b, 0x28, 0xcf, 0x27, 0x02, 0x43, 0xb8, 0x4d, 0xd4, 0x1c, 0xb1, 0x89, 0x18, 0xf7,
+                0x9d, 0x0e, 0x44, 0x57, 0xc1, 0x08, 0x52, 0xbd, 0x6f, 0xa8, 0xb8, 0x66, 0x43, 0x1e,
+                0x67, 0xd7, 0xfa, 0x48,
             ]
         );
     }

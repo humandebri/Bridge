@@ -2,7 +2,7 @@ import BridgeSpec.Model
 
 namespace BridgeSpec.MintAuthorization
 
-def authorizationTtl : Nat := 600
+def authorizationTtl : Nat := 900
 def maxU64 : Nat := 2 ^ 64 - 1
 
 def deadlineFromIssuedAt (issuedAtTimestamp : Nat) : Option Nat :=

@@ -7,9 +7,13 @@ export interface IndexActor {
   status(): Promise<{ num_blocks_synced: bigint }>
 }
 
-export async function createIndexActor(host: string, canisterId: string): Promise<IndexActor> {
+export async function createIndexActor(
+  host: string,
+  canisterId: string,
+  signal?: AbortSignal,
+): Promise<IndexActor> {
   const index = IcrcIndexCanister.create({
-    agent: await createIcAgent(host),
+    agent: await createIcAgent(host, undefined, signal),
     canisterId: Principal.fromText(canisterId),
   })
   return {

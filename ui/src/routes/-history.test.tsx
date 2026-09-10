@@ -86,6 +86,8 @@ function renderHistory(
 describe("History refresh", () => {
   it.each(["automatic", "manual"])("refreshes finalized time through %s refresh", async (mode) => {
     renderHistory()
+    expect(screen.queryByRole("textbox", { name: "Base transaction hash" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Restore transaction" })).not.toBeInTheDocument()
     await screen.findByText("Waiting for Base finality")
     mocks.block.mockResolvedValue({ timestamp: 1_001n })
     if (mode === "manual") fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
@@ -194,7 +196,14 @@ function expectRefundOnlyAfterDeadline(reason: SettlementStopReason): void {
   view.rerender(<DepositActivityRow {...props} processedWithoutReceipt />)
   expect(screen.getByText("Processed on Base")).toBeInTheDocument()
   expect(screen.queryByText("Ready to mint")).not.toBeInTheDocument()
-  expect(screen.getByText("Restore with a transaction hash")).toBeInTheDocument()
+  expect(screen.queryByText(/Restore.*History/)).not.toBeInTheDocument()
+  if (!deploymentProfile.mintRecoveryUrl)
+    expect(screen.getByText(/recovery without a saved transaction hash is not supported/)).toBeInTheDocument()
+  expect(
+    screen.getByText(
+      deploymentProfile.mintRecoveryUrl ? "取引を自動検索中" : "Transaction confirmation unavailable",
+    ),
+  ).toBeInTheDocument()
 }
 
 function depositItem(

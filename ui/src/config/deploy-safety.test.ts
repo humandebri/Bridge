@@ -11,6 +11,7 @@ describe("UI deployment safety", () => {
     const hashes = { profileFileSha256: "b".repeat(64), profileCanonicalSha256: "c".repeat(64) }
     const production = {
       testOnly: false,
+      mintRecoveryUrl: "https://recovery.bridge.kinic.xyz/v1/mint-recovery",
       environmentMode: null,
       activationTimelockDelaySeconds: 86_400,
       timelockAddress: `0x${"11".repeat(20)}`,
@@ -23,6 +24,9 @@ describe("UI deployment safety", () => {
       uiRpcConfigSha256: "f".repeat(64),
     }
     expect(() => assertProductionUiProfile(production, manifest)).not.toThrow()
+    expect(() =>
+      assertProductionUiProfile({ ...production, mintRecoveryUrl: undefined }, manifest),
+    ).toThrow("recovery URL")
     for (const drift of [
       { canisterSchemaVersion: 35 },
       { canisterModuleSha256: undefined },

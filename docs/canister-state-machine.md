@@ -51,7 +51,7 @@ RefundPending
 ```
 
 1. `EscrowedUnquoted → AuthorizationPending`では、Finalized Base snapshot、quote、全Authorization field、EIP-712 domain、digest、作成元Finalized block number/hash/timestamp、mint capacity予約、jobを一つのSQLite transactionで保存する。
-2. Finalized Base snapshotは状態・fee・pause・返金証拠だけに使う。deadlineはIC合意時刻の`issued_at_timestamp`へ固定TTL 10分（600秒）をchecked-addして一度だけ決め、Finalized timestampとの加算関係を持たない。
+2. Finalized Base snapshotは状態・fee・pause・返金証拠だけに使う。deadlineはIC合意時刻の`issued_at_timestamp`へ固定TTL 15分（900秒）をchecked-addして一度だけ決め、Finalized timestampとの加算関係を持たない。
 3. threshold ECDSAの`await`前にdispatch済みフラグとattempt番号を保存する。timeout、callback消失、upgrade後も同一digestだけを再署名し、deadlineやpayloadを変更しない。65-byte署名はlow-s `r || s || v`へ正規化し、復元addressが期待するMint Signerと一致した場合だけ、同じtransactionでservice feeを一度だけfee reserveへ計上して公開する。
 4. `AuthorizationAvailable`では任意Base walletが署名済みpayloadをcontractへ送り、そのwalletがgasを支払う。Canisterは期間中のtransactionやreceiptを追跡しない。
 5. 署名installはIC合意時刻で残り300秒以上の場合だけ許可する。300秒ちょうどを受理し、299秒以下では署名とservice fee計上を行わず、Finalized未処理証拠を待つ。新規Depositなどで取得したBase Finalized snapshotを使うdeadline順indexは、`finalized_timestamp > deadline`だけを期限切れとし、等値では予約を保持する。

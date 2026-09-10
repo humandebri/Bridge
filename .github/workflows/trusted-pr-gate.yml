@@ -154,14 +154,14 @@ jobs:
         with:
           version: v1.7.1
       - name: Install uv 0.8.4
-        if: matrix.area == 'proofs-impacted'
+        if: matrix.area == 'policy' || matrix.area == 'proofs-impacted'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: 0.8.4
           enable-cache: false
       - name: Restore cached proof toolchain
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: matrix.area == 'proofs-impacted'
+        if: matrix.area == 'policy' || matrix.area == 'proofs-impacted'
         with:
           path: |
             /home/runner/.elan
@@ -177,14 +177,14 @@ jobs:
           mode="ci"
           while IFS= read -r area; do
             case "$area" in
-              proofs-impacted) mode="all"; break ;;
+              policy|proofs-impacted) mode="all"; break ;;
               *) mode="ci" ;;
             esac
           done < <(jq -r '.[]' <<< "$AREAS")
           trusted-policy/scripts/install-ci-tools.sh "$mode"
       - name: Save cached proof toolchain
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: matrix.area == 'proofs-impacted'
+        if: matrix.area == 'policy' || matrix.area == 'proofs-impacted'
         with:
           path: |
             /home/runner/.elan

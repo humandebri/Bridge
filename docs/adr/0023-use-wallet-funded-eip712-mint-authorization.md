@@ -6,8 +6,10 @@ status: accepted
 
 CanisterはDeposit Mint transactionを作成・送信せず、Finalized Base snapshotへ束縛したEIP-712 `MintAuthorization`へthreshold ECDSA署名する。任意のBase walletが`mintDepositWithAuthorization`を送り、そのwalletがgasを支払う。recipientは署名に固定する。
 
-AuthorizationはIC合意時刻の`issued_at_timestamp`から固定600秒の期限を持ち、同じDeposit IDへdigestやdeadlineを変えた再発行をしない。threshold署名のinstall時に300秒以上残る場合だけservice feeを一度だけ確定する。既存のFinalized snapshotが期限を厳密に超えたときは個別Base照合なしでmint予約を解放し、`RefundAvailable`にする。この段落は、Finalized timestamp起点の旧2時間契約を置換する。
+AuthorizationはIC合意時刻の`issued_at_timestamp`から固定900秒の期限を持ち、同じDeposit IDへdigestやdeadlineを変えた再発行をしない。threshold署名のinstall時に300秒以上残る場合だけservice feeを一度だけ確定する。既存のFinalized snapshotが期限を厳密に超えたときは個別Base照合なしでmint予約を解放し、`RefundAvailable`にする。この段落は、Finalized timestamp起点の旧2時間契約を置換する。
 
 この決定により、Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacement、成功後のIC wallet確認署名を削除する。UIがBase receipt/eventをCanister Depositと統合して成功を表示する。Refundは`request_deposit_refund`でだけ起動し、任意の非anonymous Principalが進行できるが、宛先・金額・transfer identityはDeposit recordに固定する。認可発行済みならcanonical Finalized blockで`isDepositProcessed`を検証する。未処理だけを返金し、処理済みはexact event/receiptを保存して`Minted`へ進め、不一致時は資金を動かさずfail closedする。自動Base照合と自動Ledger refundは持たない。
 
 UI の取引確認、mint 成功通知、履歴一覧は [ADR 0028](0028-confirm-transactions-and-list-recorded-history.md) に従う。成功通知は返金要求とは別の操作とする。
+
+UIの送信前検証は残り300秒を要求せず、latest Base timestampがdeadlineを超えた場合に拒否する。Canisterの署名install時の300秒条件と、Solidityのlatest timestamp + 900秒上限は維持する。既に発行した署名のdeadlineは延長しない。

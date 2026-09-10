@@ -162,7 +162,7 @@ fn authorization_deadline_uses_issue_time_despite_twenty_or_thirty_minute_finali
         let mut authorization = authorization_record(&deposit);
         authorization.origin.finalized_block_timestamp = finalized_timestamp;
         authorization.origin.issued_at_timestamp = 2_000;
-        authorization.authorization.deadline = 2_600;
+        authorization.authorization.deadline = 2_900;
 
         deposit
             .apply(DepositEvent::CommitAuthorization {
@@ -177,7 +177,7 @@ fn authorization_deadline_uses_issue_time_despite_twenty_or_thirty_minute_finali
                 .expect("authorization")
                 .authorization
                 .deadline,
-            2_600
+            2_900
         );
     }
 }

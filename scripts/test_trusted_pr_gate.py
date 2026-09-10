@@ -3,6 +3,8 @@
 
 from pathlib import Path
 import os
+import re
+import textwrap
 import subprocess
 import tempfile
 import unittest
@@ -164,6 +166,52 @@ class TrustedPrGateTests(unittest.TestCase):
                 source = (ROOT / relative).read_text(encoding="utf-8")
                 self.assertIn("require_trusted_execution_context", source)
                 self.assertNotIn("BRIDGE_TRUSTED_PROFILE", source)
+
+    def test_policy_toolchain_preparation_by_mode(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        steps = dict(re.findall(
+            r"^      - name: ([^\n]+)\n(.*?)(?=^      - name: |\Z)",
+            workflow, re.MULTILINE | re.DOTALL,
+        ))
+        installer = textwrap.dedent(steps["Install CI toolchain"].split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            stub = Path(directory) / "trusted-policy/scripts/install-ci-tools.sh"
+            stub.parent.mkdir(parents=True)
+            stub.write_text('#!/bin/bash\nprintf "%s\\n" "$1"\n', encoding="utf-8")
+            stub.chmod(0o755)
+            for area in ("policy", "proofs-impacted", "rust-fast", "rust-integration", "ui-fast", "ui-e2e", "contracts-fast", "real", "icp", "certora"):
+                required = area in {"policy", "proofs-impacted"}
+                with self.subTest(area=area):
+                    result = subprocess.run(
+                        ["bash", "-eu", "-c", installer], cwd=directory,
+                        env={**os.environ, "AREAS": '["' + area + '"]'},
+                        text=True, capture_output=True, check=True,
+                    )
+                    self.assertEqual(result.stdout.strip(), "all" if required else "ci")
+                    for name in ("Install uv 0.8.4", "Restore cached proof toolchain", "Save cached proof toolchain"):
+                        condition = re.search(r"^        if: (.+)$", steps[name], re.MULTILINE).group(1)
+                        result = subprocess.run(
+                            ["bash", "-c", "[[ " + condition.replace("matrix.area", '"$AREA"') + " ]]"],
+                            env={**os.environ, "AREA": area}, capture_output=True,
+                        )
+                        self.assertEqual(result.returncode, 0 if required else 1, name)
+        self.assertIn("version: 0.8.4", steps["Install uv 0.8.4"])
+
+    def test_lean_mounts_are_selected_for_policy_and_proofs_only(self) -> None:
+        wrapper = (ROOT / "scripts/trusted-pr-container.sh").read_text(encoding="utf-8")
+        blocks = re.findall(r"^if ([^\n]+); then\n(.*?)^fi$", wrapper, re.MULTILINE | re.DOTALL)
+        lean_blocks = [(condition, body) for condition, body in blocks
+                       if "TOOL_PATHS+=(.elan)" in body or "dst=/scratch/home/.elan/toolchains" in body]
+        self.assertEqual(len(lean_blocks), 2)
+        self.assertIn("dst=/scratch/home/.elan/toolchains,readonly", lean_blocks[1][1])
+        for mode in ("policy", "proofs", "proofs-impacted", "rust-fast", "rust-integration", "ui-fast", "real", "icp", "certora"):
+            for condition, _ in lean_blocks:
+                with self.subTest(mode=mode, condition=condition):
+                    result = subprocess.run(
+                        ["bash", "-c", condition], env={**os.environ, "MODE": mode},
+                        capture_output=True,
+                    )
+                    self.assertEqual(result.returncode, 0 if mode in {"policy", "proofs", "proofs-impacted"} else 1)
 
     def test_untrusted_lifecycle_never_runs_before_policy_and_isolation_are_fixed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

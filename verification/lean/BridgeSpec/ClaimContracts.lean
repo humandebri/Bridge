@@ -579,4 +579,13 @@ theorem nonterminal_deposit_index_consistency_witness :
     NonterminalDepositIndexConsistency :=
   MintAuthorization.nonterminal_deposit_index_matches_nonterminal_phases
 
+def CyclesTopUpRequestPolicy : Prop :=
+  ∀ (balance threshold : Nat) (inProgress authorized : Bool),
+    (authorized && !inProgress && decide (balance ≤ threshold)) = true ↔
+      authorized = true ∧ inProgress = false ∧ balance ≤ threshold
+
+theorem cycles_top_up_request_policy_witness : CyclesTopUpRequestPolicy := by
+  intro balance threshold inProgress authorized
+  simp [Bool.and_eq_true, and_assoc]
+
 end BridgeSpec.ClaimContracts

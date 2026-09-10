@@ -28,6 +28,7 @@ export const deploymentProfileSchema = z
     activationTimelockDelaySeconds: z.number().int().positive().nullable(),
     icHost: z.url(),
     baseRpcUrl: z.url().optional(),
+    mintRecoveryUrl: z.literal("https://recovery.bridge.kinic.xyz/v1/mint-recovery").optional(),
     baseHistoryRpcUrls: z
       .array(z.url())
       .min(1)
@@ -56,6 +57,9 @@ export const deploymentProfileSchema = z
     bsnsRuntimeHash: hash.nullable(),
   })
   .superRefine((profile, context) => {
+    if (profile.mintRecoveryUrl && (profile.testOnly || profile.chainId !== 8453)) {
+      context.addIssue({ code: "custom", message: "Mint discovery is production Mainnet only" })
+    }
     if (!profile.testOnly) return
     try {
       assertEmbeddedTestUiProfile(profile)

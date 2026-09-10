@@ -72,6 +72,7 @@ export function runtimeProfileFingerprint(profile: DeploymentProfile): string {
     profile.activationTimelockDelaySeconds,
     profile.icHost,
     resolvedBaseRpcUrl(profile),
+    profile.mintRecoveryUrl ?? "",
     ...(profile.baseHistoryRpcUrls ?? []),
     profile.chainId,
     profile.bridgeCanisterId,
@@ -161,6 +162,7 @@ export async function refetchRuntimeAttestedWriteReady<
 export async function validateRuntimeHeartbeat(
   profile: DeploymentProfile,
   connectedChainId?: number,
+  signal?: AbortSignal,
 ): Promise<FinalizedRuntimeObservation> {
   const profileFingerprint = runtimeProfileFingerprint(profile)
   const blockers = profileCompleteness(profile)
@@ -170,8 +172,13 @@ export async function validateRuntimeHeartbeat(
     return { ready: false, blockers, checkedAt: Date.now(), profileFingerprint }
 
   const bridgeAddress = profile.bridgeAddress as Address
-  const client = createBasePublicClient(profile)
-  const bridge = await createBridgeActor(profile.icHost, profile.bridgeCanisterId as string)
+  const client = createBasePublicClient(profile, signal)
+  const bridge = await createBridgeActor(
+    profile.icHost,
+    profile.bridgeCanisterId as string,
+    undefined,
+    signal,
+  )
   const [status, localChainId, localFinalized] = await Promise.all([
     bridge.get_bridge_status(),
     client.getChainId(),
@@ -254,6 +261,7 @@ function bridgeSnapshotView(snapshot: {
 export async function validateRuntime(
   profile: DeploymentProfile,
   connectedChainId?: number,
+  signal?: AbortSignal,
 ): Promise<DeploymentAttestation> {
   const profileFingerprint = runtimeProfileFingerprint(profile)
   const blockers = profileCompleteness(profile)
@@ -274,10 +282,10 @@ export async function validateRuntime(
   const bridgeAddress = profile.bridgeAddress as Address
   const bsnsAddress = profile.bsnsAddress as Address
   const timelockAddress = profile.timelockAddress as Address
-  const client = createBasePublicClient(profile)
+  const client = createBasePublicClient(profile, signal)
   const [bridge, ledger] = await Promise.all([
-    createBridgeActor(profile.icHost, profile.bridgeCanisterId as string),
-    createLedgerActor(profile.icHost, profile.ledgerCanisterId as string),
+    createBridgeActor(profile.icHost, profile.bridgeCanisterId as string, undefined, signal),
+    createLedgerActor(profile.icHost, profile.ledgerCanisterId as string, signal),
   ])
   const [config, status, ledgerName, ledgerSymbol, ledgerDecimals, localChainId, localFinalized] =
     await Promise.all([
@@ -416,7 +424,7 @@ export async function validateRuntime(
   if (rpcUrlsDigest.toLowerCase() !== profile.rpcProviderUrlsSha256?.toLowerCase())
     blockers.push("Canister RPC provider URLs differ from the profile")
   try {
-    const index = await createIndexActor(profile.icHost, profile.indexCanisterId as string)
+    const index = await createIndexActor(profile.icHost, profile.indexCanisterId as string, signal)
     const indexLedgerId = await index.ledger_id()
     if (indexLedgerId.toText() !== profile.ledgerCanisterId)
       blockers.push("Index ledger differs from the profile")

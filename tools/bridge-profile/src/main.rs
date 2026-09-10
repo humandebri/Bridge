@@ -5730,6 +5730,13 @@ fn operational_epoch_digest(
     };
     let mut operational_config: OperationalConfigView = config.into();
     operational_config.mint_authorization_epoch = epoch;
+    operational_config_digest(operational_config, ledger_fee)
+}
+
+fn operational_config_digest(
+    operational_config: OperationalConfigView,
+    ledger_fee: u128,
+) -> Result<String, String> {
     let encoded = Encode!(&OperationalConfigBindingView {
         ledger_fee,
         operational_config
@@ -5739,6 +5746,46 @@ fn operational_epoch_digest(
     digest.update(OPERATIONAL_CONFIG_BINDING_DOMAIN);
     digest.update(encoded);
     Ok(hex(&digest.finalize()))
+}
+
+// The only supported TTL migration is the reviewed same-instance v36 600 -> 900 upgrade.
+// Reconstruct the new digest from authenticated old settings, never from a supplied digest.
+fn production_upgrade_ttl_migration_matches(
+    before: &BridgeStatusLiveView,
+    after: &BridgeStatusLiveView,
+    before_runtime: &LiveRuntimeBinding,
+    after_runtime: &LiveRuntimeBinding,
+    evidence: Option<&OperationalEpochEvidence>,
+    ledger_fee: u128,
+) -> Result<bool, String> {
+    if before_runtime.schema_version != 36
+        || after_runtime.schema_version != 36
+        || before.mint_authorization_ttl_seconds != 600
+        || after.mint_authorization_ttl_seconds != 900
+    {
+        return Ok(false);
+    }
+    let Some(evidence) = evidence else {
+        return Ok(false);
+    };
+    validate_operational_epoch_snapshot(evidence, before, before_runtime, ledger_fee)?;
+    let mut expected_status = before.clone();
+    expected_status.mint_authorization_ttl_seconds = 900;
+    if !production_upgrade_status_preserved(&expected_status, after) {
+        return Ok(false);
+    }
+    let config = match decode_candid_hex::<OperationalConfigResultView>(&evidence.response_hex)? {
+        OperationalConfigResultView::Ok(value) => *value,
+        OperationalConfigResultView::Err(_) => {
+            return Err("operational config preimage is unavailable".into())
+        }
+    };
+    let mut operational_config: OperationalConfigView = config.into();
+    operational_config.mint_authorization_ttl_seconds = 900;
+    let mut expected_runtime = before_runtime.clone();
+    expected_runtime.operational_config_sha256 =
+        operational_config_digest(operational_config, ledger_fee)?;
+    Ok(expected_runtime == *after_runtime)
 }
 
 fn production_upgrade_live_predecessor_matches(
@@ -6370,6 +6417,14 @@ fn validate_production_upgrade_receipts_from_start(
             );
         }
         expected_runtime = before_binding.clone();
+        let ttl_migration = production_upgrade_ttl_migration_matches(
+            &before_status,
+            &after_status,
+            &before_binding,
+            &after_binding,
+            entry.before_operational_config.as_ref(),
+            gate_a_profile.parameters.ledger_fee,
+        )?;
         let unchanged = before_binding == expected_runtime
             && after_binding == expected_runtime
             && production_upgrade_status_preserved(&before_status, &after_status)
@@ -6526,7 +6581,11 @@ fn validate_production_upgrade_receipts_from_start(
             || before_status.deposits_paused != after_status.deposits_paused
             || !entry.before_storage_validation_complete
             || !entry.after_storage_validation_complete
-            || (!unchanged && !pause_migration && !schema_migration && !combined_migration)
+            || (!unchanged
+                && !ttl_migration
+                && !pause_migration
+                && !schema_migration
+                && !combined_migration)
             || entry.before_lifecycle_response_hex != entry.after_lifecycle_response_hex
             || entry.before_storage_integrity_response_hex
                 != entry.after_storage_integrity_response_hex
@@ -6747,6 +6806,14 @@ fn validate_post_gate_a_policy_transition(
             );
         }
         expected_runtime = entry_before_binding.clone();
+        let ttl_migration = production_upgrade_ttl_migration_matches(
+            &entry_before_status,
+            &entry_after_status,
+            &entry_before_binding,
+            &entry_after_binding,
+            entry.before_operational_config.as_ref(),
+            gate_a_profile.parameters.ledger_fee,
+        )?;
         let unchanged_runtime = entry_before_binding == expected_runtime
             && entry_after_binding == expected_runtime
             && production_upgrade_status_preserved(&entry_before_status, &entry_after_status)
@@ -6840,7 +6907,11 @@ fn validate_post_gate_a_policy_transition(
             || entry_before_status.deposits_paused != entry_after_status.deposits_paused
             || !entry.before_storage_validation_complete
             || !entry.after_storage_validation_complete
-            || (!unchanged_runtime && !pause_migration && !schema_migration && !combined_migration)
+            || (!unchanged_runtime
+                && !ttl_migration
+                && !pause_migration
+                && !schema_migration
+                && !combined_migration)
             || entry.before_lifecycle_response_hex != entry.after_lifecycle_response_hex
             || entry.before_storage_integrity_response_hex
                 != entry.after_storage_integrity_response_hex
@@ -6921,7 +6992,17 @@ fn validate_post_gate_a_policy_transition(
             &before_runtime,
             &after_runtime,
         )?;
+    let last_ttl_migration_transition = last_after_binding == expected_runtime
+        && production_upgrade_ttl_migration_matches(
+            &before_status,
+            &after_status,
+            &last_before_binding,
+            &last_after_binding,
+            upgrade.before_operational_config.as_ref(),
+            gate_a_profile.parameters.ledger_fee,
+        )?;
     let last_runtime_transition_valid = last_unchanged_transition
+        || last_ttl_migration_transition
         || last_pause_migration_transition
         || (before_lifecycle == ProductionLifecycleView::Bootstrap
             && after_lifecycle == ProductionLifecycleView::Bootstrap
@@ -8474,6 +8555,10 @@ fn production_ui_runtime_profile_from_digest(
         .as_object_mut()
         .ok_or("UI runtime profile must be an object")?;
     fields.insert("baseRpcUrl".into(), serde_json::json!(rpc.base_rpc_url));
+    fields.insert(
+        "mintRecoveryUrl".into(),
+        serde_json::json!("https://recovery.bridge.kinic.xyz/v1/mint-recovery"),
+    );
     fields.insert(
         "canisterSchemaVersion".into(),
         serde_json::json!(terminal.runtime.schema_version),
@@ -12793,7 +12878,7 @@ fn run() -> Result<(), String> {
                 runtime.schema_version
             );
         }
-        Some("verify-production-upgrade-state-preserved") if args.len() == 12 => {
+        Some("verify-production-upgrade-state-preserved") if matches!(args.len(), 12 | 13) => {
             let (before, before_lifecycle, before_runtime, before_digest) = production_upgrade_query_state_any(
                 &args[2], &args[3], &args[4], &args[5],
             )?;
@@ -12810,6 +12895,14 @@ fn run() -> Result<(), String> {
                 &gate_a_profile_source,
                 &gate_a_receipt,
             )?;
+            let operational = args.get(12).map(|raw| OperationalEpochEvidence::from_response(raw)).transpose()?;
+            let ttl_migration = args[3] == args[7] && args[5] == args[9]
+                && production_upgrade_ttl_migration_matches(
+                    &before, &after,
+                    &live_runtime_binding_from_view(&before_runtime),
+                    &live_runtime_binding_from_view(&after_runtime),
+                    operational.as_ref(), gate_a_profile.parameters.ledger_fee,
+                )?;
             let unchanged = production_upgrade_status_preserved(&before, &after)
                 && args[3] == args[7]
                 && args[4] == args[8]
@@ -12870,7 +12963,7 @@ fn run() -> Result<(), String> {
                     before.deposits_paused,
                 )
                 || !production_lifecycle_pause_valid(after_lifecycle, after.deposits_paused)
-                || (!unchanged && !pause_migration && !schema_migration && !combined_migration)
+                || (!unchanged && !ttl_migration && !pause_migration && !schema_migration && !combined_migration)
             {
                 return Err("production public state was not preserved across upgrade".into());
             }
@@ -13616,6 +13709,79 @@ mod tests {
         let changed_live =
             live_runtime_binding_from_view(&matching_handover_runtime(&changed, &status));
         assert!(!check(&terminal, &status, &changed_live, Some(&wrong_config)).unwrap());
+    }
+
+    #[test]
+    fn production_upgrade_ttl_migration_requires_exact_v36_preimage() {
+        let mut profile = valid_profile();
+        profile.canister_schema_version = 36;
+        let mut before = matching_handover_status();
+        before.mint_authorization_ttl_seconds = 600;
+        let mut after = before.clone();
+        after.mint_authorization_ttl_seconds = 900;
+        let old = live_runtime_binding_from_view(&matching_handover_runtime(&profile, &before));
+        let new = live_runtime_binding_from_view(&matching_handover_runtime(&profile, &after));
+        let proof = operational_epoch_fixture(&profile, 600, before.mint_authorization_epoch);
+        let check = |a: &BridgeStatusLiveView,
+                     b: &BridgeStatusLiveView,
+                     x: &LiveRuntimeBinding,
+                     y: &LiveRuntimeBinding,
+                     p: Option<&OperationalEpochEvidence>| {
+            production_upgrade_ttl_migration_matches(a, b, x, y, p, profile.parameters.ledger_fee)
+        };
+        assert!(check(&before, &after, &old, &new, Some(&proof)).unwrap());
+        assert!(!production_upgrade_status_preserved(&before, &after));
+        assert!(production_upgrade_status_preserved(&after, &after));
+        assert!(!check(&before, &after, &old, &new, None).unwrap());
+        assert!(!check(&after, &before, &new, &old, Some(&proof)).unwrap());
+        for ttl in [0, 599, 601, 899, 901, u64::MAX] {
+            let mut changed = after.clone();
+            changed.mint_authorization_ttl_seconds = ttl;
+            assert!(!check(&before, &changed, &old, &new, Some(&proof)).unwrap());
+        }
+        for field in 0..12 {
+            let mut changed = after.clone();
+            match field {
+                0 => changed.mint_authorization_epoch += 1,
+                1 => changed.deposits_paused = !changed.deposits_paused,
+                2 => changed.reserve.sufficient = false,
+                3 => changed.counts.deposits += 1,
+                4 => changed.counts.withdrawals += 1,
+                5 => changed.counts.reconciliation_holds += 1,
+                6 => changed.counts.pending_ledger_operations += 1,
+                7 => changed.counts.reserved_deposit_mint_amount += 1,
+                8 => changed.counts.reserved_deposit_mint_operations += 1,
+                9 => changed.counts.retained_audit_events += 1,
+                10 => changed.counts.pruned_audit_events += 1,
+                _ => changed.counts.retained_deposit_index_entries += 1,
+            }
+            assert!(!check(&before, &changed, &old, &new, Some(&proof)).unwrap());
+        }
+        for version in [34, 35, 37] {
+            let mut changed = old.clone();
+            changed.schema_version = version;
+            assert!(!check(&before, &after, &changed, &new, Some(&proof)).unwrap());
+            let mut changed = new.clone();
+            changed.schema_version = version;
+            assert!(!check(&before, &after, &old, &changed, Some(&proof)).unwrap());
+        }
+        let mut changed = new.clone();
+        changed.deployment_instance_id = "ab".repeat(32);
+        assert!(!check(&before, &after, &old, &changed, Some(&proof)).unwrap());
+        changed = new.clone();
+        changed.operational_config_sha256 = "ab".repeat(32);
+        assert!(!check(&before, &after, &old, &changed, Some(&proof)).unwrap());
+        let mut changed_profile = profile.clone();
+        changed_profile.rate_limits.notification_global += 1;
+        let changed =
+            live_runtime_binding_from_view(&matching_handover_runtime(&changed_profile, &after));
+        assert!(!check(&before, &after, &old, &changed, Some(&proof)).unwrap());
+        let wrong =
+            operational_epoch_fixture(&changed_profile, 600, before.mint_authorization_epoch);
+        assert!(check(&before, &after, &old, &new, Some(&wrong)).is_err());
+        let mut wrong = proof.clone();
+        wrong.response_sha256 = "ab".repeat(32);
+        assert!(check(&before, &after, &old, &new, Some(&wrong)).is_err());
     }
 
     #[test]

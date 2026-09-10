@@ -1466,8 +1466,8 @@ def validate_live_acceptance(details: dict[str, Any], binding: dict[str, Any]) -
             fail(f"live acceptance {field} differs from the reviewed binding")
     if require_pattern(details, "bridge_runtime_sha256", EVM_HASH, context) != binding["bridge_runtime_sha256"]:
         fail("live acceptance Bridge runtime differs from the reviewed binding")
-    if require_nat(details, "mint_authorization_ttl_seconds", context) != 600:
-        fail("live acceptance requires the 600-second authorization TTL")
+    if require_nat(details, "mint_authorization_ttl_seconds", context) != 900:
+        fail("live acceptance requires the 900-second authorization TTL")
     if require_nat(details, "solidity_max_authorization_horizon_seconds", context) != 900:
         fail("live acceptance requires the 900-second Solidity horizon")
     require_pattern(details, "monitoring_receipt_sha256", SHA256, context)

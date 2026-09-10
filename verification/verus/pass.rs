@@ -7,6 +7,13 @@ use vstd::prelude::*;
 mod kernel;
 
 verus! {
+proof fn cycles_top_up_requires_authority_low_balance_and_idle(
+    balance: int, threshold: int, in_progress: bool, authorized: bool,
+)
+    ensures kernel::cycles_top_up_request_allowed_spec(balance, threshold, in_progress, authorized)
+        == (authorized && !in_progress && balance <= threshold),
+{}
+
 pub proof fn deposit_recipient_excludes_protocol_contracts(zero: bool, bridge: bool, token: bool)
     ensures kernel::deposit_recipient_allowed_spec(zero, bridge, token) == (!zero && !bridge && !token),
 {}

@@ -1,3 +1,5 @@
+import { mintExecutionDiagnostics } from "@/lib/mint-execution"
+import { toast } from "sonner"
 import { Check, ChevronUp, Circle, LoaderCircle, Minus, TriangleAlert } from "lucide-react"
 import {
   createContext,
@@ -265,6 +267,9 @@ function ProgressDialog({
             )}
           </div>
         </DialogHeader>
+        {progress.phase !== "attention" && progress.attentionMessage && (
+          <p role="alert">{progress.attentionMessage}</p>
+        )}
         {progress.phase === "attention" && (
           <div className="mt-5 rounded-2xl border border-[#ffbdad] bg-[#fff0ec] p-4" role="alert">
             <p className="font-bold text-black">{bridgeProgressLabel(progress)}</p>
@@ -280,6 +285,20 @@ function ProgressDialog({
               {bridgeProgressDetail(progress)}
             </p>
           </div>
+        )}
+        {progress.direction === "deposit" && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              void navigator.clipboard.writeText(mintExecutionDiagnostics()).then(
+                () => toast.success("Diagnostics copied"),
+                () => toast.error("Could not copy diagnostics"),
+              )
+            }}
+          >
+            Copy mint diagnostics
+          </Button>
         )}
         <ol className="mt-5 space-y-1" aria-label="Transfer progress">
           {steps.map((step, index) => (
@@ -348,7 +367,7 @@ function ProgressDialog({
         <DialogFooter>
           {action && (
             <Button disabled={action.pending} onClick={() => void action.run()}>
-              {action.pending ? "Working…" : action.label}
+              {action.pending && progress.direction !== "deposit" ? "Working…" : action.label}
             </Button>
           )}
           {dismissible && <Button onClick={onDismiss}>Close</Button>}

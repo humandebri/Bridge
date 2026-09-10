@@ -1,7 +1,10 @@
+import { rememberMintRecovery, wasMintRequested } from "@/lib/mint-recovery"
+import { loadIcHistoryOwner } from "@/lib/ic-history-owner"
+import { readLatestBridgeProgress } from "@/lib/bridge-progress"
 import { redactRpcUrls } from "@/lib/transfer-error"
 import { observeMint } from "@/lib/mint-observation"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import { toast } from "sonner"
 import { useAccount, useChainId, useWriteContract } from "wagmi"
 import { toHex } from "viem"
@@ -24,9 +27,19 @@ import {
   useRuntimeHeartbeat,
   useRuntimeValidation,
 } from "@/features/status/use-status"
-import { withBrowserLock } from "@/lib/browser-lock"
+import {
+  startMintExecution,
+  subscribeMintExecution,
+  mintExecutionSnapshot,
+  restoreMintExecution,
+  mintExecutionBusy,
+  mintExecutionMessage,
+  mintExecutionDiagnostics,
+  recordRecoveredMint,
+  releaseFinalizedMintAttempt,
+} from "@/lib/mint-execution"
+import { prepareMint, checkMintDeadline, mintWalletConnected } from "@/lib/mint-preflight"
 import { refetchRuntimeAttestedWriteReady } from "@/lib/runtime-validation"
-import { basePublicClient } from "@/lib/evm/client"
 import { contractAuthorization, validateMintAuthorization } from "@/lib/mint-authorization"
 import { mintAuthorizationWindow } from "@/lib/mint-authorization-window"
 import {
@@ -46,6 +59,8 @@ export interface MintConfirmation {
 
 export type MintProgressEvent =
   | { phase: "awaiting-wallet" }
+  | { phase: "storage-warning"; message: string }
+  | { phase: "preparing" }
   | { phase: "submitted"; transactionHash: `0x${string}` }
   | {
       phase: "included"
@@ -83,8 +98,16 @@ export function MintAuthorizationAction({
   }) => void
 }) {
   const { address } = useAccount()
+  const [restoredMint] = useState(
+    () =>
+      wasMintRequested(record) ||
+      (autoPromptOwner !== undefined &&
+        (readLatestBridgeProgress()?.createdAt ?? Infinity) < performance.timeOrigin),
+  )
+  const [storageWarning, setStorageWarning] = useState(false)
   const chainId = useChainId()
   const write = useWriteContract()
+  const writeContractAsync = write.writeContractAsync
   const queryClient = useQueryClient()
   const runtime = useRuntimeValidation(chainId, {
     enabled: false,
@@ -124,9 +147,40 @@ export function MintAuthorizationAction({
     [authorization, contract],
   )
   const authorizationAvailable = "AuthorizationAvailable" in record.state
-  const [pending, setPending] = useState(() =>
+  // IC polls recreate the authorization object; that must not cancel a receipt read.
+  const pendingAuthorizationDigest = pendingExpectation?.authorizationDigest
+  const hasPendingExpectation = pendingExpectation !== undefined
+  const executionKey = [
+    deploymentProfile.chainId,
+    deploymentProfile.bridgeAddress,
+    deploymentProfile.bridgeCanisterId,
+    deploymentProfile.deploymentInstanceId,
+    pendingExpectation?.depositId,
+    pendingExpectation?.authorizationDigest,
+  ]
+    .join(":")
+    .toLowerCase()
+  const execution = useSyncExternalStore(
+    subscribeMintExecution,
+    () => mintExecutionSnapshot(executionKey),
+    () => mintExecutionSnapshot(executionKey),
+  )
+  useEffect(() => {
+    if (pendingExpectation) restoreMintExecution(executionKey)
+  }, [executionKey, pendingExpectation])
+  const [storedPending, setPending] = useState(() =>
     pendingExpectation ? readPendingMint(pendingExpectation) : undefined,
   )
+  const pending = useMemo(() => {
+    if (storedPending) return storedPending
+    return execution.phase === "submitted" && execution.transactionHash && pendingExpectation
+      ? { ...pendingExpectation, transactionHash: execution.transactionHash }
+      : undefined
+  }, [storedPending, execution.phase, execution.transactionHash, pendingExpectation])
+  const progressCallback = useRef(onProgress)
+  useEffect(() => {
+    progressCallback.current = onProgress
+  }, [onProgress])
   const [receiptConfirmed, setReceiptConfirmed] = useState(false)
   const [mintRecorded, setMintRecorded] = useState(false)
   const [terminalReverted, setTerminalReverted] = useState(false)
@@ -149,8 +203,14 @@ export function MintAuthorizationAction({
   }, [authorization, authorizationAvailable])
 
   useEffect(() => {
+    if (pending || !pendingExpectation) return
+    const recovered = readPendingMint(pendingExpectation)
+    if (recovered) recordRecoveredMint(executionKey, recovered.transactionHash)
+  }, [clockNow, executionKey, pending, pendingExpectation])
+
+  useEffect(() => {
     if (
-      !pendingExpectation ||
+      !pendingAuthorizationDigest ||
       !pending ||
       mintRecorded ||
       terminalReverted ||
@@ -226,7 +286,7 @@ export function MintAuthorizationAction({
     identityConflict,
     onProgress,
     pending,
-    pendingExpectation,
+    pendingAuthorizationDigest,
     mintRecorded,
     terminalReverted,
   ])
@@ -256,70 +316,104 @@ export function MintAuthorizationAction({
     else toast.success(`Base mint confirmed (${pending.transactionHash.slice(0, 12)}…).`)
   }, [onMintConfirmed, pending, pendingExpectation, queryClient, receiptConfirmed])
 
-  const mint = useMutation({
-    mutationFn: async () => {
-      if (!address) throw new Error("Connect a Base wallet to pay gas")
-      if (chainId !== deploymentProfile.chainId)
-        throw new Error("Switch the gas-paying wallet to Base")
-      const { hash, validated } = await withBrowserLock(
-        `kinic-wallet-prompt:base:${address.toLowerCase()}`,
-        async () => {
-          // A different wallet prompt may hold this lock long enough to consume
-          // the authorization window, so revalidate only after acquiring it.
-          const observation = await refetchRuntimeAttestedWriteReady(
-            runtime.data,
-            runtime.refetch,
-            heartbeat.refetch,
-          )
-          const validated = await validateMintAuthorization(record, observation)
+  const executionBusy = mintExecutionBusy(execution)
+  const executionBlocked =
+    executionBusy || execution.phase === "unknown" || execution.phase === "submitted"
+  const executeMint = useCallback(
+    async (source: "automatic" | "manual" = "manual") => {
+      if (!address || !pendingExpectation || chainId !== deploymentProfile.chainId) {
+        toast.error("Connect the gas-paying wallet on Base")
+        return
+      }
+      await startMintExecution({
+        key: executionKey,
+        wallet: address,
+        source,
+        connected: () => mintWalletConnected(address, chainId),
+        readPending: () => readPendingMint(pendingExpectation)?.transactionHash,
+        prepare: async (context) => {
+          const result = await prepareMint(record, address, chainId, runtime.data, context)
           if (
-            !pendingExpectation ||
-            validated.digest.toLowerCase() !== pendingExpectation.authorizationDigest.toLowerCase()
-          ) {
+            result.validated.digest.toLowerCase() !==
+            pendingExpectation.authorizationDigest.toLowerCase()
+          )
             throw new Error("Mint authorization changed before submission")
-          }
-          await basePublicClient.simulateContract({
-            account: address,
-            address: deploymentProfile.bridgeAddress as `0x${string}`,
-            abi: bridgeAbi,
-            functionName: "mintDepositWithAuthorization",
-            args: [validated.authorization, validated.signature],
-          })
-          onProgress?.({ phase: "awaiting-wallet" })
-          const hash = await write.writeContractAsync({
-            account: address,
-            address: deploymentProfile.bridgeAddress as `0x${string}`,
-            abi: bridgeAbi,
-            functionName: "mintDepositWithAuthorization",
-            args: [validated.authorization, validated.signature],
-          })
-          return { hash, validated }
+          context.check()
+          const stored = await rememberMintRecovery(
+            record,
+            autoPromptOwner ?? loadIcHistoryOwner()?.account.owner,
+            true,
+          )
+          context.check()
+          if (!stored)
+            throw new Error("Browser storage is unavailable. Retry after storage is available.")
+          return result
         },
-      )
-      const pendingMint = { ...pendingExpectation!, transactionHash: hash }
-      setPending(pendingMint)
-      setReceiptObservation("checking")
-      onProgress?.({ phase: "submitted", transactionHash: hash })
-      await savePendingMint(pendingMint).catch(() => {
-        toast.warning(
-          `Transaction submitted: ${hash}. Keep this hash; browser storage is unavailable.`,
-        )
+        beforeWallet: checkMintDeadline,
+        send: ({ validated }) =>
+          writeContractAsync({
+            account: address,
+            address: deploymentProfile.bridgeAddress as `0x${string}`,
+            abi: bridgeAbi,
+            functionName: "mintDepositWithAuthorization",
+            args: [validated.authorization, validated.signature],
+          }),
+        save: async (hash) => {
+          try {
+            await savePendingMint({ ...pendingExpectation, transactionHash: hash })
+          } catch (error) {
+            setStorageWarning(true)
+            progressCallback.current?.({
+              phase: "storage-warning",
+              message: "Browser storage is unavailable. Keep this page open while the transaction is checked.",
+            })
+            throw error
+          }
+        },
       })
-      return { hash, recipient: validated.recipient }
     },
-    onError: (error) => {
-      onProgress?.({
+    [
+      address,
+      pendingExpectation,
+      chainId,
+      executionKey,
+      record,
+      runtime.data,
+      writeContractAsync,
+      autoPromptOwner,
+    ],
+  )
+  useEffect(() => {
+    if (pending) recordRecoveredMint(executionKey, pending.transactionHash)
+  }, [executionKey, pending])
+  useEffect(() => {
+    if (execution.phase === "submitted" && execution.transactionHash && hasPendingExpectation) {
+      progressCallback.current?.({ phase: "submitted", transactionHash: execution.transactionHash })
+    } else if (executionBusy) {
+      progressCallback.current?.({
+        phase: execution.phase === "wallet" ? "awaiting-wallet" : "preparing",
+      })
+    } else if (
+      execution.phase === "failed" ||
+      execution.phase === "rejected" ||
+      execution.phase === "unknown"
+    ) {
+      progressCallback.current?.({
         phase: "attention",
-        message:
-          error instanceof Error
-            ? redactRpcUrls(error.message)
-            : "The Base mint could not be submitted.",
+        message: redactRpcUrls(mintExecutionMessage(execution) ?? "Mint preflight failed"),
       })
-      toast.error(
-        error instanceof Error ? redactRpcUrls(error.message) : "Base mint could not be submitted",
-      )
-    },
-  })
+    }
+  }, [execution, executionBusy, hasPendingExpectation])
+  const mint = useMemo(
+    () => ({
+      isPending: executionBusy,
+      mutate: () => {
+        void executeMint()
+      },
+      mutateAsync: executeMint,
+    }),
+    [executionBusy, executeMint],
+  )
   const verifyRetry = useMutation({
     mutationFn: async () => {
       if (chainId !== deploymentProfile.chainId)
@@ -346,6 +440,7 @@ export function MintAuthorizationAction({
     if (autoPromptKey) attemptedAutoMintPrompts.add(autoPromptKey)
     setTerminalReverted(false)
     await removePendingMint(pendingExpectation)
+    releaseFinalizedMintAttempt(executionKey)
     setPending(undefined)
     setReceiptConfirmed(false)
     setReceiptObservation("checking")
@@ -364,8 +459,7 @@ export function MintAuthorizationAction({
     authorization !== undefined && estimatedLatestTimestamp !== undefined
       ? mintAuthorizationWindow(authorization.deadline, estimatedLatestTimestamp)
       : undefined
-  const submissionWindowTooShort =
-    authorizationWindow !== undefined && !authorizationWindow.hasMinimumRemainingTime
+  const authorizationExpired = authorizationWindow !== undefined && !authorizationWindow.isUnexpired
   const latestClockUnavailable =
     estimatedLatestTimestamp === undefined || latestBaseClock.isError || latestBaseClock.isStale
   const finalizedDeadlinePassed =
@@ -377,18 +471,14 @@ export function MintAuthorizationAction({
 
   useEffect(() => {
     if (!registerAction) return
-    if (
-      pending ||
-      identityConflict ||
-      submissionWindowTooShort ||
-      !address ||
-      latestClockUnavailable
-    ) {
+    if (pending || identityConflict || authorizationExpired || !address || latestClockUnavailable) {
       registerAction(undefined)
       return
     }
     registerAction({
-      label: "Confirm mint in Base wallet",
+      label: executionBusy
+        ? (mintExecutionMessage(execution) ?? "Preparing mint…")
+        : "Confirm mint in Base wallet",
       pending: mintPending || write.isPending,
       run: async () => {
         await runMint()
@@ -399,25 +489,28 @@ export function MintAuthorizationAction({
     address,
     identityConflict,
     latestClockUnavailable,
+    execution,
+    executionBusy,
     mintPending,
     pending,
     registerAction,
     runMint,
-    submissionWindowTooShort,
+    authorizationExpired,
     write.isPending,
   ])
 
   useEffect(() => {
-    if (finalizedDeadlinePassed && !pending)
+    if (finalizedDeadlinePassed && !pending && !mintPending)
       onProgress?.({
         phase: "attention",
         message:
           "The Mint Authorization expired before a Base transaction was submitted. Open History to confirm the refund path.",
       })
-  }, [finalizedDeadlinePassed, onProgress, pending])
+  }, [finalizedDeadlinePassed, mintPending, onProgress, pending])
 
   useEffect(() => {
     if (
+      restoredMint ||
       !autoPromptKey ||
       attemptedAutoMintPrompts.has(autoPromptKey) ||
       !authorizationAvailable ||
@@ -427,19 +520,22 @@ export function MintAuthorizationAction({
       estimatedLatestTimestamp === undefined ||
       latestBaseClock.isError ||
       latestBaseClock.isStale ||
-      submissionWindowTooShort ||
+      authorizationExpired ||
       identityConflict ||
       pending ||
-      mint.isPending ||
+      executionBlocked ||
       write.isPending
     )
       return
     attemptedAutoMintPrompts.add(autoPromptKey)
-    mint.mutate()
+    void executeMint("automatic")
   }, [
     address,
     authorizationAvailable,
     autoPromptKey,
+    restoredMint,
+    executeMint,
+    executionBlocked,
     chainId,
     estimatedLatestTimestamp,
     identityConflict,
@@ -448,7 +544,7 @@ export function MintAuthorizationAction({
     mint,
     pending,
     recipient,
-    submissionWindowTooShort,
+    authorizationExpired,
     write.isPending,
   ])
 
@@ -477,6 +573,36 @@ export function MintAuthorizationAction({
         compact ? "space-y-1" : "mt-4 rounded-2xl border border-[#bfd7ff] bg-[#eef5ff] p-4 text-sm"
       }
     >
+      {storageWarning && (
+        <p role="alert">
+          Browser storage is unavailable. Keep this page open while the transaction is checked.
+        </p>
+      )}
+      {restoredMint && !pending && (
+        <p role="status">
+          Checking Base for a completed mint. Wallet submission will not restart automatically.
+        </p>
+      )}
+      {execution.phase !== "idle" && (
+        <div className="space-y-1" role="status">
+          {mintExecutionMessage(execution) && (
+            <p>{redactRpcUrls(mintExecutionMessage(execution)!)}</p>
+          )}
+          {execution.transactionHash && <p className="break-all">{execution.transactionHash}</p>}
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              void navigator.clipboard.writeText(mintExecutionDiagnostics()).then(
+                () => toast.success("Diagnostics copied"),
+                () => toast.error("Could not copy diagnostics"),
+              )
+            }}
+          >
+            Copy mint diagnostics
+          </Button>
+        </div>
+      )}
       {!compact && (
         <>
           <p className="font-bold text-black">
@@ -546,11 +672,11 @@ export function MintAuthorizationAction({
         <p className="text-xs font-bold text-[#8a4b08]">
           Latest Base time could not be refreshed. No Base transaction was sent.
         </p>
-      ) : submissionWindowTooShort && !pending ? (
+      ) : authorizationExpired && !pending ? (
         <div className="space-y-2">
           <p className="text-xs font-bold text-[#8a4b08]">
-            Less than five minutes remain, so no Base transaction will be sent. A refund becomes
-            available after Base Finalized time passes the deadline.
+            The mint authorization has expired, so no Base transaction will be sent. A refund
+            becomes available after Base Finalized time passes the deadline.
           </p>
           {finalizedBaseClock.isError && (
             <p className="text-xs font-bold text-[#8a4b08]">
@@ -583,13 +709,17 @@ export function MintAuthorizationAction({
             <Button
               size={compact ? "sm" : "lg"}
               className={compact ? "" : "mt-3 w-full"}
-              disabled={identityConflict || !address || mint.isPending || write.isPending}
+              disabled={identityConflict || !address || executionBlocked || write.isPending}
               onClick={() => {
                 if (autoPromptKey) attemptedAutoMintPrompts.add(autoPromptKey)
                 mint.mutate()
               }}
             >
-              {mint.isPending ? "Minting…" : "Mint on Base"}
+              {executionBusy
+                ? mintExecutionMessage(execution)
+                : execution.phase === "failed" || execution.phase === "rejected"
+                  ? "Retry mint"
+                  : "Mint on Base"}
             </Button>
           )}
         </div>

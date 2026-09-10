@@ -1133,7 +1133,7 @@ export function BridgePage({
         )
       } else {
         toast.warning(
-          `Withdrawal ${broadcast.transactionHash} was submitted, but this browser could not save it. Copy the transaction hash; after it succeeds, recover it from History.`,
+          `Withdrawal ${broadcast.transactionHash} was submitted, but this browser could not save it. Keep the transaction hash and check its status in your wallet.`,
         )
       }
     } catch (error) {

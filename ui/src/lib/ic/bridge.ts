@@ -8,8 +8,9 @@ export async function createBridgeActor(
   host: string,
   canisterId: string,
   identity?: Identity,
+  signal?: AbortSignal,
 ): Promise<ActorSubclass<_SERVICE>> {
-  const agent = await createIcAgent(host, identity)
+  const agent = await createIcAgent(host, identity, signal)
   return Actor.createActor<_SERVICE>(idlFactory, {
     agent,
     canisterId: Principal.fromText(canisterId),

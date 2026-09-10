@@ -1,7 +1,7 @@
 use crate::Amount;
 
 /// Validity issued by the Canister from the IC consensus timestamp.
-pub const MINT_AUTHORIZATION_TTL_SECONDS: u64 = 10 * 60;
+pub const MINT_AUTHORIZATION_TTL_SECONDS: u64 = 15 * 60;
 pub const MINT_AUTHORIZATION_DOMAIN_NAME: &str = "KINIC Bridge";
 pub const MINT_AUTHORIZATION_DOMAIN_VERSION: &str = "1";
 
@@ -156,14 +156,14 @@ mod tests {
 
     #[test]
     fn deadline_is_fixed_and_checked() {
-        assert_eq!(MINT_AUTHORIZATION_TTL_SECONDS, 600);
+        assert_eq!(MINT_AUTHORIZATION_TTL_SECONDS, 900);
         assert_eq!(
             crate::kernel::MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS,
             300
         );
         assert_eq!(
             MintAuthorization::deadline_from_issued_at_timestamp(10),
-            Some(610)
+            Some(910)
         );
         assert_eq!(
             MintAuthorization::deadline_from_issued_at_timestamp(u64::MAX),

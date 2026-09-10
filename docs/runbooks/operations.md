@@ -211,7 +211,7 @@ ownerのRefund請求で`isDepositProcessed(depositId) == true`なのに、`Depos
 
 ## Stable Settlement executorと手動復旧
 
-Mint AuthorizationはIC合意時刻の`issued_at_timestamp`から固定600秒の期限を持ち、threshold署名のinstallには300秒以上の残存時間を要求する。新規Depositなどが取得したFinalized snapshotでdeadline順indexを上限付きに走査し、`Finalized timestamp > deadline`の予約だけを個別RPCなしで解放する。Depositごとのtimer、自動Base照合、自動Ledger返金はない。任意の非anonymous Principalが`request_deposit_refund`を実行すると、認可発行済みDepositの`isDepositProcessed == false`をcanonical blockで確認して固定宛先へ返金する。期限前、等値、RPC不一致では資金を動かさない。
+Mint AuthorizationはIC合意時刻の`issued_at_timestamp`から固定900秒の期限を持ち、threshold署名のinstallには300秒以上の残存時間を要求する。新規Depositなどが取得したFinalized snapshotでdeadline順indexを上限付きに走査し、`Finalized timestamp > deadline`の予約だけを個別RPCなしで解放する。Depositごとのtimer、自動Base照合、自動Ledger返金はない。任意の非anonymous Principalが`request_deposit_refund`を実行すると、認可発行済みDepositの`isDepositProcessed == false`をcanonical blockで確認して固定宛先へ返金する。期限前、等値、RPC不一致では資金を動かさない。
 
 `settlement_scheduler.health = Degraded`の場合はstopped、5分以上overdueのschedule、expired leaseを特定する。active leaseがある間の次回起床はlease期限であり、別のoverdue jobへ即時timerを再armしない。`Faulted`の場合は`last_internal_error`と`last_dispatcher_run_at_ns`を記録し、新規DepositをpauseしてSQLiteを手作業で変更せず、同じWasmをupgradeしてstable job tableからtimerを再armする。改善しなければ障害Wasmとして調査する。
 一時障害の基準retry間隔は公開設定`settlement_retry_interval_seconds`であり、Governance transactionの監視設定とは独立している。
@@ -245,3 +245,47 @@ fee payoutは既存のpayout権限で`continue_fee_payout(payout_id)`を実行�
 アップグレード履歴の終端とlive runtimeで変わり得る観測値は、deposit admissionが保存したmint authorization epochである。Activatedかつunpaused、その他のruntime fields完全一致、TTL不変、epoch正値かつ単調増加の場合に限り、controller認証済み`get_operational_config`の同じ型付きpreimageから旧epochと現epochの両digestを再計算する。任意digestや設定変更は受理しない。driverはpreflightとreceiptの`before_operational_config`にraw CandidとSHA-256を保存し、snapshot status/runtimeとの一致も検証する。v36へ到達するreceipt（36→36を含む）は証拠必須であり、既存公開済み35→35 receiptだけが省略可能。upgradeそのものの前後runtime一致条件は維持する。
 
 `bridge-profile operational-epoch-digests OPERATIONAL_HEX_FILE LEDGER_FEE OLD_EPOCH NEW_EPOCH`はRustの正本Candid encodingで2つのdigestだけを表示する診断コマンド。UI live検証もGate B controllerに束縛した`BRIDGE_PRODUCTION_INSTALLER_IDENTITY`で設定preimageを取得し、同じ条件で履歴終端との一致を確認する。これは外部観測の真正性とICの応答・controller認証に依存する実装検証であり、抽象モデルによる外部事実の証明ではない。
+
+## Launcher による実行 cycles 補充
+
+Bridge は init と成功した upgrade の直後、および24時間ごとに実行 cycles 残高を確認する。
+残高が 2,000,000,000,000 cycles 以下なら固定 launcher `xfug4-5qaaa-aaaak-afowa-cai` の
+`request_cycles : () -> (variant { Ok; Err : RequestCyclesError })` を呼ぶ。
+補充量を指定せず、launcher の認可・資金・要求間隔に従う。cycles-ledger account への送金ではない。
+このタイマーは既存の資産操作の pause や設定 seal とは独立し、upgrade 後に再設定する。
+
+controller は `check_cycles_top_up : () -> (variant { Ok; Err : text })` を手動で呼べる。
+例: `icp canister call <Bridge-canister-id> check_cycles_top_up '()' --network ic --identity <controller-identity>`。
+残高が閾値を超える場合と別要求が実行中の場合も `Ok` を返すため、`Ok` だけで補充成功と判断しない。
+`icp canister status <Bridge-canister-id> --network ic --identity <controller-identity>` の実行残高を確認する。
+
+要求失敗は canister log の `cycles top-up failed:` で確認する。controller が IC dashboard の
+canister logs、または management canister の `fetch_canister_logs` で取得する。
+`Unauthorized` は launcher 側登録、`TooSoon` は要求間隔、`LauncherBalanceTooLow` は launcher の資金、
+`TopUpFailed` は補充実行失敗を調べる。通信タイムアウト時は補充済みの場合もあるため、実行残高を先に確認する。
+自動再試行は次の24時間チェックであり、追加の短時間再試行はしない。
+24時間ごとの確認は急激な消費や停止・凍結による残高枯渇を防ぐ保証ではない。
+
+本番適用前に launcher 管理者の手順または実装で Bridge の許可登録、補充量・要求間隔、
+実行残高へ補充される処理を確認する。公開 Candid の `register_shared_memory` が補充の許可登録を
+兼ねるとは断定しない。この変更だけでは登録や本番 upgrade は実行しない。
+
+`cycles_top_up_request_policy` のローカル要求条件は共有カーネルと Verus に結び付ける。
+実行中フラグ・controller 入力・タイマー・Candid 応答の接続は単体/PocketIC テストで検証するが、
+それらを含む補充全体の保証は `partial` であり、launcher の認可・資金・補充成功と IC runtime に依存する。
+既存の `signing_cycle_reserve` の計算と stable schema v36 は変更しない。
+
+
+### Mainnet Mint復旧Worker
+
+`ui/recovery-worker` は本番専用の候補ハッシュ探索APIであり、Mint・返金・IC通知を実行しない。秘密情報はCloudflare Secretの `ALCHEMY_API_KEY`、`CURSOR_KEY`、`BRIDGE_PROFILE_JSON` に保存する。UI公開用のOrigin制限キーを流用せず、サーバーからTransfers APIを利用できる専用キーを用意する。`CURSOR_KEY` は32文字以上の暗号学的乱数とする。
+
+公開には固定Node.jsで `node ui/recovery-worker/release.mjs dry-run`、続いて `deploy` を実行する。必要な環境変数は `BRIDGE_UI_RUNTIME_PROFILE_FILE`、`BRIDGE_CHECKPOINT_EVIDENCE`、`BRIDGE_UI_RPC_CONFIG`、`BRIDGE_PROOF_RECEIPT`、`RECOVERY_ALCHEMY_API_KEY`、`RECOVERY_CURSOR_KEY`、`BRIDGE_RECOVERY_SMOKE_DEPOSIT_ID`、`BRIDGE_RECOVERY_SMOKE_TRANSACTION_HASH`。スモーク対象は既存の成功済み本番Mintに限る。クリーンなソース、完全な現行proof receipt、v36 live承認を確認し、公開前にAlchemyの候補発見、公開後にWorkerの候補発見を検証する。成功後だけ通常の本番UI公開ゲートへ進む。スモークで新規取引を送信しない。
+
+障害時は当該Workerの `RECOVERY_ENABLED` を `false` にして探索だけ停止する。既知ハッシュのreceipt追跡は継続する。Secret・RPC URL・アドレスをログへ出さず、HTTP状態と所要時間、429、上流障害を監視する。IPとDepositの制限はCloudflare拠点単位の緩やかな制限であり、全世界共通の課金上限ではない。復旧できない場合も「未送信」と判断せず、自動再送しない。Historyへのハッシュ貼り付けによる手動復元は提供しない。
+
+### v36の認可TTL移行
+
+v36の600秒から900秒へのupgradeは、controller取得済みの移行前operational configからTTLだけを置換して移行後digestを計算する。epoch、その他の設定、deployment、lifecycle、pause、公開資産状態は保存し、前後snapshotとそれぞれのpublic-state digestを検証する。通常のupgradeとepoch進行の条件は変更しない。履歴チェーンとcheckpoint suffixも同じ限定判定を使用する。逆方向、他のTTL、混在schema、証拠欠落は拒否する。
+
+本リリースは利用中の600秒認可が残っていないことを運用前提とする。旧認可の延長、再発行、互換送信は行わない。既存のcheckpoint driverは保存した移行前設定をそのまま検証へ渡す。旧CLIの `verify-production-upgrade-state-preserved` でこの移行を検証する場合は、既存引数の末尾に移行前 `get_operational_config` 応答のraw Candid hexを追加する。省略時は従来の検証条件を維持する。

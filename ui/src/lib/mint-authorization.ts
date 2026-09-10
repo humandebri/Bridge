@@ -89,6 +89,7 @@ function assertCanonicalDeposit(record: DepositView, view: MintAuthorizationView
 export async function validateMintAuthorization(
   record: DepositView,
   runtimeObservation: FinalizedRuntimeObservation,
+  client = basePublicClient,
 ): Promise<ValidatedMintAuthorization> {
   const view = record.mint_authorization[0]
   const signatureBytes = view?.signature[0]
@@ -138,13 +139,13 @@ export async function validateMintAuthorization(
   let latestBlock: Awaited<ReturnType<typeof basePublicClient.getBlock>>
   try {
     ;[processed, latestBlock] = await Promise.all([
-      basePublicClient.readContract({
+      client.readContract({
         address: configuredContract,
         abi: bridgeAbi,
         functionName: "isDepositProcessed",
         args: [authorization.depositId],
       }),
-      basePublicClient.getBlock({ blockTag: "latest" }),
+      client.getBlock({ blockTag: "latest" }),
     ])
   } catch {
     throw new Error(
@@ -158,12 +159,8 @@ export async function validateMintAuthorization(
     )
   }
   assertMintAuthorizationContractHorizon(authorization.deadline, latestBlock.timestamp)
-  if (
-    !mintAuthorizationWindow(authorization.deadline, latestBlock.timestamp).hasMinimumRemainingTime
-  ) {
-    throw new Error(
-      "Mint authorization has less than five minutes remaining. No Base transaction was sent.",
-    )
+  if (!mintAuthorizationWindow(authorization.deadline, latestBlock.timestamp).isUnexpired) {
+    throw new Error("Mint authorization has expired. No Base transaction was sent.")
   }
   if (
     snapshot.depositsPaused ||

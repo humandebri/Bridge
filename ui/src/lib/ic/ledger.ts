@@ -48,9 +48,13 @@ function metadataNat(
   return Number(value.Nat)
 }
 
-export async function createLedgerActor(host: string, canisterId: string): Promise<LedgerActor> {
+export async function createLedgerActor(
+  host: string,
+  canisterId: string,
+  signal?: AbortSignal,
+): Promise<LedgerActor> {
   const ledger = IcrcLedgerCanister.create({
-    agent: await createIcAgent(host),
+    agent: await createIcAgent(host, undefined, signal),
     canisterId: Principal.fromText(canisterId),
   })
   let metadata: Awaited<ReturnType<typeof ledger.metadata>> | undefined

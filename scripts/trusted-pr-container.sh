@@ -169,7 +169,7 @@ TOOL_PATHS=(.local)
 if [[ "$NEEDS_RUST_TOOLCHAIN" == true ]]; then
   TOOL_PATHS+=(.cargo .rustup)
 fi
-if [[ "$MODE" == "proofs" || "$MODE" == "proofs-impacted" ]]; then
+if [[ "$MODE" == "policy" || "$MODE" == "proofs" || "$MODE" == "proofs-impacted" ]]; then
   TOOL_PATHS+=(.elan)
 fi
 if [[ "$NEEDS_FOUNDRY" == true ]]; then
@@ -187,7 +187,7 @@ if [[ "$NEEDS_FOUNDRY" == true ]]; then
     || { echo "trusted Solidity compiler is missing" >&2; exit 1; }
   TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.svm,dst=/scratch/home/.svm,readonly")
 fi
-if [[ "$MODE" == "proofs" || "$MODE" == "proofs-impacted" ]]; then
+if [[ "$MODE" == "policy" || "$MODE" == "proofs" || "$MODE" == "proofs-impacted" ]]; then
   [[ -d /home/runner/.elan/toolchains && ! -L /home/runner/.elan/toolchains ]] \
     || { echo "trusted Lean toolchains are missing" >&2; exit 1; }
   TOOL_MOUNTS+=(--mount "type=bind,src=/home/runner/.elan/toolchains,dst=/scratch/home/.elan/toolchains,readonly")

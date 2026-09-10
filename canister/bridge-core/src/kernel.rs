@@ -516,6 +516,12 @@ macro_rules! fee_recipient_rotation_decision_body {
     };
 }
 
+macro_rules! cycles_top_up_request_allowed_body {
+    ($balance:expr, $threshold:expr, $in_progress:expr, $authorized:expr) => {
+        $authorized && !$in_progress && $balance <= $threshold
+    };
+}
+
 macro_rules! service_fee_change_allowed_body {
     ($service_fee:expr, $minimum_service_fee:expr, $maximum_service_fee:expr) => {
         $minimum_service_fee <= $service_fee && $service_fee <= $maximum_service_fee
@@ -1479,6 +1485,16 @@ verus! {
             FeeRecipientRotationDecision::Busy
         )
     }
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn cycles_top_up_request_allowed(
+    balance: u128,
+    threshold: u128,
+    in_progress: bool,
+    authorized: bool,
+) -> bool {
+    cycles_top_up_request_allowed_body!(balance, threshold, in_progress, authorized)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -2727,6 +2743,12 @@ verus! {
     pub open spec fn payout_allowed_spec(reserve: int, pending: int, amount: int, fee: int) -> bool {
         let max: int = 340282366920938463463374607431768211455;
         payout_allowed_body!(reserve, pending, amount, fee, max)
+    }
+
+    pub open spec fn cycles_top_up_request_allowed_spec(
+        balance: int, threshold: int, in_progress: bool, authorized: bool,
+    ) -> bool {
+        cycles_top_up_request_allowed_body!(balance, threshold, in_progress, authorized)
     }
 
     pub open spec fn service_fee_change_allowed_spec(

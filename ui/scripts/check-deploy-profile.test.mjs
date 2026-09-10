@@ -27,6 +27,7 @@ function fixture(profileOverrides = {}) {
       environment: "mainnet-candidate",
       label: "Base",
       testOnly: false,
+      mintRecoveryUrl: "https://recovery.bridge.kinic.xyz/v1/mint-recovery",
       environmentMode: null,
       activationTimelockDelaySeconds: 86_400,
       gateBManifestSha256: gate,
