@@ -313,6 +313,7 @@ grep -q $'^sample\\tfail\\t' "$PROOF_STAGE_RECEIPT"
         *,
         additional_source: str = "",
         additional_source_path: str = "other.rs",
+        ui_source_path: str = "",
         workspace_dependency: str = '"=0.1.1"',
         canister_dependency: str = "{ workspace = true }",
         lock_version: str = "0.1.1",
@@ -360,6 +361,8 @@ grep -q $'^sample\\tfail\\t' "$PROOF_STAGE_RECEIPT"
             (root / "canister" / "bridge-core").mkdir(parents=True)
             (root / "verification" / "verus").mkdir(parents=True)
             (root / "ui" / "src").mkdir(parents=True)
+            if ui_source_path:
+                (root / "ui" / "src" / ui_source_path).write_text("localStorage.clear()\n")
             script = (
                 "set -euo pipefail\n"
                 "verify_tecdsa_wrapper_dependency() {\n"
@@ -386,6 +389,40 @@ grep -q $'^sample\\tfail\\t' "$PROOF_STAGE_RECEIPT"
             "::ic_cdk_management_canister::sign_with_ecdsa(sign_args)\n"
         )
         self.assertEqual(reviewed_call.returncode, 0, reviewed_call.stderr)
+
+    def test_recurring_guard_allows_only_the_cycles_maintenance_callback(self) -> None:
+        reviewed = "::ic_cdk_management_canister::sign_with_ecdsa(sign_args)\n"
+        cycles = (Path(__file__).parents[1] / "canister/bridge-canister/src/cycles_top_up.rs").read_text()
+        result = self.run_automatic_execution_guard(
+            reviewed, additional_source=cycles, additional_source_path="cycles_top_up.rs"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cases = [
+            (cycles, "other.rs"),
+            (cycles, "nested/cycles_top_up.rs"),
+            (cycles.replace("check(true).await", "settle().await"), "cycles_top_up.rs"),
+            (cycles + "\nfn heartbeat() {}\n", "cycles_top_up.rs"),
+            (cycles + "\nfn other() { set_timer_interval(); }\n", "cycles_top_up.rs"),
+            (cycles + "\nfn other() { set_timer(); }\n", "cycles_top_up.rs"),
+            (cycles + cycles, "cycles_top_up.rs"),
+        ]
+        for source, path in cases:
+            with self.subTest(path=path, source=source[-80:]):
+                result = self.run_automatic_execution_guard(
+                    reviewed, additional_source=source, additional_source_path=path
+                )
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+
+    def test_storage_guard_allows_recovery_tests_but_rejects_production_access(self) -> None:
+        reviewed = "::ic_cdk_management_canister::sign_with_ecdsa(sign_args)\n"
+        for path in ["mint-recovery.test.ts", "mint-execution.test.ts", "mint-authorization-action.test.tsx"]:
+            with self.subTest(path=path):
+                result = self.run_automatic_execution_guard(reviewed, ui_source_path=path)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        for path in ["mint-recovery.ts", "mint-execution.ts", "mint-authorization-action.tsx"]:
+            with self.subTest(path=path):
+                result = self.run_automatic_execution_guard(reviewed, ui_source_path=path)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
 
     def test_threshold_signing_guard_rejects_unreviewed_calls(self) -> None:
         cases = {

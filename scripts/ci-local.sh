@@ -256,11 +256,30 @@ PY
 
 run_no_automatic_execution_guards() {
   verify_tecdsa_wrapper_dependency
-  if rg -n '\b(set_timer_interval|heartbeat)\b' \
-    "$ROOT/canister/bridge-canister/src"; then
-    echo "recurring canister execution path found" >&2
-    return 1
-  fi
+  python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+source_root = Path(sys.argv[1]) / "canister/bridge-canister/src"
+# Only the reviewed cycles-maintenance callback may run periodically. Keep
+# rejecting recurring settlement/signing work, including additions in this module.
+cycles_timer = """ic_cdk_timers::set_timer_interval(CHECK_INTERVAL, || async {
+            let _ = check(true).await;
+        });"""
+cycles_initial_check = """ic_cdk_timers::set_timer(Duration::ZERO, async {
+            let _ = check(true).await;
+        });"""
+for path in source_root.rglob("*.rs"):
+    source = path.read_text(encoding="utf-8")
+    if path == source_root / "cycles_top_up.rs":
+        source = source.replace(cycles_timer, "", 1)
+        source = source.replace(cycles_initial_check, "", 1)
+    if re.search(r"\b(set_timer_interval|heartbeat)\b", source):
+        raise SystemExit(f"recurring canister execution path found: {path}")
+    if path != source_root / "scheduler.rs" and re.search(r"\bset_timer\b", source):
+        raise SystemExit(f"one-shot timer found outside reviewed executors: {path}")
+PY
   if rg -n '\bunbounded_wait\b' \
     "$ROOT/canister/bridge-canister/src" --glob '*.rs'; then
     echo "unbounded canister execution path found" >&2
@@ -299,12 +318,6 @@ run_no_automatic_execution_guards() {
     echo "threshold signing must contain exactly one fully qualified reviewed wrapper call" >&2
     return 1
   fi
-  if rg -n '\bset_timer\b' \
-    "$ROOT/canister/bridge-canister/src" \
-    --glob '!scheduler.rs'; then
-    echo "one-shot timer found outside the stable settlement executor" >&2
-    return 1
-  fi
   if rg -n '\b(scheduler_priority|scheduler_code|candidate_precedes)\b' \
     "$ROOT/canister/bridge-core" "$ROOT/canister/bridge-canister/src" "$ROOT/verification/verus"; then
     echo "retired scheduler implementation found" >&2
@@ -315,6 +328,9 @@ run_no_automatic_execution_guards() {
     --glob '!pending-confirmations.test.ts' \
     --glob '!deposit-intents.ts' \
     --glob '!deposit-intents.test.ts' \
+    --glob '!mint-recovery.test.ts' \
+    --glob '!mint-execution.test.ts' \
+    --glob '!mint-authorization-action.test.tsx' \
     --glob '!browser-lock.ts' \
     --glob '!browser-lock.test.ts' \
     --glob '!settlement-confirmation-coordinator.tsx' \
