@@ -38,6 +38,8 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           persist-credentials: false
+      - name: Fetch the pinned schema 35 upgrade predecessor
+        run: git fetch --no-tags --no-recurse-submodules https://github.com/humandebri/Bridge.git e0b426e7465531d2e572b5b741509f1889e6def8
       - name: Bind full validation to the requested commit
         run: |
           [[ "$BRIDGE_EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
