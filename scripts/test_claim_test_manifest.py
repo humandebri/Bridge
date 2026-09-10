@@ -308,7 +308,7 @@ class ClaimTestManifestTests(unittest.TestCase):
             claim_tests.MANIFEST.read_text(encoding="utf-8"),
         )
         groups = claim_tests.group_tests(tests)
-        self.assertEqual(len(tests), 320)
+        self.assertEqual(len(tests), 326)
         self.assertEqual(len(groups), 50)
         self.assertEqual(
             sum(2 if group[0].runner.startswith("rust-") else 1 for group in groups),

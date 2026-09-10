@@ -71,7 +71,9 @@ beforeEach(() => {
     const call = JSON.parse(options.body)
     return Response.json({
       result:
-        call.method === "eth_blockNumber" ? "0x100" : { transfers: [{ hash }], pageKey: "next" },
+        call.method === "eth_blockNumber"
+          ? "0x100"
+          : { transfers: [{ hash, blockNum: "0x80" }], pageKey: "next" },
     })
   })
   vi.stubGlobal("fetch", rpc)
@@ -81,6 +83,7 @@ afterEach(() => {
   vi.useRealTimers()
 })
 it("recovery_worker_binds_search_and_signed_pagination", async () => {
+  vi.useFakeTimers()
   const first = await worker.fetch(request(), env)
   expect(first.status).toBe(200)
   const page = (await first.json()) as { cursor: string; hashes: string[] }
@@ -94,6 +97,7 @@ it("recovery_worker_binds_search_and_signed_pagination", async () => {
     category: ["erc20"],
     maxCount: "0x64",
   })
+  vi.advanceTimersByTime(480_000)
   const next = await worker.fetch(request({ depositId: id, cursor: page.cursor }), env)
   expect(next.status).toBe(200)
   expect(rpc).toHaveBeenCalledTimes(3)
@@ -102,8 +106,21 @@ it("recovery_worker_binds_search_and_signed_pagination", async () => {
     toBlock: "0x100",
   })
   expect(JSON.stringify(page)).not.toContain(env.ALCHEMY_API_KEY)
+  const second = (await next.json()) as { cursor: string }
+  vi.advanceTimersByTime(480_000)
+  expect((await worker.fetch(request({ depositId: id, cursor: second.cursor }), env)).status).toBe(
+    200,
+  )
+  expect(JSON.parse(rpc.mock.calls.at(-1)![1].body).params[0]).toMatchObject({
+    pageKey: "next",
+    fromBlock: "0x14",
+  })
+  rpc.mockResolvedValue(Response.json({ result: { transfers: [{ hash, blockNum: "0x13" }] } }))
+  expect((await worker.fetch(request({ depositId: id, cursor: second.cursor }), env)).status).toBe(
+    502,
+  )
 })
-it("recovery_worker_rejects_invalid_expired_and_foreign_cursors", async () => {
+it("recovery_worker_rejects_forgery_and_resumes_expired_page_keys", async () => {
   const page = (await (await worker.fetch(request(), env)).json()) as { cursor: string }
   expect(
     (await worker.fetch(request({ depositId: id, cursor: `${page.cursor}x` }), env)).status,
@@ -114,9 +131,21 @@ it("recovery_worker_rejects_invalid_expired_and_foreign_cursors", async () => {
   )
   vi.useFakeTimers()
   vi.setSystemTime(Date.now() + 900001)
-  expect((await worker.fetch(request({ depositId: id, cursor: page.cursor }), env)).status).toBe(
-    410,
-  )
+  const resumed = await worker.fetch(request({ depositId: id, cursor: page.cursor }), env)
+  expect(resumed.status).toBe(200)
+  const restarted = JSON.parse(rpc.mock.calls.at(-1)![1].body).params[0]
+  expect(restarted).toMatchObject({ fromBlock: "0x80", toBlock: "0x100" })
+  expect(restarted).not.toHaveProperty("pageKey")
+  const resumedPage = (await resumed.json()) as { cursor: string }
+  // Transfers in the boundary block can continue on a fresh pageKey.
+  vi.advanceTimersByTime(40_000)
+  expect(
+    (await worker.fetch(request({ depositId: id, cursor: resumedPage.cursor }), env)).status,
+  ).toBe(200)
+  expect(JSON.parse(rpc.mock.calls.at(-1)![1].body).params[0]).toMatchObject({
+    fromBlock: "0x80",
+    pageKey: "next",
+  })
 })
 it("recovery_worker_rejects_foreign_runtime_and_input_overrides", async () => {
   expect((await worker.fetch(request({ depositId: id, toAddress: bridge }), env)).status).toBe(400)

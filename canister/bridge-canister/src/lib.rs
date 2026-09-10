@@ -766,11 +766,13 @@ async fn notify_deposit_mint(
             deposit_id: id.to_vec(),
         });
     };
-    let record_cooldown_key: [u8; 32] = {
+    let caller_cooldown_key: [u8; 32] = {
         use sha2::{Digest, Sha256};
         let mut hash = Sha256::new();
-        hash.update(b"deposit-mint-notification");
+        // A failed public notification must not delay another caller's exact evidence.
+        hash.update(b"deposit-mint-notification-caller");
         hash.update(id);
+        hash.update(caller.as_slice());
         hash.finalize().into()
     };
     let now_ns = ic_cdk::api::time();
@@ -779,11 +781,8 @@ async fn notify_deposit_mint(
         let store = store.borrow();
         Ok::<_, Error>((
             store
-                .notification_failure_cooldown_active(transaction_hash, now_ns)
-                .map_err(|_| Error::StorageFailure)?
-                || store
-                    .notification_failure_cooldown_active(record_cooldown_key, now_ns)
-                    .map_err(|_| Error::StorageFailure)?,
+                .notification_failure_cooldown_active(caller_cooldown_key, now_ns)
+                .map_err(|_| Error::StorageFailure)?,
             store
                 .deposit_reserve_token()
                 .map_err(|_| Error::StorageFailure)?,
@@ -886,16 +885,7 @@ async fn notify_deposit_mint(
         STORE
             .with(|store| {
                 store.borrow_mut().record_notification_failure_cooldown(
-                    record_cooldown_key,
-                    ic_cdk::api::time(),
-                    30_000_000_000,
-                )
-            })
-            .map_err(|_| Error::StorageFailure)?;
-        STORE
-            .with(|store| {
-                store.borrow_mut().record_notification_failure_cooldown(
-                    transaction_hash,
+                    caller_cooldown_key,
                     ic_cdk::api::time(),
                     30_000_000_000,
                 )

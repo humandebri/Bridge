@@ -24,13 +24,17 @@ const profileSchema = z.object({
 const cursorSchema = z
   .object({
     binding: z.string(),
+    fromBlock: z.string().regex(/^0x[0-9a-f]+$/),
     toBlock: z.string().regex(/^0x[0-9a-f]+$/),
+    resumeFromBlock: z.string().regex(/^0x[0-9a-f]+$/),
     pageKey: z.string().min(1).max(2000),
-    expiresAt: z.number().int(),
+    pageKeyExpiresAt: z.number().int(),
   })
   .strict()
 const transfersSchema = z.object({
-  transfers: z.array(z.object({ hash: recoveryHash })).max(100),
+  transfers: z
+    .array(z.object({ hash: recoveryHash, blockNum: z.string().regex(/^0x[0-9a-f]+$/) }))
+    .max(100),
   pageKey: z.string().max(2000).optional(),
 })
 class ApiError extends Error {
@@ -72,7 +76,6 @@ async function openCursor(token: string, secret: string, binding: string) {
       throw new Error()
     const value = cursorSchema.parse(JSON.parse(new TextDecoder().decode(payload)))
     if (value.binding !== binding) throw new Error()
-    if (value.expiresAt <= Date.now()) throw new ApiError(410, "cursor_expired")
     return value
   } catch (error) {
     if (error instanceof ApiError) throw error
@@ -224,10 +227,25 @@ export async function handleMintRecovery(request: Request, env: Env): Promise<Re
           .regex(/^0x[0-9a-f]+$/)
           .parse(await rpc("eth_blockNumber", []))
       if (BigInt(toBlock) < from) throw new ApiError(503, "head_unavailable")
+      if (
+        cursor &&
+        (BigInt(cursor.fromBlock) < from ||
+          BigInt(cursor.resumeFromBlock) < BigInt(cursor.fromBlock) ||
+          BigInt(cursor.resumeFromBlock) > BigInt(toBlock))
+      )
+        throw new ApiError(400, "invalid_cursor_range")
+      // The signed block checkpoint survives pageKey expiry. Replay the boundary
+      // block inclusively because its transfers may span more than one page.
+      const pageKey = cursor && cursor.pageKeyExpiresAt > Date.now() ? cursor.pageKey : undefined
+      const fromBlock = cursor
+        ? pageKey
+          ? cursor.fromBlock
+          : cursor.resumeFromBlock
+        : `0x${from.toString(16)}`
       const result = transfersSchema.parse(
         await rpc("alchemy_getAssetTransfers", [
           {
-            fromBlock: `0x${from.toString(16)}`,
+            fromBlock,
             toBlock,
             toAddress: recipient,
             contractAddresses: [profile.bsnsAddress],
@@ -235,10 +253,18 @@ export async function handleMintRecovery(request: Request, env: Env): Promise<Re
             order: "asc",
             maxCount: "0x64",
             excludeZeroValue: true,
-            ...(cursor ? { pageKey: cursor.pageKey } : {}),
+            ...(pageKey ? { pageKey } : {}),
           },
         ]),
       )
+      let lastBlock = BigInt(pageKey && cursor ? cursor.resumeFromBlock : fromBlock)
+      for (const transfer of result.transfers) {
+        const block = BigInt(transfer.blockNum)
+        if (block < lastBlock || block > BigInt(toBlock))
+          throw new ApiError(502, "invalid_transfer_range")
+        lastBlock = block
+      }
+      if (result.pageKey && !result.transfers.length) throw new ApiError(502, "empty_transfer_page")
       return recoveryPageSchema.parse({
         deploymentInstanceId: profile.deploymentInstanceId,
         depositId,
@@ -248,9 +274,11 @@ export async function handleMintRecovery(request: Request, env: Env): Promise<Re
           ? await signCursor(
               {
                 binding,
+                fromBlock,
                 toBlock,
+                resumeFromBlock: `0x${lastBlock.toString(16)}`,
                 pageKey: result.pageKey,
-                expiresAt: cursor?.expiresAt ?? Date.now() + 900_000,
+                pageKeyExpiresAt: Date.now() + 540_000,
               },
               env.CURSOR_KEY,
             )

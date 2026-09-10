@@ -508,7 +508,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await mintAuthorizedDeposit(bridge, evm, result.Ok.deposit_id)).toHaveProperty("Ok.state.Minted");
   });
   it("records_an_exact_finalized_mint_notification_without_refunding_and_rejects_forgery", async () => {
-    const { evm, bridge, ledger, runtimePrincipal } = await setup();
+    const { evm, bridge, ledger, runtimePrincipal, confirmationRelayerPrincipal } = await setup();
     const deposit: any = await requestDefaultDeposit(bridge);
     const id = deposit.Ok.deposit_id;
     const authorization = await awaitMintAuthorization(bridge, id);
@@ -522,21 +522,23 @@ describe("Phase 3 PocketIC saga", () => {
       new Uint8Array(20).fill(0x77), authorization.finalized_block_number);
     await evm.actor.set_receipt_mode({Confirmed:null});
     await evm.actor.set_processed_deposit(false);
-    expect(await (bridge.actor as any).notify_deposit_mint(args)).toEqual({Err:{TransactionNotConfirmed:null}});
+    expect(await (bridge.actor as any).notify_deposit_mint({ ...args, transaction_hash: new Uint8Array(32).fill(0x43) }))
+      .toEqual({Err:{TransactionNotConfirmed:null}});
     expect(phaseName((await bridge.actor.get_deposit(id))[0].state)).toBe("AuthorizationAvailable");
-    await pic!.advanceTime(31_000);
+    expect(await (bridge.actor as any).notify_deposit_mint(args)).toEqual({Err:{RateLimited:null}});
+    bridge.actor.setPrincipal(Principal.selfAuthenticating(new Uint8Array(32).fill(0x66)));
     await evm.actor.set_processed_deposit(true);
     const mint = {deposit_id:id, recipient:authorization.recipient, authorization_digest:authorization.digest,
       gross_amount:authorization.gross_amount, charged_service_fee:authorization.charged_service_fee,
       minted_amount:BigInt(authorization.gross_amount) - BigInt(authorization.charged_service_fee), transaction_hash:transactionHash};
     await evm.actor.set_mint_log([{...mint, minted_amount:mint.minted_amount + 1n}]);
     expect(await (bridge.actor as any).notify_deposit_mint(args)).toEqual({Err:{IdentityConflict:null}});
-    await pic!.advanceTime(31_000);
+    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
     await evm.actor.set_mint_log([mint]);
     const transfers = await (ledger.actor as any).ledger_transfer_calls();
     await evm.actor.set_receipt_mode({DelayedConfirmed:null});
     const deferred = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
-    deferred.setPrincipal(notifier);
+    deferred.setPrincipal(confirmationRelayerPrincipal);
     const completeNotification = await deferred.notify_deposit_mint(args);
     let barrier: Awaited<ReturnType<NonNullable<typeof pic>["getPendingHttpsOutcalls"]>>[number] | undefined;
     for (let attempt = 0; attempt < 20; attempt += 1) {
