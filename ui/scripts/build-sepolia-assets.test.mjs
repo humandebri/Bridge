@@ -4,6 +4,16 @@ import { readFile } from "node:fs/promises"
 import path from "node:path"
 
 describe("Base Sepolia asset profile template", () => {
+  it("keeps the recovery release config valid for JSON.parse", async () => {
+    const config = JSON.parse(
+      await readFile(
+        path.resolve(import.meta.dirname, "../recovery-worker/wrangler.jsonc"),
+        "utf8",
+      ),
+    )
+    expect(config.name).toBe("kinic-bridge-mint-recovery")
+  })
+
   it("is visibly test-only and cannot reference production IDs", async () => {
     const template = JSON.parse(
       await readFile(

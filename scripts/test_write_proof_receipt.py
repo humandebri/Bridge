@@ -290,9 +290,15 @@ class ProofReceiptTests(unittest.TestCase):
     def test_source_change_before_claim_computation_fails_closed(self) -> None:
         before = fingerprint("a" * 64)
         after = fingerprint("b" * 64)
-        with patch.object(write_proof_receipt, "source_fingerprint", return_value=after):
-            with self.assertRaisesRegex(ValueError, "proof run started"):
-                write_proof_receipt.current_claim_evidence(before)
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "claim-report.json"
+            report_path.write_text(json.dumps(self.report(before, [{"id": "claim"}])), encoding="utf-8")
+            with (
+                patch.object(write_proof_receipt, "REPORT", report_path),
+                patch.object(write_proof_receipt, "source_fingerprint", return_value=after),
+            ):
+                with self.assertRaisesRegex(ValueError, "proof run started"):
+                    write_proof_receipt.current_claim_evidence(before)
 
     def test_stage_fingerprint_mismatch_is_rejected(self) -> None:
         current = fingerprint("a" * 64)

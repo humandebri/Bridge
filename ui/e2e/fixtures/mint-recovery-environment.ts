@@ -93,7 +93,10 @@ export const createBridgeActor = async () => ({
 })
 export const getWithdrawalNotificationIdentity = async () => ({})
 
-export async function firstSuccessfulHistoryClient<C, T>(clients: readonly C[], operation: (client: C) => Promise<T>): Promise<T> {
+export async function firstSuccessfulHistoryClient<C, T>(
+  clients: readonly C[],
+  operation: (client: C) => Promise<T>,
+): Promise<T> {
   return operation(clients[0]!)
 }
 

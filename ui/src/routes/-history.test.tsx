@@ -198,10 +198,14 @@ function expectRefundOnlyAfterDeadline(reason: SettlementStopReason): void {
   expect(screen.queryByText("Ready to mint")).not.toBeInTheDocument()
   expect(screen.queryByText(/Restore.*History/)).not.toBeInTheDocument()
   if (!deploymentProfile.mintRecoveryUrl)
-    expect(screen.getByText(/recovery without a saved transaction hash is not supported/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/recovery without a saved transaction hash is not supported/),
+    ).toBeInTheDocument()
   expect(
     screen.getByText(
-      deploymentProfile.mintRecoveryUrl ? "取引を自動検索中" : "Transaction confirmation unavailable",
+      deploymentProfile.mintRecoveryUrl
+        ? "取引を自動検索中"
+        : "Transaction confirmation unavailable",
     ),
   ).toBeInTheDocument()
 }

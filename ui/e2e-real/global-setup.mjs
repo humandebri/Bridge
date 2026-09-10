@@ -650,6 +650,9 @@ async function setup() {
     const authorization = record?.mint_authorization[0]
     if (!authorization?.signature.length)
       throw new Error(`refund fixture did not reach a signed Mint Authorization: ${json(record)}`)
+    const fundingLedgerBlockIndex = record.funding_ledger_block_index[0]
+    if (fundingLedgerBlockIndex === undefined)
+      throw new Error("refund fixture is missing its ledger deposit block")
     const latest = await publicClient.getBlock({ blockTag: "latest" })
     const advanceSeconds =
       authorization.deadline >= latest.timestamp
@@ -666,6 +669,7 @@ async function setup() {
     return {
       depositId: bytesHex(admitted.Ok.deposit_id),
       ownerSequence: ownerSequence.toString(),
+      fundingLedgerBlockIndex: fundingLedgerBlockIndex.toString(),
     }
   }
   await syncObservedHeads()
@@ -1106,6 +1110,20 @@ async function setup() {
         await mock.actor.set_processed_deposit(false)
         await mock.actor.set_mint_log([])
         await mock.actor.set_receipt_mint_log_index([])
+        return send(response, 200, null)
+      }
+      if (request.url === "/test/sync-base-clock") {
+        await withPausedProgress(async () => {
+          await alignFixtureClocks()
+          const latest = await publicClient.getBlock({ blockTag: "latest" })
+          const icTimestamp = BigInt(Math.floor((await pic.getTime()) / 1_000))
+          // Anvil mines on demand while PocketIC time progresses between requests.
+          // Publish a block at or after IC time before checking the mint horizon.
+          if (icTimestamp > latest.timestamp)
+            await rpc("evm_setNextBlockTimestamp", [Number(icTimestamp)])
+          await rpc("evm_mine", [])
+          await syncObservedHeads()
+        })
         return send(response, 200, null)
       }
       if (request.url === "/test/prepare-refundable-deposit") {

@@ -365,7 +365,8 @@ export function MintAuthorizationAction({
             setStorageWarning(true)
             progressCallback.current?.({
               phase: "storage-warning",
-              message: "Browser storage is unavailable. Keep this page open while the transaction is checked.",
+              message:
+                "Browser storage is unavailable. Keep this page open while the transaction is checked.",
             })
             throw error
           }

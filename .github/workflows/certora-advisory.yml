@@ -15,6 +15,7 @@ on:
       - "verification/certora/**"
       - "scripts/check_certora_manifest.py"
       - "scripts/check_claim_manifest.py"
+      - "scripts/check_claim_test_manifest.py"
       - "scripts/check_proof_impact.py"
       - "scripts/check_solidity_ast_bindings.py"
       - "scripts/check_transition_manifest.py"

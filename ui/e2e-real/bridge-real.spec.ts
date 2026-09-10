@@ -137,6 +137,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   expect(BigInt(initial.ledgerBalance) - BigInt(afterRecovery.ledgerBalance)).toBe(
     200_000_000n + 2n * BigInt(initial.ledgerFee),
   )
+  await postControl(request, "/test/sync-base-clock", {})
   await expect
     .poll(async () => BigInt((await controlState(request)).bsnsBalance), { timeout: 60_000 })
     .toBe(199_000_000n)
@@ -387,7 +388,12 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
 
 test("claims an expired deposit refund from History", async ({ page, request }) => {
   test.setTimeout(600_000)
-  await postControl(request, "/test/prepare-refundable-deposit", {})
+  const { depositId, fundingLedgerBlockIndex } = (await postControl(
+    request,
+    "/test/prepare-refundable-deposit",
+    {},
+  )) as { depositId: string; fundingLedgerBlockIndex: string }
+  const depositLabel = `Deposit #${fundingLedgerBlockIndex}`
   await page.goto("/")
   await page.getByRole("checkbox", { name: "Acknowledge unaudited bridge risk" }).check()
   await page.getByRole("button", { name: "Acknowledge and continue" }).click()
@@ -399,13 +405,9 @@ test("claims an expired deposit refund from History", async ({ page, request }) 
   await page.getByRole("button", { name: "Close confirmation" }).click()
   await openHistory(page)
   await page.locator("header").getByRole("button", { name: "Refresh", exact: true }).click()
-  const refundRow = page
-    .locator("article")
-    .filter({ hasText: "Not submitted" })
-    .filter({
-      has: page.getByRole("button", { name: "Claim refund", exact: true }),
-    })
-    .first()
+  const refundRow = page.locator("article").filter({
+    has: page.getByText(depositLabel, { exact: true }),
+  })
   await expect(refundRow).toHaveCount(1)
   await expect(refundRow.getByRole("button", { name: "Claim refund", exact: true })).toBeVisible()
   const refundResponse = page.waitForResponse(
@@ -416,10 +418,14 @@ test("claims an expired deposit refund from History", async ({ page, request }) 
   )
   await refundRow.getByRole("button", { name: "Claim refund", exact: true }).click()
   const completedRefund = await refundResponse
+  expect(completedRefund.request().postDataJSON()).toMatchObject({ id: depositId })
   expect(completedRefund.ok()).toBe(true)
   expect(await completedRefund.json()).toHaveProperty("state.Refunded")
   await page.reload()
-  const refundedRow = page.locator("article").filter({ hasText: "Not submitted" }).first()
+  const refundedRow = page.locator("article").filter({
+    has: page.getByText(depositLabel, { exact: true }),
+  })
+  await expect(refundedRow).toHaveCount(1)
   await expect(refundedRow.getByText("Refunded", { exact: true })).toBeVisible({ timeout: 30_000 })
   await expect(
     refundedRow.getByRole("button", { name: /Claim refund|Request refund/ }),
