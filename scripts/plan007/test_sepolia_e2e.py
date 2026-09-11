@@ -619,7 +619,7 @@ class SepoliaEvidenceTests(unittest.TestCase):
                 "candid_sha256": H64_B,
                 "frontend_profile_sha256": binding["frontend_profile_sha256"],
                 "bridge_runtime_sha256": TX,
-                "mint_authorization_ttl_seconds": 600,
+                "mint_authorization_ttl_seconds": 900,
                 "solidity_max_authorization_horizon_seconds": 900,
                 "old_stack_excluded": True,
                 "monitoring_receipt_sha256": H64_C,

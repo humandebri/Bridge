@@ -35,7 +35,7 @@ function authorizationRecord(): DepositView {
     finalized_block_number: 1n,
     signature: [hexBytes(vector.signature)],
     deposit_id: hexBytes(vector.authorization.deposit_id),
-    issued_at_timestamp: BigInt(vector.authorization.deadline) - 600n,
+    issued_at_timestamp: BigInt(vector.authorization.deadline) - 900n,
     domain_name: vector.domain.name,
     charged_service_fee: BigInt(vector.authorization.charged_service_fee),
     recipient: hexBytes(vector.authorization.recipient),
@@ -46,7 +46,7 @@ function authorizationRecord(): DepositView {
     signature_dispatch_attempt: 1,
     chain_id: BigInt(vector.domain.chain_id),
     finalized_block_hash: new Uint8Array(32).fill(1),
-    finalized_block_timestamp: BigInt(vector.authorization.deadline) - 600n,
+    finalized_block_timestamp: BigInt(vector.authorization.deadline) - 900n,
     verifying_contract: hexBytes(vector.domain.verifying_contract),
     digest: hexBytes(vector.digest),
     gross_amount: BigInt(vector.authorization.gross_amount),
@@ -62,6 +62,7 @@ function authorizationRecord(): DepositView {
     ],
     max_service_fee: authorization.max_service_fee,
     state: { AuthorizationAvailable: null },
+    mint_receipt: [],
     mint_authorization: [authorization],
     gross_amount: authorization.gross_amount,
   } as DepositView
@@ -141,13 +142,18 @@ describe("mint authorization latest Base admission", () => {
     ).resolves.toMatchObject({ latestBlockTimestamp: deadline - 300n })
   })
 
-  it("rejects_299_seconds_of_remaining_Base_time", async () => {
+  it("accepts_unexpired_Base_time_and_rejects_expired_authorization", async () => {
     const deadline = BigInt(vector.authorization.deadline)
-    mocks.getBlock.mockResolvedValue({ timestamp: deadline - 299n })
-
+    for (const remaining of [299n, 1n, 0n]) {
+      mocks.getBlock.mockResolvedValue({ timestamp: deadline - remaining })
+      await expect(
+        validateMintAuthorization(authorizationRecord(), runtimeObservation()),
+      ).resolves.toMatchObject({ latestBlockTimestamp: deadline - remaining })
+    }
+    mocks.getBlock.mockResolvedValue({ timestamp: deadline + 1n })
     await expect(
       validateMintAuthorization(authorizationRecord(), runtimeObservation()),
-    ).rejects.toThrow("less than five minutes remaining")
+    ).rejects.toThrow("Mint authorization has expired. No Base transaction was sent.")
   })
 
   it("fails_closed_when_latest_Base_state_cannot_be_refreshed", async () => {

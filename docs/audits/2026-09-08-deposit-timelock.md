@@ -1,0 +1,32 @@
+# Deposit・Timelock監査対応
+
+## 変更と証拠の範囲
+
+Canisterの署名対象に返金可能額と宛先条件を追加する。未署名の既存要求は返金へ進めるが、署名保存済みの要求には新ポリシーを遡及しない。GlobalHistoryは予約解放済みと返金済みを区別し、予約解放から返金完了までの受理履歴を追加する。
+
+Timelockのコンストラクタ修正は次回配置用であり、稼働中のコントラクトには適用していない。新しいbytecodeを既存本番の承認済みruntime hashや配置証拠に置き換えない。Canister/UIの変更とSolidityの変更はリリース判断を分ける。本番v35と未配置v36の区別およびUIのv35限定認可は維持する。
+
+## 本番の既存Deposit
+
+2026-09-08 JST、`lb5i5-ziaaa-aaaar-qcgwq-cai` の `get_bridge_status` を匿名queryで確認した。schemaは35、Deposit総数0、retained deposit index entries 0、pending ledger operations 0、reconciliation holds 0、reserved mint operations 0だった。観測時点で分類対象の既存Depositは0件。公開一覧はownerごとのAPIであり、今回の0件判定は全体集計に基づく。これは認証済みstate certificateによる会計証明ではなく、公開queryの観測記録である。アップグレード前には再確認する。
+
+本番Timelock `0x27fb581da2e58cd7fd9d22ddb0ee121dd55cbbb3` はBase確定ブロック51015510で初期・現行proposerとexecutorが同じ `0xf6dcc3fcde91c6ef3c5d73c94c48c58c7ff2cf84`。配置ブロック50698194から全イベントを分割取得して権限集合を復元し、交代イベント0件、余分なexecutorなしを確認した。この不具合を理由とした本番差し替えは不要。
+
+## FeePayout調査
+
+KINIC Ledger `73mez-iiaaa-aaaaq-aaasq-cai` の公開 `git_commit_id` は `cf41372e3d4dc1accfe2c09a7969f8bddc729dc1`。`icrc1_metadata` のfeeは100000。以下のDFINITY公式ソースを同revisionで確認した。メタデータからソースを特定したもので、Ledger Wasmの再現ビルド一致までは確認していない。
+
+- [送金入口](https://github.com/dfinity/ic/blob/cf41372e3d4dc1accfe2c09a7969f8bddc729dc1/rs/ledger_suite/icrc1/ledger/src/main.rs#L540)：送金状態の更新は最初のarchive awaitより前に同期的に完了する。通常送金のBadFee判定はL645付近で、dedup判定より前に実行される。
+- [台帳トランザクション](https://github.com/dfinity/ic/blob/cf41372e3d4dc1accfe2c09a7969f8bddc729dc1/rs/ledger_suite/common/ledger_canister_core/src/ledger.rs#L214)：期限と未来時刻を検査した後、同一transaction hashならDuplicateを返し、その後に残高を更新する。通常のInsufficientFundsはdedup後である。
+
+初回がcommit済みでarchive応答待ちの場合、固定fee・同一identity・dedup期間内なら再試行はDuplicateとなる。残高不足によりその成功が隠れる経路は、この通常送金実装では確認できない。dedup期限切れはTooOldとなり、BridgeはAmbiguousに分類して不存在照合を要求する。
+
+一方、初回成功後にLedgerのfeeが変更された場合、再試行はdedup前のBadFeeになり得る。BridgeのFeePayoutはReconciliationHoldからDefinitiveFailureで予約を解放するため、この条件では先行成功の会計反映を失う可能性がある。これは固定Ledger feeという外部仮定に依存する具体的境界であり、単なる「確定エラーなら先行要求も不成立」という一般則は成立しない。
+
+初回がまだ実行されていない場合の配送順序や、後続の残高変化を伴う複数要求まで、Ledgerの同期関数の読解だけで一般保証しない。今回は会計処理を変更していない。FeePayoutの堅牢化を行うなら、不確定状態からは成功/Duplicateまたは完全な不存在証拠でのみ解放する別変更として扱う。
+
+## 検証の読み方
+
+共有kernelの局所証明、production adapterの回帰テスト、Leanの抽象履歴は別々の証拠である。GlobalHistoryは期限を直接モデル化しないため、具体的な予約解放・返金履歴だけで一般的な期限付きlivenessを主張しない。従来の外部仮定と実行可能性前提を維持する。
+
+Lean負例2件はRecordのフラグ分離に追従した。偽命題は維持し、trusted fixture hashだけを新しい内容へ更新する。Proofを実行する前のhash更新を、負例の成功確認とは扱わない。

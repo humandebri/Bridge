@@ -79,7 +79,8 @@ export async function savePendingMint(value: PendingMint): Promise<void> {
       window.localStorage.setItem(key, JSON.stringify(value))
       sessionPendingMints.delete(key)
     } catch {
-      /* The session copy still preserves recovery after a successful wallet broadcast. */
+      // Preserve the session copy, but let callers disclose that reload recovery is unavailable.
+      throw new Error("This tab is tracking the transaction, but browser storage is unavailable.")
     }
   })
 }
@@ -110,6 +111,56 @@ export async function removePendingMint(expected: PendingMintExpectation): Promi
       /* The session tombstone prevents a reverted transaction from reappearing. */
     }
   })
+}
+
+export function readAllPendingMints(): PendingMint[] {
+  const prefix = [
+    "kinic.bridge.pending-mint.v2",
+    deploymentProfile.chainId,
+    String(deploymentProfile.bridgeAddress).toLowerCase(),
+    deploymentProfile.bridgeCanisterId ?? "",
+    deploymentProfile.deploymentInstanceId?.toLowerCase() ?? "",
+    "",
+  ].join(":")
+  const found = new Map<string, PendingMint>()
+  const accept = (key: string, raw: unknown) => {
+    if (
+      !key.startsWith(prefix) ||
+      removedSessionPendingMints.has(key) ||
+      !raw ||
+      typeof raw !== "object"
+    )
+      return
+    const value = raw as PendingMint
+    if (
+      !/^0x[0-9a-fA-F]{64}$/.test(value.depositId ?? "") ||
+      !/^0x[0-9a-fA-F]{64}$/.test(value.authorizationDigest ?? "") ||
+      !/^0x[0-9a-fA-F]{40}$/.test(value.recipient ?? "") ||
+      ![value.grossAmount, value.chargedServiceFee, value.mintedAmount].every(
+        (amount) => typeof amount === "string" && /^[0-9]+$/.test(amount),
+      ) ||
+      !pendingMintMatches(value, value) ||
+      pendingMintKey(value) !== key
+    )
+      return
+    found.set(key, value)
+  }
+  try {
+    for (let index = 0; index < window.localStorage.length; index++) {
+      const key = window.localStorage.key(index)
+      if (key?.startsWith(prefix)) {
+        try {
+          accept(key, JSON.parse(window.localStorage.getItem(key) ?? "null"))
+        } catch {
+          /* Ignore malformed recovery entries. */
+        }
+      }
+    }
+  } catch {
+    /* Session records remain available when browser storage is unavailable. */
+  }
+  for (const [key, value] of sessionPendingMints) accept(key, value)
+  return [...found.values()]
 }
 
 function pendingMintMatches(

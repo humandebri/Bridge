@@ -55,6 +55,21 @@ contract BridgeTimelockTest is TestBase {
     BridgeTimelockController private timelock;
     uint256 private currentTimestamp;
 
+    function testRejectsDifferentInitialProposerAndExecutor() public {
+        address[] memory proposers = new address[](1);
+        address[] memory executors = new address[](1);
+        address[] memory cancellers = new address[](1);
+        proposers[0] = BASE_ADMIN_WALLET;
+        executors[0] = OUTSIDER;
+        cancellers[0] = CANCELLER;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                BridgeTimelockController.ProposerExecutorMismatch.selector, BASE_ADMIN_WALLET, OUTSIDER
+            )
+        );
+        new BridgeTimelockController(TIMELOCK_DELAY, proposers, cancellers, executors);
+    }
+
     function setUp() public {
         currentTimestamp = block.timestamp;
         address[] memory proposers = new address[](1);

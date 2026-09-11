@@ -37,6 +37,10 @@ describe("reviewed deployment profile", () => {
       gateBManifestSha256: "a".repeat(64),
       profileFileSha256: "b".repeat(64),
       profileCanonicalSha256: "c".repeat(64),
+      canisterSchemaVersion: 36,
+      canisterModuleSha256: "d".repeat(64),
+      postActivationUpgradeSha256: "e".repeat(64),
+      uiRpcConfigSha256: "f".repeat(64),
     })
     expect(parsed).not.toHaveProperty("gateBManifestSha256")
     expect(parsed).not.toHaveProperty("profileFileSha256")
@@ -54,14 +58,14 @@ describe("reviewed deployment profile", () => {
     expect(() => resolvedBaseRpcUrl({ chainId: 31_337 })).toThrow("no default RPC URL")
   })
 
-  it("ignores a custom browser RPC on Base Mainnet", () => {
+  it("uses the reviewed browser RPC on Base Mainnet", () => {
     const profile = deploymentProfileSchema.parse({
       ...deploymentProfile,
       testOnly: false,
       chainId: 8453,
-      baseRpcUrl: "https://untrusted.example",
+      baseRpcUrl: "https://base-mainnet.g.alchemy.com/v2/test-ui-key",
     })
-    expect(resolvedBaseRpcUrl(profile)).toBe(DEFAULT_BASE_MAINNET_RPC_URL)
+    expect(resolvedBaseRpcUrl(profile)).toBe(profile.baseRpcUrl)
   })
 
   it("requires release evidence fields only in the release schema", () => {
@@ -70,8 +74,15 @@ describe("reviewed deployment profile", () => {
       gateBManifestSha256: "a".repeat(64),
       profileFileSha256: "b".repeat(64),
       profileCanonicalSha256: "c".repeat(64),
+      canisterSchemaVersion: 36,
+      canisterModuleSha256: "d".repeat(64),
+      postActivationUpgradeSha256: "e".repeat(64),
+      uiRpcConfigSha256: "f".repeat(64),
     })
     expect(release.profileFileSha256).toBe("b".repeat(64))
+    expect(release.canisterSchemaVersion).toBe(36)
+    expect(deploymentProfileSchema.parse(release)).not.toHaveProperty("postActivationUpgradeSha256")
+    expect(() => releaseProfileSchema.parse({ ...release, canisterSchemaVersion: 35 })).toThrow()
     expect(() => releaseProfileSchema.parse({ ...release, profileFileSha256: undefined })).toThrow()
   })
 

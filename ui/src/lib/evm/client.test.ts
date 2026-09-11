@@ -59,6 +59,7 @@ describe("Base clients", () => {
     }
     expect(createProfileChain(custom).rpcUrls.default.http).toEqual([custom.baseRpcUrl])
     expect(createBasePublicClient(custom).chain?.id).toBe(31_337)
+    expect(createBasePublicClient(custom).transport.retryCount).toBe(0)
   })
 
   it("creates one history client for each reviewed RPC URL", () => {

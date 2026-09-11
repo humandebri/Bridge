@@ -1,3 +1,5 @@
+import { redactRpcUrls } from "@/lib/transfer-error"
+import { readBaseBlock } from "@/lib/base-transaction-observation"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
@@ -55,7 +57,9 @@ export function useRuntimeValidation(chainId?: number, options: AutomaticQueryOp
         return {
           ready: false,
           checkedAt: Date.now(),
-          blockers: [error instanceof Error ? error.message : "Runtime validation failed"],
+          blockers: [
+            error instanceof Error ? redactRpcUrls(error.message) : "Runtime validation failed",
+          ],
         }
       }
     },
@@ -87,7 +91,11 @@ export function useRuntimeHeartbeat(
       try {
         validation = await validateRuntimeHeartbeat(deploymentProfile, chainId)
       } catch (error) {
-        if (deploymentProfile.testOnly) console.warn("Runtime heartbeat failed:", error)
+        if (deploymentProfile.testOnly)
+          console.warn(
+            "Runtime heartbeat failed:",
+            error instanceof Error ? redactRpcUrls(error.message) : "Request failed",
+          )
         throw error
       }
       if (!validation.ready && deploymentProfile.testOnly)
@@ -159,7 +167,7 @@ export function useFinalizedBaseClock(options: AutomaticQueryOptions = {}) {
     refetchOnWindowFocus: refetchInterval !== undefined,
     refetchOnReconnect: refetchInterval !== undefined,
     queryFn: async () => {
-      const block = await basePublicClient.getBlock({ blockTag: "finalized" })
+      const block = await readBaseBlock("finalized")
       if (block.timestamp === undefined) throw new Error("Finalized Base time is unavailable")
       return { timestamp: block.timestamp }
     },
@@ -177,7 +185,7 @@ export function useLatestBaseClock(options: AutomaticQueryOptions = {}) {
     refetchOnWindowFocus: refetchInterval !== undefined,
     refetchOnReconnect: refetchInterval !== undefined,
     queryFn: async () => {
-      const block = await basePublicClient.getBlock({ blockTag: "latest" })
+      const block = await readBaseBlock("latest")
       if (block.timestamp === undefined) throw new Error("Latest Base time is unavailable")
       return { timestamp: block.timestamp }
     },

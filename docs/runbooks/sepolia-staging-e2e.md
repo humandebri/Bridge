@@ -48,7 +48,7 @@ bootstrap_attestation
 
 ## Finality遅延、Wallet、Refund E2E
 
-- Finalized headを意図的に約20分遅らせた状態でDeposit reviewが成功し、authorizationの`issued_at_timestamp`と`deadline = issued_at + 600`を記録する。
+- Finalized headを意図的に約20分遅らせた状態でDeposit reviewが成功し、authorizationの`issued_at_timestamp`と`deadline = issued_at + 900`を記録する。
 - quote snapshotの`blockTimestamp`を正本として、残り300秒では送信可能、299秒以下とwindow終端ちょうどではwallet呼出し、Ledger pull、intent保存、Base transaction送信を開始しないことを記録する。
 - 実walletでTICRC1 DepositからBase mintまで完了し、Base ETH支払receiptとexact processed Depositを記録する。
 - `AuthorizationExpired`と`AuthorizationWindowTooShort`はいずれも停止理由としてHistoryへ伝播する。Finalized Base timestampがdeadlineを超えるまではrefund不可で、超過後のexact未処理証拠でだけrefundできることを記録する。

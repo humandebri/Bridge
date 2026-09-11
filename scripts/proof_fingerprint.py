@@ -18,6 +18,7 @@ FINGERPRINT_SOURCE_ROOTS = (
     ("integration", frozenset({".ts"})),
     ("scripts", frozenset({"", ".mjs", ".py", ".sh"})),
     ("ui/src", frozenset({".ts", ".tsx"})),
+    ("ui/recovery-worker", frozenset({".ts", ".json", ".jsonc", ".mjs"})),
     ("verification", frozenset({".json", ".lean", ".rs", ".sol", ".toml", ".tsv"})),
 )
 FINGERPRINT_CONFIG_FILES = (

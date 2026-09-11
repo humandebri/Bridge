@@ -28,6 +28,7 @@ export const deploymentProfileSchema = z
     activationTimelockDelaySeconds: z.number().int().positive().nullable(),
     icHost: z.url(),
     baseRpcUrl: z.url().optional(),
+    mintRecoveryUrl: z.literal("https://recovery.bridge.kinic.xyz/v1/mint-recovery").optional(),
     baseHistoryRpcUrls: z
       .array(z.url())
       .min(1)
@@ -56,6 +57,9 @@ export const deploymentProfileSchema = z
     bsnsRuntimeHash: hash.nullable(),
   })
   .superRefine((profile, context) => {
+    if (profile.mintRecoveryUrl && (profile.testOnly || profile.chainId !== 8453)) {
+      context.addIssue({ code: "custom", message: "Mint discovery is production Mainnet only" })
+    }
     if (!profile.testOnly) return
     try {
       assertEmbeddedTestUiProfile(profile)
@@ -124,6 +128,10 @@ export const releaseProfileSchema = deploymentProfileSchema.safeExtend({
   gateBManifestSha256: releaseSha256.nullable(),
   profileFileSha256: releaseSha256,
   profileCanonicalSha256: releaseSha256,
+  canisterSchemaVersion: z.literal(36).optional(),
+  canisterModuleSha256: releaseSha256.optional(),
+  postActivationUpgradeSha256: releaseSha256.optional(),
+  uiRpcConfigSha256: releaseSha256.optional(),
 })
 
 export type ReleaseDeploymentProfile = z.infer<typeof releaseProfileSchema>
@@ -133,8 +141,8 @@ export const DEFAULT_BASE_MAINNET_RPC_URL = "https://mainnet.base.org"
 export function resolvedBaseRpcUrl(
   profile: Pick<DeploymentProfile, "baseRpcUrl" | "chainId">,
 ): string {
-  if (profile.chainId === 8453) return DEFAULT_BASE_MAINNET_RPC_URL
   if (profile.baseRpcUrl) return profile.baseRpcUrl
+  if (profile.chainId === 8453) return DEFAULT_BASE_MAINNET_RPC_URL
   throw new Error(`Deployment profile has no default RPC URL for chain ${profile.chainId}`)
 }
 

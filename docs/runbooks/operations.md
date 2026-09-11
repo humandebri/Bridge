@@ -51,7 +51,7 @@ schema versionの正本は`bridge_metadata.application_schema_version`だけで�
 2. `storage_integrity_check()` queryが`ok`を返すことを確認する。upgrade処理からこの検査は自動実行されない。
 3. `refresh_storage_checksum(4194304)`を`complete = true`まで反復する。一回の呼出しは最大4 MiBであり、raw stable-memoryコピーやfilesystem backupとして扱わない。
 
-production Bridge Canisterはstable schema v35で配置・activation済みであり、source上のcurrent schema v36は未配置である。通常のcurrent Gate Bはv36だけを受理する。historical検証は、profile、Gate A receipt、upgrade chain終端、Wasm、live RuntimeBindingが単一versionへ収束する場合に限りv35またはv36を受理する。post-activation UI公開は当面実配置済みv35へ明示固定し、v34、v37、version混在、dual-read、shim、汎用fallbackは拒否する。productionを未経験の形式変更は現行形式へ直接反映し、全caller・test・fixture・文書を同時更新する。
+production Bridge Canisterはstable schema v35で配置・activation済みであり、source上のcurrent schema v36は未配置である。通常のcurrent Gate Bはv36だけを受理する。historical検証は、profile、Gate A receipt、upgrade chain終端、Wasm、live RuntimeBindingが単一versionへ収束する場合に限りv35またはv36を受理する。新しいpost-activation UI公開ゲートは、immutable v35 Gate Bから正当に連鎖するupgrade証拠と実配置済みv36終端に明示固定する。v34、v37、不連続なversion混在、dual-read、shim、汎用fallbackは拒否する。更新前のv35に新UIは公開できない。productionを未経験の形式変更は現行形式へ直接反映し、全caller・test・fixture・文書を同時更新する。
 
 ## ETH・cycles補充
 
@@ -119,9 +119,30 @@ staging upgrade前にpending Deposit/Withdrawal、reserve、pending governance t
 
 production install planはschema 2を使い、governance EVM fee、cycles floor、settlement cycle ceilingをtemplate固定のBootstrap値にする。Gate A profileも同じ3値を使い、Canister導入とBaseのpause配置を先に完了してよい。配置後はexact activation calldataのgas estimate、Finalized fee block、idle cycles burnから`initial-operational-parameters.json`を作る。`provider-independence.json`はSNS proposalを出さず、review済みsource/profile/current Wasm、公式EVM RPC Canister、`BaseMainnet`既定pool、空custom URL、runtimeの3-provider/2-thresholdへ束縛する。pre-seal Gate Bは13 artifact、proof、review、exact calldataと導出値を構造検証してsealだけを認可する。追加された`gate-a-profile.json`は配置時profileを不変証跡として保持し、`production-canister-upgrade-receipt.json`はproduction controllerによる通常upgradeの旧・新module hash、sole controller、schema、pause、storage validation/checksum、public state continuityを固定する。schema 3の`post-gate-a-policy-transition.json`は両Wasm hashとupgrade receipt hashを結合し、Gate A source、実際にupgradeを生成したsource、現在のrelease-policy sourceを別々に固定する。production wrapperはGate A → upgrade → currentの祖先関係と各source treeを検証し、current sourceから同じWasmが再現されなければ拒否する。production controllerが`scripts/production-seal-driver.sh`で一度だけsealした後、schedule/executeのprepare wrapperが固定confirmation relayerでattestationを自動refreshし、certified config digest、sole controller、module hash、pause、reserve、cycles、pendingをfresh live Gate Bで再検証する。手動`refresh-attestation`は診断用であり、別の認可ゲートではない。RPC rehearsal、monitor drill、7日計測はunpause後のGate Cで行い、Gate Bまたはcontroller handoverの認可入力にはせず、計測結果を自動的に運用値へ反映しない。
 
-production Wasm upgradeは`scripts/production-canister-upgrade.sh preflight`でread-only snapshotを新規evidence fileへ確定し、実行直前承認後に同じWasm、Gate A profile/receipt、preflight、production controller PEMと`BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER`を指定して`execute`する。このexact tokenはexecuteだけで受理し、preflight/recoverでは拒否する。driverはproduction identityとGate A installerの一致、Gate Aから全prior upgradeを経由するclean source ancestryとtree hash、旧moduleとsole controller、現行lifecycle/pause、runtime binding、storage integrityを実行直前に再取得する。BootstrapとOperationalConfigSealedはpausedを必須とし、Activatedでは観測したpause状態をupgrade前後で保持する。production canisterかつunsealed Bootstrap、paused、旧SNS Root pause principal、未使用bootstrap controller markerの組合せに限り、upgrade hookはpause principalとmarkerをproduction identityへ同一SQLite transactionで移行し、監査eventを一件追加する。既適用時は冪等、seal後はno-op、その他の組合せはfail closedとする。Wasm、Gate A profile/receipt、preflightは一度だけfreezeし、management `stored_chunks`、1 MiB以下の全`upload_chunk`、ordered chunk hash列を使う`install_chunked_code`の署名済みenvelopeとrequest IDを排他的に永続化する。chunk storeにexpected set外のhashがあれば拒否し、各raw upload responseとhashをappend-only evidenceへ保存する。partial upload停止時は同じ未期限切れrequest IDだけを再開し、全upload成功後にsole controller、旧module、lifecycle/pause、runtime binding、storage integrity、reserve、cyclesを除くcanonical public stateを再取得して一致した場合だけ最終installを送信する。通常upgrade後はmanagement status、同じ4 query response、request ID、stdout/stderr、chunk evidenceを保存する。通常upgradeでは永続public stateの完全継続を要求し、上記pause principal移行時だけはimmutable Gate A RuntimeBindingを正本としてoperational-config digestの対応差分と監査件数+1を許し、それ以外のruntime、storage、lifecycle、運用countの変化を拒否する。ICのCanister versionはupdate、callback、timer等でも増加し実装が任意に増やすことも許されるため、upgrade回数の証跡には使用しない。送信後にdriverが停止した場合は署名済みartifact、execution marker、chunk evidence、stdout/stderrを削除・上書きせず、live moduleを照合して同じ引数の`recover`でreceiptを復元するまで新規upgradeを送信しない。`recover`は署名済みenvelopeを検証するがupdateを送信しない。`install_chunked_code`成功後もchunk storeは自動clearされないため、このupgrade driverは暗黙にclearしない。残存expected chunksはreceiptに束縛し、必要なcleanupは別の明示操作と証跡で行う。
+production Wasm upgradeの通常経路は、承認済みcheckpointと追加receiptを含むevidenceを必須にする。
+`scripts/production-canister-upgrade.sh preflight --wasm ABS --checkpoint-evidence ABS --evidence ABS`でread-only snapshotを確定する。
+実行直前の明示承認後、同じWasmとcheckpoint evidenceに加えて`--preflight ABS --controller-pem ABS --receipt ABS`を指定し、`BRIDGE_ICP_IDENTITY=production`と`BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER`を使って`execute`する。
+confirmation tokenはexecuteだけで受理する。
+driverはcheckpoint終端から現在のclean sourceへの祖先関係、source tree、再現可能なWasm、sole controller、v36 RuntimeBinding、Activated、pause状態、storage integrity、reserveを検証する。
+executeは送信前に共通の完全proof gateを再実行し、失敗した場合はsubmissionを作成しない。
+read-only preflightと再送しないrecoverはこの重いgateを重複実行しない。
+凍結したevidenceのhashをpreflight、署名済みsubmission、正式receiptへ束縛し、途中の差し替えを拒否する。
 
-2回目以降のproduction upgradeでは、直前までの`production-canister-upgrade-receipt.json`を`--prior-upgrade-evidence`へ渡す。driverはその末尾moduleとtyped RuntimeBindingを実行前stateの正本とし、seal/activationで正当に変わるoperational-config digestと単調なlifecycle遷移だけを許容する。preflightとexecute/recoverの間でprior evidenceが変われば拒否する。各upgradeが出力するraw receiptは`bridge-profile append-production-upgrade-receipt <prior-or--> <raw-receipt> <new-chain>`で最大16件・合計256 MiBのappend-only chainへまとめる。Gate Bの同名artifactにはこのchainを配置し、各receiptのhash link、source ancestry/tree、Wasm、署名済みsubmission、sole controller、lifecycle/pause、schema、runtime、storage/public state継続を全件検証する。既存の単一raw receiptは1件chainとして引き続き受理する。
+署名済みstored_chunks、upload_chunk、install_chunked_codeのenvelopeとrequest IDは排他的に保存する。
+想定外のchunkは拒否し、全upload後に実行前stateを再確認してからinstallを送信する。
+v36 upgrade前後では永続public stateの継続を要求する。
+送信後に中断した場合、sidecarやexecution markerを削除せず、同じ入力の`recover`でreceiptを復元するまで新規upgradeを送信しない。
+recoverは署名とcheckpoint束縛を検証するがupdateを再送しない。
+chunk storeのclearは別の明示操作とし、このdriverでは行わない。
+
+正式receiptはbyte不変で監査用として保持する。移設後は[production証跡のローカル配置](../../deployments/README.md#production証跡のローカル配置)とGit対象外の`relocation-manifest.json`を正本の保存先一覧とする。元の監査manifestに埋め込まれたpathは書き換えない。
+`bridge-profile make-production-checkpoint-evidence CHECKPOINT OUTPUT [RECEIPT...]`にはcheckpoint以後のreceiptだけを時系列順に渡す。
+追加0件を受理し、追加履歴は最大16件、decoded合計256 MiB、各receipt128 MiBを維持する。
+各receiptのhash link、署名、Wasm、source ancestry、runtime、lifecycle、pause、storage継続を検証し、checkpoint以前のrequest IDと署名済みinstall digestの再使用も拒否する。
+通常運用ではcheckpoint以前のreceiptやGit objectを読み直さず、旧chain形式へのfallbackも行わない。
+初回候補生成と監査だけが旧形式を読む。
+上限へ達する前に`rotate-production-checkpoint-candidate EVIDENCE OUTPUT AUDIT`で次の未承認候補を作り、レビュー後にhashを別コミットで固定する。
+候補の生成やrotationは承認registryを変更しない。
 
 mappingをcommitしたclean sourceで`production-canister-plan.template.json`からrepo外のschema 2 planを作り、同じsourceから再buildしたWasmだけを`scripts/production-canister-install.sh --plan ... --wasm ... --receipt ...`へ渡す。receiptはsource checkout外にある、ownershipを実際に強制するfilesystem上の既存directoryへ出力する。directoryは実行者所有かつgroup/other非writableで、mountpointまでの祖先もgroup/otherによるpath置換を許してはならない。scriptはinstall専用modeとraw Candid binaryを固定し、初期化後のmodule/controller、Bootstrap lifecycle、空state、pause、storage validation/checksum、cycles reserve、RuntimeBinding、4 role addressをtyped receiptへ記録する。途中失敗後は通常installを再実行せずlive statusを調査する。receiptから確定した4 role addressをrelease profileへ反映し、Gate A wrapperへ`--canister-install-receipt`として渡す。wrapperは同じ凍結receiptをdeploy driverへ渡し、Base送信直前にcertified `read_state`のmodule hashとinstaller単独controllerを再検証する。Base配置後、exact schedule/execute calldataのgas estimate、10件以上のFinalized fee block、idle cycles burnを`initial-operational-parameters.json`へ記録し、固定式から導出したGate B profileと完全一致する運用設定を一度だけsealする。この更新は公式EVM RPC Canisterの`BaseMainnet`観測がruntime、role、pause条件を満たす場合だけ設定とactivation attestationを原子的に保存する。Gate BはGate A receiptと`post-gate-a-policy-transition.json`を通じてsource、deployed identity、初回install Wasmからcurrent profile Wasmまでの通常upgrade chain、runtime hashを固定し、認証済みqueryとcertified `read_state`で`OperationalConfigSealed`、freshかつ両deployment block以後のattestation、production installer単独controller、reserveを再検証する。Bootstrap、欠落・古いattestation、profile drift、module/controller driftではschedule/executeを送信しない。unpause後の7日計測、keeper drill、monitoring receiptはGate Cへ分離し、controller handoverの認可入力にはしない。controller handoverとSNS同一Wasm upgradeは初回activationやGate Cから独立し、運用者が時期を別途承認した場合だけ実行する。production profileの`base_rpc_url`は`null`、`rpc_providers`は空配列のままにし、直接Custom RPCをhandoverへ注入しない。
 
@@ -147,7 +168,26 @@ artifact公開前とreservation cleanup直前にmanagement statusを再取得し
 
 unpause後は7日以上かつ各10件以上の本番計測、keeper drill、monitoring receipt、稼働状態snapshot、全upgrade履歴をGate Cへ記録する。Gate C合格はcontroller handoverの認可条件でも、自動実行や時期を決める条件でもない。運用者が別途明示承認した場合だけ、固定confirmation relayerで`refresh-attestation`を手動実行してから、handover driverへGate B bundle、seal receipt、schedule receipt、execute receiptを渡す。handover driver自身はattestation更新を行わず、freshな認証済みattestationがなければcontroller変更前にfail closedする。driverは`initial-operational-parameters.json`からlive RuntimeBindingまでのactivation lineage、post-Gate-A upgrade chainからcurrent profile Wasmまでのmodule lineageを検証する。このGate B bundleと初回activation receiptは作成時点の順序・hash・有効期間を履歴証跡として検証し、handover時点の90日freshnessを要求しない。現在性はlive RuntimeBinding、認証済みattestation、management statusから独立に検証する。settings update送信直前はcontroller集合をproduction installer一件だけに限定し、ActivatedかつBase Deposit／WithdrawalとIC Depositがすべてunpaused、reserve sufficient、storage integrity `ok`を要求する。controller変更前後のmanagement status、module、RuntimeBinding、lifecycle、activation status／attestation、storage integrity、record／audit countをraw response digest付きで保存し、同一または非退行を検証する。運用中stateを空にする条件は置かない。合格時だけactive状態のままSNS Root一件へ変更し、続けてSNS proposalで同一Wasm upgradeを行う。初回Gate B、schedule、executeのcontroller条件はinstaller単独のままにする。
 
-post-activation production UI公開では、運用証跡とUI source証跡の役割を分離する。immutableなhistorical Gate Bとseal／schedule／execute receiptは配置時のCanister、runtime、activationを束縛し、`BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE`の単一raw receiptはGate B終端moduleから現在のmoduleまでのactivation後v35 hotfixを束縛する。このreceiptはexecute receipt以後、Gate Bと一致するRuntimeBindingから開始し、Activated、unpaused、v35のままstate、RuntimeBinding、storageを保持しなければならない。欠落、複数receipt、実行時刻逆行、開始／終端module、runtime、storage driftは拒否する。全upgrade履歴用append-only chainは別途保持するが、300秒のlive attestation窓内でUI認可を完了するため、既にhistorical Gate Bで検証済みの巨大prefixをdeploy直前に再decodeしない。今回のclean sourceから生成するstandalone schema 2 UI asset receiptはWalletConnect project ID、全file digest、aggregate digestを束縛する。`bridge-profile verify-production-ui-live`はhistorical Gate Bから決定的にrenderした`ui-runtime-profile.json`とのbyte一致に加え、追加upgrade receipt終端module、Activated、v35、installer単独controller、unpaused、pendingなし、reserve、storage、live activation confirmation、fresh attestationを検証する。controller専用のstorage integrity queryには`BRIDGE_PRODUCTION_INSTALLER_IDENTITY`で指定したローカルidentityを使い、解決したprincipalがGate Bの単独controllerと一致しなければ拒否する。identity名や鍵素材はrelease evidenceへ記録しない。通常deployはfrozen assets作成後かつWrangler直前にこのlive認可を再実行する。Gate B sourceとUI sourceの同一性や`BRIDGE_RELEASE_INPUTS_MANIFEST`は要求しない。asset追加・欠落・hash drift、receipt/profile／upgrade-lineage driftではCloudflareへ送信しない。この経路は完了済みschedule／execute proposalを再送せず、追加のCanister upgradeやcontroller handoverも行わない。
+post-activation production UI公開は`BRIDGE_CHECKPOINT_EVIDENCE`を運用証跡として使う。
+承認済みcheckpointにはimmutable Gate Bとseal／schedule／executeの検証結果を固定し、通常公開で古いファイルを全件再読込しない。
+追加receiptはcheckpointのmoduleとRuntimeBinding終端から接続し、最終schema v36、Activated、unpausedを要求する。
+欠落、重複、逆順、別instance、未承認hash、runtimeや会計やstorageのdriftを拒否する。
+元Gate Bや正式receiptは書き換えず監査用に保管する。
+
+UI RPCはCanister RPCと別の公開設定である。`BRIDGE_UI_RPC_CONFIG`にレビュー済みJSONファイルを指定する。形は `{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/REVIEWED_APP_KEY"}` とし、本番キーはsource・ログへ記録しない。このreleaseではBase mainnet Alchemy endpointだけを受理する。Origin制限は秘密保持の代替ではなく、キーを含むURLは公開UIに配信される。Canister固定RPC構成は変更しない。
+
+Canister更新と索引完成後に`bridge-profile render-production-checkpoint-ui-runtime EVIDENCE RPC_CONFIG OUTPUT`で公開用runtime profileを生成する。
+profileはGate B識別hash、checkpoint evidence全体のhash、検証済みv36終端、レビュー済みRPC設定へ決定的に束縛する。
+`verify-production-checkpoint-ui-live EVIDENCE RPC_CONFIG UI_RUNTIME_PROFILE`はbyte一致、認証済みlive RuntimeBinding、module、installer単独controller、Activated、unpaused、pending Base governanceなし、reserve、storage、5分以内のactivation attestationを要求する。
+`list_withdrawals`の署名検証queryも成功させ、IndexNotReadyやRPC失敗を空履歴として扱わない。
+attestation更新は本番update callなので別途実行承認を得る。
+実際のupgrade receiptと更新後のlive公開認可が得られるまで、UI公開は停止する。
+
+UI asset receiptは公開するclean sourceから新規生成し、WalletConnect project ID、全file digest、aggregate digestを束縛する。
+controller専用queryには`BRIDGE_PRODUCTION_INSTALLER_IDENTITY`を使用し、解決principalが承認済みcontrollerと一致しなければ拒否する。
+frozen assets作成後、Wrangler直前にlive認可とruntime profileの不変性を再確認する。
+asset、receipt、profile、checkpoint evidenceのdriftではCloudflareへ送信しない。
+proof receiptとcurrent-source fingerprintの契約はcheckpoint承認と独立であり、production driverの完全proof要件を緩和しない。
 
 BaseScanのsource verification、contract-created BSNSのownership確認、Token Update申請は[`token-publication.md`](token-publication.md)に従う。この外部申請と審査はGate A、Gate B、activationの認可条件ではない。
 
@@ -171,7 +211,7 @@ ownerのRefund請求で`isDepositProcessed(depositId) == true`なのに、`Depos
 
 ## Stable Settlement executorと手動復旧
 
-Mint AuthorizationはIC合意時刻の`issued_at_timestamp`から固定600秒の期限を持ち、threshold署名のinstallには300秒以上の残存時間を要求する。新規Depositなどが取得したFinalized snapshotでdeadline順indexを上限付きに走査し、`Finalized timestamp > deadline`の予約だけを個別RPCなしで解放する。Depositごとのtimer、自動Base照合、自動Ledger返金はない。任意の非anonymous Principalが`request_deposit_refund`を実行すると、認可発行済みDepositの`isDepositProcessed == false`をcanonical blockで確認して固定宛先へ返金する。期限前、等値、RPC不一致では資金を動かさない。
+Mint AuthorizationはIC合意時刻の`issued_at_timestamp`から固定900秒の期限を持ち、threshold署名のinstallには300秒以上の残存時間を要求する。新規Depositなどが取得したFinalized snapshotでdeadline順indexを上限付きに走査し、`Finalized timestamp > deadline`の予約だけを個別RPCなしで解放する。Depositごとのtimer、自動Base照合、自動Ledger返金はない。任意の非anonymous Principalが`request_deposit_refund`を実行すると、認可発行済みDepositの`isDepositProcessed == false`をcanonical blockで確認して固定宛先へ返金する。期限前、等値、RPC不一致では資金を動かさない。
 
 `settlement_scheduler.health = Degraded`の場合はstopped、5分以上overdueのschedule、expired leaseを特定する。active leaseがある間の次回起床はlease期限であり、別のoverdue jobへ即時timerを再armしない。`Faulted`の場合は`last_internal_error`と`last_dispatcher_run_at_ns`を記録し、新規DepositをpauseしてSQLiteを手作業で変更せず、同じWasmをupgradeしてstable job tableからtimerを再armする。改善しなければ障害Wasmとして調査する。
 一時障害の基準retry間隔は公開設定`settlement_retry_interval_seconds`であり、Governance transactionの監視設定とは独立している。
@@ -199,3 +239,61 @@ fee payoutは既存のpayout権限で`continue_fee_payout(payout_id)`を実行�
 ## Gate CのRPC・monitor証跡
 
 `rpc-e2e.json`と`monitor-drill.json`はunpause後に収集するGate C運用証跡であり、13 artifactのGate B、seal、schedule、execute、controller handoverの認可入力にはしない。7日・各10件の計測も同様にhandoverを認可しない。現行templateにはproduction/rehearsal Wasm hashとpause principalの混同、staging v8の10 scenario必須条件、`quorum_loss` injectorとvalidatorのoperation不一致、固定URLでのfault control不能が残るため、Gate C収集前にschemaとcapture経路を置換して別レビューする。これらを迂回した証跡は受理しない。quorum-lossの必須negative evidenceは、それまでPocketICとproof gateを正本とする。
+
+### Upgrade間のmint epoch観測
+
+アップグレード履歴の終端とlive runtimeで変わり得る観測値は、deposit admissionが保存したmint authorization epochである。Activatedかつunpaused、その他のruntime fields完全一致、TTL不変、epoch正値かつ単調増加の場合に限り、controller認証済み`get_operational_config`の同じ型付きpreimageから旧epochと現epochの両digestを再計算する。任意digestや設定変更は受理しない。driverはpreflightとreceiptの`before_operational_config`にraw CandidとSHA-256を保存し、snapshot status/runtimeとの一致も検証する。v36へ到達するreceipt（36→36を含む）は証拠必須であり、既存公開済み35→35 receiptだけが省略可能。upgradeそのものの前後runtime一致条件は維持する。
+
+`bridge-profile operational-epoch-digests OPERATIONAL_HEX_FILE LEDGER_FEE OLD_EPOCH NEW_EPOCH`はRustの正本Candid encodingで2つのdigestだけを表示する診断コマンド。UI live検証もGate B controllerに束縛した`BRIDGE_PRODUCTION_INSTALLER_IDENTITY`で設定preimageを取得し、同じ条件で履歴終端との一致を確認する。これは外部観測の真正性とICの応答・controller認証に依存する実装検証であり、抽象モデルによる外部事実の証明ではない。
+
+## Launcher による実行 cycles 補充
+
+Bridge は init と成功した upgrade の直後、および24時間ごとに実行 cycles 残高を確認する。
+残高が 2,000,000,000,000 cycles 以下なら固定 launcher `xfug4-5qaaa-aaaak-afowa-cai` の
+`request_cycles : () -> (variant { Ok; Err : RequestCyclesError })` を呼ぶ。
+補充量を指定せず、launcher の認可・資金・要求間隔に従う。cycles-ledger account への送金ではない。
+このタイマーは既存の資産操作の pause や設定 seal とは独立し、upgrade 後に再設定する。
+
+controller は `check_cycles_top_up : () -> (variant { Ok; Err : text })` を手動で呼べる。
+例: `icp canister call <Bridge-canister-id> check_cycles_top_up '()' --network ic --identity <controller-identity>`。
+残高が閾値を超える場合と別要求が実行中の場合も `Ok` を返すため、`Ok` だけで補充成功と判断しない。
+`icp canister status <Bridge-canister-id> --network ic --identity <controller-identity>` の実行残高を確認する。
+
+要求失敗は canister log の `cycles top-up failed:` で確認する。controller が IC dashboard の
+canister logs、または management canister の `fetch_canister_logs` で取得する。
+`Unauthorized` は launcher 側登録、`TooSoon` は要求間隔、`LauncherBalanceTooLow` は launcher の資金、
+`TopUpFailed` は補充実行失敗を調べる。通信タイムアウト時は補充済みの場合もあるため、実行残高を先に確認する。
+自動再試行は次の24時間チェックであり、追加の短時間再試行はしない。
+24時間ごとの確認は急激な消費や停止・凍結による残高枯渇を防ぐ保証ではない。
+
+本番適用前に launcher 管理者の手順または実装で Bridge の許可登録、補充量・要求間隔、
+実行残高へ補充される処理を確認する。公開 Candid の `register_shared_memory` が補充の許可登録を
+兼ねるとは断定しない。この変更だけでは登録や本番 upgrade は実行しない。
+
+`cycles_top_up_request_policy` のローカル要求条件は共有カーネルと Verus に結び付ける。
+実行中フラグ・controller 入力・タイマー・Candid 応答の接続は単体/PocketIC テストで検証するが、
+それらを含む補充全体の保証は `partial` であり、launcher の認可・資金・補充成功と IC runtime に依存する。
+既存の `signing_cycle_reserve` の計算と stable schema v36 は変更しない。
+
+
+### Mainnet Mint復旧Worker
+
+`ui/recovery-worker` は本番専用の候補ハッシュ探索APIであり、Mint・返金・IC通知を実行しない。秘密情報はCloudflare Secretの `ALCHEMY_API_KEY`、`CURSOR_KEY`、`BRIDGE_PROFILE_JSON` に保存する。UI公開用のOrigin制限キーを流用せず、サーバーからTransfers APIを利用できる専用キーを用意する。`CURSOR_KEY` は32文字以上の暗号学的乱数とする。
+
+公開には固定Node.jsで `node ui/recovery-worker/release.mjs dry-run`、続いて `deploy` を実行する。必要な環境変数は `BRIDGE_UI_RUNTIME_PROFILE_FILE`、`BRIDGE_CHECKPOINT_EVIDENCE`、`BRIDGE_UI_RPC_CONFIG`、`BRIDGE_PROOF_RECEIPT`、`RECOVERY_ALCHEMY_API_KEY`、`RECOVERY_CURSOR_KEY`、`BRIDGE_RECOVERY_SMOKE_DEPOSIT_ID`、`BRIDGE_RECOVERY_SMOKE_TRANSACTION_HASH`。スモーク対象は既存の成功済み本番Mintに限る。クリーンなソース、完全な現行proof receipt、v36 live承認を確認し、公開前にAlchemyの候補発見、公開後にWorkerの候補発見を検証する。成功後だけ通常の本番UI公開ゲートへ進む。スモークで新規取引を送信しない。
+
+障害時は当該Workerの `RECOVERY_ENABLED` を `false` にして探索だけ停止する。既知ハッシュのreceipt追跡は継続する。Secret・RPC URL・アドレスをログへ出さず、HTTP状態と所要時間、429、上流障害を監視する。IPとDepositの制限はCloudflare拠点単位の緩やかな制限であり、全世界共通の課金上限ではない。復旧できない場合も「未送信」と判断せず、自動再送しない。Historyへのハッシュ貼り付けによる手動復元は提供しない。
+
+### v36の認可TTL移行
+
+v36の600秒から900秒へのupgradeは、controller取得済みの移行前operational configからTTLだけを置換して移行後digestを計算する。epoch、その他の設定、deployment、lifecycle、pause、公開資産状態は保存し、前後snapshotとそれぞれのpublic-state digestを検証する。通常のupgradeとepoch進行の条件は変更しない。履歴チェーンとcheckpoint suffixも同じ限定判定を使用する。逆方向、他のTTL、混在schema、証拠欠落は拒否する。
+
+本リリースは利用中の600秒認可が残っていないことを運用前提とする。旧認可の延長、再発行、互換送信は行わない。既存のcheckpoint driverは保存した移行前設定をそのまま検証へ渡す。旧CLIの `verify-production-upgrade-state-preserved` でこの移行を検証する場合は、既存引数の末尾に移行前 `get_operational_config` 応答のraw Candid hexを追加する。省略時は従来の検証条件を維持する。
+
+### Mint復旧の候補処理と失敗通知
+
+検索ページの取得はレシート検証キューの消化と対象depositの巡回から独立させる。取得中のpage列を毎turn優先し、列挙終了後は次のdepositへ順に移る。検索失敗時はそのdepositを30秒待機させ、その間は他のdepositを検索する。取得不能・未Finalizedの候補は30秒後の再試行キューへ移し、他の候補を継続する。1回の処理は最大4候補、保持する未検証候補は最大10,000件とし、上限付近では候補を捨てず検索を待機する。候補を永続保存できない場合は検索位置を進めない。
+
+Workerの署名付きcursorは固定検索上限、pageKey、列挙済み範囲の再開blockを束縛する。pageKeyの使用期限は各発行から9分とし、失効後はpageKeyを使わず最後のblockを含めて再開する。同blockが複数pageにまたがる場合も取りこぼさず、保存済みhashを重複排除する。全page終了後は60秒待って元の認可開始blockから再探索し、indexへの遅延反映を拾う。検索候補や検索不成功を精算証拠にはしない。
+
+`notify_deposit_mint`の失敗時30秒クールダウンはcallerとdepositの組に限定する。ハッシュを変えた同callerの連打は制限し、第三者の失敗は別callerやconfirmation relayerを制限しない。全体のRPC予算、in-flight排他、厳密なFinalized Mint証拠の検証は維持する。

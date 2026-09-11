@@ -9,10 +9,29 @@ import {
   type Route,
 } from "@playwright/test"
 
+const rangeLogRequests = new WeakMap<Page, string[]>()
+
 const DEPLOYER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
 test.beforeEach(async ({ page }) => {
   await installAnvilWallet(page)
+  const methods: string[] = []
+  rangeLogRequests.set(page, methods)
+  page.on("request", (request) => {
+    try {
+      const body: unknown = request.postDataJSON()
+      for (const call of Array.isArray(body) ? body : [body]) {
+        if (call && typeof call === "object" && "method" in call && call.method === "eth_getLogs")
+          methods.push(call.method)
+      }
+    } catch {
+      /* IC requests use CBOR. */
+    }
+  })
+})
+
+test.afterEach(({ page }) => {
+  expect(rangeLogRequests.get(page)).toEqual([])
 })
 
 test("deposits through the real ledger, canister, and Anvil contract", async ({
@@ -81,9 +100,11 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await expect
     .poll(async () => (await controlState(request)).knownDepositCount, { timeout: 60_000 })
     .toBe(1)
-  await expect(page.getByText("Deposit status unavailable", { exact: true })).toBeVisible()
+  await expect(
+    page.getByText("Previous deposit outcome is unconfirmed", { exact: true }),
+  ).toBeVisible()
   await page.getByRole("button", { name: "Close", exact: true }).click()
-  await expect(page.getByRole("button", { name: "Check status" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Check previous deposit" })).toBeVisible()
   expect(await controlState(request)).toMatchObject({
     knownDepositCount: 1,
     depositSequences: ["0"],
@@ -95,15 +116,17 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await expect(page.getByRole("button", { name: /IC wallet connected as /i })).toBeVisible()
   await expect(page.getByRole("button", { name: "Connect IC wallet", exact: true })).toHaveCount(0)
   await refreshBridgeData(page)
-  await page.getByRole("button", { name: "Check status" }).click()
+  await page.getByRole("button", { name: "Check previous deposit" }).click()
   await expect(
     page
       .getByText(
-        /Ledger escrowを処理中|Mint Authorizationを署名中|Mint Authorization ready|Your tokens were minted on Base/,
+        /Ledger escrowを処理中|Mint Authorizationを署名中|Mint Authorization ready|Your tokens were minted on Base|Success/,
       )
       .first(),
   ).toBeVisible()
-  await expect(page.getByText("Deposit status unavailable", { exact: true })).toHaveCount(0)
+  await expect(
+    page.getByText("Previous deposit outcome is unconfirmed", { exact: true }),
+  ).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Bridge to Base" })).toHaveCount(0)
   const afterRecovery = await controlState(request)
   expect(afterRecovery).toMatchObject({
@@ -114,11 +137,13 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   expect(BigInt(initial.ledgerBalance) - BigInt(afterRecovery.ledgerBalance)).toBe(
     200_000_000n + 2n * BigInt(initial.ledgerFee),
   )
+  await postControl(request, "/test/sync-base-clock", {})
   await expect
     .poll(async () => BigInt((await controlState(request)).bsnsBalance), { timeout: 60_000 })
     .toBe(199_000_000n)
 
   await postControl(request, "/test/settle", {})
+  await waitForMintRecording(request)
   await expect(page.getByRole("button", { name: "Close", exact: true })).toBeVisible()
   await expect(page.getByLabel("You send")).toHaveValue("")
   await page.getByRole("button", { name: "Close", exact: true }).click()
@@ -136,7 +161,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await expect(
     page
       .getByText(
-        /Ledger escrowを処理中|Mint Authorizationを署名中|Mint Authorization ready|Your tokens were minted on Base/,
+        /Ledger escrowを処理中|Mint Authorizationを署名中|Mint Authorization ready|Your tokens were minted on Base|Success/,
       )
       .first(),
   ).toBeVisible()
@@ -155,6 +180,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
     .toBe(298_000_000n)
 
   await postControl(request, "/test/settle", {})
+  await waitForMintRecording(request)
   await expect(page.getByRole("button", { name: "Close", exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Close", exact: true }).click()
   await refreshBridgeData(page)
@@ -187,7 +213,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
     BigInt(initial.indexBlocksSynced) + 4n,
   )
   await openHistory(page)
-  await expect(page.getByText("Minted", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("Success", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
   for (const heading of [
     "Direction",
     "Base tx",
@@ -208,7 +234,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   const nextStepHeader = page.getByText("Next step", { exact: true }).filter({ visible: true })
   const completedDepositNextStep = page
     .locator("article")
-    .filter({ hasText: "Minted" })
+    .filter({ hasText: "Success" })
     .first()
     .getByText("—", { exact: true })
   const nextStepHeaderBox = await nextStepHeader.boundingBox()
@@ -222,11 +248,11 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await page.reload()
   await expect(page.getByRole("button", { name: /IC wallet connected as /i })).toBeVisible()
   await expect(page.getByRole("button", { name: "Connect IC wallet", exact: true })).toHaveCount(0)
-  await expect(page.getByText("Minted", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("Success", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
 
   const beforeWithdrawal = await controlState(request)
   const bridgeUpdateGate = await holdIcUpdateMethod(page, "continue_withdrawal")
-  const bridgeUpdateObserver = observeIcUpdateMethods(page)
+  const bridgeUpdateObserver = observeWithdrawalUpdateMethods(page)
   await page.getByRole("link", { name: "KINIC Bridge home" }).click()
   await page.getByRole("button", { name: "Reverse bridge direction" }).click()
   await refreshBridgeData(page)
@@ -362,7 +388,12 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
 
 test("claims an expired deposit refund from History", async ({ page, request }) => {
   test.setTimeout(600_000)
-  await postControl(request, "/test/prepare-refundable-deposit", {})
+  const { depositId, fundingLedgerBlockIndex } = (await postControl(
+    request,
+    "/test/prepare-refundable-deposit",
+    {},
+  )) as { depositId: string; fundingLedgerBlockIndex: string }
+  const depositLabel = `Deposit #${fundingLedgerBlockIndex}`
   await page.goto("/")
   await page.getByRole("checkbox", { name: "Acknowledge unaudited bridge risk" }).check()
   await page.getByRole("button", { name: "Acknowledge and continue" }).click()
@@ -374,13 +405,9 @@ test("claims an expired deposit refund from History", async ({ page, request }) 
   await page.getByRole("button", { name: "Close confirmation" }).click()
   await openHistory(page)
   await page.locator("header").getByRole("button", { name: "Refresh", exact: true }).click()
-  const refundRow = page
-    .locator("article")
-    .filter({ hasText: "Not submitted" })
-    .filter({
-      has: page.getByRole("button", { name: "Claim refund", exact: true }),
-    })
-    .first()
+  const refundRow = page.locator("article").filter({
+    has: page.getByText(depositLabel, { exact: true }),
+  })
   await expect(refundRow).toHaveCount(1)
   await expect(refundRow.getByRole("button", { name: "Claim refund", exact: true })).toBeVisible()
   const refundResponse = page.waitForResponse(
@@ -391,10 +418,14 @@ test("claims an expired deposit refund from History", async ({ page, request }) 
   )
   await refundRow.getByRole("button", { name: "Claim refund", exact: true }).click()
   const completedRefund = await refundResponse
+  expect(completedRefund.request().postDataJSON()).toMatchObject({ id: depositId })
   expect(completedRefund.ok()).toBe(true)
   expect(await completedRefund.json()).toHaveProperty("state.Refunded")
   await page.reload()
-  const refundedRow = page.locator("article").filter({ hasText: "Not submitted" }).first()
+  const refundedRow = page.locator("article").filter({
+    has: page.getByText(depositLabel, { exact: true }),
+  })
+  await expect(refundedRow).toHaveCount(1)
   await expect(refundedRow.getByText("Refunded", { exact: true })).toBeVisible({ timeout: 30_000 })
   await expect(
     refundedRow.getByRole("button", { name: /Claim refund|Request refund/ }),
@@ -448,7 +479,22 @@ interface ControlState {
   nextDepositSequence: string
 }
 
-function observeIcUpdateMethods(page: Page): {
+async function waitForMintRecording(request: APIRequestContext): Promise<void> {
+  const { depositId, transactionHash } = (await postControl(
+    request,
+    "/test/prepare-latest-mint",
+    {},
+  )) as {
+    depositId: string
+    transactionHash: string
+  }
+  await expect
+    .poll(() => postControl(request, "/test/mint-state", { depositId }), { timeout: 90_000 })
+    .toEqual({ phase: "Minted", transactionHash })
+  await postControl(request, "/test/clear-mint-proof", {})
+}
+
+function observeWithdrawalUpdateMethods(page: Page): {
   attempts: Array<{ method: string; requestId: string }>
   acceptedCalls: Array<{ method: string; requestId: string }>
   stop: () => void
@@ -457,12 +503,13 @@ function observeIcUpdateMethods(page: Page): {
   const acceptedCalls: Array<{ method: string; requestId: string }> = []
   const requestListener = (request: Request) => {
     const call = decodeIcUpdateRequest(request)
-    if (call) attempts.push(call)
+    // Other deposits can resume their idempotent recording after reload.
+    if (call && call.method !== "notify_deposit_mint") attempts.push(call)
   }
   const responseListener = (response: Response) => {
     if (response.status() !== 200 && response.status() !== 202) return
     const call = decodeIcUpdateRequest(response.request())
-    if (call) acceptedCalls.push(call)
+    if (call && call.method !== "notify_deposit_mint") acceptedCalls.push(call)
   }
   page.on("request", requestListener)
   page.on("response", responseListener)

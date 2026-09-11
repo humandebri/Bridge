@@ -61,7 +61,8 @@ structure Record where
   feeApplied : Bool
   mintApplied : Bool
   payoutApplied : Bool
-  releaseApplied : Bool
+  reservationReleased : Bool
+  refundApplied : Bool
   jobDue : Bool
   leaseGeneration : Option Nat
 deriving DecidableEq
@@ -164,7 +165,7 @@ def eventDelta (record : Record) (event : Event) : Option Delta :=
       else none
   | .refund _ amount =>
       if record.kind = .deposit ∧ record.phase = .funded ∧ record.economic.reservedMint = 0 ∧
-          !record.releaseApplied then
+          !record.refundApplied then
         some (.refund amount)
       else none
   | .cancel _ =>
@@ -181,7 +182,7 @@ def eventDelta (record : Record) (event : Event) : Option Delta :=
           (record.netAmount + record.chargedServiceFee))
       else none
   | .releaseReservation _ =>
-      if record.kind = .deposit ∧ !record.releaseApplied then
+      if record.kind = .deposit ∧ !record.reservationReleased then
         some (.releaseReservation record.economic.reservedMint)
       else none
   | .callback _ generation nextPhase =>
@@ -197,11 +198,11 @@ def transitionRecord (record : Record) (event : Event) : Option (Record × Delta
     | .installSignature _ => { record with economic, feeApplied := true }
     | .mint _ => { record with economic, phase := .minted, mintApplied := true, jobDue := false }
     | .refund _ _ =>
-        { record with economic, phase := .refunded, releaseApplied := true, jobDue := false }
+        { record with economic, phase := .refunded, refundApplied := true, jobDue := false }
     | .cancel _ => { record with economic, phase := .cancelled, jobDue := false }
     | .payout _ _ _ _ =>
         { record with economic, phase := .paid, payoutApplied := true, jobDue := false }
-    | .releaseReservation _ => { record with economic, releaseApplied := true }
+    | .releaseReservation _ => { record with economic, reservationReleased := true }
     | .callback _ _ nextPhase =>
         { record with economic, phase := nextPhase, jobDue := false, leaseGeneration := none }
   some (next, delta)
@@ -757,7 +758,7 @@ theorem duplicate_payout_is_rejected {record : Record}
   simp [applyRecord, transitionRecord, eventDelta, paid, nonterminal]
 
 theorem duplicate_release_is_rejected {record : Record}
-    (released : record.releaseApplied = true) (nonterminal : record.phase.terminal = false) :
+    (released : record.reservationReleased = true) (nonterminal : record.phase.terminal = false) :
     applyRecord record (.releaseReservation record.id) = none := by
   simp [applyRecord, transitionRecord, eventDelta, released, nonterminal]
 
@@ -858,5 +859,31 @@ theorem release_clears_exact_reservation {record next : Record}
     have reserved := (congrArg Economic.reservedMint equality).symm
     simpa using reserved
   · simp at economic
+
+-- The refunded amount is the escrow debit, including the ledger fee.
+def refundableDeposit : Record := {
+  id := 1, kind := .deposit, phase := .funded
+  economic := {
+    escrow := 30001, baseSupply := 0, feeReserve := 0,
+    unmintedLiability := 30001, unreleasedLiability := 0, reservedMint := 20001 }
+  netAmount := 20001, chargedServiceFee := 10000, paymentDestination := 0
+  feeApplied := false, mintApplied := false, payoutApplied := false
+  reservationReleased := false, refundApplied := false
+  jobDue := true, leaseGeneration := none }
+
+def refundedDepositTrace : Option Record := do
+  let signed ← applyRecord refundableDeposit (.installSignature 1)
+  let released ← applyRecord signed (.releaseReservation 1)
+  applyRecord released (.refund 1 20001)
+
+theorem released_deposit_can_refund :
+    (refundedDepositTrace.map fun record =>
+      (record.phase, record.economic.reservedMint, record.economic.unmintedLiability,
+       record.economic.feeReserve, record.reservationReleased, record.refundApplied)) =
+      some (.refunded, 0, 0, 10000, true, true) := by decide
+
+theorem refunded_deposit_rejects_duplicate_operations :
+    (refundedDepositTrace.bind fun record => applyRecord record (.refund 1 20001)) = none ∧
+    (refundedDepositTrace.bind fun record => applyRecord record (.releaseReservation 1)) = none := by decide
 
 end BridgeSpec.GlobalHistory

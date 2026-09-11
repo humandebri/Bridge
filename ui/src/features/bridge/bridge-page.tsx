@@ -38,7 +38,6 @@ import { useWalletDialog } from "@/features/wallet/wallet-controls"
 import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
 import type { DepositView } from "@/generated/bridge.did"
 import { bsnsAbi } from "@/generated/abi/bsns.generated"
-import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import {
   estimatedAmountOut,
   formatTokenAmount,
@@ -48,6 +47,7 @@ import {
 } from "@/lib/amounts"
 import { shortenWalletAddress } from "@/lib/wallet-address"
 import { classifyDepositRecoverySequence } from "@/lib/deposit-recovery"
+import { transferErrorMessage } from "@/lib/transfer-error"
 import { createLedgerActor, ledgerAccount } from "@/lib/ic/ledger"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import type { DepositCall, IcAccount } from "@/lib/ic/wallet"
@@ -59,7 +59,11 @@ import {
   type FinalizedRuntimeObservation,
 } from "@/lib/runtime-validation"
 import { currentInjectedWallet, requireWalletSnapshot, sameIcAccount } from "@/lib/wallet-snapshot"
-import { createWithdrawalAfterRevalidation } from "@/lib/withdrawal-submit"
+import {
+  createWithdrawalAfterRevalidation,
+  withdrawalAbi,
+  type ApprovalReceipt,
+} from "@/lib/withdrawal-submit"
 import { savePendingConfirmation } from "@/lib/pending-confirmations"
 import { readDepositIntent, removeDepositIntent, saveDepositIntent } from "@/lib/deposit-intents"
 import { withBrowserLock } from "@/lib/browser-lock"
@@ -94,19 +98,31 @@ interface DepositWriteGate {
 }
 
 export function validatedDepositWriteGate(input: {
+  recipient: string
   amount: bigint
   expectedSequence: bigint
   observation: FinalizedRuntimeObservation
   ledger: DepositWriteGate["ledger"]
   sequence: bigint
 }): DepositWriteGate {
-  const { amount, expectedSequence, observation, ledger, sequence } = input
+  const { amount, expectedSequence, observation, ledger, sequence, recipient } = input
+  if (
+    !/^0x[0-9a-fA-F]{40}$/.test(recipient) ||
+    [
+      "0x0000000000000000000000000000000000000000",
+      deploymentProfile.bridgeAddress,
+      deploymentProfile.bsnsAddress,
+    ].some((address) => address?.toLowerCase() === recipient.toLowerCase())
+  )
+    throw new Error("Recipient cannot be zero, the Bridge contract, or the token contract")
   const quote = observation.snapshot
   if (!quote) throw new Error("Finalized Base snapshot is unavailable")
   if (quote.depositsPaused) throw new Error("Deposits are paused on Base")
   if (amount > quote.perDepositLimit)
     throw new Error("Amount exceeds the current per-deposit limit")
   if (amount <= quote.serviceFee) throw new Error("Amount must exceed the current service fee")
+  if (amount - quote.serviceFee <= ledger.fee)
+    throw new Error("Amount must exceed the service fee plus the refund ledger fee")
   const windowEndsAt = quote.startedAt + quote.duration
   if (quote.blockTimestamp === windowEndsAt)
     throw new Error(
@@ -483,16 +499,9 @@ export function BridgePage({
       setDepositProgress("idle")
       bridgeProgress.update(progressId, {
         phase: "attention",
-        attentionMessage:
-          error instanceof Error
-            ? `${error.message}. Check History before starting another deposit.`
-            : "The deposit response is unresolved. Check History before starting another deposit.",
+        attentionMessage: `${transferErrorMessage(error)} Check the previous deposit before starting another one.`,
       })
-      toast.error(
-        error instanceof Error
-          ? `${error.message}. Retry the same deposit or check whether it was accepted.`
-          : "Deposit response is unresolved",
-      )
+      toast.error(`${transferErrorMessage(error)} Check the previous deposit before trying again.`)
     },
   })
 
@@ -533,6 +542,7 @@ export function BridgePage({
         const beforeApproval = await refetchDepositWriteGate(
           reviewed.amount,
           reviewed.gate.sequence,
+          confirmedRecipient,
         )
         const requiredAllowance = reviewed.amount + beforeApproval.ledger.fee
         if (beforeApproval.ledger.allowance < requiredAllowance) {
@@ -558,6 +568,7 @@ export function BridgePage({
         const final = await refetchDepositWriteGate(
           reviewed.amount,
           beforeApproval.sequence,
+          confirmedRecipient,
           undefined,
         )
         const attempt: UnresolvedDepositAttempt = {
@@ -581,10 +592,9 @@ export function BridgePage({
       setDepositProgress("idle")
       bridgeProgress.update(progressId, {
         phase: "attention",
-        attentionMessage:
-          error instanceof Error ? error.message : "The deposit could not continue.",
+        attentionMessage: transferErrorMessage(error),
       })
-      toast.error(error instanceof Error ? error.message : "Deposit failed")
+      toast.error(transferErrorMessage(error))
     } finally {
       await closeWalletSession?.().catch(() => undefined)
       setReviewedDeposit(undefined)
@@ -594,6 +604,7 @@ export function BridgePage({
   const refetchDepositWriteGate = async (
     amount: bigint,
     expectedSequence: bigint,
+    recipient: string,
     reusableObservation?: FinalizedRuntimeObservation,
   ): Promise<DepositWriteGate> => {
     const observationPromise =
@@ -618,6 +629,7 @@ export function BridgePage({
     return validatedDepositWriteGate({
       amount,
       expectedSequence,
+      recipient,
       observation,
       ledger: ledgerResult.data,
       sequence: sequenceResult.data,
@@ -731,6 +743,7 @@ export function BridgePage({
           throw new Error("Deposit amount or financial information is unavailable")
         return validatedDepositWriteGate({
           amount: depositParsed.value,
+          recipient: walletSnapshot.recipient,
           expectedSequence: financials.sequence,
           observation,
           ledger: financials.ledger,
@@ -870,7 +883,9 @@ export function BridgePage({
         )
         await removeDepositIntent(unresolvedDeposit.account)
         setUnresolvedDeposit(undefined)
-        toast.info("The deposit was not accepted. You can edit the form or submit a new request.")
+        toast.info(
+          "The previous deposit was not accepted. You can now edit the form or start a new deposit.",
+        )
       } else if (status === "accepted-or-conflicted") {
         const record = await actor.get_deposit_by_owner_sequence(
           Principal.fromText(unresolvedDeposit.account.owner),
@@ -885,7 +900,9 @@ export function BridgePage({
           bytesHex(record[0].from_subaccount[0] ?? new Uint8Array(32)) !==
             bytesHex(unresolvedDeposit.account.subaccount ?? new Uint8Array(32))
         ) {
-          throw new Error("Canonical deposit does not match the saved intent")
+          throw new Error(
+            "The recorded deposit does not match the saved request. Do not start another deposit. Review its details in History.",
+          )
         }
         const canonical = record[0]
         const existingProgress = bridgeProgress.progress
@@ -935,15 +952,17 @@ export function BridgePage({
         )
         await removeDepositIntent(unresolvedDeposit.account)
         setUnresolvedDeposit(undefined)
-        toast.success("The accepted deposit was recovered from canonical history.")
+        toast.success(
+          "The previous deposit was accepted. Continue this deposit instead of starting another one.",
+        )
       } else {
-        toast.error("This deposit needs attention. Check History before continuing.")
+        toast.error(
+          "We still could not confirm the previous deposit. New deposits remain blocked. Review its details in History.",
+        )
       }
     } catch (error) {
       toast.error(
-        error instanceof Error
-          ? error.message
-          : "The deposit could not be checked. Try again from History.",
+        `We still could not confirm the previous deposit. New deposits remain blocked. ${transferErrorMessage(error)}`,
       )
     } finally {
       setCheckingDeposit(false)
@@ -996,6 +1015,7 @@ export function BridgePage({
         functionName: "allowance",
         args: [snapshotAddress, deploymentProfile.bridgeAddress as `0x${string}`],
       })
+      let approvalReceipt: ApprovalReceipt | undefined
       if (allowance < withdrawParsed.value) {
         bridgeProgress.update(progressId, {
           phase: "awaiting-base-allowance",
@@ -1012,7 +1032,7 @@ export function BridgePage({
               args: [deploymentProfile.bridgeAddress as `0x${string}`, withdrawParsed.value],
             }),
         )
-        const approvalReceipt = await client.waitForTransactionReceipt({ hash: approvalHash })
+        approvalReceipt = await client.waitForTransactionReceipt({ hash: approvalHash })
         if (approvalReceipt.status !== "success") throw new Error("Token approval failed")
         bridgeProgress.update(progressId, { phase: "awaiting-base-withdrawal" })
       } else {
@@ -1021,58 +1041,91 @@ export function BridgePage({
           tokenApproval: "not-required",
         })
       }
-      const broadcast = await createWithdrawalAfterRevalidation({
-        expectedWallets,
-        refetchRuntime: async () => ({
-          data: await refetchRuntimeAttestedWriteReady(
-            runtime.data,
-            runtime.refetch,
-            heartbeat.refetch,
-          ),
-        }),
-        currentEvmWallet: currentBaseWallet,
-        currentIcAccount: () =>
-          Promise.resolve({
-            owner: confirmedIcAccount.owner,
-            subaccount: confirmedIcAccount.subaccount?.slice(),
-          }),
-        refetchFinancials: async (observation) => {
-          const quote = observation.snapshot
-          if (!quote) throw new Error("Finalized Base snapshot is unavailable")
-          const balanceResult = await bsnsBalance.refetch()
-          if (balanceResult.isError || balanceResult.isStale || balanceResult.data === undefined)
-            throw new Error("Fee or balance data changed and could not be verified")
-          return {
-            serviceFee: quote.serviceFee,
-            balance: balanceResult.data,
-            withdrawalsPaused: quote.withdrawalsPaused,
-          }
-        },
-        validateFinancials: ({ serviceFee, balance: finalBalance, withdrawalsPaused }) => {
-          if (withdrawalsPaused) throw new Error("Withdrawals are paused on Base")
-          if (withdrawParsed.value <= serviceFee)
-            throw new Error("Amount must be greater than the current service fee")
-          if (finalBalance < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
-        },
-        createWithdrawal: ({ serviceFee }) =>
-          withBrowserLock(`kinic-wallet-prompt:base:${snapshotAddress.toLowerCase()}`, () =>
-            write.writeContractAsync({
-              account: snapshotAddress,
-              address: deploymentProfile.bridgeAddress as `0x${string}`,
-              abi: bridgeAbi,
-              functionName: "createWithdrawal",
-              args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)],
+      bridgeProgress.update(progressId, { phase: "awaiting-base-approval-reflection" })
+      const withdrawalRequest = (serviceFee: bigint) =>
+        ({
+          account: snapshotAddress,
+          address: deploymentProfile.bridgeAddress as `0x${string}`,
+          abi: withdrawalAbi,
+          functionName: "createWithdrawal",
+          args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)],
+        }) as const
+      const broadcast = await withBrowserLock(
+        `kinic-wallet-prompt:base:${snapshotAddress.toLowerCase()}`,
+        () =>
+          createWithdrawalAfterRevalidation({
+            approval: {
+              receipt: approvalReceipt,
+              amount: withdrawParsed.value,
+              getBlock: (blockNumber) =>
+                client.getBlock(
+                  blockNumber === undefined ? { blockTag: "latest" } : { blockNumber },
+                ),
+              readAllowance: (blockNumber) =>
+                client.readContract({
+                  address: deploymentProfile.bsnsAddress as `0x${string}`,
+                  abi: bsnsAbi,
+                  functionName: "allowance",
+                  args: [snapshotAddress, deploymentProfile.bridgeAddress as `0x${string}`],
+                  blockNumber,
+                }),
+            },
+            expectedWallets,
+            refetchRuntime: async () => ({
+              data: await refetchRuntimeAttestedWriteReady(
+                runtime.data,
+                runtime.refetch,
+                heartbeat.refetch,
+              ),
             }),
-          ),
-        onBroadcast: async (transactionHash) => {
-          bridgeProgress.update(progressId, { phase: "base-withdrawal-submitted", transactionHash })
-          return savePendingConfirmation({
-            kind: "withdrawal",
-            transactionHash,
-            owner: confirmedIcAccount.owner,
-          })
-        },
-      })
+            currentEvmWallet: currentBaseWallet,
+            currentIcAccount: () =>
+              Promise.resolve({
+                owner: confirmedIcAccount.owner,
+                subaccount: confirmedIcAccount.subaccount?.slice(),
+              }),
+            refetchFinancials: async (observation) => {
+              const quote = observation.snapshot
+              if (!quote) throw new Error("Finalized Base snapshot is unavailable")
+              const balanceResult = await bsnsBalance.refetch()
+              if (
+                balanceResult.isError ||
+                balanceResult.isStale ||
+                balanceResult.data === undefined
+              )
+                throw new Error("Fee or balance data changed and could not be verified")
+              return {
+                serviceFee: quote.serviceFee,
+                balance: balanceResult.data,
+                withdrawalsPaused: quote.withdrawalsPaused,
+              }
+            },
+            validateFinancials: ({ serviceFee, balance: finalBalance, withdrawalsPaused }) => {
+              if (withdrawalsPaused) throw new Error("Withdrawals are paused on Base")
+              if (withdrawParsed.value <= serviceFee)
+                throw new Error("Amount must be greater than the current service fee")
+              if (finalBalance < withdrawParsed.value)
+                throw new Error("bSNS balance is insufficient")
+            },
+            simulateWithdrawal: ({ serviceFee }, blockNumber) =>
+              client.simulateContract({ ...withdrawalRequest(serviceFee), blockNumber }),
+            createWithdrawal: ({ serviceFee }) => {
+              bridgeProgress.update(progressId, { phase: "awaiting-base-withdrawal" })
+              return write.writeContractAsync(withdrawalRequest(serviceFee))
+            },
+            onBroadcast: async (transactionHash) => {
+              bridgeProgress.update(progressId, {
+                phase: "base-withdrawal-submitted",
+                transactionHash,
+              })
+              return savePendingConfirmation({
+                kind: "withdrawal",
+                transactionHash,
+                owner: confirmedIcAccount.owner,
+              })
+            },
+          }),
+      )
       setWithdrawAmount("")
       if (broadcast.pendingSaved) {
         toast.success(
@@ -1080,16 +1133,15 @@ export function BridgePage({
         )
       } else {
         toast.warning(
-          `Withdrawal ${broadcast.transactionHash} was submitted, but this browser could not save it. Copy the transaction hash; after it succeeds, recover it from History.`,
+          `Withdrawal ${broadcast.transactionHash} was submitted, but this browser could not save it. Keep the transaction hash and check its status in your wallet.`,
         )
       }
     } catch (error) {
       bridgeProgress.update(progressId, {
         phase: "attention",
-        attentionMessage:
-          error instanceof Error ? error.message : "The withdrawal could not continue.",
+        attentionMessage: transferErrorMessage(error),
       })
-      toast.error(error instanceof Error ? error.message : "Withdrawal failed")
+      toast.error(transferErrorMessage(error))
     } finally {
       setSubmittingWithdrawal(false)
     }
@@ -1283,7 +1335,7 @@ export function BridgePage({
         : effectiveDepositProgress === "authorization" || awaitingDepositAuthorization
           ? "Generating authorization…"
           : unresolvedDeposit
-            ? "Retry same deposit"
+            ? "Retry the same deposit"
             : "Bridge to Base"
   return (
     <div className="route-enter mx-auto w-full max-w-[620px] pb-6 pt-4 lg:pb-10 lg:pt-10">
@@ -1415,10 +1467,18 @@ export function BridgePage({
             />
           )}
         {unresolvedDeposit && !deposit.isPending && (
-          <div className="mt-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm text-[#8a4b08]">
-            <p className="font-bold text-black">Deposit status unavailable</p>
+          <div
+            role="alert"
+            className="mt-4 rounded-2xl border border-[#ffd19b] bg-[#fff3e4] p-4 text-sm text-[#8a4b08]"
+          >
+            <p className="font-bold text-black">Previous deposit outcome is unconfirmed</p>
             <p className="mt-1 leading-5">
-              Check whether the deposit was accepted before starting another one.
+              We could not confirm whether your previous deposit request was accepted. To prevent
+              duplicate deposits, starting a new deposit is blocked until this check is resolved.
+            </p>
+            <p className="mt-1 leading-5">
+              Retrying the same deposit uses the saved request without changing its details. A
+              previous token approval may still be active.
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
               <Button
@@ -1427,13 +1487,13 @@ export function BridgePage({
                 disabled={checkingDeposit}
                 onClick={() => void checkUnresolvedDeposit()}
               >
-                {checkingDeposit ? "Checking…" : "Check status"}
+                {checkingDeposit ? "Checking previous deposit…" : "Check previous deposit"}
               </Button>
               <Link
                 to="/history"
                 className="inline-flex h-9 items-center rounded-xl px-3 text-sm font-bold underline underline-offset-4"
               >
-                Open History
+                View deposit history
               </Link>
             </div>
           </div>

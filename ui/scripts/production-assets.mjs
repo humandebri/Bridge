@@ -194,22 +194,12 @@ async function installRuntimeProfile(targetRoot, raw) {
 
 /** @param {string} profileFile */
 function verifyProductionUiLive(profileFile) {
-  const bundle = process.env.BRIDGE_RELEASE_BUNDLE
-  const sealReceipt = process.env.BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT
-  const scheduleReceipt = process.env.BRIDGE_CONTROLLER_SCHEDULE_RECEIPT
-  const executeReceipt = process.env.BRIDGE_CONTROLLER_EXECUTE_RECEIPT
-  const postActivationUpgradeEvidence = process.env.BRIDGE_POST_ACTIVATION_UPGRADE_EVIDENCE
+  const checkpointEvidence = process.env.BRIDGE_CHECKPOINT_EVIDENCE
+  const uiRpcConfig = process.env.BRIDGE_UI_RPC_CONFIG
   const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
-  if (
-    !bundle ||
-    !sealReceipt ||
-    !scheduleReceipt ||
-    !executeReceipt ||
-    !postActivationUpgradeEvidence ||
-    !productionInstallerIdentity
-  ) {
+  if (!checkpointEvidence || !uiRpcConfig || !productionInstallerIdentity) {
     throw new Error(
-      "Production UI deploy requires the historical Gate B, activation receipts, post-activation upgrade evidence, and production installer identity",
+      "Production UI deploy requires approved checkpoint evidence, reviewed UI RPC configuration, and production installer identity",
     )
   }
   const cargoArgs = [
@@ -226,18 +216,15 @@ function verifyProductionUiLive(profileFile) {
     "cargo",
     [
       ...cargoArgs,
-      "verify-production-ui-live",
-      bundle,
-      sealReceipt,
-      scheduleReceipt,
-      executeReceipt,
-      postActivationUpgradeEvidence,
+      "verify-production-checkpoint-ui-live",
+      checkpointEvidence,
+      uiRpcConfig,
       profileFile,
     ],
     { cwd: sourceRoot, encoding: "utf8" },
   )
   const manifestSha256 =
-    /^production_ui=live-pass schema=35 activation=execute manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
+    /^production_ui=live-pass schema=36 activation=execute manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
       gateOutput,
     )?.[1]
   if (!manifestSha256) {
@@ -310,6 +297,9 @@ async function deployFrozenAssets(receipt, rawProfile, releaseProfile, profileFi
     chmodSync(frozen, 0o500)
     await requireUnchangedSourceIdentity(identity)
     const manifestSha256 = verifyProductionUiLive(profileFile)
+    if (readOrdinaryFile(profileFile).toString("utf8") !== rawProfile) {
+      throw new Error("Production UI runtime profile changed after assets were frozen")
+    }
     const { assertProductionUiProfile } = await import("../src/config/deploy-safety.ts")
     assertProductionUiProfile(releaseProfile, manifestSha256)
     const deployArgs = ["exec", "wrangler", "deploy", "--config", frozenConfig, "--assets", frozen]

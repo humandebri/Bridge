@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config"
 export default defineConfig({
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "./src") } },
   test: {
-    include: ["src/**/*.test.{ts,tsx}", "scripts/**/*.test.mjs"],
+    include: ["src/**/*.test.{ts,tsx}", "scripts/**/*.test.mjs", "recovery-worker/**/*.test.ts"],
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     css: true,

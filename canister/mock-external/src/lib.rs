@@ -1878,6 +1878,66 @@ fn decode_hex_32(value: &str) -> Option<[u8; 32]> {
     Some(result)
 }
 
+#[derive(CandidType, Deserialize, Clone)]
+pub enum CyclesTopUpMode {
+    Succeed,
+    Reject,
+}
+
+#[derive(CandidType, Deserialize)]
+pub enum RequestCyclesError {
+    TooSoon,
+    TopUpFailed(String),
+    Unauthorized,
+    LauncherBalanceTooLow,
+}
+
+#[derive(CandidType, Deserialize)]
+pub enum RequestCyclesResult {
+    Ok,
+    Err(RequestCyclesError),
+}
+
+thread_local! {
+    static CYCLES_TOP_UP_MODE: RefCell<CyclesTopUpMode> = const { RefCell::new(CyclesTopUpMode::Succeed) };
+    static CYCLES_TOP_UP_CALLERS: RefCell<Vec<Principal>> = const { RefCell::new(Vec::new()) };
+}
+
+#[ic_cdk::update]
+fn set_cycles_top_up_mode(mode: CyclesTopUpMode) {
+    CYCLES_TOP_UP_MODE.with(|value| *value.borrow_mut() = mode);
+}
+
+#[ic_cdk::query]
+fn get_cycles_top_up_callers() -> Vec<Principal> {
+    CYCLES_TOP_UP_CALLERS.with(|value| value.borrow().clone())
+}
+
+#[ic_cdk::update]
+async fn request_cycles() -> RequestCyclesResult {
+    let caller = ic_cdk::api::msg_caller();
+    CYCLES_TOP_UP_CALLERS.with(|value| value.borrow_mut().push(caller));
+    if CYCLES_TOP_UP_MODE.with(|value| matches!(*value.borrow(), CyclesTopUpMode::Reject)) {
+        return RequestCyclesResult::Err(RequestCyclesError::TooSoon);
+    }
+    #[derive(CandidType)]
+    struct DepositArgs {
+        canister_id: Principal,
+    }
+    match ic_cdk::call::Call::unbounded_wait(Principal::management_canister(), "deposit_cycles")
+        .with_arg(DepositArgs {
+            canister_id: caller,
+        })
+        .with_cycles(3_000_000_000_000)
+        .await
+    {
+        Ok(_) => RequestCyclesResult::Ok,
+        Err(error) => {
+            RequestCyclesResult::Err(RequestCyclesError::TopUpFailed(format!("{error:?}")))
+        }
+    }
+}
+
 ic_cdk::export_candid!();
 
 pub fn generated_candid_interface() -> String {

@@ -7,14 +7,14 @@ import re
 from dataclasses import dataclass
 
 
-SCHEMA_VERSION = "6"
-CLAIM_FIELD_COUNT = 13
+SCHEMA_VERSION = "7"
+CLAIM_FIELD_COUNT = 12
 LEAN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 PROOF_CLASSES = {"local-safety", "history-safety", "implementation-only"}
 ASSURANCE_TARGETS = {"release-safety", "model-support"}
 REQUIRED_STRENGTHS = {"production-linked", "implementation-proved"}
 REQUIRED_CLAIM_IDS = frozenset(
-    """activation_preflight authorization_binding canonical_probe committed_quote
+    """cycles_top_up_request_policy activation_preflight authorization_binding canonical_probe committed_quote
     deposit_admission deposit_backing deposit_identity_preflight epoch_invalidation
     exact_mint_finalization expiry_refund
     fee_accounting_once fee_payout fee_recipient_rotation funding_attempt_lifecycle
@@ -32,7 +32,7 @@ REQUIRED_CLAIM_IDS = frozenset(
     withdrawal_finality_quorum withdrawal_finalization""".split()
 )
 REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS = frozenset(
-    """activation_preflight canonical_probe committed_quote deposit_identity_preflight
+    """cycles_top_up_request_policy activation_preflight canonical_probe committed_quote deposit_identity_preflight
     fee_recipient_rotation funding_attempt_lifecycle funding_reconciliation_freshness
     governance_confirmation_authorization governance_transaction_affordability
     lease_lane_isolation ledger_block_provenance nonterminal_deposit_index_consistency
@@ -231,6 +231,26 @@ def parse_claim_manifest(text: str) -> ClaimManifest:
             f"extra={sorted(set(contracts) - set(claim_ids))}"
         )
     return ClaimManifest(tuple(rows), contracts)
+
+
+def parse_claim_test_links(claims_text: str, text: str) -> dict[str, set[str]]:
+    """Keep regression-test ownership separate from theorem definitions."""
+    claims = {row[1]: set() for row in parse_claim_manifest(claims_text).rows}
+    for number, line in enumerate(text.splitlines(), 1):
+        fields = line.split("\t")
+        if len(fields) != 3 or not all(fields):
+            raise ValueError(f"invalid claim test link row {number}")
+        claim, target, symbol = fields
+        if claim not in claims or "#" in target or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol):
+            raise ValueError(f"unknown or invalid claim test link row {number}")
+        link = target + "#" + symbol
+        if link in claims[claim]:
+            raise ValueError(f"duplicate claim test link: {claim} {link}")
+        claims[claim].add(link)
+    missing = sorted(claim for claim, links in claims.items() if not links)
+    if missing:
+        raise ValueError(f"claim test links do not cover claims: {missing}")
+    return claims
 
 
 def parse_conditional_liveness_manifest(

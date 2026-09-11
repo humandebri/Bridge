@@ -351,6 +351,16 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'public_key' : IDL.Vec(IDL.Nat8),
   });
   const Result_9 = IDL.Variant({ 'Ok' : ChainKeyProbe, 'Err' : IDL.Text });
+  const RequestCyclesError = IDL.Variant({
+    'TooSoon' : IDL.Null,
+    'TopUpFailed' : IDL.Text,
+    'Unauthorized' : IDL.Null,
+    'LauncherBalanceTooLow' : IDL.Null,
+  });
+  const RequestCyclesResult = IDL.Variant({
+    'Ok' : IDL.Null,
+    'Err' : RequestCyclesError,
+  });
   const BlockMode = IDL.Variant({
     'FinalizedCheckpointHeadError' : IDL.Null,
     'FinalizedDelayed' : IDL.Null,
@@ -362,6 +372,10 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'SameHeightDifferentHash' : IDL.Null,
   });
   const Result_10 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : IDL.Text });
+  const CyclesTopUpMode = IDL.Variant({
+    'Reject' : IDL.Null,
+    'Succeed' : IDL.Null,
+  });
   const LedgerMode = IDL.Variant({
     'TemporarilyUnavailable' : IDL.Null,
     'InsufficientAllowance' : IDL.Record({ 'allowance' : IDL.Nat }),
@@ -451,6 +465,11 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
         ['query'],
       ),
     'get_code_call_count' : IDL.Func([], [IDL.Nat64], ['query']),
+    'get_cycles_top_up_callers' : IDL.Func(
+        [],
+        [IDL.Vec(IDL.Principal)],
+        ['query'],
+      ),
     'get_transactions' : IDL.Func(
         [GetBlocksRequest],
         [GetTransactionsResponse],
@@ -475,6 +494,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'probe_chain_key' : IDL.Func([IDL.Text], [Result_9], []),
     'receipt_call_count' : IDL.Func([], [IDL.Nat64], ['query']),
     'receipt_mint_log_index' : IDL.Func([], [IDL.Opt(IDL.Nat64)], ['query']),
+    'request_cycles' : IDL.Func([], [RequestCyclesResult], []),
     'set_archive_prefix_length' : IDL.Func([IDL.Nat64], [], []),
     'set_block_mode' : IDL.Func([BlockMode], [], []),
     'set_block_timestamp' : IDL.Func([IDL.Nat64], [], []),
@@ -487,6 +507,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       ),
     'set_broadcast_inconsistent_after_accepts' : IDL.Func([IDL.Nat8], [], []),
     'set_configured_chain_id' : IDL.Func([IDL.Nat64], [], []),
+    'set_cycles_top_up_mode' : IDL.Func([CyclesTopUpMode], [], []),
     'set_deployment_postconditions' : IDL.Func(
         [
           IDL.Vec(IDL.Nat8),

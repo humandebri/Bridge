@@ -4,6 +4,16 @@ import { readFile } from "node:fs/promises"
 import path from "node:path"
 
 describe("Base Sepolia asset profile template", () => {
+  it("keeps the recovery release config valid for JSON.parse", async () => {
+    const config = JSON.parse(
+      await readFile(
+        path.resolve(import.meta.dirname, "../recovery-worker/wrangler.jsonc"),
+        "utf8",
+      ),
+    )
+    expect(config.name).toBe("kinic-bridge-mint-recovery")
+  })
+
   it("is visibly test-only and cannot reference production IDs", async () => {
     const template = JSON.parse(
       await readFile(
@@ -49,7 +59,7 @@ describe("Base Sepolia asset profile template", () => {
     expect(manifest.scripts["deploy:test:artifact"]).not.toContain("build:sepolia")
   })
 
-  it("deploys production from a standalone UI receipt and live v35 evidence", async () => {
+  it("deploys production from a standalone UI receipt and live v36 upgrade evidence", async () => {
     const manifest = JSON.parse(
       await readFile(path.resolve(import.meta.dirname, "../package.json"), "utf8"),
     )
@@ -69,10 +79,12 @@ describe("Base Sepolia asset profile template", () => {
     expect(productionAssets).not.toContain("verify-preactivation")
     expect(productionAssets).not.toContain("deploy-preactivation")
     expect(productionAssets).not.toContain('deployArgs.push("--dry-run")')
-    expect(productionAssets).toContain('"verify-production-ui-live"')
-    expect(productionAssets).toContain("BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT")
-    expect(productionAssets).toContain("BRIDGE_CONTROLLER_SCHEDULE_RECEIPT")
-    expect(productionAssets).toContain("BRIDGE_CONTROLLER_EXECUTE_RECEIPT")
+    expect(productionAssets).toContain('"verify-production-checkpoint-ui-live"')
+    expect(productionAssets).toContain("BRIDGE_CHECKPOINT_EVIDENCE")
+    expect(productionAssets).not.toContain("BRIDGE_RELEASE_BUNDLE")
+    expect(productionAssets).not.toContain("BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT")
+    expect(productionAssets).not.toContain("BRIDGE_CONTROLLER_SCHEDULE_RECEIPT")
+    expect(productionAssets).not.toContain("BRIDGE_CONTROLLER_EXECUTE_RECEIPT")
     expect(productionAssets).toContain("BRIDGE_PRODUCTION_INSTALLER_IDENTITY")
     expect(productionAssets).not.toContain("BRIDGE_RELEASE_INPUTS_MANIFEST")
     expect(productionAssets).toContain("readOrdinaryFile(profileFile)")

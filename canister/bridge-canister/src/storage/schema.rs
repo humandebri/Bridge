@@ -23,6 +23,8 @@ pub(super) const VALIDATION_TABLES: &[&str] = &[
     "owner_deposit_sequences",
     "withdrawal_liability_index",
     "withdrawal_notification_index",
+    "withdrawal_requester_index",
+    "withdrawal_transaction_index",
     "withdrawal_stop_reason_counts",
     "settlement_jobs",
 ];

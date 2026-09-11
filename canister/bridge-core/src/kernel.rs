@@ -516,6 +516,12 @@ macro_rules! fee_recipient_rotation_decision_body {
     };
 }
 
+macro_rules! cycles_top_up_request_allowed_body {
+    ($balance:expr, $threshold:expr, $in_progress:expr, $authorized:expr) => {
+        $authorized && !$in_progress && $balance <= $threshold
+    };
+}
+
 macro_rules! service_fee_change_allowed_body {
     ($service_fee:expr, $minimum_service_fee:expr, $maximum_service_fee:expr) => {
         $minimum_service_fee <= $service_fee && $service_fee <= $maximum_service_fee
@@ -821,6 +827,12 @@ verus! {
 
 }
 
+macro_rules! deposit_recipient_allowed_body {
+    ($zero:expr, $bridge:expr, $token:expr) => {
+        !$zero && !$bridge && !$token
+    };
+}
+
 macro_rules! deposit_refund_body {
     ($gross:expr, $service_fee:expr, $ledger_fee:expr) => {{
         if $gross <= $service_fee || $gross - $service_fee <= $ledger_fee {
@@ -859,7 +871,7 @@ macro_rules! deposit_transition_body {
             Some($three)
         } else if $state == $three && $event == $four {
             Some($four)
-        } else if $state == $four && $event == $six {
+        } else if ($state == $three || $state == $four) && $event == $six {
             Some($ten)
         } else if $state == $four && $event == $seven {
             Some($six)
@@ -949,7 +961,7 @@ macro_rules! deposit_numeric_effects_body {
             None => false,
         };
         let authorization_signed = deposit_charge_fee_body!($state, $event, $two, $five);
-        let mint_completed = $state == $four && $event == $six;
+        let mint_completed = ($state == $three || $state == $four) && $event == $six;
         let refund_completed = $state == $six && $event == $eight;
         let terminal_liability = if $net == $amount_zero { $gross } else { $net };
         (
@@ -1476,6 +1488,16 @@ verus! {
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn cycles_top_up_request_allowed(
+    balance: u128,
+    threshold: u128,
+    in_progress: bool,
+    authorized: bool,
+) -> bool {
+    cycles_top_up_request_allowed_body!(balance, threshold, in_progress, authorized)
+}
+
+#[cfg(not(verus_keep_ghost))]
 pub const fn service_fee_change_allowed(
     service_fee: u128,
     minimum_service_fee: u128,
@@ -1852,6 +1874,10 @@ verus! {
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn deposit_recipient_allowed(is_zero: bool, is_bridge: bool, is_token: bool) -> bool {
+    deposit_recipient_allowed_body!(is_zero, is_bridge, is_token)
+}
+
 pub const fn deposit_refund_amount(
     gross: u128,
     service_fee: u128,
@@ -2719,6 +2745,12 @@ verus! {
         payout_allowed_body!(reserve, pending, amount, fee, max)
     }
 
+    pub open spec fn cycles_top_up_request_allowed_spec(
+        balance: int, threshold: int, in_progress: bool, authorized: bool,
+    ) -> bool {
+        cycles_top_up_request_allowed_body!(balance, threshold, in_progress, authorized)
+    }
+
     pub open spec fn service_fee_change_allowed_spec(
         service_fee: int, minimum_service_fee: int, maximum_service_fee: int,
     ) -> bool {
@@ -2739,6 +2771,10 @@ verus! {
         active_generation: int, outcome_generation: int, active: bool,
     ) -> bool {
         lease_outcome_is_current_body!(active_generation, outcome_generation, active)
+    }
+
+    pub open spec fn deposit_recipient_allowed_spec(is_zero: bool, is_bridge: bool, is_token: bool) -> bool {
+        deposit_recipient_allowed_body!(is_zero, is_bridge, is_token)
     }
 
     pub open spec fn deposit_refund_amount_spec(

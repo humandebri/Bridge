@@ -1,11 +1,10 @@
-export const MINT_AUTHORIZATION_TTL_SECONDS = 600n
-export const MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS = 300n
+export const MINT_AUTHORIZATION_TTL_SECONDS = 900n
 const MAX_NAT64 = (1n << 64n) - 1n
 
 export interface MintAuthorizationWindow {
   deadline: bigint
   remainingSeconds: bigint
-  hasMinimumRemainingTime: boolean
+  isUnexpired: boolean
 }
 
 export function hasCanonicalMintAuthorizationDeadline(
@@ -26,6 +25,6 @@ export function mintAuthorizationWindow(
   return {
     deadline,
     remainingSeconds,
-    hasMinimumRemainingTime: remainingSeconds >= MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS,
+    isUnexpired: remainingSeconds >= 0n,
   }
 }

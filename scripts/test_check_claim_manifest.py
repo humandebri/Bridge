@@ -50,10 +50,10 @@ class ClaimContractTests(unittest.TestCase):
 
     def manifest(self, contract: str, witness: str) -> str:
         return (
-            "schema\t6\t-\t-\t-\t-\t-\n"
+            "schema\t7\t-\t-\t-\t-\t-\n"
             f"contract\tclaim_id\thistory-safety\trelease-safety\tproduction-linked\t{contract}\t{witness}\n"
             "protocol\tclaim_id\tclaim_theorem\t-\ttrace_theorem\t-\t-\t-\t-\t"
-            "source.rs#kernel\ttest.rs#case\tassumption\t-\n"
+            "source.rs#kernel\tassumption\t-\n"
         )
 
     def test_contract_source_checks_the_expected_type(self) -> None:
@@ -88,9 +88,9 @@ class ClaimContractTests(unittest.TestCase):
 
     def test_rejects_legacy_claim_schema(self) -> None:
         legacy = self.manifest("BridgeSpec.Contract", "BridgeSpec.witness").replace(
-            "schema\t6\t-\t-\t-\t-\t-", "schema\t5\t-\t-\t-"
+            "schema\t7\t-\t-\t-\t-\t-", "schema\t6\t-\t-\t-\t-\t-"
         )
-        with self.assertRaisesRegex(ValueError, "schema 6"):
+        with self.assertRaisesRegex(ValueError, "schema 7"):
             parse_claim_manifest(legacy)
 
     def test_rejects_invalid_assurance_target_and_strength(self) -> None:
@@ -596,7 +596,6 @@ class VerusImplementationCoverageTests(unittest.TestCase):
                 _,
                 _,
                 implementation_basis,
-                _,
                 _,
                 _,
                 _,

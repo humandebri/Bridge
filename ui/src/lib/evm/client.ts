@@ -35,10 +35,16 @@ export function createProfileChain(profile: DeploymentProfile) {
 
 export const profileChain = createProfileChain(deploymentProfile)
 
-export function createBasePublicClient(profile: DeploymentProfile = deploymentProfile) {
+export function createBasePublicClient(
+  profile: DeploymentProfile = deploymentProfile,
+  signal?: AbortSignal,
+) {
   return createPublicClient({
     chain: createProfileChain(profile),
-    transport: http(resolvedBaseRpcUrl(profile)),
+    transport: http(resolvedBaseRpcUrl(profile), {
+      retryCount: 0,
+      ...(signal ? { fetchOptions: { signal } } : {}),
+    }),
   })
 }
 
@@ -157,7 +163,7 @@ export const wagmiConfig = createConfig({
         ]
       : []),
   ],
-  transports: { [profileChain.id]: http(resolvedBaseRpcUrl(deploymentProfile)) },
+  transports: { [profileChain.id]: http(resolvedBaseRpcUrl(deploymentProfile), { retryCount: 0 }) },
 })
 
 declare module "wagmi" {

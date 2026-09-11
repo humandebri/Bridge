@@ -1,4 +1,7 @@
 use super::{params, DbError, PreparedAuditBatch, SqlCodec, UpdateConnection};
+use ic_sqlite_vfs::db::connection::Connection;
+
+pub(super) const TABLE_COUNT_SQL: &str = "SELECT count FROM table_counts WHERE name = ?1";
 
 pub(super) fn increment_table_count(
     connection: &UpdateConnection<'_>,
@@ -22,16 +25,15 @@ pub(super) fn increment_table_count(
     )
 }
 
-#[cfg(test)]
-pub(super) fn read_table_count(
-    connection: &UpdateConnection<'_>,
-    table: &str,
-) -> Result<u64, DbError> {
-    let raw = connection.query_scalar::<Vec<u8>>(
-        "SELECT count FROM table_counts WHERE name = ?1",
-        params![table],
-    )?;
+pub(super) fn read_table_count(connection: &Connection, table: &str) -> Result<u64, DbError> {
+    let raw = connection.query_scalar::<Vec<u8>>(TABLE_COUNT_SQL, params![table])?;
     u64::from_sql_bytes(raw).map_err(|_| DbError::Constraint("invalid table count".into()))
+}
+
+pub(super) fn lifetime_deposit_record_count(connection: &Connection) -> Result<u64, DbError> {
+    read_table_count(connection, "deposits")?
+        .checked_add(read_table_count(connection, "deposit_funding_attempts")?)
+        .ok_or_else(|| DbError::Constraint("lifetime deposit record count overflow".into()))
 }
 
 pub(super) fn decrement_table_count(

@@ -60,7 +60,7 @@ describe("pending finalized confirmations", () => {
       throw new Error("storage unavailable")
     })
 
-    await expect(savePendingMint(pending)).resolves.toBeUndefined()
+    await expect(savePendingMint(pending)).rejects.toThrow("browser storage is unavailable")
     expect(readPendingMint(mintExpectation)).toEqual(pending)
 
     setItem.mockRestore()

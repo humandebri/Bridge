@@ -885,6 +885,127 @@ async fn exact_mint_evidence_inner(
     })
 }
 
+pub async fn exact_mint_receipt_evidence(
+    args: &BridgeInitArgs,
+    authorization: &bridge_core::MintAuthorizationRecord,
+    finalized: FinalizedObservation,
+    transaction_hash: [u8; 32],
+) -> Result<bridge_core::MintFinalizationEvidence, ObservationError> {
+    let (receipt, receipt_observation) =
+        match canonical_finalized_receipt_at(args, transaction_hash, finalized).await? {
+            CanonicalFinalizedReceiptOutcome::Confirmed {
+                receipt,
+                receipt_observation,
+                ..
+            } => (receipt, receipt_observation),
+            _ => return Err(ObservationError::TransactionPending),
+        };
+    mint_evidence_from_receipt(
+        args.base_chain_id,
+        &args.bridge_contract,
+        authorization,
+        finalized,
+        receipt_observation,
+        &receipt,
+    )
+}
+
+fn mint_evidence_from_receipt(
+    chain_id: u64,
+    bridge_contract: &[u8],
+    authorization: &bridge_core::MintAuthorizationRecord,
+    finalized: FinalizedObservation,
+    receipt_observation: FinalizedObservation,
+    receipt: &TransactionReceipt,
+) -> Result<bridge_core::MintFinalizationEvidence, ObservationError> {
+    if receipt.status == Some(Nat256::from(0u64)) {
+        return Err(ObservationError::TransactionReverted);
+    }
+    if receipt.status != Some(Nat256::from(1u64)) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let mut topic = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(b"DepositMinted(bytes32,address,bytes32,uint256,uint256,uint256)");
+    hasher.finalize(&mut topic);
+    let candidates: Vec<_> = receipt
+        .logs
+        .iter()
+        .filter(|log| {
+            log.address.as_array().as_slice() == bridge_contract
+                && log
+                    .topics
+                    .first()
+                    .is_some_and(|value| value.as_array() == &topic)
+                && log.topics.get(1).is_some_and(|value| {
+                    value.as_array() == &authorization.authorization.deposit_id
+                })
+        })
+        .collect();
+    if candidates.len() != 1 {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let log = candidates[0];
+    let data = log.data.as_ref();
+    let net = authorization
+        .authorization
+        .gross_amount
+        .checked_sub(authorization.authorization.charged_service_fee)
+        .map_err(|_| ObservationError::Overflow)?;
+    if log.removed
+        || log.topics.len() != 4
+        || log.topics[2].as_array()[..12].iter().any(|byte| *byte != 0)
+        || log.topics[2].as_array()[12..] != authorization.authorization.recipient
+        || log.topics[3].as_array() != &authorization.digest
+        || log.transaction_hash.as_ref() != Some(&receipt.transaction_hash)
+        || log.block_hash.as_ref() != Some(&receipt.block_hash)
+        || log.block_number.as_ref() != Some(&receipt.block_number)
+        || receipt_observation.block_number < authorization.origin.finalized_block_number
+        || receipt_observation.block_number > finalized.block_number
+        || data.len() != 3 * ABI_WORD_BYTES
+        || word_u128(&data[..ABI_WORD_BYTES])? != authorization.authorization.gross_amount.get()
+        || word_u128(&data[ABI_WORD_BYTES..2 * ABI_WORD_BYTES])?
+            != authorization.authorization.charged_service_fee.get()
+        || word_u128(&data[2 * ABI_WORD_BYTES..])? != net.get()
+    {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let transaction_hash = *receipt.transaction_hash.as_array();
+    let request = json!({"method": "eth_getTransactionReceipt",
+        "params": [format!("0x{}", hex(&transaction_hash))],
+        "chainId": chain_id,
+        "finalizedBlockHash": format!("0x{}", hex(&finalized.block_hash))});
+    Ok(bridge_core::MintFinalizationEvidence {
+        deposit_id: authorization.authorization.deposit_id,
+        recipient: authorization.authorization.recipient,
+        authorization_digest: authorization.digest,
+        chain_id,
+        verifying_contract: authorization.domain.verifying_contract,
+        gross_amount: authorization.authorization.gross_amount,
+        charged_service_fee: authorization.authorization.charged_service_fee,
+        minted_amount: net,
+        transaction_hash,
+        log_index: log
+            .log_index
+            .clone()
+            .ok_or(ObservationError::InvalidResponse)
+            .and_then(|index| u64::try_from(index).map_err(|_| ObservationError::Overflow))?,
+        receipt_succeeded: true,
+        receipt_block_number: receipt_observation.block_number,
+        receipt_block_hash: receipt_observation.block_hash,
+        finalized_block_number: finalized.block_number,
+        finalized_block_hash: finalized.block_hash,
+        rpc_request_digest: Sha256::digest(
+            serde_json::to_vec(&request).map_err(|_| ObservationError::InvalidResponse)?,
+        )
+        .into(),
+        rpc_response_digest: Sha256::digest(
+            serde_json::to_vec(receipt).map_err(|_| ObservationError::InvalidResponse)?,
+        )
+        .into(),
+    })
+}
+
 fn exact_receipt_log_matches(
     candidate: &evm_rpc_types::LogEntry,
     observed: &evm_rpc_types::LogEntry,
@@ -1312,16 +1433,33 @@ pub async fn finalized_observation(
 }
 
 async fn finalized_block(args: &BridgeInitArgs) -> Result<Block, ObservationError> {
-    match client(args)
+    let result = client(args)
         .get_block_by_number(BlockTag::Finalized)
         .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
         .try_send()
         .await
-        .map_err(|_| ObservationError::Rpc)?
-    {
+        .map_err(|_| ObservationError::Rpc)?;
+    match result {
         MultiRpcResult::Consistent(Ok(block)) => Ok(block),
         MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(_) => Err(ObservationError::Inconsistent),
+        MultiRpcResult::Inconsistent(results) => {
+            let finalized_heads = provider_finalized_heads(results)?;
+            let identities = finalized_heads
+                .iter()
+                .map(|(_, identity)| *identity)
+                .collect::<Vec<_>>();
+            let checkpoint =
+                withdrawal_common_checkpoint(identities[0], identities[1], identities[2])
+                    .ok_or(ObservationError::Inconsistent)?;
+            let checkpoint_result = client(args)
+                .get_block_by_number(BlockTag::Number(Nat256::from(checkpoint)))
+                .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
+                .with_response_consensus(ConsensusStrategy::Equality)
+                .try_send()
+                .await
+                .map_err(|_| ObservationError::Rpc)?;
+            exact_finalized_block(&finalized_heads, checkpoint, checkpoint_result)
+        }
     }
 }
 
@@ -1387,39 +1525,7 @@ async fn canonical_semantically_finalized_withdrawal_receipt(
 async fn withdrawal_finalized_observation(
     args: &BridgeInitArgs,
 ) -> Result<FinalizedObservation, ObservationError> {
-    let result = client(args)
-        .get_block_by_number(BlockTag::Finalized)
-        .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
-        .try_send()
-        .await
-        .map_err(|_| ObservationError::Rpc)?;
-    let block = match result {
-        MultiRpcResult::Consistent(Ok(block)) => block,
-        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
-        MultiRpcResult::Inconsistent(results) => {
-            let finalized_heads = provider_finalized_heads(results)?;
-            let identities = finalized_heads
-                .iter()
-                .map(|(_, identity)| *identity)
-                .collect::<Vec<_>>();
-            let checkpoint =
-                withdrawal_common_checkpoint(identities[0], identities[1], identities[2])
-                    .ok_or(ObservationError::Inconsistent)?;
-            let checkpoint_result = client(args)
-                .get_block_by_number(BlockTag::Number(Nat256::from(checkpoint)))
-                .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
-                .with_response_consensus(ConsensusStrategy::Equality)
-                .try_send()
-                .await
-                .map_err(|_| ObservationError::Rpc)?;
-            exact_finalized_block(&finalized_heads, checkpoint, checkpoint_result)?
-        }
-    };
-    Ok(FinalizedObservation {
-        block_number: u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?,
-        block_hash: *block.hash.as_array(),
-        observed_at_ns: ic_cdk::api::time(),
-    })
+    finalized_observation(args).await
 }
 
 fn exact_finalized_block(
@@ -2315,6 +2421,93 @@ mod tests {
             "type": "0x2"
         }))
         .expect("valid receipt fixture")
+    }
+
+    #[test]
+    fn mint_receipt_requires_exact_payload_and_canonical_metadata() {
+        use bridge_core::{
+            MintAuthorization, MintAuthorizationDomain, MintAuthorizationOrigin,
+            MintAuthorizationRecord,
+        };
+        let authorization = MintAuthorizationRecord {
+            authorization: MintAuthorization {
+                deposit_id: [1; 32],
+                recipient: [2; 20],
+                gross_amount: Amount::new(100),
+                max_service_fee: Amount::new(20),
+                charged_service_fee: Amount::new(10),
+                deadline: 600,
+                authorization_epoch: 1,
+            },
+            domain: MintAuthorizationDomain::bridge(8453, [0x44; 20]),
+            digest: [3; 32],
+            origin: MintAuthorizationOrigin {
+                finalized_block_number: 1,
+                finalized_block_hash: [1; 32],
+                finalized_block_timestamp: 0,
+                issued_at_timestamp: 0,
+            },
+            signature_dispatch_attempt: 1,
+            signature_dispatched: true,
+            signature: Some(vec![1; 65]),
+        };
+        let mut topic = [0u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(b"DepositMinted(bytes32,address,bytes32,uint256,uint256,uint256)");
+        hasher.finalize(&mut topic);
+        let mut receipt = receipt_fixture();
+        receipt.logs = vec![serde_json::from_value(json!({
+            "address": format!("0x{}", "44".repeat(20)),
+            "topics": [format!("0x{}", hex(&topic)), format!("0x{}", "01".repeat(32)), format!("0x{}{}", "00".repeat(12), "02".repeat(20)), format!("0x{}", "03".repeat(32))],
+            "data": format!("0x{:064x}{:064x}{:064x}", 100, 10, 90),
+            "blockNumber": 42, "blockHash": format!("0x{}", "11".repeat(32)),
+            "transactionHash": format!("0x{}", "22".repeat(32)), "transactionIndex": 2,
+            "logIndex": 0, "removed": false
+        })).expect("log")];
+        let block = FinalizedObservation {
+            block_number: 42,
+            block_hash: [0x11; 32],
+            observed_at_ns: 1,
+        };
+        assert!(mint_evidence_from_receipt(
+            8453,
+            &[0x44; 20],
+            &authorization,
+            block,
+            block,
+            &receipt
+        )
+        .is_ok());
+        let mut wrong = receipt.clone();
+        wrong.logs[0].removed = true;
+        assert_eq!(
+            mint_evidence_from_receipt(8453, &[0x44; 20], &authorization, block, block, &wrong),
+            Err(ObservationError::BaseStateMismatch)
+        );
+        wrong = receipt.clone();
+        wrong.logs.push(wrong.logs[0].clone());
+        assert_eq!(
+            mint_evidence_from_receipt(8453, &[0x44; 20], &authorization, block, block, &wrong),
+            Err(ObservationError::BaseStateMismatch)
+        );
+        let mut other = authorization.clone();
+        other.digest = [9; 32];
+        assert_eq!(
+            mint_evidence_from_receipt(8453, &[0x44; 20], &other, block, block, &receipt),
+            Err(ObservationError::BaseStateMismatch)
+        );
+        let mut before = block;
+        before.block_number = 41;
+        assert_eq!(
+            mint_evidence_from_receipt(8453, &[0x44; 20], &authorization, before, block, &receipt),
+            Err(ObservationError::BaseStateMismatch)
+        );
+        wrong = receipt.clone();
+        wrong.status = Some(Nat256::from(0u64));
+        assert_eq!(
+            mint_evidence_from_receipt(8453, &[0x44; 20], &authorization, block, block, &wrong),
+            Err(ObservationError::TransactionReverted)
+        );
     }
 
     #[test]

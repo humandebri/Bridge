@@ -162,7 +162,7 @@ fn authorization_deadline_uses_issue_time_despite_twenty_or_thirty_minute_finali
         let mut authorization = authorization_record(&deposit);
         authorization.origin.finalized_block_timestamp = finalized_timestamp;
         authorization.origin.issued_at_timestamp = 2_000;
-        authorization.authorization.deadline = 2_600;
+        authorization.authorization.deadline = 2_900;
 
         deposit
             .apply(DepositEvent::CommitAuthorization {
@@ -177,7 +177,7 @@ fn authorization_deadline_uses_issue_time_despite_twenty_or_thirty_minute_finali
                 .expect("authorization")
                 .authorization
                 .deadline,
-            2_600
+            2_900
         );
     }
 }
@@ -278,39 +278,45 @@ fn minted_state_requires_and_persists_exact_canonical_evidence() {
             observed_timestamp: 1,
         })
         .expect("signed");
-    deposit
-        .apply(DepositEvent::MarkRefundAvailable {
-            reason: bridge_core::DepositRefundReason::AuthorizationExpired,
-            finalized_timestamp: Some(
-                MintAuthorization::deadline_from_issued_at_timestamp(1).expect("deadline") + 1,
-            ),
-        })
-        .expect("release reservation");
-    let mut invalid = finalization_evidence();
-    invalid.rpc_response_digest = [0; 32];
-    let snapshot = deposit.clone();
-    assert_eq!(
-        deposit.apply(DepositEvent::MintReconciled {
-            evidence: Box::new(invalid),
-        }),
-        Err(CoreError::ConflictingReplay)
-    );
-    assert_eq!(deposit, snapshot);
+    for expired in [false, true] {
+        let mut deposit = deposit.clone();
+        if expired {
+            deposit
+                .apply(DepositEvent::MarkRefundAvailable {
+                    reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+                    finalized_timestamp: Some(
+                        MintAuthorization::deadline_from_issued_at_timestamp(1).expect("deadline")
+                            + 1,
+                    ),
+                })
+                .expect("release reservation");
+        }
+        let mut invalid = finalization_evidence();
+        invalid.rpc_response_digest = [0; 32];
+        let snapshot = deposit.clone();
+        assert_eq!(
+            deposit.apply(DepositEvent::MintReconciled {
+                evidence: Box::new(invalid),
+            }),
+            Err(CoreError::ConflictingReplay)
+        );
+        assert_eq!(deposit, snapshot);
 
-    let evidence = finalization_evidence();
-    let event = DepositEvent::MintReconciled {
-        evidence: Box::new(evidence.clone()),
-    };
-    assert_eq!(
-        deposit.apply(event.clone()).expect("mint proof").outcome,
-        ApplyOutcome::Applied
-    );
-    assert_eq!(
-        deposit.apply(event).expect("exact replay").outcome,
-        ApplyOutcome::Idempotent
-    );
-    assert_eq!(deposit.mint_finalization_evidence, Some(evidence));
-    assert!(matches!(deposit.state, DepositState::Minted { .. }));
+        let evidence = finalization_evidence();
+        let event = DepositEvent::MintReconciled {
+            evidence: Box::new(evidence.clone()),
+        };
+        assert_eq!(
+            deposit.apply(event.clone()).expect("mint proof").outcome,
+            ApplyOutcome::Applied
+        );
+        assert_eq!(
+            deposit.apply(event).expect("exact replay").outcome,
+            ApplyOutcome::Idempotent
+        );
+        assert_eq!(deposit.mint_finalization_evidence, Some(evidence));
+        assert!(matches!(deposit.state, DepositState::Minted { .. }));
+    }
 }
 
 #[test]
@@ -1372,6 +1378,101 @@ fn withdrawal_state_event_transition_matrix_covers_all_current_events() {
                 expected[state_index][event_index],
                 "withdrawal state {state_index}, event {event_index}"
             );
+        }
+    }
+}
+
+#[test]
+fn unsigned_policy_rejection_refunds_without_fee_and_rejects_late_signature() {
+    for reason in [
+        bridge_core::DepositRefundReason::RefundAmountTooSmall,
+        bridge_core::DepositRefundReason::InvalidRecipient,
+    ] {
+        let mut deposit = accepted_deposit();
+        deposit
+            .apply(DepositEvent::FundingSucceeded {
+                funding_ledger_block_index: 1,
+            })
+            .unwrap();
+        deposit
+            .apply(DepositEvent::CommitAuthorization {
+                quote: test_deposit_quote(),
+                authorization: Box::new(authorization_record(&deposit)),
+            })
+            .unwrap();
+        deposit
+            .mint_authorization
+            .as_mut()
+            .unwrap()
+            .dispatch_signature()
+            .unwrap();
+        let signed_before_rejection = deposit.clone();
+        let result = deposit
+            .apply(DepositEvent::MarkRefundAvailable {
+                reason,
+                finalized_timestamp: None,
+            })
+            .unwrap();
+        assert_eq!(result.deposit_effects.unwrap().fee_credit, Amount::ZERO);
+        let before_late = deposit.clone();
+        assert!(deposit
+            .apply(DepositEvent::AuthorizationSigned {
+                signature: vec![1; 65],
+                observed_timestamp: 1
+            })
+            .is_err());
+        assert_eq!(deposit, before_late);
+        let identity = refund_identity(&deposit, 100, [14; 32]);
+        assert_eq!(
+            identity.amount.get(),
+            deposit.gross_amount.get() - identity.fee.get()
+        );
+        deposit
+            .apply(DepositEvent::StartRefund {
+                reason,
+                attempt: Box::new(attempt(identity)),
+                expiry_evidence: None,
+            })
+            .unwrap();
+        let mut signed = signed_before_rejection;
+        signed
+            .apply(DepositEvent::AuthorizationSigned {
+                signature: vec![1; 65],
+                observed_timestamp: 1,
+            })
+            .unwrap();
+        let before = signed.clone();
+        assert!(signed
+            .apply(DepositEvent::MarkRefundAvailable {
+                reason,
+                finalized_timestamp: None
+            })
+            .is_err());
+        assert_eq!(signed, before);
+    }
+}
+
+#[test]
+fn signing_refund_amount_boundary_is_checked_without_overflow() {
+    use bridge_core::kernel::{deposit_recipient_allowed, deposit_refund_amount};
+    for fee in [1u128, 10000, 100000] {
+        assert_eq!(deposit_refund_amount(fee, fee, fee), None);
+        assert_eq!(deposit_refund_amount(fee * 2, fee, fee), None);
+        assert_eq!(deposit_refund_amount(fee * 2 + 1, fee, fee), Some(1));
+        assert_eq!(
+            deposit_refund_amount(u128::MAX, fee, fee),
+            Some(u128::MAX - fee * 2)
+        );
+    }
+    assert_eq!(deposit_refund_amount(1, u128::MAX, 1), None);
+    for zero in [false, true] {
+        for bridge in [false, true] {
+            for token in [false, true] {
+                assert_eq!(
+                    deposit_recipient_allowed(zero, bridge, token),
+                    !zero && !bridge && !token
+                );
+            }
         }
     }
 }

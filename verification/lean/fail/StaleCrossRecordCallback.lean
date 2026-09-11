@@ -15,7 +15,8 @@ def first : Record := {
   feeApplied := false
   mintApplied := false
   payoutApplied := false
-  releaseApplied := false
+  reservationReleased := false
+  refundApplied := false
   jobDue := true
   leaseGeneration := some 7 }
 

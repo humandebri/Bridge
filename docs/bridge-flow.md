@@ -50,12 +50,12 @@ flowchart TB
 
 1. UIはIC wallet、Base recipient、Bridge runtime、Finalized Base snapshot、Service Fee、Ledger残高・allowanceを再検証する。
 2. IC walletが`request_deposit`を呼ぶ。Canisterは有料Base preflightより前に固定funding identityを`Prepared`で保存し、deposit quotaを消費してactive reservationとcycle reserveを確認する。admission成功後だけBase preflightとICRC-2 pullを行う。確定失敗ではattemptとactive reservationを削除するがquotaは戻さず、正式Depositは作らない。結果不明はReconciliation Holdへ入れる。
-3. pull確定後、CanisterはFinalized Base snapshotからquoteとAuthorization epochを固定し、IC合意時刻の`issued_at_timestamp`から600秒後をdeadlineとするEIP-712 domainとdigestを一度だけ決定する。
+3. pull確定後、CanisterはFinalized Base snapshotからquoteとAuthorization epochを固定し、IC合意時刻の`issued_at_timestamp`から900秒後をdeadlineとするEIP-712 domainとdigestを一度だけ決定する。
 4. Canisterは同じdigestへthreshold ECDSA署名する。署名install時にdeadlineまで300秒以上残る場合だけ、署名保存と同じtransactionでBridge service feeを一度だけ確定し、fee reserveへ計上する。署名再試行でpayloadやdeadlineを変更せず、認可発行前または残り時間不足の確定失敗ではservice feeを計上しない。
 5. UIは`AuthorizationAvailable`をpollし、chain ID、runtime hash、contract、pause、epoch、未処理Deposit、EIP-712 domain、全field、digest、復元signer、最新Base timestampを検証する。
 6. この画面で開始したDepositでは、`AuthorizationAvailable`の検証完了後、接続Base walletが元のrecipientと一致すれば`mintDepositWithAuthorization`の承認画面を一度だけ自動表示する。自動表示を拒否または失敗した場合は`Mint on Base`から再試行できる。手動操作ではgas支払walletとrecipientは同一でなくてよい。transaction hashはdeployment-scoped localStorageへ保存する。
 7. Base transaction送信後、UIはreceiptと`DepositMinted` eventを`Submitted`、`Confirmed`、`Finalized`まで追跡する。成功receiptを確認した時点でBridge to Baseモーダルは完了し、ユーザーは閉じてよい。Finalized確認はHistoryで継続し、finality前は`Mint submitted`、exact digest、recipient、gross amount、service fee、mint amountが一致するcanonical成功だけを`Minted on Base (finalized)`として表示する。成功時のIC wallet署名は要求しない。reload後もCanisterのDepositとFinalized Base logをDeposit IDで統合して復元する。
-8. Base latest timestampでdeadlineまで300秒以上残る間は同じAuthorizationで再試行できる。Base receiptがrevertした場合はpending hashを削除し、この送信境界内かつ未処理なら再送できる。
+8. Base latest timestampがdeadlineを超えていない間は同じAuthorizationで再試行できる。Base receiptがrevertした場合はpending hashを削除し、この送信境界内かつ未処理なら再送できる。
 9. 新規Depositなどが取得したBase Finalized snapshotのtimestampがdeadlineを超えたとき、Canisterはdeadline順indexを上限付きで走査し、個別Base照合なしでmint予約を解放する。`timestamp == deadline`ではContractがMintを受理できるため解放しない。backlogが残る間は予約を過大計上し、新規受付の正確な判定ができなければretry可能エラーにする。Depositごとのtimerは持たない。
 10. Refundは任意の非anonymous Principalが`request_deposit_refund(deposit_id)`を明示実行したときに進む。callerは宛先・金額・transfer identityを指定できず、すべて既存recordから取得する。認可発行前の`RefundAvailable`はBase outcallなしで返金する。認可発行後は、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を検証し、未処理なら返金、処理済みならexact event/receiptを保存して`Minted`にする。RPC不一致、event欠落・複数・digest不一致では資金を動かさない。
 11. Refund額は認可発行前なら`gross - refund ledger fee`、発行後なら`gross - charged service fee - refund ledger fee`である。最初のICRC-2 pull fee、確定済みservice fee、refund transfer feeは返さない。曖昧なLedger結果は同じtransfer identityの`RefundReconciliationHold`に保存し、任意の非anonymous callerによる再請求で照合を再開する。
@@ -84,3 +84,30 @@ WithdrawalにCanister発Base transaction、Base refund、release acknowledgement
 - Deposit refund: `request_deposit_refund`
 - Withdrawal: Base `approve` → `createWithdrawal` → `notify_withdrawal` → 必要に応じて`continue_withdrawal`
 - 状態照会: `get_deposit`、`get_withdrawal`、`get_bridge_status`
+
+## 署名前の返金可能性と宛先
+
+新規DepositはLedger pull前に、固定Bridgeおよび検証済みactivation attestationのBSNSアドレスを宛先から除外する。必要なbindingが欠ける場合は停止する。すでに開始されたfundingの照合は継続する。
+
+署名対象の見積もりには `gross − chargedServiceFee > ledgerFee` を要求する。満たさない未署名Depositは `RefundAmountTooSmall`、不正宛先は `InvalidRecipient` として返金へ進み、サービス手数料を計上しない。返金額は `gross − ledgerFee`。署名発行後の金額・期限・手数料は変更せず、既存の署名済みDepositの救済はこの変更に含めない。
+
+
+### ページ更新後のmint記録復旧
+
+送信時は取引ハッシュを保存してから送信済み状態を表示する。ハッシュがあればreceiptを追跡し、再読み込み後もFinalized確認とICへの通知を継続する。
+
+本番Mainnetでハッシュがない場合、表示中のアプリが `recovery.bridge.kinic.xyz/v1/mint-recovery` にDeposit IDを送る。Workerは固定本番設定とICのDepositから受取人・bSNS・検索範囲を決め、Alchemy Transfers APIの入金履歴から候補ハッシュを返す。ブラウザによる広範囲の `eth_getLogs` 自動検索は行わない。Sepoliaは保存済みハッシュの追跡のみを利用する。
+
+復旧はWeb Lockと永続化した予定により10秒間隔・1対象ずつ進め、候補receiptを最大4件ずつ照合する。Workerは1要求100件までの1ページを取得し、検索上限ブロックを署名付き15分カーソルへ固定する。未処理候補とカーソルはブラウザに保存する。検索が一巡して空なら60秒後に再検索し、通信失敗は30秒から最大300秒まで待機を延ばす。
+
+候補は成功の証拠ではない。Bridge・Deposit ID・digest・受取人・金額・手数料とcanonical Finalized receiptの一致を検証してから既存のIC通知へ引き渡す。無関係な入金は除外し、同じDepositの矛盾した証拠では停止する。検索結果なし、検索障害、認可の期限切れから自動再送や自動返金を行わない。ブラウザを閉じている間は処理しない。
+
+## Base mintの待機と再試行
+
+自動mintとHistoryの手動mintは同じDeposit・署名の実行状態を共有する。事前確認は合計30秒で終了し、時間切れ後に届いた応答からウォレット確認を開かない。別のウォレット操作が進行中の場合は待機列へ追加せず、先の操作が終わってから手動で再試行する。
+
+ウォレットへ依頼した後は、応答が遅くても未送信と判定しない。明示的な拒否なら再試行できるが、通信エラーや再読み込みで結果が不明になった場合は、ウォレットで取引状況を確認する。Historyへの取引ハッシュ貼り付けによる復元は提供しない。送信済みハッシュの保存に失敗した場合は、確認が終わるまで画面を開いたままにする。
+
+「Copy mint diagnostics」は直近100件までの処理段階・所要時間をコピーする。署名、金額、ウォレットアドレス、RPC URLは含まれず、自動送信されない。診断記録はページを再読み込みすると失われる。
+
+Sepoliaではハッシュ紛失時のMint復旧は提供しない。処理済みでreceipt未連携の場合はその状態を表示し、存在しない手動復元へ誘導しない。保存済みハッシュの追跡は継続する。

@@ -2,7 +2,7 @@ import BridgeSpec.Model
 
 namespace BridgeSpec.MintAuthorization
 
-def authorizationTtl : Nat := 600
+def authorizationTtl : Nat := 900
 def maxU64 : Nat := 2 ^ 64 - 1
 
 def deadlineFromIssuedAt (issuedAtTimestamp : Nat) : Option Nat :=
@@ -242,8 +242,8 @@ def completeMint (state : DepositState) (evidence : MintEvidence) : Option Depos
   match state.authorization with
   | none => none
   | some authorization =>
-      if state.phase = .refundAvailable ∧ evidence.valid authorization ∧
-          authorization.grossAmount ≤ state.pendingDepositLiability ∧
+      if (state.phase = .authorizationAvailable ∨ state.phase = .refundAvailable) ∧ evidence.valid authorization ∧
+          authorization.netAmount ≤ state.pendingDepositLiability ∧
           state.feeCounted = true then
         some { state with
           phase := .minted

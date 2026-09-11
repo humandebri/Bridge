@@ -19,5 +19,13 @@
     "test-results",
     ".e2e-runtime",
     ".e2e-cache"
+  ],
+  "overrides": [
+    {
+      "files": ["recovery-worker/wrangler.jsonc"],
+      "options": {
+        "trailingComma": "none"
+      }
+    }
   ]
 }

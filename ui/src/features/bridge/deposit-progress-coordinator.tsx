@@ -113,6 +113,44 @@ export function DepositProgressCoordinator() {
     }
   }, [identity, progress, updateProgress])
 
+  const transactionHash = progress?.transactionHash
+  const onProgress = useCallback(
+    (event: MintProgressEvent) => {
+      if (!progressId) return
+      if (event.phase === "storage-warning")
+        updateProgress(progressId, { attentionMessage: event.message })
+      else if (event.phase === "awaiting-wallet" || event.phase === "preparing")
+        updateProgress(progressId, { phase: "awaiting-base-mint" })
+      else if (event.phase === "submitted")
+        updateProgress(progressId, {
+          phase: "base-mint-submitted",
+          transactionHash: event.transactionHash,
+          receiptBlockNumber: undefined,
+          baseTransactionOutcome: undefined,
+        })
+      else if (event.phase === "included")
+        updateProgress(progressId, {
+          phase: "base-mint-included",
+          transactionHash: event.transactionHash,
+          receiptBlockNumber: event.blockNumber.toString(),
+          baseTransactionOutcome: event.outcome,
+        })
+      else if (event.phase === "finalizing")
+        updateProgress(progressId, {
+          phase: "base-mint-finalizing",
+          transactionHash: event.transactionHash,
+          receiptBlockNumber: event.blockNumber.toString(),
+        })
+      else if (event.phase === "attention")
+        updateProgress(progressId, {
+          phase: "attention",
+          transactionHash: event.transactionHash ?? transactionHash,
+          attentionMessage: event.message,
+        })
+    },
+    [progressId, transactionHash, updateProgress],
+  )
+
   if (
     !progress ||
     progress.direction !== "deposit" ||
@@ -121,37 +159,6 @@ export function DepositProgressCoordinator() {
     !("AuthorizationAvailable" in record.state)
   )
     return null
-
-  const onProgress = (event: MintProgressEvent) => {
-    if (event.phase === "awaiting-wallet")
-      bridgeProgress.update(progress.id, { phase: "awaiting-base-mint" })
-    else if (event.phase === "submitted")
-      bridgeProgress.update(progress.id, {
-        phase: "base-mint-submitted",
-        transactionHash: event.transactionHash,
-        receiptBlockNumber: undefined,
-        baseTransactionOutcome: undefined,
-      })
-    else if (event.phase === "included")
-      bridgeProgress.update(progress.id, {
-        phase: "base-mint-included",
-        transactionHash: event.transactionHash,
-        receiptBlockNumber: event.blockNumber.toString(),
-        baseTransactionOutcome: event.outcome,
-      })
-    else if (event.phase === "finalizing")
-      bridgeProgress.update(progress.id, {
-        phase: "base-mint-finalizing",
-        transactionHash: event.transactionHash,
-        receiptBlockNumber: event.blockNumber.toString(),
-      })
-    else if (event.phase === "attention")
-      bridgeProgress.update(progress.id, {
-        phase: "attention",
-        transactionHash: event.transactionHash ?? progress.transactionHash,
-        attentionMessage: event.message,
-      })
-  }
   const onMintConfirmed = (confirmation: MintConfirmation) =>
     bridgeProgress.update(progress.id, {
       phase: "complete",

@@ -18,6 +18,7 @@ mod api;
 mod base_governance;
 pub mod config;
 mod consent;
+mod cycles_top_up;
 mod evm_rpc;
 mod ledger;
 mod mint_authorization;
@@ -385,6 +386,7 @@ fn init(args: config::BridgeInitArgs) {
     install_store(store);
     scheduler::arm();
     scheduler::arm_funding_recovery();
+    cycles_top_up::start();
 }
 
 pub(crate) fn current_asset_operation_lifecycle_decision(
@@ -502,6 +504,7 @@ fn migrate_confirmed_activation_history(store: &mut StableStore) {
 
 fn finish_post_upgrade(store: StableStore) {
     install_store(store);
+    scheduler::arm_history_index_rebuild();
     ensure_supported_schema();
     STORE.with(|store| {
         let config = store
@@ -517,6 +520,7 @@ fn finish_post_upgrade(store: StableStore) {
     });
     scheduler::arm();
     scheduler::arm_funding_recovery();
+    cycles_top_up::start();
 }
 
 #[cfg(not(feature = "test-deployment"))]
@@ -623,6 +627,11 @@ fn post_upgrade(args: config::StagingUpgradeArgs) {
 }
 
 #[ic_cdk::update]
+async fn check_cycles_top_up() -> Result<(), String> {
+    cycles_top_up::check(ic_cdk::api::is_controller(&ic_cdk::api::msg_caller())).await
+}
+
+#[ic_cdk::update]
 async fn request_deposit(args: api::DepositArgs) -> Result<api::DepositReceipt, api::DepositError> {
     require_asset_operations_for_deposit()?;
     let caller = ic_cdk::api::msg_caller();
@@ -694,6 +703,206 @@ fn map_deposit_refund_exact_mint_error(
         api::RequestDepositRefundError::DepositIdentityConflict
     } else {
         map_deposit_refund_observation_error("request_deposit_refund_exact_mint", error)
+    }
+}
+
+#[ic_cdk::update]
+async fn notify_deposit_mint(
+    args: api::NotifyDepositMintArgs,
+) -> Result<api::NotifyDepositMintReceipt, api::NotifyDepositMintError> {
+    use api::NotifyDepositMintError as Error;
+    require_asset_operations_for_withdrawal_notification().map_err(|_| Error::NotAdmissible)?;
+    let caller = ic_cdk::api::msg_caller();
+    if caller == candid::Principal::anonymous() {
+        return Err(Error::AnonymousCaller);
+    }
+    let id: [u8; 32] = args
+        .deposit_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::InvalidDepositId)?;
+    let transaction_hash: [u8; 32] = args
+        .transaction_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::InvalidTransactionHash)?;
+    if transaction_hash == [0; 32] {
+        return Err(Error::InvalidTransactionHash);
+    }
+    let Some(_deposit_guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
+        return Err(Error::Busy);
+    };
+    let (config, authorization) = STORE.with(|store| {
+        let store = store.borrow();
+        let record = store
+            .deposit(id)
+            .map_err(|_| Error::StorageFailure)?
+            .ok_or(Error::NotFound)?;
+        if let Some(evidence) = record.mint_finalization_evidence.as_ref() {
+            if evidence.transaction_hash != transaction_hash {
+                return Err(Error::IdentityConflict);
+            }
+            return Ok((None, None));
+        }
+        if !matches!(
+            record.state,
+            bridge_core::DepositState::AuthorizationAvailable { .. }
+                | bridge_core::DepositState::RefundAvailable { .. }
+        ) {
+            return Err(Error::NotAdmissible);
+        }
+        let authorization = record
+            .mint_authorization
+            .filter(|a| a.signature.is_some())
+            .ok_or(Error::NotAdmissible)?;
+        let config = store
+            .config()
+            .map_err(|_| Error::StorageFailure)?
+            .ok_or(Error::StorageFailure)?;
+        Ok((Some(config), Some(authorization)))
+    })?;
+    let (Some(config), Some(authorization)) = (config, authorization) else {
+        return Ok(api::NotifyDepositMintReceipt::Duplicate {
+            deposit_id: id.to_vec(),
+        });
+    };
+    let caller_cooldown_key: [u8; 32] = {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        // A failed public notification must not delay another caller's exact evidence.
+        hash.update(b"deposit-mint-notification-caller");
+        hash.update(id);
+        hash.update(caller.as_slice());
+        hash.finalize().into()
+    };
+    let now_ns = ic_cdk::api::time();
+    let protected_lane = caller == config.confirmation_relayer_principal;
+    let (cooldown, reserve, funding) = STORE.with(|store| {
+        let store = store.borrow();
+        Ok::<_, Error>((
+            store
+                .notification_failure_cooldown_active(caller_cooldown_key, now_ns)
+                .map_err(|_| Error::StorageFailure)?,
+            store
+                .deposit_reserve_token()
+                .map_err(|_| Error::StorageFailure)?,
+            store
+                .deposit_funding_reservation_count()
+                .map_err(|_| Error::StorageFailure)?,
+        ))
+    })?;
+    if cooldown {
+        return Err(Error::RateLimited);
+    }
+    if !has_notification_cycle_budget(
+        ic_cdk::api::canister_liquid_cycle_balance(),
+        config.reserve_policy(),
+        reserve,
+        funding,
+    ) {
+        return Err(Error::InsufficientCycles);
+    }
+    let Some(_quota_guard) = NotificationQuotaGuard::acquire(caller, protected_lane) else {
+        return Err(Error::RateLimited);
+    };
+    let Some(_notification_guard) =
+        InFlightGuard::acquire(ActionKey::Notification(transaction_hash))
+    else {
+        return Err(Error::Busy);
+    };
+    let caller_count = NotificationAdmissionGuard::caller_count(
+        caller,
+        now_ns,
+        config.notification_rate_limit_window_seconds,
+    );
+    let admitted = STORE
+        .with(|store| {
+            store.borrow_mut().consume_notification_verification_quota(
+                now_ns,
+                config.notification_rate_limit_window_seconds,
+                config.notification_rate_limit_global,
+                caller_count,
+                NotificationAdmissionGuard::PER_CALLER_LIMIT,
+                protected_lane,
+            )
+        })
+        .map_err(|_| Error::StorageFailure)?;
+    if !admitted {
+        return Err(Error::RateLimited);
+    }
+    NotificationAdmissionGuard::record(
+        caller,
+        now_ns,
+        config.notification_rate_limit_window_seconds,
+    );
+    let result = async {
+        let runtime_attested = api::runtime_attested(&config).map_err(|_| Error::StorageFailure)?;
+        let observation = evm_rpc::recovery_observation(
+            &config,
+            evm_rpc::RecoveryTarget::Deposit(id),
+            runtime_attested,
+        )
+        .await
+        .map_err(map_mint_notification_error)?;
+        if !matches!(
+            observation.state,
+            evm_rpc::RecoveryBaseState::DepositProcessed(true)
+        ) {
+            return Err(Error::TransactionNotConfirmed);
+        }
+        let evidence = evm_rpc::exact_mint_receipt_evidence(
+            &config,
+            &authorization,
+            observation.finalized,
+            transaction_hash,
+        )
+        .await
+        .map_err(map_mint_notification_error)?;
+        STORE.with(|store| {
+            let mut store = store.borrow_mut();
+            let mut deposit = store
+                .deposit(id)
+                .map_err(|_| Error::StorageFailure)?
+                .ok_or(Error::NotFound)?;
+            if deposit.mint_authorization.as_ref() != Some(&authorization) {
+                return Err(Error::IdentityConflict);
+            }
+            let transition = deposit
+                .apply(bridge_core::DepositEvent::MintReconciled {
+                    evidence: Box::new(evidence),
+                })
+                .map_err(|_| Error::IdentityConflict)?;
+            store
+                .put_deposit_transition(&deposit, transition)
+                .map_err(|_| Error::StorageFailure)
+        })?;
+        Ok(api::NotifyDepositMintReceipt::Recorded {
+            deposit_id: id.to_vec(),
+        })
+    }
+    .await;
+    if result.is_err() {
+        STORE
+            .with(|store| {
+                store.borrow_mut().record_notification_failure_cooldown(
+                    caller_cooldown_key,
+                    ic_cdk::api::time(),
+                    30_000_000_000,
+                )
+            })
+            .map_err(|_| Error::StorageFailure)?;
+    }
+    result
+}
+
+fn map_mint_notification_error(error: evm_rpc::ObservationError) -> api::NotifyDepositMintError {
+    use api::NotifyDepositMintError as Error;
+    match error {
+        evm_rpc::ObservationError::TransactionPending => Error::TransactionNotConfirmed,
+        evm_rpc::ObservationError::TransactionReverted => Error::TransactionReverted,
+        evm_rpc::ObservationError::Rpc => Error::RpcUnavailable,
+        evm_rpc::ObservationError::Inconsistent => Error::RpcInconsistent,
+        _ => Error::IdentityConflict,
     }
 }
 
@@ -1004,6 +1213,13 @@ fn get_next_deposit_sequence(owner: candid::Principal) -> u64 {
 #[ic_cdk::query]
 fn get_withdrawal(id: Vec<u8>) -> Option<api::WithdrawalView> {
     api::get_withdrawal(id)
+}
+
+#[ic_cdk::query]
+fn list_withdrawals(
+    args: api::ListWithdrawalsArgs,
+) -> Result<api::WithdrawalHistoryPage, api::ListWithdrawalsError> {
+    api::list_withdrawals(args)
 }
 
 #[ic_cdk::query]
@@ -2173,8 +2389,8 @@ fn icrc10_supported_standards() -> Vec<consent::Icrc10SupportedStandard> {
 fn icrc21_canister_call_consent_message(
     request: consent::Icrc21ConsentMessageRequest,
 ) -> consent::Icrc21ConsentMessageResponse {
-    if !admit_consent_request() {
-        return consent::resource_limited();
+    if let Err(reason) = admit_consent_request() {
+        return consent::admission_error(reason);
     }
     let ledger_fee =
         if request.method == "request_deposit" || request.method == "request_deposit_refund" {
@@ -2190,40 +2406,71 @@ fn icrc21_canister_call_consent_message(
     )
 }
 
-fn admit_consent_request() -> bool {
-    if !asset_operations_are_available().unwrap_or(false) {
-        return false;
+fn consent_cycle_budget(
+    current: u128,
+    policy: bridge_core::ReservePolicy,
+    token: storage::DepositReserveToken,
+    active_funding: u64,
+) -> Result<(), consent::ConsentAdmissionError> {
+    use consent::ConsentAdmissionError as Error;
+    let deposits = token
+        .nonterminal_deposits
+        .checked_add(active_funding)
+        .ok_or(Error::BudgetCalculationFailed)?;
+    let required = policy
+        .required_cycles(token.nonterminal_withdrawals, deposits, 0)
+        .map_err(|_| Error::BudgetCalculationFailed)?;
+    if current <= required {
+        return Err(Error::InsufficientCycles);
     }
-    let Some(config) = STORE.with(|store| store.borrow().config().ok().flatten()) else {
-        return false;
-    };
-    let Ok((token, active_funding)) = STORE.with(|store| {
-        let store = store.borrow();
-        Ok::<_, storage::StorageError>((
-            store.deposit_reserve_token()?,
-            store.deposit_funding_reservation_count()?,
-        ))
-    }) else {
-        return false;
-    };
-    if !has_liability_cycle_budget(
+    Ok(())
+}
+
+fn admit_consent_request() -> Result<(), consent::ConsentAdmissionError> {
+    use consent::ConsentAdmissionError as Error;
+    if !asset_operations_are_available().map_err(|_| Error::StorageUnavailable)? {
+        return Err(Error::RequestsDisabled);
+    }
+    let config = STORE.with(|store| store.borrow().config());
+    let config = config
+        .map_err(|_| Error::ConfigurationUnavailable)?
+        .ok_or(Error::ConfigurationUnavailable)?;
+    let (token, active_funding) = STORE
+        .with(|store| {
+            let store = store.borrow();
+            Ok::<_, storage::StorageError>((
+                store.deposit_reserve_token()?,
+                store.deposit_funding_reservation_count()?,
+            ))
+        })
+        .map_err(|_| Error::StorageUnavailable)?;
+    consent_cycle_budget(
         ic_cdk::api::canister_liquid_cycle_balance(),
         config.reserve_policy(),
         token,
         active_funding,
-        0,
-    ) {
-        return false;
-    }
-    STORE
+    )?;
+    let now_ns = ic_cdk::api::time();
+    let admitted = STORE
         .with(|store| {
             store.borrow_mut().consume_consent_quota(
-                ic_cdk::api::time(),
+                now_ns,
                 config.notification_rate_limit_window_seconds,
                 config.notification_rate_limit_global.saturating_mul(2),
             )
         })
-        .unwrap_or(false)
+        .map_err(|_| Error::StorageUnavailable)?;
+    if !admitted {
+        let window_ns = config
+            .notification_rate_limit_window_seconds
+            .saturating_mul(1_000_000_000);
+        // A zero window is rejected by consume_consent_quota before this branch.
+        let retry_after_seconds = (window_ns - now_ns % window_ns).div_ceil(1_000_000_000);
+        return Err(Error::RateLimited {
+            retry_after_seconds,
+        });
+    }
+    Ok(())
 }
 
 #[ic_cdk::update]
@@ -2307,11 +2554,12 @@ pub fn generated_candid_interface() -> String {
 #[cfg(test)]
 mod candid_tests {
     use super::{
-        asset_operations_are_available_for, can_continue_withdrawal,
+        asset_operations_are_available_for, can_continue_withdrawal, consent, consent_cycle_budget,
         deposit_continuation_authorization_phase, deposit_continuation_retryable_stop,
-        has_notification_cycle_budget, storage::DepositReserveToken, storage::StorageError,
-        storage_or_trap, ActionKey, DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard,
-        StableStore, NOTIFICATION_CALLER_ADMISSION,
+        has_liability_cycle_budget, has_notification_cycle_budget, storage,
+        storage::DepositReserveToken, storage::StorageError, storage_or_trap, ActionKey,
+        DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard, StableStore,
+        NOTIFICATION_CALLER_ADMISSION,
     };
 
     #[test]
@@ -2336,7 +2584,7 @@ mod candid_tests {
         let mut governance_operator = vec![0; 20];
         governance_operator[19] = 3;
         let config = super::OperationalConfig {
-            mint_authorization_ttl_seconds: 600,
+            mint_authorization_ttl_seconds: 900,
             mint_authorization_epoch: 7,
             governance_operator,
             deposit_rate_limit_window_seconds: 60,
@@ -2378,9 +2626,9 @@ mod candid_tests {
         assert_eq!(
             super::operational_config_sha256(&config),
             [
-                0xef, 0xe2, 0x86, 0x2b, 0x6c, 0xfb, 0xa2, 0x8a, 0xce, 0x6b, 0x50, 0x08, 0x22, 0x19,
-                0x61, 0x55, 0x6a, 0x75, 0x49, 0x58, 0x82, 0x69, 0x00, 0x1b, 0xb5, 0xa1, 0x59, 0x04,
-                0xa5, 0xd5, 0xf0, 0xc3,
+                0x5b, 0x28, 0xcf, 0x27, 0x02, 0x43, 0xb8, 0x4d, 0xd4, 0x1c, 0xb1, 0x89, 0x18, 0xf7,
+                0x9d, 0x0e, 0x44, 0x57, 0xc1, 0x08, 0x52, 0xbd, 0x6f, 0xa8, 0xb8, 0x66, 0x43, 0x1e,
+                0x67, 0xd7, 0xfa, 0x48,
             ]
         );
     }
@@ -2617,6 +2865,58 @@ mod candid_tests {
                 super::evm_rpc::ObservationError::BaseStateMismatch,
             ),
             super::api::RequestDepositRefundError::DepositIdentityConflict
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn consent_quota_keeps_the_existing_limit_and_window() {
+        let mut store = StableStore::init(DefaultMemoryImpl::default()).expect("initialize");
+        let now = 1_788_840_001_000_000_000;
+        for _ in 0..120 {
+            assert!(store.consume_consent_quota(now, 600, 120).unwrap());
+        }
+        assert!(!store.consume_consent_quota(now, 600, 120).unwrap());
+        assert!(store
+            .consume_consent_quota(now + 600_000_000_000, 600, 120)
+            .unwrap());
+        assert!(store.consume_consent_quota(now, 0, 120).is_err());
+    }
+
+    #[test]
+    fn consent_budget_preserves_strict_boundary_and_reports_overflow() {
+        use consent::ConsentAdmissionError as Error;
+        let policy = bridge_core::ReservePolicy {
+            cycles_floor: 100,
+            settlement_cycle_ceiling: 5,
+        };
+        let token = storage::DepositReserveToken {
+            nonterminal_withdrawals: 1,
+            nonterminal_deposits: 2,
+            reserved_deposit_mint_amount: 0,
+            reserved_deposit_mint_operations: 0,
+        };
+        for current in [0, 119, 120, 121, u128::MAX] {
+            assert_eq!(
+                consent_cycle_budget(current, policy, token, 1).is_ok(),
+                has_liability_cycle_budget(current, policy, token, 1, 0)
+            );
+        }
+        assert_eq!(
+            consent_cycle_budget(120, policy, token, 1),
+            Err(Error::InsufficientCycles)
+        );
+        assert_eq!(
+            consent_cycle_budget(u128::MAX, policy, token, u64::MAX),
+            Err(Error::BudgetCalculationFailed)
+        );
+        let overflow = bridge_core::ReservePolicy {
+            cycles_floor: u128::MAX,
+            settlement_cycle_ceiling: 5,
+        };
+        assert_eq!(
+            consent_cycle_budget(u128::MAX, overflow, token, 1),
+            Err(Error::BudgetCalculationFailed)
         );
     }
 

@@ -15,6 +15,7 @@ contract BridgeTimelockController is TimelockController {
     error MaximumDelayTooLong(uint256 suppliedDelay, uint256 maximumDelay);
     error RoleMustHaveSingleMember(bytes32 role, uint256 suppliedMemberCount);
     error CancellerMustBeIndependent(address canceller, address operationalMember);
+    error ProposerExecutorMismatch(address proposer, address executor);
     error RoleSetFrozen(bytes32 role, address account);
     error InvalidOperationalRoleRotation(address governanceOperator, address canceller);
 
@@ -44,6 +45,9 @@ contract BridgeTimelockController is TimelockController {
         _validateSingleRoleMember(PROPOSER_ROLE, proposers);
         _validateSingleRoleMember(CANCELLER_ROLE, cancellers);
         _validateSingleRoleMember(EXECUTOR_ROLE, executors);
+        if (proposers[0] != executors[0]) {
+            revert ProposerExecutorMismatch(proposers[0], executors[0]);
+        }
         if (cancellers[0] == proposers[0] || cancellers[0] == executors[0]) {
             revert CancellerMustBeIndependent(cancellers[0], proposers[0]);
         }
