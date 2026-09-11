@@ -225,7 +225,7 @@ jobs:
           submodules: recursive
           persist-credentials: false
       - name: Fetch the pinned schema 35 upgrade predecessor
-        if: matrix.area == 'rust-integration'
+        if: matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted'
         working-directory: source
         run: git fetch --no-tags --no-recurse-submodules https://github.com/humandebri/Bridge.git e0b426e7465531d2e572b5b741509f1889e6def8
       - name: Isolate reviewed candidate dependency inputs

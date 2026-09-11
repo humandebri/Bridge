@@ -28,12 +28,18 @@ class TrustedPrGateTests(unittest.TestCase):
                 self.assertEqual(workflow.count(fetch), 1)
                 self.assertLess(workflow.index("persist-credentials: false"), workflow.index(fetch))
                 if path == WORKFLOW:
-                    self.assertIn(
-                        "if: matrix.area == 'rust-integration'\n"
-                        "        working-directory: source\n"
-                        f"        {fetch}",
+                    self.assertIn("working-directory: source\n" + f"        {fetch}", workflow)
+                    condition = re.search(
+                        r"name: Fetch the pinned schema 35 upgrade predecessor\n        if: (.+)",
                         workflow,
-                    )
+                    ).group(1).replace("matrix.area", '\"$AREA\"')
+                    for area in ("policy", "proofs-impacted", "rust-fast", "rust-integration", "ui-fast", "ui-e2e", "contracts-fast", "real", "icp", "certora"):
+                        with self.subTest(area=area):
+                            result = subprocess.run(
+                                ["bash", "-c", "[[ " + condition + " ]]"],
+                                env={**os.environ, "AREA": area}, capture_output=True,
+                            )
+                            self.assertEqual(result.returncode, 0 if area in {"rust-integration", "proofs-impacted"} else 1)
                     self.assertLess(workflow.index(fetch), workflow.index("Isolate reviewed candidate dependency inputs"))
                 else:
                     self.assertLess(workflow.index(fetch), workflow.index("scripts/ci-local.sh all"))
@@ -236,6 +242,32 @@ class TrustedPrGateTests(unittest.TestCase):
                         capture_output=True,
                     )
                     self.assertEqual(result.returncode, 0 if mode in {"policy", "proofs", "proofs-impacted"} else 1)
+
+    def test_policy_and_proofs_receive_writable_lean_output(self) -> None:
+        wrapper = (ROOT / "scripts/trusted-pr-container.sh").read_text(encoding="utf-8")
+        mount_setup = wrapper.split("WRITABLE_BUILD_MOUNTS=()", 1)[1].split("CACHE_MOUNTS=()", 1)[0]
+        for mode in ("policy", "proofs", "proofs-impacted", "rust-fast", "rust-integration", "ui-fast", "ui-e2e", "real", "icp", "certora"):
+            with self.subTest(mode=mode):
+                result = subprocess.run(
+                    ["bash", "-eu", "-c",
+                     'bridge_prepare_candidate_mountpoint() { printf "prepare:%s\\n" "$2"; }; '
+                     'WRITABLE_BUILD_MOUNTS=(); ' + mount_setup +
+                     '\nprintf "%s\\n" "${WRITABLE_BUILD_MOUNTS[@]-}"'],
+                    env={**os.environ, "MODE": mode, "SOURCE_ROOT": "/source",
+                         "SCRATCH": "/scratch", "POLICY_ROOT": "/policy"},
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                needs_lean = mode in {"policy", "proofs", "proofs-impacted"}
+                self.assertEqual("prepare:verification/lean/.lake" in result.stdout, needs_lean)
+                self.assertEqual(
+                    "type=bind,src=/scratch/lean-lake,dst=/workspace/verification/lean/.lake\n" in result.stdout,
+                    needs_lean,
+                )
+                if mode == "policy":
+                    self.assertNotIn("dst=/workspace/verification/output", result.stdout)
+                    self.assertNotIn("dst=/workspace/verification/halmos/.venv", result.stdout)
+                    self.assertNotIn("dst=/workspace/verification/smt", result.stdout)
 
     def test_untrusted_lifecycle_never_runs_before_policy_and_isolation_are_fixed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
