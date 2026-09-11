@@ -1,4 +1,6 @@
 overrides:
+  # GHSA-rgj7-g3m4-5g8c: remove when miniflare pins sharp 0.35.4 or newer.
+  "miniflare>sharp": 0.35.4
   # Security override until @coinbase/cdp-sdk permits axios 1.18.0 or newer.
   axios: 1.18.0
   # Security override for GHSA-73wf-gq98-2v4g until upstream dependency trees require a fixed browserslist.
