@@ -97,7 +97,7 @@ export function depositPhaseTone(phase: DepositPhase): "good" | "warn" | "neutra
 
 export type DepositContinuation = {
   mode: "active" | "automatic" | "stopped"
-  action?: "retry-authorization" | "request-refund"
+  action?: "retry-authorization" | "retry-processing" | "request-refund"
   message?: string
   reason?: SettlementStopReason
 }
@@ -121,6 +121,24 @@ export function depositContinuation(record: DepositView): DepositContinuation {
   const name = settlementStopReasonName(reason)
   const authorizationPhase =
     "EscrowedUnquoted" in record.state || "AuthorizationPending" in record.state
+  const recoveryPhase =
+    authorizationPhase ||
+    "FundingReconciliationHold" in record.state ||
+    "RefundProcessing" in record.state
+  if (
+    recoveryPhase &&
+    ["LedgerUnavailable", "LedgerAmbiguous", "InsufficientCycles"].includes(name)
+  ) {
+    return {
+      mode: "stopped",
+      action: "retry-processing",
+      reason,
+      message:
+        name === "InsufficientCycles"
+          ? "Automatic retries stopped because the Bridge cannot preserve its cycle reserve. Top-up alone does not restart this deposit; continue it explicitly after recovery."
+          : "Automatic retries stopped after a temporary Ledger failure. Continue this deposit explicitly to make one recovery attempt.",
+    }
+  }
   if (
     authorizationPhase &&
     ["RpcUnavailable", "RpcInconsistent", "SigningUnavailable"].includes(name)
@@ -254,6 +272,7 @@ function isSettlementStopReason(value: unknown): boolean {
       "BaseStateMismatch",
       "BridgeSignerMismatch",
       "SigningUnavailable",
+      "InsufficientCycles",
       "InvalidBaseResponse",
       "AuthorizationExpired",
       "AuthorizationWindowTooShort",

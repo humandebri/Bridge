@@ -439,6 +439,7 @@ pub(crate) fn notification_action_hash(
 
 fn map_withdrawal_observation_error(error: evm_rpc::ObservationError) -> NotifyWithdrawalError {
     match error {
+        evm_rpc::ObservationError::InsufficientCycles => NotifyWithdrawalError::InsufficientCycles,
         evm_rpc::ObservationError::Rpc => NotifyWithdrawalError::RpcUnavailable,
         evm_rpc::ObservationError::Inconsistent => NotifyWithdrawalError::RpcInconsistent,
         evm_rpc::ObservationError::BaseStateMismatch => NotifyWithdrawalError::BaseStateMismatch,

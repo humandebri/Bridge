@@ -1158,6 +1158,15 @@ export function DepositActivityRow({
           >
             {actioningId === key ? "Retrying…" : "Retry authorization"}
           </Button>
+        ) : continuation.action === "retry-processing" ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!writesEnabled || actioningId === key}
+            onClick={() => void onContinue(record)}
+          >
+            {actioningId === key ? "Continuing…" : "Continue deposit"}
+          </Button>
         ) : continuation.action === "request-refund" ? (
           deadlineRefundStatus === "ready" ? (
             <Button

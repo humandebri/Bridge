@@ -273,7 +273,13 @@ canister logs、または management canister の `fetch_canister_logs` で取�
 `cycles_top_up_request_policy` のローカル要求条件は共有カーネルと Verus に結び付ける。
 実行中フラグ・controller 入力・タイマー・Candid 応答の接続は単体/PocketIC テストで検証するが、
 それらを含む補充全体の保証は `partial` であり、launcher の認可・資金・補充成功と IC runtime に依存する。
-既存の `signing_cycle_reserve` の計算と stable schema v36 は変更しない。
+stable schema v36は変更しない。既存の`attempts`列は連続した自動失敗回数として扱う。RPC、署名、Ledger、cycles不足の一時失敗は初回を含む3回目で自動停止し、補充成功だけでは再開しない。Historyの同じDeposit recordから`continue_deposit`を明示実行し、1回だけ復旧を試す。進捗が得られた場合だけ失敗回数を0へ戻して自動処理へ復帰する。fee payoutは管理者限定の`continue_fee_payout`を使う。
+
+`settlement_cycle_ceiling`は外部callへ付与するcyclesそのものではなく、liability 1件分の予約額兼1処理分のmarginである。有料EVM RPCとthreshold署名の直前には、既存liabilityの予約必要額、当該call付与額、このmarginのchecked合計を要求する。Ledgerのようなcycles無付与callでも予約必要額とmarginを維持できなければ発行しない。
+
+funding recoveryはstable deadline indexの最古`recovery_due_ns`へone-shot timerを設定する。より早いattemptを追加した場合だけtimerを差し替え、callbackは最大1 stepを処理して次の期限へ再設定する。24時間後の期限まで30秒ごとに空振りするpollingは行わない。 callback実行中は追加timerを登録せず、完了・キャンセル時に実行権を解放して最古期限を再読取する。Deposit受付pause中はfunding recoveryのtimerを再登録しない。確認済みactivationで受付を再開した後、またはunpaused状態でのupgrade初期化後に、期限indexから再開する。
+
+照合の通信成功だけでは進捗としない。Ledger/Indexのphase、ページ・archive位置、確定watermarkが変わらない場合は`LedgerUnavailable`として連続失敗に数える。正式Depositとfee payoutは3回で停止するが、正式Deposit化前のfunding recoveryには回数上限を設けず30秒後へ再設定する。完全な不在確定と予約解放には、従来どおり重複受付期間を過ぎた新しいscanを必要とする。
 
 
 ### Mainnet Mint復旧Worker

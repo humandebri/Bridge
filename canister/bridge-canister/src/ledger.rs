@@ -30,6 +30,7 @@ fn ledger_call(canister: Principal, method: &'static str) -> Call<'static, 'stat
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReconciliationOutcome {
     Progress(Box<ReconciliationScanProgress>),
+    NoProgress(Box<ReconciliationScanProgress>),
     Succeeded {
         block_index: u128,
     },
@@ -150,7 +151,8 @@ pub async fn reconcile_step(
     mut progress: ReconciliationScanProgress,
 ) -> ReconciliationOutcome {
     const CALL_BUDGET: u8 = 4;
-    match progress.phase.clone() {
+    let previous_phase = progress.phase.clone();
+    let outcome = match progress.phase.clone() {
         ReconciliationScanPhase::Ledger {
             next_block,
             ledger_tip,
@@ -183,6 +185,19 @@ pub async fn reconcile_step(
             )
             .await
         }
+    };
+    classify_reconciliation_progress(&previous_phase, outcome)
+}
+
+fn classify_reconciliation_progress(
+    previous_phase: &ReconciliationScanPhase,
+    outcome: ReconciliationOutcome,
+) -> ReconciliationOutcome {
+    match outcome {
+        ReconciliationOutcome::Progress(progress) if &progress.phase == previous_phase => {
+            ReconciliationOutcome::NoProgress(progress)
+        }
+        outcome => outcome,
     }
 }
 
@@ -630,6 +645,99 @@ fn retryable(code: LedgerFailure) -> LedgerCallOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconciliation_requires_scan_advancement_but_preserves_terminal_evidence() {
+        let transfer = LedgerTransferIdentity {
+            operation: bridge_core::LedgerOperation::PullDeposit,
+            created_at_time_ns: 17,
+            memo: [3; 32],
+            amount: Amount::new(100),
+            fee: Amount::new(1),
+            from: bridge_core::Account::new(vec![1], [0; 32]).unwrap(),
+            to: bridge_core::Account::new(vec![2], [0; 32]).unwrap(),
+            spender: None,
+        };
+        let mut progress = ReconciliationScanProgress::new(
+            bridge_core::ReconciliationTarget::FundingAttempt(bridge_core::DepositId::new([5; 32])),
+            transfer,
+        );
+        let phases = [
+            progress.phase.clone(),
+            ReconciliationScanPhase::Ledger {
+                next_block: 1_000,
+                ledger_tip: Some(2_000),
+                pending_page: None,
+            },
+            ReconciliationScanPhase::Index {
+                ledger_watermark: 2_000,
+                index_watermark: None,
+                next_start: None,
+            },
+            ReconciliationScanPhase::Index {
+                ledger_watermark: 2_000,
+                index_watermark: Some(2_000),
+                next_start: Some(1_000),
+            },
+        ];
+        for phase in &phases {
+            progress.phase = phase.clone();
+            assert_eq!(
+                classify_reconciliation_progress(
+                    phase,
+                    ReconciliationOutcome::Progress(Box::new(progress.clone()))
+                ),
+                ReconciliationOutcome::NoProgress(Box::new(progress.clone())),
+            );
+        }
+        for pair in phases.windows(2) {
+            progress.phase = pair[1].clone();
+            let outcome = ReconciliationOutcome::Progress(Box::new(progress.clone()));
+            assert_eq!(
+                classify_reconciliation_progress(&pair[0], outcome.clone()),
+                outcome
+            );
+        }
+        progress.phase = ReconciliationScanPhase::Ledger {
+            next_block: 1_000,
+            ledger_tip: Some(2_000),
+            pending_page: Some(Box::new(ReconciliationLedgerPage {
+                end: 2_000,
+                archives: vec![ReconciliationArchiveRange {
+                    canister_id: vec![1],
+                    method: "get_transactions".into(),
+                    start: 1_000,
+                    length: 1_000,
+                }],
+                next_archive: 0,
+            })),
+        };
+        let before_archive = progress.phase.clone();
+        if let ReconciliationScanPhase::Ledger {
+            pending_page: Some(page),
+            ..
+        } = &mut progress.phase
+        {
+            page.next_archive = 1;
+        }
+        let archive_progress = ReconciliationOutcome::Progress(Box::new(progress.clone()));
+        assert_eq!(
+            classify_reconciliation_progress(&before_archive, archive_progress.clone()),
+            archive_progress
+        );
+        for outcome in [
+            ReconciliationOutcome::Succeeded { block_index: 7 },
+            ReconciliationOutcome::Absent {
+                ledger_watermark: 2_000,
+                index_watermark: 2_000,
+            },
+        ] {
+            assert_eq!(
+                classify_reconciliation_progress(&progress.phase, outcome.clone()),
+                outcome
+            );
+        }
+    }
 
     #[test]
     fn every_ledger_call_uses_the_fixed_fifteen_second_bound() {

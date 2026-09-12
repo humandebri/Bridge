@@ -37,6 +37,7 @@ pub enum SettlementStopReason {
     RpcInconsistent,
     InvalidBaseResponse,
     SigningUnavailable,
+    InsufficientCycles,
     AuthorizationExpired,
     AuthorizationWindowTooShort,
     BaseStateMismatch,
@@ -53,6 +54,7 @@ pub(crate) fn settlement_stop_reason_from_text(value: String) -> SettlementStopR
         "Base RPC providers disagreed" => SettlementStopReason::RpcInconsistent,
         "Invalid Base response" => SettlementStopReason::InvalidBaseResponse,
         "Threshold signing unavailable" => SettlementStopReason::SigningUnavailable,
+        "Insufficient execution cycles" => SettlementStopReason::InsufficientCycles,
         "Mint authorization expired before signing completed" => {
             SettlementStopReason::AuthorizationExpired
         }
@@ -133,6 +135,7 @@ pub(crate) fn stop_reason_text(result: &SettlementActionResult) -> Option<String
             SettlementStopReason::RpcInconsistent => "Base RPC providers disagreed".into(),
             SettlementStopReason::InvalidBaseResponse => "Invalid Base response".into(),
             SettlementStopReason::SigningUnavailable => "Threshold signing unavailable".into(),
+            SettlementStopReason::InsufficientCycles => "Insufficient execution cycles".into(),
             SettlementStopReason::AuthorizationExpired => {
                 "Mint authorization expired before signing completed".into()
             }
@@ -444,6 +447,9 @@ async fn advance_hold(
     .await;
     lease.ensure_current()?;
     match outcome {
+        ledger::ReconciliationOutcome::NoProgress(_) => Ok(HoldAdvance::Stopped(
+            SettlementStopReason::LedgerUnavailable,
+        )),
         ledger::ReconciliationOutcome::Progress(progress) => {
             STORE.with(|store| {
                 store
@@ -559,6 +565,11 @@ async fn prepare_escrowed_deposit(
                 Err(evm_rpc::ObservationError::Inconsistent) => {
                     return Ok(EscrowPreparation::Stopped(
                         SettlementStopReason::RpcInconsistent,
+                    ));
+                }
+                Err(evm_rpc::ObservationError::InsufficientCycles) => {
+                    return Ok(EscrowPreparation::Stopped(
+                        SettlementStopReason::InsufficientCycles,
                     ));
                 }
                 Err(_) => {
@@ -703,6 +714,9 @@ async fn authorization_still_matches_base(
         .await
         .map_err(|error| match error {
             evm_rpc::ObservationError::Inconsistent => SettlementStopReason::RpcInconsistent,
+            evm_rpc::ObservationError::InsufficientCycles => {
+                SettlementStopReason::InsufficientCycles
+            }
             _ => SettlementStopReason::RpcUnavailable,
         })?;
     crate::api::cache_runtime_attestation(config, &completed).map_err(|error| match error {
@@ -1011,10 +1025,16 @@ pub(crate) async fn advance_deposit(
                 let signature = match signer::sign_mint_authorization_digest(digest, &config).await
                 {
                     Ok(signature) => signature,
-                    Err(_) => {
+                    Err(error) => {
                         return Ok(SettlementActionResult::Stopped {
                             state,
-                            reason: SettlementStopReason::SigningUnavailable,
+                            reason: if error.class()
+                                == signer::SigningFailureClass::InsufficientCycles
+                            {
+                                SettlementStopReason::InsufficientCycles
+                            } else {
+                                SettlementStopReason::SigningUnavailable
+                            },
                         });
                     }
                 };
@@ -1134,8 +1154,11 @@ pub(crate) async fn advance_deposit(
                 })?;
                 match advance_hold(&config, hold, lease).await? {
                     HoldAdvance::Continue => continue,
-                    HoldAdvance::Progress | HoldAdvance::Stopped(_) => {
-                        return Ok(SettlementActionResult::Complete { state });
+                    HoldAdvance::Progress => {
+                        return Ok(SettlementActionResult::ReconciliationProgress { state });
+                    }
+                    HoldAdvance::Stopped(reason) => {
+                        return Ok(SettlementActionResult::Stopped { state, reason });
                     }
                 }
             }
@@ -1583,6 +1606,13 @@ pub(crate) async fn advance_fee_payout(
             )
             .await
             {
+                ledger::ReconciliationOutcome::NoProgress(_) => {
+                    lease.ensure_current()?;
+                    Ok(FeePayoutActionResult::Stopped {
+                        state: crate::admin::FeePayoutState::ReconciliationHold,
+                        reason: SettlementStopReason::LedgerUnavailable,
+                    })
+                }
                 ledger::ReconciliationOutcome::Progress(progress) => {
                     lease.ensure_current()?;
                     STORE.with(|store| {

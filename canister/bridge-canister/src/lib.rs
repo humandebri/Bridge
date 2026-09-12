@@ -670,6 +670,7 @@ fn map_deposit_refund_observation_error(
     use api::RequestDepositRefundError as Error;
 
     match error {
+        evm_rpc::ObservationError::InsufficientCycles => Error::InsufficientCycles,
         evm_rpc::ObservationError::Inconsistent => {
             let decision = evm_rpc::quorum_loss_decision(operation, None);
             if STORE
@@ -898,6 +899,7 @@ async fn notify_deposit_mint(
 fn map_mint_notification_error(error: evm_rpc::ObservationError) -> api::NotifyDepositMintError {
     use api::NotifyDepositMintError as Error;
     match error {
+        evm_rpc::ObservationError::InsufficientCycles => Error::InsufficientCycles,
         evm_rpc::ObservationError::TransactionPending => Error::TransactionNotConfirmed,
         evm_rpc::ObservationError::TransactionReverted => Error::TransactionReverted,
         evm_rpc::ObservationError::Rpc => Error::RpcUnavailable,
@@ -1408,21 +1410,104 @@ fn has_liability_cycle_budget(
         .is_some_and(|required| current > required)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ExternalCallCycleBudgetError {
+    available: u128,
+    required: u128,
+}
+
+pub(crate) fn require_external_call_cycle_budget(
+    attached_cycles: u128,
+) -> Result<(), ExternalCallCycleBudgetError> {
+    let policy = STORE
+        .with(|store| {
+            store
+                .borrow()
+                .config()?
+                .map(|config| config.reserve_policy())
+                .ok_or(storage::StorageError::RecordNotFound)
+        })
+        .map_err(|_| ExternalCallCycleBudgetError {
+            available: ic_cdk::api::canister_liquid_cycle_balance(),
+            required: u128::MAX,
+        })?;
+    require_external_call_cycle_budget_with_policy(policy, attached_cycles)
+}
+
+pub(crate) fn require_external_call_cycle_budget_with_policy(
+    policy: bridge_core::ReservePolicy,
+    attached_cycles: u128,
+) -> Result<(), ExternalCallCycleBudgetError> {
+    let (token, active_funding) = STORE
+        .with(|store| {
+            let store = store.borrow();
+            Ok::<_, storage::StorageError>((
+                store.deposit_reserve_token()?,
+                store.deposit_funding_reservation_count()?,
+            ))
+        })
+        .map_err(|_| ExternalCallCycleBudgetError {
+            available: ic_cdk::api::canister_liquid_cycle_balance(),
+            required: u128::MAX,
+        })?;
+    let deposits = token
+        .nonterminal_deposits
+        .checked_add(active_funding)
+        .ok_or(ExternalCallCycleBudgetError {
+            available: ic_cdk::api::canister_liquid_cycle_balance(),
+            required: u128::MAX,
+        })?;
+    let reserve = policy
+        .required_cycles(token.nonterminal_withdrawals, deposits, 0)
+        .map_err(|_| ExternalCallCycleBudgetError {
+            available: ic_cdk::api::canister_liquid_cycle_balance(),
+            required: u128::MAX,
+        })?;
+    let required = ::bridge_core::kernel::paid_call_cycle_requirement(
+        reserve,
+        attached_cycles,
+        policy.settlement_cycle_ceiling,
+    )
+    .ok_or(ExternalCallCycleBudgetError {
+        available: ic_cdk::api::canister_liquid_cycle_balance(),
+        required: u128::MAX,
+    })?;
+    if ::bridge_core::kernel::signing_cycle_requirement(
+        reserve,
+        attached_cycles,
+        policy.settlement_cycle_ceiling,
+    ) != Some(required)
+    {
+        return Err(ExternalCallCycleBudgetError {
+            available: ic_cdk::api::canister_liquid_cycle_balance(),
+            required: u128::MAX,
+        });
+    }
+    let available = ic_cdk::api::canister_liquid_cycle_balance();
+    if available < required {
+        return Err(ExternalCallCycleBudgetError {
+            available,
+            required,
+        });
+    }
+    Ok(())
+}
+
 fn can_continue_withdrawal(caller: candid::Principal) -> bool {
     caller != candid::Principal::anonymous()
 }
 
-fn deposit_continuation_authorization_phase(state: &bridge_core::DepositState) -> bool {
+fn deposit_continuation_recovery_phase(state: &bridge_core::DepositState) -> bool {
     match state {
-        bridge_core::DepositState::EscrowedUnquoted { .. }
-        | bridge_core::DepositState::AuthorizationPending { .. } => true,
         bridge_core::DepositState::FundingPending
-        | bridge_core::DepositState::AuthorizationAvailable { .. }
+        | bridge_core::DepositState::EscrowedUnquoted { .. }
+        | bridge_core::DepositState::FundingReconciliationHold { .. }
+        | bridge_core::DepositState::AuthorizationPending { .. }
+        | bridge_core::DepositState::RefundPending { .. }
+        | bridge_core::DepositState::RefundReconciliationHold { .. } => true,
+        bridge_core::DepositState::AuthorizationAvailable { .. }
         | bridge_core::DepositState::RefundAvailable { .. }
         | bridge_core::DepositState::Minted { .. }
-        | bridge_core::DepositState::FundingReconciliationHold { .. }
-        | bridge_core::DepositState::RefundPending { .. }
-        | bridge_core::DepositState::RefundReconciliationHold { .. }
         | bridge_core::DepositState::Refunded { .. }
         | bridge_core::DepositState::Cancelled { .. } => false,
     }
@@ -1433,13 +1518,14 @@ fn deposit_continuation_retryable_stop(reason: Option<&tasks::SettlementStopReas
         Some(
             tasks::SettlementStopReason::RpcUnavailable
             | tasks::SettlementStopReason::RpcInconsistent
-            | tasks::SettlementStopReason::SigningUnavailable,
+            | tasks::SettlementStopReason::SigningUnavailable
+            | tasks::SettlementStopReason::LedgerUnavailable
+            | tasks::SettlementStopReason::LedgerAmbiguous
+            | tasks::SettlementStopReason::InsufficientCycles,
         ) => true,
         None
         | Some(
-            tasks::SettlementStopReason::LedgerUnavailable
-            | tasks::SettlementStopReason::LedgerAmbiguous
-            | tasks::SettlementStopReason::LedgerRejected(_)
+            tasks::SettlementStopReason::LedgerRejected(_)
             | tasks::SettlementStopReason::InvalidBaseResponse
             | tasks::SettlementStopReason::AuthorizationExpired
             | tasks::SettlementStopReason::AuthorizationWindowTooShort
@@ -1485,7 +1571,7 @@ async fn continue_deposit(
             .map(tasks::settlement_stop_reason_from_text);
         Ok::<_, tasks::SettlementActionError>(::bridge_core::kernel::deposit_continuation_decision(
             true,
-            deposit_continuation_authorization_phase(&record.state),
+            deposit_continuation_recovery_phase(&record.state),
             deposit_continuation_retryable_stop(reason.as_ref()),
         ))
     })?;
@@ -1525,7 +1611,9 @@ async fn continue_deposit(
     }
     drop(guard);
     let job = claim_manual_job(storage::SettlementJobKind::Deposit, id, caller)?;
-    scheduler::run_claimed(job).await
+    let result = scheduler::run_claimed(job).await;
+    scheduler::arm();
+    result
 }
 
 #[ic_cdk::update]
@@ -2270,7 +2358,9 @@ fn emergency_pause(
     let Some(_guard) = InFlightGuard::acquire(ActionKey::EmergencyPause) else {
         return Err(base_governance::BaseGovernanceError::Busy { operation_id: 0 });
     };
-    base_governance::emergency_pause(ic_cdk::api::msg_caller())
+    let result = base_governance::emergency_pause(ic_cdk::api::msg_caller());
+    scheduler::arm_funding_recovery();
+    result
 }
 
 #[ic_cdk::query]
@@ -2305,6 +2395,9 @@ async fn confirm_base_governance_transaction(
     }
     let _guard = admit_control_plane_external_call()?;
     let result = base_governance::confirm(caller, args).await;
+    if result.is_ok() {
+        scheduler::arm_funding_recovery();
+    }
     if matches!(
         &result,
         Err(base_governance::BaseGovernanceError::TransactionNotFinalized { .. })
@@ -2475,7 +2568,9 @@ fn admit_consent_request() -> Result<(), consent::ConsentAdmissionError> {
 
 #[ic_cdk::update]
 fn pause_new_deposits() -> Result<(), admin::AdminError> {
-    admin::pause(ic_cdk::api::msg_caller())
+    let result = admin::pause(ic_cdk::api::msg_caller());
+    scheduler::arm_funding_recovery();
+    result
 }
 #[ic_cdk::update]
 fn rotate_pause_principal(args: admin::RotatePausePrincipalArgs) -> Result<(), admin::AdminError> {
@@ -2555,7 +2650,7 @@ pub fn generated_candid_interface() -> String {
 mod candid_tests {
     use super::{
         asset_operations_are_available_for, can_continue_withdrawal, consent, consent_cycle_budget,
-        deposit_continuation_authorization_phase, deposit_continuation_retryable_stop,
+        deposit_continuation_recovery_phase, deposit_continuation_retryable_stop,
         has_liability_cycle_budget, has_notification_cycle_budget, storage,
         storage::DepositReserveToken, storage::StorageError, storage_or_trap, ActionKey,
         DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard, StableStore,
@@ -2799,8 +2894,11 @@ mod candid_tests {
         let pending = bridge_core::DepositState::AuthorizationPending {
             funding_ledger_block_index: 1,
         };
-        assert!(deposit_continuation_authorization_phase(&pending));
-        assert!(!deposit_continuation_authorization_phase(
+        assert!(deposit_continuation_recovery_phase(&pending));
+        assert!(deposit_continuation_recovery_phase(
+            &bridge_core::DepositState::FundingPending
+        ));
+        assert!(!deposit_continuation_recovery_phase(
             &bridge_core::DepositState::AuthorizationAvailable {
                 funding_ledger_block_index: 1,
             }
@@ -2809,6 +2907,9 @@ mod candid_tests {
             Reason::RpcUnavailable,
             Reason::RpcInconsistent,
             Reason::SigningUnavailable,
+            Reason::LedgerUnavailable,
+            Reason::LedgerAmbiguous,
+            Reason::InsufficientCycles,
         ] {
             assert!(deposit_continuation_retryable_stop(Some(&reason)));
             assert_eq!(
@@ -2821,8 +2922,6 @@ mod candid_tests {
             );
         }
         for reason in [
-            Reason::LedgerUnavailable,
-            Reason::LedgerAmbiguous,
             Reason::LedgerRejected("rejected".to_owned()),
             Reason::AuthorizationExpired,
             Reason::InvalidBaseResponse,
