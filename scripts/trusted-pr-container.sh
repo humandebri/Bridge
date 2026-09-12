@@ -122,15 +122,17 @@ if [[ "$NEEDS_UI_DEPS" == true ]]; then
 fi
 
 WRITABLE_BUILD_MOUNTS=()
+if [[ "$MODE" == "policy" || "$MODE" == "proofs" || "$MODE" == "proofs-impacted" ]]; then
+  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/lean/.lake
+  WRITABLE_BUILD_MOUNTS+=(--mount "type=bind,src=$SCRATCH/lean-lake,dst=/workspace/verification/lean/.lake")
+fi
 if [[ "$MODE" == "proofs" || "$MODE" == "proofs-impacted" ]]; then
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/output
-  bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/lean/.lake
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/smt/out
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/smt/cache
   bridge_prepare_candidate_mountpoint "$SOURCE_ROOT" verification/halmos/.venv
   WRITABLE_BUILD_MOUNTS+=(
     --mount "type=bind,src=$SCRATCH/proof-output,dst=/workspace/verification/output"
-    --mount "type=bind,src=$SCRATCH/lean-lake,dst=/workspace/verification/lean/.lake"
     --mount "type=bind,src=$SCRATCH/smt-out,dst=/workspace/verification/smt/out"
     --mount "type=bind,src=$SCRATCH/smt-cache,dst=/workspace/verification/smt/cache"
     --mount "type=bind,src=$POLICY_ROOT/verification/halmos/.venv,dst=/workspace/verification/halmos/.venv,readonly"
