@@ -2419,8 +2419,8 @@ mod tests {
         execute_activation_calldata, initial_fee, minimum_fee_bump,
         operational_config_lifecycle_result, pending_signature_action,
         schedule_activation_calldata, selector, transaction_authorized, word_u128,
-        BaseGovernanceError, CanisterControllerStatusView, GovernanceAction,
-        PendingSignatureAction, ACTIVATION_TIMELOCK_DELAY_SECONDS,
+        BaseGovernanceError, GovernanceAction, PendingSignatureAction,
+        ACTIVATION_TIMELOCK_DELAY_SECONDS,
     };
     use crate::storage::{
         GovernanceTransaction, GovernanceTransactionKind, GovernanceTransactionState,
