@@ -67,6 +67,6 @@ proof成功後は、同じclean revisionからBridge Canister WasmとBridge cont
 
 ## 同一gate内のテスト実行結果
 
-`all`、`proofs`、`proofs-impacted`は、それぞれ一つの`execution_session.py`プロセスがテストを起動し、成功した実行結果を保持する。claim、refinement、known-answerの各stageは、この呼び出し内で実行済みの同じテストを参照できる。別の呼び出し、別job、保存済みJSON、部分receiptから結果を取り込むことはできない。`all`はrunnerの全suiteを共有し、proof専用実行は対象ファイル（Rust Canisterはfeature別のlibrary）を共有する。`isolated`登録は共有対象にできず、専用実行計画がない場合は失敗する。
+`all`、`proofs`、`proofs-impacted`は、それぞれ一つの`execution_session.py`プロセスがテストを起動し、成功した実行結果を保持する。claim、refinement、known-answerの各stageは、この呼び出し内で実行済みの同じテストを参照できる。別の呼び出し、別job、保存済みJSON、部分receiptから結果を取り込むことはできない。`all`はrunnerの全suiteを共有し、proof専用実行は対象ファイル（Rust Canisterはfeature別のlibrary）を共有する。`bridge-profile`はproof用に登録されたselectorの和集合だけを実行し、通常の全suiteは`all`で実行する。`isolated`登録は共有対象にできず、専用実行計画がない場合は失敗する。
 
 receipt schema 8にはrun ID、HEAD、trusted base（設定時）、tool versions、submodule revisions、環境digest、消費したWasmのdigest、実行command、native reportのdigest、およびstageとtestの対応を保存する。ソース変更、不足・重複・skip・失敗したテスト、異なるWasmを検出すると失敗する。native stdout/stderrは`verification/output/test-execution/<run-id>/`へ保存する。完全なproof receiptは従来どおり全10stageを必要とし、検証時には現在のソース・HEAD・ツール・submodule・Wasmとの一致も要求する。

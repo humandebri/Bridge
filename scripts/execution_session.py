@@ -122,6 +122,7 @@ class Session:
 
     def plan(self, runner: str, target: str) -> tuple[str, list[str], Path]:
         root = self.root
+        filters: list[str] = []
         candidate = root / target
         if target and (not candidate.is_file() or candidate.resolve() != candidate.absolute() or ".." in Path(target).parts):
             raise ValueError("test target must be an ordinary repository file")
@@ -167,9 +168,14 @@ class Session:
             if target != "tools/bridge-profile/src/main.rs":
                 raise ValueError("invalid Rust profile target")
             command = ["cargo", "test", "--locked", "-p", "bridge-profile", "--bin", "bridge-profile"]
+            if self.mode != "all":
+                filters = sorted({selector for _, kind, path, selector in required_consumers()
+                                  if kind == runner and path == target})
+                if not filters:
+                    raise ValueError("profile proof execution has no registered selectors")
         else:
             raise ValueError("unknown test runner")
-        return runner + ":" + target, command + ["--", "--test-threads=1", "--format=pretty"], root
+        return runner + ":" + target, command + ["--", "--test-threads=1", "--format=pretty"] + filters, root
 
     def parse_results(self, runner: str, target: str, output: str) -> list[dict]:
         if runner.startswith("rust"):

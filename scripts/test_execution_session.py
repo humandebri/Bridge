@@ -102,6 +102,15 @@ class ExecutionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 execution.validate_evidence(altered, BASELINE, stages)
 
+    def test_profile_proofs_select_registered_tests_while_all_keeps_the_full_suite(self):
+        target = "tools/bridge-profile/src/main.rs"
+        proof_command = self.session(execution.ROOT).plan("rust-profile", target)[1]
+        all_command = self.session(execution.ROOT, "all").plan("rust-profile", target)[1]
+        for selector in ("production_upgrade_epoch_progress_requires_one_exact_operational_preimage",
+                         "production_upgrade_ttl_migration_requires_exact_v36_preimage"):
+            self.assertIn(selector, proof_command)
+            self.assertNotIn(selector, all_command)
+
     def test_jest_uses_a_fresh_owned_report_despite_child_process_stdout(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
