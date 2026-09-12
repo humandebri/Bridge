@@ -16,15 +16,12 @@ from check_transition_manifest import (
 class TransitionCoverageTests(unittest.TestCase):
     def test_exact_coverage_passes(self) -> None:
         require_exact_coverage({"deposit_transition"}, {"deposit_transition"})
-
-    def test_unregistered_transition_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "missing=.*withdrawal_transition"):
             require_exact_coverage(
                 {"deposit_transition", "withdrawal_transition"},
                 {"deposit_transition"},
             )
 
-    def test_removed_transition_registration_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "extra=.*obsolete_transition"):
             require_exact_coverage(set(), {"obsolete_transition"})
 

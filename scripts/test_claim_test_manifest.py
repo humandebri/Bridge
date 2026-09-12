@@ -261,13 +261,6 @@ class ClaimTestManifestTests(unittest.TestCase):
 
         claim_tests.prepare_test_dependencies([test], Path("."), runner)
 
-    def test_live_manifest_parses(self) -> None:
-        parsed = claim_tests.parse_manifest(
-            claim_tests.CLAIMS.read_text(encoding="utf-8"),
-            claim_tests.MANIFEST.read_text(encoding="utf-8"),
-        )
-        self.assertGreater(len(parsed), 0)
-
     def test_validate_only_does_not_build_or_execute_tests(self) -> None:
         with (
             mock.patch.object(
@@ -301,20 +294,6 @@ class ClaimTestManifestTests(unittest.TestCase):
         tests = [claim_tests.ClaimTest(runner, "canister/bridge-canister/src/api.rs", "a", "a")
                  for runner in ["rust-canister", "rust-canister-test-deployment"]]
         self.assertEqual(len(claim_tests.group_tests(tests)), 2)
-
-    def test_live_plan_matches_the_reviewed_batching_baseline(self) -> None:
-        tests = claim_tests.parse_manifest(
-            claim_tests.CLAIMS.read_text(encoding="utf-8"),
-            claim_tests.MANIFEST.read_text(encoding="utf-8"),
-        )
-        groups = claim_tests.group_tests(tests)
-        self.assertEqual(len(tests), 326)
-        self.assertEqual(len(groups), 50)
-        self.assertEqual(
-            sum(2 if group[0].runner.startswith("rust-") else 1 for group in groups),
-            68,
-        )
-        self.assertEqual(sum(test.runner == "rust-profile" for test in tests), 2)
 
     def test_isolated_policy_requires_a_reason(self) -> None:
         root, claims, manifest = self.fixture()

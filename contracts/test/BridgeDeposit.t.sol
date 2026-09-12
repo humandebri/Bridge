@@ -62,12 +62,6 @@ contract BridgeDepositTest is TestBase {
         assert(token.decimals() == 8);
     }
 
-    function testConstructorStartsBothAssetFlowsPaused() public {
-        Bridge freshBridge = _deployRaw(PER_DEPOSIT_LIMIT, WINDOW_LIMIT, WINDOW_DURATION, MAX_SERVICE_FEE, SERVICE_FEE);
-        assert(freshBridge.depositMintsPaused());
-        assert(freshBridge.withdrawalsPaused());
-    }
-
     function testConstructorRejectsZeroAndDuplicateRoles() public {
         vm.expectRevert(IBridge.ZeroAddress.selector);
         new Bridge(

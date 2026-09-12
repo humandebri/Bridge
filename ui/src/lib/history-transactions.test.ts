@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react"
 import { createElement } from "react"
 import { deploymentProfile } from "@/config/profile"
+import { kinicTransactionExplorerUrl } from "@/lib/ic/transaction-explorer"
 import type { DepositView, WithdrawalView } from "@/generated/bridge.did"
 import {
   depositKinicTransactions,
@@ -17,6 +18,10 @@ afterEach(() => {
 })
 
 describe("History KINIC transactions", () => {
+  it("does not link invalid principals or negative block indexes", () => {
+    expect(kinicTransactionExplorerUrl("not-a-principal", 1n)).toBeUndefined()
+    expect(kinicTransactionExplorerUrl("7jkta-eyaaa-aaaaq-aaarq-cai", -1n)).toBeUndefined()
+  })
   it("shows both the funding and completed refund blocks in order", () => {
     const record = {
       funding_ledger_block_index: [41n],

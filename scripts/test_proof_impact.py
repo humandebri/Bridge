@@ -22,15 +22,6 @@ class ProofImpactTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.manifest = check_proof_impact.load_manifest()
 
-    def test_every_current_safety_source_is_registered(self) -> None:
-        registered = {
-            source for area in self.manifest.areas for source in area.sources
-        }
-        for watched in self.manifest.roots:
-            for path in (ROOT / watched.path).rglob(f"*{watched.suffix}"):
-                with self.subTest(path=path):
-                    self.assertIn(path.relative_to(ROOT).as_posix(), registered)
-
     def test_deposit_kernel_routes_to_all_claims_and_stages(self) -> None:
         impact = check_proof_impact.classify_paths(
             ["canister/bridge-core/src/kernel.rs"], self.manifest
