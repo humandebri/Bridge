@@ -138,7 +138,8 @@ class Session:
                     command.append(scope.removeprefix("ui/"))
                 return runner + ":" + scope, command, root / "ui"
             if runner == "jest":
-                command = [str(root / "node_modules/.bin/jest"), "--config", "integration/jest.config.js", "--runInBand", "--json"]
+                report_path = self.temporary / ("jest-" + hashlib.sha256(scope.encode()).hexdigest() + ".json")
+                command = [str(root / "node_modules/.bin/jest"), "--config", "integration/jest.config.js", "--runInBand", "--json", "--outputFile", str(report_path)]
                 if scope:
                     command += ["--runTestsByPath", scope]
                 return runner + ":" + scope, command, root
@@ -178,7 +179,8 @@ class Session:
             if totals != [str(len(records))]:
                 raise ValueError("Rust test result count differs from the runner total")
         else:
-            report = json.loads(output)
+            from check_claim_test_manifest import unique_json_object
+            report = json.loads(output, object_pairs_hook=unique_json_object)
             records = []
             if runner in {"vitest", "jest"}:
                 if report.get("success") is not True or report.get("numFailedTests") != 0:
@@ -217,6 +219,10 @@ class Session:
                 self.check_artifacts()
             if key not in self.results:
                 print(f"test execution started: {key}", file=sys.stderr, flush=True)
+                report_path = Path(command[command.index("--outputFile") + 1]) if runner == "jest" else None
+                if report_path is not None and report_path.exists():
+                    self.failed = True
+                    raise ValueError("test report already exists before its owner executes the runner")
                 started = time.monotonic()
                 process = subprocess.Popen(command, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
                 self.current_process = process
@@ -230,7 +236,13 @@ class Session:
                     self.check_inputs()
                     if process.returncode:
                         raise ValueError(f"test execution failed ({process.returncode}): {key}\n{stdout}\n{stderr}")
-                    records = self.parse_results(runner, target, stdout)
+                    report_output = stdout
+                    if report_path is not None:
+                        if not report_path.is_file() or report_path.is_symlink():
+                            raise ValueError("runner did not create its owned report file")
+                        report_output = report_path.read_text()
+                        (report_dir / (report_name + ".json")).write_text(report_output)
+                    records = self.parse_results(runner, target, report_output)
                     if runner == "jest":
                         self.check_artifacts()
                 except BaseException:
@@ -246,7 +258,7 @@ class Session:
                 self.current_process = None
                 self.results[key] = {"command": command, "cwd": str(cwd), "results": records,
                                      "elapsed_seconds": time.monotonic() - started,
-                                     "report_sha256": hashlib.sha256(stdout.encode()).hexdigest()}
+                                     "report_sha256": hashlib.sha256(report_output.encode()).hexdigest()}
                 print(f"test execution passed: {key}", file=sys.stderr, flush=True)
             result = self.results[key]
             try:

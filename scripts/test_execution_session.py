@@ -102,6 +102,30 @@ class ExecutionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 execution.validate_evidence(altered, BASELINE, stages)
 
+    def test_jest_uses_a_fresh_owned_report_despite_child_process_stdout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = "integration/example.spec.ts"
+            (root / target).parent.mkdir()
+            (root / target).write_text("fixture")
+            session = self.session(root)
+            _, command, _ = session.plan("jest", target)
+            report_path = Path(command[command.index("--outputFile") + 1])
+            report = {"success": True, "numFailedTests": 0, "numTotalTests": 1,
+                      "testResults": [{"name": str(root / target), "assertionResults": [
+                          {"title": "first", "fullName": "suite first", "ancestorTitles": ["suite"], "status": "passed"}]}]}
+            process = Mock(returncode=0)
+            def finish(**_kwargs):
+                report_path.write_text(json.dumps(report))
+                return "PocketIC child process output\n", ""
+            process.communicate.side_effect = finish
+            with patch.object(execution, "source_fingerprint", return_value=BASELINE), patch.object(execution.Session, "check_artifacts"), patch.object(execution.subprocess, "Popen", return_value=process) as launch:
+                session.execute("jest", target, ["first"])
+                session.execute("jest", target, ["first"])
+                with self.assertRaisesRegex(ValueError, "already exists"):
+                    self.session(root).execute("jest", target, ["first"])
+                self.assertEqual(launch.call_count, 1)
+
     def test_current_checkout_and_active_owner_must_match_receipt(self):
         evidence = fixture_evidence(BASELINE)
         evidence["artifacts"] = {}
@@ -127,7 +151,7 @@ class ExecutionTests(unittest.TestCase):
 
     def test_malformed_or_incomplete_runner_output_is_rejected(self):
         session = self.session(Path("/tmp"))
-        for runner, output in [("rust-core", "running 2 tests\ntest first ... ok\n"), ("rust-core", "running 1 test\ntest first ... ignored\n"), ("vitest", ""), ("vitest", json.dumps({"success": False})), ("foundry", "{}")]:
+        for runner, output in [("rust-core", "running 2 tests\ntest first ... ok\n"), ("rust-core", "running 1 test\ntest first ... ignored\n"), ("vitest", ""), ("vitest", json.dumps({"success": False})), ("foundry", "{}"), ("foundry", '{"duplicate":1,"duplicate":2}')]:
             with self.assertRaises(ValueError):
                 session.parse_results(runner, "target", output)
 
