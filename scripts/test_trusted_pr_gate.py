@@ -344,6 +344,29 @@ class TrustedPrGateTests(unittest.TestCase):
             workflow,
         )
 
+    def test_claim_transactions_prefetch_pocketic_before_isolation(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        start = workflow.index("Prefetch PocketIC runtime for Rust integration checks")
+        end = workflow.index("Prefetch PocketIC runtime for real E2E checks", start)
+        step = workflow[start:end]
+        condition = re.search(r"if: (.+)", step).group(1).replace("matrix.area", '\"$AREA\"')
+        commands = "\n".join(line.strip() for line in step.splitlines() if line.strip().startswith("node "))
+        for area in ("policy", "proofs-impacted", "rust-fast", "rust-integration", "ui-fast", "ui-e2e", "real", "icp", "certora", "contracts-fast"):
+            with self.subTest(area=area):
+                result = subprocess.run(
+                    ["bash", "-eu", "-c",
+                     'node() { printf "%s\\n" "$1"; }; if [[ ' + condition + ' ]]; then ' + commands + '; fi'],
+                    env={**os.environ, "AREA": area, "BRIDGE_TRUSTED_DEPENDENCY_ROOT": "/dependencies"},
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), [
+                    "/dependencies/node_modules/@dfinity/pic/postinstall.mjs",
+                    "/dependencies/ui/node_modules/@dfinity/pic/postinstall.mjs",
+                ] if area in {"rust-integration", "proofs-impacted"} else [])
+        self.assertLess(workflow.index("Isolate reviewed candidate dependency inputs"), start)
+        self.assertLess(end, workflow.index("Run selected trusted check"))
+
     def test_real_prefetch_uses_only_ui_dependency_tree(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         rust_start = workflow.index("Prefetch PocketIC runtime for Rust integration checks")
