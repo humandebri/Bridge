@@ -17,7 +17,6 @@ export const recoveryPageSchema = z
     cursor: z.string().max(3500).nullable(),
   })
   .strict()
-export type RecoveryPage = z.infer<typeof recoveryPageSchema>
 
 const diagnostics: { at: number; event: string; candidates: number }[] = []
 export function recordMintRecoveryDiagnostic(

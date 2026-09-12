@@ -64,3 +64,9 @@ proof成功後は、同じclean revisionからBridge Canister WasmとBridge cont
 このgateはローカルの固定sourceとtoolchainを信頼境界とする再現性検査であり、第三者CI provenance、compiler correctness、sourceとbinaryのsemantic equivalenceは主張しない。
 
 `verification/output/proof-receipt.json`はproof gateの生成成果物であり、git追跡しない。receiptのsource fingerprintは実行開始時のworking treeを固定するため、追跡されたソースに一致させる方式ではなく、release gate内で同一fingerprintのまま全stageが`pass`し`complete: true`になることを`ci-local.sh proofs`自身が強制する。receiptはgitignoreされているため、コミット内容とreceiptのfingerprintの一致は期待しない。gate bundleへは`proof-attestation.json`を含めず、receipt自体もGate bundleへ同梱しない。fingerprint不一致や未完了stage、非pass stageを含むreceiptはfail closedで再実行を要求する。
+
+## 同一gate内のテスト実行結果
+
+`all`、`proofs`、`proofs-impacted`は、それぞれ一つの`execution_session.py`プロセスがテストを起動し、成功した実行結果を保持する。claim、refinement、known-answerの各stageは、この呼び出し内で実行済みの同じテストを参照できる。別の呼び出し、別job、保存済みJSON、部分receiptから結果を取り込むことはできない。`all`はrunnerの全suiteを共有し、proof専用実行は対象ファイル（Rust Canisterはfeature別のlibrary）を共有する。`isolated`登録は共有対象にできず、専用実行計画がない場合は失敗する。
+
+receipt schema 8にはrun ID、HEAD、trusted base（設定時）、tool versions、submodule revisions、環境digest、消費したWasmのdigest、実行command、native reportのdigest、およびstageとtestの対応を保存する。ソース変更、不足・重複・skip・失敗したテスト、異なるWasmを検出すると失敗する。native stdout/stderrは`verification/output/test-execution/<run-id>/`へ保存する。完全なproof receiptは従来どおり全10stageを必要とし、検証時には現在のソース・HEAD・ツール・submodule・Wasmとの一致も要求する。

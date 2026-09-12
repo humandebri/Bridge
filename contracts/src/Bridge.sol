@@ -475,7 +475,11 @@ contract Bridge is IBridge, EIP712 {
         }
     }
 
-    function _mintAuthorizationDigest(IBridge.MintAuthorization calldata authorization) private view returns (bytes32) {
+    function _mintAuthorizationDigest(IBridge.MintAuthorization calldata authorization)
+        internal
+        view
+        returns (bytes32)
+    {
         return _hashTypedDataV4(
             keccak256(
                 abi.encode(

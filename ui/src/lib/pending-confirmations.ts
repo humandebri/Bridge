@@ -208,19 +208,7 @@ export async function savePendingConfirmation(value: PendingConfirmationInput): 
       notification: initialNotificationAttemptState(),
       ...activeDeployment(),
     }
-    return upsertPendingConfirmation(next, entry, false)
-  })
-}
-
-export async function restorePendingConfirmation(value: PendingConfirmationInput): Promise<void> {
-  await update((next) => {
-    const entry: PendingConfirmation = {
-      ...value,
-      blocked: value.blocked ?? false,
-      notification: initialNotificationAttemptState(),
-      ...activeDeployment(),
-    }
-    return upsertPendingConfirmation(next, entry, true)
+    return upsertPendingConfirmation(next, entry)
   })
 }
 
@@ -228,22 +216,12 @@ export async function ensurePendingWithdrawalConfirmation(
   value: PendingConfirmationInput,
 ): Promise<void> {
   await update((next) => {
-    const key = pendingConfirmationKey(value)
-    const existing = next.find((item) => pendingConfirmationKey(item) === key)
-    if (existing) {
-      if (existing.owner !== value.owner)
-        throw new Error("Pending withdrawal destination owner conflict")
-      return next
-    }
-    return [
-      ...next,
-      {
-        ...value,
-        blocked: value.blocked ?? false,
-        notification: initialNotificationAttemptState(),
-        ...activeDeployment(),
-      },
-    ]
+    return ensurePendingConfirmation(next, {
+      ...value,
+      blocked: value.blocked ?? false,
+      notification: initialNotificationAttemptState(),
+      ...activeDeployment(),
+    })
   })
 }
 
@@ -252,16 +230,6 @@ export async function removePendingConfirmation(
 ): Promise<void> {
   const key = pendingConfirmationKey(value)
   await update((next) => next.filter((item) => pendingConfirmationKey(item) !== key))
-}
-
-export async function setPendingConfirmationBlocked(
-  value: PendingConfirmation | PendingConfirmationInput,
-  blocked: boolean,
-): Promise<void> {
-  const key = pendingConfirmationKey(value)
-  await update((next) =>
-    next.map((item) => (pendingConfirmationKey(item) === key ? { ...item, blocked } : item)),
-  )
 }
 
 export async function markPendingConfirmationNotificationAttempt(
@@ -420,10 +388,9 @@ function isPendingNotificationFailure(value: unknown): value is PendingNotificat
   )
 }
 
-export function upsertPendingConfirmation(
+function upsertPendingConfirmation(
   values: PendingConfirmation[],
   entry: PendingConfirmation,
-  preserveExistingBlocked: boolean,
 ): PendingConfirmation[] {
   const next = [...values]
   const key = pendingConfirmationKey(entry)
@@ -433,9 +400,22 @@ export function upsertPendingConfirmation(
     const existing = next[index]!
     next[index] = {
       ...entry,
-      blocked: preserveExistingBlocked ? existing.blocked : entry.blocked,
       notification: existing.notification,
     }
   }
   return next
+}
+
+export function ensurePendingConfirmation(
+  values: PendingConfirmation[],
+  entry: PendingConfirmation,
+): PendingConfirmation[] {
+  const key = pendingConfirmationKey(entry)
+  const existing = values.find((item) => pendingConfirmationKey(item) === key)
+  if (existing) {
+    if (existing.owner !== entry.owner)
+      throw new Error("Pending withdrawal destination owner conflict")
+    return values
+  }
+  return [...values, entry]
 }

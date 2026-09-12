@@ -17,7 +17,14 @@ if [[ "${BRIDGE_CI_LOCAL_NODE_REEXEC:-0}" != 1 ]]; then
   fi
 fi
 
-export PATH="$ROOT/.tools/bin:$PATH"
+if [[ ":$PATH:" != *":$ROOT/.tools/bin:"* ]]; then
+  export PATH="$ROOT/.tools/bin:$PATH"
+fi
+if [[ -z "${BRIDGE_TEST_SESSION:-}" && ( "$MODE" == all || "$MODE" == checks || "$MODE" == proofs || "$MODE" == proofs-impacted ) ]]; then
+  SESSION_MODE="$MODE"
+  if [[ "$MODE" == checks ]]; then SESSION_MODE=all; fi
+  exec python3 "$ROOT/scripts/execution_session.py" start "$SESSION_MODE" -- "$ROOT/scripts/ci-local.sh" "$@"
+fi
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bridge-phase0.XXXXXX")"
 ANVIL_PID=""
 ICP_NETWORK_OWNED=0
@@ -31,7 +38,6 @@ ICP_SMOKE_STATE_PREPARED=0
 CLEANUP_DONE=0
 UI_DEPENDENCIES_READY=0
 
-# shellcheck source=ci_guards.sh
 # shellcheck source=ci_guards.sh
 source "$ROOT/scripts/ci_guards.sh"
 
@@ -367,7 +373,12 @@ run_rust_fast() {
   cargo clippy --locked --manifest-path "$ROOT/Cargo.toml" --workspace --all-targets -- -D warnings
   cargo clippy --locked --manifest-path "$ROOT/Cargo.toml" -p bridge-canister --all-targets \
     --features test-deployment -- -D warnings
-  cargo test --locked --manifest-path "$ROOT/Cargo.toml" --workspace
+  if [[ -n "${BRIDGE_TEST_SESSION:-}" ]]; then
+    python3 "$ROOT/scripts/execution_session.py" suite rust
+    cargo test --locked --manifest-path "$ROOT/Cargo.toml" --workspace --doc
+  else
+    cargo test --locked --manifest-path "$ROOT/Cargo.toml" --workspace
+  fi
 }
 
 run_rust_integration() {
@@ -387,7 +398,13 @@ run_rust_integration() {
   pnpm --dir "$ROOT" run governance-relayer:test
   pnpm --dir "$ROOT" run governance-relayer:typecheck
   pnpm --dir "$ROOT" run integration:typecheck
-  pnpm --dir "$ROOT" run test:e2e
+  if [[ -n "${BRIDGE_TEST_SESSION:-}" ]]; then
+    "$ROOT/scripts/plan007/build-staging-canister-wasm.sh"
+    "$ROOT/scripts/plan007/build-schema35-predecessor-wasm.sh"
+    python3 "$ROOT/scripts/execution_session.py" suite jest
+  else
+    pnpm --dir "$ROOT" run test:e2e
+  fi
   python3 "$ROOT/scripts/test_prepare_local_network.py"
   bash "$ROOT/scripts/test_ci_local_safety.sh"
   node "$ROOT/scripts/plan007/test-generate-local-e2e.mjs"
@@ -402,7 +419,11 @@ run_contracts_fast() {
   forge fmt --root "$CONTRACTS" --check
   forge build --root "$CONTRACTS" --sizes --ignored-error-codes 2394 --ignored-error-codes 3860 --ignored-error-codes 6335
   python3 "$ROOT/scripts/abi_snapshot.py" --check
-  forge test --root "$CONTRACTS"
+  if [[ -n "${BRIDGE_TEST_SESSION:-}" ]]; then
+    python3 "$ROOT/scripts/execution_session.py" suite foundry
+  else
+    forge test --root "$CONTRACTS"
+  fi
 }
 
 run_contracts_coverage() {
@@ -795,7 +816,7 @@ run_proof_stage() {
   fi
   printf '%s\t%s\t' "$stage" "$stage_status" >>"$PROOF_STAGE_RECEIPT"
   tr -d '\n' <"$PROOF_SOURCE_BASELINE" >>"$PROOF_STAGE_RECEIPT"
-  printf '\n' >>"$PROOF_STAGE_RECEIPT"
+  printf '\t%s\n' "$PROOF_RUN_ID" >>"$PROOF_STAGE_RECEIPT"
   if ! python3 "$PROOF_RECEIPT_WRITER" \
     "$PROOF_STAGE_RECEIPT" "$PROOF_RECEIPT" "$PROOF_SOURCE_BASELINE"; then
     echo "proof receipt write failed after stage: $stage" >&2
@@ -816,8 +837,10 @@ run_proofs() {
   PROOF_SOURCE_BASELINE="$TMP_ROOT/proof-source-fingerprint.json"
   PROOF_RECEIPT="${PROOF_RECEIPT:-$ROOT/verification/output/proof-receipt.json}"
   : >"$PROOF_STAGE_RECEIPT"
+  PROOF_RUN_ID="$(python3 "$ROOT/scripts/execution_session.py" snapshot | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')"
   python3 "$PROOF_FINGERPRINT" --write "$PROOF_SOURCE_BASELINE" >/dev/null
   python3 "$CLAIM_CHECK" >/dev/null
+  python3 "$ROOT/scripts/test_execution_session.py"
   python3 "$ROOT/scripts/test_write_proof_receipt.py"
   python3 "$CLAIM_TEST_TEST"
   python3 "$ROOT/scripts/test_check_claim_manifest.py"
@@ -876,7 +899,11 @@ run_ui_fast() {
   pnpm --dir "$ROOT/ui" run format:check
   pnpm --dir "$ROOT/ui" run typecheck
   pnpm --dir "$ROOT/ui" run lint
-  pnpm --dir "$ROOT/ui" run test
+  if [[ -n "${BRIDGE_TEST_SESSION:-}" ]]; then
+    python3 "$ROOT/scripts/execution_session.py" suite vitest
+  else
+    pnpm --dir "$ROOT/ui" run test
+  fi
   pnpm --dir "$ROOT/ui" run build
 }
 

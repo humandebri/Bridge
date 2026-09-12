@@ -15,6 +15,7 @@ import {
   removePendingMint,
   savePendingMint,
 } from "@/lib/pending-confirmations"
+import { fetchInBatches } from "@/lib/withdrawal-history"
 import { exactMintReceiptFinalization } from "@/lib/deposit-mint-finalization"
 
 import {
@@ -73,6 +74,18 @@ export function readMintRecoveryTargets(): RecoveryTarget[] {
   return [...values.values()]
 }
 
+function readMintRecoveryTarget(depositId: string, digest: string): RecoveryTarget | undefined {
+  const key = keyOf(depositId, digest)
+  const cached = session.get(key)
+  if (cached) return cached
+  try {
+    const value = targetSchema.parse(JSON.parse(browserLocalStorage().getItem(key)!))
+    return key === keyOf(value.depositId, value.digest) ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function persist(target: RecoveryTarget): boolean {
   const key = keyOf(target.depositId, target.digest)
   session.set(key, target)
@@ -87,13 +100,7 @@ function persist(target: RecoveryTarget): boolean {
 
 export function wasMintRequested(record: DepositView): boolean {
   const a = record.mint_authorization[0]
-  return (
-    !!a &&
-    readMintRecoveryTargets().some(
-      (t) =>
-        t.depositId === hex(record.deposit_id) && t.digest === hex(a.digest) && t.walletRequested,
-    )
-  )
+  return !!a && !!readMintRecoveryTarget(hex(record.deposit_id), hex(a.digest))?.walletRequested
 }
 
 export async function rememberMintRecovery(
@@ -106,9 +113,7 @@ export async function rememberMintRecovery(
   const depositId = hex(record.deposit_id),
     digest = hex(a.digest)
   return withBrowserLock(`kinic-mint-recovery:${keyOf(depositId, digest)}`, () => {
-    const old = readMintRecoveryTargets().find(
-      (t) => t.depositId === depositId && t.digest === digest,
-    )
+    const old = readMintRecoveryTarget(depositId, digest)
     return persist({
       ...old,
       depositId,
@@ -142,10 +147,19 @@ export async function discoverMintRecovery(
     limit: 20,
   })
   if ("Err" in page) throw new Error("Deposit recovery history is unavailable")
-  for (const id of page.Ok.deposit_ids) {
-    const record = (await actor.get_deposit(id))[0]
+  const results = await fetchInBatches(page.Ok.deposit_ids, 20, (ids) =>
+    Promise.allSettled(ids.map((id) => actor.get_deposit(id))),
+  )
+  const failures: unknown[] = []
+  for (const result of results) {
+    if (result.status === "rejected") {
+      failures.push(result.reason)
+      continue
+    }
+    const record = result.value[0]
     if (record && isRecoverableMint(record)) await rememberMintRecovery(record, owner)
   }
+  if (failures.length) throw new AggregateError(failures, "Deposit recovery history is incomplete")
   return page.Ok.next_cursor[0]
 }
 
@@ -156,9 +170,7 @@ export async function recoverMint(
   return withBrowserLock(
     `kinic-mint-recovery:${keyOf(target.depositId, target.digest)}`,
     async () => {
-      const current = readMintRecoveryTargets().find(
-        (t) => t.depositId === target.depositId && t.digest === target.digest,
-      )
+      const current = readMintRecoveryTarget(target.depositId, target.digest)
       if (!current) return { status: "unsubmitted", finalized: false, recorded: false }
       const actor = await createBridgeActor(
         deploymentProfile.icHost,
@@ -402,19 +414,17 @@ export async function runMintRecoveryCycle(
           // A history outage must not prevent tracking already saved transactions.
         }
       }
-      const pending = readAllPendingMints().filter(
-        (p) => !cycle.finalizedReverts.includes(p.transactionHash),
-      )
+      const allPending = readAllPendingMints()
+      const pending = allPending.filter((p) => !cycle.finalizedReverts.includes(p.transactionHash))
       const revertedIds = new Set(
-        readAllPendingMints()
+        allPending
           .filter((p) => cycle.finalizedReverts.includes(p.transactionHash))
           .map((p) => p.depositId),
       )
       const targets = readMintRecoveryTargets().filter((t) => !revertedIds.has(t.depositId as Hex))
+      const pendingIds = new Set(pending.map((p) => p.depositId))
       const searchable = targets
-        .filter(
-          (target) => !target.conflict && !pending.some((p) => p.depositId === target.depositId),
-        )
+        .filter((target) => !target.conflict && !pendingIds.has(target.depositId as Hex))
         .sort((a, b) => a.depositId.localeCompare(b.depositId))
       const hasCapacity = (target: RecoveryTarget) =>
         !target.search || target.search.hashes.length + target.search.deferred.length <= 9_900
@@ -437,9 +447,7 @@ export async function runMintRecoveryCycle(
           await recoverMint(scan, "search")
         } catch {
           searchFailure = scan.depositId
-          const failed = readMintRecoveryTargets().find(
-            (target) => target.depositId === scan.depositId && target.digest === scan.digest,
-          )
+          const failed = readMintRecoveryTarget(scan.depositId, scan.digest)
           if (failed) {
             persist({
               ...failed,

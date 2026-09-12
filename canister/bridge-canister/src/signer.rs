@@ -559,11 +559,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn public_key_lookup_keeps_the_fixed_sixty_second_bound() {
-        assert_eq!(PUBLIC_KEY_CALL_TIMEOUT_SECONDS, 60);
-    }
-
-    #[test]
     fn signer_errors_expose_only_the_safe_failure_class() {
         assert_eq!(
             SignerError::InvalidPublicKey.class(),

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import execution_session
 import json
 import re
 import subprocess
@@ -38,6 +39,10 @@ def main() -> int:
             raise RuntimeError(f"invalid known-answer target: {target}")
         if selector not in (ROOT / target).read_text(encoding="utf-8"):
             raise RuntimeError(f"known-answer selector is not present in target: {selector}")
+        if execution_session.active():
+            execution_session.execute("rust-canister" if runner == "rust" else runner, target, [selector])
+            print(f"known-answer consumer passed: {runner} {selector}")
+            continue
         if runner == "rust":
             output = run(["cargo", "test", "--locked", "-p", "bridge-canister", selector])
             if len(re.findall(r"^test .*::" + re.escape(selector) + r" \.\.\. ok$", output, re.MULTILINE)) != 1:

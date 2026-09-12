@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from execution_session import collect_evidence
+
 import json
 import sys
 from pathlib import Path
@@ -64,10 +66,11 @@ def main() -> int:
     stages_path, receipt_path, baseline_path = map(Path, sys.argv[1:])
     baseline = load_fingerprint(baseline_path)
     stages: dict[str, tuple[str, dict[str, object]]] = {}
+    run_ids: set[str] = set()
     if stages_path.exists():
         for line in stages_path.read_text(encoding="utf-8").splitlines():
             try:
-                stage, status, raw_fingerprint = line.split("\t")
+                stage, status, raw_fingerprint, run_id = line.split("\t")
                 stage_fingerprint = json.loads(raw_fingerprint)
             except (ValueError, json.JSONDecodeError) as error:
                 raise ValueError(f"invalid proof receipt stage: {line}") from error
@@ -75,6 +78,7 @@ def main() -> int:
                 raise ValueError(f"invalid proof receipt stage: {line}")
             if stage_fingerprint != baseline:
                 raise ValueError(f"proof stage fingerprint differs from baseline: {stage}")
+            run_ids.add(run_id)
             stages[stage] = (status, stage_fingerprint)
     claim_error: str | None = None
     try:
@@ -85,8 +89,17 @@ def main() -> int:
         fingerprint = baseline
         claim_error = str(error)
     claim_summary = summarize_claim_report(claims, conditional_liveness)
+    execution_error: str | None = None
+    execution: dict[str, object] = {}
+    try:
+        execution = collect_evidence(baseline, [stage for stage, (status, _) in stages.items() if status == "pass"])
+        if run_ids != {execution["run_id"]}:
+            raise ValueError("proof stages belong to a different execution run")
+    except ValueError as error:
+        execution_error = str(error)
     complete = (
-        claim_error is None
+        execution_error is None
+        and claim_error is None
         and tuple(stages) == REQUIRED
         and all(status == "pass" for status, _ in stages.values())
         and bool(claims)
@@ -112,6 +125,8 @@ def main() -> int:
                 "conditional_liveness": conditional_liveness,
                 "claim_summary": claim_summary,
                 "complete": complete,
+                "execution": execution,
+                **({"execution_error": execution_error} if execution_error is not None else {}),
                 **({"claim_report_error": claim_error} if claim_error is not None else {}),
             },
             indent=2,
@@ -119,7 +134,7 @@ def main() -> int:
         + "\n",
         encoding="utf-8",
     )
-    return 0 if claim_error is None else 1
+    return 0 if claim_error is None and execution_error is None else 1
 
 
 if __name__ == "__main__":

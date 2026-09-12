@@ -139,6 +139,53 @@ afterEach(() => {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe("mint recovery", () => {
+  it("reads_history_in_bounded_parallel_batches_and_does_not_advance_on_partial_failure", async () => {
+    mocks.list.mockResolvedValue({
+      Ok: { deposit_ids: Array.from({ length: 21 }, () => record.deposit_id), next_cursor: [99n] },
+    })
+    const releases: Array<() => void> = []
+    let active = 0
+    let maximum = 0
+    mocks.get.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          active += 1
+          maximum = Math.max(maximum, active)
+          releases.push(() => {
+            active -= 1
+            resolve([record])
+          })
+        }),
+    )
+    const discovery = recovery.discoverMintRecovery("aaaaa-aa")
+    await flush()
+    expect(mocks.get).toHaveBeenCalledTimes(20)
+    releases.splice(0).forEach((release) => release())
+    await flush()
+    expect(mocks.get).toHaveBeenCalledTimes(21)
+    releases.splice(0).forEach((release) => release())
+    expect(await discovery).toBe(99n)
+    expect(maximum).toBe(20)
+
+    window.localStorage.clear()
+    mocks.get
+      .mockReset()
+      .mockResolvedValue([record])
+      .mockRejectedValueOnce(new Error("one query failed"))
+    await expect(recovery.discoverMintRecovery("aaaaa-aa")).rejects.toThrow("history is incomplete")
+    expect(recovery.readMintRecoveryTargets()).toHaveLength(1)
+  })
+
+  it("looks_up_one_saved_target_without_scanning_unrelated_storage", async () => {
+    await recovery.rememberMintRecovery(record, "aaaaa-aa", true)
+    const keys = vi.spyOn(Storage.prototype, "key")
+    expect(recovery.wasMintRequested(record)).toBe(true)
+    await recovery.rememberMintRecovery(record, "aaaaa-aa")
+    expect(recovery.wasMintRequested(record)).toBe(true)
+    expect(keys).not.toHaveBeenCalled()
+    keys.mockRestore()
+  })
+
   it("recovery_search_backoff_does_not_starve_other_deposits", async () => {
     vi.useFakeTimers()
     const other = { ...record, deposit_id: new Uint8Array(32).fill(0x12) }

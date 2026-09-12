@@ -40,6 +40,7 @@ FINGERPRINT_CONFIG_FILES = (
     "ui/tsconfig.node.json",
     "ui/vite.config.ts",
     "ui/vitest.config.ts",
+    "integration/jest.config.js",
 )
 FINGERPRINT_EXCLUDED_VERIFICATION_DIRS = (
     ("output",),

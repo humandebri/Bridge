@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Regression tests for logic-to-proof impact enforcement."""
 
+from test_execution_session import fixture_evidence
+
 import json
 import subprocess
 import sys
@@ -177,6 +179,7 @@ class ProofImpactTests(unittest.TestCase):
         )
         return {
             "schema": check_proof_impact.RECEIPT_SCHEMA,
+            "execution": fixture_evidence(current),
             "required_stages": list(check_proof_impact.REQUIRED_STAGES),
             "stages": [
                 {
@@ -203,7 +206,8 @@ class ProofImpactTests(unittest.TestCase):
                 "source_fingerprint",
                 return_value=receipt["source_fingerprint"],
             ):
-                check_proof_impact.check_receipt(path)
+                with patch("execution_session.verify_current_evidence"):
+                    check_proof_impact.check_receipt(path)
 
     def test_receipt_accepts_complete_recomputed_contents(self) -> None:
         self.check_receipt(self.valid_receipt())
@@ -269,13 +273,15 @@ class ProofImpactTests(unittest.TestCase):
             "input_count": 1,
         }
         receipt["source_fingerprint"] = stale
+        receipt["execution"]["source_fingerprint"] = stale
         for stage in receipt["stages"]:
             stage["source_fingerprint"] = stale
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "receipt.json"
             path.write_text(json.dumps(receipt), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "stale"):
-                check_proof_impact.check_receipt(path)
+                with patch("execution_session.verify_current_evidence"):
+                    check_proof_impact.check_receipt(path)
 
     def test_fingerprint_baseline_write_check_and_drift(self) -> None:
         current = {

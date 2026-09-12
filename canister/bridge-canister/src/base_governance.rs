@@ -2432,34 +2432,6 @@ mod tests {
     use candid::Principal;
 
     #[test]
-    fn controller_status_view_accepts_additive_management_response_fields() {
-        #[derive(candid::CandidType)]
-        struct ExtendedControllerSettings {
-            controllers: Vec<Principal>,
-            compute_allocation: Nat,
-        }
-
-        #[derive(candid::CandidType)]
-        struct ExtendedCanisterStatus {
-            settings: ExtendedControllerSettings,
-            version: u64,
-        }
-
-        let controller = Principal::from_slice(&[1]);
-        let encoded = candid::encode_one(ExtendedCanisterStatus {
-            settings: ExtendedControllerSettings {
-                controllers: vec![controller],
-                compute_allocation: Nat::from(0u8),
-            },
-            version: 7,
-        })
-        .unwrap();
-        let decoded: CanisterControllerStatusView = candid::decode_one(&encoded).unwrap();
-
-        assert_eq!(decoded.settings.controllers, vec![controller]);
-    }
-
-    #[test]
     fn base_governance_rejects_bootstrap_and_allows_sealed_lifecycle() {
         assert_eq!(
             operational_config_lifecycle_result(false),

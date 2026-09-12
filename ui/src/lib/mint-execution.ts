@@ -36,7 +36,6 @@ export interface MintExecutionRequest<T> {
 interface Entry {
   state: MintExecutionState
   promise?: Promise<void>
-  controller?: AbortController
 }
 interface Diagnostic {
   attemptId: string
@@ -101,10 +100,6 @@ export function releaseFinalizedMintAttempt(key: string): void {
   entries.delete(key)
   automaticAttempts.delete(key)
   emit()
-}
-
-export function cancelMintPreflight(key: string): void {
-  entries.get(key)?.controller?.abort(new Error("Preflight cancelled. No wallet request was sent."))
 }
 
 /** Restore only before starting; snapshots must stay referentially stable for React. */
@@ -224,7 +219,6 @@ export function startMintExecution<T>(request: MintExecutionRequest<T>): Promise
               }
               const controller = new AbortController()
               const expiresAt = performance.now() + 30_000
-              entry.controller = controller
               const check = () => {
                 if (performance.now() >= expiresAt)
                   controller.abort(
@@ -276,7 +270,6 @@ export function startMintExecution<T>(request: MintExecutionRequest<T>): Promise
               } finally {
                 clearTimeout(timer)
                 controller.signal.removeEventListener("abort", abortListener)
-                entry.controller = undefined
               }
               update({ phase: "wallet" })
               try {
