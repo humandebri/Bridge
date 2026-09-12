@@ -102,6 +102,25 @@ class ExecutionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 execution.validate_evidence(altered, BASELINE, stages)
 
+    def test_workspace_inventory_distinguishes_library_and_declared_binary_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            library = "canister/mock-external/src/lib.rs"
+            binary = "canister/mock-external/src/bin/export-candid.rs"
+            for target in (library, binary):
+                (root / target).parent.mkdir(parents=True, exist_ok=True)
+                (root / target).write_text("fixture")
+            session = self.session(root, "all")
+            session.metadata = {"workspace_members": ["mock-id"], "packages": [
+                {"id": "mock-id", "name": "mock-external", "targets": [
+                    {"name": "mock_external", "src_path": str(root / library), "kind": ["cdylib", "rlib"], "test": True},
+                    {"name": "declared-export-name", "src_path": str(root / binary), "kind": ["bin"], "test": True}]}]}
+            self.assertEqual(session.workspace_targets(), [("rust-mock", library), ("rust-bin", binary)])
+            command = session.plan("rust-bin", binary)[1]
+            self.assertEqual(command[command.index("--bin") + 1], "declared-export-name")
+            with self.assertRaisesRegex(ValueError, "not uniquely declared"):
+                session.plan("rust-bin", library)
+
     def test_profile_proofs_select_registered_tests_while_all_keeps_the_full_suite(self):
         target = "tools/bridge-profile/src/main.rs"
         proof_command = self.session(execution.ROOT).plan("rust-profile", target)[1]

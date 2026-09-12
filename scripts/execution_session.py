@@ -99,6 +99,7 @@ class Session:
         self.environment = environment_digest()
         self.context: dict | None = None
         self.artifacts: dict[str, str] = {}
+        self.metadata: dict | None = None
 
     def execution_context(self) -> dict:
         if self.context is None:
@@ -119,6 +120,37 @@ class Session:
         if self.failed or source_fingerprint(self.root) != self.baseline:
             self.failed = True
             raise ValueError("test execution inputs changed or the run already failed")
+
+    def workspace_metadata(self) -> dict:
+        if self.metadata is None:
+            result = subprocess.run(["cargo", "metadata", "--locked", "--no-deps", "--format-version=1"],
+                                    cwd=self.root, capture_output=True, text=True, check=True, timeout=30)
+            self.metadata = json.loads(result.stdout)
+        return self.metadata
+
+    def workspace_targets(self) -> list[tuple[str, str]]:
+        metadata = self.workspace_metadata()
+        plans = []
+        for package in metadata["packages"]:
+            if package["id"] not in metadata["workspace_members"]:
+                continue
+            for target in package["targets"]:
+                if not target.get("test"):
+                    continue
+                path = Path(target["src_path"]).resolve().relative_to(self.root).as_posix()
+                runner = {"bridge-canister": "rust-canister", "bridge-profile": "rust-profile",
+                          "mock-external": "rust-mock", "bridge-core": "rust-core-lib"}.get(package["name"])
+                if runner is None:
+                    raise ValueError("workspace test target has no execution owner")
+                if "bin" in target["kind"] and package["name"] != "bridge-profile":
+                    runner = "rust-bin"
+                elif "test" in target["kind"]:
+                    if package["name"] != "bridge-core":
+                        raise ValueError("workspace integration test target has no execution owner")
+                    runner = "rust-core"
+                self.plan(runner, path)
+                plans.append((runner, path))
+        return plans
 
     def plan(self, runner: str, target: str) -> tuple[str, list[str], Path]:
         root = self.root
@@ -148,7 +180,17 @@ class Session:
             if scope:
                 command += ["--match-path", scope.removeprefix("contracts/")]
             return runner + ":" + scope, command, root
-        if runner in {"rust-core-lib", "rust-mock"}:
+        if runner == "rust-bin":
+            metadata = self.workspace_metadata()
+            matches = [(package, entry) for package in metadata["packages"]
+                       if package["id"] in metadata["workspace_members"] for entry in package["targets"]
+                       if entry.get("test") and "bin" in entry["kind"]
+                       and Path(entry["src_path"]).resolve() == candidate.resolve()]
+            if len(matches) != 1:
+                raise ValueError("Rust binary target is not uniquely declared in the workspace")
+            package, entry = matches[0]
+            command = ["cargo", "test", "--locked", "-p", package["name"], "--bin", entry["name"]]
+        elif runner in {"rust-core-lib", "rust-mock"}:
             package = "bridge-core" if runner == "rust-core-lib" else "mock-external"
             if target != f"canister/{package}/src/lib.rs":
                 raise ValueError("invalid Rust library target")
@@ -292,6 +334,12 @@ class Session:
             if value["environment"] != self.environment:
                 raise ValueError("test execution environment differs from the run owner")
             return self.execute(value["runner"], value["target"], value["selectors"])
+        if value.get("action") == "plan-workspace" and set(value) == {"action", "environment"}:
+            if value["environment"] != self.environment:
+                raise ValueError("test execution environment differs from the run owner")
+            with self.lock:
+                self.check_inputs()
+                return {"targets": self.workspace_targets()}
         if value == {"action": "snapshot"}:
             with self.lock:
                 self.check_inputs()
@@ -402,18 +450,9 @@ def main() -> int:
     args = parser.parse_args()
     if args.action == "suite":
         if args.runner == "rust":
-            metadata = json.loads(subprocess.run(["cargo", "metadata", "--no-deps", "--format-version=1"], cwd=ROOT, capture_output=True, text=True, check=True).stdout)
-            for package in metadata["packages"]:
-                for target in package["targets"]:
-                    if not target.get("test"):
-                        continue
-                    path = Path(target["src_path"]).relative_to(ROOT).as_posix()
-                    runner = {"bridge-canister": "rust-canister", "bridge-profile": "rust-profile", "mock-external": "rust-mock", "bridge-core": "rust-core-lib"}.get(package["name"])
-                    if package["name"] == "bridge-core" and "test" in target["kind"]:
-                        runner = "rust-core"
-                    if runner is None:
-                        raise ValueError("workspace test target has no execution owner")
-                    execute(runner, path, [])
+            plan = request({"action": "plan-workspace", "environment": environment_digest()})
+            for runner, path in plan["targets"]:
+                execute(runner, path, [])
         else:
             execute(args.runner, "", [])
         return 0
