@@ -16,6 +16,25 @@ import {
 } from "./settlement-phase"
 
 describe("settlement phase helpers", () => {
+  it("accepts_only_well_formed_insufficient_cycles_stops", () => {
+    const state = { Deposit: { AuthorizationPending: null } }
+    expect(
+      isSettlementActionResult({ Stopped: { state, reason: { InsufficientCycles: null } } }),
+    ).toBe(true)
+    for (const reason of [
+      { InsufficientCycles: "low" },
+      { InsufficientCycles: null, RpcUnavailable: null },
+      { FutureReason: null },
+    ]) {
+      expect(isSettlementActionResult({ Stopped: { state, reason } })).toBe(false)
+    }
+    expect(
+      isSettlementActionResult({
+        Stopped: { state, reason: { InsufficientCycles: null }, extra: true },
+      }),
+    ).toBe(false)
+  })
+
   it("preserves public display names and terminal tones", () => {
     expect(depositPhaseName({ Minted: null })).toBe("Complete")
     expect(depositPhaseTone({ Minted: null })).toBe("good")
@@ -111,6 +130,31 @@ describe("settlement phase helpers", () => {
     expect(depositContinuation(record([{ RpcInconsistent: null }])).action).toBe(
       "retry-authorization",
     )
+    for (const reason of [
+      { LedgerUnavailable: null },
+      { LedgerAmbiguous: null },
+      { InsufficientCycles: null },
+    ] as const) {
+      expect(depositContinuation(record([reason]))).toMatchObject({
+        mode: "stopped",
+        action: "retry-processing",
+      })
+      for (const state of [
+        { FundingReconciliationHold: null },
+        { RefundProcessing: null },
+      ] as const) {
+        expect(depositContinuation({ ...record([reason]), state }).action).toBe("retry-processing")
+      }
+      for (const state of [
+        { RefundAvailable: null },
+        { AuthorizationAvailable: null },
+        { Minted: null },
+        { Refunded: null },
+        { Cancelled: null },
+      ] as const) {
+        expect(depositContinuation({ ...record([reason]), state }).action).toBeUndefined()
+      }
+    }
     expect(depositContinuation(record([{ AuthorizationExpired: null }])).action).toBe(
       "request-refund",
     )

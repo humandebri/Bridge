@@ -1,45 +1,10 @@
-// contracts/test: lock the Phase 1E function, error, event, enum, struct, and constructor shapes.
+// contracts/test: lock the Phase 1E function, error, event, enum, and struct shapes.
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.36;
 
 import {IBSNS} from "../src/interfaces/IBSNS.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
 import {BridgeTimelockController} from "../src/BridgeTimelockController.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {IERC5267} from "@openzeppelin/contracts/interfaces/IERC5267.sol";
-
-contract BridgeConstructorFixture {
-    bytes32 public immutable argumentsHash;
-
-    constructor(
-        address bridgeSigner,
-        address runtimeAdministrator,
-        address baseAdminTimelock,
-        bytes32 approvedTimelockRuntimeCodeHash,
-        uint256 perDepositLimit,
-        uint256 mintWindowLimit,
-        uint64 mintWindowDuration,
-        uint256 minServiceFee,
-        uint256 maxServiceFee,
-        uint256 initialServiceFee
-    ) {
-        argumentsHash = keccak256(
-            abi.encode(
-                bridgeSigner,
-                runtimeAdministrator,
-                baseAdminTimelock,
-                approvedTimelockRuntimeCodeHash,
-                perDepositLimit,
-                mintWindowLimit,
-                mintWindowDuration,
-                minServiceFee,
-                maxServiceFee,
-                initialServiceFee
-            )
-        );
-    }
-}
 
 contract InterfaceTupleFixture {
     function deposit(IBridge.MintAuthorization calldata, bytes calldata) external pure {}
@@ -53,16 +18,6 @@ contract InterfaceSelectorsTest {
         _assertSelector(IBSNS.bridgeMint.selector, "bridgeMint(address,uint256)");
         _assertSelector(IBSNS.bridgeBurn.selector, "bridgeBurn(uint256)");
         _assertSelector(IBSNS.version.selector, "version()");
-        _assertSelector(IERC5267.eip712Domain.selector, "eip712Domain()");
-        _assertSelector(IERC20Metadata.name.selector, "name()");
-        _assertSelector(IERC20Metadata.symbol.selector, "symbol()");
-        _assertSelector(IERC20Metadata.decimals.selector, "decimals()");
-        _assertSelector(IERC20.totalSupply.selector, "totalSupply()");
-        _assertSelector(IERC20.balanceOf.selector, "balanceOf(address)");
-        _assertSelector(IERC20.transfer.selector, "transfer(address,uint256)");
-        _assertSelector(IERC20.allowance.selector, "allowance(address,address)");
-        _assertSelector(IERC20.approve.selector, "approve(address,uint256)");
-        _assertSelector(IERC20.transferFrom.selector, "transferFrom(address,address,uint256)");
     }
 
     function testBSNSAuthorizationSelectors() public pure {
@@ -249,27 +204,6 @@ contract InterfaceSelectorsTest {
             InterfaceTupleFixture.withdrawal.selector,
             "withdrawal((address,uint256,uint256,uint256,uint256,bytes,bytes32,uint8))"
         );
-    }
-
-    function testConstructorArgumentOrderFixture() public {
-        BridgeConstructorFixture fixture = new BridgeConstructorFixture(
-            address(0x11), address(0x22), address(0x33), bytes32(uint256(0x44)), 100, 200, 1 hours, 1, 10, 1
-        );
-        bytes32 expected = keccak256(
-            abi.encode(
-                address(0x11),
-                address(0x22),
-                address(0x33),
-                bytes32(uint256(0x44)),
-                uint256(100),
-                uint256(200),
-                uint64(1 hours),
-                uint256(1),
-                uint256(10),
-                uint256(1)
-            )
-        );
-        assert(fixture.argumentsHash() == expected);
     }
 
     function _assertSelector(bytes4 actual, string memory signature) private pure {

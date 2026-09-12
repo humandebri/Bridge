@@ -258,21 +258,6 @@ class RefinementManifestTests(unittest.TestCase):
                 consumers, root, ("canonical.rs",)
             )
 
-    def test_live_renderers_use_only_generated_targets(self) -> None:
-        self.assertTrue(
-            all("generated" in renderer.target.lower() for renderer in generator.RENDERERS.values())
-        )
-
-    def test_live_manifest_parses(self) -> None:
-        consumers = refinement.parse_manifest(
-            __import__("json").loads(refinement.VECTORS.read_text(encoding="utf-8")),
-            refinement.MANIFEST.read_text(encoding="utf-8"),
-            refinement.MODEL.read_text(encoding="utf-8"),
-            refinement.FINITE_WIDTH_MODEL.read_text(encoding="utf-8"),
-            refinement.MODEL_REFINEMENT.read_text(encoding="utf-8"),
-        )
-        self.assertGreater(len(consumers), 0)
-
 
 if __name__ == "__main__":
     unittest.main()

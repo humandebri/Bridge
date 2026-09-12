@@ -227,49 +227,18 @@ async fn signer_public_key(
 
 async fn threshold_signature(
     sign_args: &SignWithEcdsaArgs,
-    config: &BridgeInitArgs,
+    _config: &BridgeInitArgs,
 ) -> Result<Vec<u8>, SignerError> {
     let cycles = cost_sign_with_ecdsa(sign_args).map_err(|error| SignerError::ManagementCall {
         operation: "sign_with_ecdsa",
         class: SigningFailureClass::CostUnavailable,
         detail: format!("{error:?}"),
     })?;
-    let required_reserve = STORE.with(|store| {
-        let store = store.borrow();
-        let nonterminal_withdrawals = store
-            .nonterminal_withdrawal_count()
-            .map_err(signing_storage_error)?;
-        let nonterminal_deposits = store
-            .nonterminal_deposit_count()
-            .map_err(signing_storage_error)?;
-        let reserved_deposits = store
-            .deposit_funding_reservation_count()
-            .map_err(signing_storage_error)?;
-        config
-            .reserve_policy()
-            .required_cycles(
-                nonterminal_withdrawals,
-                nonterminal_deposits,
-                reserved_deposits,
-            )
-            .map_err(signing_storage_error)
-    })?;
-    let required_balance = ::bridge_core::kernel::signing_cycle_requirement(
-        required_reserve,
-        cycles,
-        config.settlement_cycle_ceiling,
-    )
-    .ok_or_else(|| SignerError::ManagementCall {
-        operation: "sign_with_ecdsa",
-        class: SigningFailureClass::InsufficientCycles,
-        detail: "signing cycle requirement overflow".to_string(),
-    })?;
-    let available = ic_cdk::api::canister_liquid_cycle_balance();
-    if available < required_balance {
+    if let Err(error) = crate::require_external_call_cycle_budget(cycles) {
         return Err(SignerError::ManagementCall {
             operation: "sign_with_ecdsa",
             class: SigningFailureClass::InsufficientCycles,
-            detail: format!("available={available} required={required_balance}"),
+            detail: format!("available={} required={}", error.available, error.required),
         });
     }
     let result = {

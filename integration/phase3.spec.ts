@@ -205,11 +205,11 @@ describe("Phase 3 PocketIC saga", () => {
       init,
       controller,
       runtimePrincipal,
-    } = await setup(false, {}, bridgeWasm, false, true);
+    } = await setup(false, { settlement_cycle_ceiling: (1n << 128n) - 1n }, bridgeWasm, false, true);
     const candidate = {
       governance_evm_fee: init.governance_evm_fee,
       cycles_floor: init.cycles_floor,
-      settlement_cycle_ceiling: init.settlement_cycle_ceiling,
+      settlement_cycle_ceiling: 5_000_000_000n,
     };
     for (const caller of [Principal.anonymous(), runtimePrincipal, init.pause_principal]) {
       bridge.actor.setPrincipal(caller);
@@ -227,6 +227,25 @@ describe("Phase 3 PocketIC saga", () => {
     "allows only the current controller to seal the bootstrap configuration",
     allows_only_the_current_controller_to_seal_the_bootstrap_configuration,
   );
+
+  async function rejects_unaffordable_seal_candidate_without_changing_bootstrap() {
+    const { bridge, init, controller } = await setup(
+      false, { settlement_cycle_ceiling: (1n << 128n) - 1n }, bridgeWasm, false, true,
+    );
+    const before = await (bridge.actor as any).get_operational_config();
+    bridge.actor.setPrincipal(controller);
+    expect(await (bridge.actor as any).seal_operational_config({
+      governance_evm_fee: init.governance_evm_fee,
+      cycles_floor: 1n,
+      settlement_cycle_ceiling: 1_000_000_000_000_000_000n,
+    })).toEqual({ Err: { ObservationUnavailable: null } });
+    expect(await (bridge.actor as any).get_operational_config()).toEqual(before);
+    expect(await (bridge.actor as any).get_production_lifecycle())
+      .toEqual({ Ok: { Bootstrap: null } });
+  }
+
+  it("rejects unaffordable seal candidate without changing bootstrap",
+    rejects_unaffordable_seal_candidate_without_changing_bootstrap);
 
   async function rolls_back_sealing_when_controller_authority_changes_across_an_await() {
     const { bridge, init, controller } = await setup(false, {}, bridgeWasm, false, true);
@@ -1911,6 +1930,52 @@ describe("Phase 3 PocketIC saga", () => {
     continues_only_a_retryable_stopped_deposit_authorization,
   );
 
+  async function stops_automatic_RPC_retries_at_three_and_manual_continuation_runs_once() {
+    const { evm, bridge, runtimePrincipal } = await setup(true, {
+      settlement_retry_interval_seconds: 1n,
+    });
+    const result: any = await (bridge.actor as any).request_deposit({
+      owner_sequence: 0n,
+      base_recipient: new Uint8Array(20).fill(4),
+      from_subaccount: [],
+      gross_amount: 200_000n,
+      max_service_fee: 10n,
+    });
+    expect(result).toHaveProperty("Ok.state.EscrowedUnquoted");
+    await (evm.actor as any).set_block_mode({ FinalizedUnavailable: null });
+
+    for (let failure = 1; failure <= 3; failure += 1) {
+      await pic!.tick(30);
+      const record: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
+      expect(record[0].last_settlement_stop_reason).toEqual([{ RpcUnavailable: null }]);
+      if (failure === 3) {
+        expect(record[0].automatic_progress).toEqual([]);
+        break;
+      }
+      const nextRunAtNs = BigInt(record[0].automatic_progress[0].state.Scheduled.next_run_at_ns);
+      const nowNs = BigInt(await pic!.getTime()) * 1_000_000n;
+      await pic!.advanceTime(Number((nextRunAtNs - nowNs + 999_999n) / 1_000_000n));
+    }
+
+    const callsAtStop = await (evm.actor as any).eth_call_count();
+    await advanceClock(2);
+    expect(await (evm.actor as any).eth_call_count()).toBe(callsAtStop);
+
+    bridge.actor.setPrincipal(runtimePrincipal);
+    expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id))
+      .toHaveProperty("Ok.Stopped.reason.RpcUnavailable");
+    const callsAfterManualAttempt = await (evm.actor as any).eth_call_count();
+    const afterManual: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
+    expect(afterManual[0].automatic_progress).toEqual([]);
+    await advanceClock(2);
+    expect(await (evm.actor as any).eth_call_count()).toBe(callsAfterManualAttempt);
+  }
+
+  it(
+    "stops automatic RPC retries at three and manual continuation runs once",
+    stops_automatic_RPC_retries_at_three_and_manual_continuation_runs_once,
+  );
+
   it("rate-limits new deposit admissions while preserving idempotent retries", async () => {
     const { bridge } = await setup();
     const request = (tag: number) => ({ owner_sequence: BigInt(tag - 72), base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n });
@@ -2040,6 +2105,36 @@ describe("Phase 3 PocketIC saga", () => {
   it(
     "rejects insufficient cycle reserve before Deposit Base RPC or Ledger pull",
     rejects_insufficient_cycle_reserve_before_Deposit_Base_RPC_or_Ledger_pull,
+  );
+
+  async function preserves_the_formal_Deposit_reserve_before_a_paid_Base_call() {
+    const ceiling = 300_000_000_000_000n;
+    const { evm, bridge } = await setup(true, {
+      cycles_floor: 1n,
+      settlement_cycle_ceiling: ceiling,
+    });
+    const baseCallsBefore = await (evm.actor as any).deposit_processed_call_count();
+    const result: any = await (bridge.actor as any).request_deposit({
+      owner_sequence: 0n,
+      base_recipient: new Uint8Array(20).fill(4),
+      from_subaccount: [],
+      gross_amount: 200_000n,
+      max_service_fee: 10n,
+    });
+    expect(result).toHaveProperty("Ok.state.EscrowedUnquoted");
+    await pic!.tick(30);
+
+    expect(await (evm.actor as any).deposit_processed_call_count()).toBe(baseCallsBefore);
+    const record: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
+    expect(record[0].last_settlement_stop_reason).toEqual([{ InsufficientCycles: null }]);
+    const status: any = await (bridge.actor as any).get_bridge_status();
+    expect(status.reserve.required_cycles).toBe(ceiling + 1n);
+    expect(status.reserve.cycles_balance).toBeGreaterThanOrEqual(status.reserve.required_cycles);
+  }
+
+  it(
+    "preserves the formal Deposit reserve before a paid Base call",
+    preserves_the_formal_Deposit_reserve_before_a_paid_Base_call,
   );
 
   it("rejects locally paused admissions before pull while preserving accepted replay", async () => {
@@ -2728,6 +2823,127 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
   });
 
+  async function stops_stalled_reconciliation_and_resumes_only_after_scan_advancement() {
+    const { ledger, index, bridge } = await setup(true, { settlement_retry_interval_seconds: 1n });
+    await requestDefaultDeposit(bridge);
+    await (ledger.actor as any).set_ledger_mode({ Trap: null });
+    const held: any = await (bridge.actor as any).request_deposit({
+      owner_sequence: 1n, base_recipient: new Uint8Array(20).fill(5),
+      from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n,
+    });
+    expect(held).toHaveProperty("Ok.state.FundingReconciliationHold");
+    for (const delay of [1_000, 1_000, 2_000]) {
+      await pic!.advanceTime(delay);
+      await pic!.tick(30);
+    }
+    await (ledger.actor as any).set_reconciliation_mode(1);
+    await (index.actor as any).set_index_synced_blocks([0n]);
+    await pic!.advanceTime((24 * 60 * 60 + 61) * 1_000);
+    const record = async () => (await (bridge.actor as any).get_deposit(held.Ok.deposit_id))[0];
+    const exhaust = async () => {
+      for (let failure = 1; failure <= 3; failure += 1) {
+        await pic!.tick(30);
+        const current = await record();
+        expect(current.last_settlement_stop_reason).toEqual([{ LedgerUnavailable: null }]);
+        if (failure === 3) {
+          expect(current.automatic_progress).toEqual([]);
+        } else {
+          const deadline = current.automatic_progress[0].state.Scheduled.next_run_at_ns;
+          const now = BigInt(await pic!.getTime()) * 1_000_000n;
+          await pic!.advanceTime(Number((deadline - now + 999_999n) / 1_000_000n));
+        }
+      }
+    };
+    expect(await (bridge.actor as any).continue_deposit(held.Ok.deposit_id))
+      .toHaveProperty("Ok.Stopped.reason.LedgerUnavailable");
+    expect((await record()).automatic_progress).toEqual([]);
+
+    // A completed Ledger page advances to Index, even though Index is still behind.
+    await (ledger.actor as any).set_reconciliation_mode(0);
+    expect(await (bridge.actor as any).continue_deposit(held.Ok.deposit_id))
+      .toHaveProperty("Ok.ReconciliationProgress");
+    const resumed = await record();
+    expect(resumed.automatic_progress).toHaveLength(1);
+    const resumeDeadline = resumed.automatic_progress[0].state.Scheduled.next_run_at_ns;
+    const resumeNow = BigInt(await pic!.getTime()) * 1_000_000n;
+    await pic!.advanceTime(Number((resumeDeadline - resumeNow + 999_999n) / 1_000_000n));
+    await exhaust();
+    const calls = await (index.actor as any).reconciliation_calls();
+    await advanceClock(2);
+    expect(await (index.actor as any).reconciliation_calls()).toBe(calls);
+    expect(await (bridge.actor as any).continue_deposit(held.Ok.deposit_id))
+      .toHaveProperty("Ok.Stopped.reason.LedgerUnavailable");
+    expect((await record()).automatic_progress).toEqual([]);
+    const afterManual = await (index.actor as any).reconciliation_calls();
+    await advanceClock(2);
+    expect(await (index.actor as any).reconciliation_calls()).toBe(afterManual);
+  }
+
+  it("stops stalled reconciliation and resumes only after scan advancement",
+    stops_stalled_reconciliation_and_resumes_only_after_scan_advancement);
+
+  async function funding_recovery_excludes_reentry_and_rearms_the_earliest_deadline() {
+    const { ledger, bridge, evm, init, runtimePrincipal, confirmationRelayerPrincipal } = await setup();
+    const request = { owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4),
+      from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n };
+    await (ledger.actor as any).set_delay_funding_transfer(true);
+    const deferred = pic!.createDeferredActor(bridgeIdl, bridge.canisterId) as any;
+    deferred.setPrincipal(runtimePrincipal);
+    await deferred.request_deposit(request);
+    const waitBarrier = async (url: string) => {
+      for (let step = 0; step < 30; step += 1) {
+        await pic!.tick(1);
+        const barrier = (await pic!.getPendingHttpsOutcalls()).find(call => call.url === url);
+        if (barrier) return barrier;
+      }
+      throw new Error(`missing barrier: ${url}`);
+    };
+    await waitBarrier("https://funding-delay.invalid/");
+    // Upgrade leaves the dispatched reservation for the normal recovery initializer.
+    await upgradeBridge(bridge);
+    await (ledger.actor as any).set_reconciliation_mode(2);
+    await pic!.advanceTime(31_000);
+    const barrier = await waitBarrier("https://reconciliation-delay.invalid/");
+    const calls = await (ledger.actor as any).reconciliation_calls();
+    expect(calls).toBe(1n);
+    await (ledger.actor as any).set_delay_funding_transfer(false);
+    await (ledger.actor as any).set_ledger_mode({ TemporarilyUnavailable: null });
+    bridge.actor.setPrincipal(Principal.selfAuthenticating(new Uint8Array(32).fill(91)));
+    expect(await (bridge.actor as any).request_deposit(request)).toHaveProperty("Err.FundingUnavailable");
+    await pic!.tick(30);
+    expect(await (ledger.actor as any).reconciliation_calls()).toBe(calls);
+    expect((await pic!.getPendingHttpsOutcalls()).filter(call => call.url === "https://reconciliation-delay.invalid/"))
+      .toHaveLength(1);
+    await (ledger.actor as any).set_reconciliation_mode(0);
+    await pic!.mockPendingHttpsOutcall({ requestId: barrier.requestId, subnetId: barrier.subnetId,
+      response: { type: "success", statusCode: 200, headers: [], body: new Uint8Array() } });
+    await pic!.tick(30);
+    // Retryable admissions expire at 120 seconds, before the final absence scan.
+    // A changed intent is accepted only if recovery has removed the old admission.
+    await pic!.advanceTime(121_000);
+    await pic!.tick(30);
+    expect(await (bridge.actor as any).request_deposit({ ...request, gross_amount: 210_000n }))
+      .toHaveProperty("Err.FundingUnavailable");
+    bridge.actor.setPrincipal(runtimePrincipal);
+    expect(await (bridge.actor as any).request_deposit({ ...request, gross_amount: 210_000n }))
+      .toHaveProperty("Err.DepositConflict");
+    bridge.actor.setPrincipal(init.pause_principal);
+    expect(await (bridge.actor as any).pause_new_deposits()).toHaveProperty("Ok");
+    const callsBeforePause = await (ledger.actor as any).reconciliation_calls();
+    await pic!.advanceTime((24 * 60 * 60 + 61) * 1_000);
+    await pic!.tick(30);
+    expect(await (ledger.actor as any).reconciliation_calls()).toBe(callsBeforePause);
+    await (evm.actor as any).set_block_timestamp(BigInt(Math.floor((await pic!.getTime()) / 1_000)));
+    await activateBridgeThroughGovernance(bridge, evm, runtimePrincipal, confirmationRelayerPrincipal);
+    await pic!.tick(30);
+    expect(await (ledger.actor as any).reconciliation_calls()).toBeGreaterThan(callsBeforePause);
+    expect(await (bridge.actor as any).request_deposit({ ...request, gross_amount: 210_000n }))
+      .toHaveProperty("Err.FundingUnavailable");
+  }
+
+  it("funding recovery excludes reentry and rearms the earliest deadline",
+    funding_recovery_excludes_reentry_and_rearms_the_earliest_deadline);
+
   it("retains one retryable funding identity without repeating early preflight or quota", async () => {
     const { ledger, evm, bridge } = await setup();
     await (ledger.actor as any).set_ledger_mode({ TemporarilyUnavailable: null });
@@ -2742,9 +2958,12 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).request_deposit(request)).toHaveProperty("Err.FundingUnavailable");
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
     expect(await (evm.actor as any).deposit_processed_call_count()).toBe(baseCallsBefore);
-    await pic!.advanceTime(31_000);
+    await pic!.advanceTime(29_000);
     await pic!.tick(5);
+    expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(1n);
     await (ledger.actor as any).set_ledger_mode({ Succeed: null });
+    await pic!.advanceTime(2_000);
+    await pic!.tick(5);
     const funded: any = await (bridge.actor as any).request_deposit(request);
     expect(funded).toHaveProperty("Ok.state.EscrowedUnquoted");
     expect(await (ledger.actor as any).ledger_transfer_calls()).toBe(2n);
@@ -3180,6 +3399,53 @@ describe("Phase 3 PocketIC saga", () => {
     const retried: any = await (bridge.actor as any).continue_fee_payout(failed.Ok.id);
     expect(retried).toHaveProperty("Ok.Complete");
   });
+
+  async function fee_payout_stalled_scan_stops_and_real_progress_restores_automatic_work() {
+    const { ledger, index, evm, bridge } = await setup(true, { settlement_retry_interval_seconds: 1n });
+    await (evm.actor as any).set_max_service_fee(200_000n);
+    await (evm.actor as any).set_service_fee(200_000n);
+    const deposit: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n,
+      base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 900_000n,
+      max_service_fee: 200_000n });
+    await mintAuthorizedDeposit(bridge, evm, deposit.Ok.deposit_id);
+    await (ledger.actor as any).set_ledger_mode({ Trap: null });
+    const payout: any = await (bridge.actor as any).request_fee_payout(1n);
+    // Allow the automatic transfer attempts to park before manual reconciliation.
+    for (const delay of [1_000, 1_000, 2_000]) {
+      await pic!.advanceTime(delay);
+      await pic!.tick(30);
+    }
+    await pic!.advanceTime((24 * 60 * 60 + 61) * 1_000);
+    await (ledger.actor as any).set_reconciliation_mode(1);
+    expect(await (bridge.actor as any).continue_fee_payout(payout.Ok.id))
+      .toHaveProperty("Ok.Stopped.reason.LedgerUnavailable");
+    await (ledger.actor as any).set_reconciliation_mode(0);
+    await (index.actor as any).set_index_synced_blocks([0n]);
+    expect(await (bridge.actor as any).continue_fee_payout(payout.Ok.id))
+      .toHaveProperty("Ok.ReconciliationProgress.state.ReconciliationHold");
+    await pic!.advanceTime(1_000);
+    for (let failure = 1; failure <= 3; failure += 1) {
+      await pic!.tick(30);
+      if (failure < 3) {
+        const pending: any = await (bridge.actor as any).continue_fee_payout(payout.Ok.id);
+        expect(pending).toHaveProperty("Err.AutomaticProgressPending");
+        const deadline = pending.Err.AutomaticProgressPending.next_run_at_ns[0];
+        const now = BigInt(await pic!.getTime()) * 1_000_000n;
+        await pic!.advanceTime(Number((deadline - now + 999_999n) / 1_000_000n));
+      }
+    }
+    const calls = await (index.actor as any).reconciliation_calls();
+    await advanceClock(2);
+    expect(await (index.actor as any).reconciliation_calls()).toBe(calls);
+    expect(await (bridge.actor as any).continue_fee_payout(payout.Ok.id))
+      .toHaveProperty("Ok.Stopped.reason.LedgerUnavailable");
+    const manualCalls = await (index.actor as any).reconciliation_calls();
+    await advanceClock(2);
+    expect(await (index.actor as any).reconciliation_calls()).toBe(manualCalls);
+  }
+
+  it("fee payout stalled scan stops and real progress restores automatic work",
+    fee_payout_stalled_scan_stops_and_real_progress_restores_automatic_work);
 
   it("keeps large SQLite status and upgrade work bounded and completes controller maintenance", async () => {
     const { bridge, runtimePrincipal } = await setup(false);

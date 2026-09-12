@@ -55,7 +55,7 @@ service_fee初期値 = 0.5 KINIC
 
 新規処理が既存の非終端operationの完了用cyclesを侵食しないよう、基礎floorに非終端liabilityごとの保守的上限を加えて検査する（ADR 0005）。
 
-- settlement cycle ceiling: `5000000000` cyclesに固定する。
+- settlement cycle ceiling: `5000000000` cyclesに固定する。この値は外部callへ付与するcycles額の上限ではなく、非終端liability 1件を完了させるための予約額兼、外部call前に残す1処理分のmarginである。有料callは`既存liabilityの予約必要額 + 実際のcall付与額 + このmargin`を満たす場合だけ発行する。
 - cycles floor: pause状態の`idle_cycles_burned_per_day`から次式で設定する。
 
 production installとGate Aではschema 2 template固定のBootstrap運用値を使う。この値は運用上限ではなく、`Bootstrap` lifecycleとshared kernel gateの組でasset update、scheduler、Base governance transactionをfail closedにするための非運用値である。Baseをpause配置した後に`initial-operational-parameters.json`を作成し、Gate B profileでgovernance fee 8項目、cycles floor、settlement cycle ceilingだけを導出値へ置換して一度だけsealする。
@@ -79,7 +79,7 @@ unpause後は7日以上のBase feeとgovernance gas／settlement cycles各10件�
 - gas 価格の上限評価
 - Base governance transactionはCanisterが署名し、外部relayerが送信・Finalized待機・確定通知を行う。自動再送・自動replacementは行わない。運用者が明示要求した場合だけ同一nonce・payloadで最大3回、直前generationから12.5%以上fee bumpし、設定済みceilingを超えないtransactionをCanisterが再署名する。各署名前に`gas_limit × max_fee_per_gas + l1_fee_per_transaction_ceiling_wei + value`をchecked計算し、Safe/Finalized残高の小さい方が不足する場合は状態を変更せず拒否する。
 - EVM RPC 費用と management canister call 費用の上限評価
-- Settlementの一時障害retryはGovernance timerと共有せず、`settlement_retry_interval_seconds`（初期値60秒）を基準に指数backoffし、最大15分とする。
+- Settlementの一時障害retryはGovernance timerと共有せず、`settlement_retry_interval_seconds`（初期値60秒）を基準に指数backoffし、最大15分とする。Depositとfee payoutの自動laneは初回を含む連続3回の一時失敗で停止し、production設定では0分、1分、3分に実行して開始から約3分で明示continuation待ちになる。進捗または明示的な延期は連続失敗回数を0へ戻し、`Busy`は回数を変えない。
 - 公式EVM RPC Canisterと設定されたquorumがcanonical Finalized chainを正しく返すこと
 - 監視が5分以内検知、15分以内担当確認、60分以内のBase/IC双方pauseを実証できること
 

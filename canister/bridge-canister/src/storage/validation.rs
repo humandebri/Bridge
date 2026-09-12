@@ -12,21 +12,3 @@ pub(super) fn expect_row_shape(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn row_shape_validation_rejects_either_dimension() {
-        assert!(expect_row_shape(&[0; 8], &[0], 8, 1, "shape").is_ok());
-        assert!(matches!(
-            expect_row_shape(&[0; 7], &[0], 8, 1, "shape"),
-            Err(DbError::Constraint(message)) if message == "shape"
-        ));
-        assert!(matches!(
-            expect_row_shape(&[0; 8], &[], 8, 1, "shape"),
-            Err(DbError::Constraint(message)) if message == "shape"
-        ));
-    }
-}

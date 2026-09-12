@@ -718,6 +718,7 @@ type SettlementStopReason = variant {
   LedgerFeeExceedsServiceFee;
   LedgerRejected : text;
   RpcUnavailable;
+  InsufficientCycles;
   RpcInconsistent;
   LedgerAmbiguous;
   LedgerUnavailable;

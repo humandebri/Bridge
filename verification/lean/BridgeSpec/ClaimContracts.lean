@@ -92,6 +92,15 @@ theorem signing_cycle_reserve_witness : SigningCycleReserve := by
   intro liquid reserve signingCost callMargin charged budget chargeBound
   omega
 
+def PaidCallCycleReserve : Prop :=
+  ∀ liquid reserve attachedCycles callMargin charged : Nat,
+    reserve + attachedCycles + callMargin ≤ liquid →
+      charged ≤ attachedCycles + callMargin → reserve ≤ liquid - charged
+
+theorem paid_call_cycle_reserve_witness : PaidCallCycleReserve := by
+  intro liquid reserve attachedCycles callMargin charged budget chargeBound
+  omega
+
 def ActivationPreflight : Prop :=
   ∀ {initialDomain : ControlPlane.InstallDomain} {state : ControlPlane.State},
     ControlPlane.Reachable initialDomain state → state.paused = false →
@@ -411,6 +420,18 @@ def LeaseOutcome : Prop :=
 
 theorem lease_outcome_witness : LeaseOutcome :=
   ⟨Claims.lease_claim, global_interleaving_safety_witness⟩
+
+def automaticRetryAllowed (automaticLane : Bool) (failures limit : Nat) : Bool :=
+  automaticLane && decide (failures < limit)
+
+def AutomaticRetryLimit : Prop :=
+  ∀ automaticLane failures limit,
+    automaticRetryAllowed automaticLane failures limit = true ↔
+      automaticLane = true ∧ failures < limit
+
+theorem automatic_retry_limit_witness : AutomaticRetryLimit := by
+  intro automaticLane failures limit
+  simp [automaticRetryAllowed, Bool.and_eq_true]
 
 def NotificationQuotaIsolation : Prop :=
   (∀ {globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : Nat},

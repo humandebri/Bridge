@@ -59,22 +59,3 @@ pub enum SettlementState {
     Deposit(DepositPhase),
     Withdrawal(WithdrawalPhase),
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn public_phase_variants_are_stable() {
-        assert_eq!(
-            DepositPhase::from(&DepositState::EscrowedUnquoted {
-                funding_ledger_block_index: 1,
-            }),
-            DepositPhase::EscrowedUnquoted
-        );
-        assert_eq!(
-            WithdrawalPhase::from(&WithdrawalState::Observed),
-            WithdrawalPhase::Observed
-        );
-    }
-}

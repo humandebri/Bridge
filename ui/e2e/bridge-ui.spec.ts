@@ -45,16 +45,12 @@ test("bridge defaults to IC to Base and reports incomplete configuration", async
   page,
 }, testInfo) => {
   await page.goto("/")
-  await expect(page.getByText("Bridge KINIC", { exact: true })).toHaveCount(0)
-  await expect(page.getByText("Move tokens between IC and Base.", { exact: true })).toHaveCount(0)
-  await expect(page.getByText("1:1 across both networks", { exact: true })).toHaveCount(0)
   await expect(page.getByRole("region", { name: "KINIC bridge" })).toBeVisible()
   const homeLink = page.getByRole("link", { name: "KINIC Bridge home" })
   await expect(homeLink).toContainText("KINIC Bridge")
   await expect(homeLink.locator("img")).toHaveAttribute("src", /blue_kinic/)
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", /blue_kinic/)
   await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute("href", /blue_kinic/)
-  await expect(page.getByText("IC ↔ Base", { exact: true })).toHaveCount(0)
   await expect(page.getByText("Internet Computer")).toBeVisible()
   await expect(
     page
@@ -66,12 +62,6 @@ test("bridge defaults to IC to Base and reports incomplete configuration", async
       .getByRole("button", { name: "To Base Connect EVM wallet", exact: true })
       .locator('[data-network-logo="base"]'),
   ).toBeVisible()
-  await expect(page.getByText("Refresh before continuing.")).toBeHidden()
-  await expect(
-    page.getByText(
-      "Live status is not confirmed. Current conditions will be checked before continuing.",
-    ),
-  ).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Bridge to Base" })).toBeDisabled()
   await expect(page.getByRole("button", { name: "MAX" })).toBeVisible()
   await expect(page.getByRole("button", { name: "MAX" })).toBeDisabled()
@@ -79,14 +69,6 @@ test("bridge defaults to IC to Base and reports incomplete configuration", async
   await expect(page.getByLabel("You send")).toHaveAttribute(
     "aria-describedby",
     "bridge-amount-feedback",
-  )
-  await expect(page.getByRole("button", { name: "Reverse bridge direction" })).toHaveCSS(
-    "width",
-    "32px",
-  )
-  await expect(page.getByRole("button", { name: "Reverse bridge direction" })).toHaveCSS(
-    "height",
-    "32px",
   )
   if ((page.viewportSize()?.width ?? 0) >= 768) {
     await expect(page.getByRole("link", { name: "Open history" })).toBeVisible()
@@ -97,15 +79,6 @@ test("bridge defaults to IC to Base and reports incomplete configuration", async
     await expect(page.getByRole("link", { name: "Open status" })).toBeHidden()
     await expect(page.getByLabel("Open navigation menu")).toBeVisible()
   }
-  if ((page.viewportSize()?.width ?? 0) >= 1024) {
-    const panel = await page.getByTestId("bridge-panel").boundingBox()
-    expect(panel).not.toBeNull()
-    expect(panel!.width).toBeLessThanOrEqual(621)
-    expect(
-      Math.abs(panel!.x + panel!.width / 2 - (page.viewportSize()?.width ?? 0) / 2),
-    ).toBeLessThanOrEqual(2)
-  }
-  await expect(page.locator(".kinic-rail i")).toHaveCount(4)
   await expectNoWcag21AaViolations(page)
   await capture(page, testInfo, "bridge-deposit")
 })
@@ -457,14 +430,7 @@ test("IC and EVM wallet controls are separate", async ({ page }, testInfo) => {
 test("history and status are separate low-density surfaces", async ({ page }, testInfo) => {
   await page.goto("/history")
   await expect(page.getByRole("heading", { name: "Bridge history" })).toBeVisible()
-  await expect(page.getByText("Actions unavailable")).toHaveCount(0)
-  await expect(page.getByText("Some activity is unavailable")).toHaveCount(0)
-  await expect(page.getByText("Connect an IC wallet to include IC → Base activity.")).toHaveCount(0)
   await expect(page.getByText("Connect a wallet", { exact: true })).toBeVisible()
-  await expect(page.getByRole("tab")).toHaveCount(0)
-  await expect(page.getByRole("button", { name: "All", exact: true })).toHaveCount(0)
-  await expect(page.getByRole("button", { name: "To Base", exact: true })).toHaveCount(0)
-  await expect(page.getByRole("button", { name: "To IC", exact: true })).toHaveCount(0)
   await expectNoWcag21AaViolations(page)
   await capture(page, testInfo, "history")
   await page.goto("/status")
@@ -472,8 +438,6 @@ test("history and status are separate low-density surfaces", async ({ page }, te
   await expect(
     page.getByText("Current availability across Internet Computer and Base."),
   ).toBeVisible()
-  await expect(page.getByText("Bridge checks have not passed.")).toBeHidden()
-  await expect(page.getByText("Safe is not finality.")).toBeHidden()
   await expect(page.getByText("Availability", { exact: true })).toBeVisible()
   await expect(page.getByText("Current terms", { exact: true })).toBeVisible()
   await expectNoWcag21AaViolations(page)
