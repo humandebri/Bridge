@@ -359,6 +359,37 @@ proof fn signing_cycle_requirement_preserves_reserve(
         required_reserve <= liquid - charged
 {}
 
+proof fn paid_call_cycle_requirement_preserves_reserve(
+    required_reserve: int,
+    attached_cycles: int,
+    call_margin: int,
+    liquid: int,
+    charged: int,
+)
+    requires 0 <= required_reserve,
+        0 <= attached_cycles,
+        0 <= call_margin,
+        0 <= charged,
+        required_reserve <= 340282366920938463463374607431768211455int,
+        attached_cycles <= 340282366920938463463374607431768211455int - required_reserve,
+        call_margin <= 340282366920938463463374607431768211455int
+            - (required_reserve + attached_cycles),
+        required_reserve + attached_cycles + call_margin <= liquid,
+        charged <= attached_cycles + call_margin
+    ensures kernel::paid_call_cycle_requirement_spec(
+            required_reserve,
+            attached_cycles,
+            call_margin,
+        ) == Some(required_reserve + attached_cycles + call_margin),
+        required_reserve <= liquid - charged
+{}
+
+proof fn automatic_retry_limit_stops_third_and_manual()
+    ensures kernel::automatic_retry_allowed_spec(true, 2, 3),
+        !kernel::automatic_retry_allowed_spec(true, 3, 3),
+        !kernel::automatic_retry_allowed_spec(false, 1, 3)
+{}
+
 proof fn reserve_overflow_is_rejected()
     ensures kernel::checked_requirement_spec(340282366920938463463374607431768211455int, 1, 1) == None::<int>
 {}

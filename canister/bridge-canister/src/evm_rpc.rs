@@ -24,11 +24,19 @@ use tiny_keccak::{Hasher, Keccak};
 pub enum ObservationError {
     Inconsistent,
     Rpc,
+    InsufficientCycles,
     InvalidResponse,
     Overflow,
     BaseStateMismatch,
     TransactionPending,
     TransactionReverted,
+}
+
+fn observation_call_error(error: IcError) -> ObservationError {
+    match error {
+        IcError::InsufficientLiquidCycleBalance { .. } => ObservationError::InsufficientCycles,
+        _ => ObservationError::Rpc,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,8 +270,10 @@ const BLOCK_RESPONSE_BYTES: u64 = 16 * 1024;
 const RECEIPT_RESPONSE_BYTES: u64 = 32 * 1024;
 const EVM_RPC_TIMEOUT_SECONDS: u32 = 300;
 
-#[derive(Clone, Copy, Debug, Default)]
-struct BoundedRuntime;
+#[derive(Clone, Copy, Debug)]
+struct BoundedRuntime {
+    reserve_policy: bridge_core::ReservePolicy,
+}
 
 #[async_trait]
 impl Runtime for BoundedRuntime {
@@ -283,6 +293,14 @@ impl Runtime for BoundedRuntime {
             ic_cdk::api::CanisterStatusCode::Running
         ) {
             return Err(IcError::CallPerformFailed);
+        }
+        if let Err(error) =
+            crate::require_external_call_cycle_budget_with_policy(self.reserve_policy, cycles)
+        {
+            return Err(IcError::InsufficientLiquidCycleBalance {
+                available: error.available,
+                required: error.required,
+            });
         }
         Call::bounded_wait(id, method)
             .change_timeout(EVM_RPC_TIMEOUT_SECONDS)
@@ -358,13 +376,19 @@ fn client(args: &BridgeInitArgs) -> EvmRpcClient<BoundedRuntime, CandidResponseC
                 .collect(),
         }
     };
-    EvmRpcClient::builder(BoundedRuntime, args.evm_rpc_canister_id)
-        .with_rpc_sources(services)
-        .with_consensus_strategy(ConsensusStrategy::Threshold {
-            total: Some(3),
-            min: 2,
-        })
-        .build()
+    EvmRpcClient::builder(
+        BoundedRuntime {
+            // Sealing preflight uses a validated candidate before it is persisted.
+            reserve_policy: args.reserve_policy(),
+        },
+        args.evm_rpc_canister_id,
+    )
+    .with_rpc_sources(services)
+    .with_consensus_strategy(ConsensusStrategy::Threshold {
+        total: Some(3),
+        min: 2,
+    })
+    .build()
 }
 
 fn selector(signature: &str) -> [u8; 4] {
@@ -424,7 +448,7 @@ async fn eth_call_target_at_observation(
             .with_response_size_estimate(SMALL_RESPONSE_BYTES)
             .try_send()
             .await
-            .map_err(|_| ObservationError::Rpc)?,
+            .map_err(observation_call_error)?,
     )
 }
 
@@ -785,7 +809,7 @@ async fn exact_mint_evidence_inner(
             .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
             .try_send()
             .await
-            .map_err(|_| ObservationError::Rpc)?,
+            .map_err(observation_call_error)?,
     )?;
     let rpc_response_digest = Sha256::digest(value.as_bytes()).into();
     let logs: Vec<evm_rpc_types::LogEntry> =
@@ -1345,7 +1369,7 @@ async fn runtime_at_observation(
             .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
             .try_send()
             .await
-            .map_err(|_| ObservationError::Rpc)?,
+            .map_err(observation_call_error)?,
     )?;
     decode_hex(
         value
@@ -1438,7 +1462,7 @@ async fn finalized_block(args: &BridgeInitArgs) -> Result<Block, ObservationErro
         .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
         .try_send()
         .await
-        .map_err(|_| ObservationError::Rpc)?;
+        .map_err(observation_call_error)?;
     match result {
         MultiRpcResult::Consistent(Ok(block)) => Ok(block),
         MultiRpcResult::Consistent(Err(_)) => Err(ObservationError::Rpc),
@@ -1457,7 +1481,7 @@ async fn finalized_block(args: &BridgeInitArgs) -> Result<Block, ObservationErro
                 .with_response_consensus(ConsensusStrategy::Equality)
                 .try_send()
                 .await
-                .map_err(|_| ObservationError::Rpc)?;
+                .map_err(observation_call_error)?;
             exact_finalized_block(&finalized_heads, checkpoint, checkpoint_result)
         }
     }
@@ -1490,7 +1514,7 @@ async fn canonical_finalized_receipt(
                 .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
                 .try_send()
                 .await
-                .map_err(|_| ObservationError::Rpc)?,
+                .map_err(observation_call_error)?,
         )
     };
     let (finalized, receipt) = futures::join!(finalized_observation(args), receipt_call);
@@ -1509,7 +1533,7 @@ async fn canonical_semantically_finalized_withdrawal_receipt(
             .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
             .try_send()
             .await
-            .map_err(|_| ObservationError::Rpc)?,
+            .map_err(observation_call_error)?,
     )?;
     let Some(receipt) = receipt else {
         return Ok(CanonicalFinalizedReceiptOutcome::Missing);
@@ -1719,7 +1743,7 @@ async fn canonical_finalized_receipt_at(
             .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
             .try_send()
             .await
-            .map_err(|_| ObservationError::Rpc)?,
+            .map_err(observation_call_error)?,
     )?;
     canonical_finalized_receipt_with_hash(args, hash, transaction_hash, finalized, receipt).await
 }
@@ -1759,7 +1783,7 @@ async fn canonical_finalized_receipt_with_hash(
         .with_response_size_estimate(SMALL_RESPONSE_BYTES)
         .try_send()
         .await
-        .map_err(|_| ObservationError::Rpc)?
+        .map_err(observation_call_error)?
     {
         MultiRpcResult::Consistent(Ok(value)) => value,
         MultiRpcResult::Consistent(Err(error)) => return Err(canonical_probe_error(error)),
@@ -1808,7 +1832,7 @@ pub async fn transaction_count(
             .with_response_size_estimate(SMALL_RESPONSE_BYTES)
             .try_send()
             .await
-            .map_err(|_| ObservationError::Rpc)?,
+            .map_err(observation_call_error)?,
     )?;
     u64::try_from(value).map_err(|_| ObservationError::Overflow)
 }
@@ -1823,7 +1847,7 @@ pub async fn signer_eth_balance_safe(
             .with_response_size_estimate(SMALL_RESPONSE_BYTES)
             .try_send()
             .await
-            .map_err(|_| ObservationError::Rpc)?,
+            .map_err(observation_call_error)?,
     )?;
     parse_u128(&value)
 }
@@ -1846,7 +1870,7 @@ pub async fn signer_eth_balance_at(
             .with_response_size_estimate(SMALL_RESPONSE_BYTES)
             .try_send()
             .await
-            .map_err(|_| ObservationError::Rpc)?,
+            .map_err(observation_call_error)?,
     )?;
     parse_u128(&value)
 }

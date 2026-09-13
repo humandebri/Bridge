@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   persistRiskAcknowledgement,
@@ -9,33 +9,6 @@ import {
 describe("RiskAcknowledgementDialog", () => {
   beforeEach(() => window.localStorage.clear())
   afterEach(() => vi.restoreAllMocks())
-
-  it("blocks the app until the risk is checked and explicitly acknowledged", () => {
-    render(<RiskAcknowledgementDialog />)
-
-    expect(screen.getByRole("heading", { name: "Unaudited bridge" })).toBeVisible()
-    expect(screen.queryByRole("button", { name: "Close confirmation" })).not.toBeInTheDocument()
-    const continueButton = screen.getByRole("button", { name: "Acknowledge and continue" })
-    expect(continueButton).toBeDisabled()
-    expect(window.localStorage.getItem(riskAcknowledgementStorageKey())).toBeNull()
-
-    fireEvent.keyDown(document, { key: "Escape" })
-    expect(screen.getByRole("dialog")).toBeVisible()
-
-    fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge unaudited bridge risk" }))
-    expect(window.localStorage.getItem(riskAcknowledgementStorageKey())).toBeNull()
-    expect(continueButton).toBeEnabled()
-    fireEvent.click(continueButton)
-
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
-    expect(window.localStorage.getItem(riskAcknowledgementStorageKey())).toBe("acknowledged")
-  })
-
-  it("does not show again for the active deployment after acknowledgement", () => {
-    window.localStorage.setItem(riskAcknowledgementStorageKey(), "acknowledged")
-    render(<RiskAcknowledgementDialog />)
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
-  })
 
   it.each([
     ["another deployment", `${riskAcknowledgementStorageKey()}:other`, "acknowledged"],

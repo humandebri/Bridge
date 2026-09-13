@@ -1,18 +1,20 @@
 use bridge_core::{
     activation_prepare_authorized, administrator_authorized, asset_operation_lifecycle_decision,
-    audit_next, authorization_commit_allowed, bootstrap_pause_principal_migration_decision,
-    checked_counter_transition, checked_requirement, confirmation_caller_authorized,
-    confirmation_roles_distinct, counter_delta, deposit_admission_decision,
-    deposit_reservation_active, deposit_transition, deposit_transition_decision, evidence_matches,
-    expiry_refund_allowed, fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
+    audit_next, authorization_commit_allowed, automatic_retry_allowed,
+    bootstrap_pause_principal_migration_decision, checked_counter_transition, checked_requirement,
+    confirmation_caller_authorized, confirmation_roles_distinct, counter_delta,
+    deposit_admission_decision, deposit_reservation_active, deposit_transition,
+    deposit_transition_decision, evidence_matches, expiry_refund_allowed,
+    fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
     funding_reconciliation_decision, hold_resolution_decision, lease_generation_next,
     lease_outcome_is_current, legacy_activation_evidence_requirement, manual_claim_decision,
     mint_admission_total, mint_authorization_has_minimum_remaining_time, mint_finalization_allowed,
     next_attempt, notification_failure_cooldown_active, operational_config_seal_caller_authorized,
-    operational_config_seal_decision, outbound_settlement, payout_allowed, payout_debit,
-    refresh_generation_next, refresh_owner_matches, release_transfer_matches, replay_matches,
-    reservation_decision, reserve_admission_preserves_requirement, scan_complete,
-    service_fee_change_allowed, settlement_decision, signature_install_allowed,
+    operational_config_seal_decision, outbound_settlement, paid_call_cycle_requirement,
+    payout_allowed, payout_debit, refresh_generation_next, refresh_owner_matches,
+    release_transfer_matches, replay_matches, reservation_decision,
+    reserve_admission_preserves_requirement, scan_complete, service_fee_change_allowed,
+    settlement_decision, settlement_failure_count, signature_install_allowed,
     signing_cycle_requirement, transaction_liability_wei, withdrawal_phase_allows,
     withdrawal_phase_step, withdrawal_transition_effects, AssetOperationLifecycleDecision,
     BootstrapPausePrincipalMigrationDecision, DepositEventGuard, DepositTransitionDecision,
@@ -202,8 +204,26 @@ fn reserve_boundaries_and_overflow_are_checked() {
 #[test]
 fn signing_cycle_requirement_is_fail_closed() {
     assert_eq!(signing_cycle_requirement(100, 40, 10), Some(150));
+    assert_eq!(paid_call_cycle_requirement(100, 40, 10), Some(150));
     assert_eq!(signing_cycle_requirement(u128::MAX, 1, 0), None);
+    assert_eq!(paid_call_cycle_requirement(u128::MAX, 1, 0), None);
     assert_eq!(signing_cycle_requirement(u128::MAX - 1, 1, 1), None);
+    assert_eq!(paid_call_cycle_requirement(u128::MAX - 1, 1, 1), None);
+}
+
+#[test]
+fn automatic_retry_limit_parks_the_third_failure_and_manual_lane() {
+    assert!(automatic_retry_allowed(true, 2, 3));
+    assert!(!automatic_retry_allowed(true, 3, 3));
+    assert!(!automatic_retry_allowed(false, 1, 3));
+    assert_eq!(settlement_failure_count(2, true, true, false), 3);
+    assert_eq!(settlement_failure_count(3, false, true, false), 3);
+    assert_eq!(settlement_failure_count(2, true, false, true), 0);
+    assert_eq!(settlement_failure_count(2, true, false, false), 2);
+    assert_eq!(
+        settlement_failure_count(u8::MAX, true, true, false),
+        u8::MAX
+    );
 }
 
 #[test]

@@ -248,7 +248,7 @@ jobs:
         if: matrix.area == 'real'
         run: node trusted-policy/ui/scripts/download-ledger-artifacts.mjs
       - name: Prefetch PocketIC runtime for Rust integration checks
-        if: matrix.area == 'rust-integration'
+        if: matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted'
         run: |
           node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/node_modules/@dfinity/pic/postinstall.mjs"
           node "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/ui/node_modules/@dfinity/pic/postinstall.mjs"

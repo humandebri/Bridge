@@ -312,6 +312,42 @@ fn set_ledger_mode(mode: LedgerMode) {
     LEDGER_MODE.with(|current| *current.borrow_mut() = mode);
 }
 
+thread_local! {
+    // Test barriers and counters are deliberately reset by mock upgrades.
+    static RECONCILIATION_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    static RECONCILIATION_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static DELAY_FUNDING_TRANSFER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[ic_cdk::update]
+fn set_reconciliation_mode(mode: u8) {
+    RECONCILIATION_MODE.with(|current| current.set(mode));
+}
+
+#[ic_cdk::update]
+fn set_delay_funding_transfer(delay: bool) {
+    DELAY_FUNDING_TRANSFER.with(|current| current.set(delay));
+}
+
+#[ic_cdk::query]
+fn reconciliation_calls() -> u64 {
+    RECONCILIATION_CALLS.with(|calls| calls.get())
+}
+
+async fn reconciliation_barrier(url: &str) {
+    http_request(&HttpRequestArgs {
+        url: url.into(),
+        max_response_bytes: Some(1),
+        method: HttpMethod::GET,
+        headers: vec![],
+        body: None,
+        transform: None,
+        is_replicated: Some(false),
+    })
+    .await
+    .expect("mock reconciliation barrier");
+}
+
 #[ic_cdk::update]
 fn set_refund_ledger_mode(mode: Option<LedgerMode>) {
     REFUND_LEDGER_MODE.with(|current| *current.borrow_mut() = mode);
@@ -816,7 +852,10 @@ fn icrc1_fee() -> Nat {
 }
 
 #[ic_cdk::update]
-fn icrc2_transfer_from(args: TransferFromArgs) -> Result<Nat, TransferFromError> {
+async fn icrc2_transfer_from(args: TransferFromArgs) -> Result<Nat, TransferFromError> {
+    if DELAY_FUNDING_TRANSFER.with(|delay| delay.get()) {
+        reconciliation_barrier("https://funding-delay.invalid/").await;
+    }
     LEDGER_TRANSFER_CALLS.with(|value| *value.borrow_mut() += 1);
     match LEDGER_MODE.with(|mode| *mode.borrow()) {
         LedgerMode::Trap => ic_cdk::trap("ambiguous mock transfer"),
@@ -913,8 +952,18 @@ fn icrc1_transfer(args: TransferArg) -> Result<Nat, TransferError> {
     Ok(Nat::from(2u8))
 }
 
-#[ic_cdk::query]
-fn get_transactions(args: GetBlocksRequest) -> GetTransactionsResponse {
+#[ic_cdk::update]
+async fn get_transactions(args: GetBlocksRequest) -> GetTransactionsResponse {
+    RECONCILIATION_CALLS.with(|calls| calls.set(calls.get() + 1));
+    match RECONCILIATION_MODE.with(|mode| mode.get()) {
+        1 => ic_cdk::trap("mock history unavailable"),
+        2 => reconciliation_barrier("https://reconciliation-delay.invalid/").await,
+        _ => {}
+    }
+    transaction_page(args)
+}
+
+fn transaction_page(args: GetBlocksRequest) -> GetTransactionsResponse {
     let transactions = TRANSACTIONS.with(|transactions| transactions.borrow().clone());
     let start = nat_to_usize(&args.start).min(transactions.len());
     let length = nat_to_usize(&args.length);
@@ -973,8 +1022,9 @@ fn ledger_id() -> Principal {
     LEDGER_ID.with(|id| id.borrow().unwrap_or_else(ic_cdk::api::canister_self))
 }
 
-#[ic_cdk::query]
+#[ic_cdk::update]
 fn status() -> Status {
+    RECONCILIATION_CALLS.with(|calls| calls.set(calls.get() + 1));
     Status {
         num_blocks_synced: INDEX_SYNCED_BLOCKS.with(|override_value| {
             Nat::from(override_value.borrow().unwrap_or_else(|| {
@@ -2033,7 +2083,7 @@ mod candid_tests {
                 .collect();
         });
 
-        let page = super::get_transactions(icrc_ledger_types::icrc3::blocks::GetBlocksRequest {
+        let page = super::transaction_page(icrc_ledger_types::icrc3::blocks::GetBlocksRequest {
             start: Nat::from(1u8),
             length: Nat::from(2u8),
         });

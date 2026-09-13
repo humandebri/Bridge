@@ -118,6 +118,19 @@ theorem signing_cycle_reserve_claim
     reserve ≤ liquid - charged := by
   omega
 
+theorem paid_call_cycle_reserve_claim
+    {liquid reserve attachedCycles callMargin charged : Nat}
+    (budget : reserve + attachedCycles + callMargin ≤ liquid)
+    (chargeBound : charged ≤ attachedCycles + callMargin) :
+    reserve ≤ liquid - charged := by
+  omega
+
+theorem automatic_retry_limit_claim
+    {automaticLane : Bool} {failures limit : Nat}
+    (allowed : (automaticLane && decide (failures < limit)) = true) :
+    automaticLane = true ∧ failures < limit := by
+  simpa [Bool.and_eq_true] using allowed
+
 theorem fee_rotation_claim
     {state next : FeeState} {recipient : Nat}
     (rotated : rotateFeeRecipient state recipient = some next) :

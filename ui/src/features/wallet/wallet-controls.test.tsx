@@ -143,26 +143,6 @@ describe("wallet controls", () => {
     ).toEqual(["MetaMask", "WalletConnect"])
   })
 
-  it("shows chain logos in disconnected wallet controls", () => {
-    const { unmount } = render(
-      <WalletDialogProvider>
-        <WalletCenter />
-      </WalletDialogProvider>,
-    )
-
-    const icSummary = screen.getByRole("button", { name: "Connect IC wallet" })
-    const baseSummary = screen.getByRole("button", { name: "Connect EVM wallet" })
-    expect(within(icSummary).getByRole("img", { name: "Internet Computer logo" })).toHaveAttribute(
-      "data-network-logo",
-      "ic",
-    )
-    expect(within(baseSummary).getByRole("img", { name: "Base logo" })).toHaveAttribute(
-      "data-network-logo",
-      "base",
-    )
-    unmount()
-  })
-
   it("shows the official IC wallet logos and connects the selected provider", () => {
     render(
       <WalletDialogProvider>

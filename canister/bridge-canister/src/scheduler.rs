@@ -23,6 +23,7 @@ const _: () =
     assert!(LEASE_NS > MAX_EVM_RPC_CALL_NS * MAX_SEQUENTIAL_EVM_RPC_ROUNDS + 60 * 1_000_000_000);
 const BUSY_RETRY_NS: u64 = 60 * 1_000_000_000;
 const MAX_TRANSIENT_RETRY_NS: u64 = 15 * 60 * 1_000_000_000;
+const MAX_CONSECUTIVE_AUTOMATIC_FAILURES: u8 = 3;
 #[cfg(target_arch = "wasm32")]
 const MAX_AUTOMATIC_SETTLEMENTS: u64 = 4;
 #[cfg(target_arch = "wasm32")]
@@ -84,7 +85,75 @@ fn transient_stop(reason: &tasks::SettlementStopReason) -> bool {
         tasks::SettlementStopReason::LedgerUnavailable
             | tasks::SettlementStopReason::LedgerAmbiguous
             | tasks::SettlementStopReason::RpcUnavailable
+            | tasks::SettlementStopReason::RpcInconsistent
             | tasks::SettlementStopReason::SigningUnavailable
+            | tasks::SettlementStopReason::InsufficientCycles
+    )
+}
+
+fn retry_or_park(
+    job: &SettlementJob,
+    retry_interval_seconds: u64,
+    detail: String,
+    record_stop_reason: Option<String>,
+) -> Result<(), SettlementActionError> {
+    let automatic_lane = job.lease_lane == crate::storage::SettlementLeaseLane::Automatic;
+    let failures =
+        ::bridge_core::kernel::settlement_failure_count(job.attempts, automatic_lane, true, false);
+    if ::bridge_core::kernel::automatic_retry_allowed(
+        automatic_lane,
+        failures,
+        MAX_CONSECUTIVE_AUTOMATIC_FAILURES,
+    ) {
+        return finish(
+            job,
+            Some(transient_retry_at(retry_interval_seconds, job.attempts)),
+            failures,
+            None,
+            record_stop_reason,
+        );
+    }
+    let (code, detail) = if automatic_lane {
+        (
+            "AutomaticRetryLimitReached",
+            format!("automatic retry limit reached after {failures} failures: {detail}"),
+        )
+    } else {
+        ("ManualContinuationRequired", detail)
+    };
+    finish(
+        job,
+        None,
+        failures,
+        Some((code, detail)),
+        record_stop_reason,
+    )
+}
+
+fn reset_consecutive_failures(job: &SettlementJob) -> u8 {
+    ::bridge_core::kernel::settlement_failure_count(
+        job.attempts,
+        job.lease_lane == crate::storage::SettlementLeaseLane::Automatic,
+        false,
+        true,
+    )
+}
+
+fn park_manual_deposit_busy(job: &SettlementJob) -> Result<(), SettlementActionError> {
+    let record_stop_reason = STORE
+        .with(|store| {
+            store
+                .borrow()
+                .deposit(job.settlement_id)
+                .map(|record| record.and_then(|record| record.last_settlement_stop_reason))
+        })
+        .map_err(|_| SettlementActionError::StorageFailure)?;
+    finish(
+        job,
+        None,
+        job.attempts,
+        Some(("ManualContinuationRequired", "deposit is busy".into())),
+        record_stop_reason,
     )
 }
 
@@ -135,6 +204,8 @@ impl SettlementLease {
     }
 
     pub(crate) fn renew_before_external_call(&mut self) -> Result<(), SettlementActionError> {
+        crate::require_external_call_cycle_budget(0)
+            .map_err(|_| SettlementActionError::InsufficientCycles)?;
         let now = ic_cdk::api::time();
         let renewed = STORE.with(|store| {
             store.borrow_mut().renew_settlement_lease(
@@ -167,7 +238,57 @@ impl SettlementLease {
 thread_local! {
     static HISTORY_INDEX_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
     static SETTLEMENT_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
-    static FUNDING_RECOVERY_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> = const { std::cell::RefCell::new(None) };
+    static FUNDING_RECOVERY_TIMER: std::cell::RefCell<Option<(ic_cdk_timers::TimerId, u64)>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+thread_local! {
+    static FUNDING_RECOVERY_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+struct FundingRecoveryGuard;
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl FundingRecoveryGuard {
+    fn acquire() -> Option<Self> {
+        FUNDING_RECOVERY_RUNNING.with(|running| {
+            if running.replace(true) {
+                None
+            } else {
+                Some(Self)
+            }
+        })
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl Drop for FundingRecoveryGuard {
+    fn drop(&mut self) {
+        FUNDING_RECOVERY_RUNNING.with(|running| running.set(false));
+        arm_funding_recovery();
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn funding_recovery_paused() -> bool {
+    !STORE.with(|store| {
+        store
+            .borrow()
+            .admin_state()
+            .is_ok_and(|state| !state.deposits_paused)
+    })
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn funding_timer_deadline_to_arm(
+    current_deadline_ns: Option<u64>,
+    next_deadline_ns: Option<u64>,
+) -> Option<u64> {
+    match next_deadline_ns {
+        Some(next) if current_deadline_ns.is_none_or(|current| next < current) => Some(next),
+        _ => None,
+    }
 }
 
 // History maintenance has durable progress but must also run while asset operations are paused.
@@ -196,35 +317,61 @@ pub fn arm_history_index_rebuild() {
 
 pub fn arm_funding_recovery() {
     #[cfg(target_arch = "wasm32")]
-    FUNDING_RECOVERY_TIMER.with(|slot| {
-        if !asset_operations_allowed() {
-            if let Some(timer) = slot.borrow_mut().take() {
+    {
+        if !asset_operations_allowed() || funding_recovery_paused() {
+            FUNDING_RECOVERY_TIMER.with(|slot| {
+                if let Some((timer, _)) = slot.borrow_mut().take() {
+                    ic_cdk_timers::clear_timer(timer);
+                }
+            });
+            return;
+        }
+        if FUNDING_RECOVERY_RUNNING.with(|running| running.get()) {
+            return;
+        }
+        let next = STORE.with(|store| store.borrow().next_deposit_funding_recovery_ns());
+        let next_run_at_ns = match next {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                FUNDING_RECOVERY_TIMER.with(|slot| {
+                    if let Some((timer, _)) = slot.borrow_mut().take() {
+                        ic_cdk_timers::clear_timer(timer);
+                    }
+                });
+                return;
+            }
+            Err(_) => {
+                mark_fault("failed to read the next funding recovery deadline");
+                return;
+            }
+        };
+        let now = ic_cdk::api::time();
+        FUNDING_RECOVERY_TIMER.with(|slot| {
+            let current_deadline_ns = slot.borrow().as_ref().map(|(_, deadline)| *deadline);
+            if funding_timer_deadline_to_arm(current_deadline_ns, Some(next_run_at_ns)).is_none() {
+                return;
+            }
+            if let Some((timer, _)) = slot.borrow_mut().take() {
                 ic_cdk_timers::clear_timer(timer);
             }
-            return;
-        }
-        if slot.borrow().is_some()
-            || !STORE.with(|store| store.borrow().has_deposit_funding_attempts())
-        {
-            return;
-        }
-        let timer = ic_cdk_timers::set_timer(
-            Duration::from_secs(FUNDING_RECOVERY_INTERVAL_SECONDS),
-            async {
+            let delay = next_run_at_ns.saturating_sub(now);
+            let timer = ic_cdk_timers::set_timer(Duration::from_nanos(delay), async {
                 FUNDING_RECOVERY_TIMER.with(|slot| {
                     slot.borrow_mut().take();
                 });
+                let Some(_guard) = FundingRecoveryGuard::acquire() else {
+                    return;
+                };
                 recover_one_funding_attempt().await;
-                arm_funding_recovery();
-            },
-        );
-        *slot.borrow_mut() = Some(timer);
-    });
+            });
+            *slot.borrow_mut() = Some((timer, next_run_at_ns));
+        });
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 async fn recover_one_funding_attempt() {
-    if !asset_operations_allowed() {
+    if !asset_operations_allowed() || funding_recovery_paused() {
         return;
     }
     let now = ic_cdk::api::time();
@@ -310,7 +457,8 @@ async fn recover_one_funding_attempt() {
     )
     .await
     {
-        crate::ledger::ReconciliationOutcome::Progress(progress) => {
+        crate::ledger::ReconciliationOutcome::Progress(progress)
+        | crate::ledger::ReconciliationOutcome::NoProgress(progress) => {
             let mut next = current.clone();
             next.state = DepositFundingAttemptState::Reconciling {
                 progress,
@@ -395,13 +543,39 @@ async fn recover_one_funding_attempt() {
 mod funding_recovery_tests {
     use super::{
         fresh_funding_reconciliation_progress, funding_dedup_expired,
-        funding_dedup_expiry_boundary_ns, funding_final_scan_at_ns, LEDGER_DEDUP_EXPIRY_MARGIN_NS,
-        LEDGER_DEDUP_NS,
+        funding_dedup_expiry_boundary_ns, funding_final_scan_at_ns, funding_timer_deadline_to_arm,
+        LEDGER_DEDUP_EXPIRY_MARGIN_NS, LEDGER_DEDUP_NS,
     };
     use bridge_core::{
         Account, Amount, DepositId, LedgerOperation, LedgerTransferIdentity,
         ReconciliationScanPhase, ReconciliationScanProgress, ReconciliationTarget,
     };
+
+    #[test]
+    fn funding_recovery_guard_excludes_reentry_and_releases_on_cancellation() {
+        use super::FundingRecoveryGuard;
+        use std::{
+            future::Future,
+            pin::pin,
+            task::{Context, Poll, Waker},
+        };
+
+        let guard = FundingRecoveryGuard::acquire().expect("first execution");
+        assert!(FundingRecoveryGuard::acquire().is_none());
+        drop(guard);
+
+        let mut pending = Box::pin(async {
+            let _guard = FundingRecoveryGuard::acquire().expect("released execution");
+            std::future::pending::<()>().await;
+        });
+        assert_eq!(
+            pin!(&mut pending).poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Pending
+        );
+        assert!(FundingRecoveryGuard::acquire().is_none());
+        drop(pending);
+        assert!(FundingRecoveryGuard::acquire().is_some());
+    }
 
     #[test]
     fn early_absence_restarts_the_same_transfer_from_a_fresh_ledger_cursor() {
@@ -447,6 +621,15 @@ mod funding_recovery_tests {
         assert!(funding_dedup_expired(created_at, boundary + 1));
         assert_eq!(funding_dedup_expiry_boundary_ns(created_at), boundary);
         assert_eq!(funding_final_scan_at_ns(created_at), boundary + 1);
+    }
+
+    #[test]
+    fn funding_timer_rearms_only_for_an_earlier_deadline() {
+        assert_eq!(funding_timer_deadline_to_arm(None, Some(100)), Some(100));
+        assert_eq!(funding_timer_deadline_to_arm(Some(100), Some(99)), Some(99));
+        assert_eq!(funding_timer_deadline_to_arm(Some(100), Some(100)), None);
+        assert_eq!(funding_timer_deadline_to_arm(Some(100), Some(101)), None);
+        assert_eq!(funding_timer_deadline_to_arm(Some(100), None), None);
     }
 }
 
@@ -601,23 +784,16 @@ pub(crate) async fn run_claimed_fee_payout(
         ),
         Ok(tasks::FeePayoutActionResult::ReconciliationProgress { .. }) => finish(
             &lease.job,
-            Some(transient_retry_at(
-                retry_interval_seconds,
-                lease.job.attempts,
-            )),
-            lease.job.attempts.saturating_add(1),
+            Some(transient_retry_at(retry_interval_seconds, 0)),
+            reset_consecutive_failures(&lease.job),
             None,
             None,
         ),
         Ok(tasks::FeePayoutActionResult::Stopped { reason, .. }) if transient_stop(reason) => {
-            finish(
+            retry_or_park(
                 &lease.job,
-                Some(transient_retry_at(
-                    retry_interval_seconds,
-                    lease.job.attempts,
-                )),
-                lease.job.attempts.saturating_add(1),
-                None,
+                retry_interval_seconds,
+                format!("{reason:?}"),
                 None,
             )
         }
@@ -633,6 +809,12 @@ pub(crate) async fn run_claimed_fee_payout(
             Some(now.saturating_add(BUSY_RETRY_NS)),
             lease.job.attempts,
             None,
+            None,
+        ),
+        Err(SettlementActionError::InsufficientCycles) => retry_or_park(
+            &lease.job,
+            retry_interval_seconds,
+            "InsufficientCycles".into(),
             None,
         ),
         Err(error) => finish(
@@ -673,7 +855,7 @@ async fn run_claimed_inner(
                 Some(("ManualContinuationRequired", "withdrawal is busy".into())),
                 Some("Manual continuation required".into()),
             )?;
-        } else {
+        } else if lease.job.lease_lane == crate::storage::SettlementLeaseLane::Automatic {
             finish(
                 &lease.job,
                 Some(now.saturating_add(BUSY_RETRY_NS)),
@@ -681,6 +863,8 @@ async fn run_claimed_inner(
                 None,
                 None,
             )?;
+        } else {
+            park_manual_deposit_busy(&lease.job)?;
         }
         return Err(SettlementActionError::Busy);
     };
@@ -700,16 +884,14 @@ async fn run_claimed_inner(
     } else {
         let retry_interval_seconds = settlement_retry_interval_seconds()?;
         match &result {
-            Ok(SettlementActionResult::Stopped { reason, .. }) if transient_stop(reason) => finish(
-                &lease.job,
-                Some(transient_retry_at(
+            Ok(SettlementActionResult::Stopped { reason, .. }) if transient_stop(reason) => {
+                retry_or_park(
+                    &lease.job,
                     retry_interval_seconds,
-                    lease.job.attempts,
-                )),
-                lease.job.attempts.saturating_add(1),
-                None,
-                record_stop_reason.clone(),
-            ),
+                    format!("{reason:?}"),
+                    record_stop_reason.clone(),
+                )
+            }
             Ok(SettlementActionResult::Stopped { reason, .. }) => finish(
                 &lease.job,
                 None,
@@ -719,30 +901,39 @@ async fn run_claimed_inner(
             ),
             Ok(SettlementActionResult::ReconciliationProgress { .. }) => finish(
                 &lease.job,
-                Some(transient_retry_at(
-                    retry_interval_seconds,
-                    lease.job.attempts,
-                )),
-                lease.job.attempts.saturating_add(1),
+                Some(transient_retry_at(retry_interval_seconds, 0)),
+                reset_consecutive_failures(&lease.job),
                 None,
                 None,
             ),
             Ok(SettlementActionResult::Deferred { next_run_at_ns, .. }) => finish(
                 &lease.job,
                 Some(*next_run_at_ns),
-                lease.job.attempts,
+                reset_consecutive_failures(&lease.job),
                 None,
                 None,
             ),
             Ok(SettlementActionResult::Complete { .. }) => {
                 finish(&lease.job, None, lease.job.attempts, None, None)
             }
-            Err(SettlementActionError::Busy) => finish(
+            Err(SettlementActionError::Busy) => {
+                if lease.job.lease_lane == crate::storage::SettlementLeaseLane::Automatic {
+                    finish(
+                        &lease.job,
+                        Some(ic_cdk::api::time().saturating_add(BUSY_RETRY_NS)),
+                        lease.job.attempts,
+                        None,
+                        None,
+                    )
+                } else {
+                    park_manual_deposit_busy(&lease.job)
+                }
+            }
+            Err(SettlementActionError::InsufficientCycles) => retry_or_park(
                 &lease.job,
-                Some(ic_cdk::api::time().saturating_add(BUSY_RETRY_NS)),
-                lease.job.attempts,
-                None,
-                None,
+                retry_interval_seconds,
+                "InsufficientCycles".into(),
+                Some("Insufficient execution cycles".into()),
             ),
             Err(error) => finish(
                 &lease.job,
@@ -887,16 +1078,19 @@ mod tests {
     }
 
     #[test]
-    fn only_recoverable_stop_reasons_are_rescheduled() {
+    fn only_transient_stop_reasons_are_retryable() {
         assert!(transient_stop(&tasks::SettlementStopReason::RpcUnavailable));
+        assert!(transient_stop(
+            &tasks::SettlementStopReason::RpcInconsistent
+        ));
         assert!(transient_stop(
             &tasks::SettlementStopReason::SigningUnavailable
         ));
-        assert!(!transient_stop(
-            &tasks::SettlementStopReason::LedgerFeeExceedsServiceFee
+        assert!(transient_stop(
+            &tasks::SettlementStopReason::InsufficientCycles
         ));
         assert!(!transient_stop(
-            &tasks::SettlementStopReason::RpcInconsistent
+            &tasks::SettlementStopReason::LedgerFeeExceedsServiceFee
         ));
         assert!(!transient_stop(
             &tasks::SettlementStopReason::BaseStateMismatch

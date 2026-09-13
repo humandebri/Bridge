@@ -7734,8 +7734,17 @@ impl StableStore {
             .transpose()
     }
 
-    pub fn has_deposit_funding_attempts(&self) -> bool {
-        self.deposit_funding_attempts.len() != 0
+    pub fn next_deposit_funding_recovery_ns(&self) -> Result<Option<u64>, StorageError> {
+        self.handle
+            .query(|connection| {
+                connection.query_optional_scalar::<i64>(
+                    "SELECT recovery_due_ns FROM deposit_funding_attempts
+                     ORDER BY recovery_due_ns, key LIMIT 1",
+                    params![],
+                )
+            })?
+            .map(|value| u64::try_from(value).map_err(|_| StorageError::DecodeFailed))
+            .transpose()
     }
 
     pub fn next_deposit_funding_attempt_for_recovery(
@@ -14245,46 +14254,21 @@ mod tests {
     #[test]
     #[serial]
     fn obsolete_v32_schema_fails_closed_even_when_empty() {
-        let memory = VectorMemory::default();
-        let store = StableStore::init(memory.clone()).expect("initialize current schema");
-        mark_stored_schema(&store, OBSOLETE_SCHEMA_VERSION_V32);
-        drop(store);
-
-        assert!(matches!(
-            StableStore::reopen_after_upgrade(memory),
-            Err(StorageError::UnsupportedSchemaVersion(version))
-                if version == OBSOLETE_SCHEMA_VERSION_V32
-        ));
-    }
-
-    #[test]
-    #[serial]
-    fn obsolete_v33_schema_fails_closed_even_when_empty() {
-        let memory = VectorMemory::default();
-        let store = StableStore::init(memory.clone()).expect("initialize current schema");
-        mark_stored_schema(&store, OBSOLETE_SCHEMA_VERSION_V33);
-        drop(store);
-
-        assert!(matches!(
-            StableStore::reopen_after_upgrade(memory),
-            Err(StorageError::UnsupportedSchemaVersion(version))
-                if version == OBSOLETE_SCHEMA_VERSION_V33
-        ));
-    }
-
-    #[test]
-    #[serial]
-    fn obsolete_v34_schema_fails_closed_even_when_empty() {
-        let memory = VectorMemory::default();
-        let store = StableStore::init(memory.clone()).expect("initialize current schema");
-        mark_stored_schema(&store, OBSOLETE_SCHEMA_VERSION_V34);
-        drop(store);
-
-        assert!(matches!(
-            StableStore::reopen_after_upgrade(memory),
-            Err(StorageError::UnsupportedSchemaVersion(version))
-                if version == OBSOLETE_SCHEMA_VERSION_V34
-        ));
+        for version in [
+            OBSOLETE_SCHEMA_VERSION_V32,
+            OBSOLETE_SCHEMA_VERSION_V33,
+            OBSOLETE_SCHEMA_VERSION_V34,
+        ] {
+            let memory = VectorMemory::default();
+            let store = StableStore::init(memory.clone()).expect("initialize current schema");
+            mark_stored_schema(&store, version);
+            drop(store);
+            assert_eq!(
+                StableStore::reopen_after_upgrade(memory).err(),
+                Some(StorageError::UnsupportedSchemaVersion(version)),
+                "schema v{version}"
+            );
+        }
     }
 
     #[cfg(feature = "test-deployment")]
@@ -15220,6 +15204,26 @@ mod tests {
         assert!(plan
             .iter()
             .any(|detail| detail.contains("deposit_funding_attempts_recovery_due")));
+        let earliest_plan = store
+            .handle
+            .query(|connection| {
+                connection.query_all(
+                    "EXPLAIN QUERY PLAN SELECT recovery_due_ns FROM deposit_funding_attempts
+                     ORDER BY recovery_due_ns, key LIMIT 1",
+                    params![],
+                    |row| row.get::<String>(3),
+                )
+            })
+            .expect("earliest deadline query plan");
+        assert!(earliest_plan
+            .iter()
+            .any(|detail| detail.contains("deposit_funding_attempts_recovery_due")));
+        assert_eq!(
+            store
+                .next_deposit_funding_recovery_ns()
+                .expect("earliest recovery deadline"),
+            Some(120_000_000_000)
+        );
         assert_eq!(
             store
                 .next_deposit_funding_attempt_for_recovery(120_000_000_000)

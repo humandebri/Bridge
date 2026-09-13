@@ -473,7 +473,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'get_transactions' : IDL.Func(
         [GetBlocksRequest],
         [GetTransactionsResponse],
-        ['query'],
+        [],
       ),
     'icrc1_fee' : IDL.Func([], [IDL.Nat], ['query']),
     'icrc1_transfer' : IDL.Func([TransferArg], [Result_6], []),
@@ -494,6 +494,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'probe_chain_key' : IDL.Func([IDL.Text], [Result_9], []),
     'receipt_call_count' : IDL.Func([], [IDL.Nat64], ['query']),
     'receipt_mint_log_index' : IDL.Func([], [IDL.Opt(IDL.Nat64)], ['query']),
+    'reconciliation_calls' : IDL.Func([], [IDL.Nat64], ['query']),
     'request_cycles' : IDL.Func([], [RequestCyclesResult], []),
     'set_archive_prefix_length' : IDL.Func([IDL.Nat64], [], []),
     'set_block_mode' : IDL.Func([BlockMode], [], []),
@@ -508,6 +509,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'set_broadcast_inconsistent_after_accepts' : IDL.Func([IDL.Nat8], [], []),
     'set_configured_chain_id' : IDL.Func([IDL.Nat64], [], []),
     'set_cycles_top_up_mode' : IDL.Func([CyclesTopUpMode], [], []),
+    'set_delay_funding_transfer' : IDL.Func([IDL.Bool], [], []),
     'set_deployment_postconditions' : IDL.Func(
         [
           IDL.Vec(IDL.Nat8),
@@ -561,6 +563,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'set_processed_deposit' : IDL.Func([IDL.Bool], [], []),
     'set_receipt_mint_log_index' : IDL.Func([IDL.Opt(IDL.Nat64)], [], []),
     'set_receipt_mode' : IDL.Func([ReceiptMode], [], []),
+    'set_reconciliation_mode' : IDL.Func([IDL.Nat8], [], []),
     'set_refund_ledger_mode' : IDL.Func([IDL.Opt(LedgerMode)], [], []),
     'set_safe_block' : IDL.Func(
         [IDL.Nat64, IDL.Vec(IDL.Nat8)],
@@ -571,7 +574,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'set_withdrawal' : IDL.Func([IDL.Opt(WithdrawalFixture)], [], []),
     'set_withdrawal_status' : IDL.Func([IDL.Nat8], [], []),
     'set_withdrawals_paused' : IDL.Func([IDL.Bool], [], []),
-    'status' : IDL.Func([], [Status], ['query']),
+    'status' : IDL.Func([], [Status], []),
   });
 };
 export const init = ({ IDL }: Parameters<import("@icp-sdk/core/candid").IDL.InterfaceFactory>[0]) => {

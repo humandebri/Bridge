@@ -169,6 +169,12 @@ macro_rules! signing_cycle_requirement_body {
     }};
 }
 
+macro_rules! automatic_retry_allowed_body {
+    ($automatic_lane:expr, $consecutive_failures:expr, $failure_limit:expr) => {
+        $automatic_lane && $consecutive_failures < $failure_limit
+    };
+}
+
 macro_rules! transaction_liability_body {
     ($gas_limit:expr, $max_fee_per_gas:expr, $l1_fee:expr, $value:expr, $max:expr, $zero:expr) => {{
         if $value > $max - $l1_fee {
@@ -1162,6 +1168,47 @@ pub const fn signing_cycle_requirement(
     call_margin: u128,
 ) -> Option<u128> {
     signing_cycle_requirement_body!(required_reserve, signing_cost, call_margin, u128::MAX)
+}
+
+/// Returns the minimum liquid-cycle balance required before any paid external call.
+/// The call attachment and one operation margin are kept distinct from the
+/// reserve already committed to existing liabilities.
+#[cfg(not(verus_keep_ghost))]
+pub const fn paid_call_cycle_requirement(
+    required_reserve: u128,
+    attached_cycles: u128,
+    call_margin: u128,
+) -> Option<u128> {
+    signing_cycle_requirement_body!(required_reserve, attached_cycles, call_margin, u128::MAX)
+}
+
+/// Automatic work is rescheduled only while its consecutive failure count is
+/// below the fixed limit. Explicit manual work never silently becomes a retry loop.
+#[cfg(not(verus_keep_ghost))]
+pub const fn automatic_retry_allowed(
+    automatic_lane: bool,
+    consecutive_failures: u8,
+    failure_limit: u8,
+) -> bool {
+    automatic_retry_allowed_body!(automatic_lane, consecutive_failures, failure_limit)
+}
+
+/// Tracks only consecutive automatic failures. Progress and explicit deferral
+/// establish a new retry episode; manual and busy outcomes preserve the count.
+#[cfg(not(verus_keep_ghost))]
+pub const fn settlement_failure_count(
+    current: u8,
+    automatic_lane: bool,
+    retryable_failure: bool,
+    progress_or_deferred: bool,
+) -> u8 {
+    if progress_or_deferred {
+        0
+    } else if automatic_lane && retryable_failure {
+        current.saturating_add(1)
+    } else {
+        current
+    }
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -2553,6 +2600,23 @@ verus! {
     ) -> Option<int> {
         let max: int = 340282366920938463463374607431768211455;
         signing_cycle_requirement_body!(required_reserve, signing_cost, call_margin, max)
+    }
+
+    pub open spec fn paid_call_cycle_requirement_spec(
+        required_reserve: int,
+        attached_cycles: int,
+        call_margin: int,
+    ) -> Option<int> {
+        let max: int = 340282366920938463463374607431768211455;
+        signing_cycle_requirement_body!(required_reserve, attached_cycles, call_margin, max)
+    }
+
+    pub open spec fn automatic_retry_allowed_spec(
+        automatic_lane: bool,
+        consecutive_failures: int,
+        failure_limit: int,
+    ) -> bool {
+        automatic_retry_allowed_body!(automatic_lane, consecutive_failures, failure_limit)
     }
 
     pub open spec fn transaction_liability_wei_spec(

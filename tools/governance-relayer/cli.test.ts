@@ -21,6 +21,8 @@ import {
   identityFromPem,
   isActivationArtifact,
   isNonceTooLow,
+  isAlreadyKnown,
+  redactedErrorMessage,
   parseExpectedGovernanceOperationId,
   parseOptions,
   selectPendingArtifact,
@@ -34,6 +36,30 @@ import {
   writeJsonExclusiveAtomic,
   writeOrMatchConfirmationEvidence,
 } from "./cli.ts"
+
+test("parses explicit and inline options without accepting positional input", () => {
+  assert.deepEqual(parseOptions(["--operation-id", "7", "--max-fee=100", "--help"]), {
+    "operation-id": "7", "max-fee": "100", help: true,
+  })
+  assert.throws(() => parseOptions(["unexpected"]), /Unexpected argument/)
+})
+
+test("treats idempotent RPC submission responses as already relayed", () => {
+  assert.equal(isAlreadyKnown(new Error("already known")), true)
+  assert.equal(isAlreadyKnown(new Error("nonce too low")), false)
+  assert.equal(isAlreadyKnown(new Error("insufficient funds")), false)
+})
+
+test("redacts identity paths and RPC credentials from errors", () => {
+  const environment = {
+    BASE_RPC_URL: "https://rpc.example/key-secret",
+    IC_IDENTITY_PEM: "/secure/governance-secret.pem",
+  }
+  assert.equal(redactedErrorMessage(
+    new Error(`request to ${environment.BASE_RPC_URL} failed for ${environment.IC_IDENTITY_PEM}`),
+    environment,
+  ), "request to [REDACTED] failed for [REDACTED]")
+})
 
 test("publishes receipts atomically across pre- and post-publish failures", async () => {
   const root = await mkdtemp(join(tmpdir(), "bridge-atomic-receipt-"))

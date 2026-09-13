@@ -14,7 +14,7 @@ PROOF_CLASSES = {"local-safety", "history-safety", "implementation-only"}
 ASSURANCE_TARGETS = {"release-safety", "model-support"}
 REQUIRED_STRENGTHS = {"production-linked", "implementation-proved"}
 REQUIRED_CLAIM_IDS = frozenset(
-    """cycles_top_up_request_policy activation_preflight authorization_binding canonical_probe committed_quote
+    """cycles_top_up_request_policy activation_preflight authorization_binding automatic_retry_limit canonical_probe committed_quote
     deposit_admission deposit_backing deposit_identity_preflight epoch_invalidation
     exact_mint_finalization expiry_refund
     fee_accounting_once fee_payout fee_recipient_rotation funding_attempt_lifecycle
@@ -28,18 +28,18 @@ REQUIRED_CLAIM_IDS = frozenset(
     operational_config_seal
     refund_evidence_enforcement refund_request_authorization reservation_commit
     reservation_lifecycle runtime_attestation_reuse service_fee_maximum
-    settlement_backing signing_cycle_reserve withdrawal_admission_boundary
+    paid_call_cycle_reserve settlement_backing signing_cycle_reserve withdrawal_admission_boundary
     withdrawal_finality_quorum withdrawal_finalization""".split()
 )
 REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS = frozenset(
     """cycles_top_up_request_policy activation_preflight canonical_probe committed_quote deposit_identity_preflight
     fee_recipient_rotation funding_attempt_lifecycle funding_reconciliation_freshness
     governance_confirmation_authorization governance_transaction_affordability
-    lease_lane_isolation ledger_block_provenance nonterminal_deposit_index_consistency
+    automatic_retry_limit lease_lane_isolation ledger_block_provenance nonterminal_deposit_index_consistency
     notification_quota_isolation operational_config_seal refund_request_authorization reservation_commit
     confirmed_activation_evidence_binding
     initial_activation_authorization
-    runtime_attestation_reuse service_fee_maximum signing_cycle_reserve
+    paid_call_cycle_reserve runtime_attestation_reuse service_fee_maximum signing_cycle_reserve
     withdrawal_admission_boundary""".split()
 )
 REQUIRED_CLAIM_POLICY = {
@@ -75,6 +75,7 @@ REQUIRED_CONDITIONAL_LIVENESS_POLICY = {
         "BridgeSpec.Liveness.FundedDepositEventuallyMinted",
         frozenset(
             {
+                "eventual_deposit_continuation",
                 "eventual_external_resolution",
                 "eventual_storage_commit",
                 "eventual_user_action",
@@ -91,6 +92,7 @@ REQUIRED_CONDITIONAL_LIVENESS_POLICY = {
         "BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded",
         frozenset(
             {
+                "eventual_deposit_continuation",
                 "eventual_external_resolution",
                 "eventual_keeper_action",
                 "eventual_storage_commit",
@@ -108,6 +110,7 @@ REQUIRED_CONDITIONAL_LIVENESS_POLICY = {
         "BridgeSpec.Liveness.FundedDepositEventuallyMintedOrRefunded",
         frozenset(
             {
+                "eventual_deposit_continuation",
                 "eventual_external_resolution",
                 "eventual_keeper_action",
                 "eventual_storage_commit",

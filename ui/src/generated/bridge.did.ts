@@ -626,6 +626,7 @@ export type SettlementState = { 'Deposit' : DepositPhase } |
 export type SettlementStopReason = { 'LedgerFeeExceedsServiceFee' : null } |
   { 'LedgerRejected' : string } |
   { 'RpcUnavailable' : null } |
+  { 'InsufficientCycles' : null } |
   { 'RpcInconsistent' : null } |
   { 'LedgerAmbiguous' : null } |
   { 'LedgerUnavailable' : null } |

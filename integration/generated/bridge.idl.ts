@@ -124,6 +124,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'LedgerFeeExceedsServiceFee' : IDL.Null,
     'LedgerRejected' : IDL.Text,
     'RpcUnavailable' : IDL.Null,
+    'InsufficientCycles' : IDL.Null,
     'RpcInconsistent' : IDL.Null,
     'LedgerAmbiguous' : IDL.Null,
     'LedgerUnavailable' : IDL.Null,

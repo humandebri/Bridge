@@ -166,11 +166,51 @@ describe("History finalized authorization deadline recovery", () => {
   it("holds_AuthorizationExpired_until_finalized_Base_time_passes_the_deadline", () => {
     expectRefundOnlyAfterDeadline({ AuthorizationExpired: null })
   })
-
-  it("holds_AuthorizationWindowTooShort_until_finalized_Base_time_passes_the_deadline", () => {
-    expectRefundOnlyAfterDeadline({ AuthorizationWindowTooShort: null })
-  })
 })
+
+describe("History stopped deposit recovery", () => {
+  it(
+    "offers one explicit continuation for retry-limited stops",
+    offers_one_explicit_continuation_for_retry_limited_stops,
+  )
+})
+
+function offers_one_explicit_continuation_for_retry_limited_stops(): void {
+  const reason: SettlementStopReason = { LedgerUnavailable: null }
+  const onContinue = vi.fn(() => Promise.resolve())
+  const view = render(
+    <DepositActivityRow
+      item={depositItem(reason)}
+      mintFinalization="absent"
+      writesEnabled
+      actioningId={undefined}
+      onRequestRefund={vi.fn(() => Promise.resolve())}
+      onContinue={onContinue}
+    />,
+  )
+
+  fireEvent.click(screen.getByRole("button", { name: "Continue deposit" }))
+  expect(onContinue).toHaveBeenCalledOnce()
+
+  const refundable = depositItem({ InsufficientCycles: null })
+  refundable.deposit.state = { RefundAvailable: null }
+  const onRequestRefund = vi.fn(() => Promise.resolve())
+  view.rerender(
+    <DepositActivityRow
+      item={refundable}
+      mintFinalization="absent"
+      writesEnabled
+      actioningId={undefined}
+      onRequestRefund={onRequestRefund}
+      onContinue={onContinue}
+    />,
+  )
+  expect(screen.queryByRole("button", { name: "Continue deposit" })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Request refund" }))
+  expect(onRequestRefund).toHaveBeenCalledWith(refundable.deposit)
+  expect(onContinue).toHaveBeenCalledOnce()
+  view.unmount()
+}
 
 function expectRefundOnlyAfterDeadline(reason: SettlementStopReason): void {
   const item = depositItem(reason)

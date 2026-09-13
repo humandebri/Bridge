@@ -334,6 +334,23 @@ describe("Plug restored account validation", () => {
     ).rejects.toThrow("Plug account changed")
   })
 
+  it("accepts_InsufficientCycles_as_a_valid_stopped_continuation", async () => {
+    const plug = installPlug("aaaaa-aa")
+    const stopped = {
+      Stopped: {
+        state: { Deposit: { AuthorizationPending: null } },
+        reason: { InsufficientCycles: null },
+      },
+    }
+    plug.createActor.mockResolvedValue({
+      continue_deposit: vi.fn().mockResolvedValue({ Ok: stopped }),
+    })
+    const adapter = new PlugAdapter("https://icp-api.io", "aaaaa-aa", "aaaaa-aa", {
+      owner: "aaaaa-aa",
+    })
+    await expect(adapter.continueDeposit(new Uint8Array(32).fill(7))).resolves.toEqual(stopped)
+  })
+
   it("accepts_AuthorizationWindowTooShort_as_a_valid_stopped_continuation", async () => {
     const plug = installPlug("aaaaa-aa")
     plug.createActor.mockResolvedValue({
