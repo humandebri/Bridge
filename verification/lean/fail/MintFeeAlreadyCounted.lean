@@ -14,6 +14,6 @@ def state : DepositState := {
   pendingDepositLiability := 10, reservedMint := 10, feeCounted := true
 }
 
-example : (installSignature state).any
+example : (installSignature state 0).any
     (fun next => next.feeReserve = state.feeReserve + authorization.chargedServiceFee) := by
   decide

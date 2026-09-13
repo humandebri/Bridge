@@ -144,6 +144,12 @@
       "runner": "rust",
       "target": "canister/bridge-core/tests/generated_refinement.rs",
       "selector": "protocol_settlement_cases_matches_production"
+    },
+    {
+      "section": "signature_time_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_signature_time_cases_matches_production"
     }
   ]
 }

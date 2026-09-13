@@ -485,3 +485,15 @@ fn protocol_settlement_cases_matches_production() {
         assert_eq!(backed(after), boolean(&case, "after_backed"));
     }
 }
+
+#[test]
+fn protocol_signature_time_cases_matches_production() {
+    for case in cases("signature_time_cases") {
+        let observed: u64 = text(&case, "observed_timestamp").parse().unwrap();
+        let deadline: u64 = text(&case, "deadline").parse().unwrap();
+        assert_eq!(
+            bridge_core::kernel::mint_authorization_has_minimum_remaining_time(observed, deadline),
+            boolean(&case, "accepted")
+        );
+    }
+}

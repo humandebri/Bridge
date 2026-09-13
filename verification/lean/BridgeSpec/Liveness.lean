@@ -199,11 +199,11 @@ theorem funding_failure_eventually_cancelled : FundingFailureEventuallyCancelled
   have startBefore : start ≤ time := Nat.le_trans common.readyAfterStart after
   exact ⟨time + 1, by omega, cancelled⟩
 
-def FundedDepositEventuallyMintedOrRefunded : Prop :=
+def DepositTerminalProgressLemmas : Prop :=
   FundedDepositEventuallyMinted ∧ ExpiredDepositEventuallyRefunded
 
-theorem funded_deposit_eventually_minted_or_refunded :
-    FundedDepositEventuallyMintedOrRefunded :=
+theorem deposit_terminal_progress_lemmas :
+    DepositTerminalProgressLemmas :=
   ⟨funded_deposit_eventually_minted, expired_deposit_eventually_refunded⟩
 
 end BridgeSpec.Liveness

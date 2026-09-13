@@ -14,3 +14,8 @@ proof gateのpassが示すのは、これらの含意がproject-local axiomな�
 実装からadmissibilityが導出できることは証明していない。このためrelease summaryでは
 `conditional-liveness`として分離し、`release-ready`にも`implementation-proved`にも
 数えない。
+
+`DepositTerminalProgressLemmas`は、mint到達の条件付き含意とrefund到達の条件付き含意を組にした補題である。
+それぞれが自分の実行とadmissibilityを量化するため、同じDepositの同じ実行について「mintまたはrefundへ必ず到達する」という命題ではない。
+5件の登録にはこの組を含むが、release保証を追加するものではない。
+`CommonOperationalAssumptions`はreadyAt以降に可用性が継続することを要求し、単発の成功だけでは前提を満たさない。

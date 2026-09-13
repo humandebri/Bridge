@@ -67,6 +67,13 @@ def vitest_test(selector: str, body: str) -> str:
 
 
 RUST_RENDERERS: dict[str, tuple[str, str]] = {
+    "signature_time_cases": (
+        "protocol_signature_time_cases_matches_production",
+        '''        let observed: u64 = text(&case, "observed_timestamp").parse().unwrap();
+        let deadline: u64 = text(&case, "deadline").parse().unwrap();
+        assert_eq!(bridge_core::kernel::mint_authorization_has_minimum_remaining_time(
+            observed, deadline), boolean(&case, "accepted"));''',
+    ),
     "quote_cases": (
         "protocol_quote_cases_matches_production",
         '''        let amount_value = amount(text(&case, "amount"));
