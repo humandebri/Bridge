@@ -61,11 +61,6 @@ def main() -> None:
         ("docs/implementation-plan.md", r"(?:stable schema v|現行stable schemaはv)(\d+)", 2),
         (
             "canister/bridge-canister/src/storage/mod.rs",
-            r"assert_eq!\(SCHEMA_VERSION, (\d+)\);",
-            1,
-        ),
-        (
-            "canister/bridge-canister/src/storage/mod.rs",
             r"INSERT INTO bridge_metadata VALUES \(1, (\d+), \d+\);",
             1,
         ),

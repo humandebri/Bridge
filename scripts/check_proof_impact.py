@@ -38,7 +38,7 @@ REQUIRED_STAGES = (
     "verus-and-negative",
 )
 PAIRED_STAGES = (("lean", "lean-negative"),)
-RECEIPT_SCHEMA = 7
+RECEIPT_SCHEMA = 8
 EXPECTED_CLAIM_SUMMARY = {
     "total": len(REQUIRED_CLAIM_IDS),
     "release-ready": len(REQUIRED_CLAIM_IDS),
@@ -315,6 +315,11 @@ def validate_receipt_contents(receipt: object) -> None:
     if any(stage["source_fingerprint"] != receipt_fingerprint for stage in stages):
         raise ValueError("proof receipt stage source fingerprints do not match the run baseline")
 
+    from execution_session import validate_evidence
+    validate_evidence(receipt.get("execution"), receipt_fingerprint, stage_ids)
+    if "execution_error" in receipt:
+        raise ValueError("completed proof receipt contains an execution error")
+
     claims = receipt.get("claims")
     if not isinstance(claims, list) or not claims:
         raise ValueError("proof receipt claims must be a non-empty list")
@@ -345,6 +350,8 @@ def check_receipt(receipt_path: Path, repo_root: Path = ROOT) -> None:
         raise ValueError("proof receipt source fingerprint is stale")
     if repo_root.resolve() != ROOT.resolve():
         raise ValueError("claim report regeneration requires the repository root")
+    from execution_session import verify_current_evidence
+    verify_current_evidence(receipt["execution"], repo_root)
     from check_claim_manifest import CLAIM_REPORT_SCHEMA, build_claim_report
 
     expected_report = build_claim_report()

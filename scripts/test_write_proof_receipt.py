@@ -23,6 +23,11 @@ def fingerprint(digest: str) -> dict[str, object]:
 
 
 class ProofReceiptTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(write_proof_receipt, "collect_evidence", return_value={"run_id": "1" * 32})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def release_claims(self) -> list[dict[str, object]]:
         return [
             {
@@ -59,7 +64,7 @@ class ProofReceiptTests(unittest.TestCase):
     def stage_rows(self, current: dict[str, object], status: str = "pass") -> str:
         encoded = json.dumps(current, sort_keys=True)
         return "".join(
-            f"{stage}\t{status}\t{encoded}\n"
+            f"{stage}\t{status}\t{encoded}\t{'1' * 32}\n"
             for stage in write_proof_receipt.REQUIRED
         )
 

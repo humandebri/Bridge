@@ -31,9 +31,10 @@ class TrustedStagingLayoutTests(unittest.TestCase):
         self.touch(self.policy_dir / "legacy-stack-binding.json")
         self.touch(self.policy_dir / "fresh-stack.template.json")
 
-    def test_complete_upgrade_layout_requires_upgrade_tests(self) -> None:
+    def test_complete_upgrade_layout_is_rejected(self) -> None:
         self.install_upgrade_layout()
-        self.assertEqual(classify_layout(self.root, self.script_root), "upgrade")
+        with self.assertRaisesRegex(ValueError, "obsolete staging upgrade"):
+            classify_layout(self.root, self.script_root)
 
     def test_complete_replacement_layout_skips_obsolete_upgrade_tests(self) -> None:
         self.install_replacement_layout()

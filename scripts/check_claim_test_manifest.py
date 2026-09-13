@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
+import execution_session
+
 from claim_manifest import parse_claim_manifest, parse_claim_test_links
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -244,6 +246,11 @@ def execute_group(
         raise ValueError("execution requires one non-empty runner/file/policy group")
     test = tests[0]
     expected = [item.selector for item in tests]
+    if runner is subprocess.run and execution_session.active():
+        if test.execution != "grouped":
+            raise ValueError("isolated claim tests require a dedicated execution plan; sharing is forbidden")
+        execution_session.execute(test.runner, test.target, expected)
+        return
     if len(set(expected)) != len(expected):
         raise ValueError("ambiguous claim test selectors")
     # Match literal titles, including an optional enclosing JS suite prefix.

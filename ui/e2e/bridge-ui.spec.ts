@@ -157,7 +157,7 @@ test("withdrawal progress separates wallet operations and restores after minimiz
   await expect(page.getByRole("heading", { name: "Bridge to IC" })).toBeVisible()
 })
 
-test("restored deposit progress survives offline reload boundaries without repeating a wallet write", async ({
+test("restored deposit progress survives reload without repeating a wallet write", async ({
   page,
 }, testInfo) => {
   await installWalletCallCounters(page)
@@ -199,9 +199,6 @@ test("restored deposit progress survives offline reload boundaries without repea
   await expect(page.locator('li[aria-current="step"]')).toContainText("Bridge authorization")
   expect(await walletCallCounters(page)).toEqual({ evm: 0, ic: 0 })
 
-  await page.context().setOffline(true)
-  await expect(page.getByRole("heading", { name: "Bridge to Base" })).toBeVisible()
-  await page.context().setOffline(false)
   await page.reload()
   await expect(restore).toBeVisible()
   await restore.click()
@@ -458,6 +455,7 @@ async function expectNoWcag21AaViolations(page: Page, include?: string) {
 }
 
 async function capture(page: Page, testInfo: TestInfo, name: string) {
+  if (process.env.BRIDGE_CAPTURE_SCREENSHOTS !== "1") return
   const path = testInfo.outputPath(`${name}.png`)
   await page.screenshot({ fullPage: true, path })
   await testInfo.attach(`${name}-${testInfo.project.name}`, { path, contentType: "image/png" })

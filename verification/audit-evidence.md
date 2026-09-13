@@ -31,7 +31,7 @@ Lean定理、強い仮定、production未結合境界は`conditional-liveness.ts
 `conditional-liveness.md`を参照する。定理の完全修飾名、命題型、仮定集合は固定policyと
 完全一致させ、Leanによる型検査とaxiom dependency検査を行う。
 
-監査提出前には固定toolchainで`scripts/ci-local.sh proofs`を実行し、receipt schema 7の
+監査提出前には固定toolchainで`scripts/ci-local.sh proofs`を実行し、receipt schema 8の
 source fingerprint、全10 stageの`pass`、`complete: true`、43件の`release-ready`、
 `release-blocked: 0`、`model-support: 0`、25/18件の証拠強度区分を確認する。receipt自体はgit追跡せず、監査対象checkout
 から再生成する。

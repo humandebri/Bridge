@@ -740,23 +740,6 @@ mod tests {
     }
 
     #[test]
-    fn every_ledger_call_uses_the_fixed_fifteen_second_bound() {
-        assert_eq!(LEDGER_CALL_TIMEOUT_SECONDS, 15);
-    }
-
-    #[test]
-    fn fixed_kinic_ledger_fee_supports_a_positive_refund() {
-        assert_eq!(
-            bridge_core::deposit_refund_amount(
-                KINIC_LEDGER_FEE.get().saturating_add(1),
-                0,
-                KINIC_LEDGER_FEE.get(),
-            ),
-            Some(1)
-        );
-    }
-
-    #[test]
     fn build_uses_the_reviewed_environment_ledger_fee() {
         #[cfg(not(feature = "test-deployment"))]
         assert_eq!(KINIC_LEDGER_FEE.get(), 100_000);

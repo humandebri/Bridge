@@ -21,6 +21,7 @@ MANIFEST = ROOT / "verification" / "transition-manifest.tsv"
 VERUS_MANIFEST = ROOT / "verification" / "verus" / "manifest.tsv"
 VERUS_PASS = ROOT / "verification" / "verus" / "pass.rs"
 KERNEL = ROOT / "canister" / "bridge-core" / "src" / "kernel.rs"
+RAW_STRING_START = re.compile(r'(?:br|r)(#{0,255})"')
 TRANSITION = re.compile(r"^\s*pub\s+(?:const\s+)?fn\s+(\w*transition\w*)\s*\(", re.MULTILINE)
 
 
@@ -43,14 +44,14 @@ def strip_comments_and_strings(source: str) -> str:
         pair = source[index : index + 2]
         char = source[index]
         if state == "code":
-            raw = re.match(r'(?:br|r)(#{0,255})"', source[index:])
+            raw = RAW_STRING_START.match(source, index)
             if raw is not None and (
                 index == 0 or not (source[index - 1].isalnum() or source[index - 1] == "_")
             ):
                 raw_terminator = '"' + raw.group(1)
-                for offset in range(raw.end()):
+                for offset in range(raw.end() - index):
                     result[index + offset] = " "
-                index += raw.end()
+                index = raw.end()
                 state = "raw_string"
                 continue
             if pair == "//":

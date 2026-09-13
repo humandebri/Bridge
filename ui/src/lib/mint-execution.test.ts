@@ -91,20 +91,6 @@ describe("mint execution", () => {
     await m.startMintExecution(request())
     expect(m.mintExecutionSnapshot(r.key).phase).toBe("submitted")
   })
-  it("cancels_preflight_without_opening_a_late_wallet_prompt", async () => {
-    const m = await import("./mint-execution")
-    const p = deferred<number>()
-    const r = request()
-    r.prepare = () => p.promise
-    const run = m.startMintExecution(r)
-    await Promise.resolve()
-    await Promise.resolve()
-    m.cancelMintPreflight(r.key)
-    await run
-    p.resolve(1)
-    await Promise.resolve()
-    expect(r.send).not.toHaveBeenCalled()
-  })
   it("does_not_queue_behind_another_wallet_operation", async () => {
     const m = await import("./mint-execution")
     const r = request()

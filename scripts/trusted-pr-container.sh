@@ -231,6 +231,7 @@ docker run --rm \
   "${CACHE_MOUNTS[@]}" \
   "${CHANGED_PATHS_MOUNTS[@]}" \
   --env CI=true \
+  --env BRIDGE_TRUSTED_BASE_SHA="$(git -C "$POLICY_ROOT" rev-parse HEAD)" \
   --env BRIDGE_TRUSTED_DEPS_READY=1 \
   --env BRIDGE_EXPECTED_HEAD_SHA="${BRIDGE_EXPECTED_HEAD_SHA:?missing expected head SHA}" \
   --env BRIDGE_CANDIDATE_SCRIPTS=/scratch/candidate-scripts \

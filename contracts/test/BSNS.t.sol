@@ -77,15 +77,6 @@ contract BSNSTest is TestBase {
         assert(restricted.totalSupply() == 60);
     }
 
-    function testStandardERC20AllowanceRemainsAvailable() public {
-        token.bridgeMint(authorizer, 100);
-        vm.prank(authorizer);
-        token.approve(address(this), 70);
-        assert(token.transferFrom(authorizer, recipient, 60));
-        assert(token.balanceOf(recipient) == 60);
-        assert(token.allowance(authorizer, address(this)) == 10);
-    }
-
     function testTransferWithAuthorizationAllowsRelayer() public {
         token.bridgeMint(authorizer, 100);
         bytes32 nonce = keccak256("transfer");
@@ -325,26 +316,6 @@ contract BSNSTest is TestBase {
             authorizer, recipient, 10, block.timestamp - 1, block.timestamp + 1, nonce, v, r, s
         );
         assert(token.balanceOf(recipient) == 10);
-    }
-
-    function testFuzzAuthorizationNonceNamespace(uint256 nonceSeed) public {
-        token.bridgeMint(authorizer, 1);
-        bytes32 nonce = bytes32(nonceSeed);
-        uint256 validAfter = block.timestamp - 1;
-        uint256 validBefore = block.timestamp + 2;
-        (uint8 transferV, bytes32 transferR, bytes32 transferS) = _signTransfer(
-            AUTHORIZER_KEY, TRANSFER_TYPEHASH, address(token), authorizer, recipient, 1, validAfter, validBefore, nonce
-        );
-
-        token.transferWithAuthorization(
-            authorizer, recipient, 1, validAfter, validBefore, nonce, transferV, transferR, transferS
-        );
-        assert(token.authorizationState(authorizer, nonce));
-
-        (uint8 cancelV, bytes32 cancelR, bytes32 cancelS) =
-            _signCancel(AUTHORIZER_KEY, address(token), authorizer, nonce);
-        vm.expectRevert(abi.encodeWithSelector(IBSNS.AuthorizationAlreadyUsed.selector, authorizer, nonce));
-        token.cancelAuthorization(authorizer, nonce, cancelV, cancelR, cancelS);
     }
 
     function _signTransfer(

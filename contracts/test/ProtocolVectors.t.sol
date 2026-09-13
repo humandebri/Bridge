@@ -2,41 +2,46 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.36;
 
+import {Bridge} from "../src/Bridge.sol";
+import {IBridge} from "../src/interfaces/IBridge.sol";
+
 import {TestBase} from "./TestBase.sol";
+
+contract MintDigestHarness is Bridge {
+    constructor(address timelock)
+        Bridge(address(1), address(2), timelock, timelock.codehash, 1_000_000, 1_000_000, 3600, 1, 100, 1)
+    {}
+
+    function authorizationDigest(IBridge.MintAuthorization calldata authorization) external view returns (bytes32) {
+        return _mintAuthorizationDigest(authorization);
+    }
+}
 
 contract ProtocolVectorsTest is TestBase {
     string private constant MINT_AUTHORIZATION_VECTOR = "../verification/generated/mint-authorization-vector.json";
 
-    function test_mint_authorization_shared_vector() public view {
+    function test_mint_authorization_shared_vector() public {
         string memory json = vm.readFile(MINT_AUTHORIZATION_VECTOR);
         bytes32 depositId = _bytes32(_hexBytes(vm.parseJsonString(json, ".authorization.deposit_id")));
         address recipient = _address(_hexBytes(vm.parseJsonString(json, ".authorization.recipient")));
         address verifyingContract = _address(_hexBytes(vm.parseJsonString(json, ".domain.verifying_contract")));
         uint256 chainId = vm.parseUint(vm.parseJsonString(json, ".domain.chain_id"));
-        bytes32 domainSeparator = keccak256(
-            abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-                keccak256(bytes(vm.parseJsonString(json, ".domain.name"))),
-                keccak256(bytes(vm.parseJsonString(json, ".domain.version"))),
-                chainId,
-                verifyingContract
-            )
-        );
-        bytes32 structHash = keccak256(
-            abi.encode(
-                keccak256(
-                    "MintAuthorization(bytes32 depositId,address recipient,uint256 grossAmount,uint256 maxServiceFee,uint256 chargedServiceFee,uint256 deadline,uint256 authorizationEpoch)"
-                ),
-                depositId,
-                recipient,
-                vm.parseUint(vm.parseJsonString(json, ".authorization.gross_amount")),
-                vm.parseUint(vm.parseJsonString(json, ".authorization.max_service_fee")),
-                vm.parseUint(vm.parseJsonString(json, ".authorization.charged_service_fee")),
-                vm.parseUint(vm.parseJsonString(json, ".authorization.deadline")),
-                vm.parseUint(vm.parseJsonString(json, ".authorization.authorization_epoch"))
-            )
-        );
-        bytes32 digest = keccak256(abi.encodePacked(hex"1901", domainSeparator, structHash));
+        vm.chainId(chainId);
+        MintDigestHarness implementation = new MintDigestHarness(_deployTestTimelock(address(3)));
+        // The frozen vector binds its own address. EIP712 recomputes the domain there.
+        vm.etch(verifyingContract, address(implementation).code);
+        bytes32 digest = MintDigestHarness(verifyingContract)
+            .authorizationDigest(
+                IBridge.MintAuthorization({
+                depositId: depositId,
+                recipient: recipient,
+                grossAmount: vm.parseUint(vm.parseJsonString(json, ".authorization.gross_amount")),
+                maxServiceFee: vm.parseUint(vm.parseJsonString(json, ".authorization.max_service_fee")),
+                chargedServiceFee: vm.parseUint(vm.parseJsonString(json, ".authorization.charged_service_fee")),
+                deadline: vm.parseUint(vm.parseJsonString(json, ".authorization.deadline")),
+                authorizationEpoch: vm.parseUint(vm.parseJsonString(json, ".authorization.authorization_epoch"))
+            })
+            );
         assert(digest == _bytes32(_hexBytes(vm.parseJsonString(json, ".digest"))));
 
         bytes memory signature = _hexBytes(vm.parseJsonString(json, ".signature"));

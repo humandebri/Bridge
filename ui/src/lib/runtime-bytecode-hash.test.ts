@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest"
 import { runtimeBytecodeSha256 } from "./runtime-bytecode-hash"
 
