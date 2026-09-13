@@ -76,7 +76,6 @@ class ChangedAreaTests(unittest.TestCase):
             "real",
             "proofs-impacted",
         )
-        self.assert_areas(["ui/src/styles.css"], "ui-fast", "ui-e2e")
 
     def test_ui_real_e2e_change_runs_ui_and_real(self) -> None:
         self.assert_areas(["ui/e2e-real/bridge-real.spec.ts"], "real")

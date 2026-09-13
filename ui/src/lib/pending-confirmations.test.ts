@@ -7,11 +7,8 @@ import {
   markPendingConfirmationNotified,
   removePendingMint,
   removePendingConfirmation,
-  restorePendingConfirmation,
   savePendingMint,
   savePendingConfirmation,
-  setPendingConfirmationBlocked,
-  upsertPendingConfirmation,
 } from "./pending-confirmations"
 
 const entry = {
@@ -89,14 +86,11 @@ describe("pending finalized confirmations", () => {
     ).toBeUndefined()
   })
 
-  it("persists, updates, blocks, and removes a settlement", async () => {
+  it("persists, updates, and removes a settlement", async () => {
     await savePendingConfirmation(entry)
     expect(readPendingConfirmations()).toEqual([
       { ...entry, ...scope, blocked: false, notification: awaitingNotification },
     ])
-
-    await setPendingConfirmationBlocked(entry, true)
-    expect(readPendingConfirmations()[0]?.blocked).toBe(true)
 
     await savePendingConfirmation({ ...entry, owner: "updated-owner", blocked: false })
     expect(readPendingConfirmations()).toHaveLength(1)
@@ -104,12 +98,6 @@ describe("pending finalized confirmations", () => {
 
     await removePendingConfirmation(entry)
     expect(readPendingConfirmations()).toEqual([])
-  })
-
-  it("does not unblock a failed confirmation during History restoration", async () => {
-    await savePendingConfirmation({ ...entry, blocked: true })
-    await restorePendingConfirmation(entry)
-    expect(readPendingConfirmations()[0]?.blocked).toBe(true)
   })
 
   it("fails closed for malformed storage", () => {
@@ -165,12 +153,6 @@ describe("pending finalized confirmations", () => {
     expect(readPendingConfirmations()).toEqual([])
   })
 
-  it("repairs canonical owner metadata without clearing a blocked state", async () => {
-    await savePendingConfirmation({ ...entry, owner: "wrong-owner", blocked: true })
-    await restorePendingConfirmation(entry)
-    expect(readPendingConfirmations()[0]).toMatchObject({ owner: entry.owner, blocked: true })
-  })
-
   it("ensures_History_uses_the_event_owner_without_downgrading_recovery_state", async () => {
     const withdrawalId = `0x${"66".repeat(32)}` as const
     await savePendingConfirmation({ ...entry, blocked: true })
@@ -195,26 +177,6 @@ describe("pending finalized confirmations", () => {
     expect(readPendingConfirmations()[0]).toMatchObject({ owner: "2vxsx-fae", blocked: true })
   })
 
-  it("pure serialized upserts preserve a different settlement and a blocked retry", () => {
-    const first = { ...entry, ...scope, blocked: true, notification: awaitingNotification }
-    const second = {
-      ...entry,
-      ...scope,
-      transactionHash: `0x${"55".repeat(32)}` as const,
-      blocked: false,
-      notification: awaitingNotification,
-    }
-    const saved = upsertPendingConfirmation([first], second, false)
-    expect(saved).toEqual([first, second])
-
-    const restored = upsertPendingConfirmation(
-      saved,
-      { ...first, owner: "canonical-owner", blocked: false },
-      true,
-    )
-    expect(restored).toEqual([{ ...first, owner: "canonical-owner", blocked: true }, second])
-  })
-
   it("retains the session queue when durable storage is unavailable", async () => {
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("storage unavailable")
@@ -237,7 +199,7 @@ describe("pending finalized confirmations", () => {
       status: "notified",
       withdrawalId,
     })
-    await restorePendingConfirmation(entry)
+    await ensurePendingWithdrawalConfirmation(entry)
     expect(readPendingConfirmations()[0]?.notification).toEqual({
       status: "notified",
       withdrawalId,

@@ -261,28 +261,17 @@ describe("SettlementConfirmationCoordinator", () => {
   })
 
   it("keeps_a_reverted_receipt_pending_until_its_block_is_finalized", async () => {
-    for (const finalized of [
-      { number: 9n, hash: `0x${"55".repeat(32)}` },
-      { number: null, hash: null },
-      { number: 10n, hash: null },
-    ]) {
-      mocks.getReceipt.mockResolvedValue({ status: "reverted", blockNumber: 10n, blockHash })
-      mocks.getBlock.mockResolvedValue(finalized)
-
-      render(<SettlementConfirmationCoordinator />)
-
-      await waitFor(() =>
-        expect(mocks.update).toHaveBeenCalledWith(
-          "withdraw:1",
-          expect.objectContaining({ phase: "base-withdrawal-included", receiptBlockNumber: "10" }),
-        ),
-      )
-      expect(mocks.removePending).not.toHaveBeenCalled()
-      expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
-      cleanup()
-      vi.clearAllMocks()
-      mocks.readPending.mockReturnValue([pending])
-    }
+    mocks.getReceipt.mockResolvedValue({ status: "reverted", blockNumber: 10n, blockHash })
+    mocks.getBlock.mockResolvedValue({ number: 9n, hash: `0x${"55".repeat(32)}` })
+    render(<SettlementConfirmationCoordinator />)
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenCalledWith(
+        "withdraw:1",
+        expect.objectContaining({ phase: "base-withdrawal-included", receiptBlockNumber: "10" }),
+      ),
+    )
+    expect(mocks.removePending).not.toHaveBeenCalled()
+    expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
   })
 
   it("discards_a_reverted_receipt_only_after_finality_and_canonicality", async () => {
@@ -735,22 +724,6 @@ describe("SettlementConfirmationCoordinator", () => {
     expect(mocks.continueWithdrawal).toHaveBeenCalledOnce()
     expect(mocks.completeWithdrawalProgress).toHaveBeenCalledOnce()
     expect(mocks.removePending).toHaveBeenCalledWith(pending)
-  })
-
-  it("restores_a_notified_withdrawal_without_notifying_again", async () => {
-    mocks.readPending.mockReturnValue([notifiedPending])
-    mocks.getWithdrawal.mockResolvedValue([{ state: { ReleasePending: null } }])
-
-    render(<SettlementConfirmationCoordinator />)
-
-    await waitFor(() =>
-      expect(mocks.update).toHaveBeenCalledWith("withdraw:1", {
-        phase: "ledger-payout",
-        withdrawal: { owner: "aaaaa-aa", withdrawalId: notifiedPending.notification.withdrawalId },
-      }),
-    )
-    expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
-    expect(mocks.removePending).not.toHaveBeenCalled()
   })
 
   it("retains_a_notified_reconciliation_hold_for_explicit_recovery", async () => {

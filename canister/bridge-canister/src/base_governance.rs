@@ -2419,8 +2419,8 @@ mod tests {
         execute_activation_calldata, initial_fee, minimum_fee_bump,
         operational_config_lifecycle_result, pending_signature_action,
         schedule_activation_calldata, selector, transaction_authorized, word_u128,
-        BaseGovernanceError, CanisterControllerStatusView, GovernanceAction,
-        PendingSignatureAction, ACTIVATION_TIMELOCK_DELAY_SECONDS,
+        BaseGovernanceError, GovernanceAction, PendingSignatureAction,
+        ACTIVATION_TIMELOCK_DELAY_SECONDS,
     };
     use crate::storage::{
         GovernanceTransaction, GovernanceTransactionKind, GovernanceTransactionState,
@@ -2430,34 +2430,6 @@ mod tests {
     };
     use candid::Nat;
     use candid::Principal;
-
-    #[test]
-    fn controller_status_view_accepts_additive_management_response_fields() {
-        #[derive(candid::CandidType)]
-        struct ExtendedControllerSettings {
-            controllers: Vec<Principal>,
-            compute_allocation: Nat,
-        }
-
-        #[derive(candid::CandidType)]
-        struct ExtendedCanisterStatus {
-            settings: ExtendedControllerSettings,
-            version: u64,
-        }
-
-        let controller = Principal::from_slice(&[1]);
-        let encoded = candid::encode_one(ExtendedCanisterStatus {
-            settings: ExtendedControllerSettings {
-                controllers: vec![controller],
-                compute_allocation: Nat::from(0u8),
-            },
-            version: 7,
-        })
-        .unwrap();
-        let decoded: CanisterControllerStatusView = candid::decode_one(&encoded).unwrap();
-
-        assert_eq!(decoded.settings.controllers, vec![controller]);
-    }
 
     #[test]
     fn base_governance_rejects_bootstrap_and_allows_sealed_lifecycle() {

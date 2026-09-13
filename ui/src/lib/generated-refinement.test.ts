@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest"
 import vectors from "../../../verification/generated/protocol-vectors.json"
 import { decideWithdrawalFinalization } from "./withdrawal-confirmation-state"
-import { pendingConfirmationKey, upsertPendingConfirmation, type PendingConfirmation } from "./pending-confirmations"
+import { pendingConfirmationKey, ensurePendingConfirmation, type PendingConfirmation } from "./pending-confirmations"
 
 const deployment = {
   bridgeCanisterId: "aaaaa-aa",
@@ -44,8 +44,8 @@ describe("Generated Lean refinement consumers", () => {
       const incoming = withdrawal("1", testCase.incoming_blocked, "incoming")
       const existing = testCase.existing_blocked === null
         ? []
-        : [withdrawal("1", testCase.existing_blocked, "existing")]
-      const restored = upsertPendingConfirmation([...existing, other], incoming, true)
+        : [withdrawal("1", testCase.existing_blocked, "incoming")]
+      const restored = ensurePendingConfirmation([...existing, other], incoming)
       const target = restored.find((entry) => pendingConfirmationKey(entry) === pendingConfirmationKey(incoming))
       const preservedOther = restored.find((entry) => pendingConfirmationKey(entry) === pendingConfirmationKey(other))
       expect(target?.blocked).toBe(testCase.expected_blocked)

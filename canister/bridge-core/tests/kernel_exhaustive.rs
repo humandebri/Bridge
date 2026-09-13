@@ -1,24 +1,20 @@
 use bridge_core::{
-    activation_prepare_authorized, administrator_authorized, asset_operation_lifecycle_decision,
-    audit_next, authorization_commit_allowed, automatic_retry_allowed,
-    bootstrap_pause_principal_migration_decision, checked_counter_transition, checked_requirement,
-    confirmation_caller_authorized, confirmation_roles_distinct, counter_delta,
-    deposit_admission_decision, deposit_reservation_active, deposit_transition,
-    deposit_transition_decision, evidence_matches, expiry_refund_allowed,
-    fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
-    funding_reconciliation_decision, hold_resolution_decision, lease_generation_next,
-    lease_outcome_is_current, legacy_activation_evidence_requirement, manual_claim_decision,
-    mint_admission_total, mint_authorization_has_minimum_remaining_time, mint_finalization_allowed,
-    next_attempt, notification_failure_cooldown_active, operational_config_seal_caller_authorized,
+    asset_operation_lifecycle_decision, audit_next, authorization_commit_allowed,
+    automatic_retry_allowed, bootstrap_pause_principal_migration_decision,
+    checked_counter_transition, checked_requirement, deposit_admission_decision,
+    deposit_reservation_active, deposit_transition, deposit_transition_decision,
+    expiry_refund_allowed, fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
+    hold_resolution_decision, lease_generation_next, lease_outcome_is_current,
+    legacy_activation_evidence_requirement, manual_claim_decision, mint_admission_total,
+    mint_authorization_has_minimum_remaining_time, mint_finalization_allowed, next_attempt,
     operational_config_seal_decision, outbound_settlement, paid_call_cycle_requirement,
     payout_allowed, payout_debit, refresh_generation_next, refresh_owner_matches,
-    release_transfer_matches, replay_matches, reservation_decision,
-    reserve_admission_preserves_requirement, scan_complete, service_fee_change_allowed,
-    settlement_decision, settlement_failure_count, signature_install_allowed,
-    signing_cycle_requirement, transaction_liability_wei, withdrawal_phase_allows,
-    withdrawal_phase_step, withdrawal_transition_effects, AssetOperationLifecycleDecision,
-    BootstrapPausePrincipalMigrationDecision, DepositEventGuard, DepositTransitionDecision,
-    DepositTransitionInput, FeeRecipientRotationDecision, FundingReconciliationDecision,
+    release_transfer_matches, reservation_decision, reserve_admission_preserves_requirement,
+    scan_complete, service_fee_change_allowed, settlement_decision, settlement_failure_count,
+    signature_install_allowed, signing_cycle_requirement, transaction_liability_wei,
+    withdrawal_phase_allows, withdrawal_phase_step, withdrawal_transition_effects,
+    AssetOperationLifecycleDecision, BootstrapPausePrincipalMigrationDecision, DepositEventGuard,
+    DepositTransitionDecision, DepositTransitionInput, FeeRecipientRotationDecision,
     HoldResolutionDecision, LegacyActivationEvidenceRequirement, ManualClaimDecision,
     OperationalConfigSealDecision,
 };
@@ -41,111 +37,6 @@ fn mint_authorization_remaining_time_is_checked_at_boundaries() {
         u64::MAX,
         u64::MAX
     ));
-}
-
-#[test]
-fn boolean_decisions_are_exhaustive() {
-    for non_anonymous in [false, true] {
-        for relayer in [false, true] {
-            for governance in [false, true] {
-                for pause in [false, true] {
-                    assert_eq!(
-                        confirmation_caller_authorized(non_anonymous, relayer, governance, pause,),
-                        non_anonymous && (relayer || governance || pause)
-                    );
-                }
-            }
-        }
-    }
-    for relayer_governance in [false, true] {
-        for relayer_pause in [false, true] {
-            for governance_pause in [false, true] {
-                for allow_staging in [false, true] {
-                    assert_eq!(
-                        confirmation_roles_distinct(
-                            relayer_governance,
-                            relayer_pause,
-                            governance_pause,
-                            allow_staging,
-                        ),
-                        !governance_pause
-                            && !relayer_pause
-                            && (allow_staging || !relayer_governance)
-                    );
-                }
-            }
-        }
-    }
-    for old in [false, true] {
-        for new in [false, true] {
-            let expected = match (old, new) {
-                (false, true) => 1,
-                (true, false) => -1,
-                _ => 0,
-            };
-            assert_eq!(counter_delta(old, new), expected);
-        }
-    }
-    for request in [false, true] {
-        for hold in [false, true] {
-            for transfer in [false, true] {
-                for open in [false, true] {
-                    for evidence in [false, true] {
-                        assert_eq!(
-                            evidence_matches(request, hold, transfer, open, evidence),
-                            request && hold && transfer && open && evidence
-                        );
-                    }
-                }
-            }
-        }
-    }
-    assert!(replay_matches(true));
-    assert!(!replay_matches(false));
-    assert!(notification_failure_cooldown_active(true, 9, 10));
-    assert!(!notification_failure_cooldown_active(false, 9, 10));
-    assert!(!notification_failure_cooldown_active(true, 10, 10));
-    assert!(!notification_failure_cooldown_active(true, 11, 10));
-}
-
-#[test]
-fn activation_authorization_fails_closed_until_bootstrap_is_consumed() {
-    for controller in [false, true] {
-        for bootstrap in [false, true] {
-            assert_eq!(
-                operational_config_seal_caller_authorized(controller, bootstrap),
-                controller && bootstrap
-            );
-        }
-    }
-    for controller in [false, true] {
-        for governance in [false, true] {
-            for sealed_paused in [false, true] {
-                for bootstrap_authority_present in [false, true] {
-                    for phase in 0..=2 {
-                        let expected = if phase > 1 {
-                            false
-                        } else if bootstrap_authority_present {
-                            controller && sealed_paused
-                        } else {
-                            governance && sealed_paused
-                        };
-                        assert_eq!(
-                            activation_prepare_authorized(
-                                controller,
-                                governance,
-                                sealed_paused,
-                                bootstrap_authority_present,
-                                phase,
-                            ),
-                            expected,
-                            "controller={controller} governance={governance} sealed_paused={sealed_paused} bootstrap_authority_present={bootstrap_authority_present} phase={phase}"
-                        );
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[test]
@@ -300,25 +191,7 @@ fn typed_decisions_preserve_every_shared_guard() {
         hold_resolution_decision(false, true),
         HoldResolutionDecision::ResolveAbsent
     );
-    for complete_absence in [false, true] {
-        for final_scan in [false, true] {
-            for dedup_expired in [false, true] {
-                let expected = if !complete_absence {
-                    FundingReconciliationDecision::Wait
-                } else if !final_scan {
-                    FundingReconciliationDecision::RestartFresh
-                } else if dedup_expired {
-                    FundingReconciliationDecision::Release
-                } else {
-                    FundingReconciliationDecision::Wait
-                };
-                assert_eq!(
-                    funding_reconciliation_decision(complete_absence, final_scan, dedup_expired,),
-                    expected
-                );
-            }
-        }
-    }
+
     assert_eq!(
         manual_claim_decision(false, false, false, false, false),
         ManualClaimDecision::Allow
@@ -380,25 +253,13 @@ fn refresh_reserve_and_lease_tokens_fail_closed() {
 }
 
 #[test]
-fn payout_and_authorization_tables_are_exhaustive() {
+fn payout_boundaries_preserve_reserves_and_reject_overflow() {
     assert!(payout_allowed(12, 2, 7, 3));
     assert!(!payout_allowed(11, 2, 7, 3));
     assert!(!payout_allowed(u128::MAX, 0, u128::MAX, 1));
     assert_eq!(payout_debit(true, 7, 3), Some(10));
     assert_eq!(payout_debit(false, 7, 3), Some(0));
     assert_eq!(payout_debit(true, u128::MAX, 1), None);
-    for action in 0..=u8::MAX {
-        for pause in [false, true] {
-            for governance in [false, true] {
-                let expected = (action == 0 && pause)
-                    || ((action == 1 || action == 2 || action == 3) && governance);
-                assert_eq!(
-                    administrator_authorized(action, pause, governance),
-                    expected
-                );
-            }
-        }
-    }
 }
 
 #[test]

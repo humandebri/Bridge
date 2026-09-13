@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { hashTypedData, recoverAddress } from "viem"
 import type { DepositView, MintAuthorizationView } from "@/generated/bridge.did"
 import type { FinalizedRuntimeObservation } from "@/lib/runtime-validation"
 import vector from "../../../verification/generated/mint-authorization-vector.json"
-import { mintAuthorizationTypes, validateMintAuthorization } from "./mint-authorization"
+import { validateMintAuthorization } from "./mint-authorization"
 
 const mocks = vi.hoisted(() => ({
   getBlock: vi.fn(),
@@ -81,35 +80,12 @@ function runtimeObservation(): FinalizedRuntimeObservation {
 
 describe("mint authorization protocol vector", () => {
   it("matches the shared digest and recovered signer", async () => {
-    const digest = hashTypedData({
-      domain: {
-        name: vector.domain.name,
-        version: vector.domain.version,
-        chainId: BigInt(vector.domain.chain_id),
-        verifyingContract: vector.domain.verifying_contract as `0x${string}`,
-      },
-      types: mintAuthorizationTypes,
-      primaryType: "MintAuthorization",
-      message: {
-        depositId: vector.authorization.deposit_id as `0x${string}`,
-        recipient: vector.authorization.recipient as `0x${string}`,
-        grossAmount: BigInt(vector.authorization.gross_amount),
-        maxServiceFee: BigInt(vector.authorization.max_service_fee),
-        chargedServiceFee: BigInt(vector.authorization.charged_service_fee),
-        deadline: BigInt(vector.authorization.deadline),
-        authorizationEpoch: BigInt(vector.authorization.authorization_epoch),
-      },
-    })
-
-    expect(digest).toBe(vector.digest)
-    expect(
-      (
-        await recoverAddress({
-          hash: digest,
-          signature: vector.signature as `0x${string}`,
-        })
-      ).toLowerCase(),
-    ).toBe(vector.signer)
+    mocks.getBlock.mockResolvedValue({ timestamp: BigInt(vector.authorization.deadline) - 300n })
+    mocks.readContract.mockResolvedValue(false)
+    const validated = await validateMintAuthorization(authorizationRecord(), runtimeObservation())
+    expect(validated.digest).toBe(vector.digest)
+    expect(validated.signer.toLowerCase()).toBe(vector.signer)
+    expect(validated.signature).toBe(vector.signature)
   })
 })
 

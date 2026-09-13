@@ -69,7 +69,7 @@ def classify_layout(root: Path, candidate_scripts: Path | None) -> str:
     if obsolete:
         raise ValueError("obsolete staging upgrade policy must be absent")
     if canonical and all(upgrade_scripts) and not any(replacement_markers + replacement_evidence):
-        return "upgrade"
+        raise ValueError("obsolete staging upgrade layout must be replaced")
     if (
         not canonical
         and not any(upgrade_scripts)

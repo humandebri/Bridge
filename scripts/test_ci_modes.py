@@ -231,13 +231,6 @@ test "$(cat {shlex.quote(str(stages))})" = 'claim-manifest'
         build = body.index("forge build")
         self.assertLess(source_check, build)
 
-    def test_smoke_uses_profile_specific_bridge_constructor_arguments(self) -> None:
-        self.assertIn(
-            'bridge_fee_constructor_args=("1" "100000000" "$service_fee")', SOURCE
-        )
-        self.assertNotIn('bridge_fee_constructor_args=("100000000"', SOURCE)
-        self.assertIn('"${bridge_fee_constructor_args[@]}"', SOURCE)
-
     def test_proof_stage_stops_on_the_first_failed_command(self) -> None:
         body = function_body("run_proof_stage")
         marker = '"$PROOF_FINGERPRINT" --check "$PROOF_SOURCE_BASELINE"'

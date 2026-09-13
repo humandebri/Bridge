@@ -24,38 +24,6 @@ export const BASE_MAINNET_CHAIN_ID = 8453
 export const BASE_SEPOLIA_CHAIN_ID = 84532
 export const OFFICIAL_EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
 export const MINIMUM_PRODUCTION_TIMELOCK_DELAY_SECONDS = 24 * 60 * 60
-export const PRODUCTION_CANISTER_IDS = new Set([
-  "73mez-iiaaa-aaaaq-aaasq-cai",
-  "7vojr-tyaaa-aaaaq-aaatq-cai",
-])
-
-export function assertTestUiProfile(profile: UiDeploymentMode): void {
-  if (profile.testOnly !== true) throw new Error("Test UI deploy requires testOnly: true")
-  if (profile.chainId === BASE_MAINNET_CHAIN_ID)
-    throw new Error("Test UI deploy rejects Base Mainnet")
-  for (const canisterId of [
-    profile.bridgeCanisterId,
-    profile.ledgerCanisterId,
-    profile.indexCanisterId,
-  ]) {
-    if (canisterId && PRODUCTION_CANISTER_IDS.has(canisterId)) {
-      throw new Error("Test UI deploy rejects production canister IDs")
-    }
-  }
-  if (profile.environment === "sepolia-staging") {
-    if (profile.chainId !== BASE_SEPOLIA_CHAIN_ID)
-      throw new Error("Sepolia staging requires Base Sepolia chain ID 84532")
-    if (profile.evmRpcCanisterId !== OFFICIAL_EVM_RPC_CANISTER_ID) {
-      throw new Error("Sepolia staging requires the official EVM RPC Canister")
-    }
-    if (
-      profile.environmentMode !== "short-delay-test-only" ||
-      profile.activationTimelockDelaySeconds !== 300
-    ) {
-      throw new Error("Sepolia staging requires the five-minute test-only Timelock policy")
-    }
-  }
-}
 
 export function assertProductionUiProfile(
   profile: UiDeploymentMode,

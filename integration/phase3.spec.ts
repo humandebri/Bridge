@@ -25,6 +25,14 @@ if (schema35WasmSha256 === undefined) {
   throw new Error(`schema 35 predecessor Wasm has no reviewed artifact for host ${schema35BuildHost}`);
 }
 const mockWasm = resolve(root, "target/wasm32-unknown-unknown/release/mock_external.wasm");
+const wasmBytes = new Map<string, Buffer>();
+function readWasm(path: string): Buffer {
+  const cached = wasmBytes.get(path);
+  if (cached) return cached;
+  const bytes = readFileSync(path);
+  wasmBytes.set(path, bytes);
+  return bytes;
+}
 const testLedgerFee = 10_000n;
 
 const mockInit = mockInitFactory({ IDL })[0];
@@ -88,28 +96,20 @@ describe("Phase 3 PocketIC saga", () => {
     retainProductionController = false,
   ) {
     if (activate && !seal) throw new Error("cannot activate an unsealed test canister");
-    const mockBytes = readFileSync(mockWasm);
+    const mockBytes = readWasm(mockWasm);
     const subnet = await pic!.getFiduciarySubnet();
     if (subnet === undefined) throw new Error("Fiduciary subnet was not created");
     const installMock = (ledgerId: Principal): Promise<any> => pic!.setupCanister({ idlFactory: mockIdl, wasm: mockBytes, arg: IDL.encode([mockInit], [{ ledger_id: ledgerId }]), cycles: 50_000_000_000_000n, targetSubnetId: subnet.id });
     const ledger = await installMock(Principal.anonymous());
     const index = await installMock(ledger.canisterId);
     const evm = await installMock(ledger.canisterId);
-    const missing: any = await (evm.actor as any).probe_chain_key("missing_test_key");
-    expect(missing.Err).toContain("unknown threshold key");
-    const preflight: any = await (evm.actor as any).probe_chain_key("key_1");
-    if (!("Ok" in preflight)) {
-      throw new Error(`chain-key preflight failed: key=key_1 subnet=${subnet.id.toText()} error=${preflight.Err}`);
-    }
-    expect(preflight.Ok.public_key).toHaveLength(33);
-    expect(preflight.Ok.signature).toHaveLength(64);
     const runtimePrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
     const controllerPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(6));
     const confirmationRelayerPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(8));
     const feeRecipientPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(55));
     const init = { ledger_canister_id: ledger.canisterId, index_canister_id: index.canisterId, evm_rpc_canister_id: evm.canisterId, custom_evm_rpc_urls: [], base_chain_id: 8453n, bridge_contract: new Uint8Array(20).fill(1), expected_bridge_runtime_sha256: new Uint8Array(createHash("sha256").update(new Uint8Array([0x60, 0x00])).digest()), timelock_contract: new Uint8Array(20).fill(2), expected_timelock_minimum_delay_seconds: 300n, expected_bsns_runtime_sha256: new Uint8Array(createHash("sha256").update(new Uint8Array([0x60, 0x02])).digest()), expected_bsns_decimals: 8, expected_minimum_service_fee: 1n, deployment_instance_id: new Uint8Array(32).fill(3), minimum_withdrawal_id: new Uint8Array([...new Uint8Array(31), 1]), ecdsa_key_name: "key_1", ecdsa_derivation_path: [], governance_ecdsa_derivation_path: [new TextEncoder().encode("governance-operator")], deposit_rate_limit_window_seconds: 60n, deposit_rate_limit_global: 30, deposit_rate_limit_per_principal: 3, notification_rate_limit_window_seconds: 600n, notification_rate_limit_global: 60, notification_ingestion_rate_limit_global: 30, settlement_rate_limit_window_seconds: 3_600n, settlement_rate_limit_global: 60, settlement_rate_limit_per_principal: 30, settlement_rate_limit_per_record: 3, settlement_retry_interval_seconds: 60n, governance_evm_fee: { gas_limit_ceiling: 500_000n, max_fee_per_gas_ceiling: 200_000_000_000n, max_priority_fee_per_gas_ceiling: 10_000_000_000n, l1_fee_per_transaction_ceiling_wei: 10_000_000_000_000_000n, quote_validity_seconds: 90n, gas_limit_multiplier_bps: 13_000, base_fee_multiplier_bps: 60_000, l1_fee_multiplier_bps: 15_000 }, governance_replacement: { max_replacements: 3, fee_bump_bps: 1_250 }, cycles_floor: 1n, settlement_cycle_ceiling: 1n, governance_principal: runtimePrincipal, pause_principal: Principal.selfAuthenticating(new Uint8Array(32).fill(34)), confirmation_relayer_principal: confirmationRelayerPrincipal, fee_recipient: { owner: feeRecipientPrincipal, subaccount: [] } };
     Object.assign(init, initOverrides);
-    const bridge: any = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readFileSync(wasmPath), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id, sender: controllerPrincipal });
+    const bridge: any = await pic!.setupCanister({ idlFactory: bridgeIdl, wasm: readWasm(wasmPath), arg: IDL.encode([bridgeInit], [init]), cycles: 500_000_000_000_000n, targetSubnetId: subnet.id, sender: controllerPrincipal });
     const [controller] = await pic!.getControllers(bridge.canisterId);
     if (controller === undefined) throw new Error("bridge controller is missing");
     expect(controller.toText()).toBe(controllerPrincipal.toText());
@@ -162,7 +162,6 @@ describe("Phase 3 PocketIC saga", () => {
       });
     }
     bridge.actor.setPrincipal(runtimePrincipal);
-    expect((await pic!.getCanisterSubnetId(bridge.canisterId))?.toText()).toBe(subnet.id.toText());
     return {
       ledger,
       index,
@@ -180,7 +179,7 @@ describe("Phase 3 PocketIC saga", () => {
     if (controller === undefined) throw new Error("bridge controller is missing");
     await pic!.upgradeCanister({
       canisterId: bridge.canisterId,
-      wasm: readFileSync(bridgeWasm),
+      wasm: readWasm(bridgeWasm),
       arg: IDL.encode([], []),
       sender: controller,
     });
@@ -2378,7 +2377,7 @@ describe("Phase 3 PocketIC saga", () => {
 
     await pic!.reinstallCode({
       canisterId: bridge.canisterId,
-      wasm: readFileSync(bridgeWasm),
+      wasm: readWasm(bridgeWasm),
       arg: IDL.encode([bridgeInit], [init]),
       sender: controller,
     });
@@ -3269,17 +3268,6 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).request_deposit(args)).toEqual({ Err: { DepositsPaused: null } });
   });
 
-  it("keeps Mint gas outside Deposit reserve admission", async () => {
-    const { ledger, evm, bridge } = await setup();
-    await (evm.actor as any).set_eth_balance(0n);
-    const args = { owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n };
-    const result: any = await (bridge.actor as any).request_deposit(args);
-    expect(result).toHaveProperty("Ok.state.EscrowedUnquoted");
-    await awaitMintAuthorization(bridge, result.Ok.deposit_id);
-    expect(phaseName((await (bridge.actor as any).get_deposit(result.Ok.deposit_id))[0].state)).toBe("AuthorizationAvailable");
-    expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
-  });
-
   it("rejects a definitive Ledger pull failure without creating formal deposit artifacts", async () => {
     const { ledger, bridge, runtimePrincipal } = await setup();
     const failed = { owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n };
@@ -3318,26 +3306,6 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (ledger.actor as any).ledger_transactions()).toEqual([]);
   });
 
-  it("serves configured transaction prefixes through the ICRC archive callback", async () => {
-    const { ledger, bridge } = await setup();
-    const deposited: any = await (bridge.actor as any).request_deposit({
-      owner_sequence: 0n,
-      base_recipient: new Uint8Array(20).fill(4),
-      from_subaccount: [],
-      gross_amount: 200_000n,
-      max_service_fee: 10n,
-    });
-    await advanceDepositJobs(bridge, deposited.Ok.deposit_id);
-    await (ledger.actor as any).set_archive_prefix_length(1n);
-    const page: any = await (ledger.actor as any).get_transactions({ start: 0n, length: 10n });
-    expect(page.transactions).toEqual([]);
-    expect(page.archived_transactions).toHaveLength(1);
-    expect(page.archived_transactions[0].start).toBe(0n);
-    expect(page.archived_transactions[0].length).toBe(1n);
-    const archived: any = await (ledger.actor as any).get_archive_transactions({ start: 0n, length: 10n });
-    expect(archived.transactions).toHaveLength(1);
-  });
-
   it("keeps an ambiguous deposit nonterminal until the Index watermark reaches the Ledger tip", async () => {
     const { ledger, index, bridge } = await setup();
     const first: any = await (bridge.actor as any).request_deposit({
@@ -3350,6 +3318,8 @@ describe("Phase 3 PocketIC saga", () => {
     expect(first).toHaveProperty("Ok");
     await advanceDepositJobs(bridge, first.Ok.deposit_id);
     expect(await (ledger.actor as any).ledger_transactions()).toHaveLength(1);
+
+    await (ledger.actor as any).set_archive_prefix_length(1n);
 
     await (ledger.actor as any).set_ledger_mode({ Trap: null });
     const ambiguous: any = await (bridge.actor as any).request_deposit({

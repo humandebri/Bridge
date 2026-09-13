@@ -2236,31 +2236,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn evm_rpc_runtime_uses_the_sdk_default_five_minute_bound() {
-        assert_eq!(EVM_RPC_TIMEOUT_SECONDS, 300);
-        assert_eq!(SMALL_RESPONSE_BYTES, 4 * 1024);
-        assert_eq!(BLOCK_RESPONSE_BYTES, 16 * 1024);
-    }
-
-    #[test]
-    fn deposit_preflight_uses_configured_chain_and_one_finalized_anchor_for_two_state_calls() {
-        assert_eq!(
-            DEPOSIT_PREFLIGHT_RPC_CALLS,
-            [
-                "eth_getBlockByNumber(finalized)",
-                "eth_call(isDepositProcessed,EIP-1898-finalized-hash)",
-                "eth_call(bridgeSnapshot,EIP-1898-finalized-hash)",
-            ]
-        );
-        assert!(!DEPOSIT_PREFLIGHT_RPC_CALLS
-            .iter()
-            .any(|call| call.contains("chainId")));
-        assert!(!DEPOSIT_PREFLIGHT_RPC_CALLS
-            .iter()
-            .any(|call| call.contains("getCode")));
-    }
-
-    #[test]
     fn runtime_attestation_requires_nonempty_code_and_the_configured_hash() {
         let code = [0x60, 0x00];
         let expected: [u8; 32] = Sha256::digest(code).into();

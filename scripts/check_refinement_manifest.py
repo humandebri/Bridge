@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
+from check_claim_test_manifest import ClaimTest, execute_group, group_tests
+
 import json
 import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence
 
 from generate_refinement_harness import RENDERERS, Renderer, expected_outputs
 
@@ -21,9 +21,7 @@ FINITE_WIDTH_MODEL = ROOT / "verification" / "lean" / "BridgeSpec" / "FiniteWidt
 MODEL_REFINEMENT = ROOT / "verification" / "lean" / "BridgeSpec" / "ModelRefinement.lean"
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 NON_GENERATED_TESTS = (
-    "canister/bridge-core/tests/protocol_vectors.rs",
     "contracts/test/ProtocolVectors.t.sol",
-    "ui/src/lib/protocol-vectors.test.ts",
 )
 
 
@@ -36,9 +34,6 @@ class Consumer:
     runner: str
     target: str
     selector: str
-
-
-CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def declaration(source: str, keyword: str, name: str) -> str:
@@ -180,50 +175,6 @@ def parse_manifest(
     return consumers
 
 
-def run_command(
-    command: Sequence[str],
-    root: Path,
-    runner: CommandRunner = subprocess.run,
-) -> subprocess.CompletedProcess[str]:
-    result = runner(command, cwd=root, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise ValueError(
-            f"refinement consumer failed: {' '.join(command)}\n"
-            f"{result.stdout}{result.stderr}"
-        )
-    return result
-
-
-def run_json_command(
-    command: Sequence[str],
-    root: Path,
-    runner: CommandRunner = subprocess.run,
-) -> subprocess.CompletedProcess[str]:
-    result = run_command(command, root, runner)
-    if result.stdout.strip():
-        return result
-
-    # Vitest can occasionally exit successfully before its JSON reporter flushes
-    # when invoked after the preceding refinement consumers. Retry once, while
-    # still failing closed if no machine-readable evidence is produced.
-    retry = run_command(command, root, runner)
-    if not retry.stdout.strip():
-        raise ValueError(
-            f"refinement consumer produced no JSON: {' '.join(command)}"
-        )
-    return retry
-
-
-def parse_json_stdout(result: subprocess.CompletedProcess[str], label: str) -> dict[str, object]:
-    try:
-        report = json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        raise ValueError(f"{label} emitted non-JSON stdout") from error
-    if not isinstance(report, dict):
-        raise ValueError(f"{label} JSON stdout must be an object")
-    return report
-
-
 def validate_generated_selector_ownership(
     consumers: list[Consumer],
     root: Path = ROOT,
@@ -247,109 +198,6 @@ def validate_generated_selector_ownership(
             )
 
 
-def execute_consumer(
-    consumer: Consumer,
-    root: Path = ROOT,
-    runner: CommandRunner = subprocess.run,
-) -> None:
-    if consumer.runner == "rust":
-        target_name = Path(consumer.target).stem
-        result = run_command(
-            [
-                "cargo",
-                "test",
-                "--locked",
-                "-p",
-                "bridge-core",
-                "--test",
-                target_name,
-                consumer.selector,
-                "--",
-                "--exact",
-            ],
-            root,
-            runner,
-        )
-        output = result.stdout + result.stderr
-        if len(re.findall(r"^running 1 test$", output, re.MULTILINE)) != 1 or len(
-            re.findall(
-                rf"^test {re.escape(consumer.selector)} \.\.\. ok$",
-                output,
-                re.MULTILINE,
-            )
-        ) != 1:
-            raise ValueError(
-                f"Rust refinement consumer did not pass exactly once: {consumer.selector}"
-            )
-    elif consumer.runner == "foundry":
-        target = Path(consumer.target)
-        try:
-            match_path = target.relative_to("contracts").as_posix()
-        except ValueError as error:
-            raise ValueError(f"Foundry consumer is outside contracts: {consumer.target}") from error
-        result = run_json_command(
-            [
-                "forge",
-                "test",
-                "--root",
-                "contracts",
-                "--match-path",
-                match_path,
-                "--match-test",
-                consumer.selector,
-                "--json",
-            ],
-            root,
-            runner,
-        )
-        report = parse_json_stdout(result, "Foundry refinement consumer")
-        results = [
-            (name, value)
-            for suite in report.values()
-            for name, value in suite.get("test_results", {}).items()
-        ]
-        if (
-            len(results) != 1
-            or results[0][0] != f"{consumer.selector}()"
-            or results[0][1].get("status") != "Success"
-        ):
-            raise ValueError(
-                f"Foundry refinement consumer did not pass exactly once: {consumer.selector}"
-            )
-    elif consumer.runner == "vitest":
-        target = Path(consumer.target)
-        try:
-            test_path = target.relative_to("ui").as_posix()
-        except ValueError as error:
-            raise ValueError(f"Vitest consumer is outside ui: {consumer.target}") from error
-        result = run_json_command(
-            [
-                str(root / "ui" / "node_modules" / ".bin" / "vitest"),
-                "run",
-                test_path,
-                "-t",
-                consumer.selector,
-                "--reporter=json",
-            ],
-            root / "ui",
-            runner,
-        )
-        report = parse_json_stdout(result, "Vitest refinement consumer")
-        matches = [
-            assertion
-            for test in report.get("testResults", [])
-            for assertion in test.get("assertionResults", [])
-            if assertion.get("title") == consumer.selector
-            and assertion.get("status") == "passed"
-        ]
-        if report.get("numPassedTests") != 1 or len(matches) != 1:
-            raise ValueError(
-                f"Vitest refinement consumer did not pass exactly once: {consumer.selector}"
-            )
-    else:
-        raise ValueError(f"unknown refinement runner: {consumer.runner}")
-
-
 def main() -> int:
     stale = [
         path.relative_to(ROOT).as_posix()
@@ -366,12 +214,14 @@ def main() -> int:
         MODEL_REFINEMENT.read_text(encoding="utf-8"),
     )
     validate_generated_selector_ownership(consumers)
-    for consumer in consumers:
-        execute_consumer(consumer)
-        print(
-            f"refinement consumer passed: {consumer.section} "
-            f"{consumer.runner} {consumer.selector}"
-        )
+    tests = [ClaimTest(
+        "rust-core" if consumer.runner == "rust" else consumer.runner,
+        consumer.target, consumer.selector, consumer.selector,
+    ) for consumer in consumers]
+    for group in group_tests(tests):
+        execute_group(group)
+        for test in group:
+            print(f"refinement consumer passed: {test.runner} {test.selector}")
     return 0
 
 

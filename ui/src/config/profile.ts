@@ -134,8 +134,6 @@ export const releaseProfileSchema = deploymentProfileSchema.safeExtend({
   uiRpcConfigSha256: releaseSha256.optional(),
 })
 
-export type ReleaseDeploymentProfile = z.infer<typeof releaseProfileSchema>
-
 export const DEFAULT_BASE_MAINNET_RPC_URL = "https://mainnet.base.org"
 
 export function resolvedBaseRpcUrl(

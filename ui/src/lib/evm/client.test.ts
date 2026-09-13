@@ -11,7 +11,6 @@ import {
   hasIndependentFinalizedRevertQuorum,
   profileChain,
   wagmiConfig,
-  withHistoryClientFailover,
 } from "./client"
 
 describe("Base clients", () => {
@@ -132,30 +131,5 @@ describe("Base clients", () => {
         Promise.reject(new Error("unavailable")),
       ),
     ).rejects.toThrow("Base history RPCs are unavailable")
-  })
-
-  it("fails over when a downstream history operation fails after the finalized head", async () => {
-    const attempts: string[] = []
-    const failed = new Set<number>()
-    const result = await withHistoryClientFailover(["first", "second"], failed, (client) => {
-      attempts.push(`finalized:${client}`)
-      if (client === "first") return Promise.reject(new Error("checkpoint request rejected"))
-      attempts.push(`logs:${client}`)
-      return Promise.resolve("complete")
-    })
-    expect(result).toBe("complete")
-    expect(attempts).toEqual(["finalized:first", "finalized:second", "logs:second"])
-    expect([...failed]).toEqual([0])
-  })
-
-  it("retries all history providers after every provider has failed", async () => {
-    const failed = new Set([0, 1])
-    const attempts: string[] = []
-    await withHistoryClientFailover(["first", "second"], failed, (client) => {
-      attempts.push(client)
-      return Promise.resolve("complete")
-    })
-    expect(attempts).toEqual(["first"])
-    expect(failed.size).toBe(0)
   })
 })
