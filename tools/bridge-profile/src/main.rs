@@ -1305,7 +1305,7 @@ struct GetProposalResponse {
 #[derive(CandidType, Deserialize)]
 enum GetProposalResult {
     Error(GovernanceErrorView),
-    Proposal(ProposalDataView),
+    Proposal(Box<ProposalDataView>),
 }
 
 #[derive(CandidType, Deserialize)]
@@ -7885,7 +7885,7 @@ fn verify_same_wasm_sns_upgrade(
         return Err("SNS upgrade proposal unavailable".into());
     };
     let decided_at = proposal.decided_timestamp_seconds;
-    validate_same_wasm_sns_upgrade(profile, proposal_id, minimum_time, proposal)?;
+    validate_same_wasm_sns_upgrade(profile, proposal_id, minimum_time, *proposal)?;
     let observation = Decode!(&upgrade_bytes, Option<ReleaseUpgradeObservationView>)
         .map_err(|e| e.to_string())?
         .ok_or("SNS upgrade has not completed post_upgrade")?;
