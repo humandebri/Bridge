@@ -70,3 +70,25 @@ proof成功後は、同じclean revisionからBridge Canister WasmとBridge cont
 `all`、`proofs`、`proofs-impacted`は、それぞれ一つの`execution_session.py`プロセスがテストを起動し、成功した実行結果を保持する。claim、refinement、known-answerの各stageは、この呼び出し内で実行済みの同じテストを参照できる。別の呼び出し、別job、保存済みJSON、部分receiptから結果を取り込むことはできない。`all`はrunnerの全suiteを共有し、proof専用実行は対象ファイル（Rust Canisterはfeature別のlibrary）を共有する。`bridge-profile`はproof用に登録されたselectorの和集合だけを実行し、通常の全suiteは`all`で実行する。`isolated`登録は共有対象にできず、専用実行計画がない場合は失敗する。
 
 receipt schema 8にはrun ID、HEAD、trusted base（設定時）、tool versions、submodule revisions、環境digest、消費したWasmのdigest、実行command、native reportのdigest、およびstageとtestの対応を保存する。ソース変更、不足・重複・skip・失敗したテスト、異なるWasmを検出すると失敗する。native stdout/stderrは`verification/output/test-execution/<run-id>/`へ保存する。完全なproof receiptは従来どおり全10stageを必要とし、検証時には現在のソース・HEAD・ツール・submodule・Wasmとの一致も要求する。
+
+## 命題の意味と変更レビュー
+
+43件のrelease claimと5件の条件付きlivenessの前提、結論、仕様の参照先、未証明境界を`claim-semantics.tsv`に登録する。
+主要定義の意味は`definition-semantics.tsv`に集約し、仕様に対応する定義とモデル補助定義を分ける。
+証拠と外部仮定は既存のclaim台帳へ参照で結び付け、証拠強度の判定は増やさない。
+
+`python3 scripts/check_claim_semantics.py --write`は、固定Lean版で解釈した命題型と主要定義をJSONとMarkdownへ生成する。
+生成物は`verification/generated/claim-statements.*`であり、witnessの証明本体を含まない。
+通常の実行は生成物のdriftを拒否する。
+この検査は既存のclaim-manifest段階に含まれ、receiptの必須10段階を変更しない。
+
+trusted CIは既存のtrusted base commitと比較する。
+命題または主要定義が変わったclaimには対応表の更新を要求し、ソースだけの変更もレビュー対象として通知する。
+型や構造の内部、主要定義以外の依存定義はソース差分で確認する。
+hash一致、定理名の一致、candidate自身によるsnapshot更新を、仕様との意味的一致の証明とは扱わない。
+`verification/`は既存の対象HEADレビュー対象であり、snapshotと対応表を同時に変更してもレビューを省略できない。
+
+証明の読み順と限界は[証明の骨格](proof-outline.md)を参照する。
+Deposit履歴は`DepositHistory.lean`、個別policyは`ProtocolPolicies.lean`、統合遷移と保存定理は`Protocol.lean`に置く。
+GlobalHistoryの`AccountingInvariant`は会計とrecord構造の条件であり、終端phaseから実送金の完了を導くものではない。
+統合Protocolの`filterSafeStoredState`も抽象的な受理条件であり、本番のdecodeやmigrationの実装証明ではない。

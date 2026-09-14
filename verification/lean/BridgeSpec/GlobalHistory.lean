@@ -85,7 +85,7 @@ def ReservationConsistent (records : List Record) : Prop :=
   ∀ record ∈ records, record.economic.reservedMint > 0 →
     record.kind = .deposit
 
-def Safe (state : GlobalState) : Prop :=
+def AccountingInvariant (state : GlobalState) : Prop :=
   UniqueIds state.records ∧
     state.accounting = summarize state.records ∧
     Backed state.accounting ∧
@@ -687,8 +687,8 @@ theorem step_preserves_ids {state next : GlobalState} {event : Event}
   subst next
   exact update_record_preserves_ids updateAccepted
 
-theorem step_preserves_safe {state next : GlobalState} {event : Event}
-    (safe : Safe state) (accepted : step state event = some next) : Safe next := by
+theorem step_preserves_accounting_invariant {state next : GlobalState} {event : Event}
+    (safe : AccountingInvariant state) (accepted : step state event = some next) : AccountingInvariant next := by
   rcases safe with ⟨unique, total, backed, reservation⟩
   rw [total] at backed
   unfold step at accepted
@@ -710,14 +710,14 @@ theorem step_preserves_safe {state next : GlobalState} {event : Event}
   · exact apply_delta_preserves_backing backed summaryAccepted
       (update_record_delta_well_formed updateAccepted)
 
-theorem runs_preserve_safe {state final : GlobalState} {events : List Event}
-    (safe : Safe state) (runs : Runs state events final) : Safe final := by
+theorem runs_preserve_accounting_invariant {state final : GlobalState} {events : List Event}
+    (safe : AccountingInvariant state) (runs : Runs state events final) : AccountingInvariant final := by
   induction events generalizing state with
   | nil => simp only [Runs] at runs; subst final; exact safe
   | cons event rest ih =>
       simp only [Runs] at runs
       obtain ⟨next, accepted, tail⟩ := runs
-      exact ih (step_preserves_safe safe accepted) tail
+      exact ih (step_preserves_accounting_invariant safe accepted) tail
 
 theorem step_frames_other_record
     {state next : GlobalState} {event : Event} {other : Nat}

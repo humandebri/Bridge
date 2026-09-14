@@ -81,6 +81,11 @@ def depositAdmissionCase
     natField "mint_window_limit" windowLimit ++ "," ++
     field "accepted" (boolJson result.isSome) ++ "," ++ field "net" net ++ "}"
 
+def signatureTimeCase (observedTimestamp deadline : Nat) : String :=
+  "{" ++ natField "observed_timestamp" observedTimestamp ++ "," ++
+    natField "deadline" deadline ++ "," ++
+    field "accepted" (boolJson (signatureTimeAllowed observedTimestamp deadline)) ++ "}"
+
 def depositIdentityDecisionName : DepositIdentityDecision → String
   | .allow => "Allow"
   | .conflict => "Conflict"
@@ -408,6 +413,10 @@ def document : String :=
     ledgerBlockCase none none (some 9) (.releaseSucceeded 9),
     ledgerBlockCase none none (some 9) (.releaseSucceeded 10)]
   "{" ++ field "schema_version" "3" ++ "," ++
+    jsonSection "signature_time" [signatureTimeCase 700 1000,
+      signatureTimeCase 701 1000, signatureTimeCase 1001 1000,
+      signatureTimeCase 18446744073709551615 18446744073709551615,
+      signatureTimeCase 18446744073709551315 18446744073709551615] ++ "," ++
     jsonSection "quote" quotes ++ "," ++ jsonSection "settlement" settlements ++ "," ++
     jsonSection "payment" payments ++ "," ++ jsonSection "deposit_admission" deposits ++ "," ++
     jsonSection "deposit_identity" depositIdentities ++ "," ++

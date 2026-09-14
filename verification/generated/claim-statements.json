@@ -1,0 +1,1955 @@
+{
+  "schema": 1,
+  "lean_version": "Lean 4.30.0 commit d024af099ca4bf2c86f649261ebf59565dc8c622",
+  "toolchain": "leanprover/lean4:v4.30.0",
+  "exporter_sha256": "6abaa7400745eb69ce85dc461632b5d7d64156919590cd614907ae9f0f75de73",
+  "sources": {
+    "verification/lean/BridgeSpec/AuditExport.lean": {
+      "sha256": "71f528152dcd1c0a250ae213e0d250e8c4a46d42002c38d579b13679dd7bf501",
+      "lines": 18,
+      "source_declarations": 1
+    },
+    "verification/lean/BridgeSpec/ClaimContracts.lean": {
+      "sha256": "dcf249993e8e20af7fc1645817e6b1f7c099b8276ae630e83898912e494b176a",
+      "lines": 624,
+      "source_declarations": 105
+    },
+    "verification/lean/BridgeSpec/Claims.lean": {
+      "sha256": "f74ffe05f86fbdfa4e94095bdc2dc64a1dd3ed94c947a4b800af6433dada3430",
+      "lines": 226,
+      "source_declarations": 28
+    },
+    "verification/lean/BridgeSpec/ControlPlane.lean": {
+      "sha256": "57e6656b42d4da34726d8e69bfe129939d7649070923beddc9c5fdce8876936c",
+      "lines": 323,
+      "source_declarations": 32
+    },
+    "verification/lean/BridgeSpec/DepositAuthorization.lean": {
+      "sha256": "737633200787c8db2275d4a8408e8bad75754e04415c9cbc435b934660ca001e",
+      "lines": 586,
+      "source_declarations": 48
+    },
+    "verification/lean/BridgeSpec/DepositHistory.lean": {
+      "sha256": "51536b20ba0fd5da8a26491d13faf56b5e38a3c300f16e319e99ee5c8dec6620",
+      "lines": 561,
+      "source_declarations": 27
+    },
+    "verification/lean/BridgeSpec/FiniteWidthModel.lean": {
+      "sha256": "0345c19c9df5a982a4f896205cbde5d01a40dd68a8bd1f4e3c58e9923e3cf0ea",
+      "lines": 137,
+      "source_declarations": 31
+    },
+    "verification/lean/BridgeSpec/GlobalHistory.lean": {
+      "sha256": "a1b6668db4ec35f997042da7fbfb73285d8606a2891084b4645542e2e8b7ea37",
+      "lines": 889,
+      "source_declarations": 67
+    },
+    "verification/lean/BridgeSpec/LedgerBlockProvenance.lean": {
+      "sha256": "23421e6d692d4651eb98d658e501e918e185f36d378f72ed5115fbaf06ba69c4",
+      "lines": 337,
+      "source_declarations": 28
+    },
+    "verification/lean/BridgeSpec/Liveness.lean": {
+      "sha256": "72402ad8473fc2e294a3725535ade0153ed8bd51270ebb22660d75d8706aeff0",
+      "lines": 209,
+      "source_declarations": 26
+    },
+    "verification/lean/BridgeSpec/Model.lean": {
+      "sha256": "a9f07f9643e72cfb41bf9c1d14a34c5c6ab5108fc3cd54886e31216c0889ecd3",
+      "lines": 323,
+      "source_declarations": 60
+    },
+    "verification/lean/BridgeSpec/ModelBoundaries.lean": {
+      "sha256": "67b361fa752dfd66e101553b9a0ed6b49d177d49866b94239c8a6c214eba7d13",
+      "lines": 42,
+      "source_declarations": 4
+    },
+    "verification/lean/BridgeSpec/ModelRefinement.lean": {
+      "sha256": "101d62bf7e751cdcc14e0bccf61b9d6ba12326fa8cccdb70df63a51338649342",
+      "lines": 161,
+      "source_declarations": 24
+    },
+    "verification/lean/BridgeSpec/Protocol.lean": {
+      "sha256": "41678966a02226b6930bac1f74881d49b6d20f13c60671d7354da0bd90571043",
+      "lines": 809,
+      "source_declarations": 34
+    },
+    "verification/lean/BridgeSpec/ProtocolPolicies.lean": {
+      "sha256": "a2702b5b210970ee5ac01e5c3109697c902775610de2e8982da60195d132f71c",
+      "lines": 420,
+      "source_declarations": 52
+    },
+    "verification/lean/BridgeSpec/Theorems.lean": {
+      "sha256": "848b4f6361b2f097725a3ab084b9e7344d03c906030ca8ad004bb19095e6c4f4",
+      "lines": 204,
+      "source_declarations": 19
+    },
+    "verification/lean/BridgeSpec/Vectors.lean": {
+      "sha256": "00c33dad5b79d86ac6c9147f33352a412bc20f672e9c7ad33e25961a0a7e9325",
+      "lines": 439,
+      "source_declarations": 41
+    },
+    "verification/lean/Main.lean": {
+      "sha256": "286cd7fcd66afc4e7532fb8f2f0d7e0e15f858ffdad3de716c9f83bfc6b42a05",
+      "lines": 10,
+      "source_declarations": 1
+    },
+    "verification/lean/fail/AccountingDeltaViolation.lean": {
+      "sha256": "638f8837d8c221d828fed5162973b4215af39c61984c6aba3220f8b8b3dd7a08",
+      "lines": 24,
+      "source_declarations": 1
+    },
+    "verification/lean/fail/AnonymousRefundRequest.lean": {
+      "sha256": "beae263600cfc9307feadae225b64983f34e11bfdfa04adae6316ec7a1869552",
+      "lines": 8,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/AuthorizationReissue.lean": {
+      "sha256": "ee67fee642f47c1d116fc94f8a5f9387e96525dfa5397646063d6fbc6451d508",
+      "lines": 25,
+      "source_declarations": 4
+    },
+    "verification/lean/fail/BackingViolation.lean": {
+      "sha256": "0ad4d6a1424518a8b8f9968310d0a88619133f86d4ce877fa7134a0f22b206d2",
+      "lines": 12,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/ConflictingFundingReplay.lean": {
+      "sha256": "fd5f6abf7f8812e64bf2cbf457991ca46fcea6cdcc71acd074a6b162317c7b96",
+      "lines": 9,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/DeadlineOverflow.lean": {
+      "sha256": "864692b1294fc6b36f398fc91ea14695d07fea1c3defc14708eccc329aa74d5c",
+      "lines": 6,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/DestinationMutation.lean": {
+      "sha256": "a3992470b4340e01eb81291efe4172fb9b3269141e987beea8238f02fded0cae",
+      "lines": 20,
+      "source_declarations": 3
+    },
+    "verification/lean/fail/DoubleDepositFeeTrace.lean": {
+      "sha256": "9f00413132deded07cee5385e9a56384775d7b6b869bfad08b31c384059605ba",
+      "lines": 7,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/DoubleFee.lean": {
+      "sha256": "076049e9a5e13cd6c1e4ebab231ed452dffc9fcac994b7aa15bdd8645e304851",
+      "lines": 6,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/DriftedConfirmedActivationEvidence.lean": {
+      "sha256": "cce72323186747a19ebd7bd19393b75624c5b5f5a330eebb6a24b6c75aa1df5a",
+      "lines": 6,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/EvidencelessMint.lean": {
+      "sha256": "7d248eb1e8b57cfd2e9f2c3d3892e03b495934fbc920278146a056cca36b2c96",
+      "lines": 19,
+      "source_declarations": 2
+    },
+    "verification/lean/fail/FinalizedTimestampDeadline.lean": {
+      "sha256": "614a8705cfd818db1749f072723d51e18f07d03b750a882a3f8d1fdb2935a212",
+      "lines": 7,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/IncompleteAbsence.lean": {
+      "sha256": "22ed9af027b854b148ed57fd103aa4cf9707a4366943ce43b4276e3ca4cbad62",
+      "lines": 15,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/IncompleteExpiryAudit.lean": {
+      "sha256": "4c30cb6604648725bea1d9a376cd758efedc2bbbc029c26088ed070229be55bd",
+      "lines": 22,
+      "source_declarations": 2
+    },
+    "verification/lean/fail/IncompleteMintAudit.lean": {
+      "sha256": "34a54671a3271bf8efb75d8ffa94483006cb795bca44a73eeccd29384ed3ec1c",
+      "lines": 21,
+      "source_declarations": 2
+    },
+    "verification/lean/fail/InvalidExecutionStep.lean": {
+      "sha256": "a6b48a8e639af5578312a150535c1b778d45877f353b449eca9559558c156213",
+      "lines": 10,
+      "source_declarations": 1
+    },
+    "verification/lean/fail/ManualActiveLeaseBypass.lean": {
+      "sha256": "05b63de3fa0532e200bdd0c2f8e75495f96b40683b11177827e16335ee5fa7a7",
+      "lines": 6,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/ManualClaimEconomicMutation.lean": {
+      "sha256": "9b60fdf900a577eea35aa64585347ed44b629cceae79b2dbbc0ede270ad7722d",
+      "lines": 13,
+      "source_declarations": 1
+    },
+    "verification/lean/fail/MintFeeAlreadyCounted.lean": {
+      "sha256": "1506eb9046d1280a73afc6a2e0203ad2ebc477b2eb62afc1e8360bbd6bbb4a68",
+      "lines": 19,
+      "source_declarations": 2
+    },
+    "verification/lean/fail/MissingUserLiveness.lean": {
+      "sha256": "285ee5520011c8603f7db684c1a6365bef69da98d9e38c6ed60a4f0b69bbe07e",
+      "lines": 16,
+      "source_declarations": 1
+    },
+    "verification/lean/fail/ProcessedExpiryRefund.lean": {
+      "sha256": "4dcff1642961a5f622a762ac1b4748b990a5b4ee6a480d4e6a42abf76f7e0773",
+      "lines": 21,
+      "source_declarations": 2
+    },
+    "verification/lean/fail/QuoteChangedDuringTrace.lean": {
+      "sha256": "9a520139c90b0736b11e639ee117cd5e8d2b58e7f36ef7fe039ebbb7b72fa645",
+      "lines": 8,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/RefundAfterReservationReplay.lean": {
+      "sha256": "398008e4f37597fc27cdc61909bfe32312895afa6bb84128a5d01a252b164afd",
+      "lines": 6,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/RefundBeforeFunding.lean": {
+      "sha256": "47ac92b520aef0fc257bf1a3fa956af2ce6130b9bf676b56d8936e62c2bd56f0",
+      "lines": 9,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/SignatureTooLate.lean": {
+      "sha256": "bdd74ab81077e94e7f16dedce8b2dd0bd5db6a71c6d31e57e6fae72dc9fbc106",
+      "lines": 4,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/StaleCrossRecordCallback.lean": {
+      "sha256": "0394bec7a1db4833940a74de7386b6150db5753b09b2cae5b8d5ebb8c64330b1",
+      "lines": 27,
+      "source_declarations": 2
+    },
+    "verification/lean/fail/StaleLeaseCallback.lean": {
+      "sha256": "060d4a6c2845d57c76dc64427eca5be79f8444c0472b7191a2ffffe4f34c2dae",
+      "lines": 9,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/TerminalAuthorizationReopen.lean": {
+      "sha256": "33f763ac7516e6a73762e978616d1d89063aac597834af2f954f90446805c4b1",
+      "lines": 12,
+      "source_declarations": 1
+    },
+    "verification/lean/fail/TerminalDepositIndexed.lean": {
+      "sha256": "5a740f2449b4ebd506b9d3095378f2226f253b9fd4ec96442422a0adbcbd91d7",
+      "lines": 6,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/UnauthorizedConfirmationCaller.lean": {
+      "sha256": "ebb7016ca30fe6b8c28c6dc6533da01331be76d3cc479a886866213d52ce80d0",
+      "lines": 8,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/UnauthorizedOperationalConfigSeal.lean": {
+      "sha256": "8d45c7d35059439e55d1e8b7eaec11c842f9918084a8d4410c70dc986f43423e",
+      "lines": 6,
+      "source_declarations": 0
+    },
+    "verification/lean/fail/UnfairLiveness.lean": {
+      "sha256": "e346efb2083754bc8793d27a176243cc79c29f55a54eed0af4778e85faff6eca",
+      "lines": 16,
+      "source_declarations": 1
+    },
+    "verification/lean/fail/UnsafeBootstrapPausePrincipalMigration.lean": {
+      "sha256": "ddd05423bdf6e17a1ca3f0be7a2eae1694f5e331b638d5939fef44dafaf485eb",
+      "lines": 6,
+      "source_declarations": 0
+    },
+    "verification/lean/lakefile.lean": {
+      "sha256": "ea0d55c075440c9541d28b7802430abfe5e99b6a2e5a0abb561b76963055950c",
+      "lines": 11,
+      "source_declarations": 0
+    }
+  },
+  "semantics": [
+    {
+      "kind": "claim",
+      "id": "activation_preflight",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.ActivationPreflight",
+      "premises": "ControlPlane到達状態、非pause、activationCount>0",
+      "conclusion": "最後のactivationはvalidated",
+      "boundary": "初期activationCount=0は除外。外部観測の正しさは前提",
+      "evidence": "claims.tsv:activation_preflight",
+      "external": "claims.tsv:activation_preflight",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "authorization_binding",
+      "specification": "docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md",
+      "definitions": "BridgeSpec.ClaimContracts.AuthorizationBinding;BridgeSpec.MintAuthorization.installSignature;BridgeSpec.signatureTimeAllowed;BridgeSpec.MintAuthorization.Authorization.valid",
+      "premises": "authorization commitまたは署名installが受理",
+      "conclusion": "domain・epoch・IC起点900秒期限を束縛し、署名時にu64範囲と残り300秒以上",
+      "boundary": "署名の暗号学的真正性・IC時刻とNatの対応は外部仮定",
+      "evidence": "claims.tsv:authorization_binding",
+      "external": "claims.tsv:authorization_binding",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "automatic_retry_limit",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.AutomaticRetryLimit",
+      "premises": "laneと失敗回数・上限を入力",
+      "conclusion": "automatic laneかつfailures<limitのときだけ許可",
+      "boundary": "失敗回数の永続化と停止後のuser再開は別証拠",
+      "evidence": "claims.tsv:automatic_retry_limit",
+      "external": "claims.tsv:automatic_retry_limit",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "canonical_probe",
+      "specification": "docs/bridge-flow.md",
+      "definitions": "BridgeSpec.ClaimContracts.CanonicalProbe;BridgeSpec.Protocol.Safe;BridgeSpec.Protocol.filterSafeStoredState",
+      "premises": "receiptとsnapshotのblock番号",
+      "conclusion": "predicateは番号の一致と同値",
+      "boundary": "番号一致だけではcanonical hashの真正性は保証しない",
+      "evidence": "claims.tsv:canonical_probe",
+      "external": "claims.tsv:canonical_probe",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "committed_quote",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.CommittedQuote;BridgeSpec.Protocol.Safe;BridgeSpec.Protocol.filterSafeStoredState",
+      "premises": "commit受理、初期Safeと受理されたtrace",
+      "conclusion": "純額は正、gross=純額+fee、終端宛先・純額は初期保存quoteと一致",
+      "boundary": "本番からLean traceへの完全な写像は未証明",
+      "evidence": "claims.tsv:committed_quote",
+      "external": "claims.tsv:committed_quote",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "confirmed_activation_evidence_binding",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding",
+      "premises": "match個数とgeneration・signedAtを入力",
+      "conclusion": "単一matchかつmetadataの厳密一致",
+      "boundary": "履歴探索・署名・永続化の真正性は別証拠",
+      "evidence": "claims.tsv:confirmed_activation_evidence_binding",
+      "external": "claims.tsv:confirmed_activation_evidence_binding",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "cycles_top_up_request_policy",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy",
+      "premises": "balance・threshold・inProgress・authorizedを入力",
+      "conclusion": "認可済み・非実行中・balance≤thresholdのときだけ要求可能",
+      "boundary": "launcherの補充実行や将来残高回復は未証明",
+      "evidence": "claims.tsv:cycles_top_up_request_policy",
+      "external": "claims.tsv:cycles_top_up_request_policy",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "deposit_admission",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.DepositAdmission",
+      "premises": "admitDepositが純額を返す",
+      "conclusion": "fee・正の純額・一件上限・window上限を満たす",
+      "boundary": "局所モデルは予約量を独立入力に持たない。本番の予約込み受付は別Verus義務",
+      "evidence": "claims.tsv:deposit_admission",
+      "external": "claims.tsv:deposit_admission",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "deposit_backing",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.DepositBacking;BridgeSpec.GlobalHistory.AccountingInvariant;BridgeSpec.GlobalHistory.Backed;BridgeSpec.GlobalHistory.eventDelta",
+      "premises": "初期会計不変条件と受理されたsignature・mint・refund履歴",
+      "conclusion": "backingを保存し、各操作で規定会計差分を適用",
+      "boundary": "会計モデルのphaseは実外部操作を証明しない",
+      "evidence": "claims.tsv:deposit_backing",
+      "external": "claims.tsv:deposit_backing",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "deposit_identity_preflight",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.DepositIdentityPreflight",
+      "premises": "IdentityHistory到達状態で候補preflightが受理",
+      "conclusion": "候補IDは処理済みではない",
+      "boundary": "RPCの真正性とinstall instanceの一意性は外部境界",
+      "evidence": "claims.tsv:deposit_identity_preflight",
+      "external": "claims.tsv:deposit_identity_preflight",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "epoch_invalidation",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.EpochInvalidation",
+      "premises": "既存authorizationまたはretiredSigner≠replacementSigner",
+      "conclusion": "認可の再発行を拒否し、旧signerは未来epochでも拒否",
+      "boundary": "署名回復・epoch更新のEVM実行は別証拠",
+      "evidence": "claims.tsv:epoch_invalidation",
+      "external": "claims.tsv:epoch_invalidation",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "exact_mint_finalization",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.ExactMintFinalization;BridgeSpec.MintAuthorization.MintEvidence.valid",
+      "premises": "completeMintが受理",
+      "conclusion": "成功receiptはfinalized以下で、deposit・recipient・digestがauthorization一致",
+      "boundary": "hashやRPC digestの非0は真正性証明ではない。暗号とcanonicalityは外部仮定",
+      "evidence": "claims.tsv:exact_mint_finalization",
+      "external": "claims.tsv:exact_mint_finalization",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "expiry_refund",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.ExpiryRefund;BridgeSpec.MintAuthorization.ExpiryEvidence.valid",
+      "premises": "startExpiredRefundが受理",
+      "conclusion": "未処理・deposit/digest一致・期限を厳密に超過、会計backingを保存",
+      "boundary": "Finalized証拠の真正性と実Ledger転送は外部境界",
+      "evidence": "claims.tsv:expiry_refund",
+      "external": "claims.tsv:expiry_refund",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "fee_accounting_once",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.FeeAccountingOnce;BridgeSpec.MintAuthorization.installSignature;BridgeSpec.signatureTimeAllowed;BridgeSpec.MintAuthorization.Authorization.valid",
+      "premises": "初期Depositからの受理traceと署名install",
+      "conclusion": "fee credit回数は高々1で、署名時のfee差分はauthorizationの値",
+      "boundary": "GlobalHistoryとDepositHistoryを本番履歴へ接続する完全証明はない",
+      "evidence": "claims.tsv:fee_accounting_once",
+      "external": "claims.tsv:fee_accounting_once",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "fee_payout",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.FeePayout",
+      "premises": "feePayoutAllowedが受理",
+      "conclusion": "pendingと新規debitはreserve内、成功時だけdebitを計上",
+      "boundary": "外部転送結果の正しさと永続化は外部境界",
+      "evidence": "claims.tsv:fee_payout",
+      "external": "claims.tsv:fee_payout",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "fee_recipient_rotation",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.FeeRecipientRotation",
+      "premises": "rotateFeeRecipientが受理",
+      "conclusion": "pending payoutは0、残高・既計上feeは保存しrecipientを更新",
+      "boundary": "本番認可とSQL commitは別証拠",
+      "evidence": "claims.tsv:fee_recipient_rotation",
+      "external": "claims.tsv:fee_recipient_rotation",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "funding_attempt_lifecycle",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.FundingAttemptLifecycle;BridgeSpec.Protocol.Safe;BridgeSpec.Protocol.filterSafeStoredState",
+      "premises": "funding outcome enumを入力",
+      "conclusion": "成功・duplicate・曖昧・retryable・確定失敗を規定decisionへ分類",
+      "boundary": "enumへの外部結果のdecodeとSQL transactionは別証拠",
+      "evidence": "claims.tsv:funding_attempt_lifecycle",
+      "external": "claims.tsv:funding_attempt_lifecycle",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "funding_reconciliation_freshness",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.FundingReconciliationFreshness;BridgeSpec.Protocol.Safe;BridgeSpec.Protocol.filterSafeStoredState",
+      "premises": "absence・finalScan・dedupExpiredのboolを入力",
+      "conclusion": "fresh scanが必要な条件とrelease可能条件を区別",
+      "boundary": "完全履歴・経過時刻・scan結果の真正性は外部境界",
+      "evidence": "claims.tsv:funding_reconciliation_freshness",
+      "external": "claims.tsv:funding_reconciliation_freshness",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "governance_confirmation_authorization",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization",
+      "premises": "callerと現在のrelayer・governance・pauseをNatで表現",
+      "conclusion": "非0かつ許可された三者のいずれかだけ受理",
+      "boundary": "Natの0とanonymous Principalの対応、controller取得は本番側境界",
+      "evidence": "claims.tsv:governance_confirmation_authorization",
+      "external": "claims.tsv:governance_confirmation_authorization",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "governance_nonce_chain_binding",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.GovernanceNonceChainBinding",
+      "premises": "ControlPlane到達状態に最後のgovernance chainがある",
+      "conclusion": "governance chainはconfigured chainと一致",
+      "boundary": "RPC観測chainIdやprovider切替耐性は主張しない",
+      "evidence": "claims.tsv:governance_nonce_chain_binding",
+      "external": "claims.tsv:governance_nonce_chain_binding",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "governance_transaction_affordability",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.GovernanceTransactionAffordability",
+      "premises": "observedWei<requiredWei",
+      "conclusion": "requiredWei以下の残高では支払可能条件を満たさない",
+      "boundary": "必要額見積りや外部残高照会は証明しない",
+      "evidence": "claims.tsv:governance_transaction_affordability",
+      "external": "claims.tsv:governance_transaction_affordability",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "hold_resolution",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.HoldResolution",
+      "premises": "holdRetryAllowedが受理",
+      "conclusion": "exact successまたはcomplete absenceが存在",
+      "boundary": "入力boolから証拠の真正性は導けない",
+      "evidence": "claims.tsv:hold_resolution",
+      "external": "claims.tsv:hold_resolution",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "initial_activation_authorization",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.InitialActivationAuthorization",
+      "premises": "bootstrap・governance・sealed・phase・migration分類入力",
+      "conclusion": "bootstrap期間の認可と消費、seal caller条件、migration分類を規定",
+      "boundary": "migration分類の定義展開だけでは実復元を証明しない",
+      "evidence": "claims.tsv:initial_activation_authorization",
+      "external": "claims.tsv:initial_activation_authorization",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "lease_lane_isolation",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.LeaseLaneIsolation;BridgeSpec.GlobalHistory.AccountingInvariant;BridgeSpec.GlobalHistory.Backed;BridgeSpec.GlobalHistory.eventDelta",
+      "premises": "lane claim decisionがallow",
+      "conclusion": "対象は非activeでlane capacity未満",
+      "boundary": "lane入力の分類とruntime dispatcherは別証拠",
+      "evidence": "claims.tsv:lease_lane_isolation",
+      "external": "claims.tsv:lease_lane_isolation",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "lease_outcome",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.LeaseOutcome;BridgeSpec.GlobalHistory.AccountingInvariant;BridgeSpec.GlobalHistory.Backed;BridgeSpec.GlobalHistory.eventDelta",
+      "premises": "lease outcome predicateとGlobalHistory更新が受理",
+      "conclusion": "leaseはactiveでgeneration一致、会計不変条件と他recordを保存",
+      "boundary": "async実行・SQL行選択・callbackの外部効果は別証拠",
+      "evidence": "claims.tsv:lease_outcome",
+      "external": "claims.tsv:lease_outcome",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "ledger_block_provenance",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.LedgerBlockProvenance",
+      "premises": "Ledger indexをinstallする受理trace",
+      "conclusion": "既存indexを保持し、競合を拒否し、refundにはfunding indexが必要",
+      "boundary": "index値の履歴真正性とSQL行選択は外部仮定",
+      "evidence": "claims.tsv:ledger_block_provenance",
+      "external": "claims.tsv:ledger_block_provenance",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "nonterminal_deposit_index_consistency",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency",
+      "premises": "DepositPhaseを入力",
+      "conclusion": "refunded・cancelled・minted以外だけindex対象",
+      "boundary": "SQL index維持と実record走査は別証拠",
+      "evidence": "claims.tsv:nonterminal_deposit_index_consistency",
+      "external": "claims.tsv:nonterminal_deposit_index_consistency",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "notification_quota_isolation",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.NotificationQuotaIsolation",
+      "premises": "通知受付・ingestion predicateが受理",
+      "conclusion": "global・caller・ingestion上限未満、cooldownはhash一致かつ期限未満",
+      "boundary": "永続カウンタ・期間更新・caller真正性は別証拠",
+      "evidence": "claims.tsv:notification_quota_isolation",
+      "external": "claims.tsv:notification_quota_isolation",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "operational_config_seal",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.OperationalConfigSeal",
+      "premises": "sealedとcandidateValidの入力",
+      "conclusion": "未sealかつ候補有効の場合だけsealし、asset操作はsealedの場合だけ許可",
+      "boundary": "呼出し元が真偽入力を正しく作ることと永続化は別証拠",
+      "evidence": "claims.tsv:operational_config_seal",
+      "external": "claims.tsv:operational_config_seal",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "paid_call_cycle_reserve",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.PaidCallCycleReserve",
+      "premises": "reserve+attachedCycles+margin≤liquid、実請求額≤予算",
+      "conclusion": "課金後もreserveを残す",
+      "boundary": "ICの実課金・返却とruntime会計は外部境界",
+      "evidence": "claims.tsv:paid_call_cycle_reserve",
+      "external": "claims.tsv:paid_call_cycle_reserve",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "payment_identity",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.PaymentIdentity;BridgeSpec.GlobalHistory.AccountingInvariant;BridgeSpec.GlobalHistory.Backed;BridgeSpec.GlobalHistory.eventDelta",
+      "premises": "GlobalHistoryのpayoutまたはrecord更新が受理",
+      "conclusion": "payoutの純額・宛先はrecordに一致し、別IDのrecordは不変",
+      "boundary": "callbackのpaid phase自体は実送金の証拠ではない",
+      "evidence": "claims.tsv:payment_identity",
+      "external": "claims.tsv:payment_identity",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "pending_queue",
+      "specification": "docs/bridge-flow.md",
+      "definitions": "BridgeSpec.ClaimContracts.PendingQueue",
+      "premises": "blockedな既存entryまたはstorage書込失敗",
+      "conclusion": "blocked retryを保持し、書込失敗時はsessionを保持してdurable結果なし",
+      "boundary": "Web Locks・browser storage原子性は外部仮定",
+      "evidence": "claims.tsv:pending_queue",
+      "external": "claims.tsv:pending_queue",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "refund_evidence_enforcement",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.RefundEvidenceEnforcement;BridgeSpec.MintAuthorization.ExpiryEvidence.valid",
+      "premises": "初期Depositからの受理trace中に期限切れrefund開始がある",
+      "conclusion": "未処理・deposit/digest一致・strict expiryが必要",
+      "boundary": "RPC canonicalityと履歴真正性は外部仮定",
+      "evidence": "claims.tsv:refund_evidence_enforcement",
+      "external": "claims.tsv:refund_evidence_enforcement",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "refund_request_authorization",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.RefundRequestAuthorization",
+      "premises": "受理prefix後のrequestExpiredRefundが受理",
+      "conclusion": "authenticated=trueかつdepositProcessed=false",
+      "boundary": "callerは既存recordの宛先・金額を変更できないことは本番側証拠",
+      "evidence": "claims.tsv:refund_request_authorization",
+      "external": "claims.tsv:refund_request_authorization",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "reservation_commit",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.ReservationCommit",
+      "premises": "有限幅境界内の予約計算と受理された予約解放",
+      "conclusion": "予約+候補の合計を保存し、解放は正確に0、二重解放を拒否",
+      "boundary": "GlobalHistoryの解放イベント自体には時刻証拠がない",
+      "evidence": "claims.tsv:reservation_commit",
+      "external": "claims.tsv:reservation_commit",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "reservation_lifecycle",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.ReservationLifecycle;BridgeSpec.GlobalHistory.AccountingInvariant;BridgeSpec.GlobalHistory.Backed;BridgeSpec.GlobalHistory.eventDelta",
+      "premises": "GlobalHistoryの予約解放イベントが受理",
+      "conclusion": "予約を正確に0へし、二重解放を拒否",
+      "boundary": "期限判断はDepositHistoryと本番側の別証拠",
+      "evidence": "claims.tsv:reservation_lifecycle",
+      "external": "claims.tsv:reservation_lifecycle",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "runtime_attestation_reuse",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.RuntimeAttestationReuse",
+      "premises": "到達ControlPlane状態に再利用domainがある",
+      "conclusion": "再利用domainは現在のinstall domainと一致",
+      "boundary": "runtime不変性、warm観測の正しさ、保存と再利用経路は別証拠",
+      "evidence": "claims.tsv:runtime_attestation_reuse",
+      "external": "claims.tsv:runtime_attestation_reuse",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "service_fee_maximum",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.ServiceFeeMaximum;BridgeSpec.Protocol.Safe;BridgeSpec.Protocol.filterSafeStoredState",
+      "premises": "fee上下限の局所predicateとDeposit署名履歴",
+      "conclusion": "fee変更は固定範囲内、署名fee計上は一度だけ",
+      "boundary": "pending payoutのtrace上限は別のreserve性質。全実行のfee設定写像は未証明",
+      "evidence": "claims.tsv:service_fee_maximum",
+      "external": "claims.tsv:service_fee_maximum",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "settlement_backing",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.SettlementBacking;BridgeSpec.GlobalHistory.AccountingInvariant;BridgeSpec.GlobalHistory.Backed;BridgeSpec.GlobalHistory.eventDelta",
+      "premises": "初期会計不変条件と受理された履歴・payout",
+      "conclusion": "backingを保存し、escrow・feeReserve・未決済債務へ規定差分を適用",
+      "boundary": "実Ledger送金とSQLの原子性は外部境界",
+      "evidence": "claims.tsv:settlement_backing",
+      "external": "claims.tsv:settlement_backing",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "signing_cycle_reserve",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.SigningCycleReserve",
+      "premises": "reserve+signingCost+margin≤liquid、実請求額≤見積り",
+      "conclusion": "請求後もreserveを残す",
+      "boundary": "IC課金額と見積りの対応は外部仮定",
+      "evidence": "claims.tsv:signing_cycle_reserve",
+      "external": "claims.tsv:signing_cycle_reserve",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "withdrawal_admission_boundary",
+      "specification": "docs/canister-state-machine.md",
+      "definitions": "BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary",
+      "premises": "withdrawalIdAdmissibleが受理",
+      "conclusion": "minimumは非0でobservedはminimum以上",
+      "boundary": "Natと32byte big-endian IDの対応は共有predicateとテスト",
+      "evidence": "claims.tsv:withdrawal_admission_boundary",
+      "external": "claims.tsv:withdrawal_admission_boundary",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "withdrawal_finality_quorum",
+      "specification": "docs/bridge-flow.md",
+      "definitions": "BridgeSpec.ClaimContracts.WithdrawalFinalityQuorum",
+      "premises": "三providerのheadまたはidentityからcheckpointを選択",
+      "conclusion": "二者が高さをattestし、identity版は高さとhashの二者一致",
+      "boundary": "providerの正しいchain設定と応答真正性は外部仮定",
+      "evidence": "claims.tsv:withdrawal_finality_quorum",
+      "external": "claims.tsv:withdrawal_finality_quorum",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "claim",
+      "id": "withdrawal_finalization",
+      "specification": "docs/bridge-flow.md",
+      "definitions": "BridgeSpec.ClaimContracts.WithdrawalFinalization",
+      "premises": "receipt成功・canonical・blockを入力",
+      "conclusion": "notifyには成功かつfinalized以下かつcanonicalが必要、finalized不在ならretry",
+      "boundary": "provider応答とブラウザ実装全体は証明しない",
+      "evidence": "claims.tsv:withdrawal_finalization",
+      "external": "claims.tsv:withdrawal_finalization",
+      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+    },
+    {
+      "kind": "liveness",
+      "id": "deposit_terminal_progress_lemmas",
+      "specification": "verification/conditional-liveness.md",
+      "definitions": "BridgeSpec.Liveness.DepositTerminalProgressLemmas;BridgeSpec.Liveness.AdmissibleUntilOccurs;BridgeSpec.Liveness.CommonOperationalAssumptions;BridgeSpec.Liveness.WeakFair",
+      "premises": "対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作",
+      "conclusion": "mintの条件付き含意とrefundの条件付き含意の論理積。共通実行の二者択一ではない",
+      "boundary": "本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない",
+      "evidence": "conditional-liveness.tsv:deposit_terminal_progress_lemmas",
+      "external": "conditional-liveness.tsv:deposit_terminal_progress_lemmas",
+      "review_note": "初回対応表。条件付き補題と本番の到達性を区別。"
+    },
+    {
+      "kind": "liveness",
+      "id": "expired_deposit_eventually_refunded",
+      "specification": "verification/conditional-liveness.md",
+      "definitions": "BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded;BridgeSpec.Liveness.AdmissibleUntilOccurs;BridgeSpec.Liveness.CommonOperationalAssumptions;BridgeSpec.Liveness.WeakFair",
+      "premises": "対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作",
+      "conclusion": "対象depositがrefundedへ到達",
+      "boundary": "本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない",
+      "evidence": "conditional-liveness.tsv:expired_deposit_eventually_refunded",
+      "external": "conditional-liveness.tsv:expired_deposit_eventually_refunded",
+      "review_note": "初回対応表。条件付き補題と本番の到達性を区別。"
+    },
+    {
+      "kind": "liveness",
+      "id": "funded_deposit_eventually_minted",
+      "specification": "verification/conditional-liveness.md",
+      "definitions": "BridgeSpec.Liveness.FundedDepositEventuallyMinted;BridgeSpec.Liveness.AdmissibleUntilOccurs;BridgeSpec.Liveness.CommonOperationalAssumptions;BridgeSpec.Liveness.WeakFair",
+      "premises": "対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作",
+      "conclusion": "対象depositがmintedへ到達",
+      "boundary": "本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない",
+      "evidence": "conditional-liveness.tsv:funded_deposit_eventually_minted",
+      "external": "conditional-liveness.tsv:funded_deposit_eventually_minted",
+      "review_note": "初回対応表。条件付き補題と本番の到達性を区別。"
+    },
+    {
+      "kind": "liveness",
+      "id": "funding_failure_eventually_cancelled",
+      "specification": "verification/conditional-liveness.md",
+      "definitions": "BridgeSpec.Liveness.FundingFailureEventuallyCancelled;BridgeSpec.Liveness.AdmissibleUntilOccurs;BridgeSpec.Liveness.CommonOperationalAssumptions;BridgeSpec.Liveness.WeakFair",
+      "premises": "対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作",
+      "conclusion": "対象depositがcancelledへ到達",
+      "boundary": "本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない",
+      "evidence": "conditional-liveness.tsv:funding_failure_eventually_cancelled",
+      "external": "conditional-liveness.tsv:funding_failure_eventually_cancelled",
+      "review_note": "初回対応表。条件付き補題と本番の到達性を区別。"
+    },
+    {
+      "kind": "liveness",
+      "id": "withdrawal_eventually_paid",
+      "specification": "verification/conditional-liveness.md",
+      "definitions": "BridgeSpec.Liveness.WithdrawalEventuallyPaid;BridgeSpec.Liveness.AdmissibleUntilOccurs;BridgeSpec.Liveness.CommonOperationalAssumptions;BridgeSpec.Liveness.WeakFair",
+      "premises": "対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作",
+      "conclusion": "対象withdrawalがpaidへ到達",
+      "boundary": "本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない",
+      "evidence": "conditional-liveness.tsv:withdrawal_eventually_paid",
+      "external": "conditional-liveness.tsv:withdrawal_eventually_paid",
+      "review_note": "初回対応表。条件付き補題と本番の到達性を区別。"
+    }
+  ],
+  "definitions": [
+    {
+      "name": "BridgeSpec.ClaimContracts.ActivationPreflight",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "最後のactivationはvalidated"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.AuthorizationBinding",
+      "role": "specification",
+      "specification": "docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md",
+      "meaning": "domain・epoch・IC起点900秒期限を束縛し、署名時にu64範囲と残り300秒以上"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.AutomaticRetryLimit",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "automatic laneかつfailures<limitのときだけ許可"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.CanonicalProbe",
+      "role": "specification",
+      "specification": "docs/bridge-flow.md",
+      "meaning": "predicateは番号の一致と同値"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.CommittedQuote",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "純額は正、gross=純額+fee、終端宛先・純額は初期保存quoteと一致"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "単一matchかつmetadataの厳密一致"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "認可済み・非実行中・balance≤thresholdのときだけ要求可能"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.DepositAdmission",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "fee・正の純額・一件上限・window上限を満たす"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.DepositBacking",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "backingを保存し、各操作で規定会計差分を適用"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.DepositIdentityPreflight",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "候補IDは処理済みではない"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.EpochInvalidation",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "認可の再発行を拒否し、旧signerは未来epochでも拒否"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.ExactMintFinalization",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "成功receiptはfinalized以下で、deposit・recipient・digestがauthorization一致"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.ExpiryRefund",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "未処理・deposit/digest一致・期限を厳密に超過、会計backingを保存"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.FeeAccountingOnce",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "fee credit回数は高々1で、署名時のfee差分はauthorizationの値"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.FeePayout",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "pendingと新規debitはreserve内、成功時だけdebitを計上"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.FeeRecipientRotation",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "pending payoutは0、残高・既計上feeは保存しrecipientを更新"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.FundingAttemptLifecycle",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "成功・duplicate・曖昧・retryable・確定失敗を規定decisionへ分類"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.FundingReconciliationFreshness",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "fresh scanが必要な条件とrelease可能条件を区別"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "非0かつ許可された三者のいずれかだけ受理"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.GovernanceNonceChainBinding",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "governance chainはconfigured chainと一致"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.GovernanceTransactionAffordability",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "requiredWei以下の残高では支払可能条件を満たさない"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.HoldResolution",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "exact successまたはcomplete absenceが存在"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.InitialActivationAuthorization",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "bootstrap期間の認可と消費、seal caller条件、migration分類を規定"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.LeaseLaneIsolation",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "対象は非activeでlane capacity未満"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.LeaseOutcome",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "leaseはactiveでgeneration一致、会計不変条件と他recordを保存"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.LedgerBlockProvenance",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "既存indexを保持し、競合を拒否し、refundにはfunding indexが必要"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "refunded・cancelled・minted以外だけindex対象"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.NotificationQuotaIsolation",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "global・caller・ingestion上限未満、cooldownはhash一致かつ期限未満"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.OperationalConfigSeal",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "未sealかつ候補有効の場合だけsealし、asset操作はsealedの場合だけ許可"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.PaidCallCycleReserve",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "課金後もreserveを残す"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.PaymentIdentity",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "payoutの純額・宛先はrecordに一致し、別IDのrecordは不変"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.PendingQueue",
+      "role": "specification",
+      "specification": "docs/bridge-flow.md",
+      "meaning": "blocked retryを保持し、書込失敗時はsessionを保持してdurable結果なし"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.RefundEvidenceEnforcement",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "未処理・deposit/digest一致・strict expiryが必要"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.RefundRequestAuthorization",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "authenticated=trueかつdepositProcessed=false"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.ReservationCommit",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "予約+候補の合計を保存し、解放は正確に0、二重解放を拒否"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.ReservationLifecycle",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "予約を正確に0へし、二重解放を拒否"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.RuntimeAttestationReuse",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "再利用domainは現在のinstall domainと一致"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.ServiceFeeMaximum",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "fee変更は固定範囲内、署名fee計上は一度だけ"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.SettlementBacking",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "backingを保存し、escrow・feeReserve・未決済債務へ規定差分を適用"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.SigningCycleReserve",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "請求後もreserveを残す"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "minimumは非0でobservedはminimum以上"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.WithdrawalFinalityQuorum",
+      "role": "specification",
+      "specification": "docs/bridge-flow.md",
+      "meaning": "二者が高さをattestし、identity版は高さとhashの二者一致"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.WithdrawalFinalization",
+      "role": "specification",
+      "specification": "docs/bridge-flow.md",
+      "meaning": "notifyには成功かつfinalized以下かつcanonicalが必要、finalized不在ならretry"
+    },
+    {
+      "name": "BridgeSpec.GlobalHistory.AccountingInvariant",
+      "role": "model-support",
+      "specification": "verification/README.md",
+      "meaning": "ID一意性・集計一致・backing・予約のrecord種別だけを拘束する"
+    },
+    {
+      "name": "BridgeSpec.GlobalHistory.Backed",
+      "role": "specification",
+      "specification": "verification/README.md",
+      "meaning": "escrow=baseSupply+feeReserve+unmintedLiability+unreleasedLiability"
+    },
+    {
+      "name": "BridgeSpec.GlobalHistory.eventDelta",
+      "role": "model-support",
+      "specification": "verification/README.md",
+      "meaning": "会計イベントの選択。callback phaseは実Ledger送金を認証しない"
+    },
+    {
+      "name": "BridgeSpec.Liveness.AdmissibleUntilOccurs",
+      "role": "model-support",
+      "specification": "verification/conditional-liveness.md",
+      "meaning": "対象終端イベントが選択まで常時受理可能であるという仮定"
+    },
+    {
+      "name": "BridgeSpec.Liveness.CommonOperationalAssumptions",
+      "role": "model-support",
+      "specification": "verification/conditional-liveness.md",
+      "meaning": "readyAt以降の継続的な可用性とweak fairnessをまとめた仮定"
+    },
+    {
+      "name": "BridgeSpec.Liveness.DepositTerminalProgressLemmas",
+      "role": "model-support",
+      "specification": "verification/conditional-liveness.md",
+      "meaning": "mintの条件付き含意とrefundの条件付き含意の論理積。共通実行の二者択一ではない"
+    },
+    {
+      "name": "BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded",
+      "role": "model-support",
+      "specification": "verification/conditional-liveness.md",
+      "meaning": "対象depositがrefundedへ到達"
+    },
+    {
+      "name": "BridgeSpec.Liveness.FundedDepositEventuallyMinted",
+      "role": "model-support",
+      "specification": "verification/conditional-liveness.md",
+      "meaning": "対象depositがmintedへ到達"
+    },
+    {
+      "name": "BridgeSpec.Liveness.FundingFailureEventuallyCancelled",
+      "role": "model-support",
+      "specification": "verification/conditional-liveness.md",
+      "meaning": "対象depositがcancelledへ到達"
+    },
+    {
+      "name": "BridgeSpec.Liveness.WeakFair",
+      "role": "model-support",
+      "specification": "verification/conditional-liveness.md",
+      "meaning": "継続的に有効な具体イベントが将来選択されるという仮定"
+    },
+    {
+      "name": "BridgeSpec.Liveness.WithdrawalEventuallyPaid",
+      "role": "model-support",
+      "specification": "verification/conditional-liveness.md",
+      "meaning": "対象withdrawalがpaidへ到達"
+    },
+    {
+      "name": "BridgeSpec.MintAuthorization.Authorization.valid",
+      "role": "specification",
+      "specification": "verification/README.md",
+      "meaning": "認可のdomain・epoch・金額・IC起点期限の一致。digestの暗号計算は対象外"
+    },
+    {
+      "name": "BridgeSpec.MintAuthorization.ExpiryEvidence.valid",
+      "role": "specification",
+      "specification": "verification/README.md",
+      "meaning": "decode済み未処理証拠とstrict expiryの照合"
+    },
+    {
+      "name": "BridgeSpec.MintAuthorization.MintEvidence.valid",
+      "role": "specification",
+      "specification": "verification/README.md",
+      "meaning": "decode済みmint証拠のfield照合。非0hashの真正性は外部前提"
+    },
+    {
+      "name": "BridgeSpec.MintAuthorization.installSignature",
+      "role": "specification",
+      "specification": "verification/README.md",
+      "meaning": "署名時の残り300秒、有限幅、fee一回性を検査する抽象遷移"
+    },
+    {
+      "name": "BridgeSpec.Protocol.Safe",
+      "role": "model-support",
+      "specification": "verification/README.md",
+      "meaning": "統合単一recordモデルの会計・quote・lease条件。全runtime安全性ではない"
+    },
+    {
+      "name": "BridgeSpec.Protocol.filterSafeStoredState",
+      "role": "model-support",
+      "specification": "verification/README.md",
+      "meaning": "Safeを条件として受理する抽象フィルタ。本番decodeやmigrationではない"
+    },
+    {
+      "name": "BridgeSpec.signatureTimeAllowed",
+      "role": "specification",
+      "specification": "verification/README.md",
+      "meaning": "u64期限・加算overflow拒否・最低残存300秒のpredicate"
+    }
+  ],
+  "roots": {
+    "activation_preflight": {
+      "contract": "BridgeSpec.ClaimContracts.ActivationPreflight",
+      "witness": "BridgeSpec.ClaimContracts.activation_preflight_witness"
+    },
+    "authorization_binding": {
+      "contract": "BridgeSpec.ClaimContracts.AuthorizationBinding",
+      "witness": "BridgeSpec.ClaimContracts.authorization_binding_witness"
+    },
+    "automatic_retry_limit": {
+      "contract": "BridgeSpec.ClaimContracts.AutomaticRetryLimit",
+      "witness": "BridgeSpec.ClaimContracts.automatic_retry_limit_witness"
+    },
+    "canonical_probe": {
+      "contract": "BridgeSpec.ClaimContracts.CanonicalProbe",
+      "witness": "BridgeSpec.ClaimContracts.canonical_probe_witness"
+    },
+    "committed_quote": {
+      "contract": "BridgeSpec.ClaimContracts.CommittedQuote",
+      "witness": "BridgeSpec.ClaimContracts.committed_quote_witness"
+    },
+    "confirmed_activation_evidence_binding": {
+      "contract": "BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding",
+      "witness": "BridgeSpec.ClaimContracts.confirmed_activation_evidence_binding_witness"
+    },
+    "cycles_top_up_request_policy": {
+      "contract": "BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy",
+      "witness": "BridgeSpec.ClaimContracts.cycles_top_up_request_policy_witness"
+    },
+    "deposit_admission": {
+      "contract": "BridgeSpec.ClaimContracts.DepositAdmission",
+      "witness": "BridgeSpec.ClaimContracts.deposit_admission_witness"
+    },
+    "deposit_backing": {
+      "contract": "BridgeSpec.ClaimContracts.DepositBacking",
+      "witness": "BridgeSpec.ClaimContracts.deposit_backing_witness"
+    },
+    "deposit_identity_preflight": {
+      "contract": "BridgeSpec.ClaimContracts.DepositIdentityPreflight",
+      "witness": "BridgeSpec.ClaimContracts.deposit_identity_preflight_witness"
+    },
+    "epoch_invalidation": {
+      "contract": "BridgeSpec.ClaimContracts.EpochInvalidation",
+      "witness": "BridgeSpec.ClaimContracts.epoch_invalidation_witness"
+    },
+    "exact_mint_finalization": {
+      "contract": "BridgeSpec.ClaimContracts.ExactMintFinalization",
+      "witness": "BridgeSpec.ClaimContracts.exact_mint_finalization_witness"
+    },
+    "expiry_refund": {
+      "contract": "BridgeSpec.ClaimContracts.ExpiryRefund",
+      "witness": "BridgeSpec.ClaimContracts.expiry_refund_witness"
+    },
+    "fee_accounting_once": {
+      "contract": "BridgeSpec.ClaimContracts.FeeAccountingOnce",
+      "witness": "BridgeSpec.ClaimContracts.fee_accounting_once_witness"
+    },
+    "fee_payout": {
+      "contract": "BridgeSpec.ClaimContracts.FeePayout",
+      "witness": "BridgeSpec.ClaimContracts.fee_payout_witness"
+    },
+    "fee_recipient_rotation": {
+      "contract": "BridgeSpec.ClaimContracts.FeeRecipientRotation",
+      "witness": "BridgeSpec.ClaimContracts.fee_recipient_rotation_witness"
+    },
+    "funding_attempt_lifecycle": {
+      "contract": "BridgeSpec.ClaimContracts.FundingAttemptLifecycle",
+      "witness": "BridgeSpec.ClaimContracts.funding_attempt_lifecycle_witness"
+    },
+    "funding_reconciliation_freshness": {
+      "contract": "BridgeSpec.ClaimContracts.FundingReconciliationFreshness",
+      "witness": "BridgeSpec.ClaimContracts.funding_reconciliation_freshness_witness"
+    },
+    "governance_confirmation_authorization": {
+      "contract": "BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization",
+      "witness": "BridgeSpec.ClaimContracts.governance_confirmation_authorization_witness"
+    },
+    "governance_nonce_chain_binding": {
+      "contract": "BridgeSpec.ClaimContracts.GovernanceNonceChainBinding",
+      "witness": "BridgeSpec.ClaimContracts.governance_nonce_chain_binding_witness"
+    },
+    "governance_transaction_affordability": {
+      "contract": "BridgeSpec.ClaimContracts.GovernanceTransactionAffordability",
+      "witness": "BridgeSpec.ClaimContracts.governance_transaction_affordability_witness"
+    },
+    "hold_resolution": {
+      "contract": "BridgeSpec.ClaimContracts.HoldResolution",
+      "witness": "BridgeSpec.ClaimContracts.hold_resolution_witness"
+    },
+    "initial_activation_authorization": {
+      "contract": "BridgeSpec.ClaimContracts.InitialActivationAuthorization",
+      "witness": "BridgeSpec.ClaimContracts.initial_activation_authorization_witness"
+    },
+    "lease_lane_isolation": {
+      "contract": "BridgeSpec.ClaimContracts.LeaseLaneIsolation",
+      "witness": "BridgeSpec.ClaimContracts.lease_lane_isolation_witness"
+    },
+    "lease_outcome": {
+      "contract": "BridgeSpec.ClaimContracts.LeaseOutcome",
+      "witness": "BridgeSpec.ClaimContracts.lease_outcome_witness"
+    },
+    "ledger_block_provenance": {
+      "contract": "BridgeSpec.ClaimContracts.LedgerBlockProvenance",
+      "witness": "BridgeSpec.ClaimContracts.ledger_block_provenance_witness"
+    },
+    "nonterminal_deposit_index_consistency": {
+      "contract": "BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency",
+      "witness": "BridgeSpec.ClaimContracts.nonterminal_deposit_index_consistency_witness"
+    },
+    "notification_quota_isolation": {
+      "contract": "BridgeSpec.ClaimContracts.NotificationQuotaIsolation",
+      "witness": "BridgeSpec.ClaimContracts.notification_quota_isolation_witness"
+    },
+    "operational_config_seal": {
+      "contract": "BridgeSpec.ClaimContracts.OperationalConfigSeal",
+      "witness": "BridgeSpec.ClaimContracts.operational_config_seal_witness"
+    },
+    "paid_call_cycle_reserve": {
+      "contract": "BridgeSpec.ClaimContracts.PaidCallCycleReserve",
+      "witness": "BridgeSpec.ClaimContracts.paid_call_cycle_reserve_witness"
+    },
+    "payment_identity": {
+      "contract": "BridgeSpec.ClaimContracts.PaymentIdentity",
+      "witness": "BridgeSpec.ClaimContracts.payment_identity_witness"
+    },
+    "pending_queue": {
+      "contract": "BridgeSpec.ClaimContracts.PendingQueue",
+      "witness": "BridgeSpec.ClaimContracts.pending_queue_witness"
+    },
+    "refund_evidence_enforcement": {
+      "contract": "BridgeSpec.ClaimContracts.RefundEvidenceEnforcement",
+      "witness": "BridgeSpec.ClaimContracts.refund_evidence_enforcement_witness"
+    },
+    "refund_request_authorization": {
+      "contract": "BridgeSpec.ClaimContracts.RefundRequestAuthorization",
+      "witness": "BridgeSpec.ClaimContracts.refund_request_authorization_witness"
+    },
+    "reservation_commit": {
+      "contract": "BridgeSpec.ClaimContracts.ReservationCommit",
+      "witness": "BridgeSpec.ClaimContracts.reservation_commit_witness"
+    },
+    "reservation_lifecycle": {
+      "contract": "BridgeSpec.ClaimContracts.ReservationLifecycle",
+      "witness": "BridgeSpec.ClaimContracts.reservation_lifecycle_witness"
+    },
+    "runtime_attestation_reuse": {
+      "contract": "BridgeSpec.ClaimContracts.RuntimeAttestationReuse",
+      "witness": "BridgeSpec.ClaimContracts.runtime_attestation_reuse_witness"
+    },
+    "service_fee_maximum": {
+      "contract": "BridgeSpec.ClaimContracts.ServiceFeeMaximum",
+      "witness": "BridgeSpec.ClaimContracts.service_fee_maximum_witness"
+    },
+    "settlement_backing": {
+      "contract": "BridgeSpec.ClaimContracts.SettlementBacking",
+      "witness": "BridgeSpec.ClaimContracts.settlement_backing_witness"
+    },
+    "signing_cycle_reserve": {
+      "contract": "BridgeSpec.ClaimContracts.SigningCycleReserve",
+      "witness": "BridgeSpec.ClaimContracts.signing_cycle_reserve_witness"
+    },
+    "withdrawal_admission_boundary": {
+      "contract": "BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary",
+      "witness": "BridgeSpec.ClaimContracts.withdrawal_admission_boundary_witness"
+    },
+    "withdrawal_finality_quorum": {
+      "contract": "BridgeSpec.ClaimContracts.WithdrawalFinalityQuorum",
+      "witness": "BridgeSpec.ClaimContracts.withdrawal_finality_quorum_witness"
+    },
+    "withdrawal_finalization": {
+      "contract": "BridgeSpec.ClaimContracts.WithdrawalFinalization",
+      "witness": "BridgeSpec.ClaimContracts.withdrawal_finalization_witness"
+    },
+    "deposit_terminal_progress_lemmas": {
+      "contract": "BridgeSpec.Liveness.DepositTerminalProgressLemmas",
+      "witness": "BridgeSpec.Liveness.deposit_terminal_progress_lemmas"
+    },
+    "expired_deposit_eventually_refunded": {
+      "contract": "BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded",
+      "witness": "BridgeSpec.Liveness.expired_deposit_eventually_refunded"
+    },
+    "funded_deposit_eventually_minted": {
+      "contract": "BridgeSpec.Liveness.FundedDepositEventuallyMinted",
+      "witness": "BridgeSpec.Liveness.funded_deposit_eventually_minted"
+    },
+    "funding_failure_eventually_cancelled": {
+      "contract": "BridgeSpec.Liveness.FundingFailureEventuallyCancelled",
+      "witness": "BridgeSpec.Liveness.funding_failure_eventually_cancelled"
+    },
+    "withdrawal_eventually_paid": {
+      "contract": "BridgeSpec.Liveness.WithdrawalEventuallyPaid",
+      "witness": "BridgeSpec.Liveness.committed_withdrawal_eventually_paid"
+    }
+  },
+  "declarations": [
+    {
+      "definition": "∀ {initialDomain : BridgeSpec.ControlPlane.InstallDomain} {state : BridgeSpec.ControlPlane.State},\n  BridgeSpec.ControlPlane.Reachable initialDomain state →\n    Eq.{1} (BridgeSpec.ControlPlane.State.paused state) Bool.false →\n      GT.gt.{0} (BridgeSpec.ControlPlane.State.activationCount state) 0 →\n        Eq.{1} (BridgeSpec.ControlPlane.State.lastActivationValidated state) Bool.true",
+      "name": "BridgeSpec.ClaimContracts.ActivationPreflight",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {state next : BridgeSpec.MintAuthorization.DepositState}\n    {authorization : BridgeSpec.MintAuthorization.Authorization}\n    {origin : BridgeSpec.MintAuthorization.AuthorizationOrigin},\n    Eq.{1} (BridgeSpec.MintAuthorization.commitAuthorization state authorization origin) (Option.some.{0} next) →\n      And (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.authorization next) (Option.some.{0} authorization))\n        (And\n          (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.deadline authorization)\n            (HAdd.hAdd.{0, 0, 0} (BridgeSpec.MintAuthorization.AuthorizationOrigin.issuedAtTimestamp origin)\n              BridgeSpec.MintAuthorization.authorizationTtl))\n          (And\n            (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.chainId authorization)\n              (BridgeSpec.MintAuthorization.AuthorizationOrigin.expectedChainId origin))\n            (And\n              (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.verifyingContract authorization)\n                (BridgeSpec.MintAuthorization.AuthorizationOrigin.expectedVerifyingContract origin))\n              (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.epoch authorization)\n                (BridgeSpec.MintAuthorization.AuthorizationOrigin.expectedEpoch origin))))))\n  (And\n    (∀ {state next : BridgeSpec.MintAuthorization.DepositState} {observedTimestamp : Nat},\n      Eq.{1} (BridgeSpec.MintAuthorization.installSignature state observedTimestamp) (Option.some.{0} next) →\n        Exists.{1} fun authorization =>\n          And (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.authorization state) (Option.some.{0} authorization))\n            (And\n              (LE.le.{0} (BridgeSpec.MintAuthorization.Authorization.deadline authorization)\n                BridgeSpec.MintAuthorization.maxU64)\n              (And (LE.le.{0} observedTimestamp (HSub.hSub.{0, 0, 0} BridgeSpec.MintAuthorization.maxU64 300))\n                (LE.le.{0} (HAdd.hAdd.{0, 0, 0} observedTimestamp 300)\n                  (BridgeSpec.MintAuthorization.Authorization.deadline authorization)))))\n    BridgeSpec.ClaimContracts.DepositTransitionSafety)",
+      "name": "BridgeSpec.ClaimContracts.AuthorizationBinding",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ (automaticLane : Bool) (failures limit : Nat),\n  Iff (Eq.{1} (BridgeSpec.ClaimContracts.automaticRetryAllowed automaticLane failures limit) Bool.true)\n    (And (Eq.{1} automaticLane Bool.true) (LT.lt.{0} failures limit))",
+      "name": "BridgeSpec.ClaimContracts.AutomaticRetryLimit",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ (receiptBlock snapshotBlock : Nat),\n    Iff (Eq.{1} (BridgeSpec.canonicalProbeMatches receiptBlock snapshotBlock) Bool.true)\n      (Eq.{1} receiptBlock snapshotBlock))\n  BridgeSpec.ClaimContracts.IntegratedProtocolReachability",
+      "name": "BridgeSpec.ClaimContracts.CanonicalProbe",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {amount serviceFee : Nat} {destination : BridgeSpec.Account} {withdrawal : BridgeSpec.Withdrawal},\n    Eq.{1} (BridgeSpec.commit amount serviceFee destination) (Option.some.{0} withdrawal) →\n      BridgeSpec.QuoteValid withdrawal)\n  (And\n    (∀ {state final : BridgeSpec.Protocol.ProtocolState} {events : List.{0} BridgeSpec.Protocol.ProtocolEvent},\n      BridgeSpec.Protocol.Safe state →\n        BridgeSpec.Protocol.Runs state events final →\n          And\n            (Eq.{1} (BridgeSpec.Withdrawal.destination (BridgeSpec.Protocol.ProtocolState.withdrawal final))\n              (BridgeSpec.Protocol.ProtocolState.committedDestination state))\n            (Eq.{1} (BridgeSpec.Withdrawal.amountOut (BridgeSpec.Protocol.ProtocolState.withdrawal final))\n              (BridgeSpec.Protocol.ProtocolState.committedAmountOut state)))\n    BridgeSpec.ClaimContracts.IntegratedProtocolReachability)",
+      "name": "BridgeSpec.ClaimContracts.CommittedQuote",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ (foundMatch foundAdditionalMatch : Bool),\n    Iff\n      (Eq.{1} (BridgeSpec.ClaimContracts.confirmedActivationAttemptIsUnique foundMatch foundAdditionalMatch) Bool.true)\n      (And (Eq.{1} foundMatch Bool.true) (Eq.{1} foundAdditionalMatch Bool.false)))\n  (∀ (confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt : Nat),\n    Iff\n      (Eq.{1}\n        (BridgeSpec.ClaimContracts.confirmedActivationMetadataMatches confirmedGeneration confirmedSignedAt\n          artifactGeneration artifactSignedAt)\n        Bool.true)\n      (And (Eq.{1} confirmedGeneration artifactGeneration) (Eq.{1} confirmedSignedAt artifactSignedAt)))",
+      "name": "BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ (balance threshold : Nat) (inProgress authorized : Bool),\n  Iff\n    (Eq.{1} (Bool.and (Bool.and authorized (Bool.not inProgress)) (Decidable.decide (LE.le.{0} balance threshold)))\n      Bool.true)\n    (And (Eq.{1} authorized Bool.true) (And (Eq.{1} inProgress Bool.false) (LE.le.{0} balance threshold)))",
+      "name": "BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {admission : BridgeSpec.DepositAdmission} {net : Nat},\n    Eq.{1} (BridgeSpec.admitDeposit admission) (Option.some.{0} net) →\n      And\n        (LE.le.{0} (BridgeSpec.DepositAdmission.serviceFee admission)\n          (BridgeSpec.DepositAdmission.maximumServiceFee admission))\n        (And\n          (LT.lt.{0} (BridgeSpec.DepositAdmission.serviceFee admission)\n            (BridgeSpec.DepositAdmission.grossAmount admission))\n          (And\n            (Eq.{1} net\n              (HSub.hSub.{0, 0, 0} (BridgeSpec.DepositAdmission.grossAmount admission)\n                (BridgeSpec.DepositAdmission.serviceFee admission)))\n            (And (GT.gt.{0} net 0)\n              (And (LE.le.{0} net (BridgeSpec.DepositAdmission.perDepositLimit admission))\n                (LE.le.{0} (HAdd.hAdd.{0, 0, 0} (BridgeSpec.DepositAdmission.mintedInWindow admission) net)\n                  (BridgeSpec.DepositAdmission.mintWindowLimit admission)))))))\n  BridgeSpec.ClaimContracts.IntegratedProtocolReachability",
+      "name": "BridgeSpec.ClaimContracts.DepositAdmission",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {state final : BridgeSpec.GlobalHistory.GlobalState} {events : List.{0} BridgeSpec.GlobalHistory.Event},\n    BridgeSpec.GlobalHistory.AccountingInvariant state →\n      BridgeSpec.GlobalHistory.Runs state events final →\n        BridgeSpec.GlobalHistory.Backed (BridgeSpec.GlobalHistory.GlobalState.accounting final))\n  (And\n    (∀ {record next : BridgeSpec.GlobalHistory.Record},\n      Eq.{1}\n          (BridgeSpec.GlobalHistory.applyRecord record\n            (BridgeSpec.GlobalHistory.Event.installSignature (BridgeSpec.GlobalHistory.Record.id record)))\n          (Option.some.{0} next) →\n        And\n          (Eq.{1} (BridgeSpec.GlobalHistory.Economic.feeReserve (BridgeSpec.GlobalHistory.Record.economic next))\n            (HAdd.hAdd.{0, 0, 0}\n              (BridgeSpec.GlobalHistory.Economic.feeReserve (BridgeSpec.GlobalHistory.Record.economic record))\n              (BridgeSpec.GlobalHistory.Record.chargedServiceFee record)))\n          (Eq.{1} (BridgeSpec.GlobalHistory.Economic.unmintedLiability (BridgeSpec.GlobalHistory.Record.economic next))\n            (HSub.hSub.{0, 0, 0}\n              (BridgeSpec.GlobalHistory.Economic.unmintedLiability (BridgeSpec.GlobalHistory.Record.economic record))\n              (BridgeSpec.GlobalHistory.Record.chargedServiceFee record))))\n    (And\n      (∀ {record next : BridgeSpec.GlobalHistory.Record},\n        Eq.{1}\n            (BridgeSpec.GlobalHistory.applyRecord record\n              (BridgeSpec.GlobalHistory.Event.mint (BridgeSpec.GlobalHistory.Record.id record)))\n            (Option.some.{0} next) →\n          And\n            (Eq.{1} (BridgeSpec.GlobalHistory.Economic.baseSupply (BridgeSpec.GlobalHistory.Record.economic next))\n              (HAdd.hAdd.{0, 0, 0}\n                (BridgeSpec.GlobalHistory.Economic.baseSupply (BridgeSpec.GlobalHistory.Record.economic record))\n                (BridgeSpec.GlobalHistory.Record.netAmount record)))\n            (Eq.{1}\n              (BridgeSpec.GlobalHistory.Economic.unmintedLiability (BridgeSpec.GlobalHistory.Record.economic next))\n              (HSub.hSub.{0, 0, 0}\n                (BridgeSpec.GlobalHistory.Economic.unmintedLiability (BridgeSpec.GlobalHistory.Record.economic record))\n                (BridgeSpec.GlobalHistory.Record.netAmount record))))\n      (∀ {record next : BridgeSpec.GlobalHistory.Record} {amount : Nat},\n        Eq.{1}\n            (BridgeSpec.GlobalHistory.applyRecord record\n              (BridgeSpec.GlobalHistory.Event.refund (BridgeSpec.GlobalHistory.Record.id record) amount))\n            (Option.some.{0} next) →\n          And\n            (Eq.{1} (BridgeSpec.GlobalHistory.Economic.escrow (BridgeSpec.GlobalHistory.Record.economic next))\n              (HSub.hSub.{0, 0, 0}\n                (BridgeSpec.GlobalHistory.Economic.escrow (BridgeSpec.GlobalHistory.Record.economic record)) amount))\n            (Eq.{1}\n              (BridgeSpec.GlobalHistory.Economic.unmintedLiability (BridgeSpec.GlobalHistory.Record.economic next))\n              (HSub.hSub.{0, 0, 0}\n                (BridgeSpec.GlobalHistory.Economic.unmintedLiability (BridgeSpec.GlobalHistory.Record.economic record))\n                amount)))))",
+      "name": "BridgeSpec.ClaimContracts.DepositBacking",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ {state next : BridgeSpec.IdentityHistory.State} {candidate : Nat},\n  BridgeSpec.IdentityHistory.Reachable state →\n    Eq.{1} (BridgeSpec.IdentityHistory.preflight state candidate) (Option.some.{0} next) →\n      Eq.{1} (state candidate) Bool.false",
+      "name": "BridgeSpec.ClaimContracts.DepositIdentityPreflight",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {state : BridgeSpec.MintAuthorization.DepositState}\n    {current replacement : BridgeSpec.MintAuthorization.Authorization}\n    {origin : BridgeSpec.MintAuthorization.AuthorizationOrigin},\n    Eq.{1} (BridgeSpec.MintAuthorization.DepositState.authorization state) (Option.some.{0} current) →\n      Eq.{1} (BridgeSpec.MintAuthorization.commitAuthorization state replacement origin) Option.none.{0})\n  (And\n    (∀ {authorizationEpoch currentEpoch retiredSigner replacementSigner : Nat},\n      Ne.{1} retiredSigner replacementSigner →\n        Eq.{1}\n          (BridgeSpec.MintAuthorization.evmMintAuthorizationAccepted authorizationEpoch\n            (HAdd.hAdd.{0, 0, 0} currentEpoch 1) retiredSigner replacementSigner)\n          Bool.false)\n    BridgeSpec.ClaimContracts.AuthorizationBinding)",
+      "name": "BridgeSpec.ClaimContracts.EpochInvalidation",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {state next : BridgeSpec.MintAuthorization.DepositState} {evidence : BridgeSpec.MintAuthorization.MintEvidence},\n    Eq.{1} (BridgeSpec.MintAuthorization.completeMint state evidence) (Option.some.{0} next) →\n      And (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.receiptSucceeded evidence) Bool.true)\n        (And\n          (LE.le.{0} (BridgeSpec.MintAuthorization.MintEvidence.receiptBlock evidence)\n            (BridgeSpec.MintAuthorization.MintEvidence.finalizedBlock evidence))\n          (Exists.{1} fun authorization =>\n            And (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.authorization state) (Option.some.{0} authorization))\n              (And\n                (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.depositId evidence)\n                  (BridgeSpec.MintAuthorization.Authorization.depositId authorization))\n                (And\n                  (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.recipient evidence)\n                    (BridgeSpec.MintAuthorization.Authorization.recipient authorization))\n                  (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.authorizationDigest evidence)\n                    (BridgeSpec.MintAuthorization.Authorization.digest authorization)))))))\n  BridgeSpec.ClaimContracts.DepositBacking",
+      "name": "BridgeSpec.ClaimContracts.ExactMintFinalization",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {state next : BridgeSpec.MintAuthorization.DepositState}\n    {origin : BridgeSpec.MintAuthorization.AuthorizationOrigin}\n    {evidence : BridgeSpec.MintAuthorization.ExpiryEvidence},\n    Eq.{1} (BridgeSpec.MintAuthorization.startExpiredRefund state origin evidence) (Option.some.{0} next) →\n      And (Eq.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.depositProcessed evidence) Bool.false)\n        (Exists.{1} fun authorization =>\n          And (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.authorization state) (Option.some.{0} authorization))\n            (And\n              (Eq.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.depositId evidence)\n                (BridgeSpec.MintAuthorization.Authorization.depositId authorization))\n              (And\n                (Eq.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.authorizationDigest evidence)\n                  (BridgeSpec.MintAuthorization.Authorization.digest authorization))\n                (GT.gt.{0} (BridgeSpec.MintAuthorization.ExpiryEvidence.finalizedTimestamp evidence)\n                  (BridgeSpec.MintAuthorization.Authorization.deadline authorization))))))\n  BridgeSpec.ClaimContracts.DepositBacking",
+      "name": "BridgeSpec.ClaimContracts.ExpiryRefund",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {next : BridgeSpec.Protocol.Deposit.State} {events : List.{0} BridgeSpec.Protocol.Deposit.Event},\n    Eq.{1} (BridgeSpec.Protocol.Deposit.depositRun BridgeSpec.Protocol.Deposit.initial events) (Option.some.{0} next) →\n      LE.le.{0} (BridgeSpec.Protocol.Deposit.traceFeeCreditCount events) 1)\n  (∀ {state next : BridgeSpec.MintAuthorization.DepositState} {observedTimestamp : Nat},\n    Eq.{1} (BridgeSpec.MintAuthorization.installSignature state observedTimestamp) (Option.some.{0} next) →\n      Exists.{1} fun authorization =>\n        And (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.authorization state) (Option.some.{0} authorization))\n          (And\n            (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.feeReserve next)\n              (HAdd.hAdd.{0, 0, 0} (BridgeSpec.MintAuthorization.DepositState.feeReserve state)\n                (BridgeSpec.MintAuthorization.Authorization.chargedServiceFee authorization)))\n            (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.feeCounted next) Bool.true)))",
+      "name": "BridgeSpec.ClaimContracts.FeeAccountingOnce",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {reserve pending amount fee : Nat},\n    Eq.{1} (BridgeSpec.feePayoutAllowed reserve pending amount fee) Bool.true →\n      And (LE.le.{0} pending reserve)\n        (And (LE.le.{0} (HAdd.hAdd.{0, 0, 0} amount fee) (HSub.hSub.{0, 0, 0} reserve pending))\n          (And (Eq.{1} (BridgeSpec.payoutDebit Bool.false amount fee) 0)\n            (Eq.{1} (BridgeSpec.payoutDebit Bool.true amount fee) (HAdd.hAdd.{0, 0, 0} amount fee)))))\n  BridgeSpec.ClaimContracts.SettlementBacking",
+      "name": "BridgeSpec.ClaimContracts.FeePayout",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {state next : BridgeSpec.FeeState} {recipient : Nat},\n    Eq.{1} (BridgeSpec.rotateFeeRecipient state recipient) (Option.some.{0} next) →\n      And (Eq.{1} (BridgeSpec.FeeState.pendingPayout state) 0)\n        (And (Eq.{1} (BridgeSpec.FeeState.reserve next) (BridgeSpec.FeeState.reserve state))\n          (And (Eq.{1} (BridgeSpec.FeeState.confirmedDepositFees next) (BridgeSpec.FeeState.confirmedDepositFees state))\n            (And\n              (Eq.{1} (BridgeSpec.FeeState.confirmedWithdrawalFees next)\n                (BridgeSpec.FeeState.confirmedWithdrawalFees state))\n              (And (Eq.{1} (BridgeSpec.FeeState.pendingPayout next) 0)\n                (Eq.{1} (BridgeSpec.FeeState.recipient next) recipient))))))\n  BridgeSpec.ClaimContracts.IntegratedProtocolReachability",
+      "name": "BridgeSpec.ClaimContracts.FeeRecipientRotation",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (And\n    (Eq.{1} (BridgeSpec.decideFundingAttempt BridgeSpec.FundingOutcomeKind.definitiveFailure)\n      BridgeSpec.FundingAttemptDecision.release)\n    (And\n      (Eq.{1} (BridgeSpec.decideFundingAttempt BridgeSpec.FundingOutcomeKind.success)\n        BridgeSpec.FundingAttemptDecision.promoteSuccess)\n      (And\n        (Eq.{1} (BridgeSpec.decideFundingAttempt BridgeSpec.FundingOutcomeKind.duplicate)\n          BridgeSpec.FundingAttemptDecision.promoteSuccess)\n        (And\n          (Eq.{1} (BridgeSpec.decideFundingAttempt BridgeSpec.FundingOutcomeKind.ambiguous)\n            BridgeSpec.FundingAttemptDecision.promoteAmbiguous)\n          (Eq.{1} (BridgeSpec.decideFundingAttempt BridgeSpec.FundingOutcomeKind.retryableFailure)\n            BridgeSpec.FundingAttemptDecision.retain)))))\n  BridgeSpec.ClaimContracts.IntegratedProtocolReachability",
+      "name": "BridgeSpec.ClaimContracts.FundingAttemptLifecycle",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (And\n    (Eq.{1} (BridgeSpec.decideFundingReconciliation Bool.false Bool.false Bool.false)\n      BridgeSpec.FundingReconciliationDecision.wait)\n    (And\n      (Eq.{1} (BridgeSpec.decideFundingReconciliation Bool.false Bool.false Bool.true)\n        BridgeSpec.FundingReconciliationDecision.wait)\n      (And\n        (Eq.{1} (BridgeSpec.decideFundingReconciliation Bool.false Bool.true Bool.false)\n          BridgeSpec.FundingReconciliationDecision.wait)\n        (And\n          (Eq.{1} (BridgeSpec.decideFundingReconciliation Bool.false Bool.true Bool.true)\n            BridgeSpec.FundingReconciliationDecision.wait)\n          (And\n            (Eq.{1} (BridgeSpec.decideFundingReconciliation Bool.true Bool.false Bool.false)\n              BridgeSpec.FundingReconciliationDecision.restartFresh)\n            (And\n              (Eq.{1} (BridgeSpec.decideFundingReconciliation Bool.true Bool.false Bool.true)\n                BridgeSpec.FundingReconciliationDecision.restartFresh)\n              (And\n                (Eq.{1} (BridgeSpec.decideFundingReconciliation Bool.true Bool.true Bool.false)\n                  BridgeSpec.FundingReconciliationDecision.wait)\n                (Eq.{1} (BridgeSpec.decideFundingReconciliation Bool.true Bool.true Bool.true)\n                  BridgeSpec.FundingReconciliationDecision.release))))))))\n  BridgeSpec.ClaimContracts.IntegratedProtocolReachability",
+      "name": "BridgeSpec.ClaimContracts.FundingReconciliationFreshness",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ (caller currentConfirmationRelayer currentGovernance currentPause : Nat),\n  Iff\n    (Eq.{1}\n      (BridgeSpec.ClaimContracts.confirmationCallerAuthorized caller currentConfirmationRelayer currentGovernance\n        currentPause)\n      Bool.true)\n    (And (Ne.{1} caller 0)\n      (Or (Eq.{1} caller currentConfirmationRelayer)\n        (Or (Eq.{1} caller currentGovernance) (Eq.{1} caller currentPause))))",
+      "name": "BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ {initialDomain : BridgeSpec.ControlPlane.InstallDomain} {state : BridgeSpec.ControlPlane.State},\n  BridgeSpec.ControlPlane.Reachable initialDomain state →\n    ∀ (chainId : Nat),\n      Eq.{1} (BridgeSpec.ControlPlane.State.lastGovernanceChain state) (Option.some.{0} chainId) →\n        Eq.{1} chainId (BridgeSpec.ControlPlane.State.configuredChainId state)",
+      "name": "BridgeSpec.ClaimContracts.GovernanceNonceChainBinding",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ (observedWei requiredWei : Nat), LT.lt.{0} observedWei requiredWei → Not (LE.le.{0} requiredWei observedWei)",
+      "name": "BridgeSpec.ClaimContracts.GovernanceTransactionAffordability",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {success absence : Bool},\n    Eq.{1} (BridgeSpec.holdRetryAllowed success absence) Bool.true →\n      Or (Eq.{1} success Bool.true) (Eq.{1} absence Bool.true))\n  BridgeSpec.ClaimContracts.IntegratedProtocolReachability",
+      "name": "BridgeSpec.ClaimContracts.HoldResolution",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ (bootstrapController governance sealed bootstrapActive validPhase : Bool),\n    Iff\n      (Eq.{1}\n        (BridgeSpec.ClaimContracts.initialActivationAuthorized bootstrapController governance sealed bootstrapActive\n          validPhase)\n        Bool.true)\n      (And (Eq.{1} validPhase Bool.true)\n        (And (Eq.{1} sealed Bool.true)\n          (ite.{1} (Eq.{1} bootstrapActive Bool.true) (Eq.{1} bootstrapController Bool.true)\n            (Eq.{1} governance Bool.true)))))\n  (And\n    (∀ (authorityPresent confirmedExecute : Bool),\n      Iff\n        (Eq.{1}\n          (BridgeSpec.ClaimContracts.bootstrapActivationAuthorityAfterTransition authorityPresent confirmedExecute)\n          Bool.true)\n        (And (Eq.{1} authorityPresent Bool.true) (Eq.{1} confirmedExecute Bool.false)))\n    (And\n      (∀ (controller bootstrap : Bool),\n        Iff (Eq.{1} (BridgeSpec.ClaimContracts.operationalConfigSealCallerAuthorized controller bootstrap) Bool.true)\n          (And (Eq.{1} controller Bool.true) (Eq.{1} bootstrap Bool.true)))\n      (∀ (sealed paused pauseIsOld pauseIsNew markerUnbound markerIsNew rolesDistinct : Bool),\n        Eq.{1}\n          (BridgeSpec.ClaimContracts.bootstrapPausePrincipalMigrationCode sealed paused pauseIsOld pauseIsNew\n            markerUnbound markerIsNew rolesDistinct)\n          (ite.{1} (Eq.{1} sealed Bool.true) 2\n            (ite.{1} (Eq.{1} (Bool.and pauseIsNew markerIsNew) Bool.true) 1\n              (ite.{1} (Eq.{1} (Bool.and (Bool.and (Bool.and paused pauseIsNew) markerUnbound) rolesDistinct) Bool.true)\n                4\n                (ite.{1}\n                  (Eq.{1} (Bool.and (Bool.and (Bool.and paused pauseIsOld) markerUnbound) rolesDistinct) Bool.true) 0\n                  3)))))))",
+      "name": "BridgeSpec.ClaimContracts.InitialActivationAuthorization",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {targetActive targetAutomatic : Bool} {activeInLane capacity : Nat},\n    Eq.{1} (BridgeSpec.decideLeaseLaneClaim targetActive targetAutomatic activeInLane capacity)\n        BridgeSpec.LeaseLaneClaimDecision.allow →\n      And (Eq.{1} targetActive Bool.false) (LT.lt.{0} activeInLane capacity))\n  BridgeSpec.ClaimContracts.GlobalInterleavingSafety",
+      "name": "BridgeSpec.ClaimContracts.LeaseLaneIsolation",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {active : Bool} {currentGeneration outcomeGeneration : Nat},\n    Eq.{1} (BridgeSpec.leaseOutcomeCurrent active currentGeneration outcomeGeneration) Bool.true →\n      And (Eq.{1} active Bool.true) (Eq.{1} currentGeneration outcomeGeneration))\n  BridgeSpec.ClaimContracts.GlobalInterleavingSafety",
+      "name": "BridgeSpec.ClaimContracts.LeaseOutcome",
+      "type": "Prop"
+    },
+    {
+      "definition": "BridgeSpec.LedgerBlockProvenance.ClaimContract",
+      "name": "BridgeSpec.ClaimContracts.LedgerBlockProvenance",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ (phase : BridgeSpec.MintAuthorization.DepositPhase),\n  Iff (Eq.{1} (BridgeSpec.MintAuthorization.nonterminalDepositIndexed phase) Bool.true)\n    (And (Ne.{1} phase BridgeSpec.MintAuthorization.DepositPhase.refunded)\n      (And (Ne.{1} phase BridgeSpec.MintAuthorization.DepositPhase.cancelled)\n        (Ne.{1} phase BridgeSpec.MintAuthorization.DepositPhase.minted)))",
+      "name": "BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {globalCount callerCount globalLimit callerLimit ingestionCount ingestionLimit : Nat},\n    Eq.{1} (BridgeSpec.notificationAdmissionAllowed globalCount callerCount globalLimit callerLimit) Bool.true →\n      Eq.{1} (BridgeSpec.notificationIngestionAllowed ingestionCount ingestionLimit) Bool.true →\n        And (LT.lt.{0} globalCount globalLimit)\n          (And (LT.lt.{0} callerCount callerLimit) (LT.lt.{0} ingestionCount ingestionLimit)))\n  (And\n    (∀ {hashMatches : Bool} {nowNs retryAfterNs : Nat},\n      Eq.{1} (BridgeSpec.notificationFailureCooldownActive hashMatches nowNs retryAfterNs) Bool.true →\n        And (Eq.{1} hashMatches Bool.true) (LT.lt.{0} nowNs retryAfterNs))\n    BridgeSpec.ClaimContracts.IntegratedProtocolReachability)",
+      "name": "BridgeSpec.ClaimContracts.NotificationQuotaIsolation",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ (sealed candidateValid : Bool),\n    Iff (Eq.{1} (BridgeSpec.ClaimContracts.operationalConfigSealAllowed sealed candidateValid) Bool.true)\n      (And (Eq.{1} sealed Bool.false) (Eq.{1} candidateValid Bool.true)))\n  (∀ (sealed : Bool),\n    Iff (Eq.{1} (BridgeSpec.ClaimContracts.assetOperationsAllowed sealed) Bool.true) (Eq.{1} sealed Bool.true))",
+      "name": "BridgeSpec.ClaimContracts.OperationalConfigSeal",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ (liquid reserve attachedCycles callMargin charged : Nat),\n  LE.le.{0} (HAdd.hAdd.{0, 0, 0} (HAdd.hAdd.{0, 0, 0} reserve attachedCycles) callMargin) liquid →\n    LE.le.{0} charged (HAdd.hAdd.{0, 0, 0} attachedCycles callMargin) →\n      LE.le.{0} reserve (HSub.hSub.{0, 0, 0} liquid charged)",
+      "name": "BridgeSpec.ClaimContracts.PaidCallCycleReserve",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {record next : BridgeSpec.GlobalHistory.Record} {ledgerFee transferAmount destination : Nat},\n    Eq.{1}\n        (BridgeSpec.GlobalHistory.applyRecord record\n          (BridgeSpec.GlobalHistory.Event.payout (BridgeSpec.GlobalHistory.Record.id record) ledgerFee transferAmount\n            destination))\n        (Option.some.{0} next) →\n      And (Eq.{1} transferAmount (BridgeSpec.GlobalHistory.Record.netAmount record))\n        (And (Eq.{1} destination (BridgeSpec.GlobalHistory.Record.paymentDestination record))\n          (LE.le.{0} ledgerFee (BridgeSpec.GlobalHistory.Record.chargedServiceFee record))))\n  (∀ {state next : BridgeSpec.GlobalHistory.GlobalState} {event : BridgeSpec.GlobalHistory.Event} {other : Nat},\n    Ne.{1} other (BridgeSpec.GlobalHistory.Event.id event) →\n      Eq.{1} (BridgeSpec.GlobalHistory.step state event) (Option.some.{0} next) →\n        Eq.{1} (BridgeSpec.GlobalHistory.findRecord? (BridgeSpec.GlobalHistory.GlobalState.records next) other)\n          (BridgeSpec.GlobalHistory.findRecord? (BridgeSpec.GlobalHistory.GlobalState.records state) other))",
+      "name": "BridgeSpec.ClaimContracts.PaymentIdentity",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {queue : BridgeSpec.PendingQueue} {existing incoming : BridgeSpec.PendingQueueEntry},\n    Eq.{1} (BridgeSpec.PendingQueueEntry.blocked existing) Bool.true →\n      Eq.{1} (queue (BridgeSpec.PendingQueueEntry.key incoming)) (Option.some.{0} existing) →\n        Eq.{1}\n          (Option.map.{0, 0} (fun entry => BridgeSpec.PendingQueueEntry.blocked entry)\n            (BridgeSpec.restorePendingQueue queue incoming (BridgeSpec.PendingQueueEntry.key incoming)))\n          (Option.some.{0} Bool.true))\n  (∀ (queue : BridgeSpec.PendingQueue),\n    And (Eq.{1} (BridgeSpec.PendingQueueWrite.session (BridgeSpec.recordPendingQueueWrite queue Bool.false)) queue)\n      (Eq.{1} (BridgeSpec.PendingQueueWrite.durable (BridgeSpec.recordPendingQueueWrite queue Bool.false))\n        Option.none.{0}))",
+      "name": "BridgeSpec.ClaimContracts.PendingQueue",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ {final : BridgeSpec.Protocol.Deposit.State} {historyPrefix suffix : List.{0} BridgeSpec.Protocol.Deposit.Event}\n  {origin : BridgeSpec.MintAuthorization.AuthorizationOrigin} {evidence : BridgeSpec.MintAuthorization.ExpiryEvidence},\n  Eq.{1}\n      (BridgeSpec.Protocol.Deposit.depositRun BridgeSpec.Protocol.Deposit.initial\n        (HAppend.hAppend.{0, 0, 0} historyPrefix\n          (List.cons.{0} (BridgeSpec.Protocol.Deposit.Event.startExpiredRefund origin evidence) suffix)))\n      (Option.some.{0} final) →\n    And (Eq.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.depositProcessed evidence) Bool.false)\n      (Exists.{1} fun authorization =>\n        And\n          (Eq.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.depositId evidence)\n            (BridgeSpec.MintAuthorization.Authorization.depositId authorization))\n          (And\n            (Eq.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.authorizationDigest evidence)\n              (BridgeSpec.MintAuthorization.Authorization.digest authorization))\n            (GT.gt.{0} (BridgeSpec.MintAuthorization.ExpiryEvidence.finalizedTimestamp evidence)\n              (BridgeSpec.MintAuthorization.Authorization.deadline authorization))))",
+      "name": "BridgeSpec.ClaimContracts.RefundEvidenceEnforcement",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ {state next : BridgeSpec.Protocol.Deposit.State} {historyPrefix : List.{0} BridgeSpec.Protocol.Deposit.Event}\n  {authenticated : Bool} {origin : BridgeSpec.MintAuthorization.AuthorizationOrigin}\n  {evidence : BridgeSpec.MintAuthorization.ExpiryEvidence},\n  Eq.{1} (BridgeSpec.Protocol.Deposit.depositRun BridgeSpec.Protocol.Deposit.initial historyPrefix)\n      (Option.some.{0} state) →\n    Eq.{1} (BridgeSpec.MintAuthorization.requestExpiredRefund authenticated state origin evidence)\n        (Option.some.{0} next) →\n      And (Eq.{1} authenticated Bool.true)\n        (Eq.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.depositProcessed evidence) Bool.false)",
+      "name": "BridgeSpec.ClaimContracts.RefundRequestAuthorization",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ (reserved candidate : Nat),\n    have next := BridgeSpec.commitMintReservation reserved candidate;\n    Eq.{1} (HAdd.hAdd.{0, 0, 0} (Prod.fst.{0, 0} next) (Prod.snd.{0, 0} next)) (HAdd.hAdd.{0, 0, 0} reserved candidate))\n  BridgeSpec.ClaimContracts.ReservationLifecycle",
+      "name": "BridgeSpec.ClaimContracts.ReservationCommit",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {record next : BridgeSpec.GlobalHistory.Record},\n    Eq.{1}\n        (BridgeSpec.GlobalHistory.applyRecord record\n          (BridgeSpec.GlobalHistory.Event.releaseReservation (BridgeSpec.GlobalHistory.Record.id record)))\n        (Option.some.{0} next) →\n      Eq.{1} (BridgeSpec.GlobalHistory.Economic.reservedMint (BridgeSpec.GlobalHistory.Record.economic next)) 0)\n  (∀ {record : BridgeSpec.GlobalHistory.Record},\n    Eq.{1} (BridgeSpec.GlobalHistory.Record.reservationReleased record) Bool.true →\n      Eq.{1} (BridgeSpec.GlobalHistory.Phase.terminal (BridgeSpec.GlobalHistory.Record.phase record)) Bool.false →\n        Eq.{1}\n          (BridgeSpec.GlobalHistory.applyRecord record\n            (BridgeSpec.GlobalHistory.Event.releaseReservation (BridgeSpec.GlobalHistory.Record.id record)))\n          Option.none.{0})",
+      "name": "BridgeSpec.ClaimContracts.ReservationLifecycle",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ {initialDomain : BridgeSpec.ControlPlane.InstallDomain} {state : BridgeSpec.ControlPlane.State},\n  BridgeSpec.ControlPlane.Reachable initialDomain state →\n    ∀ (reusedDomain : BridgeSpec.ControlPlane.InstallDomain),\n      Eq.{1} (BridgeSpec.ControlPlane.State.lastReusedDomain state) (Option.some.{0} reusedDomain) →\n        Eq.{1} reusedDomain (BridgeSpec.ControlPlane.State.domain state)",
+      "name": "BridgeSpec.ClaimContracts.RuntimeAttestationReuse",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ (serviceFee minimumServiceFee maximumServiceFee : Nat),\n    Iff (Eq.{1} (BridgeSpec.serviceFeeChangeAllowed serviceFee minimumServiceFee maximumServiceFee) Bool.true)\n      (And (LE.le.{0} minimumServiceFee serviceFee) (LE.le.{0} serviceFee maximumServiceFee)))\n  BridgeSpec.ClaimContracts.FeeAccountingOnce",
+      "name": "BridgeSpec.ClaimContracts.ServiceFeeMaximum",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {state final : BridgeSpec.GlobalHistory.GlobalState} {events : List.{0} BridgeSpec.GlobalHistory.Event},\n    BridgeSpec.GlobalHistory.AccountingInvariant state →\n      BridgeSpec.GlobalHistory.Runs state events final →\n        BridgeSpec.GlobalHistory.Backed (BridgeSpec.GlobalHistory.GlobalState.accounting final))\n  (∀ {record next : BridgeSpec.GlobalHistory.Record} {ledgerFee transferAmount destination : Nat},\n    Eq.{1}\n        (BridgeSpec.GlobalHistory.applyRecord record\n          (BridgeSpec.GlobalHistory.Event.payout (BridgeSpec.GlobalHistory.Record.id record) ledgerFee transferAmount\n            destination))\n        (Option.some.{0} next) →\n      And\n        (Eq.{1} (BridgeSpec.GlobalHistory.Economic.escrow (BridgeSpec.GlobalHistory.Record.economic next))\n          (HSub.hSub.{0, 0, 0}\n            (BridgeSpec.GlobalHistory.Economic.escrow (BridgeSpec.GlobalHistory.Record.economic record))\n            (HAdd.hAdd.{0, 0, 0} (BridgeSpec.GlobalHistory.Record.netAmount record) ledgerFee)))\n        (And\n          (Eq.{1} (BridgeSpec.GlobalHistory.Economic.feeReserve (BridgeSpec.GlobalHistory.Record.economic next))\n            (HAdd.hAdd.{0, 0, 0}\n              (BridgeSpec.GlobalHistory.Economic.feeReserve (BridgeSpec.GlobalHistory.Record.economic record))\n              (HSub.hSub.{0, 0, 0} (BridgeSpec.GlobalHistory.Record.chargedServiceFee record) ledgerFee)))\n          (Eq.{1}\n            (BridgeSpec.GlobalHistory.Economic.unreleasedLiability (BridgeSpec.GlobalHistory.Record.economic next))\n            (HSub.hSub.{0, 0, 0}\n              (BridgeSpec.GlobalHistory.Economic.unreleasedLiability (BridgeSpec.GlobalHistory.Record.economic record))\n              (HAdd.hAdd.{0, 0, 0} (BridgeSpec.GlobalHistory.Record.netAmount record)\n                (BridgeSpec.GlobalHistory.Record.chargedServiceFee record))))))",
+      "name": "BridgeSpec.ClaimContracts.SettlementBacking",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ (liquid reserve signingCost callMargin charged : Nat),\n  LE.le.{0} (HAdd.hAdd.{0, 0, 0} (HAdd.hAdd.{0, 0, 0} reserve signingCost) callMargin) liquid →\n    LE.le.{0} charged (HAdd.hAdd.{0, 0, 0} signingCost callMargin) →\n      LE.le.{0} reserve (HSub.hSub.{0, 0, 0} liquid charged)",
+      "name": "BridgeSpec.ClaimContracts.SigningCycleReserve",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ {observed minimum : Nat},\n  Eq.{1} (BridgeSpec.withdrawalIdAdmissible observed minimum) Bool.true →\n    And (Eq.{1} (bne.{0} minimum 0) Bool.true) (LE.le.{0} minimum observed)",
+      "name": "BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {first second third : Option.{0} Nat} {checkpoint : Nat},\n    Eq.{1} (BridgeSpec.withdrawalFinalizedCheckpoint first second third) (Option.some.{0} checkpoint) →\n      BridgeSpec.twoFinalizedHeadsAttest first second third checkpoint)\n  (∀ {first second third : Option.{0} BridgeSpec.FinalizedIdentity} {checkpoint : BridgeSpec.FinalizedIdentity},\n    Eq.{1} (BridgeSpec.withdrawalFinalizedIdentityQuorum first second third) (Option.some.{0} checkpoint) →\n      BridgeSpec.twoFinalizedIdentitiesAttest first second third checkpoint)",
+      "name": "BridgeSpec.ClaimContracts.WithdrawalFinalityQuorum",
+      "type": "Prop"
+    },
+    {
+      "definition": "And\n  (∀ {receiptSucceeded canonical : Bool} {receiptBlock finalizedBlock : Nat},\n    Eq.{1}\n        (BridgeSpec.decideWithdrawalFinalization receiptSucceeded receiptBlock (Option.some.{0} finalizedBlock)\n          canonical)\n        BridgeSpec.WithdrawalFinalizationDecision.notify →\n      And (Eq.{1} receiptSucceeded Bool.true)\n        (And (LE.le.{0} receiptBlock finalizedBlock) (Eq.{1} canonical Bool.true)))\n  (∀ {receiptSucceeded canonical : Bool} {receiptBlock : Nat},\n    Eq.{1} (BridgeSpec.decideWithdrawalFinalization receiptSucceeded receiptBlock Option.none.{0} canonical)\n      BridgeSpec.WithdrawalFinalizationDecision.retry)",
+      "name": "BridgeSpec.ClaimContracts.WithdrawalFinalization",
+      "type": "Prop"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.activation_preflight_witness",
+      "type": "BridgeSpec.ClaimContracts.ActivationPreflight"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.authorization_binding_witness",
+      "type": "BridgeSpec.ClaimContracts.AuthorizationBinding"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.automatic_retry_limit_witness",
+      "type": "BridgeSpec.ClaimContracts.AutomaticRetryLimit"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.canonical_probe_witness",
+      "type": "BridgeSpec.ClaimContracts.CanonicalProbe"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.committed_quote_witness",
+      "type": "BridgeSpec.ClaimContracts.CommittedQuote"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.confirmed_activation_evidence_binding_witness",
+      "type": "BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.cycles_top_up_request_policy_witness",
+      "type": "BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.deposit_admission_witness",
+      "type": "BridgeSpec.ClaimContracts.DepositAdmission"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.deposit_backing_witness",
+      "type": "BridgeSpec.ClaimContracts.DepositBacking"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.deposit_identity_preflight_witness",
+      "type": "BridgeSpec.ClaimContracts.DepositIdentityPreflight"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.epoch_invalidation_witness",
+      "type": "BridgeSpec.ClaimContracts.EpochInvalidation"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.exact_mint_finalization_witness",
+      "type": "BridgeSpec.ClaimContracts.ExactMintFinalization"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.expiry_refund_witness",
+      "type": "BridgeSpec.ClaimContracts.ExpiryRefund"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.fee_accounting_once_witness",
+      "type": "BridgeSpec.ClaimContracts.FeeAccountingOnce"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.fee_payout_witness",
+      "type": "BridgeSpec.ClaimContracts.FeePayout"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.fee_recipient_rotation_witness",
+      "type": "BridgeSpec.ClaimContracts.FeeRecipientRotation"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.funding_attempt_lifecycle_witness",
+      "type": "BridgeSpec.ClaimContracts.FundingAttemptLifecycle"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.funding_reconciliation_freshness_witness",
+      "type": "BridgeSpec.ClaimContracts.FundingReconciliationFreshness"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.governance_confirmation_authorization_witness",
+      "type": "BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.governance_nonce_chain_binding_witness",
+      "type": "BridgeSpec.ClaimContracts.GovernanceNonceChainBinding"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.governance_transaction_affordability_witness",
+      "type": "BridgeSpec.ClaimContracts.GovernanceTransactionAffordability"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.hold_resolution_witness",
+      "type": "BridgeSpec.ClaimContracts.HoldResolution"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.initial_activation_authorization_witness",
+      "type": "BridgeSpec.ClaimContracts.InitialActivationAuthorization"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.lease_lane_isolation_witness",
+      "type": "BridgeSpec.ClaimContracts.LeaseLaneIsolation"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.lease_outcome_witness",
+      "type": "BridgeSpec.ClaimContracts.LeaseOutcome"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.ledger_block_provenance_witness",
+      "type": "BridgeSpec.ClaimContracts.LedgerBlockProvenance"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.nonterminal_deposit_index_consistency_witness",
+      "type": "BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.notification_quota_isolation_witness",
+      "type": "BridgeSpec.ClaimContracts.NotificationQuotaIsolation"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.operational_config_seal_witness",
+      "type": "BridgeSpec.ClaimContracts.OperationalConfigSeal"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.paid_call_cycle_reserve_witness",
+      "type": "BridgeSpec.ClaimContracts.PaidCallCycleReserve"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.payment_identity_witness",
+      "type": "BridgeSpec.ClaimContracts.PaymentIdentity"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.pending_queue_witness",
+      "type": "BridgeSpec.ClaimContracts.PendingQueue"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.refund_evidence_enforcement_witness",
+      "type": "BridgeSpec.ClaimContracts.RefundEvidenceEnforcement"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.refund_request_authorization_witness",
+      "type": "BridgeSpec.ClaimContracts.RefundRequestAuthorization"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.reservation_commit_witness",
+      "type": "BridgeSpec.ClaimContracts.ReservationCommit"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.reservation_lifecycle_witness",
+      "type": "BridgeSpec.ClaimContracts.ReservationLifecycle"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.runtime_attestation_reuse_witness",
+      "type": "BridgeSpec.ClaimContracts.RuntimeAttestationReuse"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.service_fee_maximum_witness",
+      "type": "BridgeSpec.ClaimContracts.ServiceFeeMaximum"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.settlement_backing_witness",
+      "type": "BridgeSpec.ClaimContracts.SettlementBacking"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.signing_cycle_reserve_witness",
+      "type": "BridgeSpec.ClaimContracts.SigningCycleReserve"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.withdrawal_admission_boundary_witness",
+      "type": "BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.withdrawal_finality_quorum_witness",
+      "type": "BridgeSpec.ClaimContracts.WithdrawalFinalityQuorum"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.withdrawal_finalization_witness",
+      "type": "BridgeSpec.ClaimContracts.WithdrawalFinalization"
+    },
+    {
+      "definition": "fun state =>\n  And (BridgeSpec.GlobalHistory.UniqueIds (BridgeSpec.GlobalHistory.GlobalState.records state))\n    (And\n      (Eq.{1} (BridgeSpec.GlobalHistory.GlobalState.accounting state)\n        (BridgeSpec.GlobalHistory.summarize (BridgeSpec.GlobalHistory.GlobalState.records state)))\n      (And (BridgeSpec.GlobalHistory.Backed (BridgeSpec.GlobalHistory.GlobalState.accounting state))\n        (BridgeSpec.GlobalHistory.ReservationConsistent (BridgeSpec.GlobalHistory.GlobalState.records state))))",
+      "name": "BridgeSpec.GlobalHistory.AccountingInvariant",
+      "type": "BridgeSpec.GlobalHistory.GlobalState → Prop"
+    },
+    {
+      "definition": "fun economic =>\n  Eq.{1} (BridgeSpec.GlobalHistory.Economic.escrow economic)\n    (HAdd.hAdd.{0, 0, 0}\n      (HAdd.hAdd.{0, 0, 0}\n        (HAdd.hAdd.{0, 0, 0} (BridgeSpec.GlobalHistory.Economic.baseSupply economic)\n          (BridgeSpec.GlobalHistory.Economic.feeReserve economic))\n        (BridgeSpec.GlobalHistory.Economic.unmintedLiability economic))\n      (BridgeSpec.GlobalHistory.Economic.unreleasedLiability economic))",
+      "name": "BridgeSpec.GlobalHistory.Backed",
+      "type": "BridgeSpec.GlobalHistory.Economic → Prop"
+    },
+    {
+      "definition": "fun record event =>\n  ite.{1}\n    (Or (Ne.{1} (BridgeSpec.GlobalHistory.Event.id event) (BridgeSpec.GlobalHistory.Record.id record))\n      (Eq.{1} (BridgeSpec.GlobalHistory.Phase.terminal (BridgeSpec.GlobalHistory.Record.phase record)) Bool.true))\n    Option.none.{0}\n    (match event with\n    | BridgeSpec.GlobalHistory.Event.installSignature id =>\n      ite.{1}\n        (And (Eq.{1} (BridgeSpec.GlobalHistory.Record.kind record) BridgeSpec.GlobalHistory.RecordKind.deposit)\n          (And (Eq.{1} (BridgeSpec.GlobalHistory.Record.phase record) BridgeSpec.GlobalHistory.Phase.funded)\n            (Eq.{1} (Bool.not (BridgeSpec.GlobalHistory.Record.feeApplied record)) Bool.true)))\n        (Option.some.{0}\n          (BridgeSpec.GlobalHistory.Delta.signature (BridgeSpec.GlobalHistory.Record.chargedServiceFee record)))\n        Option.none.{0}\n    | BridgeSpec.GlobalHistory.Event.mint id =>\n      ite.{1}\n        (And (Eq.{1} (BridgeSpec.GlobalHistory.Record.kind record) BridgeSpec.GlobalHistory.RecordKind.deposit)\n          (And (Eq.{1} (BridgeSpec.GlobalHistory.Record.phase record) BridgeSpec.GlobalHistory.Phase.funded)\n            (And\n              (Eq.{1} (BridgeSpec.GlobalHistory.Economic.reservedMint (BridgeSpec.GlobalHistory.Record.economic record))\n                0)\n              (Eq.{1} (Bool.not (BridgeSpec.GlobalHistory.Record.mintApplied record)) Bool.true))))\n        (Option.some.{0} (BridgeSpec.GlobalHistory.Delta.mint (BridgeSpec.GlobalHistory.Record.netAmount record)))\n        Option.none.{0}\n    | BridgeSpec.GlobalHistory.Event.refund id amount =>\n      ite.{1}\n        (And (Eq.{1} (BridgeSpec.GlobalHistory.Record.kind record) BridgeSpec.GlobalHistory.RecordKind.deposit)\n          (And (Eq.{1} (BridgeSpec.GlobalHistory.Record.phase record) BridgeSpec.GlobalHistory.Phase.funded)\n            (And\n              (Eq.{1} (BridgeSpec.GlobalHistory.Economic.reservedMint (BridgeSpec.GlobalHistory.Record.economic record))\n                0)\n              (Eq.{1} (Bool.not (BridgeSpec.GlobalHistory.Record.refundApplied record)) Bool.true))))\n        (Option.some.{0} (BridgeSpec.GlobalHistory.Delta.refund amount)) Option.none.{0}\n    | BridgeSpec.GlobalHistory.Event.cancel id =>\n      ite.{1}\n        (And (Eq.{1} (BridgeSpec.GlobalHistory.Record.kind record) BridgeSpec.GlobalHistory.RecordKind.deposit)\n          (And (Eq.{1} (BridgeSpec.GlobalHistory.Record.phase record) BridgeSpec.GlobalHistory.Phase.pending)\n            (Eq.{1} (BridgeSpec.GlobalHistory.Economic.reservedMint (BridgeSpec.GlobalHistory.Record.economic record))\n              0)))\n        (Option.some.{0} BridgeSpec.GlobalHistory.Delta.none) Option.none.{0}\n    | BridgeSpec.GlobalHistory.Event.payout id ledgerFee transferAmount destination =>\n      ite.{1}\n        (And (Eq.{1} (BridgeSpec.GlobalHistory.Record.kind record) BridgeSpec.GlobalHistory.RecordKind.withdrawal)\n          (And (Eq.{1} (BridgeSpec.GlobalHistory.Record.phase record) BridgeSpec.GlobalHistory.Phase.committed)\n            (And (Eq.{1} (Bool.not (BridgeSpec.GlobalHistory.Record.payoutApplied record)) Bool.true)\n              (And (LE.le.{0} ledgerFee (BridgeSpec.GlobalHistory.Record.chargedServiceFee record))\n                (And (Eq.{1} transferAmount (BridgeSpec.GlobalHistory.Record.netAmount record))\n                  (Eq.{1} destination (BridgeSpec.GlobalHistory.Record.paymentDestination record)))))))\n        (Option.some.{0}\n          (BridgeSpec.GlobalHistory.Delta.payout\n            (HAdd.hAdd.{0, 0, 0} (BridgeSpec.GlobalHistory.Record.netAmount record) ledgerFee)\n            (HSub.hSub.{0, 0, 0} (BridgeSpec.GlobalHistory.Record.chargedServiceFee record) ledgerFee)\n            (HAdd.hAdd.{0, 0, 0} (BridgeSpec.GlobalHistory.Record.netAmount record)\n              (BridgeSpec.GlobalHistory.Record.chargedServiceFee record))))\n        Option.none.{0}\n    | BridgeSpec.GlobalHistory.Event.releaseReservation id =>\n      ite.{1}\n        (And (Eq.{1} (BridgeSpec.GlobalHistory.Record.kind record) BridgeSpec.GlobalHistory.RecordKind.deposit)\n          (Eq.{1} (Bool.not (BridgeSpec.GlobalHistory.Record.reservationReleased record)) Bool.true))\n        (Option.some.{0}\n          (BridgeSpec.GlobalHistory.Delta.releaseReservation\n            (BridgeSpec.GlobalHistory.Economic.reservedMint (BridgeSpec.GlobalHistory.Record.economic record))))\n        Option.none.{0}\n    | BridgeSpec.GlobalHistory.Event.callback id generation nextPhase =>\n      ite.{1}\n        (And (Eq.{1} (BridgeSpec.GlobalHistory.Record.leaseGeneration record) (Option.some.{0} generation))\n          (Or (Eq.{1} (BridgeSpec.GlobalHistory.Phase.terminal nextPhase) Bool.false)\n            (Eq.{1} (BridgeSpec.GlobalHistory.Economic.reservedMint (BridgeSpec.GlobalHistory.Record.economic record))\n              0)))\n        (Option.some.{0} BridgeSpec.GlobalHistory.Delta.none) Option.none.{0})",
+      "name": "BridgeSpec.GlobalHistory.eventDelta",
+      "type": "BridgeSpec.GlobalHistory.Record → BridgeSpec.GlobalHistory.Event → Option.{0} BridgeSpec.GlobalHistory.Delta"
+    },
+    {
+      "definition": "fun execution event start =>\n  ∀ (time : Nat),\n    LE.le.{0} start time →\n      Not (BridgeSpec.Liveness.OccurredBefore execution event start time) →\n        Exists.{1} fun next =>\n          Eq.{1} (BridgeSpec.GlobalHistory.step (BridgeSpec.Liveness.Execution.state execution time) event)\n            (Option.some.{0} next)",
+      "name": "BridgeSpec.Liveness.AdmissibleUntilOccurs",
+      "type": "BridgeSpec.Liveness.Execution → BridgeSpec.GlobalHistory.Event → Nat → Prop"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.Liveness.CommonOperationalAssumptions",
+      "type": "BridgeSpec.Liveness.Execution → Nat → Type"
+    },
+    {
+      "definition": "And BridgeSpec.Liveness.FundedDepositEventuallyMinted BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded",
+      "name": "BridgeSpec.Liveness.DepositTerminalProgressLemmas",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ (execution : BridgeSpec.Liveness.Execution) (id amount start : Nat)\n  (common : BridgeSpec.Liveness.CommonOperationalAssumptions execution start),\n  BridgeSpec.Liveness.KeeperActionAssumption execution\n      (BridgeSpec.Liveness.CommonOperationalAssumptions.readyAt common) →\n    BridgeSpec.Liveness.AdmissibleUntilOccurs execution (BridgeSpec.GlobalHistory.Event.refund id amount)\n        (BridgeSpec.Liveness.CommonOperationalAssumptions.readyAt common) →\n      BridgeSpec.Liveness.Eventually (BridgeSpec.Liveness.ReachesPhase id BridgeSpec.GlobalHistory.Phase.refunded)\n        execution start",
+      "name": "BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ (execution : BridgeSpec.Liveness.Execution) (id start : Nat)\n  (common : BridgeSpec.Liveness.CommonOperationalAssumptions execution start),\n  BridgeSpec.Liveness.UserActionAssumption execution (BridgeSpec.Liveness.CommonOperationalAssumptions.readyAt common) →\n    BridgeSpec.Liveness.AdmissibleUntilOccurs execution (BridgeSpec.GlobalHistory.Event.mint id)\n        (BridgeSpec.Liveness.CommonOperationalAssumptions.readyAt common) →\n      BridgeSpec.Liveness.Eventually (BridgeSpec.Liveness.ReachesPhase id BridgeSpec.GlobalHistory.Phase.minted)\n        execution start",
+      "name": "BridgeSpec.Liveness.FundedDepositEventuallyMinted",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ (execution : BridgeSpec.Liveness.Execution) (id start : Nat)\n  (common : BridgeSpec.Liveness.CommonOperationalAssumptions execution start),\n  BridgeSpec.Liveness.AdmissibleUntilOccurs execution (BridgeSpec.GlobalHistory.Event.cancel id)\n      (BridgeSpec.Liveness.CommonOperationalAssumptions.readyAt common) →\n    BridgeSpec.Liveness.Eventually (BridgeSpec.Liveness.ReachesPhase id BridgeSpec.GlobalHistory.Phase.cancelled)\n      execution start",
+      "name": "BridgeSpec.Liveness.FundingFailureEventuallyCancelled",
+      "type": "Prop"
+    },
+    {
+      "definition": "fun execution =>\n  ∀ (event : BridgeSpec.GlobalHistory.Event) (needsUser : Bool) (start : Nat),\n    BridgeSpec.Liveness.EnabledUntilOccurs execution event needsUser start →\n      Exists.{1} fun time =>\n        And (LE.le.{0} start time)\n          (Eq.{1} (BridgeSpec.Liveness.Execution.action execution time) (Option.some.{0} event))",
+      "name": "BridgeSpec.Liveness.WeakFair",
+      "type": "BridgeSpec.Liveness.Execution → Prop"
+    },
+    {
+      "definition": "∀ (execution : BridgeSpec.Liveness.Execution) (id ledgerFee transferAmount destination start : Nat)\n  (common : BridgeSpec.Liveness.CommonOperationalAssumptions execution start),\n  BridgeSpec.Liveness.KeeperActionAssumption execution\n      (BridgeSpec.Liveness.CommonOperationalAssumptions.readyAt common) →\n    BridgeSpec.Liveness.AdmissibleUntilOccurs execution\n        (BridgeSpec.GlobalHistory.Event.payout id ledgerFee transferAmount destination)\n        (BridgeSpec.Liveness.CommonOperationalAssumptions.readyAt common) →\n      BridgeSpec.Liveness.Eventually (BridgeSpec.Liveness.ReachesPhase id BridgeSpec.GlobalHistory.Phase.paid) execution\n        start",
+      "name": "BridgeSpec.Liveness.WithdrawalEventuallyPaid",
+      "type": "Prop"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.Liveness.committed_withdrawal_eventually_paid",
+      "type": "BridgeSpec.Liveness.WithdrawalEventuallyPaid"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.Liveness.deposit_terminal_progress_lemmas",
+      "type": "BridgeSpec.Liveness.DepositTerminalProgressLemmas"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.Liveness.expired_deposit_eventually_refunded",
+      "type": "BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.Liveness.funded_deposit_eventually_minted",
+      "type": "BridgeSpec.Liveness.FundedDepositEventuallyMinted"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.Liveness.funding_failure_eventually_cancelled",
+      "type": "BridgeSpec.Liveness.FundingFailureEventuallyCancelled"
+    },
+    {
+      "definition": "fun authorization origin =>\n  And (Ne.{1} (BridgeSpec.MintAuthorization.Authorization.recipient authorization) 0)\n    (And\n      (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.chainId authorization)\n        (BridgeSpec.MintAuthorization.AuthorizationOrigin.expectedChainId origin))\n      (And\n        (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.verifyingContract authorization)\n          (BridgeSpec.MintAuthorization.AuthorizationOrigin.expectedVerifyingContract origin))\n        (And (Ne.{1} (BridgeSpec.MintAuthorization.Authorization.digest authorization) 0)\n          (And\n            (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.epoch authorization)\n              (BridgeSpec.MintAuthorization.AuthorizationOrigin.expectedEpoch origin))\n            (And (Ne.{1} (BridgeSpec.MintAuthorization.AuthorizationOrigin.finalizedHash origin) 0)\n              (And\n                (Eq.{1}\n                  (HAdd.hAdd.{0, 0, 0} (BridgeSpec.MintAuthorization.Authorization.netAmount authorization)\n                    (BridgeSpec.MintAuthorization.Authorization.chargedServiceFee authorization))\n                  (BridgeSpec.MintAuthorization.Authorization.grossAmount authorization))\n                (And\n                  (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.deadline authorization)\n                    (HAdd.hAdd.{0, 0, 0} (BridgeSpec.MintAuthorization.AuthorizationOrigin.issuedAtTimestamp origin)\n                      BridgeSpec.MintAuthorization.authorizationTtl))\n                  (Eq.{1}\n                    (BridgeSpec.MintAuthorization.deadlineFromIssuedAt\n                      (BridgeSpec.MintAuthorization.AuthorizationOrigin.issuedAtTimestamp origin))\n                    (Option.some.{0} (BridgeSpec.MintAuthorization.Authorization.deadline authorization))))))))))",
+      "name": "BridgeSpec.MintAuthorization.Authorization.valid",
+      "type": "BridgeSpec.MintAuthorization.Authorization → BridgeSpec.MintAuthorization.AuthorizationOrigin → Prop"
+    },
+    {
+      "definition": "fun evidence authorization origin =>\n  And\n    (Eq.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.depositId evidence)\n      (BridgeSpec.MintAuthorization.Authorization.depositId authorization))\n    (And\n      (Eq.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.authorizationDigest evidence)\n        (BridgeSpec.MintAuthorization.Authorization.digest authorization))\n      (And\n        (Eq.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.chainId evidence)\n          (BridgeSpec.MintAuthorization.Authorization.chainId authorization))\n        (And\n          (Eq.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.verifyingContract evidence)\n            (BridgeSpec.MintAuthorization.Authorization.verifyingContract authorization))\n          (And (Eq.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.depositProcessed evidence) Bool.false)\n            (And\n              (GE.ge.{0} (BridgeSpec.MintAuthorization.ExpiryEvidence.finalizedBlock evidence)\n                (BridgeSpec.MintAuthorization.AuthorizationOrigin.finalizedBlock origin))\n              (And (Ne.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.finalizedHash evidence) 0)\n                (And (Ne.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.runtimeSha256 evidence) 0)\n                  (And (Ne.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.rpcRequestDigest evidence) 0)\n                    (And (Ne.{1} (BridgeSpec.MintAuthorization.ExpiryEvidence.rpcResponseDigest evidence) 0)\n                      (GT.gt.{0} (BridgeSpec.MintAuthorization.ExpiryEvidence.finalizedTimestamp evidence)\n                        (BridgeSpec.MintAuthorization.Authorization.deadline authorization)))))))))))",
+      "name": "BridgeSpec.MintAuthorization.ExpiryEvidence.valid",
+      "type": "BridgeSpec.MintAuthorization.ExpiryEvidence →\n  BridgeSpec.MintAuthorization.Authorization → BridgeSpec.MintAuthorization.AuthorizationOrigin → Prop"
+    },
+    {
+      "definition": "fun evidence authorization =>\n  And\n    (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.depositId evidence)\n      (BridgeSpec.MintAuthorization.Authorization.depositId authorization))\n    (And\n      (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.recipient evidence)\n        (BridgeSpec.MintAuthorization.Authorization.recipient authorization))\n      (And\n        (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.authorizationDigest evidence)\n          (BridgeSpec.MintAuthorization.Authorization.digest authorization))\n        (And\n          (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.chainId evidence)\n            (BridgeSpec.MintAuthorization.Authorization.chainId authorization))\n          (And\n            (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.verifyingContract evidence)\n              (BridgeSpec.MintAuthorization.Authorization.verifyingContract authorization))\n            (And\n              (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.grossAmount evidence)\n                (BridgeSpec.MintAuthorization.Authorization.grossAmount authorization))\n              (And\n                (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.chargedServiceFee evidence)\n                  (BridgeSpec.MintAuthorization.Authorization.chargedServiceFee authorization))\n                (And\n                  (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.mintedAmount evidence)\n                    (BridgeSpec.MintAuthorization.Authorization.netAmount authorization))\n                  (And (Ne.{1} (BridgeSpec.MintAuthorization.MintEvidence.transactionHash evidence) 0)\n                    (And (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.receiptSucceeded evidence) Bool.true)\n                      (And\n                        (LE.le.{0} (BridgeSpec.MintAuthorization.MintEvidence.receiptBlock evidence)\n                          (BridgeSpec.MintAuthorization.MintEvidence.finalizedBlock evidence))\n                        (And (Ne.{1} (BridgeSpec.MintAuthorization.MintEvidence.receiptBlockHash evidence) 0)\n                          (And (Ne.{1} (BridgeSpec.MintAuthorization.MintEvidence.finalizedBlockHash evidence) 0)\n                            (And (Ne.{1} (BridgeSpec.MintAuthorization.MintEvidence.rpcRequestDigest evidence) 0)\n                              (And (Ne.{1} (BridgeSpec.MintAuthorization.MintEvidence.rpcResponseDigest evidence) 0)\n                                (And (Eq.{1} (BridgeSpec.MintAuthorization.MintEvidence.exactEventCount evidence) 1)\n                                  (Eq.{1}\n                                    (HAdd.hAdd.{0, 0, 0}\n                                      (BridgeSpec.MintAuthorization.Authorization.netAmount authorization)\n                                      (BridgeSpec.MintAuthorization.Authorization.chargedServiceFee authorization))\n                                    (BridgeSpec.MintAuthorization.Authorization.grossAmount\n                                      authorization)))))))))))))))))",
+      "name": "BridgeSpec.MintAuthorization.MintEvidence.valid",
+      "type": "BridgeSpec.MintAuthorization.MintEvidence → BridgeSpec.MintAuthorization.Authorization → Prop"
+    },
+    {
+      "definition": "fun state observedTimestamp =>\n  match BridgeSpec.MintAuthorization.DepositState.authorization state with\n  | Option.none.{0} => Option.none.{0}\n  | Option.some.{0} authorization =>\n    ite.{1}\n      (And\n        (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.phase state)\n          BridgeSpec.MintAuthorization.DepositPhase.authorizationPending)\n        (And (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.feeCounted state) Bool.false)\n          (And\n            (LE.le.{0} (BridgeSpec.MintAuthorization.Authorization.chargedServiceFee authorization)\n              (BridgeSpec.MintAuthorization.DepositState.pendingDepositLiability state))\n            (Eq.{1}\n              (BridgeSpec.signatureTimeAllowed observedTimestamp\n                (BridgeSpec.MintAuthorization.Authorization.deadline authorization))\n              Bool.true))))\n      (Option.some.{0}\n        { phase := BridgeSpec.MintAuthorization.DepositPhase.authorizationAvailable,\n          authorization := BridgeSpec.MintAuthorization.DepositState.authorization state,\n          escrow := BridgeSpec.MintAuthorization.DepositState.escrow state,\n          baseSupply := BridgeSpec.MintAuthorization.DepositState.baseSupply state,\n          feeReserve :=\n            HAdd.hAdd.{0, 0, 0} (BridgeSpec.MintAuthorization.DepositState.feeReserve state)\n              (BridgeSpec.MintAuthorization.Authorization.chargedServiceFee authorization),\n          pendingDepositLiability :=\n            HSub.hSub.{0, 0, 0} (BridgeSpec.MintAuthorization.DepositState.pendingDepositLiability state)\n              (BridgeSpec.MintAuthorization.Authorization.chargedServiceFee authorization),\n          reservedMint := BridgeSpec.MintAuthorization.DepositState.reservedMint state, feeCounted := Bool.true,\n          jobNextRun := BridgeSpec.MintAuthorization.DepositState.jobNextRun state,\n          leaseGeneration := BridgeSpec.MintAuthorization.DepositState.leaseGeneration state })\n      Option.none.{0}",
+      "name": "BridgeSpec.MintAuthorization.installSignature",
+      "type": "BridgeSpec.MintAuthorization.DepositState → Nat → Option.{0} BridgeSpec.MintAuthorization.DepositState"
+    },
+    {
+      "definition": "fun state =>\n  And (BridgeSpec.Backed (BridgeSpec.Protocol.ProtocolState.economic state))\n    (And\n      (Eq.{1} (BridgeSpec.FeeState.reserve (BridgeSpec.Protocol.ProtocolState.fee state))\n        (BridgeSpec.EconomicState.feeReserve (BridgeSpec.Protocol.ProtocolState.economic state)))\n      (And\n        (LE.le.{0} (BridgeSpec.FeeState.pendingPayout (BridgeSpec.Protocol.ProtocolState.fee state))\n          (BridgeSpec.FeeState.reserve (BridgeSpec.Protocol.ProtocolState.fee state)))\n        (And\n          (LE.le.{0}\n            (HAdd.hAdd.{0, 0, 0}\n              (BridgeSpec.Protocol.WindowState.consumed (BridgeSpec.Protocol.ProtocolState.window state))\n              (BridgeSpec.Protocol.WindowState.reserved (BridgeSpec.Protocol.ProtocolState.window state)))\n            BridgeSpec.FiniteWidthModel.maxU128)\n          (And\n            (Eq.{1}\n              (HAdd.hAdd.{0, 0, 0}\n                (BridgeSpec.Protocol.DepositTrace.reserved (BridgeSpec.Protocol.ProtocolState.deposit state))\n                (BridgeSpec.Protocol.DepositTrace.candidate (BridgeSpec.Protocol.ProtocolState.deposit state)))\n              (BridgeSpec.Protocol.DepositTrace.requirement (BridgeSpec.Protocol.ProtocolState.deposit state)))\n            (And\n              (Eq.{1} (BridgeSpec.Withdrawal.destination (BridgeSpec.Protocol.ProtocolState.withdrawal state))\n                (BridgeSpec.Protocol.ProtocolState.committedDestination state))\n              (And\n                (Eq.{1} (BridgeSpec.Withdrawal.amountOut (BridgeSpec.Protocol.ProtocolState.withdrawal state))\n                  (BridgeSpec.Protocol.ProtocolState.committedAmountOut state))\n                (And\n                  (Eq.{1} (BridgeSpec.Protocol.ProtocolState.withdrawalFeeCounted state)\n                    (BridgeSpec.Withdrawal.paid (BridgeSpec.Protocol.ProtocolState.withdrawal state)))\n                  (BridgeSpec.Protocol.leaseBounded (BridgeSpec.Protocol.ProtocolState.lease state)))))))))",
+      "name": "BridgeSpec.Protocol.Safe",
+      "type": "BridgeSpec.Protocol.ProtocolState → Prop"
+    },
+    {
+      "definition": "fun stored => ite.{1} (BridgeSpec.Protocol.Safe stored) (Option.some.{0} stored) Option.none.{0}",
+      "name": "BridgeSpec.Protocol.filterSafeStoredState",
+      "type": "BridgeSpec.Protocol.ProtocolState → Option.{0} BridgeSpec.Protocol.ProtocolState"
+    },
+    {
+      "definition": "fun observedTimestamp deadline =>\n  Decidable.decide\n    (And (LE.le.{0} deadline (HSub.hSub.{0, 0, 0} (HPow.hPow.{0, 0, 0} 2 64) 1))\n      (And (LE.le.{0} observedTimestamp (HSub.hSub.{0, 0, 0} (HSub.hSub.{0, 0, 0} (HPow.hPow.{0, 0, 0} 2 64) 1) 300))\n        (LE.le.{0} (HAdd.hAdd.{0, 0, 0} observedTimestamp 300) deadline)))",
+      "name": "BridgeSpec.signatureTimeAllowed",
+      "type": "Nat → Nat → Bool"
+    }
+  ]
+}

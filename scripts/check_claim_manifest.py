@@ -924,6 +924,9 @@ def require_release_ready_catalog(results: list[dict[str, object]]) -> None:
 
 
 def main() -> int:
+    from check_claim_semantics import check_reviewed_semantics
+
+    check_reviewed_semantics()
     check_operational_config_guard_dominance()
     report = build_claim_report()
     write_claim_report(report)

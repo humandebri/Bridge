@@ -171,6 +171,7 @@ run_versions() {
   forge build --root "$ROOT/contracts" --ast
   python3 "$ROOT/scripts/check_certora_manifest.py"
   python3 "$ROOT/scripts/test_certora_manifest.py"
+  python3 "$ROOT/scripts/test_claim_semantics.py"
   python3 "$ROOT/scripts/test_proof_impact.py"
   python3 "$ROOT/scripts/test_trusted_execution_context.py"
   python3 "$ROOT/scripts/test_candidate_dependencies.py"

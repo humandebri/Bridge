@@ -110,13 +110,14 @@ def commitAuthorization
       reservedMint := authorization.netAmount }
   else none
 
-def installSignature (state : DepositState) : Option DepositState :=
+def installSignature (state : DepositState) (observedTimestamp : Nat) : Option DepositState :=
   match state.authorization with
   | none => none
   | some authorization =>
       if state.phase = .authorizationPending ∧
           state.feeCounted = false ∧
-          authorization.chargedServiceFee ≤ state.pendingDepositLiability then
+          authorization.chargedServiceFee ≤ state.pendingDepositLiability ∧
+          signatureTimeAllowed observedTimestamp authorization.deadline = true then
         some { state with
           phase := .authorizationAvailable
           feeReserve := state.feeReserve + authorization.chargedServiceFee
@@ -124,6 +125,22 @@ def installSignature (state : DepositState) : Option DepositState :=
             state.pendingDepositLiability - authorization.chargedServiceFee
           feeCounted := true }
       else none
+
+theorem accepted_signature_requires_minimum_remaining_time
+    {state next : DepositState} {observedTimestamp : Nat}
+    (accepted : installSignature state observedTimestamp = some next) :
+    ∃ authorization, state.authorization = some authorization ∧
+      authorization.deadline ≤ maxU64 ∧ observedTimestamp ≤ maxU64 - 300 ∧
+      observedTimestamp + 300 ≤ authorization.deadline := by
+  unfold installSignature at accepted
+  cases auth : state.authorization with
+  | none => simp [auth] at accepted
+  | some authorization =>
+      simp only [auth] at accepted
+      split at accepted
+      next allowed =>
+        exact ⟨authorization, rfl, of_decide_eq_true allowed.2.2.2⟩
+      next => simp at accepted
 
 def releaseExpiredReservation
     (state : DepositState) (finalizedTimestamp : Nat) : Option DepositState :=
@@ -430,8 +447,8 @@ theorem mint_preserves_backing
       next => simp at accepted
 
 theorem authorization_signature_counts_exact_service_fee_once
-    {state next : DepositState}
-    (accepted : installSignature state = some next) :
+    {state next : DepositState} {observedTimestamp : Nat}
+    (accepted : installSignature state observedTimestamp = some next) :
     ∃ authorization, state.authorization = some authorization ∧
       next.feeReserve = state.feeReserve + authorization.chargedServiceFee ∧
       next.feeCounted = true := by
@@ -512,8 +529,8 @@ theorem minted_and_refunded_are_disjoint :
     DepositPhase.minted ≠ DepositPhase.refunded := by decide
 
 theorem terminal_phases_are_absorbing_for_authorization_progress
-    {state : DepositState} (terminalState : terminal state.phase = true) :
-    installSignature state = none ∧
+    {state : DepositState} (observedTimestamp : Nat) (terminalState : terminal state.phase = true) :
+    installSignature state observedTimestamp = none ∧
       releaseExpiredReservation state (maxU64 + 1) = none := by
   cases phaseEq : state.phase <;>
     simp [terminal, phaseEq, installSignature, releaseExpiredReservation] at terminalState ⊢

@@ -18,8 +18,8 @@ theorem ledger_block_provenance_witness : LedgerBlockProvenance :=
 def FeeAccountingOnce : Prop :=
   (∀ {next : State} {events : List Event},
       depositRun initial events = some next → traceFeeCreditCount events ≤ 1) ∧
-    (∀ {state next : DepositState},
-      installSignature state = some next →
+    (∀ {state next : DepositState} {observedTimestamp : Nat},
+      installSignature state observedTimestamp = some next →
         ∃ authorization, state.authorization = some authorization ∧
           next.feeReserve = state.feeReserve + authorization.chargedServiceFee ∧
           next.feeCounted = true)
@@ -28,7 +28,7 @@ theorem fee_accounting_once_witness : FeeAccountingOnce := by
   constructor
   · intro next events accepted
     exact deposit_run_fee_credit_count_at_most_once accepted
-  · intro state next accepted
+  · intro state next observedTimestamp accepted
     exact authorization_signature_counts_exact_service_fee_once accepted
 
 def RuntimeAttestationReuse : Prop :=
@@ -212,22 +212,22 @@ theorem confirmed_activation_evidence_binding_witness :
 def IntegratedProtocolReachability : Prop :=
   (∀ {state : Protocol.ProtocolState}, Protocol.Reachable state → Protocol.Safe state) ∧
     (∀ {stored reopened : Protocol.ProtocolState},
-      Protocol.reopenState stored = some reopened → Protocol.Safe reopened)
+      Protocol.filterSafeStoredState stored = some reopened → Protocol.Safe reopened)
 
 theorem integrated_protocol_reachability_witness : IntegratedProtocolReachability := by
-  exact ⟨Protocol.reachable_is_safe, Protocol.reopened_state_is_safe⟩
+  exact ⟨Protocol.reachable_is_safe, Protocol.filtered_stored_state_is_safe⟩
 
 def GlobalInterleavingSafety : Prop :=
   (∀ {state final : GlobalHistory.GlobalState} {events : List GlobalHistory.Event},
-      GlobalHistory.Safe state → GlobalHistory.Runs state events final →
-        GlobalHistory.Safe final) ∧
+      GlobalHistory.AccountingInvariant state → GlobalHistory.Runs state events final →
+        GlobalHistory.AccountingInvariant final) ∧
     (∀ {state next : GlobalHistory.GlobalState} {event : GlobalHistory.Event} {other : Nat},
       other ≠ event.id → GlobalHistory.step state event = some next →
         GlobalHistory.findRecord? next.records other =
           GlobalHistory.findRecord? state.records other)
 
 theorem global_interleaving_safety_witness : GlobalInterleavingSafety := by
-  exact ⟨GlobalHistory.runs_preserve_safe, GlobalHistory.step_frames_other_record⟩
+  exact ⟨GlobalHistory.runs_preserve_accounting_invariant, GlobalHistory.step_frames_other_record⟩
 
 def DepositTransitionSafety : Prop :=
   ∀ {state next : Protocol.Deposit.State} {event : Protocol.Deposit.Event},
@@ -273,7 +273,7 @@ theorem refund_request_authorization_witness : RefundRequestAuthorization := by
 
 def SettlementBacking : Prop :=
   (∀ {state final : GlobalHistory.GlobalState} {events : List GlobalHistory.Event},
-      GlobalHistory.Safe state → GlobalHistory.Runs state events final →
+      GlobalHistory.AccountingInvariant state → GlobalHistory.Runs state events final →
         GlobalHistory.Backed final.accounting) ∧
     (∀ {record next : GlobalHistory.Record} {ledgerFee transferAmount destination : Nat},
       GlobalHistory.applyRecord record
@@ -287,7 +287,7 @@ def SettlementBacking : Prop :=
 theorem settlement_backing_witness : SettlementBacking := by
   constructor
   · intro state final events safe runs
-    exact (GlobalHistory.runs_preserve_safe safe runs).2.2.1
+    exact (GlobalHistory.runs_preserve_accounting_invariant safe runs).2.2.1
   · exact GlobalHistory.payout_applies_exact_delta
 
 def PaymentIdentity : Prop :=
@@ -318,7 +318,7 @@ theorem reservation_lifecycle_witness : ReservationLifecycle := by
 
 def DepositBacking : Prop :=
   (∀ {state final : GlobalHistory.GlobalState} {events : List GlobalHistory.Event},
-      GlobalHistory.Safe state → GlobalHistory.Runs state events final →
+      GlobalHistory.AccountingInvariant state → GlobalHistory.Runs state events final →
         GlobalHistory.Backed final.accounting) ∧
     (∀ {record next : GlobalHistory.Record},
       GlobalHistory.applyRecord record (.installSignature record.id) = some next →
@@ -339,7 +339,7 @@ theorem deposit_backing_witness : DepositBacking := by
   refine ⟨?_, GlobalHistory.signature_applies_exact_fee,
     GlobalHistory.mint_applies_exact_amount, GlobalHistory.refund_applies_exact_amount⟩
   intro state final events safe runs
-  exact (GlobalHistory.runs_preserve_safe safe runs).2.2.1
+  exact (GlobalHistory.runs_preserve_accounting_invariant safe runs).2.2.1
 
 def DepositDecisionSafety : Prop := DepositTransitionSafety ∧ DepositBacking
 
@@ -349,10 +349,15 @@ theorem deposit_decision_safety_witness : DepositDecisionSafety := by
 def CommittedQuote : Prop :=
   (∀ {amount serviceFee : Nat} {destination : Account} {withdrawal : Withdrawal},
       commit amount serviceFee destination = some withdrawal → QuoteValid withdrawal) ∧
+    (∀ {state final : Protocol.ProtocolState} {events : List Protocol.ProtocolEvent},
+      Protocol.Safe state → Protocol.Runs state events final →
+        final.withdrawal.destination = state.committedDestination ∧
+        final.withdrawal.amountOut = state.committedAmountOut) ∧
     IntegratedProtocolReachability
 
 theorem committed_quote_witness : CommittedQuote :=
-  ⟨Claims.committed_quote_claim, integrated_protocol_reachability_witness⟩
+  ⟨Claims.committed_quote_claim, Protocol.committed_quote_is_immutable_across_trace,
+    integrated_protocol_reachability_witness⟩
 
 def DepositAdmission : Prop :=
   (∀ {admission : BridgeSpec.DepositAdmission} {net : Nat}, admitDeposit admission = some net →
@@ -543,7 +548,13 @@ def AuthorizationBinding : Prop :=
         authorization.deadline = origin.issuedAtTimestamp + authorizationTtl ∧
         authorization.chainId = origin.expectedChainId ∧
         authorization.verifyingContract = origin.expectedVerifyingContract ∧
-        authorization.epoch = origin.expectedEpoch) ∧ DepositTransitionSafety
+        authorization.epoch = origin.expectedEpoch) ∧
+    (∀ {state next : DepositState} {observedTimestamp : Nat},
+      installSignature state observedTimestamp = some next →
+        ∃ authorization, state.authorization = some authorization ∧
+          authorization.deadline ≤ MintAuthorization.maxU64 ∧
+          observedTimestamp ≤ MintAuthorization.maxU64 - 300 ∧
+          observedTimestamp + 300 ≤ authorization.deadline) ∧ DepositTransitionSafety
 
 theorem authorization_binding_witness : AuthorizationBinding := by
   constructor
@@ -551,7 +562,8 @@ theorem authorization_binding_witness : AuthorizationBinding := by
     rcases accepted_authorization_is_exact_and_has_fixed_deadline accepted with
       ⟨stored, _, _, deadline, chain, contract, epoch, _⟩
     exact ⟨stored, deadline, chain, contract, epoch⟩
-  · exact deposit_transition_safety_witness
+  · exact ⟨accepted_signature_requires_minimum_remaining_time,
+      deposit_transition_safety_witness⟩
 
 def ExpiryRefund : Prop :=
   (∀ {state next : DepositState} {origin : AuthorizationOrigin} {evidence : ExpiryEvidence},

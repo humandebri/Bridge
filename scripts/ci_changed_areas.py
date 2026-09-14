@@ -244,6 +244,8 @@ def classify(paths: list[str]) -> dict[str, bool]:
         if not path or path == ".":
             continue
         if _is_documentation(path):
+            if path in _proof_owned_paths():
+                result["proofs-impacted"] = True
             continue
         if _is_unregistered_production_source(path):
             _enable_all(result)

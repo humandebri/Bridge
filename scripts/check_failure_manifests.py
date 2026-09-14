@@ -14,6 +14,8 @@ from check_claim_manifest import checked_link
 ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_LEAN_FAILURE_SHA256 = {
+    "QuoteChangedDuringTrace.lean": "9a520139c90b0736b11e639ee117cd5e8d2b58e7f36ef7fe039ebbb7b72fa645",
+    "SignatureTooLate.lean": "bdd74ab81077e94e7f16dedce8b2dd0bd5db6a71c6d31e57e6fae72dc9fbc106",
     "RefundAfterReservationReplay.lean": "398008e4f37597fc27cdc61909bfe32312895afa6bb84128a5d01a252b164afd",
     "AccountingDeltaViolation.lean": "638f8837d8c221d828fed5162973b4215af39c61984c6aba3220f8b8b3dd7a08",
     "AnonymousRefundRequest.lean": "beae263600cfc9307feadae225b64983f34e11bfdfa04adae6316ec7a1869552",
@@ -25,7 +27,7 @@ REQUIRED_LEAN_FAILURE_SHA256 = {
     "ConflictingFundingReplay.lean": "fd5f6abf7f8812e64bf2cbf457991ca46fcea6cdcc71acd074a6b162317c7b96",
     "DeadlineOverflow.lean": "864692b1294fc6b36f398fc91ea14695d07fea1c3defc14708eccc329aa74d5c",
     "DestinationMutation.lean": "a3992470b4340e01eb81291efe4172fb9b3269141e987beea8238f02fded0cae",
-    "DoubleDepositFeeTrace.lean": "daa0327e85847d2435b85c11f9bfe1031a2f19e0a53249d66e24effa7fe43434",
+    "DoubleDepositFeeTrace.lean": "9f00413132deded07cee5385e9a56384775d7b6b869bfad08b31c384059605ba",
     "DoubleFee.lean": "076049e9a5e13cd6c1e4ebab231ed452dffc9fcac994b7aa15bdd8645e304851",
     "DriftedConfirmedActivationEvidence.lean": (
         "cce72323186747a19ebd7bd19393b756"
@@ -39,13 +41,13 @@ REQUIRED_LEAN_FAILURE_SHA256 = {
     "InvalidExecutionStep.lean": "a6b48a8e639af5578312a150535c1b778d45877f353b449eca9559558c156213",
     "ManualActiveLeaseBypass.lean": "05b63de3fa0532e200bdd0c2f8e75495f96b40683b11177827e16335ee5fa7a7",
     "ManualClaimEconomicMutation.lean": "9b60fdf900a577eea35aa64585347ed44b629cceae79b2dbbc0ede270ad7722d",
-    "MintFeeAlreadyCounted.lean": "58bb359655944e3825b6045587fa430e276e3c8640aeda5876cf4eee625fb9df",
+    "MintFeeAlreadyCounted.lean": "1506eb9046d1280a73afc6a2e0203ad2ebc477b2eb62afc1e8360bbd6bbb4a68",
     "MissingUserLiveness.lean": "285ee5520011c8603f7db684c1a6365bef69da98d9e38c6ed60a4f0b69bbe07e",
     "ProcessedExpiryRefund.lean": "4dcff1642961a5f622a762ac1b4748b990a5b4ee6a480d4e6a42abf76f7e0773",
     "RefundBeforeFunding.lean": "47ac92b520aef0fc257bf1a3fa956af2ce6130b9bf676b56d8936e62c2bd56f0",
     "StaleCrossRecordCallback.lean": "0394bec7a1db4833940a74de7386b6150db5753b09b2cae5b8d5ebb8c64330b1",
     "StaleLeaseCallback.lean": "060d4a6c2845d57c76dc64427eca5be79f8444c0472b7191a2ffffe4f34c2dae",
-    "TerminalAuthorizationReopen.lean": "c7ba272a6f81dfcd0c4333bd325bcea1f41c1ce618cd1a645cd3dddea5daa29f",
+    "TerminalAuthorizationReopen.lean": "33f763ac7516e6a73762e978616d1d89063aac597834af2f954f90446805c4b1",
     "TerminalDepositIndexed.lean": "5a740f2449b4ebd506b9d3095378f2226f253b9fd4ec96442422a0adbcbd91d7",
     "UnauthorizedConfirmationCaller.lean": "ebb7016ca30fe6b8c28c6dc6533da01331be76d3cc479a886866213d52ce80d0",
     "UnauthorizedOperationalConfigSeal.lean": "8d45c7d35059439e55d1e8b7eaec11c842f9918084a8d4410c70dc986f43423e",
@@ -144,6 +146,9 @@ def main() -> int:
             "LedgerBlockProvenance.lean",
             "Liveness.lean",
             "Protocol.lean",
+            "DepositHistory.lean",
+            "ProtocolPolicies.lean",
+            "ModelBoundaries.lean",
         )
     )
     lean_rows = rows(ROOT / "verification" / "lean" / "deposit-failure-manifest.tsv", 3)

@@ -8,5 +8,5 @@ def state : DepositState := {
   feeCounted := true
 }
 
-example : installSignature state ≠ none := by
+example : installSignature state 0 ≠ none := by
   decide

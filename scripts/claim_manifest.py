@@ -105,9 +105,9 @@ REQUIRED_CONDITIONAL_LIVENESS_POLICY = {
             }
         ),
     ),
-    "funded_deposit_eventually_minted_or_refunded": (
-        "BridgeSpec.Liveness.funded_deposit_eventually_minted_or_refunded",
-        "BridgeSpec.Liveness.FundedDepositEventuallyMintedOrRefunded",
+    "deposit_terminal_progress_lemmas": (
+        "BridgeSpec.Liveness.deposit_terminal_progress_lemmas",
+        "BridgeSpec.Liveness.DepositTerminalProgressLemmas",
         frozenset(
             {
                 "eventual_deposit_continuation",

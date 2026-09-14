@@ -22,6 +22,11 @@ class ChangedAreaTests(unittest.TestCase):
     def test_docs_only_runs_no_component_gate(self) -> None:
         self.assert_areas(["docs/bridge-flow.md", "README.md", "LICENSE", ".gitignore"])
 
+    def test_registered_semantics_docs_run_proofs_and_require_review(self) -> None:
+        for path in ("verification/generated/claim-statements.md", "verification/proof-outline.md", "verification/README.md"):
+            self.assert_areas([path], "proofs-impacted")
+            self.assert_review([path], True)
+
     def test_docs_only_emits_a_nonempty_workflow_matrix(self) -> None:
         with tempfile.NamedTemporaryFile() as output:
             subprocess.run(
@@ -276,7 +281,7 @@ class ChangedAreaTests(unittest.TestCase):
         )
 
     def test_sensitive_documentation_requires_review_without_compute(self) -> None:
-        for path in ("deployments/README.md", "verification/README.md"):
+        for path in ("deployments/README.md", "verification/audit-evidence.md"):
             with self.subTest(path=path):
                 self.assert_areas([path])
                 self.assert_review([path], True)
