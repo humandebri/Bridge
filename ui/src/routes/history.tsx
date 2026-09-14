@@ -1,3 +1,13 @@
+import {
+  continueTransferPayout,
+  payoutFeeGuardBlocked as feeGuardBlocked,
+} from "@/lib/transfer-operations"
+import {
+  useTransferPresentation,
+  depositFacts,
+  withdrawalFacts,
+} from "@/features/bridge/use-transfer-presentation"
+import { useDepositRefund } from "@/features/bridge/use-deposit-refund"
 import { redactRpcUrls } from "@/lib/transfer-error"
 import { TransactionEvidenceMismatch, withdrawalReceiptDetails } from "@/lib/transaction-recovery"
 import { observeDeposit, type MintObservation } from "@/lib/mint-observation"
@@ -26,7 +36,6 @@ import type {
   WithdrawalView,
 } from "@/generated/bridge.did"
 import {
-  activityAutoRefreshEnabled,
   mergeActivityItems,
   olderActivitySources,
   visibleActivityItems,
@@ -59,14 +68,11 @@ import { refetchRuntimeAttestedWriteReady } from "@/lib/runtime-validation"
 import {
   authorizationDeadlineRefundStatus,
   depositContinuation,
-  depositPhaseName,
-  depositPhaseTone,
   depositReconciliationMessage,
   depositUsesPendingMintStatus,
   isDepositTerminal,
   isWithdrawalTerminal,
   settlementStateName,
-  withdrawalPhaseName,
   withdrawalPhaseTone,
 } from "@/lib/settlement-phase"
 import { fetchInBatches, notifyHistoryWithdrawal } from "@/lib/withdrawal-history"
@@ -106,13 +112,13 @@ function HistoryPage() {
   const runtime = useRuntimeValidation(chainId, { enabled: false })
   const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, { enabled: false })
   const queryClient = useQueryClient()
+  const refundAction = useDepositRefund()
   const bridgeProgress = useBridgeProgress()
   const completeWithdrawalProgress = bridgeProgress.completeWithdrawal
   const [retryingHash, setRetryingHash] = useState<string>()
   const [actioningId, setActioningId] = useState<string>()
   const [loadingOlderWithdrawals, setLoadingOlderWithdrawals] = useState(false)
   const [loadingOlderDeposits, setLoadingOlderDeposits] = useState(false)
-  const [pageVisible, setPageVisible] = useState(() => document.visibilityState === "visible")
 
   const depositQueryKey = ["deposit-history", historyAccount?.owner] as const
   const readDepositHistory = async (
@@ -225,6 +231,7 @@ function HistoryPage() {
         ),
       ),
     staleTime: 10_000,
+    refetchIntervalInBackground: true,
     refetchInterval: (query) =>
       [...(query.state.data?.values() ?? [])].some(
         (observation) =>
@@ -416,22 +423,14 @@ function HistoryPage() {
     )
   const hasUnresolvedMint = mintRecords.some((record) => !isDepositTerminal(record.state))
 
-  useEffect(() => {
-    const onVisibilityChange = () => setPageVisible(document.visibilityState === "visible")
-    document.addEventListener("visibilitychange", onVisibilityChange)
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange)
-  }, [])
-  useActivityAutoRefresh(
-    activityAutoRefreshEnabled(pageVisible, hasAutomaticProgress || hasUnresolvedMint),
-    () => {
-      void Promise.all([
-        historyAccount ? deposits.refetch() : Promise.resolve(),
-        hasUnresolvedMint ? mintObservations.refetch() : Promise.resolve(),
-        hasUnresolvedMint ? finalizedClock.refetch() : Promise.resolve(),
-        address ? withdrawals.refetch() : Promise.resolve(),
-      ])
-    },
-  )
+  useActivityAutoRefresh(hasAutomaticProgress || hasUnresolvedMint, () => {
+    void Promise.all([
+      historyAccount ? deposits.refetch({ cancelRefetch: false }) : Promise.resolve(),
+      hasUnresolvedMint ? mintObservations.refetch({ cancelRefetch: false }) : Promise.resolve(),
+      hasUnresolvedMint ? finalizedClock.refetch({ cancelRefetch: false }) : Promise.resolve(),
+      address ? withdrawals.refetch({ cancelRefetch: false }) : Promise.resolve(),
+    ])
+  })
   useEffect(() => {
     for (const item of withdrawals.data?.items ?? []) {
       if (!item.hash || !item.canister || !("Paid" in item.canister.state)) continue
@@ -540,33 +539,13 @@ function HistoryPage() {
     }
   }
   const requestDepositRefund = async (record: DepositView) => {
-    const key = bytesHex(record.deposit_id)
-    let closeWalletSession: (() => Promise<void>) | undefined
     try {
-      setActioningId(key)
-      if (!ic.adapter)
-        throw new Error("Connect any non-anonymous IC wallet to continue this refund")
-      closeWalletSession = await ic.adapter.prepare()
-      await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
-      const result = await withBrowserLock(
-        `kinic-wallet-prompt:ic:${ic.account?.owner ?? "unknown"}`,
-        () => ic.adapter!.requestDepositRefund(Uint8Array.from(record.deposit_id)),
-      )
-      if ("Refunded" in result.state) toast.success("Refund completed.")
-      else if ("Minted" in result.state) toast.success("This deposit was already minted on Base.")
-      else toast.info("Refund claim recorded. Run the claim again to continue reconciliation.")
-      await deposits.refetch()
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "The refund could not be claimed. Try again later.",
-      )
-    } finally {
-      await closeWalletSession?.()
-      setActioningId(undefined)
+      await refundAction.request(record)
+    } catch {
+      /* Presented by the shared action. */
     }
   }
+
   const continueDeposit = async (record: DepositView) => {
     const key = bytesHex(record.deposit_id)
     let closeWalletSession: (() => Promise<void>) | undefined
@@ -598,10 +577,10 @@ function HistoryPage() {
     try {
       setActioningId(key)
       if (!item.canister) throw new Error("Notify the finalized withdrawal first")
-      if (!feeGuardBlocked(item.canister))
-        await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
-      const result = await continueWithdrawalWithBrowserIdentity(
-        Uint8Array.from(item.canister.withdrawal_id),
+      const result = await continueTransferPayout(
+        item.canister,
+        () => refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch),
+        `withdraw:${item.hash?.toLowerCase() ?? item.id}`,
       )
       toastSettlement(result)
       if (
@@ -1018,7 +997,16 @@ export function DepositActivityRow({
   const reconciliationMessage = refundPhase
     ? depositReconciliationMessage(record.state, record.last_settlement_stop_reason[0])
     : continuation.message
-  const mintedOnBase = mintFinalization === "minted"
+  const presentation = useTransferPresentation(
+    depositFacts(record, {
+      finalized: mintFinalization === "minted" && mintRecording !== "confirming",
+      included: mintFinalization === "minted",
+      unavailable: mintFinalization === "unavailable",
+      submitted: Boolean(pendingMint),
+      processed: processedWithoutReceipt,
+    }),
+  )
+  const mintedOnBase = mintFinalization === "minted" && mintRecording !== "confirming"
   const mintSubmitted = depositUsesPendingMintStatus(
     record.state,
     Boolean(pendingMint),
@@ -1079,21 +1067,16 @@ export function DepositActivityRow({
         <MobileLabel>Status</MobileLabel>
         <Badge
           tone={
-            mintedOnBase
-              ? "good"
-              : processedWithoutReceipt || mintSubmitted
-                ? "info"
-                : depositPhaseTone(record.state)
+            presentation.icon === "warning"
+              ? "warn"
+              : presentation.icon === "success"
+                ? "good"
+                : "info"
           }
         >
-          {processedWithoutReceipt
-            ? "Processed on Base"
-            : mintedOnBase
-              ? "Success"
-              : mintSubmitted
-                ? "Mint pending"
-                : depositPhaseName(record.state)}
+          {presentation.title}
         </Badge>
+        {presentation.description && <p className="mt-1 text-xs">{presentation.description}</p>}
         {mintedOnBase && mintRecording && (
           <p className="mt-1 text-xs text-[var(--muted)]">
             {mintRecording === "recorded"
@@ -1135,7 +1118,9 @@ export function DepositActivityRow({
       </div>
       <div className="min-w-0">
         <MobileLabel>Next step</MobileLabel>
-        {processedWithoutReceipt ? (
+        {presentation.code === "conflict" || presentation.terminal ? (
+          <span className="text-sm text-[var(--muted)]">—</span>
+        ) : processedWithoutReceipt ? (
           <span className="text-sm text-[var(--muted)]">
             {discoveryEnabled ? "取引を自動検索中" : "Transaction confirmation unavailable"}
           </span>
@@ -1175,7 +1160,7 @@ export function DepositActivityRow({
               disabled={!writesEnabled || actioningId === key}
               onClick={() => void onRequestRefund(record)}
             >
-              {actioningId === key ? "Requesting…" : "Request refund"}
+              {actioningId === key ? "Checking…" : "Check refund"}
             </Button>
           ) : (
             <span className="text-sm text-[var(--muted)]">
@@ -1196,7 +1181,7 @@ export function DepositActivityRow({
             disabled={!writesEnabled || actioningId === key}
             onClick={() => void onRequestRefund(record)}
           >
-            {actioningId === key ? "Requesting…" : "Request refund"}
+            {actioningId === key ? "Checking…" : "Check refund"}
           </Button>
         ) : "RefundProcessing" in record.state ? (
           <span className="text-sm text-[var(--muted)]">Refunding…</span>
@@ -1230,6 +1215,7 @@ function WithdrawalActivityRow({
   onContinue: (record: WithdrawalHistoryItem) => Promise<void>
 }) {
   const record = item.withdrawal
+  const presentation = useTransferPresentation(withdrawalFacts(record))
   const key = record.id?.toString() ?? record.hash
   const terminal = record.canister && isWithdrawalTerminal(record.canister.state)
   const pendingNotification = readPendingConfirmations().find(
@@ -1240,13 +1226,6 @@ function WithdrawalActivityRow({
   const pendingAttempt =
     pendingNotification?.status === "awaiting-notification" ? pendingNotification : undefined
   const needsAttention = Boolean(record.canister && !terminal)
-  const label = !record.canister
-    ? "Committed"
-    : "ReleasePending" in record.canister.state
-      ? "Payout pending"
-      : "ReconciliationHold" in record.canister.state
-        ? "Recovery needed"
-        : withdrawalPhaseName(record.canister.state)
   const kinicTransactions = withdrawalKinicTransactions(record.canister)
   return (
     <article className="grid gap-4 rounded-2xl bg-white p-4 lg:grid-cols-[minmax(6rem,0.7fr)_minmax(7rem,0.8fr)_minmax(7rem,0.8fr)_minmax(9rem,1.3fr)_minmax(7.5rem,1fr)_minmax(6rem,0.7fr)_9rem] lg:items-center">
@@ -1292,8 +1271,9 @@ function WithdrawalActivityRow({
                 : "neutral"
           }
         >
-          {label}
+          {presentation.title}
         </Badge>
+        {presentation.description && <p className="mt-1 text-xs">{presentation.description}</p>}
         {needsAttention && (
           <p className="mt-1 text-xs font-bold text-[#b42318]">Continue from History when ready.</p>
         )}
@@ -1307,7 +1287,9 @@ function WithdrawalActivityRow({
       </div>
       <div>
         <MobileLabel>Next step</MobileLabel>
-        {!record.canister ? (
+        {presentation.code === "conflict" || presentation.terminal ? (
+          <span className="text-sm text-[var(--muted)]">—</span>
+        ) : !record.canister ? (
           pendingAttempt?.failure?.disposition === "terminal" ? (
             <span className="text-sm text-[var(--muted)]">Operator review required</span>
           ) : (
@@ -1510,13 +1492,6 @@ function oldestDepositTimestamp(records?: DepositView[]): bigint | undefined {
     (oldest, record) =>
       oldest === undefined || record.created_at_ns < oldest ? record.created_at_ns : oldest,
     undefined,
-  )
-}
-
-function feeGuardBlocked(record?: WithdrawalView): boolean {
-  return Boolean(
-    record?.last_settlement_stop_reason[0] &&
-    "LedgerFeeExceedsServiceFee" in record.last_settlement_stop_reason[0],
   )
 }
 

@@ -1,9 +1,20 @@
+import {
+  assertTransferActionAllowed,
+  initialTransferFacts,
+  reduceTransfer,
+  transferIdentity,
+  transferPresentation,
+  publishTransferFacts,
+  readTransferFacts,
+  subscribeTransfers,
+} from "@/lib/transfer-state"
 import { mintExecutionDiagnostics } from "@/lib/mint-execution"
 import { toast } from "sonner"
 import { Check, ChevronUp, Circle, LoaderCircle, Minus, TriangleAlert } from "lucide-react"
 import {
   createContext,
   useCallback,
+  useEffect,
   useContext,
   useMemo,
   useRef,
@@ -62,8 +73,40 @@ interface BridgeProgressContextValue {
 
 const BridgeProgressContext = createContext<BridgeProgressContextValue | undefined>(undefined)
 
+function persistProgress(record: BridgeProgressRecord) {
+  if (saveLatestBridgeProgress(record)) return
+  const transfer =
+    record.transfer ??
+    initialTransferFacts(transferIdentity(record), record.direction, record.phase)
+  record.transfer = {
+    ...transfer,
+    warnings: {
+      ...transfer.warnings,
+      storage: "Browser storage unavailable. Keep this page open.",
+    },
+  }
+}
+
 export function BridgeProgressProvider({ children }: { children: ReactNode }) {
-  const [restored] = useState(() => readLatestBridgeProgress())
+  const [restored] = useState<BridgeProgressRecord | undefined>(() => {
+    const record = readLatestBridgeProgress()
+    if (!record) return undefined
+    const phase = record.transactionHash
+      ? record.direction === "deposit"
+        ? "base-mint-submitted"
+        : "base-withdrawal-submitted"
+      : record.withdrawal?.withdrawalId
+        ? "ledger-payout"
+        : record.deposit?.depositId
+          ? "authorization-generating"
+          : "attention"
+    const transfer = initialTransferFacts(transferIdentity(record), record.direction, phase)
+    if (phase === "attention") {
+      transfer.issue = "unknown"
+      transfer.message = "Check the saved transfer before continuing."
+    }
+    return { ...record, phase, transfer, attentionMessage: transfer.message }
+  })
   const [progress, setProgress] = useState<BridgeProgressRecord | undefined>(restored)
   const progressRef = useRef(progress)
   const [minimized, setMinimized] = useState(Boolean(restored))
@@ -84,7 +127,7 @@ export function BridgeProgressProvider({ children }: { children: ReactNode }) {
     if (progressRef.current)
       throw new Error("Complete or close the current transfer before starting another one")
     const next = createBridgeProgress(input)
-    saveLatestBridgeProgress(next)
+    persistProgress(next)
     progressRef.current = next
     setProgress(next)
     setMinimized(false)
@@ -93,32 +136,157 @@ export function BridgeProgressProvider({ children }: { children: ReactNode }) {
   }, [])
   const update = useCallback<BridgeProgressContextValue["update"]>(
     (id, patch) => {
-      if (patch.phase === "complete" || patch.phase === "attention")
-        setProgressAction(id, undefined)
-      setProgress((current) => {
-        if (!current || current.id !== id) return current
-        const unchanged = Object.entries(patch).every(
-          ([key, value]) => current[key as keyof BridgeProgressRecord] === value,
-        )
-        if (unchanged) return current
-        const nextPhase = patch.phase ?? current.phase
-        const attentionPhase =
-          nextPhase === "attention"
-            ? (patch.attentionPhase ??
-              (current.phase === "attention"
-                ? current.attentionPhase
-                : current.phase === "complete"
-                  ? undefined
-                  : current.phase))
-            : undefined
-        const next = { ...current, ...patch, attentionPhase, updatedAt: Date.now() }
-        saveLatestBridgeProgress(next)
-        progressRef.current = next
-        return next
+      if (patch.phase === "complete") setProgressAction(id, undefined)
+      const current = progressRef.current
+      if (!current || current.id !== id) return
+      const nextPhase = patch.phase ?? current.phase
+      const attentionPhase =
+        nextPhase === "attention"
+          ? (patch.attentionPhase ??
+            (current.phase === "attention"
+              ? current.attentionPhase
+              : current.phase === "complete"
+                ? undefined
+                : current.phase))
+          : undefined
+      const updatedAt = Date.now()
+      const candidate = { ...current, ...patch, attentionPhase, updatedAt }
+      const identity = transferIdentity(candidate)
+      const facts =
+        readTransferFacts(identity) ??
+        (current.transfer?.identity === identity
+          ? current.transfer
+          : initialTransferFacts(identity, current.direction, current.phase))
+      const source =
+        patch.observationSource ??
+        (patch.phase?.startsWith("base-") || patch.transactionHash || patch.receiptBlockNumber
+          ? "base"
+          : patch.phase === "authorization-generating" ||
+              patch.phase === "ledger-payout" ||
+              patch.phase === "ic-notification-recorded" ||
+              (patch.phase === "awaiting-base-mint" &&
+                patch.attentionPhase === "authorization-generating")
+            ? "ic"
+            : "operation")
+      const hasObservation = [
+        "phase",
+        "issue",
+        "outcome",
+        "transactionHash",
+        "recordingPending",
+        "attentionMessage",
+        "completionMessage",
+      ].some((key) => key in patch)
+      const unchanged = Object.entries(patch).every(([key, value]) => {
+        if (key === "observationSource") return true
+        if (key === "observationError") return facts.transportErrors?.[source] === value
+        if (key === "walletWarning") return facts.warnings.wallet === value
+        if (key === "storageWarning") return facts.warnings.storage === value
+        return current[key as keyof BridgeProgressRecord] === value
       })
+      if (unchanged && !(hasObservation && facts.transportErrors?.[source])) return
+      const revision = (facts.revisions[source] ?? 0) + 1
+      let transfer = hasObservation
+        ? reduceTransfer(facts, {
+            identity,
+            generation: facts.generation,
+            source,
+            revision,
+            type: "observed",
+            phase: candidate.phase,
+            issue:
+              patch.issue ??
+              (patch.phase === undefined
+                ? facts.issue
+                : patch.phase === "attention"
+                  ? "stopped"
+                  : undefined),
+            outcome:
+              patch.outcome ??
+              (patch.phase === "complete"
+                ? current.direction === "deposit"
+                  ? "minted"
+                  : "paid"
+                : undefined),
+            message: patch.attentionMessage ?? patch.completionMessage,
+            transactionHash: patch.transactionHash,
+            recordingPending: patch.recordingPending,
+          })
+        : facts
+      for (const [field, cause] of [
+        ["observationError", "transport"],
+        ["storageWarning", "storage"],
+        ["walletWarning", "wallet"],
+      ] as const) {
+        if (field in patch)
+          transfer = reduceTransfer(transfer, {
+            identity,
+            generation: transfer.generation,
+            source,
+            revision: (transfer.revisions[source] ?? 0) + 1,
+            type: "warning",
+            cause,
+            message: patch[field],
+          })
+      }
+      const next = {
+        ...candidate,
+        phase: transfer.phase,
+        transfer,
+        attentionMessage: transfer.phase === "attention" ? transfer.message : undefined,
+      }
+
+      persistProgress(next)
+      progressRef.current = next
+      setProgress(next)
+      publishTransferFacts(next.transfer)
     },
     [setProgressAction],
   )
+  useEffect(() => {
+    if (progress?.transfer && readTransferFacts(progress.transfer.identity) !== progress.transfer)
+      publishTransferFacts(progress.transfer)
+  }, [progress])
+  useEffect(
+    () =>
+      subscribeTransfers(() => {
+        const current = progressRef.current
+        if (!current) return
+        const transfer = readTransferFacts(transferIdentity(current))
+        if (!transfer || transfer === current.transfer) return
+        const next = {
+          ...current,
+          transfer,
+          phase: transfer.phase,
+          attentionMessage: transfer.phase === "attention" ? transfer.message : undefined,
+        }
+        progressRef.current = next
+        persistProgress(next)
+        setProgress(next)
+      }),
+    [],
+  )
+  const walletProgressId = progress?.id
+  const walletProgressPhase = progress?.phase
+  useEffect(() => {
+    if (
+      !walletProgressId ||
+      !walletProgressPhase ||
+      ![
+        "awaiting-base-mint",
+        "awaiting-base-withdrawal",
+        "awaiting-base-allowance",
+        "awaiting-ic-allowance",
+        "awaiting-ic-deposit",
+      ].includes(walletProgressPhase)
+    )
+      return
+    const timer = window.setTimeout(
+      () => update(walletProgressId, { walletWarning: "Check your wallet. Do not submit again." }),
+      60_000,
+    )
+    return () => window.clearTimeout(timer)
+  }, [walletProgressId, walletProgressPhase, update])
   const minimize = useCallback(() => setMinimized(true), [])
   const restore = useCallback(() => setMinimized(false), [])
   const dismiss = useCallback(() => {
@@ -176,7 +344,8 @@ export function BridgeProgressProvider({ children }: { children: ReactNode }) {
           <span
             className={`grid size-9 shrink-0 place-items-center rounded-full ${progress.phase === "attention" ? "bg-[#fff0ec] text-[#b42318]" : progress.phase === "complete" ? "bg-[#eaf8ef] text-[#157347]" : "bg-[var(--pink-soft)] text-[var(--pink)]"}`}
           >
-            {progress.phase === "attention" ? (
+            {progress.phase === "attention" ||
+            (progress.transfer && transferPresentation(progress.transfer).icon === "warning") ? (
               <TriangleAlert className="size-4" />
             ) : progress.phase === "complete" ? (
               <Check className="size-4" />
@@ -224,17 +393,25 @@ function ProgressDialog({
   onMinimize: () => void
   onDismiss: () => void
 }) {
-  const canonicalTerminal = progress.phase === "complete" || progress.phase === "attention"
+  const presentation = progress.transfer ? transferPresentation(progress.transfer) : undefined
+  const needsAttention = progress.phase === "attention" || presentation?.icon === "warning"
+  const canonicalTerminal = progress.phase === "complete" || needsAttention
   const depositTransactionComplete = isDepositTransactionComplete(progress)
   const dismissible = canonicalTerminal || depositTransactionComplete
-  const handleOutsidePointerDown = dismissible ? onDismiss : onMinimize
+  const closeProgress =
+    presentation?.terminal ||
+    progress.phase === "complete" ||
+    (progress.phase === "attention" && !progress.deposit?.depositId && !progress.transactionHash)
+      ? onDismiss
+      : onMinimize
+  const handleOutsidePointerDown = dismissible ? closeProgress : onMinimize
   const steps = bridgeProgressSteps(progress)
   const finalityProgress = withdrawalFinalityProgress(progress)
   return (
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open && dismissible) onDismiss()
+        if (!open && dismissible) closeProgress()
       }}
     >
       <DialogContent
@@ -270,7 +447,7 @@ function ProgressDialog({
         {progress.phase !== "attention" && progress.attentionMessage && (
           <p role="alert">{progress.attentionMessage}</p>
         )}
-        {progress.phase === "attention" && (
+        {needsAttention && (
           <div className="mt-5 rounded-2xl border border-[#ffbdad] bg-[#fff0ec] p-4" role="alert">
             <p className="font-bold text-black">{bridgeProgressLabel(progress)}</p>
             <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
@@ -285,6 +462,9 @@ function ProgressDialog({
               {bridgeProgressDetail(progress)}
             </p>
           </div>
+        )}
+        {progress.transfer?.warnings.storage && (
+          <p role="alert">{progress.transfer.warnings.storage}</p>
         )}
         {progress.direction === "deposit" && (
           <Button
@@ -328,7 +508,11 @@ function ProgressDialog({
                 ) : step.status === "complete" ? (
                   <Check className="size-4" />
                 ) : step.status === "current" ? (
-                  <LoaderCircle className="size-4 animate-spin" />
+                  needsAttention ? (
+                    <TriangleAlert className="size-4" />
+                  ) : (
+                    <LoaderCircle className="size-4 animate-spin" />
+                  )
                 ) : (
                   <Circle className="size-3" />
                 )}
@@ -365,12 +549,28 @@ function ProgressDialog({
           ))}
         </ol>
         <DialogFooter>
-          {action && (
-            <Button disabled={action.pending} onClick={() => void action.run()}>
-              {action.pending && progress.direction !== "deposit" ? "Working…" : action.label}
+          {action &&
+            !presentation?.terminal &&
+            presentation?.code !== "conflict" &&
+            presentation?.code !== "processed" && (
+              <Button
+                disabled={action.pending}
+                onClick={() => {
+                  assertTransferActionAllowed(transferIdentity(progress))
+                  void action.run()
+                }}
+              >
+                {action.pending && progress.direction !== "deposit" ? "Working…" : action.label}
+              </Button>
+            )}
+          {progress.phase === "attention" && (
+            <Button asChild>
+              <a href="/history" onClick={onMinimize}>
+                Open History
+              </a>
             </Button>
           )}
-          {dismissible && <Button onClick={onDismiss}>Close</Button>}
+          {dismissible && <Button onClick={closeProgress}>Close</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

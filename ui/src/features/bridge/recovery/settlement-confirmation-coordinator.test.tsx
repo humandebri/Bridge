@@ -1,3 +1,8 @@
+vi.mock("wagmi", () => ({ useChainId: () => 8453 }))
+vi.mock("@/features/status/use-status", () => ({
+  useRuntimeValidation: () => ({ data: undefined, refetch: vi.fn() }),
+  useRuntimeHeartbeat: () => ({ refetch: vi.fn() }),
+}))
 import { cleanup, render, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -29,7 +34,7 @@ vi.mock("@/lib/transaction-recovery", () => ({ withdrawalReceiptDetails: async (
 vi.mock("@/features/bridge/bridge-progress-provider", () => ({
   useBridgeProgress: () => ({
     progress: mocks.progress,
-    update: mocks.update,
+    update: updateWithoutSource,
     setAction: mocks.setAction,
     completeWithdrawal: mocks.completeWithdrawalProgress,
   }),
@@ -215,3 +220,10 @@ describe("withdrawal interruption recovery", () => {
     )
   })
 })
+
+function updateWithoutSource(
+  id: string,
+  { observationSource: _source, ...patch }: Record<string, unknown>,
+) {
+  mocks.update(id, patch)
+}

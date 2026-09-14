@@ -1,3 +1,7 @@
+vi.mock("./use-deposit-refund", () => ({
+  useDepositRefund: () => ({ request: vi.fn(), pending: false }),
+  depositRefundProgress: () => ({ phase: "attention" }),
+}))
 import { act, cleanup, render, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -25,7 +29,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/features/bridge/bridge-progress-provider", () => ({
   useBridgeProgress: () => ({
     progress: mocks.progress,
-    update: mocks.update,
+    update: updateWithoutSource,
     setAction: mocks.setAction,
   }),
 }))
@@ -60,6 +64,9 @@ describe("DepositProgressCoordinator", () => {
     await waitFor(() =>
       expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
         phase: "complete",
+        outcome: "minted",
+        recordingPending: false,
+        observationError: undefined,
         completionMessage: "1.5 KINIC was minted on Base.",
       }),
     )
@@ -91,7 +98,9 @@ describe("DepositProgressCoordinator", () => {
     const first = render(<DepositProgressCoordinator />)
 
     await waitFor(() => expect(mocks.getDeposit).toHaveBeenCalledOnce())
-    expect(mocks.update).not.toHaveBeenCalled()
+    expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
+      observationError: "IC status could not be refreshed. Retrying.",
+    })
     expect(mocks.mintAuthorizationAction).not.toHaveBeenCalled()
 
     first.unmount()
@@ -229,12 +238,44 @@ describe("DepositProgressCoordinator", () => {
     mocks.progress.phase = "attention"
     mocks.progress.attentionPhase = "awaiting-base-mint"
 
+    mocks.getDeposit.mockResolvedValue([
+      {
+        state: { AuthorizationAvailable: null },
+        automatic_progress: [],
+        last_settlement_stop_reason: [],
+      },
+    ])
     render(<DepositProgressCoordinator />)
 
-    await act(async () => {})
-    expect(mocks.getDeposit).not.toHaveBeenCalled()
+    await waitFor(() => expect(mocks.mintAuthorizationAction).toHaveBeenCalled())
+    expect(mocks.getDeposit).toHaveBeenCalledOnce()
     expect(mocks.update).not.toHaveBeenCalled()
-    expect(mocks.mintAuthorizationAction).not.toHaveBeenCalled()
+  })
+
+  it("does not reset wallet progress when IC still reports an available authorization", async () => {
+    mocks.progress.phase = "awaiting-base-mint"
+    mocks.getDeposit.mockResolvedValue([
+      {
+        state: { AuthorizationAvailable: null },
+        automatic_progress: [],
+        last_settlement_stop_reason: [],
+      },
+    ])
+    render(<DepositProgressCoordinator />)
+    await waitFor(() => expect(mocks.mintAuthorizationAction).toHaveBeenCalled())
+    expect(mocks.update).not.toHaveBeenCalled()
+    const props = mocks.mintAuthorizationAction.mock.calls.at(-1)?.[0] as {
+      onProgress: (event: unknown) => void
+    }
+    act(() => props.onProgress({ phase: "attention", message: "Submission result unknown." }))
+    expect(mocks.update).toHaveBeenLastCalledWith(
+      "deposit:1",
+      expect.objectContaining({
+        phase: "attention",
+        attentionPhase: "awaiting-base-mint",
+        attentionMessage: "Submission result unknown.",
+      }),
+    )
   })
 
   it("continues_polling_canonical_authorization_attention_until_the_deposit_is_minted", async () => {
@@ -246,8 +287,18 @@ describe("DepositProgressCoordinator", () => {
     await waitFor(() =>
       expect(mocks.update).toHaveBeenCalledWith("deposit:1", {
         phase: "complete",
+        outcome: "minted",
+        recordingPending: false,
+        observationError: undefined,
         completionMessage: "1.5 KINIC was minted on Base.",
       }),
     )
   })
 })
+
+function updateWithoutSource(
+  id: string,
+  { observationSource: _source, ...patch }: Record<string, unknown>,
+) {
+  mocks.update(id, patch)
+}

@@ -9,12 +9,19 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { deploymentProfile } from "@/config/profile"
 import type * as RuntimeValidationModule from "@/lib/runtime-validation"
-import { useCurrentBaseQuote, useRuntimeHeartbeat, useRuntimeValidation } from "./use-status"
+import {
+  useCurrentBaseQuote,
+  useFinalizedBaseClock,
+  useLatestBaseClock,
+  useRuntimeHeartbeat,
+  useRuntimeValidation,
+} from "./use-status"
 
 const mocks = vi.hoisted(() => ({
   validateRuntime: vi.fn(),
   validateRuntimeHeartbeat: vi.fn(),
   readContract: vi.fn(),
+  readBaseBlock: vi.fn(),
 }))
 
 vi.mock("@/lib/runtime-validation", async (importOriginal) => {
@@ -30,6 +37,8 @@ vi.mock("@/lib/evm/client", () => ({
   basePublicClient: { readContract: mocks.readContract },
 }))
 
+vi.mock("@/lib/base-transaction-observation", () => ({ readBaseBlock: mocks.readBaseBlock }))
+
 function wrapper() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } })
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -42,9 +51,13 @@ function wrapper() {
 }
 
 describe("automatic status queries", () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    focusManager.setFocused(true)
+  })
 
   beforeEach(() => {
+    mocks.readBaseBlock.mockReset().mockResolvedValue({ timestamp: 100n })
     focusManager.setFocused(true)
     onlineManager.setOnline(true)
     mocks.validateRuntime
@@ -254,6 +267,7 @@ describe("automatic status queries", () => {
     await waitFor(() => expect(view.result.current.isSuccess).toBe(true))
     expect(mocks.validateRuntimeHeartbeat).toHaveBeenCalledOnce()
 
+    mocks.readBaseBlock.mockReset().mockResolvedValue({ timestamp: 100n })
     focusManager.setFocused(true)
     onlineManager.setOnline(false)
     await act(async () => new Promise((resolve) => setTimeout(resolve, 30)))
@@ -268,6 +282,21 @@ describe("automatic status queries", () => {
     renderHook(() => useRuntimeValidation(undefined), { wrapper: wrapper() })
     await act(async () => Promise.resolve())
     expect(mocks.validateRuntime).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["quote", useCurrentBaseQuote],
+    ["finalized clock", useFinalizedBaseClock],
+    ["latest clock", useLatestBaseClock],
+  ] as const)("continues polling the %s while unfocused", async (_name, useObservation) => {
+    focusManager.setFocused(false)
+    const read = _name === "quote" ? mocks.readContract : mocks.readBaseBlock
+    const view = renderHook(() => useObservation({ enabled: true, refetchInterval: 20 }), {
+      wrapper: wrapper(),
+    })
+    await waitFor(() => expect(read.mock.calls.length).toBeGreaterThanOrEqual(2))
+    expect(view.result.current.isSuccess).toBe(true)
+    view.unmount()
   })
 
   it("loads the Base quote when runtime readiness enables it", async () => {

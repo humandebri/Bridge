@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { DepositView } from "@/generated/bridge.did"
 import {
-  activityAutoRefreshEnabled,
   mergeActivityItems,
   olderActivitySources,
   visibleActivityItems,
@@ -10,12 +9,6 @@ import {
 } from "./activity-history"
 
 describe("activity history", () => {
-  it("keeps polling while a connected activity source is visible", () => {
-    expect(activityAutoRefreshEnabled(true, true)).toBe(true)
-    expect(activityAutoRefreshEnabled(true, false)).toBe(false)
-    expect(activityAutoRefreshEnabled(false, true)).toBe(false)
-  })
-
   it("merges both directions newest-first with a stable tie break", () => {
     const items = mergeActivityItems(
       [deposit(1, 20n), deposit(2, 10n)],

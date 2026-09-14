@@ -1,7 +1,11 @@
+import { continueTransferPayout } from "@/lib/transfer-operations"
+import { useRuntimeValidation, useRuntimeHeartbeat } from "@/features/status/use-status"
+import { refetchRuntimeAttestedWriteReady } from "@/lib/runtime-validation"
+import { useChainId } from "wagmi"
 import { readBaseReceipt, readBaseBlock } from "@/lib/base-transaction-observation"
 import { TransactionEvidenceMismatch, withdrawalReceiptDetails } from "@/lib/transaction-recovery"
 import { useEffect, useRef } from "react"
-import { hexToBytes } from "viem"
+import { hexToBytes, toHex } from "viem"
 import { toast } from "sonner"
 import { deploymentProfile } from "@/config/profile"
 import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
@@ -35,6 +39,16 @@ type PendingWithdrawal = Extract<PendingConfirmation, { kind: "withdrawal" }>
  * inclusion, finality, IC notification, and Ledger payout remain distinct facts.
  */
 export function SettlementConfirmationCoordinator() {
+  const chainId = useChainId()
+  const runtime = useRuntimeValidation(chainId, { enabled: false })
+  const heartbeat = useRuntimeHeartbeat(chainId, runtime.data, { enabled: false })
+  const verifyRuntime = useRef(() =>
+    refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch),
+  )
+  useEffect(() => {
+    verifyRuntime.current = () =>
+      refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
+  }, [runtime.data, runtime.refetch, heartbeat.refetch])
   const bridgeProgress = useBridgeProgress()
   const progressRef = useRef(bridgeProgress.progress)
   const runningRef = useRef(new Set<string>())
@@ -59,8 +73,9 @@ export function SettlementConfirmationCoordinator() {
       if (
         current?.direction !== "withdraw" ||
         current.transactionHash?.toLowerCase() !== entry.transactionHash.toLowerCase() ||
+        (current.withdrawal?.owner ?? current.destination) !== entry.owner ||
         current.phase === "complete" ||
-        current.phase === "attention"
+        (current.phase === "attention" && !current.observationError)
       )
         return undefined
       return current
@@ -68,7 +83,8 @@ export function SettlementConfirmationCoordinator() {
     const matchingProgressFor = (entry: PendingWithdrawal) => {
       const current = progressRef.current
       return current?.direction === "withdraw" &&
-        current.transactionHash?.toLowerCase() === entry.transactionHash.toLowerCase()
+        current.transactionHash?.toLowerCase() === entry.transactionHash.toLowerCase() &&
+        (current.withdrawal?.owner ?? current.destination) === entry.owner
         ? current
         : undefined
     }
@@ -86,8 +102,138 @@ export function SettlementConfirmationCoordinator() {
       )
     }
 
+    const displayedWithdrawalIsCurrent = (
+      progress: NonNullable<typeof bridgeProgress.progress>,
+    ) => {
+      const hash = progress.transactionHash!
+      const owner = progress.withdrawal?.owner ?? progress.destination
+      const current = progressRef.current
+      return (
+        isCurrent() &&
+        current?.id === progress.id &&
+        current.direction === "withdraw" &&
+        current.transactionHash?.toLowerCase() === hash.toLowerCase() &&
+        (current.withdrawal?.owner ?? current.destination) === owner &&
+        current.destination === progress.destination &&
+        current.transfer?.generation === progress.transfer?.generation &&
+        current.withdrawal?.withdrawalId === progress.withdrawal?.withdrawalId &&
+        (current.phase !== "complete" || progress.phase === "complete") &&
+        current.transfer?.outcome === progress.transfer?.outcome
+      )
+    }
+
+    // The shared queue can be removed by a different tab before this tab sees Paid.
+    // Reconcile the displayed transfer without recreating work or sending updates to IC.
+    const observeUnqueuedWithdrawal = async (
+      progress: NonNullable<typeof bridgeProgress.progress>,
+    ) => {
+      const hash = progress.transactionHash!
+      const owner = progress.withdrawal?.owner ?? progress.destination
+      const stillCurrent = () => displayedWithdrawalIsCurrent(progress)
+      let observationSource: "base" | "ic" = progress.withdrawal?.withdrawalId ? "ic" : "base"
+      try {
+        let withdrawalId = progress.withdrawal?.withdrawalId
+        if (!withdrawalId) {
+          const receipt = await readBaseReceipt(hash)
+          if (!stillCurrent() || receipt.blockHash === null) return
+          const finalized = await readBaseBlock("finalized")
+          if (!stillCurrent()) return
+          if (
+            finalized.number === null ||
+            finalized.hash === null ||
+            finalized.number < receipt.blockNumber
+          ) {
+            update(progress.id, {
+              phase: "base-withdrawal-finalizing",
+              observationSource,
+              observationError: undefined,
+            })
+            return
+          }
+          const canonical = await finalizedCheckpointMatches({
+            finalizedBlock: finalized.number,
+            finalizedBlockHash: finalized.hash,
+            checkpointBlock: receipt.blockNumber,
+            checkpointBlockHash: receipt.blockHash,
+            fetchCheckpointBlockHash: async (number) => (await readBaseBlock(number)).hash,
+          })
+          if (!stillCurrent()) return
+          const decision = decideWithdrawalFinalization(
+            receipt.status,
+            receipt.blockNumber,
+            finalized.number,
+            canonical,
+          )
+          if (decision === "retry") {
+            update(progress.id, {
+              phase: "base-withdrawal-submitted",
+              baseTransactionOutcome: undefined,
+              receiptBlockNumber: undefined,
+            })
+            return
+          }
+          if (decision === "discard-reverted") {
+            const agreed = await hasIndependentFinalizedRevertQuorum(hash)
+            if (stillCurrent() && agreed)
+              update(progress.id, {
+                phase: "attention",
+                outcome: "reverted",
+                observationSource,
+                observationError: undefined,
+                attentionMessage:
+                  "The finalized Base withdrawal transaction reverted. No withdrawal was recorded on the IC; you can close this transfer and try again.",
+              })
+            return
+          }
+          const details = await withdrawalReceiptDetails(hash, owner)
+          if (!stillCurrent()) return
+          withdrawalId = toHex(details.id, { size: 32 })
+          update(progress.id, { observationSource: "base", observationError: undefined })
+        }
+        observationSource = "ic"
+        const actor = await createBridgeActor(
+          deploymentProfile.icHost,
+          deploymentProfile.bridgeCanisterId as string,
+        )
+        if (!stillCurrent()) return
+        const [record] = await actor.get_withdrawal(hexToBytes(withdrawalId))
+        if (!stillCurrent()) return
+        if (!record) throw new Error("The IC withdrawal record is not available yet. Retrying.")
+        if (bytesHex(record.withdrawal_id).toLowerCase() !== withdrawalId.toLowerCase())
+          throw new TransactionEvidenceMismatch("The IC record does not match this withdrawal.")
+        if ("Paid" in record.state) {
+          update(progress.id, { observationSource: "ic", observationError: undefined })
+          completeWithdrawal({ transactionHash: hash, owner, withdrawalId })
+        } else {
+          update(progress.id, {
+            phase: "ReconciliationHold" in record.state ? "attention" : "ledger-payout",
+            observationSource,
+            observationError: undefined,
+            withdrawal: { owner, withdrawalId },
+            attentionMessage:
+              "ReconciliationHold" in record.state ? "Payout needs reconciliation." : undefined,
+          })
+        }
+      } catch (error) {
+        if (!stillCurrent()) return
+        if (error instanceof TransactionEvidenceMismatch)
+          update(progress.id, {
+            phase: "attention",
+            issue: "conflict",
+            observationSource,
+            observationError: undefined,
+            attentionMessage: error.message,
+          })
+        else
+          update(progress.id, {
+            observationSource,
+            observationError: "Transfer status could not be refreshed. Retrying.",
+          })
+      }
+    }
+
     const tick = () => {
-      if (!isCurrent() || document.visibilityState !== "visible") return
+      if (!isCurrent()) return
       const latest = progressRef.current
       const entries = readPendingConfirmations().filter((entry): entry is PendingWithdrawal => {
         if (entry.kind !== "withdrawal") return false
@@ -102,6 +248,21 @@ export function SettlementConfirmationCoordinator() {
           return false
         return true
       })
+      const displayedHash = latest?.transactionHash?.toLowerCase()
+      if (
+        latest?.direction === "withdraw" &&
+        displayedHash &&
+        latest.phase !== "complete" &&
+        !latest.transfer?.outcome &&
+        !entries.some((entry) => entry.transactionHash.toLowerCase() === displayedHash) &&
+        !runningRef.current.has(displayedHash)
+      ) {
+        runningRef.current.add(displayedHash)
+        void observeUnqueuedWithdrawal(latest).finally(() => {
+          runningRef.current.delete(displayedHash)
+          if (!isCurrent()) window.queueMicrotask(() => tickRef.current())
+        })
+      }
       for (const entry of entries) {
         const transactionKey = entry.transactionHash.toLowerCase()
         let resumeNotification = false
@@ -127,10 +288,16 @@ export function SettlementConfirmationCoordinator() {
             )
             continue
           }
-          if (matchingProgressFor(entry)?.phase === "attention" && !resumeNotification) continue
+          if (
+            matchingProgressFor(entry)?.phase === "attention" &&
+            !matchingProgressFor(entry)?.observationError &&
+            !resumeNotification
+          )
+            continue
         }
         if (runningRef.current.has(transactionKey)) continue
         runningRef.current.add(transactionKey)
+        const observedProgress = matchingProgressFor(entry)
         if (resumeNotification)
           notificationRetryAfterRef.current.set(transactionKey, Date.now() + 120_000)
         void observeWithdrawal(
@@ -138,7 +305,13 @@ export function SettlementConfirmationCoordinator() {
           (resumeNotification ? recoverableProgressFor(entry) : activeProgressFor(entry))?.id,
           resumeNotification ? "manual" : "automatic",
         )
-          .catch(() => undefined)
+          .catch(() => {
+            if (observedProgress && displayedWithdrawalIsCurrent(observedProgress))
+              update(observedProgress.id, {
+                observationSource: entry.notification.status === "notified" ? "ic" : "base",
+                observationError: "Transfer status could not be refreshed. Retrying.",
+              })
+          })
           .finally(() => {
             runningRef.current.delete(transactionKey)
             if (!isCurrent()) window.queueMicrotask(() => tickRef.current())
@@ -159,25 +332,72 @@ export function SettlementConfirmationCoordinator() {
         )
         const record = await actor.get_withdrawal(hexToBytes(entry.notification.withdrawalId))
         if (!isCurrent() || !record[0]) return
+        const presentationCurrent = progress && displayedWithdrawalIsCurrent(progress)
         if ("Paid" in record[0].state) {
-          completeWithdrawal({
-            transactionHash: entry.transactionHash,
-            owner: entry.owner,
-            withdrawalId: entry.notification.withdrawalId,
-          })
+          if (presentationCurrent)
+            completeWithdrawal({
+              transactionHash: entry.transactionHash,
+              owner: entry.owner,
+              withdrawalId: entry.notification.withdrawalId,
+            })
           await removePendingConfirmation(entry)
         } else if ("ReconciliationHold" in record[0].state) {
-          if (progress)
+          if (presentationCurrent)
             update(progress.id, {
               phase: "attention",
+              observationSource: "ic",
+              observationError: undefined,
               withdrawal: { owner: entry.owner, withdrawalId: entry.notification.withdrawalId },
-              attentionMessage:
-                "The withdrawal is recorded but needs reconciliation. Open History to review the available action.",
+              attentionMessage: "Payout needs reconciliation.",
             })
-        } else if (progress) {
+        } else if (presentationCurrent) {
           update(progress.id, {
             phase: "ledger-payout",
+            observationError: undefined,
             withdrawal: { owner: entry.owner, withdrawalId: entry.notification.withdrawalId },
+          })
+        }
+        if (presentationCurrent && !("Paid" in record[0].state)) {
+          const observedRecord = record[0]
+          setAction(progress.id, {
+            label: "Continue payout",
+            run: async () => {
+              setAction(progress.id, { label: "Continuing…", pending: true, run: () => {} })
+              try {
+                const result = await continueTransferPayout(
+                  observedRecord,
+                  () => verifyRuntime.current(),
+                  `withdraw:${entry.transactionHash.toLowerCase()}`,
+                )
+                if (!isCurrent()) return
+                if (
+                  "Complete" in result &&
+                  "Withdrawal" in result.Complete.state &&
+                  "Paid" in result.Complete.state.Withdrawal
+                ) {
+                  completeWithdrawal({
+                    transactionHash: entry.transactionHash,
+                    owner: entry.owner,
+                    withdrawalId:
+                      entry.notification.status === "notified"
+                        ? entry.notification.withdrawalId
+                        : undefined,
+                  })
+                  await removePendingConfirmation(entry)
+                } else update(progress.id, { phase: "ledger-payout", observationError: undefined })
+              } catch (error) {
+                if (isCurrent())
+                  update(progress.id, {
+                    observationError:
+                      error instanceof Error ? error.message : "Payout unavailable. Try again.",
+                  })
+              } finally {
+                if (isCurrent()) {
+                  setAction(progress.id, undefined)
+                  tickRef.current()
+                }
+              }
+            },
           })
         }
         return
@@ -220,6 +440,7 @@ export function SettlementConfirmationCoordinator() {
       if (latest)
         update(latest.id, {
           phase: "base-withdrawal-included",
+          observationError: undefined,
           baseTransactionOutcome: receipt.status,
           receiptBlockNumber: receipt.blockNumber.toString(),
         })
@@ -276,6 +497,7 @@ export function SettlementConfirmationCoordinator() {
         if (latest)
           update(latest.id, {
             phase: "attention",
+            outcome: "reverted",
             receiptBlockNumber: receipt.blockNumber.toString(),
             attentionMessage:
               "The finalized Base withdrawal transaction reverted. No withdrawal was recorded on the IC; you can close this transfer and try again.",
