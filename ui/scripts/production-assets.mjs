@@ -221,7 +221,9 @@ function verifyProductionUiLive(profileFile) {
     "cargo",
     [
       ...cargoArgs,
-      handover ? "verify-production-checkpoint-ui-sns-live" : "verify-production-checkpoint-ui-live",
+      handover
+        ? "verify-production-checkpoint-ui-sns-live"
+        : "verify-production-checkpoint-ui-live",
       checkpointEvidence,
       uiRpcConfig,
       profileFile,
