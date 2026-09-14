@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "purpose": "Read-only starting observation; not deployment or proposal authorization",
+  "files": [
+    {
+      "path": "management.json",
+      "sha256": "c0f70a7aa2c23df64adc30da897043e42fadf338c3bad64e8e70b73da074fe95"
+    },
+    {
+      "path": "functions.json",
+      "sha256": "faedb456ccd15d29f4e966c3690f2e75d9a0eced667c03e31c048ac4468ce465"
+    },
+    {
+      "path": "get_activation_status.json",
+      "sha256": "53fe04288ea3618c730cfdb0eae86dfada55272aab6b6e15fa498a8c0e410e70"
+    },
+    {
+      "path": "get_bridge_status.json",
+      "sha256": "67edc92ce8d0d04715e6ab275463a2841932d7741d9edd0cc27f6f8976337bb5"
+    },
+    {
+      "path": "get_operational_config.json",
+      "sha256": "e726be1823b75762f389d484b32610669b404e567616798eeecb77123150ca08"
+    },
+    {
+      "path": "get_production_lifecycle.json",
+      "sha256": "ef412c8459fd9bd703adca4467b770458a4703e451396d5ac1b0156a7e41ea70"
+    },
+    {
+      "path": "get_runtime_binding.json",
+      "sha256": "2b731b91a34891375d075b6f4c71ea5db66c44feeac47bae3a095f8585b85c32"
+    },
+    {
+      "path": "sns-canisters.json",
+      "sha256": "26ef3ba6a87c7879f16993cf88d1b1823513a6a5c88986909b2514447b6bffbf"
+    }
+  ]
+}

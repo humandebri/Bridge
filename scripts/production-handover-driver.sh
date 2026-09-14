@@ -58,6 +58,27 @@ BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$TMP/seal-receipt.json"
 BRIDGE_CONTROLLER_SCHEDULE_RECEIPT="$TMP/schedule-receipt.json"
 BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$TMP/execute-receipt.json"
 BRIDGE_HANDOVER_VALIDATOR_BIN="$TMP/bridge-profile"
+if [[ -n "${BRIDGE_CHECKPOINT_EVIDENCE:-}" ]]; then
+  : "${BRIDGE_DAO_SCHEDULE_RECEIPT:?checkpoint handover requires the DAO schedule receipt}"
+  : "${BRIDGE_DAO_EXECUTE_RECEIPT:?checkpoint handover requires the DAO execute receipt}"
+  production_freeze_receipt "$BRIDGE_CHECKPOINT_EVIDENCE" "$TMP/approved-checkpoint.json" "approved checkpoint evidence"
+  export BRIDGE_CHECKPOINT_EVIDENCE="$TMP/approved-checkpoint.json"
+fi
+if [[ -n "${BRIDGE_DAO_SCHEDULE_RECEIPT:-}" || -n "${BRIDGE_DAO_EXECUTE_RECEIPT:-}" ]]; then
+  : "${BRIDGE_DAO_SCHEDULE_RECEIPT:?DAO reactivation requires the schedule receipt}"
+  : "${BRIDGE_DAO_EXECUTE_RECEIPT:?DAO reactivation requires the execute receipt}"
+  production_freeze_receipt "$BRIDGE_DAO_SCHEDULE_RECEIPT" "$TMP/dao-schedule.json" "DAO schedule receipt"
+  production_freeze_receipt "$BRIDGE_DAO_EXECUTE_RECEIPT" "$TMP/dao-execute.json" "DAO execute receipt"
+  export BRIDGE_DAO_SCHEDULE_RECEIPT="$TMP/dao-schedule.json"
+  export BRIDGE_DAO_EXECUTE_RECEIPT="$TMP/dao-execute.json"
+fi
+
+
+capture_handover_query() {
+  local method="$1" output="$2"
+  icp canister call bridge-canister "$method" '()' -e production --query --identity "$BRIDGE_ICP_IDENTITY" --json >"$output.raw"
+  "$BRIDGE_HANDOVER_VALIDATOR_BIN" decode-handover-query "$method" "$output.raw" >"$output"
+}
 
 if [[ "$BRIDGE_HANDOVER_MODE" == submit ]]; then
 production_validate_gate handover "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" "" \
@@ -68,6 +89,9 @@ read -r CANISTER ROOT CYCLES_FLOOR EXPECTED_WASM < <(python3 -c '
 import json,sys
 p=json.load(open(sys.argv[1])); print(p["bridge_canister_id"],p["root_canister_id"],p["parameters"]["cycles_floor"],p["bridge_canister_wasm_sha256"])
 ' "$PROFILE")
+if [[ -n "${BRIDGE_CHECKPOINT_EVIDENCE:-}" ]]; then
+  EXPECTED_WASM="$("$BRIDGE_HANDOVER_VALIDATOR_BIN" validate-production-checkpoint-evidence "$BRIDGE_CHECKPOINT_EVIDENCE" | python3 -c 'import json,sys;print(json.load(sys.stdin)["module_sha256"])')"
+fi
 [[ "$CANISTER" =~ ^[a-z0-9-]+$ && "$ROOT" == 7jkta-eyaaa-aaaaq-aaarq-cai ]] || {
   echo "handover profile does not bind a production Bridge and the fixed KINIC SNS Root" >&2; exit 1;
 }
@@ -75,12 +99,12 @@ p=json.load(open(sys.argv[1])); print(p["bridge_canister_id"],p["root_canister_i
   echo "production ICP environment does not map the reviewed Bridge Canister" >&2; exit 1;
 }
 
-icp canister call bridge-canister get_bridge_status '()' -e production --json >"$TMP/bridge-status.json"
-icp canister call bridge-canister get_production_lifecycle '()' -e production --json >"$TMP/lifecycle.json"
-icp canister call bridge-canister get_runtime_binding '()' -e production --json >"$TMP/runtime-binding.json"
-icp canister call bridge-canister storage_integrity_check '()' -e production --json >"$TMP/storage-integrity.json"
-icp canister call bridge-canister get_activation_status '()' -e production --json >"$TMP/activation-status.json"
-icp canister call bridge-canister get_activation_attestation '()' -e production --json >"$TMP/activation-attestation.json"
+capture_handover_query get_bridge_status "$TMP/bridge-status.json"
+capture_handover_query get_production_lifecycle "$TMP/lifecycle.json"
+capture_handover_query get_runtime_binding "$TMP/runtime-binding.json"
+capture_handover_query storage_integrity_check "$TMP/storage-integrity.json"
+capture_handover_query get_activation_status "$TMP/activation-status.json"
+capture_handover_query get_activation_attestation "$TMP/activation-attestation.json"
 icp canister status bridge-canister -e production --identity "$BRIDGE_ICP_IDENTITY" --json >"$TMP/canister-status.json"
 EXECUTING_PRINCIPAL="$(icp identity principal --identity "$BRIDGE_ICP_IDENTITY")"
 python3 - "$TMP/bridge-status.json" "$TMP/canister-status.json" "$EXECUTING_PRINCIPAL" "$CYCLES_FLOOR" "$EXPECTED_WASM" "$TMP/lifecycle.json" "$TMP/runtime-binding.json" "$TMP/storage-integrity.json" "$TMP/activation-status.json" "$TMP/activation-attestation.json" "$BRIDGE_RELEASE_BUNDLE/release-manifest.json" "$BRIDGE_GATE_B_MANIFEST_SHA256" "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT" >"$TMP/preflight.json" <<'PY'
@@ -142,7 +166,7 @@ PY
 # step. This is the snapshot that authorizes the irreversible settings update.
 icp canister status bridge-canister -e production --identity "$BRIDGE_ICP_IDENTITY" --json >"$TMP/pre-send-management-status.json"
 for method in get_bridge_status get_production_lifecycle get_runtime_binding storage_integrity_check get_activation_status get_activation_attestation; do
-  icp canister call bridge-canister "$method" '()' -e production --json >"$TMP/pre-send-$method.json"
+  capture_handover_query "$method" "$TMP/pre-send-$method.json"
 done
 python3 - "$TMP/preflight.json" "$TMP/pre-send-management-status.json" "$EXECUTING_PRINCIPAL" "$EXPECTED_WASM" "$CYCLES_FLOOR" "$TMP/pre-send-get_bridge_status.json" "$TMP/pre-send-get_production_lifecycle.json" "$TMP/pre-send-get_runtime_binding.json" "$TMP/pre-send-storage_integrity_check.json" "$TMP/pre-send-get_activation_status.json" "$TMP/pre-send-get_activation_attestation.json" >"$TMP/preflight-final.json" <<'PY'
 import hashlib,json,sys
@@ -184,7 +208,7 @@ def scalar(item,key):
  return found[0]
 if scalar(bridge,'deposits_paused') is not False or scalar(bridge,'sufficient') is not True:
  raise SystemExit('pre-send IC deposit admission or reserve is invalid')
-if lifecycle != {'Ok':{'Activated':None}}: raise SystemExit('pre-send lifecycle is not Activated')
+if lifecycle.get('decoded') != {'Ok':'Activated'}: raise SystemExit('pre-send lifecycle is not Activated')
 if scalar(integrity,'Ok') != 'ok': raise SystemExit('pre-send storage integrity is not ok')
 if scalar(activation,'deposits_paused') is not False: raise SystemExit('pre-send activation status is paused')
 if scalar(attestation,'deposits_paused') is not False or scalar(attestation,'withdrawals_paused') is not False:
@@ -335,6 +359,9 @@ else
 import json,sys
 p=json.load(open(sys.argv[1])); print(p["bridge_canister_id"],p["root_canister_id"],p["bridge_canister_wasm_sha256"])
 ' "$PROFILE")
+  if [[ -n "${BRIDGE_CHECKPOINT_EVIDENCE:-}" ]]; then
+    EXPECTED_WASM="$("$BRIDGE_HANDOVER_VALIDATOR_BIN" validate-production-checkpoint-evidence "$BRIDGE_CHECKPOINT_EVIDENCE" | python3 -c 'import json,sys;print(json.load(sys.stdin)["module_sha256"])')"
+  fi
   [[ "$(icp canister status bridge-canister -e production -i --identity "$BRIDGE_ICP_IDENTITY")" == "$CANISTER" ]] || {
     echo "production ICP environment does not map the reviewed Bridge Canister" >&2; exit 1;
   }
@@ -375,7 +402,9 @@ if ! icp canister status bridge-canister -e production --public --json >"$TMP/po
   exit 1
 fi
 for method in get_bridge_status get_production_lifecycle get_runtime_binding storage_integrity_check get_activation_status get_activation_attestation; do
-  if ! icp canister call bridge-canister "$method" '()' -e production --json >"$TMP/post-$method.json"; then
+  query_method="$method"
+  if [[ "$method" == storage_integrity_check ]]; then query_method=get_release_storage_integrity; fi
+  if ! capture_handover_query "$query_method" "$TMP/post-$method.json"; then
     echo "INCIDENT: controller handover succeeded but the post-handover state snapshot is incomplete; submitted checkpoint retained" >&2
     exit 1
   fi
@@ -411,7 +440,7 @@ def scalar(item,key):
  return found[0]
 if scalar(bridge,'deposits_paused') is not False or scalar(bridge,'sufficient') is not True:
  raise SystemExit('INCIDENT: IC deposit admission or reserve changed during handover')
-if lifecycle != {'Ok':{'Activated':None}}:
+if lifecycle.get('decoded') != {'Ok':'Activated'}:
  raise SystemExit('INCIDENT: production lifecycle is not Activated after handover')
 if scalar(integrity,'Ok') != 'ok':
  raise SystemExit('INCIDENT: storage integrity is not ok after handover')

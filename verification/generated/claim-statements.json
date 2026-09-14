@@ -10,9 +10,9 @@
       "source_declarations": 1
     },
     "verification/lean/BridgeSpec/ClaimContracts.lean": {
-      "sha256": "dcf249993e8e20af7fc1645817e6b1f7c099b8276ae630e83898912e494b176a",
-      "lines": 624,
-      "source_declarations": 105
+      "sha256": "3d8f15747089cba5ba9eda5a60b7492225698d5f45ad94196ce7eceb102d1c12",
+      "lines": 633,
+      "source_declarations": 106
     },
     "verification/lean/BridgeSpec/Claims.lean": {
       "sha256": "f74ffe05f86fbdfa4e94095bdc2dc64a1dd3ed94c947a4b800af6433dada3430",
@@ -331,12 +331,12 @@
       "id": "confirmed_activation_evidence_binding",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding",
-      "premises": "match個数とgeneration・signedAtを入力",
-      "conclusion": "単一matchかつmetadataの厳密一致",
-      "boundary": "履歴探索・署名・永続化の真正性は別証拠",
+      "premises": "activationのmatch個数・generation・signedAt、upgrade完了hookのcallerと時刻を入力",
+      "conclusion": "activationは単一matchとmetadata厳密一致。SNS更新はRootの完了hookが採択・移譲後かつ未来でない",
+      "boundary": "IC callbackとcaller・時刻の真正性、同時upgradeがないこと、SNSとIC実行完了は外部仮定",
       "evidence": "claims.tsv:confirmed_activation_evidence_binding",
       "external": "claims.tsv:confirmed_activation_evidence_binding",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "同一Wasmのproposal受理とpost_upgrade完了を区別する判定を追加。実SNSの失敗と完了を別途検証する。"
     },
     {
       "kind": "claim",
@@ -878,7 +878,7 @@
       "name": "BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "単一matchかつmetadataの厳密一致"
+      "meaning": "activationの単一match・metadata厳密一致と、Rootによる採択・移譲後のupgrade完了hook"
     },
     {
       "name": "BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy",
@@ -1432,7 +1432,7 @@
       "type": "Prop"
     },
     {
-      "definition": "And\n  (∀ (foundMatch foundAdditionalMatch : Bool),\n    Iff\n      (Eq.{1} (BridgeSpec.ClaimContracts.confirmedActivationAttemptIsUnique foundMatch foundAdditionalMatch) Bool.true)\n      (And (Eq.{1} foundMatch Bool.true) (Eq.{1} foundAdditionalMatch Bool.false)))\n  (∀ (confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt : Nat),\n    Iff\n      (Eq.{1}\n        (BridgeSpec.ClaimContracts.confirmedActivationMetadataMatches confirmedGeneration confirmedSignedAt\n          artifactGeneration artifactSignedAt)\n        Bool.true)\n      (And (Eq.{1} confirmedGeneration artifactGeneration) (Eq.{1} confirmedSignedAt artifactSignedAt)))",
+      "definition": "And\n  (∀ (foundMatch foundAdditionalMatch : Bool),\n    Iff\n      (Eq.{1} (BridgeSpec.ClaimContracts.confirmedActivationAttemptIsUnique foundMatch foundAdditionalMatch) Bool.true)\n      (And (Eq.{1} foundMatch Bool.true) (Eq.{1} foundAdditionalMatch Bool.false)))\n  (And\n    (∀ (confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt : Nat),\n      Iff\n        (Eq.{1}\n          (BridgeSpec.ClaimContracts.confirmedActivationMetadataMatches confirmedGeneration confirmedSignedAt\n            artifactGeneration artifactSignedAt)\n          Bool.true)\n        (And (Eq.{1} confirmedGeneration artifactGeneration) (Eq.{1} confirmedSignedAt artifactSignedAt)))\n    (∀ (root : Bool) (completed decided handover now : Nat),\n      Iff (Eq.{1} (BridgeSpec.ClaimContracts.snsUpgradeCompletionAllowed root completed decided handover now) Bool.true)\n        (And (Eq.{1} root Bool.true)\n          (And (GT.gt.{0} decided 0)\n            (And (GE.ge.{0} completed decided) (And (GE.ge.{0} completed handover) (LE.le.{0} completed now)))))))",
       "name": "BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding",
       "type": "Prop"
     },

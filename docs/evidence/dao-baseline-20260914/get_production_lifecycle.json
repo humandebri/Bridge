@@ -1,0 +1,21 @@
+{
+  "observed_at": "2026-09-14T01:57:50.280072+00:00",
+  "command": [
+    "icp",
+    "canister",
+    "call",
+    "bridge-canister",
+    "get_production_lifecycle",
+    "()",
+    "-e",
+    "production",
+    "--identity",
+    "production",
+    "--query",
+    "--json"
+  ],
+  "exit_code": 0,
+  "stdout": "{\"response_bytes\":\"4449444c076b02bc8a0101c5fed201026b03cee4a4e3017fb182fc950b7fd0e7c7ac0b7f6b0cf7b0b63303d982e5df0204d1b8edb5030490f39ac4077fd4b4c59a097fba8a96b00a7ff4b895a40b7fa1d6a8eb0b04eff489f80c7fa4eaddb30d7fe99eb2c80f04abefd5e00f056c02a493dbd3047dfbacd8bd097d6c01b380e78f06786c01b8f0e1c204066b099bc2fe4e7f9b8ee88f017fa1daffb7067fe3f5d1c4067f90f39ac4077fafd5ad8f087f9fb5fcfd087fdcdce3de0a7fe38de6c00d7f01000001\",\"response_text\":null,\"response_candid\":\"(variant { 17_724 = variant { 2_998_862_129 } })\"}",
+  "stderr": "WARN could not fetch candid type, serializing arguments with inferred types.\n",
+  "stdout_sha256": "63b19137bd71546bcd266f65f4029e09d4549edbb597fc6d0381bdcbc8cac3fa"
+}

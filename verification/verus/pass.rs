@@ -7,6 +7,18 @@ use vstd::prelude::*;
 mod kernel;
 
 verus! {
+proof fn sns_upgrade_completion_requires_root_and_completed_hook(root: bool, completed: int, decided: int, handover: int, now: int)
+    ensures kernel::sns_upgrade_completion_allowed_spec(root, completed, decided, handover, now)
+        == (root && decided > 0 && completed >= decided && completed >= handover && completed <= now),
+{}
+
+proof fn sns_activation_requires_current_paused_predecessor(
+    activated: bool, paused: bool, predecessor: bool, schedule: bool, pending: bool, last_schedule: bool,
+)
+    ensures kernel::sns_activation_proposal_allowed_spec(activated, paused, predecessor, schedule, pending, last_schedule)
+        == (activated && paused && predecessor && (pending != schedule) && (schedule || last_schedule)),
+{}
+
 proof fn cycles_top_up_requires_authority_low_balance_and_idle(
     balance: int, threshold: int, in_progress: bool, authorized: bool,
 )

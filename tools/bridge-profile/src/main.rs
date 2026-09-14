@@ -1060,6 +1060,9 @@ struct ActivationSubmission {
     bridge_canister_id: String,
     function_id: u64,
     target_method_name: String,
+    validator_canister_id: String,
+    validator_method_name: String,
+    previous_governance_operation_id: u64,
     payload_hex: String,
     payload_sha256: String,
     proposer_principal: String,
@@ -1085,6 +1088,9 @@ struct ActivationReceipt {
     proposal_id: u64,
     function_id: u64,
     target_method_name: String,
+    validator_canister_id: String,
+    validator_method_name: String,
+    previous_governance_operation_id: u64,
     payload_sha256: String,
     executed_at_unix: u64,
     verified_at_unix: u64,
@@ -1351,8 +1357,19 @@ enum SnsProposalAction {
 
 #[derive(CandidType, Deserialize)]
 struct UpgradeSnsControlledCanisterView {
+    mode: Option<i32>,
+    canister_upgrade_arg: Option<Vec<u8>>,
+    canister_upgrade_options: Option<Reserved>,
+    chunked_canister_wasm: Option<ChunkedSnsWasmView>,
     new_canister_wasm: Vec<u8>,
     canister_id: Option<Principal>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct ChunkedSnsWasmView {
+    wasm_module_hash: Vec<u8>,
+    store_canister_id: Option<Principal>,
+    chunk_hashes_list: Vec<Vec<u8>>,
 }
 
 #[derive(CandidType, Deserialize)]
@@ -1382,22 +1399,24 @@ enum FunctionTypeView {
 struct GenericNervousSystemFunctionView {
     target_canister_id: Option<Principal>,
     target_method_name: Option<String>,
+    validator_canister_id: Option<Principal>,
+    validator_method_name: Option<String>,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 struct ActivationOperationStatusView {
     operation_id: Vec<u8>,
     salt: Vec<u8>,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 struct ActivationStatusView {
     deposits_paused: bool,
     pending_timelock_operation: Option<ActivationOperationStatusView>,
     last_confirmed_activation: Option<ActivationConfirmationStatusView>,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 struct ActivationConfirmationStatusView {
     phase: String,
     governance_operation_id: u64,
@@ -1408,7 +1427,7 @@ struct ActivationConfirmationStatusView {
     signed_at_ns: u64,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 enum ActivationStatusResultView {
     Ok(ActivationStatusView),
     Err(Reserved),
@@ -1420,7 +1439,7 @@ enum PendingGovernanceTransactionsView {
     Err(Reserved),
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 struct ActivationAttestationView {
     chain_id: u64,
     finalized_block_number: u64,
@@ -1448,13 +1467,13 @@ struct ActivationAttestationView {
     base_service_fee: u128,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 enum ActivationAttestationResultView {
     Ok(Box<ActivationAttestationView>),
     Err(Reserved),
 }
 
-#[derive(CandidType, Deserialize, Clone, PartialEq, Eq)]
+#[derive(CandidType, Deserialize, Clone, PartialEq, Eq, Serialize)]
 struct RuntimeBindingView {
     base_chain_id: u64,
     bridge_contract: Vec<u8>,
@@ -1511,12 +1530,12 @@ struct OperationalFeeRecipientView {
 
 const OPERATIONAL_CONFIG_BINDING_DOMAIN: &[u8] = b"KINIC_OPERATIONAL_CONFIG_BINDING_V1\0";
 
-#[derive(CandidType, Deserialize, Clone, PartialEq, Eq)]
+#[derive(CandidType, Deserialize, Clone, PartialEq, Eq, Serialize)]
 struct ReserveStatusView {
     sufficient: bool,
 }
 
-#[derive(CandidType, Deserialize, Clone, PartialEq, Eq)]
+#[derive(CandidType, Deserialize, Clone, PartialEq, Eq, Serialize)]
 struct BridgeStatusLiveView {
     reserve: ReserveStatusView,
     deposits_paused: bool,
@@ -1525,7 +1544,7 @@ struct BridgeStatusLiveView {
     counts: ProductionStatusCountsView,
 }
 
-#[derive(CandidType, Deserialize, Clone, PartialEq, Eq)]
+#[derive(CandidType, Deserialize, Clone, PartialEq, Eq, Serialize)]
 struct ProductionStatusCountsView {
     deposits: u64,
     withdrawals: u64,
@@ -1681,7 +1700,7 @@ impl From<OperationalConfigCallView> for OperationalConfigView {
     }
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 enum StorageIntegrityResultView {
     Ok(String),
     Err(Reserved),
@@ -1694,7 +1713,7 @@ enum ProductionLifecycleView {
     Activated,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 enum ProductionLifecycleResultView {
     Ok(ProductionLifecycleView),
     Err(Reserved),
@@ -3471,6 +3490,15 @@ fn validate_production_handover_receipt_files(
     )))
 }
 
+fn optional_handover_checkpoint() -> Result<Option<production_checkpoint::VerifiedEvidence>, String>
+{
+    match env::var("BRIDGE_CHECKPOINT_EVIDENCE") {
+        Ok(path) => production_checkpoint::read_evidence(Path::new(&path)).map(Some),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(_) => Err("invalid handover checkpoint path".into()),
+    }
+}
+
 fn validate_production_handover_candidate_files(
     bundle_path: &Path,
     seal_receipt_path: &Path,
@@ -3493,7 +3521,20 @@ fn validate_production_handover_evidence_files(
     execute_receipt_path: &Path,
     live_context: SealReceiptLiveContext,
 ) -> Result<(ValidatedBundle, GateAReceipt, ControllerActivationReceipt), String> {
-    let bundle = validate_historical_gate_b_bundle(bundle_path)?;
+    let mut bundle = validate_historical_gate_b_bundle(bundle_path)?;
+    let checkpoint = if matches!(
+        live_context,
+        SealReceiptLiveContext::HandoverPreTransfer | SealReceiptLiveContext::HandoverPostTransfer
+    ) {
+        optional_handover_checkpoint()?
+    } else {
+        None
+    };
+    let live_context = if checkpoint.is_some() {
+        SealReceiptLiveContext::HistoricalCheckpoint
+    } else {
+        live_context
+    };
     if bundle.manifest.schema_version != 4 {
         return Err("controller handover requires the current Gate B bundle".into());
     }
@@ -3515,6 +3556,30 @@ fn validate_production_handover_evidence_files(
         ActivationReceiptFreshness::Historical,
     )?;
     let gate_a_receipt: GateAReceipt = read_json(&bundle.root.join("gate-a-receipt.json"))?;
+    if let Some(checkpoint) = checkpoint {
+        let roots = &checkpoint.checkpoint.roots;
+        if roots.gate_b_sha256 != bundle.manifest_sha256
+            || canonical_bytes(&roots.gate_b_profile)? != canonical_bytes(&bundle.profile)?
+            || checkpoint.checkpoint.controller != gate_b_controller(&bundle)?.to_text()
+            || roots.seal_sha256 != seal_receipt_sha256
+            || roots.schedule_sha256
+                != hex(&Sha256::digest(
+                    fs::read(schedule_receipt_path).map_err(|e| e.to_string())?,
+                ))
+            || roots.execute_sha256
+                != hex(&Sha256::digest(
+                    fs::read(execute_receipt_path).map_err(|e| e.to_string())?,
+                ))
+            || checkpoint.terminal.runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
+            || checkpoint.terminal.lifecycle != ProductionLifecycleView::Activated
+        {
+            return Err(
+                "handover checkpoint is disconnected from the initial activation evidence".into(),
+            );
+        }
+        bundle.profile.bridge_canister_wasm_sha256 = checkpoint.module_sha256;
+        bundle.profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
+    }
     Ok((bundle, gate_a_receipt, execute_receipt))
 }
 
@@ -4704,7 +4769,7 @@ fn validate_controller_handover_continuity(
         || before_activation != pre_send_activation
         || before_activation != after_activation
         || before_attestation != pre_send_attestation
-        || before_lifecycle != serde_json::json!({"Ok":{"Activated":null}})
+        || before_lifecycle.get("decoded") != Some(&serde_json::json!({"Ok":"Activated"}))
         || single_json_key(&before_integrity, "Ok")? != &Value::String("ok".into())
         || single_json_key(&pre_send_integrity, "Ok")? != &Value::String("ok".into())
         || single_json_key(&after_integrity, "Ok")? != &Value::String("ok".into())
@@ -7152,6 +7217,14 @@ fn verify_live_inputs(
             .map(|provider| provider.url.clone())
             .collect::<Vec<_>>(),
     )?);
+    verify_live_inputs_for_services_hash(bundle, expected_deposits_paused, &rpc_url_hash)
+}
+
+fn verify_live_inputs_for_services_hash(
+    bundle: &ValidatedBundle,
+    expected_deposits_paused: bool,
+    rpc_url_hash: &str,
+) -> Result<(), String> {
     let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
         .map_err(|error| error.to_string())?;
     let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
@@ -7189,7 +7262,7 @@ fn verify_live_inputs(
     validate_live_runtime_binding(
         &observed,
         &bundle.profile,
-        &rpc_url_hash,
+        rpc_url_hash,
         &operational_config_sha256,
     )?;
     if !matches!(pending, PendingGovernanceTransactionsView::Ok(ref values) if values.is_empty())
@@ -7632,6 +7705,15 @@ fn verify_production_canister_handover_state(
             )
         })
         .transpose()?;
+    let upgrade_terminal = match (upgrade_terminal, optional_handover_checkpoint()?) {
+        (Some(_), Some(_)) => {
+            return Err("choose one explicit handover upgrade evidence format".into())
+        }
+        (None, Some(checkpoint)) => {
+            Some((checkpoint.module_sha256, checkpoint.terminal, Vec::new()))
+        }
+        (terminal, None) => terminal,
+    };
     if let Some((runtime_profile_path, rpc_config_path)) = production_ui_runtime_profile {
         let (module, terminal, upgrade_bytes) = upgrade_terminal
             .as_ref()
@@ -7668,6 +7750,7 @@ fn verify_production_canister_handover_state(
     };
     verify_production_live_state(
         &bundle.profile,
+        &bundle.manifest_sha256,
         gate_b_controller(&bundle)?,
         &activation,
         upgrade_terminal.as_ref().map(|(_, terminal, _)| terminal),
@@ -7679,14 +7762,358 @@ fn verify_production_canister_handover_state(
     Ok(bundle)
 }
 
+#[derive(CandidType, Deserialize, Serialize)]
+struct SnsCanistersView {
+    dapps: Vec<Principal>,
+}
+#[derive(CandidType)]
+struct SnsRootQuery {}
+
+fn validate_same_wasm_sns_upgrade(
+    profile: &Profile,
+    proposal_id: u64,
+    minimum_time: u64,
+    proposal: ProposalDataView,
+) -> Result<(), String> {
+    if proposal.id.as_ref().map(|id| id.id) != Some(proposal_id)
+        || proposal_id == 0
+        || proposal.decided_timestamp_seconds == 0
+        || proposal.executed_timestamp_seconds < minimum_time
+        || proposal.executed_timestamp_seconds == 0
+        || proposal.executed_timestamp_seconds > now_unix()?
+        || proposal.failed_timestamp_seconds != 0
+        || proposal.failure_reason.is_some()
+    {
+        return Err("SNS upgrade proposal has not executed after handover".into());
+    }
+    let Some(SnsProposalAction::UpgradeSnsControlledCanister(action)) =
+        proposal.proposal.and_then(|p| p.action)
+    else {
+        return Err("SNS upgrade proposal action differs".into());
+    };
+    if action.canister_id.map(|id| id.to_text()).as_deref()
+        != Some(profile.bridge_canister_id.as_str())
+        || action.mode != Some(3)
+        || action.canister_upgrade_options.is_some()
+        || action.canister_upgrade_arg.as_deref() != Some(&[68, 73, 68, 76, 0, 0])
+        || match action.chunked_canister_wasm.as_ref() {
+            Some(chunks) => {
+                !action.new_canister_wasm.is_empty()
+                    || hex(&chunks.wasm_module_hash) != profile.bridge_canister_wasm_sha256
+                    || chunks.store_canister_id.map(|id| id.to_text()).as_deref()
+                        != Some(profile.bridge_canister_id.as_str())
+                    || chunks.chunk_hashes_list.is_empty()
+                    || chunks.chunk_hashes_list.len() > 100
+                    || chunks.chunk_hashes_list.iter().any(|hash| hash.len() != 32)
+            }
+            None => {
+                hex(&Sha256::digest(&action.new_canister_wasm))
+                    != profile.bridge_canister_wasm_sha256
+            }
+        }
+    {
+        return Err("SNS upgrade must use the exact reviewed uncompressed Wasm, upgrade mode, and empty Candid arguments".into());
+    }
+    Ok(())
+}
+
+#[derive(CandidType, Deserialize)]
+struct ReleaseUpgradeObservationView {
+    completed_at_ns: u64,
+    upgrader: Principal,
+}
+
+fn validate_sns_upgrade_completion(
+    observation: &ReleaseUpgradeObservationView,
+    decided_at: u64,
+    handover_at: u64,
+    now: u64,
+) -> Result<(), String> {
+    if !bridge_core::kernel::sns_upgrade_completion_allowed(
+        observation.upgrader.to_text() == KINIC_ROOT,
+        observation.completed_at_ns / 1_000_000_000,
+        decided_at,
+        handover_at,
+        now,
+    ) {
+        return Err("SNS Root acknowledged the proposal, but no matching successful post_upgrade is observed".into());
+    }
+    Ok(())
+}
+
+fn verify_same_wasm_sns_upgrade(
+    profile: &Profile,
+    proposal_id: u64,
+    minimum_time: u64,
+) -> Result<(), String> {
+    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|e| e.to_string())?;
+    let root = Principal::from_text(KINIC_ROOT).map_err(|e| e.to_string())?;
+    let bridge = Principal::from_text(&profile.bridge_canister_id).map_err(|e| e.to_string())?;
+    let agent = mainnet_agent(&profile.ic_host, false)?;
+    let (proposal_bytes, dapps_bytes, upgrade_bytes) = async_runtime()?.block_on(async {
+        let proposal = agent
+            .query(&governance, "get_proposal")
+            .with_arg(
+                Encode!(&GetProposalRequest {
+                    proposal_id: Some(ProposalId { id: proposal_id })
+                })
+                .map_err(|e| e.to_string())?,
+            )
+            .call_with_verification()
+            .await
+            .map_err(|e| e.to_string())?;
+        let dapps = agent
+            .query(&root, "list_sns_canisters")
+            .with_arg(Encode!(&SnsRootQuery {}).map_err(|e| e.to_string())?)
+            .call_with_verification()
+            .await
+            .map_err(|e| e.to_string())?;
+        let upgrade = agent
+            .query(&bridge, "get_release_upgrade_observation")
+            .with_arg(Encode!().map_err(|e| e.to_string())?)
+            .call_with_verification()
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>((proposal, dapps, upgrade))
+    })?;
+    let dapps = Decode!(&dapps_bytes, SnsCanistersView).map_err(|e| e.to_string())?;
+    if dapps.dapps.iter().filter(|id| **id == bridge).count() != 1 {
+        return Err("Bridge is not registered in SNS Root".into());
+    }
+    let response = Decode!(&proposal_bytes, GetProposalResponse).map_err(|e| e.to_string())?;
+    let Some(GetProposalResult::Proposal(proposal)) = response.result else {
+        return Err("SNS upgrade proposal unavailable".into());
+    };
+    let decided_at = proposal.decided_timestamp_seconds;
+    validate_same_wasm_sns_upgrade(profile, proposal_id, minimum_time, proposal)?;
+    let observation = Decode!(&upgrade_bytes, Option<ReleaseUpgradeObservationView>)
+        .map_err(|e| e.to_string())?
+        .ok_or("SNS upgrade has not completed post_upgrade")?;
+    validate_sns_upgrade_completion(&observation, decided_at, minimum_time, now_unix()?)
+}
+
+fn verified_dao_reactivation(
+    profile: &Profile,
+    gate_b_sha256: &str,
+    original_activation: &ProductionHandoverActivationBinding<'_>,
+    schedule_path: &Path,
+    execute_path: &Path,
+) -> Result<ActivationConfirmationStatusView, String> {
+    let schedule_bytes = fs::read(schedule_path).map_err(|error| error.to_string())?;
+    let execute_bytes = fs::read(execute_path).map_err(|error| error.to_string())?;
+    let schedule: ActivationReceipt =
+        serde_json::from_slice(&schedule_bytes).map_err(|error| error.to_string())?;
+    let execute: ActivationReceipt =
+        serde_json::from_slice(&execute_bytes).map_err(|error| error.to_string())?;
+    let bridge =
+        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    let mut confirmed = Vec::new();
+    for (phase, receipt) in [("schedule", &schedule), ("execute", &execute)] {
+        let payload = sns_activation_payload(receipt.previous_governance_operation_id)?;
+        let method = format!("sns_{phase}_activation");
+        let validator = format!("validate_{method}");
+        let now = now_unix()?;
+        if receipt.gate_b_manifest_sha256 != gate_b_sha256
+            || receipt.proposal_id == 0
+            || receipt.function_id == 0
+            || receipt.verified_at_unix < receipt.executed_at_unix
+            || receipt.verified_at_unix > now
+            || now.saturating_sub(receipt.verified_at_unix) > MAX_EVIDENCE_AGE_SECS
+            || !activation_raw_digest_matches(
+                &receipt.governance_query_response_hex,
+                &receipt.governance_query_response_sha256,
+            )?
+            || !activation_raw_digest_matches(
+                &receipt.function_registry_response_hex,
+                &receipt.function_registry_response_sha256,
+            )?
+            || receipt.schema_version != 5
+            || receipt.phase != phase
+            || receipt.target_method_name != method
+            || receipt.validator_canister_id != profile.bridge_canister_id
+            || receipt.validator_method_name != validator
+            || receipt.payload_sha256 != hex(&Sha256::digest(&payload))
+            || !activation_raw_digest_matches(
+                &receipt.activation_status_response_hex,
+                &receipt.activation_status_response_sha256,
+            )?
+        {
+            return Err("DAO reactivation receipt binding differs".into());
+        }
+        let snapshot = fetch_live_activation_snapshot(
+            &profile.ic_host,
+            bridge,
+            receipt.proposal_id,
+            &payload,
+        )?;
+        let response = Decode!(&snapshot.proposal_raw, GetProposalResponse)
+            .map_err(|error| error.to_string())?;
+        let Some(GetProposalResult::Proposal(proposal)) = response.result else {
+            return Err("DAO reactivation proposal is unavailable".into());
+        };
+        if proposal.id.as_ref().map(|id| id.id) != Some(receipt.proposal_id)
+            || proposal.executed_timestamp_seconds == 0
+            || proposal.executed_timestamp_seconds != receipt.executed_at_unix
+            || proposal.decided_timestamp_seconds == 0
+            || proposal.failed_timestamp_seconds != 0
+            || proposal.failure_reason.is_some()
+            || proposal.executed_timestamp_seconds > now_unix()?
+        {
+            return Err("DAO reactivation proposal did not execute successfully".into());
+        }
+        let Some(SnsProposalAction::ExecuteGenericNervousSystemFunction(action)) =
+            proposal.proposal.and_then(|p| p.action)
+        else {
+            return Err("DAO reactivation proposal action differs".into());
+        };
+        if action.function_id != receipt.function_id || action.payload != payload {
+            return Err("DAO reactivation proposal payload differs".into());
+        }
+        let registry = Decode!(
+            &snapshot.registry_raw,
+            ListNervousSystemFunctionsResponseView
+        )
+        .map_err(|error| error.to_string())?;
+        if registry.functions.iter().filter(|f| f.id == receipt.function_id && matches!(f.function_type.as_ref(),
+            Some(FunctionTypeView::GenericNervousSystemFunction(g)) if g.target_canister_id == Some(bridge)
+                && g.validator_canister_id == Some(bridge) && g.target_method_name.as_deref() == Some(method.as_str())
+                && g.validator_method_name.as_deref() == Some(validator.as_str()))).count() != 1 {
+            return Err("DAO reactivation registry differs".into());
+        }
+        let bytes = decode_hex(&receipt.activation_status_response_hex)?;
+        let ActivationStatusResultView::Ok(status) =
+            Decode!(&bytes, ActivationStatusResultView).map_err(|e| e.to_string())?
+        else {
+            return Err("DAO reactivation receipt has no activation state".into());
+        };
+        let last = status
+            .last_confirmed_activation
+            .ok_or("DAO reactivation confirmation missing")?;
+        if last.phase != phase
+            || last.governance_operation_id.to_string() != receipt.governance_operation_id
+            || last.governance_operation_id <= receipt.previous_governance_operation_id
+            || last.receipt_block_number == 0
+            || last.transaction_hash.len() != 32
+            || format!("0x{}", hex(&last.timelock_operation_id)) != receipt.operation_id
+        {
+            return Err("DAO reactivation confirmation differs".into());
+        }
+        if last.signed_at_ns / 1_000_000_000 > receipt.executed_at_unix
+            || last.receipt_block_number <= original_activation.finalized_block_number
+        {
+            return Err("DAO confirmation predates its proposal or initial activation".into());
+        }
+        if phase == "schedule" {
+            let instance: [u8; 32] = decode_hex(&profile.deployment_instance_id)?
+                .try_into()
+                .map_err(|_| "invalid instance")?;
+            let salt = initial_activation_salt(instance, last.governance_operation_id);
+            let operation =
+                initial_activation_operation_id(decode_address(&profile.bridge_contract)?, salt);
+            let pending = status
+                .pending_timelock_operation
+                .as_ref()
+                .ok_or("schedule receipt has no pending operation")?;
+            if !status.deposits_paused
+                || pending.operation_id != operation
+                || pending.salt != salt
+                || receipt.operation_salt != format!("0x{}", hex(&salt))
+                || last.timelock_operation_id != operation
+                || receipt.previous_governance_operation_id
+                    < original_activation.governance_operation_id
+            {
+                return Err(
+                    "DAO schedule differs from the deployment namespace or predecessor".into(),
+                );
+            }
+        }
+        if phase == "execute" {
+            let ActivationStatusResultView::Ok(live) =
+                Decode!(&snapshot.activation_raw, ActivationStatusResultView)
+                    .map_err(|e| e.to_string())?
+            else {
+                return Err("live DAO reactivation status is unavailable".into());
+            };
+            let live_last = live
+                .last_confirmed_activation
+                .ok_or("live DAO activation confirmation missing")?;
+            if live.deposits_paused
+                || live.pending_timelock_operation.is_some()
+                || Encode!(&live_last).map_err(|e| e.to_string())?
+                    != Encode!(&last).map_err(|e| e.to_string())?
+            {
+                return Err("live DAO reactivation does not match the execute receipt".into());
+            }
+        }
+        confirmed.push(last);
+    }
+    if execute.prior_schedule_receipt_sha256.as_deref()
+        != Some(hex(&Sha256::digest(&schedule_bytes)).as_str())
+        || execute.previous_governance_operation_id != confirmed[0].governance_operation_id
+        || schedule.prior_schedule_receipt_sha256.is_some()
+        || execute.operation_id != schedule.operation_id
+        || execute.operation_salt != schedule.operation_salt
+        || execute.proposal_id <= schedule.proposal_id
+        || execute.executed_at_unix < schedule.executed_at_unix
+        || confirmed[1].receipt_block_number <= confirmed[0].receipt_block_number
+        || confirmed[1].signed_at_ns <= confirmed[0].signed_at_ns
+        || execute.source_revision != schedule.source_revision
+        || execute.source_tree_sha256 != schedule.source_tree_sha256
+        || execute.release_id != schedule.release_id
+        || execute.gate_b_manifest_sha256 != schedule.gate_b_manifest_sha256
+    {
+        return Err("DAO reactivation schedule/execute lineage differs".into());
+    }
+    if fs::read(schedule_path).map_err(|e| e.to_string())? != schedule_bytes
+        || fs::read(execute_path).map_err(|e| e.to_string())? != execute_bytes
+    {
+        return Err("DAO reactivation receipts changed during verification".into());
+    }
+    Ok(confirmed.remove(1))
+}
+
 fn verify_production_live_state(
     profile: &Profile,
+    gate_b_sha256: &str,
     installer: Principal,
     activation: &ProductionHandoverActivationBinding<'_>,
     upgrade_terminal: Option<&ProductionUpgradeTerminal>,
     manifest_created_at_unix: u64,
     minimum_deployment_block: u64,
 ) -> Result<(), String> {
+    let dao_receipts = match (
+        env::var("BRIDGE_DAO_SCHEDULE_RECEIPT"),
+        env::var("BRIDGE_DAO_EXECUTE_RECEIPT"),
+    ) {
+        (Ok(schedule), Ok(execute)) => Some(verified_dao_reactivation(
+            profile,
+            gate_b_sha256,
+            activation,
+            Path::new(&schedule),
+            Path::new(&execute),
+        )?),
+        (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent)) => None,
+        _ => return Err("DAO reactivation requires both schedule and execute receipts".into()),
+    };
+    let dao_operation = dao_receipts
+        .as_ref()
+        .map(|v| format!("0x{}", hex(&v.timelock_operation_id)));
+    let dao_transaction = dao_receipts
+        .as_ref()
+        .map(|v| format!("0x{}", hex(&v.transaction_hash)));
+    let dao_signed_at = dao_receipts.as_ref().map(|v| v.signed_at_ns.to_string());
+    let dao_binding = dao_receipts
+        .as_ref()
+        .map(|last| ProductionHandoverActivationBinding {
+            governance_operation_id: last.governance_operation_id,
+            finalized_block_number: last.receipt_block_number,
+            timelock_operation_id: dao_operation.as_ref().unwrap(),
+            transaction_hash: dao_transaction.as_ref().unwrap(),
+            confirmed_generation: last.generation,
+            confirmed_signed_at_ns: dao_signed_at.as_ref().unwrap(),
+            expected_module_sha256: activation.expected_module_sha256,
+        });
+    let activation = dao_binding.as_ref().unwrap_or(activation);
     let bridge =
         Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
     let agent = mainnet_agent(&profile.ic_host, false)?;
@@ -8079,6 +8506,33 @@ fn decode_production_storage_integrity(
         .map_err(|error| format!("invalid production storage integrity response: {error}"))
 }
 
+fn decode_handover_query(method: &str, path: &Path) -> Result<Value, String> {
+    let raw: Value = read_json(path)?;
+    let bytes = decode_hex(
+        raw.get("response_bytes")
+            .and_then(Value::as_str)
+            .ok_or("query response lacks raw Candid")?,
+    )?;
+    macro_rules! decoded {
+        ($ty:ty) => {
+            serde_json::to_value(Decode!(&bytes, $ty).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?
+        };
+    }
+    let decoded = match method {
+        "get_bridge_status" => decoded!(BridgeStatusLiveView),
+        "get_runtime_binding" => decoded!(RuntimeBindingView),
+        "get_production_lifecycle" => decoded!(ProductionLifecycleResultView),
+        "get_activation_status" => decoded!(ActivationStatusResultView),
+        "get_activation_attestation" => decoded!(ActivationAttestationResultView),
+        "storage_integrity_check" | "get_release_storage_integrity" => {
+            decoded!(StorageIntegrityResultView)
+        }
+        _ => return Err("unsupported handover query".into()),
+    };
+    Ok(serde_json::json!({"response_bytes":hex(&bytes), "decoded":decoded}))
+}
+
 fn production_installer_storage_integrity(
     bridge: Principal,
     expected_installer: Principal,
@@ -8095,6 +8549,23 @@ fn production_installer_query(
     expected_installer: Principal,
     method: &str,
 ) -> Result<Vec<u8>, String> {
+    if expected_installer.to_text() == KINIC_ROOT {
+        let public_method = match method {
+            "get_operational_config" => "get_release_operational_config",
+            "storage_integrity_check" => "get_release_storage_integrity",
+            _ => return Err("unsupported SNS release query".into()),
+        };
+        let agent = mainnet_agent("https://icp-api.io", false)?;
+        let bytes = async_runtime()?.block_on(async {
+            agent
+                .query(&bridge, public_method)
+                .with_arg(Encode!().map_err(|error| error.to_string())?)
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())
+        })?;
+        return Ok(hex(&bytes).into_bytes());
+    }
     let identity = env::var("BRIDGE_PRODUCTION_INSTALLER_IDENTITY")
         .map_err(|_| "missing BRIDGE_PRODUCTION_INSTALLER_IDENTITY for controller-authenticated storage integrity query")?;
     if identity.trim().is_empty() {
@@ -10265,16 +10736,81 @@ fn verify_controller_schedule_receipt_live(
     Ok(())
 }
 
+#[derive(CandidType, Deserialize, Serialize)]
+struct SnsActivationProposal {
+    previous_governance_operation_id: u64,
+}
+
+fn dao_activation_bundle(root: &Path) -> Result<ValidatedBundle, String> {
+    let mut bundle = validate_historical_gate_b_bundle(root)?;
+    let evidence_path = env::var("BRIDGE_CHECKPOINT_EVIDENCE").map_err(|_| {
+        "DAO activation verification requires the current approved checkpoint evidence"
+    })?;
+    let evidence = production_checkpoint::read_evidence(Path::new(&evidence_path))?;
+    if bundle.manifest.test_only
+        || evidence.checkpoint.roots.gate_b_sha256 != bundle.manifest_sha256
+        || canonical_bytes(&evidence.checkpoint.roots.gate_b_profile)?
+            != canonical_bytes(&bundle.profile)?
+        || evidence.checkpoint.controller != gate_b_controller(&bundle)?.to_text()
+        || evidence.terminal.runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || evidence.terminal.lifecycle != ProductionLifecycleView::Activated
+    {
+        return Err("DAO activation checkpoint is disconnected from its historical Gate B".into());
+    }
+    bundle.profile.bridge_canister_wasm_sha256 = evidence.module_sha256;
+    bundle.profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
+    Ok(bundle)
+}
+
+fn verify_dao_live_inputs(
+    bundle: &ValidatedBundle,
+    expected_deposits_paused: bool,
+) -> Result<(), String> {
+    verify_live_inputs_for_services_hash(
+        bundle,
+        expected_deposits_paused,
+        &hex(&canonical_sha256(&Vec::<String>::new())?),
+    )
+}
+
+fn sns_activation_payload(previous_governance_operation_id: u64) -> Result<Vec<u8>, String> {
+    Encode!(&SnsActivationProposal {
+        previous_governance_operation_id
+    })
+    .map_err(|error| error.to_string())
+}
+
+fn sns_activation_binding(
+    bundle: &ValidatedBundle,
+    id: u64,
+) -> Result<(u64, [u8; 32], [u8; 32]), String> {
+    let instance: [u8; 32] = decode_hex(&bundle.profile.deployment_instance_id)?
+        .try_into()
+        .map_err(|_| "invalid deployment instance")?;
+    let salt = initial_activation_salt(instance, id);
+    Ok((
+        id,
+        initial_activation_operation_id(decode_address(&bundle.profile.bridge_contract)?, salt),
+        salt,
+    ))
+}
+
 fn validate_schedule_receipt_binding(
     receipt: &ActivationReceipt,
     bundle: &ValidatedBundle,
 ) -> Result<(), String> {
-    let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
-    let payload_sha256 = hex(&Sha256::digest(canonical_payload));
+    let canonical_payload = sns_activation_payload(receipt.previous_governance_operation_id)?;
+    let payload_sha256 = hex(&Sha256::digest(&canonical_payload));
     let now = now_unix()?;
     let (expected_governance_operation_id, expected_operation_id, expected_salt) =
-        gate_b_initial_activation_binding(bundle, ActivationReceiptFreshness::Current)?;
-    if receipt.schema_version != 4
+        sns_activation_binding(
+            bundle,
+            receipt
+                .governance_operation_id
+                .parse()
+                .map_err(|_| "invalid schedule operation ID")?,
+        )?;
+    if receipt.schema_version != 5
         || receipt.phase != "schedule"
         || receipt.release_id != bundle.manifest.release_id
         || receipt.source_revision != bundle.manifest.source_revision
@@ -10287,7 +10823,9 @@ fn validate_schedule_receipt_binding(
             .eq_ignore_ascii_case(&bundle.manifest_sha256)
         || receipt.proposal_id == 0
         || receipt.function_id == 0
-        || receipt.target_method_name != "schedule_activation"
+        || receipt.target_method_name != "sns_schedule_activation"
+        || receipt.validator_canister_id != bundle.profile.bridge_canister_id
+        || receipt.validator_method_name != "validate_sns_schedule_activation"
         || !receipt.payload_sha256.eq_ignore_ascii_case(&payload_sha256)
         || receipt.executed_at_unix == 0
         || receipt.verified_at_unix < receipt.executed_at_unix
@@ -10308,6 +10846,7 @@ fn validate_schedule_receipt_binding(
         )?
         || !valid_hash32(&receipt.operation_id)
         || !valid_hash32(&receipt.operation_salt)
+        || expected_governance_operation_id <= receipt.previous_governance_operation_id
         || receipt.governance_operation_id != expected_governance_operation_id.to_string()
         || !receipt
             .operation_id
@@ -10341,7 +10880,8 @@ fn fetch_live_activation_snapshot(
         proposal_id: Some(ProposalId { id: proposal_id }),
     })
     .map_err(|error| error.to_string())?;
-    let empty_arg = canonical_payload.to_vec();
+    let empty_arg = Encode!().map_err(|error| error.to_string())?;
+    let _ = canonical_payload;
     let agent = mainnet_agent(host, false)?;
     async_runtime()?.block_on(async {
         let proposal_raw = agent
@@ -10398,13 +10938,13 @@ fn verify_activation(
         now,
     )?;
     let method = if phase == "schedule" {
-        "schedule_activation"
+        "sns_schedule_activation"
     } else {
-        "execute_activation"
+        "sns_execute_activation"
     };
-    let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
+    let canonical_payload = sns_activation_payload(submission.previous_governance_operation_id)?;
     let proposal_response = decode_hex(&submission.proposal_response_hex)?;
-    if submission.schema_version != 3
+    if submission.schema_version != 4
         || submission.phase != phase
         || submission.release_id != bundle.manifest.release_id
         || submission.source_revision != bundle.manifest.source_revision
@@ -10418,10 +10958,12 @@ fn verify_activation(
         || submission.bridge_canister_id != bundle.profile.bridge_canister_id
         || submission.function_id == 0
         || submission.target_method_name != method
+        || submission.validator_canister_id != bundle.profile.bridge_canister_id
+        || submission.validator_method_name != format!("validate_{method}")
         || decode_hex(&submission.payload_hex)? != canonical_payload
         || !submission
             .payload_sha256
-            .eq_ignore_ascii_case(&hex(&Sha256::digest(canonical_payload)))
+            .eq_ignore_ascii_case(&hex(&Sha256::digest(&canonical_payload)))
         || !principal(&submission.proposer_principal)
         || submission.neuron_subaccount.len() != 64
         || !submission
@@ -10529,6 +11071,8 @@ fn verify_activation(
                     Some(FunctionTypeView::GenericNervousSystemFunction(generic))
                         if generic.target_canister_id == Some(bridge)
                             && generic.target_method_name.as_deref() == Some(method)
+                            && generic.validator_canister_id == Some(bridge)
+                            && generic.validator_method_name.as_deref() == Some(submission.validator_method_name.as_str())
                 )
         })
         .count();
@@ -10583,8 +11127,9 @@ fn verify_activation(
     }
     if phase == "schedule" {
         let (expected_governance_operation_id, expected_operation_id, expected_salt) =
-            gate_b_initial_activation_binding(bundle, ActivationReceiptFreshness::Current)?;
-        if confirmation_governance_operation_id != expected_governance_operation_id
+            sns_activation_binding(bundle, confirmation_governance_operation_id)?;
+        if confirmation_governance_operation_id <= submission.previous_governance_operation_id
+            || confirmation_governance_operation_id != expected_governance_operation_id
             || operation_id != format!("0x{}", hex(&expected_operation_id))
             || operation_salt != format!("0x{}", hex(&expected_salt))
         {
@@ -10600,14 +11145,16 @@ fn verify_activation(
             .governance_operation_id
             .parse::<u64>()
             .map_err(|_| "invalid prior schedule governance operation ID")?;
-        if confirmation_governance_operation_id <= prior_governance_operation_id {
+        if submission.previous_governance_operation_id != prior_governance_operation_id
+            || confirmation_governance_operation_id <= prior_governance_operation_id
+        {
             return Err("SNS execute governance operation ID does not follow schedule".into());
         }
     }
 
     let prior_schedule_receipt_sha256 = prior.as_ref().map(|(_, digest)| digest.clone());
     let receipt = ActivationReceipt {
-        schema_version: 4,
+        schema_version: 5,
         phase: phase.into(),
         release_id: bundle.manifest.release_id.clone(),
         source_revision: bundle.manifest.source_revision.clone(),
@@ -10616,6 +11163,9 @@ fn verify_activation(
         proposal_id: submission.proposal_id,
         function_id: submission.function_id,
         target_method_name: method.into(),
+        validator_canister_id: submission.validator_canister_id.clone(),
+        validator_method_name: submission.validator_method_name.clone(),
+        previous_governance_operation_id: submission.previous_governance_operation_id,
         payload_sha256: submission.payload_sha256.clone(),
         executed_at_unix: executed_at,
         verified_at_unix: now,
@@ -10638,7 +11188,7 @@ fn verify_schedule_receipt_live(
     receipt_path: &Path,
 ) -> Result<(), String> {
     let receipt: ActivationReceipt = read_json(receipt_path)?;
-    let canonical_payload = [0x44, 0x49, 0x44, 0x4c, 0x00, 0x00];
+    let canonical_payload = sns_activation_payload(receipt.previous_governance_operation_id)?;
     validate_schedule_receipt_binding(&receipt, bundle)?;
 
     let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
@@ -10702,7 +11252,9 @@ fn verify_schedule_receipt_live(
                     Some(FunctionTypeView::GenericNervousSystemFunction(generic))
                         if generic.target_canister_id == Some(bridge)
                             && generic.target_method_name.as_deref()
-                                == Some("schedule_activation")
+                                == Some("sns_schedule_activation")
+                            && generic.validator_canister_id == Some(bridge)
+                            && generic.validator_method_name.as_deref() == Some("validate_sns_schedule_activation")
                 )
         })
         .count();
@@ -11480,6 +12032,9 @@ fn run() -> Result<(), String> {
         Some("render-production-checkpoint-ui-runtime") if args.len() == 5 => {
             production_checkpoint::render_ui(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
         }
+        Some("verify-production-checkpoint-ui-sns-live") if args.len() == 7 => {
+            production_checkpoint::verify_ui_after_handover(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]), Path::new(&args[5]), args[6].parse().map_err(|_| "invalid SNS upgrade proposal ID")?)?;
+        }
         Some("verify-production-checkpoint-ui-live") if args.len() == 5 => {
             production_checkpoint::verify_ui(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
         }
@@ -11840,14 +12395,20 @@ fn run() -> Result<(), String> {
                 Path::new(&args[6]),
             )?;
         }
+        Some("decode-handover-query") if args.len() == 4 => {
+            println!("{}", decode_handover_query(&args[2], Path::new(&args[3]))?);
+        }
+        Some("sns-activation-payload") if args.len() == 3 => {
+            println!("{}", hex(&sns_activation_payload(args[2].parse::<u64>().map_err(|_| "invalid previous operation ID")?)?));
+        }
         Some("verify-activation") if args.len() == 7 => {
-            let bundle = validate_bundle(Path::new(&args[3]), true)?;
+            let bundle = dao_activation_bundle(Path::new(&args[3]))?;
             if bundle.manifest.test_only {
                 return Err("activation verification rejects test-only bundles".into());
             }
             match args[2].as_str() {
-                "schedule" => verify_live(&bundle, true)?,
-                "execute" => verify_live_inputs(&bundle, false)?,
+                "schedule" => verify_dao_live_inputs(&bundle, true)?,
+                "execute" => verify_dao_live_inputs(&bundle, false)?,
                 _ => return Err("activation phase must be schedule or execute".into()),
             }
             let prior = if args[5] == "-" {
@@ -11954,11 +12515,11 @@ fn run() -> Result<(), String> {
             );
         }
         Some("verify-schedule-receipt-live") if args.len() == 4 => {
-            let bundle = validate_bundle(Path::new(&args[2]), true)?;
+            let bundle = dao_activation_bundle(Path::new(&args[2]))?;
             if bundle.manifest.test_only {
                 return Err("schedule receipt verification rejects test-only bundles".into());
             }
-            verify_live(&bundle, true)?;
+            verify_dao_live_inputs(&bundle, true)?;
             verify_schedule_receipt_live(&bundle, Path::new(&args[3]))?;
             println!(
                 "schedule_receipt=verified manifest_sha256={} receipt={}",
@@ -12178,6 +12739,91 @@ fn main() {
 mod tests {
     use super::*;
     use k256::ecdsa::SigningKey;
+
+    #[test]
+    fn sns_upgrade_completion_rejects_personal_and_stale_hooks() {
+        let root = Principal::from_text(KINIC_ROOT).unwrap();
+        let valid = ReleaseUpgradeObservationView {
+            completed_at_ns: 100_000_000_000,
+            upgrader: root,
+        };
+        assert!(validate_sns_upgrade_completion(&valid, 99, 98, 101).is_ok());
+        let personal = ReleaseUpgradeObservationView {
+            completed_at_ns: 100_000_000_000,
+            upgrader: Principal::anonymous(),
+        };
+        assert!(validate_sns_upgrade_completion(&personal, 99, 98, 101).is_err());
+        assert!(validate_sns_upgrade_completion(&valid, 101, 98, 102).is_err());
+        assert!(validate_sns_upgrade_completion(&valid, 99, 101, 102).is_err());
+        assert!(validate_sns_upgrade_completion(&valid, 99, 98, 99).is_err());
+        assert!(validate_sns_upgrade_completion(&valid, 0, 98, 101).is_err());
+    }
+
+    #[test]
+    fn sns_same_wasm_upgrade_rejects_wrong_target_mode_module_and_execution() {
+        let mut profile = valid_profile();
+        let wasm = vec![0, 97, 115, 109, 1, 0, 0, 0];
+        profile.bridge_canister_wasm_sha256 = hex(&Sha256::digest(&wasm));
+        let now = now_unix().unwrap();
+        let make = || ProposalDataView {
+            id: Some(ProposalId { id: 42 }),
+            failure_reason: None,
+            failed_timestamp_seconds: 0,
+            decided_timestamp_seconds: now - 2,
+            executed_timestamp_seconds: now - 1,
+            proposal: Some(ProposalView {
+                summary: String::new(),
+                action: Some(SnsProposalAction::UpgradeSnsControlledCanister(
+                    UpgradeSnsControlledCanisterView {
+                        mode: Some(3),
+                        canister_id: Some(
+                            Principal::from_text(&profile.bridge_canister_id).unwrap(),
+                        ),
+                        new_canister_wasm: wasm.clone(),
+                        canister_upgrade_arg: Some(vec![68, 73, 68, 76, 0, 0]),
+                        canister_upgrade_options: None,
+                        chunked_canister_wasm: None,
+                    },
+                )),
+            }),
+        };
+        assert!(validate_same_wasm_sns_upgrade(&profile, 42, now - 3, make()).is_ok());
+        for drift in 0..8 {
+            let mut proposal = make();
+            let Some(SnsProposalAction::UpgradeSnsControlledCanister(action)) =
+                proposal.proposal.as_mut().unwrap().action.as_mut()
+            else {
+                unreachable!()
+            };
+            match drift {
+                0 => action.mode = Some(2),
+                1 => action.canister_id = Some(Principal::anonymous()),
+                2 => action.new_canister_wasm.push(1),
+                3 => action.canister_upgrade_arg = Some(vec![]),
+                4 => proposal.failed_timestamp_seconds = now - 1,
+                5 => proposal.executed_timestamp_seconds = 0,
+                6 => proposal.id = Some(ProposalId { id: 43 }),
+                _ => proposal.executed_timestamp_seconds = now + 1,
+            }
+            assert!(
+                validate_same_wasm_sns_upgrade(&profile, 42, now - 3, proposal).is_err(),
+                "drift {drift}"
+            );
+        }
+        let mut proposal = make();
+        let Some(SnsProposalAction::UpgradeSnsControlledCanister(action)) =
+            proposal.proposal.as_mut().unwrap().action.as_mut()
+        else {
+            unreachable!()
+        };
+        action.new_canister_wasm.clear();
+        action.chunked_canister_wasm = Some(ChunkedSnsWasmView {
+            wasm_module_hash: Sha256::digest(&wasm).to_vec(),
+            store_canister_id: action.canister_id,
+            chunk_hashes_list: vec![Sha256::digest(&wasm).to_vec()],
+        });
+        assert!(validate_same_wasm_sns_upgrade(&profile, 42, now - 3, proposal).is_ok());
+    }
 
     fn trim_leading_zeroes(value: &[u8]) -> &[u8] {
         let first = value
@@ -14622,7 +15268,7 @@ mod tests {
             "mint_authorization_epoch": 7,
             "counts": {"deposits": 2,"withdrawals": 3,"retained_audit_events": 8,"pruned_audit_events": 5}
         }));
-        let lifecycle = json_bytes(serde_json::json!({"Ok":{"Activated":null}}));
+        let lifecycle = json_bytes(serde_json::json!({"decoded":{"Ok":"Activated"}}));
         let operational_config_sha256 = hex(&expected_operational_config_sha256(&profile, 900, 7)
             .expect("derive operational config binding"));
         let runtime = json_bytes(serde_json::json!({

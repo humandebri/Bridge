@@ -42,7 +42,7 @@ version = "0.0.0"
 LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs};
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="verify-production-canister-handover"{let counter=env::var("TRACE").unwrap()+".verify";let n=fs::read_to_string(&counter).ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(0);fs::write(&counter,(n+1).to_string()).unwrap();let valid=a.len()==5&&fs::read_to_string(&a[2]).is_ok_and(|v|v.contains("\"kind\":\"seal\"")&&v.contains("\"initial_operational_parameters_sha256\":\"1111\""))&&fs::read_to_string(&a[3]).is_ok_and(|v|v.contains("\"kind\":\"schedule\"")&&v.contains("\"seal_receipt_sha256\":\"2222\""))&&fs::read_to_string(&a[4]).is_ok_and(|v|v.contains("\"kind\":\"execute\"")&&v.contains("\"schedule_receipt_sha256\":\"3333\""));if (n>0&&env::var("HANDOVER_PRE_SEND_ACTIVE_DRIFT").as_deref()==Ok("true"))||!valid||["HANDOVER_BOOTSTRAP","HANDOVER_SEALED","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_INITIAL_PARAMETERS_DRIFT","HANDOVER_SEAL_RECEIPT_DRIFT","HANDOVER_SCHEDULE_RECEIPT_DRIFT","HANDOVER_EXECUTE_RECEIPT_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_RESERVE_DRIFT","HANDOVER_STORAGE_INTEGRITY_DRIFT","HANDOVER_IC_DEPOSITS_PAUSED","HANDOVER_BASE_DEPOSITS_PAUSED","HANDOVER_BASE_WITHDRAWALS_PAUSED"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else if a[0]=="validate-production-handover-candidate"{println!("production_handover_candidate=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-controller-handover-recovery"{println!("controller_handover_recovery=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-controller-handover-completion"&&env::var("HANDOVER_COMPLETION_VALIDATOR_FAIL").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="validate-bundle"&&env::var("REJECT_CURRENT_GATE_B").as_deref()==Ok("true"){std::process::exit(1)}else{println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","a".repeat(64))}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="decode-handover-query"{print!("{}",fs::read_to_string(&a[2]).unwrap())}else if a[0]=="verify-production-canister-handover"{let counter=env::var("TRACE").unwrap()+".verify";let n=fs::read_to_string(&counter).ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(0);fs::write(&counter,(n+1).to_string()).unwrap();let valid=a.len()==5&&fs::read_to_string(&a[2]).is_ok_and(|v|v.contains("\"kind\":\"seal\"")&&v.contains("\"initial_operational_parameters_sha256\":\"1111\""))&&fs::read_to_string(&a[3]).is_ok_and(|v|v.contains("\"kind\":\"schedule\"")&&v.contains("\"seal_receipt_sha256\":\"2222\""))&&fs::read_to_string(&a[4]).is_ok_and(|v|v.contains("\"kind\":\"execute\"")&&v.contains("\"schedule_receipt_sha256\":\"3333\""));if (n>0&&env::var("HANDOVER_PRE_SEND_ACTIVE_DRIFT").as_deref()==Ok("true"))||!valid||["HANDOVER_BOOTSTRAP","HANDOVER_SEALED","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_INITIAL_PARAMETERS_DRIFT","HANDOVER_SEAL_RECEIPT_DRIFT","HANDOVER_SCHEDULE_RECEIPT_DRIFT","HANDOVER_EXECUTE_RECEIPT_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_RESERVE_DRIFT","HANDOVER_STORAGE_INTEGRITY_DRIFT","HANDOVER_IC_DEPOSITS_PAUSED","HANDOVER_BASE_DEPOSITS_PAUSED","HANDOVER_BASE_WITHDRAWALS_PAUSED"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else if a[0]=="validate-production-handover-candidate"{println!("production_handover_candidate=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-controller-handover-recovery"{println!("controller_handover_recovery=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-controller-handover-completion"&&env::var("HANDOVER_COMPLETION_VALIDATOR_FAIL").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="validate-bundle"&&env::var("REJECT_CURRENT_GATE_B").as_deref()==Ok("true"){std::process::exit(1)}else{println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","a".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -83,12 +83,12 @@ elif [[ "$*" == *get_bridge_status* ]]; then
 elif [[ "$*" == *get_production_lifecycle* ]]; then
   calls="$(cat "$TRACE.lifecycle-calls" 2>/dev/null || printf 0)"; printf '%s\n' "$((calls+1))" >"$TRACE.lifecycle-calls"; lifecycle="${HANDOVER_LIFECYCLE:-Activated}"
   [[ "$calls" -lt 1 || "${HANDOVER_PRE_SEND_LIFECYCLE_DRIFT:-false}" != true ]] || lifecycle=Bootstrap
-  printf '{"Ok":{"%s":null}}\n' "$lifecycle"
+  printf '{"decoded":{"Ok":"%s"}}\n' "$lifecycle"
 elif [[ "$*" == *get_runtime_binding* ]]; then
   runtime="stable"; [[ -e "$TRACE.updated" ]] && runtime="${HANDOVER_POST_RUNTIME:-stable}"
   calls="$(cat "$TRACE.runtime-calls" 2>/dev/null || printf 0)"; printf '%s\n' "$((calls+1))" >"$TRACE.runtime-calls"; [[ "$calls" -lt 1 || "${HANDOVER_PRE_SEND_RUNTIME_DRIFT:-false}" != true ]] || runtime=drifted
   printf '{"schema_version":5,"binding":"%s"}\n' "$runtime"
-elif [[ "$*" == *storage_integrity_check* ]]; then
+elif [[ "$*" == *storage_integrity_check* || "$*" == *get_release_storage_integrity* ]]; then
   integrity="${HANDOVER_STORAGE_RESULT:-ok}"; [[ -e "$TRACE.updated" ]] && integrity="${HANDOVER_POST_STORAGE_RESULT:-$integrity}"
   calls="$(cat "$TRACE.integrity-calls" 2>/dev/null || printf 0)"; printf '%s\n' "$((calls+1))" >"$TRACE.integrity-calls"; [[ "$calls" -lt 1 || "${HANDOVER_PRE_SEND_STORAGE_DRIFT:-false}" != true ]] || integrity=corrupt
   printf '{"Ok":"%s"}\n' "$integrity"
@@ -415,3 +415,14 @@ python3 - "$T/recover-validator-source.json" <<'PY'
 import json,sys
 assert json.load(open(sys.argv[1]))['stage']=='complete'
 PY
+
+# A checkpoint must be accepted by the fixed typed verifier before any transfer.
+printf '{}\n' >"$T/unverified-checkpoint.json"
+updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+if BRIDGE_CHECKPOINT_EVIDENCE="$T/unverified-checkpoint.json" \
+  BRIDGE_DAO_SCHEDULE_RECEIPT="$T/controller-schedule-receipt.json" \
+  BRIDGE_DAO_EXECUTE_RECEIPT="$T/controller-execute-receipt.json" \
+  run_handover "$T/unverified-checkpoint-output.json" >/dev/null 2>&1; then
+  echo "handover accepted an unverified checkpoint" >&2; exit 1
+fi
+[[ "$updates_before" == "$(rg -c 'settings update bridge-canister' "$TRACE" || true)" ]]

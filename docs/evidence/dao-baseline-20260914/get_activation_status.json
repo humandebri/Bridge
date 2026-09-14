@@ -1,0 +1,21 @@
+{
+  "observed_at": "2026-09-14T01:57:51.178467+00:00",
+  "command": [
+    "icp",
+    "canister",
+    "call",
+    "bridge-canister",
+    "get_activation_status",
+    "()",
+    "-e",
+    "production",
+    "--identity",
+    "production",
+    "--query",
+    "--json"
+  ],
+  "exit_code": 0,
+  "stdout": "{\"response_bytes\":\"4449444c0c6b02bc8a0101c5fed201076c0388ada2e7020298ff84f3067efff484da09056e036c029685b6e20404b380e78f06046d7b6e066c078fcac5b4010498818ff3047bee82b7bf0578b0b9a0c80878bbd0a48f0c719aebe0ae0c04e2f3aae30c786b0cf7b0b63308d982e5df0209d1b8edb5030990f39ac4077fd4b4c59a097fba8a96b00a7ff4b895a40b7fa1d6a8eb0b09eff489f80c7fa4eaddb30d7fe99eb2c80f09abefd5e00f0a6c02a493dbd3047dfbacd8bd097d6c01b380e78f06786c01b8f0e1c2040b6b099bc2fe4e7f9b8ee88f017fa1daffb7067fe3f5d1c4067f90f39ac4077fafd5ad8f087f9fb5fcfd087fdcdce3de0a7fe38de6c00d7f010000000001202bef7f2f3e8d901330e07616468bc64d09141a7df07d1d0875e1dfd8cde7fe610073b14fa15996d2180100000000000000076578656375746520343234fcea7cef791ea71b940385be7c72cdfc9da76cc3fcbdda97f35c878127d531090300000000\",\"response_text\":null,\"response_candid\":\"(\\n  variant {\\n    17_724 = record {\\n      753_440_392 = null;\\n      1_851_867_032 = false;\\n      2_604_743_295 = opt record {\\n        378_627_343 = blob \\\"\\\\2b\\\\ef\\\\7f\\\\2f\\\\3e\\\\8d\\\\90\\\\13\\\\30\\\\e0\\\\76\\\\16\\\\46\\\\8b\\\\c6\\\\4d\\\\09\\\\14\\\\1a\\\\7d\\\\f0\\\\7d\\\\1d\\\\08\\\\75\\\\e1\\\\df\\\\d8\\\\cd\\\\e7\\\\fe\\\\61\\\";\\n        1_315_160_216 = 0 : nat8;\\n        1_475_199_342 = 1_788_657_313_722_118_515 : nat64;\\n        2_299_010_224 = 1 : nat64;\\n        3_253_282_875 = \\\"execute\\\";\\n        3_319_281_050 = blob \\\"\\\\34\\\\32\\\\34\\\\fc\\\\ea\\\\7c\\\\ef\\\\79\\\\1e\\\\a7\\\\1b\\\\94\\\\03\\\\85\\\\be\\\\7c\\\\72\\\\cd\\\\fc\\\\9d\\\\a7\\\\6c\\\\c3\\\\fc\\\\bd\\\\da\\\\97\\\\f3\\\\5c\\\\87\\\\81\\\\27\\\";\\n        3_429_546_466 = 50_934_229 : nat64;\\n      };\\n    }\\n  },\\n)\"}",
+  "stderr": "WARN could not fetch candid type, serializing arguments with inferred types.\n",
+  "stdout_sha256": "9aeef67efc192471ebea0394d2f53539cbd0c0913aff0e70f0339202eb103dc2"
+}

@@ -179,7 +179,14 @@ pub enum PublicConfigInitializationError {
     StorageFailure,
 }
 
+#[derive(Clone, CandidType, Deserialize)]
+struct ReleaseUpgradeObservation {
+    completed_at_ns: u64,
+    upgrader: Principal,
+}
+
 thread_local! {
+    static RELEASE_UPGRADE_OBSERVATION: RefCell<Option<ReleaseUpgradeObservation>> = const { RefCell::new(None) };
     static STORE: RefCell<StoreState> = const { RefCell::new(StoreState(None)) };
     static IN_FLIGHT_ACTIONS: RefCell<BTreeSet<ActionKey>> = const { RefCell::new(BTreeSet::new()) };
     static NOTIFICATION_CALLERS: RefCell<BTreeMap<Principal, u8>> = const { RefCell::new(BTreeMap::new()) };
@@ -521,6 +528,13 @@ fn finish_post_upgrade(store: StableStore) {
     scheduler::arm();
     scheduler::arm_funding_recovery();
     cycles_top_up::start();
+    // Heap-only evidence resets on every upgrade; a trapped upgrade cannot publish it.
+    RELEASE_UPGRADE_OBSERVATION.with(|value| {
+        *value.borrow_mut() = Some(ReleaseUpgradeObservation {
+            completed_at_ns: ic_cdk::api::time(),
+            upgrader: ic_cdk::api::msg_caller(),
+        })
+    });
 }
 
 #[cfg(not(feature = "test-deployment"))]
@@ -2301,6 +2315,23 @@ fn get_operational_config() -> Result<OperationalConfig, OperationalConfigError>
     Ok(current_operational_config())
 }
 
+// Release verification must remain possible after the installer loses control.
+// These are read-only projections; they grant no maintenance or admin authority.
+#[ic_cdk::query]
+fn get_release_upgrade_observation() -> Option<ReleaseUpgradeObservation> {
+    RELEASE_UPGRADE_OBSERVATION.with(|value| value.borrow().clone())
+}
+
+#[ic_cdk::query]
+fn get_release_operational_config() -> Result<OperationalConfig, OperationalConfigError> {
+    Ok(current_operational_config())
+}
+
+#[ic_cdk::query]
+fn get_release_storage_integrity() -> Result<String, StorageMaintenanceError> {
+    STORE.with(|store| store.borrow().storage_integrity_check())
+}
+
 #[ic_cdk::update]
 async fn prepare_base_governance_action(
     action: base_governance::BaseGovernanceAction,
@@ -2459,6 +2490,58 @@ async fn schedule_activation(
         base_governance::GovernanceAction::ScheduleActivation,
     )
     .await
+}
+
+#[ic_cdk::update]
+fn validate_sns_schedule_activation(
+    proposal: base_governance::SnsActivationProposal,
+) -> Result<String, String> {
+    base_governance::validate_sns_activation(&proposal, true)
+}
+
+#[ic_cdk::update]
+fn validate_sns_execute_activation(
+    proposal: base_governance::SnsActivationProposal,
+) -> Result<String, String> {
+    base_governance::validate_sns_activation(&proposal, false)
+}
+
+async fn prepare_sns_activation(proposal: base_governance::SnsActivationProposal, schedule: bool) {
+    let result = async {
+        let caller = ic_cdk::api::msg_caller();
+        if !admin::is_governance(caller).unwrap_or(false) {
+            return Err("Only SNS Governance may execute this proposal".to_string());
+        }
+        let _guard = InFlightGuard::acquire(ActionKey::BaseGovernance)
+            .ok_or("A Base governance operation is in flight")?;
+        base_governance::validate_sns_activation(&proposal, schedule)?;
+        let action = if schedule {
+            base_governance::GovernanceAction::ScheduleActivation
+        } else {
+            base_governance::GovernanceAction::ExecuteActivation
+        };
+        base_governance::prepare(caller, action)
+            .await
+            .map_err(|error| format!("{error:?}"))?;
+        Ok::<(), String>(())
+    }
+    .await;
+    // SNS treats every successful IC reply as execution success, including Err.
+    // Reject without trapping so async progress and guard cleanup are preserved.
+    match result {
+        Ok(()) => ic_cdk::api::msg_reply([0x44, 0x49, 0x44, 0x4c, 0, 0]),
+        Err(error) => ic_cdk::api::msg_reject(error),
+    }
+}
+
+#[ic_cdk::update(manual_reply = true)]
+async fn sns_schedule_activation(proposal: base_governance::SnsActivationProposal) {
+    prepare_sns_activation(proposal, true).await;
+}
+
+#[ic_cdk::update(manual_reply = true)]
+async fn sns_execute_activation(proposal: base_governance::SnsActivationProposal) {
+    prepare_sns_activation(proposal, false).await;
 }
 
 #[ic_cdk::update]

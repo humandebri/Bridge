@@ -4,11 +4,23 @@
 
 - **State**: IN PROGRESS
 - **Dependency**: Plan 005の初期運用値、固定limit、実pause principalが確定していること。pause/cancel経路演習と7日・各10件の本番計測はunpause後のGate Cで行い、初回activationまたはcontroller handoverを認可しない。
-- **Safety**: Gate B executeへの明示承認まで本番資産を受け付けない。外部transaction、controller変更、proposal提出、activationは個別承認なしに実行しない。
+- **Safety**: 初回activationは完了し、本番資産を受付中。再開実証や移譲は初回Gate Bとは別途承認する。外部transaction、controller変更、proposal提出、activationは個別承認なしに実行しない。
+
+## 個人controller保持期間のDAO実証
+
+本番は公開済みでテスト運用中。初回activationをやり直さず、個人単独controllerを保持してDAOの再開経路を確認する。実装とローカル検証の完了は、本番proposal提出、停止・再開、controller変更の承認を兼ねない。
+
+- SNSの専用validatorと実行入口は同じtyped payload（直前に確定したactivationのgovernance operation ID）を受け取る。validatorは読み取りのみ、実行はGovernance callerだけを認可し既存の管理カーネルへ委譲する。
+- 個人の緊急停止、DAOによるschedule、24時間後の別proposalによるexecute、relay、CanisterのFinalized確認、少額入出金までを本番実証とする。proposalのexecutedだけでは完了ではない。
+- 直前の確定operationが変われば古いpayloadを拒否する。未確定の同一操作は既存transactionを再開し、別transactionを重複生成しない。
+- 本番実証後、期間を固定せず運用者が別途承認してRoot-only変更、SNS管理対象登録、同一Wasm upgradeを順に実施する。
+- 本番SNS登録は個人controllerを削除するため、個人権限の保持期間には実施しない。
+
+具体的な準備・確認手順は`docs/runbooks/dao-reactivation.md`を参照する。
 
 ## 権限モデル
 
-KINIC SNS Governance `74ncn-fqaaa-aaaaq-aaasa-cai`をIC/Base双方の管理trust rootとする。人間が長期保有する管理資格情報は単一のIC emergency pause principalだけとし、finance principal、release approver、人間のBase Admin/Runtime/Cancellerを置かない。
+KINIC SNS Governance `74ncn-fqaaa-aaaaq-aaasa-cai`をIC/Base双方の管理trust rootとする。最終移譲後に人間が長期保有する管理資格情報は単一のIC emergency pause principalだけとし、finance principal、release approver、人間のBase Admin/Runtime/Cancellerを置かない。
 
 Bridge Canisterは異なるderivation pathからMint SignerとGovernance Operatorを導出する。Mint SignerはEIP-712 Deposit Mint Authorization署名専用で、Base transactionを送信せずETHも保持しない。Governance OperatorはBase pause、Service Fee、Timelock schedule/cancel/executeの署名専用とし、外部relayerが送信・確定通知を担う。nonceとtransaction recordはMint署名レーンと共有しない。Base管理APIはclosed enumのみを受け付け、任意target、calldata、raw transaction、nonceを入力させない。
 

@@ -1,0 +1,21 @@
+{
+  "observed_at": "2026-09-14T01:57:52.753461+00:00",
+  "command": [
+    "icp",
+    "canister",
+    "call",
+    "bridge-canister",
+    "get_operational_config",
+    "()",
+    "-e",
+    "production",
+    "--identity",
+    "production",
+    "--query",
+    "--json"
+  ],
+  "exit_code": 0,
+  "stdout": "{\"response_bytes\":\"4449444c076b02bc8a0101c5fed201066c16d0d19b237abfebc98a017acea3e6be017de0d5dae1017ac9fe97ef0178c6c18e800202e6e3a3c3027892efe7c3027ad292c1d00278e092f88e04039fc280ae0478dd80f6bf0478f7d7ab88057aea848bcc057ac5e9b4ad097ae5e1a4890a6891e4d7ee0a68e3c9e9a20b68d2d8b6e80c78f5f3fcf00c05a1eb80810e04daebd8f20e7d6c08e382f2aa017dd5b8e9c00578d3a397cb077ddce3a5f8087dfa9bc0ed0c79d1e7d5d70d79aea7b1d70e79e19298830f7d6c02b3b0dac30368ad86ca8305046d7b6c02b58ee6b3067a9ca4afe50c7b6b01d4b4c59a097f0100003c00060080e497d01203008403000000000000b4f2b3e9705a00000000000000d0fa06c0dac402983a0000c832000060ea000080c2d72f02000000000000003c003c00000000000000011d32df0a4598b3c1a593f47d931aed89efbe0c5850c2acbe071eb3cc0f0200580200000000000058020000000000001e0003001e00011de83e09d1d44669ab10af219be8f243d3fd011fd78f0d609b101f32f902010a00000000020000240101011d68e310e836ff7e0249568ca46ce29c8d0f9ef7a4b2c4037d2be283a9023c00000000000000e2040314f6dcc3fcde91c6ef3c5d73c94c48c58c7ff2cf84bccfbb8bd50f\",\"response_text\":null,\"response_candid\":\"(\\n  variant {\\n    17_724 = record {\\n      73_853_136 = 60 : nat16;\\n      290_616_767 = 6 : nat16;\\n      400_134_606 = 5_000_000_000 : nat;\\n      473_344_736 = 3 : nat16;\\n      501_612_361 = 900 : nat64;\\n      537_108_678 = record {\\n        358_383_971 = 30_285_822_260 : nat;\\n        1_478_122_581 = 90 : nat64;\\n        2_036_715_987 = 114_000 : nat;\\n        2_399_760_860 = 5_320_000 : nat;\\n        3_450_867_194 = 15_000 : nat32;\\n        3_673_519_057 = 13_000 : nat32;\\n        3_941_356_462 = 60_000 : nat32;\\n        4_033_218_913 = 100_000_000 : nat;\\n      };\\n      677_966_310 = 2 : nat64;\\n      679_081_874 = 60 : nat16;\\n      705_710_418 = 60 : nat64;\\n      1_105_070_432 = record {\\n        947_296_307 = principal \\\"tn7co-ars34-felgf-tygsz-h5d5s-mno3c-ppxyg-fqugc-vs7ao-hvtzq-hqe\\\";\\n        1_349_681_965 = blob \\\"\\\";\\n      };\\n      1_170_219_295 = 600 : nat64;\\n      1_207_795_805 = 600 : nat64;\\n      1_359_670_263 = 30 : nat16;\\n      1_501_741_674 = 3 : nat16;\\n      2_511_156_421 = 30 : nat16;\\n      2_703_831_269 = principal \\\"lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe\\\";\\n      2_916_479_505 = principal \\\"74ncn-fqaaa-aaaaq-aaasa-cai\\\";\\n      3_025_822_947 = principal \\\"huxkg-e3i4m-ioqnx-7pybe-svumu-rwofh-enb6p-ppjfs-yqbx2-k7cqo-uqe\\\";\\n      3_440_225_362 = 60 : nat64;\\n      3_458_152_949 = record {\\n        1_719_240_501 = 1_250 : nat16;\\n        3_433_812_508 = 3 : nat8;\\n      };\\n      3_760_207_265 = blob \\\"\\\\f6\\\\dc\\\\c3\\\\fc\\\\de\\\\91\\\\c6\\\\ef\\\\3c\\\\5d\\\\73\\\\c9\\\\4c\\\\48\\\\c5\\\\8c\\\\7f\\\\f2\\\\cf\\\\84\\\";\\n      3_998_627_290 = 538_237_134_780 : nat;\\n    }\\n  },\\n)\"}",
+  "stderr": "WARN could not fetch candid type, serializing arguments with inferred types.\n",
+  "stdout_sha256": "87a0583079722b5b69246ff9b41a449ef4015c29b370a145c930ba6e36efb1f3"
+}

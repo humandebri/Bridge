@@ -191,6 +191,9 @@ def confirmedActivationMetadataMatches
     (confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt : Nat) : Bool :=
   confirmedGeneration == artifactGeneration && confirmedSignedAt == artifactSignedAt
 
+def snsUpgradeCompletionAllowed (root : Bool) (completed decided handover now : Nat) : Bool :=
+  root && decide (decided > 0 ∧ completed ≥ decided ∧ completed ≥ handover ∧ completed ≤ now)
+
 def ConfirmedActivationEvidenceBinding : Prop :=
   (∀ foundMatch foundAdditionalMatch : Bool,
       confirmedActivationAttemptIsUnique foundMatch foundAdditionalMatch = true ↔
@@ -198,7 +201,10 @@ def ConfirmedActivationEvidenceBinding : Prop :=
   (∀ confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt : Nat,
       confirmedActivationMetadataMatches
           confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt = true ↔
-        confirmedGeneration = artifactGeneration ∧ confirmedSignedAt = artifactSignedAt)
+        confirmedGeneration = artifactGeneration ∧ confirmedSignedAt = artifactSignedAt) ∧
+  (∀ (root : Bool) (completed decided handover now : Nat),
+      snsUpgradeCompletionAllowed root completed decided handover now = true ↔
+        root = true ∧ decided > 0 ∧ completed ≥ decided ∧ completed ≥ handover ∧ completed ≤ now)
 
 theorem confirmed_activation_evidence_binding_witness :
     ConfirmedActivationEvidenceBinding := by
@@ -206,8 +212,11 @@ theorem confirmed_activation_evidence_binding_witness :
   · intro foundMatch foundAdditionalMatch
     cases foundMatch <;> cases foundAdditionalMatch <;>
       simp [confirmedActivationAttemptIsUnique]
-  · intro confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt
-    simp [confirmedActivationMetadataMatches, Bool.and_eq_true]
+  · constructor
+    · intro confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt
+      simp [confirmedActivationMetadataMatches, Bool.and_eq_true]
+    · intro root completed decided handover now
+      simp [snsUpgradeCompletionAllowed, Bool.and_eq_true]
 
 def IntegratedProtocolReachability : Prop :=
   (∀ {state : Protocol.ProtocolState}, Protocol.Reachable state → Protocol.Safe state) ∧

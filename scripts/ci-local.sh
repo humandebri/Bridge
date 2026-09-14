@@ -178,6 +178,7 @@ run_versions() {
   python3 "$ROOT/scripts/test_proof_fingerprint_candidate_scripts.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"
+  python3 "$ROOT/scripts/test_sns_test_runtime.py"
   python3 "$ROOT/scripts/test_trusted_staging_layout.py"
   "$ROOT/scripts/test_ci_guards.sh"
   "$ROOT/scripts/test_production_canister_bootstrap.sh"

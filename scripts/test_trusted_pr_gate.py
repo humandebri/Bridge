@@ -14,6 +14,72 @@ WORKFLOW = ROOT / ".github" / "workflows" / "trusted-pr-gate.yml"
 
 
 class TrustedPrGateTests(unittest.TestCase):
+    def test_sns_runtime_missing_assets_stop_before_container_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy = root / 'policy'
+            runtime = policy / '.tools/sns-test-runtime'
+            runtime.mkdir(parents=True)
+            assets = ('sns-governance-canister.wasm', 'sns-root-canister.wasm',
+                      'sns-governance-canister.cjs', 'sns-root-canister.cjs')
+            for asset in assets:
+                (runtime / asset).write_text('fixture')
+            (root / 'paths.json').write_text('[]')
+            for mode in ('rust-integration', 'proofs', 'proofs-impacted'):
+                for asset in assets:
+                    with self.subTest(mode=mode, asset=asset):
+                        (runtime / asset).unlink()
+                        result = subprocess.run(
+                            ['bash', str(ROOT / 'scripts/trusted-pr-container.sh'),
+                             str(root), str(policy), mode, str(root)] +
+                            ([str(root / 'paths.json')] if mode == 'proofs-impacted' else []),
+                            capture_output=True, text=True)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('trusted SNS test runtime asset is missing: ' + asset,
+                                      result.stderr)
+                        (runtime / asset).mkdir()
+                        result = subprocess.run(
+                            ['bash', str(ROOT / 'scripts/trusted-pr-container.sh'),
+                             str(root), str(policy), mode, str(root)] +
+                            ([str(root / 'paths.json')] if mode == 'proofs-impacted' else []),
+                            capture_output=True, text=True)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('trusted SNS test runtime asset is missing: ' + asset,
+                                      result.stderr)
+                        (runtime / asset).rmdir()
+                        (runtime / asset).write_text('fixture')
+
+    def test_sns_runtime_mount_uses_trusted_policy_and_keeps_empty_tools(self):
+        wrapper = (ROOT / 'scripts/trusted-pr-container.sh').read_text()
+        # Execute the preflight with distinct candidate/trusted directories.
+        prefix = wrapper.split('NEEDS_WORKSPACE_DEPS=false', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy = root / 'policy'
+            runtime = policy / '.tools/sns-test-runtime'
+            runtime.mkdir(parents=True)
+            for asset in ('sns-governance-canister.wasm', 'sns-root-canister.wasm',
+                          'sns-governance-canister.cjs', 'sns-root-canister.cjs'):
+                (runtime / asset).write_text('fixture')
+            (root / 'paths.json').write_text('[]')
+            for mode in ('rust-integration', 'proofs', 'proofs-impacted', 'rust-fast'):
+                result = subprocess.run(
+                    ['bash', '-c', prefix + '\nset +u\nprintf "%s\\n" "${SNS_RUNTIME_ARGS[@]}"',
+                     'test', str(root), str(policy), mode, str(root)] +
+                    ([str(root / 'paths.json')] if mode == 'proofs-impacted' else []),
+                    env={**os.environ, 'BRIDGE_SNS_TEST_RUNTIME': '/untrusted'},
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if mode == 'rust-fast':
+                    self.assertEqual(result.stdout.strip(), '')
+                else:
+                    self.assertIn(f'src={runtime},dst=/opt/bridge-sns-runtime,readonly', result.stdout)
+                    self.assertIn('BRIDGE_SNS_TEST_RUNTIME=/opt/bridge-sns-runtime', result.stdout)
+                    self.assertNotIn('/untrusted', result.stdout)
+        self.assertIn('"${SNS_RUNTIME_ARGS[@]}"', wrapper.split('docker run --rm', 1)[1])
+        self.assertIn('src=$SCRATCH/empty-tools,dst=/workspace/.tools,readonly', wrapper)
+        self.assertIn('--network none', wrapper)
+
     def test_upgrade_jobs_fetch_the_pinned_predecessor_outside_candidate_execution(self) -> None:
         revision = "e0b426e7465531d2e572b5b741509f1889e6def8"
         fixture = (ROOT / "integration" / "phase3.spec.ts").read_text(encoding="utf-8")

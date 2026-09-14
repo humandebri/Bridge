@@ -108,15 +108,15 @@ BridgeSpec.ClaimContracts.committed_quote_witness : BridgeSpec.ClaimContracts.Co
 
 仕様: `docs/canister-state-machine.md`
 
-前提: match個数とgeneration・signedAtを入力
+前提: activationのmatch個数・generation・signedAt、upgrade完了hookのcallerと時刻を入力
 
-結論: 単一matchかつmetadataの厳密一致
+結論: activationは単一matchとmetadata厳密一致。SNS更新はRootの完了hookが採択・移譲後かつ未来でない
 
-未証明境界: 履歴探索・署名・永続化の真正性は別証拠
+未証明境界: IC callbackとcaller・時刻の真正性、同時upgradeがないこと、SNSとIC実行完了は外部仮定
 
 証拠・外部仮定: `claims.tsv:confirmed_activation_evidence_binding` / `claims.tsv:confirmed_activation_evidence_binding`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+レビュー理由: 同一Wasmのproposal受理とpost_upgrade完了を区別する判定を追加。実SNSの失敗と完了を別途検証する。
 
 ```lean
 BridgeSpec.ClaimContracts.confirmed_activation_evidence_binding_witness : BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding
@@ -1075,7 +1075,7 @@ And
 
 ### BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding
 
-specification: 単一matchかつmetadataの厳密一致
+specification: activationの単一match・metadata厳密一致と、Rootによる採択・移譲後のupgrade完了hook
 
 仕様: `docs/canister-state-machine.md`
 
@@ -1086,13 +1086,19 @@ And
     Iff
       (Eq.{1} (BridgeSpec.ClaimContracts.confirmedActivationAttemptIsUnique foundMatch foundAdditionalMatch) Bool.true)
       (And (Eq.{1} foundMatch Bool.true) (Eq.{1} foundAdditionalMatch Bool.false)))
-  (∀ (confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt : Nat),
-    Iff
-      (Eq.{1}
-        (BridgeSpec.ClaimContracts.confirmedActivationMetadataMatches confirmedGeneration confirmedSignedAt
-          artifactGeneration artifactSignedAt)
-        Bool.true)
-      (And (Eq.{1} confirmedGeneration artifactGeneration) (Eq.{1} confirmedSignedAt artifactSignedAt)))
+  (And
+    (∀ (confirmedGeneration confirmedSignedAt artifactGeneration artifactSignedAt : Nat),
+      Iff
+        (Eq.{1}
+          (BridgeSpec.ClaimContracts.confirmedActivationMetadataMatches confirmedGeneration confirmedSignedAt
+            artifactGeneration artifactSignedAt)
+          Bool.true)
+        (And (Eq.{1} confirmedGeneration artifactGeneration) (Eq.{1} confirmedSignedAt artifactSignedAt)))
+    (∀ (root : Bool) (completed decided handover now : Nat),
+      Iff (Eq.{1} (BridgeSpec.ClaimContracts.snsUpgradeCompletionAllowed root completed decided handover now) Bool.true)
+        (And (Eq.{1} root Bool.true)
+          (And (GT.gt.{0} decided 0)
+            (And (GE.ge.{0} completed decided) (And (GE.ge.{0} completed handover) (LE.le.{0} completed now)))))))
 ```
 
 ### BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy
@@ -2363,7 +2369,7 @@ fun observedTimestamp deadline =>
 | Source | Lines | Declarations | SHA-256 |
 |---|---:|---:|---|
 | verification/lean/BridgeSpec/AuditExport.lean | 18 | 1 | 71f528152dcd1c0a250ae213e0d250e8c4a46d42002c38d579b13679dd7bf501 |
-| verification/lean/BridgeSpec/ClaimContracts.lean | 624 | 105 | dcf249993e8e20af7fc1645817e6b1f7c099b8276ae630e83898912e494b176a |
+| verification/lean/BridgeSpec/ClaimContracts.lean | 633 | 106 | 3d8f15747089cba5ba9eda5a60b7492225698d5f45ad94196ce7eceb102d1c12 |
 | verification/lean/BridgeSpec/Claims.lean | 226 | 28 | f74ffe05f86fbdfa4e94095bdc2dc64a1dd3ed94c947a4b800af6433dada3430 |
 | verification/lean/BridgeSpec/ControlPlane.lean | 323 | 32 | 57e6656b42d4da34726d8e69bfe129939d7649070923beddc9c5fdce8876936c |
 | verification/lean/BridgeSpec/DepositAuthorization.lean | 586 | 48 | 737633200787c8db2275d4a8408e8bad75754e04415c9cbc435b934660ca001e |

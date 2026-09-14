@@ -1,3 +1,23 @@
+macro_rules! sns_upgrade_completion_allowed_body {
+    ($root:expr, $completed:expr, $decided:expr, $handover:expr, $now:expr, $zero:expr) => {
+        $root
+            && $decided > $zero
+            && $completed >= $decided
+            && $completed >= $handover
+            && $completed <= $now
+    };
+}
+
+macro_rules! sns_activation_proposal_allowed_body {
+    ($activated:expr, $paused:expr, $predecessor:expr, $schedule:expr, $pending:expr, $last_schedule:expr) => {
+        $activated
+            && $paused
+            && $predecessor
+            && ($pending != $schedule)
+            && ($schedule || $last_schedule)
+    };
+}
+
 // These expression macros are the single source for the Cargo executable functions and their
 // Verus spec views. Keep them free of allocation, traits, I/O, and canister APIs.
 #[cfg(not(verus_keep_ghost))]
@@ -1945,6 +1965,36 @@ pub const fn payout_debit(confirmed_first_time: bool, amount: u128, fee: u128) -
 }
 
 #[cfg(not(verus_keep_ghost))]
+pub const fn sns_upgrade_completion_allowed(
+    root_caller: bool,
+    completed: u64,
+    decided: u64,
+    handover: u64,
+    now: u64,
+) -> bool {
+    sns_upgrade_completion_allowed_body!(root_caller, completed, decided, handover, now, 0)
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn sns_activation_proposal_allowed(
+    activated: bool,
+    paused: bool,
+    predecessor_matches: bool,
+    schedule: bool,
+    pending_timelock: bool,
+    last_was_schedule: bool,
+) -> bool {
+    sns_activation_proposal_allowed_body!(
+        activated,
+        paused,
+        predecessor_matches,
+        schedule,
+        pending_timelock,
+        last_was_schedule
+    )
+}
+
+#[cfg(not(verus_keep_ghost))]
 pub const fn administrator_authorized(action: u8, is_pause: bool, is_governance: bool) -> bool {
     authorized_body!(action, is_pause, is_governance, 0u8, 1u8, 2u8, 3u8)
 }
@@ -2852,6 +2902,18 @@ verus! {
         if !confirmed_first_time { Some(0) }
         else if amount > max - fee { None }
         else { Some(amount + fee) }
+    }
+
+    pub open spec fn sns_upgrade_completion_allowed_spec(root_caller: bool, completed: int, decided: int, handover: int, now: int) -> bool {
+        let zero: int = 0;
+        sns_upgrade_completion_allowed_body!(root_caller, completed, decided, handover, now, zero)
+    }
+
+    pub open spec fn sns_activation_proposal_allowed_spec(
+        activated: bool, paused: bool, predecessor_matches: bool,
+        schedule: bool, pending_timelock: bool, last_was_schedule: bool,
+    ) -> bool {
+        sns_activation_proposal_allowed_body!(activated, paused, predecessor_matches, schedule, pending_timelock, last_was_schedule)
     }
 
     pub open spec fn administrator_authorized_spec(action: int, pause: bool, governance: bool) -> bool {

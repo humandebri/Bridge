@@ -21,6 +21,22 @@ else
     || { echo "changed-paths input is only valid for proofs-impacted" >&2; exit 2; }
 fi
 
+SNS_RUNTIME_ARGS=()
+case "$MODE" in
+  rust-integration|proofs|proofs-impacted)
+    SNS_RUNTIME="$POLICY_ROOT/.tools/sns-test-runtime"
+    [[ -d "$SNS_RUNTIME" && ! -L "$POLICY_ROOT/.tools" && ! -L "$SNS_RUNTIME" ]] \
+      || { echo "trusted SNS test runtime is missing" >&2; exit 1; }
+    for asset in sns-governance-canister.wasm sns-root-canister.wasm \
+      sns-governance-canister.cjs sns-root-canister.cjs; do
+      [[ -f "$SNS_RUNTIME/$asset" && -s "$SNS_RUNTIME/$asset" && ! -L "$SNS_RUNTIME/$asset" ]] \
+        || { echo "trusted SNS test runtime asset is missing: $asset" >&2; exit 1; }
+    done
+    SNS_RUNTIME_ARGS=(--mount "type=bind,src=$SNS_RUNTIME,dst=/opt/bridge-sns-runtime,readonly"
+      --env BRIDGE_SNS_TEST_RUNTIME=/opt/bridge-sns-runtime)
+    ;;
+esac
+
 NEEDS_WORKSPACE_DEPS=false
 NEEDS_UI_DEPS=false
 NEEDS_RUST_TOOLCHAIN=false
@@ -229,6 +245,7 @@ docker run --rm \
   "${TOOL_MOUNTS[@]}" \
   --mount type=bind,src=/opt/hostedtoolcache,dst=/opt/hostedtoolcache,readonly \
   "${CACHE_MOUNTS[@]}" \
+  "${SNS_RUNTIME_ARGS[@]}" \
   "${CHANGED_PATHS_MOUNTS[@]}" \
   --env CI=true \
   --env BRIDGE_TRUSTED_BASE_SHA="$(git -C "$POLICY_ROOT" rev-parse HEAD)" \
