@@ -2,7 +2,7 @@ overrides:
   # Security override for GHSA-73wf-gq98-2v4g until upstream dependency trees require a fixed browserslist.
   browserslist: 4.28.7
   # Security override until @istanbuljs/load-nyc-config excludes vulnerable js-yaml releases.
-  js-yaml: 3.15.1
+  js-yaml: 3.15.2
 
 allowBuilds:
   '@dfinity/pic': true
