@@ -213,7 +213,9 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
     BigInt(initial.indexBlocksSynced) + 4n,
   )
   await openHistory(page)
-  await expect(page.getByText("Success", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("Mint complete", { exact: true }).first()).toBeVisible({
+    timeout: 30_000,
+  })
   for (const heading of [
     "Direction",
     "Base tx",
@@ -234,7 +236,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   const nextStepHeader = page.getByText("Next step", { exact: true }).filter({ visible: true })
   const completedDepositNextStep = page
     .locator("article")
-    .filter({ hasText: "Success" })
+    .filter({ hasText: "Mint complete" })
     .first()
     .getByText("—", { exact: true })
   const nextStepHeaderBox = await nextStepHeader.boundingBox()
@@ -248,7 +250,9 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await page.reload()
   await expect(page.getByRole("button", { name: /IC wallet connected as /i })).toBeVisible()
   await expect(page.getByRole("button", { name: "Connect IC wallet", exact: true })).toHaveCount(0)
-  await expect(page.getByText("Success", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("Mint complete", { exact: true }).first()).toBeVisible({
+    timeout: 30_000,
+  })
 
   const beforeWithdrawal = await controlState(request)
   const bridgeUpdateGate = await holdIcUpdateMethod(page, "continue_withdrawal")
@@ -326,12 +330,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   ])
   bridgeUpdateObserver.stop()
   await bridgeUpdateGate.stop()
-  await expect(
-    page.getByText(
-      "The withdrawal is recorded but needs reconciliation. Open History to review the available action.",
-      { exact: true },
-    ),
-  ).toBeVisible()
+  await expect(page.getByText("Payout needs reconciliation.", { exact: true })).toBeVisible()
   expect((await controlState(request)).bsnsAllowance).toBe("0")
   await openHistory(page)
   await page
@@ -339,7 +338,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
     .filter({ has: page.getByRole("heading", { name: "Bridge history" }) })
     .getByRole("button", { name: "Refresh", exact: true })
     .click()
-  await expect(page.getByText("Recovery needed", { exact: true })).toBeVisible()
+  await expect(page.getByText("Transfer needs attention", { exact: true })).toBeVisible()
   await expect(page.getByRole("button", { name: "Continue payout", exact: true })).toBeVisible()
   await page.getByRole("button", { name: /IC wallet connected as /i }).click()
   await page.getByRole("button", { name: /^Disconnect (OISY Wallet|Plug)$/ }).click()
@@ -352,17 +351,19 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await expect(page.getByRole("button", { name: "Connect IC wallet", exact: true })).toBeVisible()
   for (let attempt = 0; attempt < 4; attempt += 1) {
     await page.locator("header").getByRole("button", { name: "Refresh", exact: true }).click()
-    if (await page.getByText("Paid", { exact: true }).isVisible()) break
+    if (await page.getByText("Withdrawal complete", { exact: true }).isVisible()) break
     const continuePayout = page.getByRole("button", { name: "Continue payout", exact: true })
     if (await continuePayout.isVisible()) {
       await continuePayout.click()
       await postControl(request, "/test/relay", {})
     } else {
-      await expect(page.getByText("Paid", { exact: true })).toBeVisible()
+      await expect(page.getByText("Withdrawal complete", { exact: true })).toBeVisible()
       break
     }
   }
-  await expect(page.getByText("Paid", { exact: true })).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("Withdrawal complete", { exact: true })).toBeVisible({
+    timeout: 30_000,
+  })
   await expect(page.getByText("0.99 KINIC", { exact: true }).last()).toBeVisible()
   await expect(page.getByText(/^Payout #[\d,]+$/).first()).toBeVisible()
   await expect(page.getByText(/KINIC to IC/)).toHaveCount(0)
@@ -383,7 +384,9 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   expect(BigInt(final.indexBlocksSynced)).toBeGreaterThan(BigInt(afterDeposit.indexBlocksSynced))
   expect(BigInt(final.bsnsBalance)).toBe(198_000_000n)
   await expect(page.getByText("Base → IC", { exact: true }).first()).toBeVisible()
-  await expect(page.getByText("Paid", { exact: true })).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("Withdrawal complete", { exact: true })).toBeVisible({
+    timeout: 30_000,
+  })
 })
 
 test("claims an expired deposit refund from History", async ({ page, request }) => {
@@ -409,14 +412,14 @@ test("claims an expired deposit refund from History", async ({ page, request }) 
     has: page.getByText(depositLabel, { exact: true }),
   })
   await expect(refundRow).toHaveCount(1)
-  await expect(refundRow.getByRole("button", { name: "Claim refund", exact: true })).toBeVisible()
+  await expect(refundRow.getByRole("button", { name: "Check refund", exact: true })).toBeVisible()
   const refundResponse = page.waitForResponse(
     (candidate) =>
       candidate.request().method() === "POST" &&
       candidate.url().endsWith("/ic/request-deposit-refund"),
     { timeout: 120_000 },
   )
-  await refundRow.getByRole("button", { name: "Claim refund", exact: true }).click()
+  await refundRow.getByRole("button", { name: "Check refund", exact: true }).click()
   const completedRefund = await refundResponse
   expect(completedRefund.request().postDataJSON()).toMatchObject({ id: depositId })
   expect(completedRefund.ok()).toBe(true)
@@ -426,9 +429,11 @@ test("claims an expired deposit refund from History", async ({ page, request }) 
     has: page.getByText(depositLabel, { exact: true }),
   })
   await expect(refundedRow).toHaveCount(1)
-  await expect(refundedRow.getByText("Refunded", { exact: true })).toBeVisible({ timeout: 30_000 })
+  await expect(refundedRow.getByText("Refund complete", { exact: true })).toBeVisible({
+    timeout: 30_000,
+  })
   await expect(
-    refundedRow.getByRole("button", { name: /Claim refund|Request refund/ }),
+    refundedRow.getByRole("button", { name: /Check refund|Claim refund|Request refund/ }),
   ).toHaveCount(0)
 })
 

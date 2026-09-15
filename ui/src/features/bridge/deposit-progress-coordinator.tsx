@@ -1,5 +1,6 @@
+import { useDepositRefund, depositRefundProgress } from "./use-deposit-refund"
 import { Principal } from "@icp-sdk/core/principal"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useState, useRef } from "react"
 import { toast } from "sonner"
 import type { DepositView } from "@/generated/bridge.did"
 import { deploymentProfile } from "@/config/profile"
@@ -17,11 +18,17 @@ const notifiedDepositStops = new Set<string>()
 
 /** Rebuilds the latest deposit presentation from canonical IC and Base facts. */
 export function DepositProgressCoordinator() {
+  const refundAction = useDepositRefund()
   const bridgeProgress = useBridgeProgress()
   const progress = bridgeProgress.progress
   const progressId = progress?.id
   const setProgressAction = bridgeProgress.setAction
-  const updateProgress = bridgeProgress.update
+  const rawUpdate = bridgeProgress.update
+  const updateProgress = useCallback(
+    (id: string, patch: Parameters<typeof rawUpdate>[1]) =>
+      rawUpdate(id, { observationSource: "ic", ...patch }),
+    [rawUpdate],
+  )
   const identity = progress?.direction === "deposit" ? progress.deposit : undefined
   const identityKey = identity ? `${identity.owner}:${identity.ownerSequence}` : undefined
   const [observation, setObservation] = useState<{ identityKey: string; record: DepositView }>()
@@ -38,13 +45,15 @@ export function DepositProgressCoordinator() {
     if (
       !progress ||
       !identity ||
-      progress.phase === "complete" ||
-      (progress.phase === "attention" && progress.attentionPhase !== "authorization-generating")
+      (progress.phase === "complete" && !progress.transfer?.recordingPending)
     ) {
       return
     }
     let active = true
+    let running = false
     const tick = async () => {
+      if (!active || running) return
+      running = true
       try {
         const actor = await createBridgeActor(
           deploymentProfile.icHost,
@@ -61,10 +70,20 @@ export function DepositProgressCoordinator() {
         if ("Minted" in record.state) {
           updateProgress(progress.id, {
             phase: "complete",
+            outcome: "minted",
+            recordingPending: false,
+            observationError: undefined,
             completionMessage: `${progress.receiveAmount} ${progress.receiveSymbol} was minted on Base.`,
           })
-        } else if ("AuthorizationAvailable" in record.state && !progress.transactionHash) {
-          updateProgress(progress.id, { phase: "awaiting-base-mint" })
+        } else if (
+          "AuthorizationAvailable" in record.state &&
+          !progress.transactionHash &&
+          (progress.phase === "authorization-generating" ||
+            progress.phase === "ic-deposit-accepted" ||
+            (progress.phase === "attention" &&
+              progress.attentionPhase === "authorization-generating"))
+        ) {
+          updateProgress(progress.id, { phase: "awaiting-base-mint", observationError: undefined })
         } else if (continuation.mode === "stopped") {
           const message = continuation.message ?? "This deposit stopped and needs attention."
           updateProgress(progress.id, {
@@ -94,15 +113,15 @@ export function DepositProgressCoordinator() {
           "FundingReconciliationHold" in record.state ||
           "Cancelled" in record.state
         ) {
-          updateProgress(progress.id, {
-            phase: "attention",
-            attentionPhase: "authorization-generating",
-            attentionMessage:
-              "This deposit cannot continue to Base minting. Open History to review its refund or reconciliation state.",
-          })
+          updateProgress(progress.id, depositRefundProgress(record))
         }
       } catch {
-        // Temporary IC query failures keep the last observed state and retry.
+        if (active)
+          updateProgress(progress.id, {
+            observationError: "IC status could not be refreshed. Retrying.",
+          })
+      } finally {
+        running = false
       }
     }
     void tick()
@@ -117,39 +136,87 @@ export function DepositProgressCoordinator() {
   const onProgress = useCallback(
     (event: MintProgressEvent) => {
       if (!progressId) return
-      if (event.phase === "storage-warning")
-        updateProgress(progressId, { attentionMessage: event.message })
-      else if (event.phase === "awaiting-wallet" || event.phase === "preparing")
-        updateProgress(progressId, { phase: "awaiting-base-mint" })
-      else if (event.phase === "submitted")
+      const updateMint = (patch: Parameters<typeof rawUpdate>[1]) =>
         updateProgress(progressId, {
+          ...patch,
+          observationSource:
+            event.phase === "preparing" ||
+            event.phase === "awaiting-wallet" ||
+            event.phase === "attention"
+              ? "wallet"
+              : "base",
+        })
+      if (event.phase === "storage-warning") updateMint({ storageWarning: event.message })
+      else if (event.phase === "awaiting-wallet" || event.phase === "preparing")
+        updateMint({ phase: "awaiting-base-mint" })
+      else if (event.phase === "submitted")
+        updateMint({
           phase: "base-mint-submitted",
           transactionHash: event.transactionHash,
           receiptBlockNumber: undefined,
           baseTransactionOutcome: undefined,
         })
       else if (event.phase === "included")
-        updateProgress(progressId, {
+        updateMint({
           phase: "base-mint-included",
+          observationError: undefined,
           transactionHash: event.transactionHash,
           receiptBlockNumber: event.blockNumber.toString(),
           baseTransactionOutcome: event.outcome,
         })
+      else if (event.phase === "recorded")
+        updateMint({
+          phase: "complete",
+          outcome: "minted",
+          recordingPending: false,
+          observationError: undefined,
+        })
+      else if (event.phase === "finalized")
+        updateMint({
+          phase: "complete",
+          outcome: "minted",
+          recordingPending: true,
+          observationError: undefined,
+        })
       else if (event.phase === "finalizing")
-        updateProgress(progressId, {
+        updateMint({
           phase: "base-mint-finalizing",
           transactionHash: event.transactionHash,
           receiptBlockNumber: event.blockNumber.toString(),
         })
+      else if (event.phase === "unavailable") updateMint({ observationError: event.message })
       else if (event.phase === "attention")
-        updateProgress(progressId, {
+        updateMint({
           phase: "attention",
           transactionHash: event.transactionHash ?? transactionHash,
+          attentionPhase: "awaiting-base-mint",
           attentionMessage: event.message,
+          issue: event.issue,
         })
     },
     [progressId, transactionHash, updateProgress],
   )
+
+  const refundRecord = useRef(record)
+  const requestRefund = useRef(refundAction.request)
+  useEffect(() => {
+    refundRecord.current = record
+    requestRefund.current = refundAction.request
+  }, [record, refundAction.request])
+  const canonicalRefund = Boolean(
+    record && ("RefundAvailable" in record.state || "RefundProcessing" in record.state),
+  )
+  useEffect(() => {
+    if (!canonicalRefund) return
+    registerAction({
+      label: refundAction.pending ? "Checking…" : "Check refund",
+      pending: refundAction.pending,
+      run: async () => {
+        if (refundRecord.current) await requestRefund.current(refundRecord.current).catch(() => {})
+      },
+    })
+    return () => registerAction(undefined)
+  }, [canonicalRefund, refundAction.pending, registerAction])
 
   if (
     !progress ||
@@ -174,6 +241,10 @@ export function DepositProgressCoordinator() {
       onProgress={onProgress}
       onMintConfirmed={onMintConfirmed}
       registerAction={registerAction}
+      onRequestRefund={() => {
+        void refundAction.request(record).catch(() => {})
+      }}
+      claimingRefund={refundAction.pending}
     />
   )
 }

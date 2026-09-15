@@ -1,3 +1,9 @@
+import {
+  transferPresentation,
+  type TransferFacts,
+  type TransferIssue,
+  type TransferOutcome,
+} from "./transfer-state"
 import { deploymentProfile } from "@/config/profile"
 import { browserLocalStorage } from "@/lib/browser-lock"
 import { transferAttentionTitle } from "@/lib/transfer-error"
@@ -23,6 +29,9 @@ export type BridgeProgressPhase =
   | "awaiting-ic-notification"
   | "ic-notification-recorded"
   | "ledger-payout"
+  | "refund-checking"
+  | "refund-processing"
+  | "refund-waiting"
   | "complete"
   | "attention"
 
@@ -63,6 +72,14 @@ export interface BridgeProgressRecord {
   attentionMessage?: string
   attentionPhase?: ActiveBridgeProgressPhase
   completionMessage?: string
+  transfer?: TransferFacts
+  issue?: TransferIssue
+  outcome?: TransferOutcome
+  observationSource?: "ic" | "base" | "wallet" | "operation"
+  observationError?: string
+  walletWarning?: string
+  storageWarning?: string
+  recordingPending?: boolean
 }
 
 const STORAGE_VERSION = 3
@@ -125,17 +142,17 @@ export function createBridgeProgress(
   }
 }
 
-export function saveLatestBridgeProgress(record: BridgeProgressRecord): void {
-  if (typeof window === "undefined") return
+export function saveLatestBridgeProgress(record: BridgeProgressRecord): boolean {
+  if (typeof window === "undefined") return false
   try {
     if (record.phase === "complete") {
       browserLocalStorage().removeItem(storageKey())
-      return
+      return true
     }
     const phase = restorablePhase(record)
     if (!phase) {
       browserLocalStorage().removeItem(storageKey())
-      return
+      return true
     }
     const stored: StoredBridgeProgress = {
       version: record.version,
@@ -157,8 +174,10 @@ export function saveLatestBridgeProgress(record: BridgeProgressRecord): void {
       attentionPhase: phase === "attention" ? record.attentionPhase : undefined,
     }
     browserLocalStorage().setItem(storageKey(), JSON.stringify(stored))
+    return true
   } catch {
     // The in-memory provider still owns the live transfer for this session.
+    return false
   }
 }
 
@@ -185,6 +204,18 @@ export function removeLatestBridgeProgress(id?: string): void {
 
 export function bridgeProgressLabel(record: BridgeProgressRecord): string {
   if (
+    record.direction === "deposit" &&
+    record.phase === "attention" &&
+    record.attentionPhase === "authorization-generating"
+  ) {
+    return "Bridge processing paused"
+  }
+  if (record.phase === "attention")
+    return record.transfer?.issue === "unknown"
+      ? transferPresentation(record.transfer).title
+      : transferAttentionTitle(record.attentionMessage ?? record.transfer?.message)
+  if (record.transfer) return transferPresentation(record.transfer).title
+  if (
     [
       "base-mint-included",
       "base-mint-finalizing",
@@ -194,13 +225,6 @@ export function bridgeProgressLabel(record: BridgeProgressRecord): string {
     record.baseTransactionOutcome === "reverted"
   ) {
     return "Base transaction reverted"
-  }
-  if (
-    record.direction === "deposit" &&
-    record.phase === "attention" &&
-    record.attentionPhase === "authorization-generating"
-  ) {
-    return "Bridge processing paused"
   }
   const labels: Record<BridgeProgressPhase, string> = {
     "verifying-ic-destination": "Verifying the destination IC account",
@@ -221,6 +245,9 @@ export function bridgeProgressLabel(record: BridgeProgressRecord): string {
     "awaiting-ic-notification": "Recording the finalized withdrawal on the Internet Computer",
     "ic-notification-recorded": "Withdrawal recorded on the Internet Computer",
     "ledger-payout": "Sending tokens to your IC wallet",
+    "refund-checking": "Checking refund",
+    "refund-processing": "Refund processing",
+    "refund-waiting": "Waiting to check refund",
     complete: "Bridge complete",
     attention: transferAttentionTitle(record.attentionMessage),
   }
@@ -229,7 +256,12 @@ export function bridgeProgressLabel(record: BridgeProgressRecord): string {
 
 export function bridgeProgressDetail(record: BridgeProgressRecord): string {
   if (record.phase === "attention")
-    return record.attentionMessage ?? "Review the transfer in History before trying again."
+    return record.transfer?.issue === "unknown"
+      ? transferPresentation(record.transfer).description
+      : (record.attentionMessage ??
+          record.transfer?.message ??
+          "Review the transfer in History before trying again.")
+  if (record.transfer) return transferPresentation(record.transfer).description
   if (record.phase === "complete")
     return record.completionMessage ?? "The transfer reached its destination."
   if (record.phase === "verifying-ic-destination")
@@ -369,12 +401,12 @@ export function withdrawalFinalityProgress(record: BridgeProgressRecord):
   }
 }
 
-/** True after Base has returned a successful receipt, before canonical finality is known. */
+/** Presentation completion requires a terminal result, not merely inclusion. */
 export function isDepositTransactionComplete(record: BridgeProgressRecord): boolean {
   return (
     record.direction === "deposit" &&
-    record.baseTransactionOutcome === "success" &&
-    (record.phase === "base-mint-included" || record.phase === "base-mint-finalizing")
+    record.phase === "complete" &&
+    (record.transfer?.outcome ?? record.outcome ?? "minted") === "minted"
   )
 }
 

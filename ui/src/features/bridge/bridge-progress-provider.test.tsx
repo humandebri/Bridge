@@ -1,11 +1,36 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import type { MintProgressEvent } from "./mint-authorization-action"
+import { DepositProgressCoordinator } from "./deposit-progress-coordinator"
+const mintCallback = vi.hoisted(() => ({
+  onProgress: undefined as undefined | ((event: MintProgressEvent) => void),
+}))
+vi.mock("./mint-authorization-action", () => ({
+  MintAuthorizationAction: (props: { onProgress: (event: MintProgressEvent) => void }) => {
+    mintCallback.onProgress = props.onProgress
+    return null
+  },
+}))
+vi.mock("./use-deposit-refund", () => ({
+  useDepositRefund: () => ({ request: vi.fn(), pending: false }),
+  depositRefundProgress: () => ({ phase: "attention" }),
+}))
+vi.mock("@/lib/ic/bridge", () => ({
+  createBridgeActor: async () => ({
+    get_deposit_by_owner_sequence: async () => [{ state: { AuthorizationAvailable: null } }],
+  }),
+}))
+import { clearTransferFacts } from "@/lib/transfer-state"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { useState } from "react"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { browserLocalStorage } from "@/lib/browser-lock"
 import { createBridgeProgress, saveLatestBridgeProgress } from "@/lib/bridge-progress"
 import { BridgeProgressProvider, useBridgeProgress } from "./bridge-progress-provider"
 
-beforeEach(() => browserLocalStorage().clear())
+beforeEach(() => {
+  mintCallback.onProgress = undefined
+  clearTransferFacts()
+  browserLocalStorage().clear()
+})
 afterEach(() => {
   cleanup()
   browserLocalStorage().clear()
@@ -16,6 +41,35 @@ function Harness() {
   const [startError, setStartError] = useState<string>()
   return (
     <div>
+      <button
+        onClick={() => {
+          const id = progress.progress!.id
+          progress.update(id, { observationSource: "base", observationError: "Base offline" })
+          progress.update(id, { storageWarning: "Storage unavailable" })
+        }}
+      >
+        Concurrent warnings
+      </button>
+      <button
+        onClick={() => {
+          progress.update(progress.progress!.id, {
+            observationSource: "ic",
+            phase: "awaiting-ic-deposit",
+          })
+        }}
+      >
+        IC recovered
+      </button>
+      <button
+        onClick={() => {
+          progress.update(progress.progress!.id, {
+            observationSource: "base",
+            observationError: undefined,
+          })
+        }}
+      >
+        Base recovered
+      </button>
       <button
         type="button"
         onClick={() =>
@@ -244,7 +298,9 @@ describe("BridgeProgressProvider", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
     expect(screen.queryByText("Finality will be reflected in History.")).not.toBeInTheDocument()
     expect(screen.getAllByRole("listitem")).toHaveLength(4)
-    expect(screen.getByRole("listitem", { name: "Base mint transaction complete" })).toBeVisible()
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent(
+      "Base mint transaction",
+    )
     expect(screen.queryByText("Base finality")).not.toBeInTheDocument()
     expect(screen.queryByText("Complete", { selector: "li *" })).not.toBeInTheDocument()
 
@@ -253,10 +309,10 @@ describe("BridgeProgressProvider", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
     expect(storage.getItem("kinic.bridge.pending-mint.v2:test")).toBe("saved pending mint")
     fireEvent.click(screen.getByRole("button", { name: "Start another" }))
-    expect(screen.getByRole("dialog", { name: "Bridge to IC" })).toBeVisible()
+    expect(screen.queryByRole("dialog", { name: "Bridge to IC" })).not.toBeInTheDocument()
     expect(
-      screen.queryByText("Complete or close the current transfer before starting another one"),
-    ).not.toBeInTheDocument()
+      screen.getByText("Complete or close the current transfer before starting another one"),
+    ).toBeInTheDocument()
   })
 
   it("restores an incomplete latest transfer as a minimized global bar", async () => {
@@ -282,8 +338,41 @@ describe("BridgeProgressProvider", () => {
     )
 
     const bar = await screen.findByRole("button", { name: /Open transfer progress/ })
-    expect(bar).toHaveTextContent("Waiting for the Base transaction")
+    expect(bar).toHaveTextContent("Confirming withdrawal")
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  })
+
+  it("preserves a saved attention result even when it has a transaction hash", async () => {
+    const attentionMessage = "The withdrawal is recorded but needs reconciliation."
+    saveLatestBridgeProgress(
+      createBridgeProgress({
+        direction: "withdraw",
+        phase: "attention",
+        attentionPhase: "ledger-payout",
+        attentionMessage,
+        source: "0x0000000000000000000000000000000000000002",
+        destination: "aaaaa-aa",
+        sendAmount: "2",
+        receiveAmount: "1.5",
+        sendSymbol: "KINIC",
+        receiveSymbol: "TICRC1",
+        transactionHash: `0x${"44".repeat(32)}`,
+        withdrawal: { owner: "aaaaa-aa", withdrawalId: `0x${"55".repeat(32)}` },
+      }),
+    )
+
+    render(
+      <BridgeProgressProvider>
+        <Harness />
+      </BridgeProgressProvider>,
+    )
+
+    const bar = await screen.findByRole("button", {
+      name: /Open transfer progress: This transfer needs attention/,
+    })
+    fireEvent.click(bar)
+    expect(screen.getByRole("alert")).toHaveTextContent(attentionMessage)
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Ledger payout")
   })
 
   it("shows Withdrawal finality timing and exact block progress in the modal", () => {
@@ -299,7 +388,7 @@ describe("BridgeProgressProvider", () => {
     expect(screen.getByText("365 blocks remaining")).toBeVisible()
   })
 
-  it("shows an unnecessary approval and keeps repeated attention on the failed transaction step after reload", () => {
+  it("shows an unnecessary approval and preserves repeated attention after reload", () => {
     const view = render(
       <BridgeProgressProvider>
         <Harness />
@@ -385,7 +474,7 @@ describe("BridgeProgressProvider", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Complete matching withdrawal", hidden: true }),
     )
-    expect(screen.getByText("Bridge complete")).toBeVisible()
+    expect(screen.getByText("Withdrawal complete")).toBeVisible()
     expect(screen.getByText("1.5 TICRC1 was paid to aaaaa-aa.")).toBeVisible()
     expect(screen.getByRole("button", { name: "Close" })).toBeEnabled()
   })
@@ -421,6 +510,34 @@ describe("BridgeProgressProvider", () => {
     expect(screen.queryByRole("button", { name: "Retry transfer" })).not.toBeInTheDocument()
   })
 
+  it("offers History and stops spinning for an uncertain mint", () => {
+    saveLatestBridgeProgress(
+      createBridgeProgress({
+        direction: "deposit",
+        phase: "attention",
+        attentionPhase: "awaiting-base-mint",
+        attentionMessage:
+          "Submission result unknown. Check your wallet for the transaction status.",
+        source: "aaaaa-aa",
+        destination: "0x0000000000000000000000000000000000000002",
+        sendAmount: "2",
+        receiveAmount: "1.5",
+        sendSymbol: "TICRC1",
+        receiveSymbol: "KINIC",
+        deposit: { owner: "aaaaa-aa", ownerSequence: "3" },
+      }),
+    )
+    render(
+      <BridgeProgressProvider>
+        <Harness />
+      </BridgeProgressProvider>,
+    )
+    fireEvent.click(screen.getByRole("button", { name: /Open transfer progress/ }))
+    expect(screen.getByRole("alert")).toHaveTextContent("Submission status unknown")
+    expect(screen.getByRole("link", { name: "Open History" })).toHaveAttribute("href", "/history")
+    expect(screen.getByRole("dialog").querySelector(".animate-spin")).toBeNull()
+  })
+
   it("renders a stopped step as attention instead of an in-progress spinner", () => {
     render(
       <BridgeProgressProvider>
@@ -435,4 +552,50 @@ describe("BridgeProgressProvider", () => {
     expect(stopped.querySelector(".lucide-loader-circle")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Close" })).toBeEnabled()
   })
+})
+
+it("wallet_response_warning_preserves_tracking_and_clears_on_completion", async function wallet_response_warning_preserves_tracking_and_clears_on_completion() {
+  vi.useFakeTimers()
+  try {
+    render(
+      <BridgeProgressProvider>
+        <DepositProgressCoordinator />
+        <Harness />
+      </BridgeProgressProvider>,
+    )
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Start" }))
+    })
+    expect(mintCallback.onProgress).toBeDefined()
+    act(() => {
+      mintCallback.onProgress!({ phase: "unavailable", message: "Base offline" })
+      mintCallback.onProgress!({ phase: "storage-warning", message: "Storage unavailable" })
+    })
+    expect(
+      screen.getAllByRole("alert").some((el) => el.textContent?.includes("Base offline")),
+    ).toBe(true)
+    expect(screen.getByText("Storage unavailable")).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "IC recovered", hidden: true }))
+    expect(
+      screen.getAllByRole("alert").some((el) => el.textContent?.includes("Base offline")),
+    ).toBe(true)
+    fireEvent.click(screen.getByRole("button", { name: "Base recovered", hidden: true }))
+    expect(screen.queryByText("Status unavailable")).not.toBeInTheDocument()
+    expect(screen.getByText("Storage unavailable")).toBeVisible()
+    await act(() => vi.advanceTimersByTimeAsync(60_000))
+    expect(
+      screen
+        .getAllByRole("alert")
+        .some((el) => el.textContent?.includes("Wallet response pending")),
+    ).toBe(true)
+    expect(screen.getByRole("dialog").querySelector(".animate-spin")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Minimize" }))
+    expect(screen.getByRole("button", { name: /Open transfer progress/ })).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: /Open transfer progress/ }))
+    fireEvent.click(screen.getByRole("button", { name: /^Complete$/, hidden: true }))
+    expect(screen.queryByText("Status unavailable")).not.toBeInTheDocument()
+    expect(screen.getByRole("status")).toHaveTextContent("Mint complete")
+  } finally {
+    vi.useRealTimers()
+  }
 })

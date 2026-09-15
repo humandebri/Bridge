@@ -12,7 +12,7 @@ export function MintConfirmationCoordinator() {
     let active = true
     let running = false
     const tick = async () => {
-      if (!active || running || document.visibilityState !== "visible") return
+      if (!active || running) return
       running = true
       try {
         const result = await runMintRecoveryCycle(owner)
