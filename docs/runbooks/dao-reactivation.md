@@ -2,11 +2,13 @@
 
 この手順は本番公開後の再開経路を検証する。初回activationとcontroller移譲を自動実行しない。個人はコード更新と現在の緊急停止を保持し、通常管理操作を個人に追加しない。
 
-開始時点の生応答とSHA-256は[baseline manifest](../evidence/dao-baseline-20260914/manifest.json)に固定している。これは実行承認用の最新証跡を代替しない。
+承認済みのproduction baselineは[production checkpoint](../../deployments/checkpoints/README.md)に固定したschema 36、module SHA-256 `6192841b3c2b5c28c6decea307e7c8e23700ab9bb00e6e593d74857478563c75`である。開始時点の生応答とSHA-256は[baseline manifest](../evidence/dao-baseline-20260914/manifest.json)に監査用の観測として固定しているが、checkpointまたはcutoverの承認を代替しない。
 
 ## 開始時点
 
-2026-09-14の読み取りではBridge `lb5i5-ziaaa-aaaar-qcgwq-cai` はschema 36、controllerはproduction identity `lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe`一件だった。module SHA-256は`bf0477947b06a06d31aa32b52992a1b775fca0c9b4c98bf3129037d47abedd64`。Governanceは`74ncn-fqaaa-aaaaq-aaasa-cai`、pause principalはproduction identityである。これらは開始時点の観測で、実行時の再検証を代替しない。
+2026-09-14の読み取りではBridge `lb5i5-ziaaa-aaaar-qcgwq-cai` はschema 36、controllerはproduction identity `lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe`一件だった。Governanceは`74ncn-fqaaa-aaaaq-aaasa-cai`、pause principalはproduction identityである。一方、生応答のmodule SHA-256 `bf0477947b06a06d31aa32b52992a1b775fca0c9b4c98bf3129037d47abedd64`は、承認済みcheckpointの`6192841b3c2b5c28c6decea307e7c8e23700ab9bb00e6e593d74857478563c75`と一致しない。この生応答は未承認の差分を示す監査証跡としてのみ保持する。
+
+この不一致がある間はfail closedとし、本runbookのproposal準備・再開実証・controller移譲を開始しない。`bf0477947b06a06d31aa32b52992a1b775fca0c9b4c98bf3129037d47abedd64`を現行terminalとして扱うには、そのupgrade chainを検証した承認済みcheckpointまたはcutover記録を先に追加する。そうでなければlive stateを再取得し、承認済み`6192841b3c2b5c28c6decea307e7c8e23700ab9bb00e6e593d74857478563c75`との一致を確認する。生観測だけを根拠に承認済みhashを置換しない。
 
 ## 準備
 
