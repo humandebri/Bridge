@@ -342,6 +342,39 @@ describe("BridgeProgressProvider", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
+  it("preserves a saved attention result even when it has a transaction hash", async () => {
+    const attentionMessage = "The withdrawal is recorded but needs reconciliation."
+    saveLatestBridgeProgress(
+      createBridgeProgress({
+        direction: "withdraw",
+        phase: "attention",
+        attentionPhase: "ledger-payout",
+        attentionMessage,
+        source: "0x0000000000000000000000000000000000000002",
+        destination: "aaaaa-aa",
+        sendAmount: "2",
+        receiveAmount: "1.5",
+        sendSymbol: "KINIC",
+        receiveSymbol: "TICRC1",
+        transactionHash: `0x${"44".repeat(32)}`,
+        withdrawal: { owner: "aaaaa-aa", withdrawalId: `0x${"55".repeat(32)}` },
+      }),
+    )
+
+    render(
+      <BridgeProgressProvider>
+        <Harness />
+      </BridgeProgressProvider>,
+    )
+
+    const bar = await screen.findByRole("button", {
+      name: /Open transfer progress: This transfer needs attention/,
+    })
+    fireEvent.click(bar)
+    expect(screen.getByRole("alert")).toHaveTextContent(attentionMessage)
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent("Ledger payout")
+  })
+
   it("shows Withdrawal finality timing and exact block progress in the modal", () => {
     render(
       <BridgeProgressProvider>
@@ -355,7 +388,7 @@ describe("BridgeProgressProvider", () => {
     expect(screen.getByText("365 blocks remaining")).toBeVisible()
   })
 
-  it("shows an unnecessary approval and keeps repeated attention on the failed transaction step after reload", () => {
+  it("shows an unnecessary approval and preserves repeated attention after reload", () => {
     const view = render(
       <BridgeProgressProvider>
         <Harness />
@@ -392,8 +425,7 @@ describe("BridgeProgressProvider", () => {
     expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent(
       "Base withdrawal transaction",
     )
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-    expect(screen.queryByText("Withdrawal still needs attention.")).not.toBeInTheDocument()
+    expect(screen.getByRole("alert")).toHaveTextContent("Withdrawal still needs attention.")
   })
 
   it("clears the attention source after resuming an active phase", () => {
@@ -557,7 +589,7 @@ it("wallet_response_warning_preserves_tracking_and_clears_on_completion", async 
         .some((el) => el.textContent?.includes("Wallet response pending")),
     ).toBe(true)
     expect(screen.getByRole("dialog").querySelector(".animate-spin")).toBeNull()
-    fireEvent.click(screen.getByRole("button", { name: /^Close$/ }))
+    fireEvent.click(screen.getByRole("button", { name: "Minimize" }))
     expect(screen.getByRole("button", { name: /Open transfer progress/ })).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: /Open transfer progress/ }))
     fireEvent.click(screen.getByRole("button", { name: /^Complete$/, hidden: true }))

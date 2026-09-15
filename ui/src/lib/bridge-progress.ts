@@ -203,6 +203,17 @@ export function removeLatestBridgeProgress(id?: string): void {
 }
 
 export function bridgeProgressLabel(record: BridgeProgressRecord): string {
+  if (
+    record.direction === "deposit" &&
+    record.phase === "attention" &&
+    record.attentionPhase === "authorization-generating"
+  ) {
+    return "Bridge processing paused"
+  }
+  if (record.phase === "attention")
+    return record.transfer?.issue === "unknown"
+      ? transferPresentation(record.transfer).title
+      : transferAttentionTitle(record.attentionMessage ?? record.transfer?.message)
   if (record.transfer) return transferPresentation(record.transfer).title
   if (
     [
@@ -214,13 +225,6 @@ export function bridgeProgressLabel(record: BridgeProgressRecord): string {
     record.baseTransactionOutcome === "reverted"
   ) {
     return "Base transaction reverted"
-  }
-  if (
-    record.direction === "deposit" &&
-    record.phase === "attention" &&
-    record.attentionPhase === "authorization-generating"
-  ) {
-    return "Bridge processing paused"
   }
   const labels: Record<BridgeProgressPhase, string> = {
     "verifying-ic-destination": "Verifying the destination IC account",
@@ -251,9 +255,13 @@ export function bridgeProgressLabel(record: BridgeProgressRecord): string {
 }
 
 export function bridgeProgressDetail(record: BridgeProgressRecord): string {
-  if (record.transfer) return transferPresentation(record.transfer).description
   if (record.phase === "attention")
-    return record.attentionMessage ?? "Review the transfer in History before trying again."
+    return record.transfer?.issue === "unknown"
+      ? transferPresentation(record.transfer).description
+      : (record.attentionMessage ??
+          record.transfer?.message ??
+          "Review the transfer in History before trying again.")
+  if (record.transfer) return transferPresentation(record.transfer).description
   if (record.phase === "complete")
     return record.completionMessage ?? "The transfer reached its destination."
   if (record.phase === "verifying-ic-destination")

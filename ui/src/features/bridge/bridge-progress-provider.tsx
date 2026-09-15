@@ -91,19 +91,28 @@ export function BridgeProgressProvider({ children }: { children: ReactNode }) {
   const [restored] = useState<BridgeProgressRecord | undefined>(() => {
     const record = readLatestBridgeProgress()
     if (!record) return undefined
-    const phase = record.transactionHash
-      ? record.direction === "deposit"
-        ? "base-mint-submitted"
-        : "base-withdrawal-submitted"
-      : record.withdrawal?.withdrawalId
-        ? "ledger-payout"
-        : record.deposit?.depositId
-          ? "authorization-generating"
-          : "attention"
+    const phase =
+      record.phase === "attention"
+        ? "attention"
+        : record.transactionHash
+          ? record.direction === "deposit"
+            ? "base-mint-submitted"
+            : "base-withdrawal-submitted"
+          : record.withdrawal?.withdrawalId
+            ? "ledger-payout"
+            : record.deposit?.depositId
+              ? "authorization-generating"
+              : "attention"
     const transfer = initialTransferFacts(transferIdentity(record), record.direction, phase)
     if (phase === "attention") {
-      transfer.issue = "unknown"
-      transfer.message = "Check the saved transfer before continuing."
+      const submissionUnknown =
+        record.direction === "deposit" &&
+        record.attentionPhase === "awaiting-base-mint" &&
+        !record.transactionHash
+      transfer.issue = submissionUnknown ? "unknown" : "stopped"
+      transfer.message = submissionUnknown
+        ? "Check the saved transfer before continuing."
+        : (record.attentionMessage ?? "Check the saved transfer before continuing.")
     }
     return { ...record, phase, transfer, attentionMessage: transfer.message }
   })
@@ -395,13 +404,14 @@ function ProgressDialog({
 }) {
   const presentation = progress.transfer ? transferPresentation(progress.transfer) : undefined
   const needsAttention = progress.phase === "attention" || presentation?.icon === "warning"
-  const canonicalTerminal = progress.phase === "complete" || needsAttention
+  const canonicalTerminal =
+    progress.phase === "complete" ||
+    progress.phase === "attention" ||
+    Boolean(presentation?.terminal)
   const depositTransactionComplete = isDepositTransactionComplete(progress)
   const dismissible = canonicalTerminal || depositTransactionComplete
   const closeProgress =
-    presentation?.terminal ||
-    progress.phase === "complete" ||
-    (progress.phase === "attention" && !progress.deposit?.depositId && !progress.transactionHash)
+    presentation?.terminal || progress.phase === "complete" || progress.phase === "attention"
       ? onDismiss
       : onMinimize
   const handleOutsidePointerDown = dismissible ? closeProgress : onMinimize
