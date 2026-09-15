@@ -42,13 +42,6 @@ export interface ActivityBoundaries {
   withdrawal: ActivityBoundary
 }
 
-export function activityAutoRefreshEnabled(
-  pageVisible: boolean,
-  hasAutomaticProgress: boolean,
-): boolean {
-  return pageVisible && hasAutomaticProgress
-}
-
 export function mergeActivityItems(
   deposits: DepositView[],
   withdrawals: WithdrawalHistoryItem[],

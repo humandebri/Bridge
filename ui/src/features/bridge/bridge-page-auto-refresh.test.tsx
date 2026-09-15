@@ -1,3 +1,5 @@
+import { DepositProgressCoordinator } from "./deposit-progress-coordinator"
+import { clearTransferFacts } from "@/lib/transfer-state"
 import { StrictMode, useState, type ReactNode } from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
@@ -210,6 +212,7 @@ describe("BridgePage automatic wallet refresh", () => {
   afterEach(cleanup)
 
   beforeEach(() => {
+    clearTransferFacts()
     browserLocalStorage().clear()
     mocks.useAccount.mockReset().mockReturnValue({ address: undefined, isConnected: false })
     mocks.useIcWallet.mockReset().mockReturnValue({
@@ -1026,7 +1029,7 @@ describe("BridgePage automatic wallet refresh", () => {
 
     expect(
       await screen.findByRole("button", {
-        name: /Open transfer progress: Waiting for the Base transaction/,
+        name: /Open transfer progress: Confirming withdrawal/,
       }),
     ).toBeVisible()
     expect(mocks.removeDepositIntent).not.toHaveBeenCalled()
@@ -1478,16 +1481,30 @@ describe("BridgePage automatic wallet refresh", () => {
     })
     mocks.getDepositByOwnerSequence.mockResolvedValue([{ state }])
 
-    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    render(
+      <>
+        <DepositProgressCoordinator />
+        <BridgePage direction="deposit" onDirectionChange={vi.fn()} />
+      </>,
+      { wrapper: Wrapper },
+    )
     await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalled())
     fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
     fireEvent.click(screen.getByRole("button", { name: "Bridge to Base" }))
     fireEvent.click(await screen.findByRole("button", { name: "Continue to IC wallet" }))
 
     await waitFor(() => expect(mocks.getDepositByOwnerSequence).toHaveBeenCalled())
-    if ("Minted" in state)
-      expect(await screen.findByRole("heading", { name: "Bridge to Base" })).toBeVisible()
-    else expect(await screen.findByText("This transfer needs attention")).toBeVisible()
+    expect(
+      (
+        await screen.findAllByText(
+          "Minted" in state
+            ? "Mint complete"
+            : "Refunded" in state
+              ? "Refund complete"
+              : "Transfer cancelled",
+        )
+      )[0],
+    ).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: "Close" }))
     await waitFor(() => expect(screen.getByRole("textbox", { name: "You send" })).toBeEnabled())
     expect(screen.getByRole("button", { name: "Reverse bridge direction" })).toBeEnabled()

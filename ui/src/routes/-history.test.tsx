@@ -1,8 +1,17 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { Principal } from "@icp-sdk/core/principal"
 import type * as Wagmi from "wagmi"
+import type * as ActivityAutoRefresh from "@/lib/activity-auto-refresh"
 import type { DepositView, SettlementStopReason, WithdrawalView } from "@/generated/bridge.did"
 import { deploymentProfile } from "@/config/profile"
 import type { ActivityItem } from "@/lib/activity-history"
@@ -17,6 +26,7 @@ const mocks = vi.hoisted(() => ({
     get_withdrawals: vi.fn(),
   },
   block: vi.fn(),
+  observeDeposit: vi.fn(),
   complete: vi.fn(),
   autoRefresh: undefined as (() => void) | undefined,
 }))
@@ -41,7 +51,7 @@ vi.mock("@/lib/base-transaction-observation", () => ({
   readBaseReceipt: vi.fn(),
 }))
 vi.mock("@/lib/mint-observation", () => ({
-  observeDeposit: async () => ({ status: "unsubmitted", finalized: false, recorded: false }),
+  observeDeposit: mocks.observeDeposit,
 }))
 vi.mock("@/lib/activity-auto-refresh", () => ({
   useActivityAutoRefresh: (enabled: boolean, refresh: () => void) => {
@@ -51,6 +61,11 @@ vi.mock("@/lib/activity-auto-refresh", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.observeDeposit.mockResolvedValue({
+    status: "unsubmitted",
+    finalized: false,
+    recorded: false,
+  })
   mocks.block.mockResolvedValue({ timestamp: 1_000n })
   mocks.actor.list_deposit_ids.mockResolvedValue({
     Ok: {
@@ -69,7 +84,11 @@ beforeEach(() => {
   })
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+})
 
 function renderHistory(
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } }),
@@ -84,6 +103,19 @@ function renderHistory(
 }
 
 describe("History refresh", () => {
+  it("refreshes unresolved activity while the browser tab is hidden", async () => {
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
+    renderHistory()
+    await screen.findByText("Waiting for Base finality")
+    expect(mocks.autoRefresh).toBeDefined()
+    mocks.block.mockResolvedValue({ timestamp: 1_001n })
+    await act(async () => {
+      mocks.autoRefresh!()
+    })
+    await screen.findByRole("button", { name: "Check refund" })
+    expect(mocks.block).toHaveBeenCalledTimes(2)
+  })
+
   it.each(["automatic", "manual"])("refreshes finalized time through %s refresh", async (mode) => {
     renderHistory()
     expect(screen.queryByRole("textbox", { name: "Base transaction hash" })).not.toBeInTheDocument()
@@ -95,7 +127,7 @@ describe("History refresh", () => {
       await act(async () => {
         mocks.autoRefresh!()
       })
-    await screen.findByRole("button", { name: "Request refund" })
+    await screen.findByRole("button", { name: "Check refund" })
     expect(mocks.block).toHaveBeenCalledTimes(2)
   })
 
@@ -206,7 +238,7 @@ function offers_one_explicit_continuation_for_retry_limited_stops(): void {
     />,
   )
   expect(screen.queryByRole("button", { name: "Continue deposit" })).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole("button", { name: "Request refund" }))
+  fireEvent.click(screen.getByRole("button", { name: "Check refund" }))
   expect(onRequestRefund).toHaveBeenCalledWith(refundable.deposit)
   expect(onContinue).toHaveBeenCalledOnce()
   view.unmount()
@@ -226,11 +258,11 @@ function expectRefundOnlyAfterDeadline(reason: SettlementStopReason): void {
   const view = render(<DepositActivityRow {...props} finalizedBlockTimestamp={1_000n} />)
 
   expect(screen.getByText("Waiting for Base finality")).toBeInTheDocument()
-  expect(screen.queryByRole("button", { name: "Request refund" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Check refund" })).not.toBeInTheDocument()
   expect(onRequestRefund).not.toHaveBeenCalled()
 
   view.rerender(<DepositActivityRow {...props} finalizedBlockTimestamp={1_001n} />)
-  fireEvent.click(screen.getByRole("button", { name: "Request refund" }))
+  fireEvent.click(screen.getByRole("button", { name: "Check refund" }))
   expect(onRequestRefund).toHaveBeenCalledOnce()
 
   view.rerender(<DepositActivityRow {...props} processedWithoutReceipt />)
@@ -299,3 +331,69 @@ function depositItem(
     deposit,
   }
 }
+
+it("history_automatic_refresh_preserves_slow_inflight_queries_across_visibility_changes", async () => {
+  const { useActivityAutoRefresh } = await vi.importActual<typeof ActivityAutoRefresh>(
+    "@/lib/activity-auto-refresh",
+  )
+  const client = renderHistory()
+  await screen.findByText("Waiting for Base finality")
+  await waitFor(() => expect(client.isFetching()).toBe(0))
+  const depositResult = await mocks.actor.list_deposit_ids.mock.results[0]!.value
+  const withdrawalResult = await mocks.actor.list_withdrawals.mock.results[0]!.value
+  const pending = <T,>() => {
+    let resolve!: (value: T) => void
+    return {
+      promise: new Promise<T>((done) => {
+        resolve = done
+      }),
+      resolve: (value: T) => resolve(value),
+    }
+  }
+  const deposits = pending<typeof depositResult>()
+  const withdrawals = pending<typeof withdrawalResult>()
+  const observation = pending<{ status: string; finalized: boolean; recorded: boolean }>()
+  const clock = pending<{ timestamp: bigint }>()
+  mocks.actor.list_deposit_ids.mockReturnValue(deposits.promise)
+  mocks.actor.list_withdrawals.mockReturnValue(withdrawals.promise)
+  mocks.observeDeposit.mockReturnValue(observation.promise)
+  mocks.block.mockReturnValue(clock.promise)
+  const calls = [
+    mocks.actor.list_deposit_ids,
+    mocks.actor.list_withdrawals,
+    mocks.observeDeposit,
+    mocks.block,
+  ]
+  const initialCounts = calls.map((mock) => mock.mock.calls.length)
+  vi.useFakeTimers()
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible")
+  renderHook(() => useActivityAutoRefresh(true, () => mocks.autoRefresh!()))
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000)
+  })
+  visibility.mockReturnValue("hidden")
+  document.dispatchEvent(new Event("visibilitychange"))
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(120_000)
+  })
+  visibility.mockReturnValue("visible")
+  document.dispatchEvent(new Event("visibilitychange"))
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000)
+  })
+  calls.forEach((mock, index) => expect(mock).toHaveBeenCalledTimes(initialCounts[index]! + 1))
+  await act(async () => {
+    deposits.resolve(depositResult)
+    withdrawals.resolve(withdrawalResult)
+    observation.resolve({ status: "unsubmitted", finalized: false, recorded: false })
+    clock.resolve({ timestamp: 1_001n })
+    await vi.advanceTimersByTimeAsync(1)
+  })
+  expect(screen.getByRole("button", { name: "Check refund" })).toBeInTheDocument()
+  expect(client.isFetching()).toBe(0)
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000)
+  })
+  calls.forEach((mock, index) => expect(mock).toHaveBeenCalledTimes(initialCounts[index]! + 2))
+  client.clear()
+})
