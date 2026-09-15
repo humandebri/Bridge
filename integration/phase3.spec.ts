@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync }
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { freemem, loadavg, tmpdir, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import { IDL } from "@icp-sdk/core/candid";
 import { Principal } from "@icp-sdk/core/principal";
@@ -49,6 +49,44 @@ function phaseName(value: Record<string, unknown>): string {
 function debugJson(value: unknown): string {
   return JSON.stringify(value, (_key, item) => typeof item === "bigint" ? `${item}n` : item);
 }
+function readOptionalText(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+function diagnosticCommand(command: string, args: string[]): string {
+  try {
+    return execFileSync(command, args, { encoding: "utf8" }).trim();
+  } catch (error) {
+    return `unavailable: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+function capturePocketIcResources(serverPid: number): Record<string, unknown> {
+  const processSnapshot = diagnosticCommand("ps", [
+    "-eo",
+    "pid=,ppid=,%cpu=,%mem=,rss=,etime=,stat=,command=",
+  ]).split("\n").filter((line) => {
+    const fields = line.trim().split(/\s+/, 3);
+    return Number(fields[0]) === serverPid
+      || Number(fields[1]) === serverPid
+      || line.includes("pocket-ic");
+  });
+  return {
+    captured_at: new Date().toISOString(),
+    server_pid: serverPid,
+    node_rss_bytes: process.memoryUsage().rss,
+    system_free_memory_bytes: freemem(),
+    system_total_memory_bytes: totalmem(),
+    load_average: loadavg(),
+    cgroup_memory_current: readOptionalText("/sys/fs/cgroup/memory.current"),
+    cgroup_memory_max: readOptionalText("/sys/fs/cgroup/memory.max"),
+    cgroup_memory_events: readOptionalText("/sys/fs/cgroup/memory.events"),
+    disk: diagnosticCommand("df", ["-Pk", root, tmpdir()]),
+    pocket_ic_processes: processSnapshot,
+  };
+}
 function buildSchema35Predecessor(): void {
   if (existsSync(schema35BridgeWasm)
     && createHash("sha256").update(readFileSync(schema35BridgeWasm)).digest("hex") === schema35WasmSha256) {
@@ -89,6 +127,9 @@ describe("Phase 3 PocketIC saga", () => {
   let server: ChildProcess | undefined;
   let pic: PocketIc | undefined;
   let serverUrl = "";
+  let pocketIcMonitor: ReturnType<typeof setInterval> | undefined;
+  let lastPocketIcResources: Record<string, unknown> | undefined;
+  let serverShutdownRequested = false;
 
   async function setup(
     activate = true,
@@ -629,6 +670,10 @@ describe("Phase 3 PocketIC saga", () => {
   }
 
   beforeAll(async () => {
+    // A stale or host-incompatible predecessor is expensive to replace. Validate
+    // and, if necessary, rebuild it before PocketIC starts so both workloads do
+    // not compete for the trusted runner's memory.
+    readWasm(schema35BridgeWasm);
     const probe = createServer();
     const port = await new Promise<number>((resolvePort, reject) => {
       probe.once("error", reject);
@@ -640,7 +685,32 @@ describe("Phase 3 PocketIC saga", () => {
     });
     serverUrl = `http://127.0.0.1:${port}`;
     server = spawn(resolve("node_modules/@dfinity/pic/pocket-ic"), ["--port", String(port), "--hard-ttl", "1800"], { stdio: "inherit" });
+    server.once("spawn", () => {
+      if (server?.pid === undefined) return;
+      lastPocketIcResources = capturePocketIcResources(server.pid);
+      pocketIcMonitor = setInterval(() => {
+        if (server?.pid !== undefined) lastPocketIcResources = capturePocketIcResources(server.pid);
+      }, 5_000);
+      pocketIcMonitor.unref();
+    });
+    server.once("error", (error) => {
+      console.error(`[pocketic-spawn-error] ${debugJson({ message: error.message })}`);
+    });
+    server.once("exit", (code, signal) => {
+      if (pocketIcMonitor !== undefined) clearInterval(pocketIcMonitor);
+      if (!serverShutdownRequested) {
+        console.error(`[pocketic-unexpected-exit] ${debugJson({
+          code,
+          signal,
+          last_resources: lastPocketIcResources,
+          exit_resources: server?.pid === undefined ? null : capturePocketIcResources(server.pid),
+        })}`);
+      }
+    });
     for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (server.exitCode !== null || server.signalCode !== null) {
+        throw new Error(`PocketIC exited before readiness: code=${server.exitCode} signal=${server.signalCode}`);
+      }
       try {
         await fetch(serverUrl);
         return;
@@ -652,7 +722,24 @@ describe("Phase 3 PocketIC saga", () => {
   }, 600_000);
 
   afterAll(async () => {
-    server?.kill();
+    serverShutdownRequested = true;
+    if (pocketIcMonitor !== undefined) clearInterval(pocketIcMonitor);
+    if (server !== undefined && server.exitCode === null && server.signalCode === null) {
+      await new Promise<void>((resolveStopped) => {
+        const timeout = setTimeout(() => {
+          if (server!.exitCode === null && server!.signalCode === null) server!.kill("SIGKILL");
+          resolveStopped();
+        }, 10_000);
+        server!.once("exit", () => {
+          clearTimeout(timeout);
+          resolveStopped();
+        });
+        if (!server!.kill("SIGTERM")) {
+          clearTimeout(timeout);
+          resolveStopped();
+        }
+      });
+    }
   });
 
   beforeEach(async () => {
