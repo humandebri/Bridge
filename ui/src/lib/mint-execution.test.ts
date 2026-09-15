@@ -94,7 +94,7 @@ describe("mint execution", () => {
   it("does_not_queue_behind_another_wallet_operation", async () => {
     const m = await import("./mint-execution")
     const r = request()
-    vi.mocked(navigator.locks.request).mockImplementation((async (
+    vi.spyOn(navigator.locks, "request").mockImplementation((async (
       _n: string,
       _o: unknown,
       run: (lock: null) => Promise<void>,
