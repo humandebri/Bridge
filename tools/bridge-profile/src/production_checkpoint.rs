@@ -628,10 +628,12 @@ pub(super) fn render_ui(
     )
 }
 
-pub(super) fn verify_ui(
+fn verify_ui_with_freshness(
     evidence_path: &Path,
     rpc_path: &Path,
     runtime_path: &Path,
+    attestation_freshness: super::ActivationAttestationFreshness,
+    success: &str,
 ) -> Result<(), String> {
     let verified = read_evidence(evidence_path)?;
     let rpc_bytes = read_bounded(rpc_path, MAX_BYTES)?;
@@ -659,6 +661,7 @@ pub(super) fn verify_ui(
         Some(&verified.terminal),
         roots.gate_b_created_at_unix,
         roots.deployment_block_number,
+        attestation_freshness,
     )?;
     if read_bounded(rpc_path, MAX_BYTES)? != rpc_bytes
         || read_bounded(runtime_path, MAX_BYTES)? != runtime_bytes
@@ -670,10 +673,38 @@ pub(super) fn verify_ui(
         return Err("production UI inputs changed during live validation".into());
     }
     println!(
-        "production_ui=live-pass schema=36 activation=execute manifest_sha256={}",
+        "production_ui={success} schema=36 activation=execute manifest_sha256={}",
         roots.gate_b_sha256
     );
     Ok(())
+}
+
+pub(super) fn verify_ui(
+    evidence_path: &Path,
+    rpc_path: &Path,
+    runtime_path: &Path,
+) -> Result<(), String> {
+    verify_ui_with_freshness(
+        evidence_path,
+        rpc_path,
+        runtime_path,
+        super::ActivationAttestationFreshness::Required,
+        "live-pass",
+    )
+}
+
+pub(super) fn verify_ui_assets_only(
+    evidence_path: &Path,
+    rpc_path: &Path,
+    runtime_path: &Path,
+) -> Result<(), String> {
+    verify_ui_with_freshness(
+        evidence_path,
+        rpc_path,
+        runtime_path,
+        super::ActivationAttestationFreshness::AllowStaleForUnchangedUiAssets,
+        "assets-only-live-pass",
+    )
 }
 
 pub(super) fn make_evidence(

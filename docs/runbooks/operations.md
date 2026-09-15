@@ -183,6 +183,8 @@ profileはGate B識別hash、checkpoint evidence全体のhash、検証済みv36�
 attestation更新は本番update callなので別途実行承認を得る。
 実際のupgrade receiptと更新後のlive公開認可が得られるまで、UI公開は停止する。
 
+runtime profile、RPC、checkpoint evidenceを変更しないUIアセットだけの公開には`pnpm --dir ui run deploy:assets-only:check`、続いて`pnpm --dir ui run deploy:assets-only`を使用する。この明示的経路は、認証済みlive RuntimeBinding、module、controller、Activated、unpaused、pending Base governanceなし、reserve、storage、withdrawal index、および保存済みactivation attestationの内容を通常経路と同様に検証する。保存済みattestationがGate B以後かつ未来時刻でないことも要求するが、5分以内の鮮度だけは要求しない。代わりに、本番originからredirectなしで取得した`deployment-profile.js`が今回生成する公開profileとbyte一致することを凍結前とWrangler直前の2回検証する。不一致、取得失敗、想定外のscript形状では公開しない。この経路はBase pause／role状態の現在時点での鮮度を証明せず、runtime profile、RPC、evidence、Canisterを変更する公開には使用しない。
+
 UI asset receiptは公開するclean sourceから新規生成し、WalletConnect project ID、全file digest、aggregate digestを束縛する。
 controller専用queryには`BRIDGE_PRODUCTION_INSTALLER_IDENTITY`を使用し、解決principalが承認済みcontrollerと一致しなければ拒否する。
 frozen assets作成後、Wrangler直前にlive認可とruntime profileの不変性を再確認する。

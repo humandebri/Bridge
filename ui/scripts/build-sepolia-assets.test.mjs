@@ -75,11 +75,14 @@ describe("Base Sepolia asset profile template", () => {
     expect(manifest.scripts.deploy).not.toContain("pnpm run build && wrangler deploy")
     expect(manifest.scripts["deploy:preactivation"]).toBeUndefined()
     expect(manifest.scripts["deploy:preactivation:check"]).toBeUndefined()
-    expect(productionAssets).toContain('const modes = ["generate", "verify", "deploy"]')
+    expect(productionAssets).toContain(
+      'const modes = ["generate", "verify", "deploy", "check-assets-only", "deploy-assets-only"]',
+    )
     expect(productionAssets).not.toContain("verify-preactivation")
     expect(productionAssets).not.toContain("deploy-preactivation")
-    expect(productionAssets).not.toContain('deployArgs.push("--dry-run")')
+    expect(productionAssets).toContain('if (dryRun) deployArgs.push("--dry-run")')
     expect(productionAssets).toContain('"verify-production-checkpoint-ui-live"')
+    expect(productionAssets).toContain('"verify-production-checkpoint-ui-assets-only-live"')
     expect(productionAssets).toContain("BRIDGE_CHECKPOINT_EVIDENCE")
     expect(productionAssets).not.toContain("BRIDGE_RELEASE_BUNDLE")
     expect(productionAssets).not.toContain("BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT")
@@ -89,12 +92,16 @@ describe("Base Sepolia asset profile template", () => {
     expect(productionAssets).not.toContain("BRIDGE_RELEASE_INPUTS_MANIFEST")
     expect(productionAssets).toContain("readOrdinaryFile(profileFile)")
     expect(productionAssets).toContain("releaseProfileSchema.parse(JSON.parse(raw))")
-    expect(productionAssets).toContain("const manifestSha256 = verifyProductionUiLive(profileFile)")
+    expect(productionAssets).toContain(
+      "const manifestSha256 = verifyProductionUiLive(profileFile, assetsOnly)",
+    )
     expect(productionAssets).toContain('{ cwd: sourceRoot, encoding: "utf8" }')
     expect(productionAssets).toContain("assertProductionUiProfile(releaseProfile, manifestSha256)")
-    expect(productionAssets).toContain(
-      "await deployFrozenAssets(receipt, raw, releaseProfile, profileFile, identity)",
-    )
+    expect(manifest.scripts["deploy:assets-only:check"]).toContain("check-assets-only")
+    expect(manifest.scripts["deploy:assets-only"]).toContain("deploy-assets-only")
+    expect(
+      productionAssets.match(/requireUnchangedProductionProfile\(publicProfile\)/g),
+    ).toHaveLength(2)
     expect(productionAssets).toContain("await requireUnchangedSourceIdentity(identity)")
     expect(productionAssets).toContain("walletconnect_project_id: projectId")
     expect(productionAssets).toContain(
@@ -116,7 +123,7 @@ describe("Base Sepolia asset profile template", () => {
       )
       expect(result.status).not.toBe(0)
       expect(result.stderr).toContain(
-        "usage: production-assets.mjs {generate|verify|deploy} RECEIPT [UI_RUNTIME_PROFILE]",
+        "usage: production-assets.mjs {generate|verify|deploy|check-assets-only|deploy-assets-only} RECEIPT [UI_RUNTIME_PROFILE]",
       )
     },
   )

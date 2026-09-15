@@ -7384,6 +7384,12 @@ struct ProductionHandoverActivationBinding<'a> {
     expected_module_sha256: &'a str,
 }
 
+#[derive(Clone, Copy)]
+enum ActivationAttestationFreshness {
+    Required,
+    AllowStaleForUnchangedUiAssets,
+}
+
 #[cfg(test)]
 fn validate_production_handover_canister_state(
     profile: &Profile,
@@ -7404,6 +7410,7 @@ fn validate_production_handover_canister_state(
         observation,
         manifest_created_at_unix,
         now,
+        ActivationAttestationFreshness::Required,
     )
 }
 
@@ -7415,6 +7422,7 @@ fn validate_production_handover_observation(
     observation: &ProductionHandoverCanisterObservation<'_>,
     manifest_created_at_unix: u64,
     now: u64,
+    attestation_freshness: ActivationAttestationFreshness,
 ) -> Result<(), String> {
     if !matches!(observation.lifecycle, ProductionLifecycleView::Activated) {
         return Err("production Canister must be Activated before handover".into());
@@ -7481,13 +7489,14 @@ fn validate_production_handover_observation(
     let attestation = observation
         .attestation
         .ok_or("authenticated activation attestation is unavailable for active handover")?;
-    validate_activation_attestation_with_pause(
+    validate_activation_attestation_with_pause_and_freshness(
         profile,
         attestation,
         manifest_created_at_unix,
         minimum_deployment_block,
         now,
         Some(false),
+        attestation_freshness,
     )
 }
 
@@ -7675,6 +7684,7 @@ fn verify_production_canister_handover_state(
         gate_a_receipt
             .bridge_deployment_block_number
             .max(gate_a_receipt.timelock_deployment_block_number),
+        ActivationAttestationFreshness::Required,
     )?;
     Ok(bundle)
 }
@@ -7686,6 +7696,7 @@ fn verify_production_live_state(
     upgrade_terminal: Option<&ProductionUpgradeTerminal>,
     manifest_created_at_unix: u64,
     minimum_deployment_block: u64,
+    attestation_freshness: ActivationAttestationFreshness,
 ) -> Result<(), String> {
     let bridge =
         Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
@@ -7835,6 +7846,7 @@ fn verify_production_live_state(
         &observation,
         manifest_created_at_unix,
         now_unix()?,
+        attestation_freshness,
     )?;
     Ok(())
 }
@@ -8168,11 +8180,42 @@ fn validate_activation_attestation_with_pause(
     now: u64,
     expected_paused: Option<bool>,
 ) -> Result<(), String> {
-    validate_activation_attestation_time(
-        attestation.observed_at_ns,
+    validate_activation_attestation_with_pause_and_freshness(
+        profile,
+        attestation,
         manifest_created_at_unix,
+        minimum_finalized_block,
         now,
-    )?;
+        expected_paused,
+        ActivationAttestationFreshness::Required,
+    )
+}
+
+fn validate_activation_attestation_with_pause_and_freshness(
+    profile: &Profile,
+    attestation: &ActivationAttestationView,
+    manifest_created_at_unix: u64,
+    minimum_finalized_block: u64,
+    now: u64,
+    expected_paused: Option<bool>,
+    freshness: ActivationAttestationFreshness,
+) -> Result<(), String> {
+    match freshness {
+        ActivationAttestationFreshness::Required => validate_activation_attestation_time(
+            attestation.observed_at_ns,
+            manifest_created_at_unix,
+            now,
+        )?,
+        ActivationAttestationFreshness::AllowStaleForUnchangedUiAssets => {
+            if attestation.observed_at_ns == 0 {
+                return Err("activation attestation timestamp is missing".into());
+            }
+            let observed = attestation.observed_at_ns / 1_000_000_000;
+            if observed < manifest_created_at_unix || observed > now {
+                return Err("activation attestation predates Gate B or is future-dated".into());
+            }
+        }
+    }
     let expected_signer = decode_address(&profile.expected_bridge_signer)?;
     let expected_runtime = decode_hex(&profile.bridge_runtime_bytecode_sha256)?;
     let expected_timelock = decode_address(&profile.timelock.address)?;
@@ -11483,6 +11526,9 @@ fn run() -> Result<(), String> {
         Some("verify-production-checkpoint-ui-live") if args.len() == 5 => {
             production_checkpoint::verify_ui(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
         }
+        Some("verify-production-checkpoint-ui-assets-only-live") if args.len() == 5 => {
+            production_checkpoint::verify_ui_assets_only(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
+        }
         Some("generate-production-checkpoint-candidate") if args.len() == 5 => {
             production_checkpoint::generate_candidate(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
         }
@@ -13795,6 +13841,8 @@ mod tests {
             now - MAX_ACTIVATION_ATTESTATION_AGE_SECS - 1,
             101,
         );
+        stale.deposits_paused = false;
+        stale.withdrawals_paused = false;
         assert!(validate(
             &ProductionLifecycleView::Activated,
             Some(&stale),
@@ -13802,8 +13850,35 @@ mod tests {
             &module_hash,
         )
         .is_err());
+        let validate_assets_only_attestation = |candidate: &ActivationAttestationView| {
+            let observation = ProductionHandoverCanisterObservation {
+                lifecycle: &ProductionLifecycleView::Activated,
+                attestation: Some(candidate),
+                activation_status: &activation_status,
+                runtime: &runtime,
+                status: &status,
+                storage_integrity: &storage_integrity,
+                controllers: &controllers,
+                module_hash: &module_hash,
+            };
+            validate_production_handover_observation(
+                &profile,
+                installer,
+                gate_a_receipt
+                    .bridge_deployment_block_number
+                    .max(gate_a_receipt.timelock_deployment_block_number),
+                &activation,
+                &observation,
+                created,
+                now,
+                ActivationAttestationFreshness::AllowStaleForUnchangedUiAssets,
+            )
+        };
+        let stale_assets_only = validate_assets_only_attestation(&stale);
+        assert!(stale_assets_only.is_ok(), "{stale_assets_only:?}");
         stale.observed_at_ns = now * 1_000_000_000;
         stale.finalized_block_number = 100;
+        assert!(validate_assets_only_attestation(&stale).is_err());
         assert!(validate(
             &ProductionLifecycleView::Activated,
             Some(&stale),
@@ -13811,6 +13886,13 @@ mod tests {
             &module_hash,
         )
         .is_err());
+        stale.finalized_block_number = 101;
+        stale.observed_at_ns = (created - 1) * 1_000_000_000;
+        assert!(validate_assets_only_attestation(&stale).is_err());
+        stale.observed_at_ns = (now + 1) * 1_000_000_000;
+        assert!(validate_assets_only_attestation(&stale).is_err());
+        stale.observed_at_ns = 0;
+        assert!(validate_assets_only_attestation(&stale).is_err());
 
         let mut profile_drift = attestation;
         profile_drift.chain_id = 84532;
