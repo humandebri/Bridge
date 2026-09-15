@@ -34,7 +34,13 @@
 
 ## 最終移譲
 
-実証結果を確認して運用者が別途承認するまでは、Root追加・管理対象登録・個人controller削除を実施しない。承認後に`BRIDGE_CHECKPOINT_EVIDENCE`で現在の承認済みterminalを固定し、handover driverでRoot単独へ変更し、標準RegisterDappCanistersの実行を確認する。既に管理対象なら再登録しない。続くUpgradeSnsControlledCanisterで同一非圧縮Wasm、mode=3（upgrade）、空Candid引数を指定し、proposal成功と保存状態・runtime・入出金・UI検証を確認する。
+実証結果を確認して運用者が別途承認するまでは、Root追加・管理対象登録・個人controller削除を実施しない。承認後も一度にRoot単独へ置換しない。handover driverの`prepare`でRootだけを追加し、controller集合が正確にproduction identityとRootの二者であることを確認してschema 5のpreparation receiptを保存する。結果が不明なら`recover`で再取得し、管理操作は再送しない。
+
+共同controllerを確認した後、`production-handover-registration-proposal.sh`でレビュー済みの標準`RegisterDappCanisters` proposalを一度だけ提出する。提出失敗または実行失敗では個人controllerを保持し、自動再送・自動削除を行わない。proposalのexecutedを確認した後、handover driverの`complete`でGovernanceのproposal、Rootの`dapps`、Root単独controller、module・runtime・storageの継続を検証し、schema 5のcompletion receiptを別ファイルへ保存する。Root単独だが未登録、登録済みだが個人controllerが残る、第三controllerがある状態はすべてインシデントとして停止する。
+
+登録提出scriptにもseal／schedule／execute receiptを環境変数で渡す。scriptは提出前に既存のtyped handover validatorとproof gateを再実行し、review済みpayloadがBridge一件だけの固定actionと完全一致する場合だけjournalを予約して送信する。
+
+testflightを中止する場合は、controller集合が正確にproduction identityとRootの二者で、登録proposalが未実行であることを再確認し、別途承認した操作でRootを削除する。完了後はUpgradeSnsControlledCanisterで同一非圧縮Wasm、mode=3（upgrade）、空Candid引数を指定し、proposal成功と保存状態・runtime・入出金・UI検証を確認する。
 
 移譲用提出物は次で生成する（送信は行わない）。ROOT_RESPONSE_JSONはRootの`list_sns_canisters (record {})`の最新の`--json`応答、EXPECTED_SHA256は検証済みの現在の非圧縮module hashを指定する。
 
@@ -42,7 +48,7 @@
 node tools/sns-proposal/handover.mjs ROOT_RESPONSE_JSON BRIDGE WASM EXPECTED_SHA256 OUTPUT_JSON
 ```
 
-出力には登録済み判定、登録proposal（登録済みならnull）、同一Wasmの標準upgrade proposal、1MBごとのchunkファイルと各SHA-256を含む。BridgeのWasmはingress上限を超えるため、別途承認した移譲準備で個人controllerがBridge自身のchunk storeへuploadし、返却された各hashと`stored_chunks`を読み戻す。uploadはcontroller移譲前に完了させる。proposalはその順序付きhash一覧と元の非圧縮Wasm hashを固定する。圧縮によってmodule hashを変えない。chunked upgradeもSNSの標準経路を使用する。[公式SNS管理手順](https://docs.internetcomputer.org/guides/governance/managing/)
+出力には登録済み判定、登録proposal、同一Wasmの標準upgrade proposal、1MBごとのchunkファイルと各SHA-256を含む。移管開始時にBridgeが既にRootへ登録済みなら状態不整合として停止し、再登録を省略して続行しない。BridgeのWasmはingress上限を超えるため、別途承認した移譲準備で個人controllerがBridge自身のchunk storeへuploadし、返却された各hashと`stored_chunks`を読み戻す。uploadはRoot追加前に完了させる。proposalはその順序付きhash一覧と元の非圧縮Wasm hashを固定する。圧縮によってmodule hashを変えない。chunked upgradeもSNSの標準経路を使用する。[公式SNS管理手順](https://docs.internetcomputer.org/guides/governance/managing/)
 
 緊急停止principalは保持する。移譲後の障害を個人identityで直接修復できるとは扱わない。
 

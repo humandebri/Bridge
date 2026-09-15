@@ -42,7 +42,7 @@ version = "0.0.0"
 LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs};
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="decode-handover-query"{print!("{}",fs::read_to_string(&a[2]).unwrap())}else if a[0]=="verify-production-canister-handover"{let counter=env::var("TRACE").unwrap()+".verify";let n=fs::read_to_string(&counter).ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(0);fs::write(&counter,(n+1).to_string()).unwrap();let valid=a.len()==5&&fs::read_to_string(&a[2]).is_ok_and(|v|v.contains("\"kind\":\"seal\"")&&v.contains("\"initial_operational_parameters_sha256\":\"1111\""))&&fs::read_to_string(&a[3]).is_ok_and(|v|v.contains("\"kind\":\"schedule\"")&&v.contains("\"seal_receipt_sha256\":\"2222\""))&&fs::read_to_string(&a[4]).is_ok_and(|v|v.contains("\"kind\":\"execute\"")&&v.contains("\"schedule_receipt_sha256\":\"3333\""));if (n>0&&env::var("HANDOVER_PRE_SEND_ACTIVE_DRIFT").as_deref()==Ok("true"))||!valid||["HANDOVER_BOOTSTRAP","HANDOVER_SEALED","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_INITIAL_PARAMETERS_DRIFT","HANDOVER_SEAL_RECEIPT_DRIFT","HANDOVER_SCHEDULE_RECEIPT_DRIFT","HANDOVER_EXECUTE_RECEIPT_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_RESERVE_DRIFT","HANDOVER_STORAGE_INTEGRITY_DRIFT","HANDOVER_IC_DEPOSITS_PAUSED","HANDOVER_BASE_DEPOSITS_PAUSED","HANDOVER_BASE_WITHDRAWALS_PAUSED"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else if a[0]=="validate-production-handover-candidate"{println!("production_handover_candidate=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-controller-handover-recovery"{println!("controller_handover_recovery=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-controller-handover-completion"&&env::var("HANDOVER_COMPLETION_VALIDATOR_FAIL").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="validate-bundle"&&env::var("REJECT_CURRENT_GATE_B").as_deref()==Ok("true"){std::process::exit(1)}else{println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","a".repeat(64))}}
+fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="decode-handover-query"{print!("{}",fs::read_to_string(&a[2]).unwrap())}else if a[0]=="verify-production-canister-handover"{let counter=env::var("TRACE").unwrap()+".verify";let n=fs::read_to_string(&counter).ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(0);fs::write(&counter,(n+1).to_string()).unwrap();let valid=a.len()==5&&fs::read_to_string(&a[2]).is_ok_and(|v|v.contains("\"kind\":\"seal\"")&&v.contains("\"initial_operational_parameters_sha256\":\"1111\""))&&fs::read_to_string(&a[3]).is_ok_and(|v|v.contains("\"kind\":\"schedule\"")&&v.contains("\"seal_receipt_sha256\":\"2222\""))&&fs::read_to_string(&a[4]).is_ok_and(|v|v.contains("\"kind\":\"execute\"")&&v.contains("\"schedule_receipt_sha256\":\"3333\""));if (n>0&&env::var("HANDOVER_PRE_SEND_ACTIVE_DRIFT").as_deref()==Ok("true"))||!valid||["HANDOVER_BOOTSTRAP","HANDOVER_SEALED","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_INITIAL_PARAMETERS_DRIFT","HANDOVER_SEAL_RECEIPT_DRIFT","HANDOVER_SCHEDULE_RECEIPT_DRIFT","HANDOVER_EXECUTE_RECEIPT_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_RESERVE_DRIFT","HANDOVER_STORAGE_INTEGRITY_DRIFT","HANDOVER_IC_DEPOSITS_PAUSED","HANDOVER_BASE_DEPOSITS_PAUSED","HANDOVER_BASE_WITHDRAWALS_PAUSED"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else if a[0]=="validate-production-handover-candidate"{println!("production_handover_candidate=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-controller-handover-recovery"{println!("controller_handover_recovery=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-controller-handover-preparation"&&env::var("HANDOVER_COMPLETION_VALIDATOR_FAIL").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="validate-bundle"&&env::var("REJECT_CURRENT_GATE_B").as_deref()==Ok("true"){std::process::exit(1)}else{println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","a".repeat(64))}}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
@@ -107,7 +107,17 @@ elif [[ "$*" == *'status bridge-canister -e production --identity'* ]]; then
   printf '{"controllers":["%s"],"module_hash":"%s","cycles":%s,"freezing_threshold":86400,"idle_cycles_burned_per_day":100}\n' "$controller" "${HANDOVER_MODULE:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" "${HANDOVER_CYCLES:-1000000}"
 elif [[ "$*" == *'status bridge-canister -e production --public --json'* ]]; then
   [[ "${HANDOVER_POSTCONDITION_FAIL:-false}" != true ]] || exit 1
-  printf '{"controllers":%s,"module_hash":"%s"}\n' "${HANDOVER_FINAL_CONTROLLERS:-[\"7jkta-eyaaa-aaaaq-aaarq-cai\"]}" "${HANDOVER_POST_MODULE:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+  default='["aaaaa-aa","7jkta-eyaaa-aaaaq-aaarq-cai"]'
+  [[ "${HANDOVER_COMPLETING:-false}" != true ]] || default='["7jkta-eyaaa-aaaaq-aaarq-cai"]'
+  printf '{"controllers":%s,"module_hash":"%s"}\n' "${HANDOVER_FINAL_CONTROLLERS:-$default}" "${HANDOVER_POST_MODULE:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+elif [[ "$*" == *get_proposal* ]]; then
+  printf '{"response_bytes":"00","decoded":{"result":{"Proposal":{"id":{"id":42},"decided_timestamp_seconds":1,"executed_timestamp_seconds":1,"failed_timestamp_seconds":0}}}}\n'
+elif [[ "$*" == *list_sns_canisters* ]]; then
+  if [[ "${HANDOVER_ALREADY_REGISTERED:-false}" == true || "${HANDOVER_COMPLETING:-false}" == true ]]; then
+    printf '{"response_bytes":"00","decoded":{"dapps":["2vxsx-fae"]}}\n'
+  else
+    printf '{"response_bytes":"00","decoded":{"dapps":[]}}\n'
+  fi
 elif [[ "$*" == *'settings update bridge-canister'* ]]; then
   if [[ "${HANDOVER_FAIL_AFTER_UPDATE:-false}" == true ]]; then
     : >"$TRACE.updated"
@@ -140,8 +150,25 @@ run_handover() {
   BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/controller-execute-receipt.json" \
   BRIDGE_ICP_IDENTITY=production \
   BRIDGE_HANDOVER_EVIDENCE_FILE="$evidence" \
-  BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY \
+  BRIDGE_HANDOVER_CONFIRMATION=STAGE_KINIC_SNS_ROOT_CO_CONTROLLER \
   "$T/source/scripts/production-handover-driver.sh" "$@"
+}
+
+run_completion() {
+  local preparation="$1" submission="$2" completion="$3"
+  BRIDGE_GATE_B_MANIFEST_SHA256="$GATE_B_HASH" \
+  BRIDGE_RELEASE_BUNDLE="$T/bundle" \
+  BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$T/operational-config-seal-receipt.json" \
+  BRIDGE_CONTROLLER_SCHEDULE_RECEIPT="$T/controller-schedule-receipt.json" \
+  BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/controller-execute-receipt.json" \
+  BRIDGE_ICP_IDENTITY=production \
+  BRIDGE_HANDOVER_MODE=complete \
+  BRIDGE_HANDOVER_EVIDENCE_FILE="$preparation" \
+  BRIDGE_HANDOVER_REGISTRATION_SUBMISSION="$submission" \
+  BRIDGE_HANDOVER_COMPLETION_EVIDENCE_FILE="$completion" \
+  BRIDGE_HANDOVER_CONFIRMATION=VERIFY_KINIC_SNS_REGISTRATION \
+  HANDOVER_COMPLETING=true \
+  "$T/source/scripts/production-handover-driver.sh"
 }
 
 run_handover "$T/handover.json"
@@ -149,8 +176,8 @@ REJECT_CURRENT_GATE_B=true run_handover "$T/historical-lineage.json"
 python3 - "$T/handover.json" "$GATE_B_HASH" <<'PY'
 import hashlib,json,sys
 v=json.load(open(sys.argv[1]))
-assert v['final_controllers']==['7jkta-eyaaa-aaaaq-aaarq-cai']
-assert v['schema_version']==4 and v['stage']=='complete'
+assert set(v['final_controllers'])=={'aaaaa-aa','7jkta-eyaaa-aaaaq-aaarq-cai'}
+assert v['schema_version']==5 and v['stage']=='co_controller_ready'
 checkpoint=bytes.fromhex(v['pre_send_checkpoint_json_hex'])
 assert hashlib.sha256(checkpoint).hexdigest()==v['pre_send_checkpoint_sha256']
 assert json.loads(checkpoint)['stage']=='pre_send_checkpoint'
@@ -170,12 +197,47 @@ for prefix in ('management_status','bridge_status','lifecycle','runtime_binding'
 transcript=bytes.fromhex(v['response_stdout_hex'])+bytes.fromhex(v['response_stderr_hex'])
 assert v['response_exit_code']==0 and hashlib.sha256(transcript).hexdigest()==v['response_sha256']
 assert v['request_id'].encode() in transcript
-a=v['command_argv']; assert a.count('--remove-all-controllers')==1 and a.count('--add-controller')==1
+a=v['command_argv']; assert '--remove-all-controllers' not in a and a.count('--add-controller')==1
 assert a[a.index('--add-controller')+1]=='7jkta-eyaaa-aaaaq-aaarq-cai'
 PY
-rg -q 'settings update bridge-canister -e production --remove-all-controllers --add-controller 7jkta-eyaaa-aaaaq-aaarq-cai --force --identity production --debug' "$TRACE"
+rg -q 'settings update bridge-canister -e production --add-controller 7jkta-eyaaa-aaaaq-aaarq-cai --force --identity production --debug' "$TRACE"
 rg -q '^proofs proofs$' "$TRACE"
 rg -q '^rebuild ' "$TRACE"
+
+updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+if HANDOVER_ALREADY_REGISTERED=true run_handover "$T/already-registered.json" >/dev/null 2>&1; then
+  echo "handover prepared controllers for an already registered Bridge" >&2; exit 1
+fi
+updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+[[ "$updates_before" == "$updates_after" && ! -e "$T/already-registered.json" ]]
+
+python3 - "$T/handover.json" "$T/registration-submission.json" <<'PY'
+import hashlib,json,sys
+preparation_path,target=sys.argv[1:]
+preparation=open(preparation_path,'rb').read(); value=json.loads(preparation)
+json.dump({'schema_version':1,'kind':'sns-dapp-registration-submission','bridge_canister_id':value['bridge_canister_id'],
+ 'sns_root_canister_id':value['sns_root_canister_id'],'governance_canister_id':'74ncn-fqaaa-aaaaq-aaasa-cai',
+ 'preparation_receipt_sha256':hashlib.sha256(preparation).hexdigest(),'proposal_id':42},open(target,'w'))
+PY
+updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+run_completion "$T/handover.json" "$T/registration-submission.json" "$T/handover-complete.json"
+updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+[[ "$updates_before" == "$updates_after" ]]
+python3 - "$T/handover.json" "$T/registration-submission.json" "$T/handover-complete.json" <<'PY'
+import hashlib,json,sys
+preparation,submission,completion=sys.argv[1:]
+value=json.load(open(completion))
+assert value['schema_version']==5 and value['stage']=='complete'
+assert value['final_controllers']==['7jkta-eyaaa-aaaaq-aaarq-cai']
+assert value['registration_proposal_id']==42
+assert value['preparation_receipt_sha256']==hashlib.sha256(open(preparation,'rb').read()).hexdigest()
+assert value['registration_submission_sha256']==hashlib.sha256(open(submission,'rb').read()).hexdigest()
+PY
+if HANDOVER_FINAL_CONTROLLERS='["aaaaa-aa","7jkta-eyaaa-aaaaq-aaarq-cai"]' \
+  run_completion "$T/handover.json" "$T/registration-submission.json" "$T/incomplete-registration.json" >/dev/null 2>&1; then
+  echo "handover completed while the personal controller remained" >&2; exit 1
+fi
+[[ ! -e "$T/incomplete-registration.json" ]]
 
 cp "$T/bundle/profile.json" "$T/profile.before-race.json"
 MUTATE_HANDOVER_INPUT_AFTER_FREEZE=true run_handover "$T/frozen-input-race.json"
@@ -193,7 +255,7 @@ if BRIDGE_GATE_B_MANIFEST_SHA256="$GATE_B_HASH" \
   BRIDGE_RELEASE_BUNDLE="$T/bundle" \
   BRIDGE_ICP_IDENTITY=production \
   BRIDGE_HANDOVER_EVIDENCE_FILE="$T/predeploy-handover.json" \
-  BRIDGE_HANDOVER_CONFIRMATION=TRANSFER_TO_KINIC_SNS_ROOT_ONLY \
+  BRIDGE_HANDOVER_CONFIRMATION=STAGE_KINIC_SNS_ROOT_CO_CONTROLLER \
   "$T/source/scripts/production-handover-driver.sh" >/dev/null 2>&1; then
   echo "handover accepted no activation lineage receipts" >&2; exit 1
 fi
@@ -283,47 +345,47 @@ fi
 updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
 [[ "$updates_before" == "$updates_after" ]]
 [[ ! -e "$T/pre-send-controller-race.json" ]]
-if HANDOVER_FINAL_CONTROLLERS='["7jkta-eyaaa-aaaaq-aaarq-cai","aaaaa-aa"]' run_handover "$T/extra-controller.json" >/dev/null 2>&1; then
+if HANDOVER_FINAL_CONTROLLERS='["7jkta-eyaaa-aaaaq-aaarq-cai","aaaaa-aa","2vxsx-fae"]' run_handover "$T/extra-controller.json" >/dev/null 2>&1; then
   echo "handover accepted an extra live controller" >&2; exit 1
 fi
 python3 - "$T/extra-controller.json" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_submitted'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==5 and v['stage']=='controller_update_submitted'
 PY
 if HANDOVER_FINAL_CONTROLLERS='["aaaaa-aa"]' run_handover "$T/missing-root.json" >/dev/null 2>&1; then
   echo "handover accepted a live controller set without SNS Root" >&2; exit 1
 fi
 python3 - "$T/missing-root.json" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_submitted'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==5 and v['stage']=='controller_update_submitted'
 PY
 if HANDOVER_POST_MODULE="$(printf 'b%.0s' {1..64})" run_handover "$T/post-module-drift.json" >/dev/null 2>&1; then
   echo "handover accepted a module change across controller handover" >&2; exit 1
 fi
 python3 - "$T/post-module-drift.json" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_submitted'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==5 and v['stage']=='controller_update_submitted'
 PY
 if HANDOVER_POST_RUNTIME=drifted run_handover "$T/post-runtime-drift.json" >/dev/null 2>&1; then
   echo "handover accepted RuntimeBinding drift across controller handover" >&2; exit 1
 fi
 python3 - "$T/post-runtime-drift.json" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_submitted'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==5 and v['stage']=='controller_update_submitted'
 PY
 if HANDOVER_POST_STORAGE_RESULT=corrupt run_handover "$T/post-storage-drift.json" >/dev/null 2>&1; then
   echo "handover accepted storage integrity drift across controller handover" >&2; exit 1
 fi
 python3 - "$T/post-storage-drift.json" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_submitted'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==5 and v['stage']=='controller_update_submitted'
 PY
 if HANDOVER_POSTCONDITION_FAIL=true run_handover "$T/postcondition-failed.json" >/dev/null 2>&1; then
   echo "handover wrote evidence without a live controller postcondition" >&2; exit 1
 fi
 python3 - "$T/postcondition-failed.json" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_submitted'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==5 and v['stage']=='controller_update_submitted'
 PY
 printf '\n' >>"$T/source/src/main.rs"
 if run_handover "$T/dirty.json" >/dev/null 2>&1; then
@@ -340,7 +402,7 @@ if HANDOVER_FAIL=true run_handover "$T/failed.json" >/dev/null 2>&1; then
 fi
 python3 - "$T/failed.json" <<'PY'
 import hashlib,json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_uncertain'
+v=json.load(open(sys.argv[1])); assert v['schema_version']==5 and v['stage']=='controller_update_uncertain'
 assert v['response_exit_code']!=0
 transcript=bytes.fromhex(v['response_stdout_hex'])+bytes.fromhex(v['response_stderr_hex'])
 assert hashlib.sha256(transcript).hexdigest()==v['response_sha256']
@@ -352,7 +414,7 @@ updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
 python3 - "$T/failed.json" <<'PY'
 import json,sys
 v=json.load(open(sys.argv[1]))
-assert v['schema_version']==4 and v['stage']=='complete'
+assert v['schema_version']==5 and v['stage']=='co_controller_ready'
 assert v['request_id']=='' and v['recovered_without_request_id'] is True
 source=json.loads(bytes.fromhex(v['recovery_source_checkpoint_json_hex']))
 assert source['stage']=='controller_update_uncertain' and source['response_exit_code']!=0
@@ -373,7 +435,7 @@ updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
 python3 - "$T/failed-after-update.json" <<'PY'
 import json,sys
 v=json.load(open(sys.argv[1]))
-assert v['stage']=='complete' and v['request_id']=='b'*64
+assert v['stage']=='co_controller_ready' and v['request_id']=='b'*64
 assert v['response_exit_code']!=0 and v['recovered_without_request_id'] is False
 PY
 if HANDOVER_NO_REQUEST_ID=true run_handover "$T/missing-request-id.json" >/dev/null 2>&1; then
@@ -381,7 +443,7 @@ if HANDOVER_NO_REQUEST_ID=true run_handover "$T/missing-request-id.json" >/dev/n
 fi
 python3 - "$T/missing-request-id.json" <<'PY'
 import hashlib,json,sys
-v=json.load(open(sys.argv[1])); assert v['schema_version']==4 and v['stage']=='controller_update_uncertain' and v['response_exit_code']==0 and v['request_id']==''
+v=json.load(open(sys.argv[1])); assert v['schema_version']==5 and v['stage']=='controller_update_uncertain' and v['response_exit_code']==0 and v['request_id']==''
 transcript=bytes.fromhex(v['response_stdout_hex'])+bytes.fromhex(v['response_stderr_hex'])
 assert hashlib.sha256(transcript).hexdigest()==v['response_sha256']
 PY
@@ -392,9 +454,9 @@ updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
 python3 - "$T/missing-request-id.json" <<'PY'
 import json,sys
 v=json.load(open(sys.argv[1]))
-assert v['schema_version']==4 and v['stage']=='complete'
+assert v['schema_version']==5 and v['stage']=='co_controller_ready'
 assert v['request_id']=='' and v['recovered_without_request_id'] is True
-assert v['final_controllers']==['7jkta-eyaaa-aaaaq-aaarq-cai']
+assert set(v['final_controllers'])=={'aaaaa-aa','7jkta-eyaaa-aaaaq-aaarq-cai'}
 PY
 if HANDOVER_POSTCONDITION_FAIL=true run_handover "$T/recover-validator-source.json" >/dev/null 2>&1; then
   echo "handover unexpectedly completed without a postcondition" >&2; exit 1
@@ -413,7 +475,7 @@ updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
 [[ -z "$(find "$T" -maxdepth 1 -name '.handover-completion.*' -print -quit)" ]]
 python3 - "$T/recover-validator-source.json" <<'PY'
 import json,sys
-assert json.load(open(sys.argv[1]))['stage']=='complete'
+assert json.load(open(sys.argv[1]))['stage']=='co_controller_ready'
 PY
 
 # A checkpoint must be accepted by the fixed typed verifier before any transfer.

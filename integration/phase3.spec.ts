@@ -3299,6 +3299,12 @@ describe("Phase 3 PocketIC saga", () => {
     }
     // Production-mode Root registration removes the personal co-controller.
     await pic!.updateCanisterSettings({canisterId: bridge.canisterId, sender: controller, controllers: [controller,sns.rootId]});
+    expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText()).sort())
+      .toEqual([controller.toText(),sns.rootId.toText()].sort());
+    const unadoptedRegistration = await sns.submitUnadopted({RegisterDappCanisters: {canister_ids: [bridge.canisterId]}});
+    expect(unadoptedRegistration.executed_timestamp_seconds).toBe(0n);
+    expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText()).sort())
+      .toEqual([controller.toText(),sns.rootId.toText()].sort());
     await sns.propose({RegisterDappCanisters: {canister_ids: [bridge.canisterId]}});
     expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText())).toEqual([sns.rootId.toText()]);
     expect((await sns.snsRoot.list_sns_canisters({})).dapps.map((p: Principal) => p.toText())).toContain(bridge.canisterId.toText());

@@ -42,15 +42,23 @@ test('proposal response requires typed MakeProposal success', async () => {
 });
 
 test('handover preparation skips registered dapps and fixes exact upgrade bytes', async () => {
-  const {prepareHandover} = await import('./handover.mjs');
+  const {prepareHandover,decodeProposalResponse,decodeRootDapps,KINIC_GOVERNANCE,KINIC_ROOT} = await import('./handover.mjs');
   const {createHash} = await import('node:crypto');
   const wasm = Buffer.from([0,97,115,109,1,0,0,0]);
   const hash = createHash('sha256').update(wasm).digest('hex');
   const envelope = dapps => ({response_bytes:Buffer.from(IDL.encode([IDL.Record({dapps:IDL.Vec(IDL.Principal)})],[{dapps}])).toString('hex')});
   const absent = prepareHandover(envelope([]),bridge,wasm,hash);
+  assert.equal(absent.governance_canister_id,KINIC_GOVERNANCE);
+  assert.equal(absent.root_canister_id,KINIC_ROOT);
   assert.match(absent.registration_proposal,/RegisterDappCanisters/);
+  assert.match(absent.registration_proposal,/co-controllers/);
   assert.match(absent.upgrade_proposal,/mode=opt \(3 : int32\)/);
   assert.equal(prepareHandover(envelope([Principal.fromText(bridge)]),bridge,wasm,hash).registration_proposal,null);
   assert.throws(()=>prepareHandover(envelope([]),bridge,wasm,'0'.repeat(64)));
   assert.throws(()=>prepareHandover(envelope([Principal.fromText(bridge),Principal.fromText(bridge)]),bridge,wasm,hash));
+  assert.deepEqual(decodeRootDapps(envelope([Principal.fromText(bridge)])),[bridge]);
+  const responseType = IDL.Record({command:IDL.Opt(IDL.Variant({MakeProposal:IDL.Record({proposal_id:IDL.Opt(IDL.Record({id:IDL.Nat64}))}),Error:IDL.Record({error_type:IDL.Int32,error_message:IDL.Text})}))});
+  const response = value => ({response_bytes:Buffer.from(IDL.encode([responseType],[value])).toString('hex')});
+  assert.equal(decodeProposalResponse(response({command:[{MakeProposal:{proposal_id:[{id:77n}]}}]})),'77');
+  assert.throws(()=>decodeProposalResponse(response({command:[{Error:{error_type:1,error_message:'denied'}}]})));
 });

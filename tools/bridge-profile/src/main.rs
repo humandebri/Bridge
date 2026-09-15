@@ -989,6 +989,8 @@ struct ControllerHandover {
     after_module_sha256: String,
     before_management_status_response_json_hex: String,
     before_management_status_response_sha256: String,
+    before_root_registration_response_json_hex: String,
+    before_root_registration_response_sha256: String,
     pre_send_management_status_response_json_hex: String,
     pre_send_management_status_response_sha256: String,
     pre_send_bridge_status_response_json_hex: String,
@@ -1045,6 +1047,42 @@ struct ControllerHandover {
     recovery_source_checkpoint_sha256: String,
     #[serde(default)]
     recovered_without_request_id: bool,
+    registration_proposal_id: u64,
+    preparation_receipt_json_hex: String,
+    preparation_receipt_sha256: String,
+    registration_submission_json_hex: String,
+    registration_submission_sha256: String,
+    registration_governance_response_json_hex: String,
+    registration_governance_response_sha256: String,
+    registration_root_response_json_hex: String,
+    registration_root_response_sha256: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HandoverRegistrationSubmission {
+    schema_version: u8,
+    kind: String,
+    release_id: String,
+    source_revision: String,
+    source_tree_sha256: String,
+    gate_b_manifest_sha256: String,
+    governance_canister_id: String,
+    sns_root_canister_id: String,
+    bridge_canister_id: String,
+    proposer_principal: String,
+    neuron_subaccount: String,
+    proposal_id: u64,
+    submitted_at_unix: u64,
+    proposal_sha256: String,
+    preparation_receipt_sha256: String,
+    reviewed_handover_sha256: String,
+    root_query_response_hex: String,
+    root_query_response_sha256: String,
+    proposal_response_hex: String,
+    proposal_response_sha256: String,
+    root_command_argv: Vec<String>,
+    proposal_command_argv: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1297,24 +1335,24 @@ struct GetProposalRequest {
     proposal_id: Option<ProposalId>,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 struct GetProposalResponse {
     result: Option<GetProposalResult>,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 enum GetProposalResult {
     Error(GovernanceErrorView),
     Proposal(Box<ProposalDataView>),
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 struct GovernanceErrorView {
     error_message: String,
     error_type: i32,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 struct ProposalDataView {
     id: Option<ProposalId>,
     failure_reason: Option<GovernanceErrorView>,
@@ -1324,14 +1362,14 @@ struct ProposalDataView {
     executed_timestamp_seconds: u64,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 struct ProposalView {
     action: Option<SnsProposalAction>,
     summary: String,
 }
 
 #[allow(clippy::large_enum_variant)]
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 enum SnsProposalAction {
     ManageNervousSystemParameters(Reserved),
     AddGenericNervousSystemFunction(Reserved),
@@ -1340,7 +1378,7 @@ enum SnsProposalAction {
     RemoveGenericNervousSystemFunction(Reserved),
     UpgradeSnsToNextVersion(Reserved),
     AdvanceSnsTargetVersion(Reserved),
-    RegisterDappCanisters(Reserved),
+    RegisterDappCanisters(RegisterDappCanistersView),
     RegisterExtension(Reserved),
     UpgradeExtension(Reserved),
     ExecuteExtensionOperation(Reserved),
@@ -1355,7 +1393,7 @@ enum SnsProposalAction {
     Motion(Reserved),
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 struct UpgradeSnsControlledCanisterView {
     mode: Option<i32>,
     canister_upgrade_arg: Option<Vec<u8>>,
@@ -1365,14 +1403,19 @@ struct UpgradeSnsControlledCanisterView {
     canister_id: Option<Principal>,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
+struct RegisterDappCanistersView {
+    canister_ids: Vec<Principal>,
+}
+
+#[derive(CandidType, Deserialize, Serialize)]
 struct ChunkedSnsWasmView {
     wasm_module_hash: Vec<u8>,
     store_canister_id: Option<Principal>,
     chunk_hashes_list: Vec<Vec<u8>>,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Serialize)]
 struct ExecuteGenericFunctionView {
     function_id: u64,
     payload: Vec<u8>,
@@ -4375,11 +4418,12 @@ fn validate_controller_handover_recovery_files(
     };
     let installer = &gate_a_receipt.canister_install.installer_principal;
     let stage = text("stage")?;
-    if object.get("schema_version").and_then(Value::as_u64) != Some(4)
+    if object.get("schema_version").and_then(Value::as_u64) != Some(5)
         || ![
             "pre_send_checkpoint",
             "controller_update_uncertain",
             "controller_update_submitted",
+            "co_controller_ready",
         ]
         .contains(&stage)
         || text("source_revision")? != bundle.manifest.source_revision
@@ -4401,6 +4445,7 @@ fn validate_controller_handover_recovery_files(
         return Err("controller handover recovery checkpoint lineage is invalid".into());
     }
     for prefix in [
+        "before_root_registration",
         "pre_send_management_status",
         "pre_send_bridge_status",
         "pre_send_lifecycle",
@@ -4421,7 +4466,7 @@ fn validate_controller_handover_recovery_files(
         return Err("controller handover recovery response digest is invalid".into());
     }
     let request_id = text("request_id")?.trim_start_matches("0x");
-    if stage == "controller_update_submitted"
+    if ["controller_update_submitted", "co_controller_ready"].contains(&stage)
         && (!valid_sha256(request_id)
             || handover_request_ids(&String::from_utf8_lossy(&response))?
                 != BTreeSet::from([request_id.to_ascii_lowercase()]))
@@ -4438,7 +4483,6 @@ fn validate_controller_handover_recovery_files(
             "bridge-canister",
             "-e",
             "production",
-            "--remove-all-controllers",
             "--add-controller",
             KINIC_ROOT,
             "--force",
@@ -4447,7 +4491,36 @@ fn validate_controller_handover_recovery_files(
             "--debug",
         ]
     {
-        return Err("controller handover recovery command is not the fixed transfer".into());
+        return Err(
+            "controller handover recovery command is not the fixed co-controller addition".into(),
+        );
+    }
+    if stage == "co_controller_ready" {
+        let expected = BTreeSet::from([installer.clone(), KINIC_ROOT.to_string()]);
+        let final_controllers = strings("final_controllers")?;
+        if final_controllers.len() != 2
+            || final_controllers.into_iter().collect::<BTreeSet<_>>() != expected
+            || !text("after_module_sha256")?
+                .eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+        {
+            return Err(
+                "controller handover preparation does not preserve exact co-control".into(),
+            );
+        }
+        for prefix in [
+            "after_management_status",
+            "after_bridge_status",
+            "after_lifecycle",
+            "after_runtime_binding",
+            "after_storage_integrity",
+            "after_activation_status",
+            "after_activation_attestation",
+        ] {
+            handover_json_evidence(
+                text(&format!("{prefix}_response_json_hex"))?,
+                text(&format!("{prefix}_response_sha256"))?,
+            )?;
+        }
     }
     Ok(bundle.manifest_sha256)
 }
@@ -4499,7 +4572,7 @@ fn controller_handover_checkpoint_matches(
                     .eq(expected.iter().map(|value| Some(value.as_str())))
             })
     };
-    checkpoint.get("schema_version").and_then(Value::as_u64) == Some(4)
+    checkpoint.get("schema_version").and_then(Value::as_u64) == Some(5)
         && string_matches("stage", "pre_send_checkpoint")
         && string_matches("source_revision", &handover.source_revision)
         && string_matches("source_tree_sha256", &handover.source_tree_sha256)
@@ -4550,6 +4623,10 @@ fn controller_handover_checkpoint_matches(
             "pre_send_activation_attestation_response_sha256",
             &handover.pre_send_activation_attestation_response_sha256,
         )
+        && string_matches(
+            "before_root_registration_response_sha256",
+            &handover.before_root_registration_response_sha256,
+        )
 }
 
 fn controller_handover_recovery_source_matches(
@@ -4568,7 +4645,7 @@ fn controller_handover_recovery_source_matches(
         "controller_update_submitted",
     ]
     .contains(&stage)
-        || source.get("schema_version").and_then(Value::as_u64) != Some(4)
+        || source.get("schema_version").and_then(Value::as_u64) != Some(5)
     {
         return false;
     }
@@ -4878,16 +4955,227 @@ fn validate_controller_handover_completion(
         (valid_sha256(&handover.request_id) || valid_hash32(&handover.request_id))
             && response_request_ids == BTreeSet::from([request_id_text])
     };
-    if handover.schema_version != 4
+    let preparation = decode_hex(&handover.preparation_receipt_json_hex)?;
+    let preparation_digest = hex(&Sha256::digest(&preparation));
+    let preparation_value: Value =
+        serde_json::from_slice(&preparation).map_err(|error| error.to_string())?;
+    let preparation_object = preparation_value
+        .as_object()
+        .ok_or("controller handover preparation is not an object")?;
+    let preparation_controllers = preparation_object
+        .get("final_controllers")
+        .and_then(Value::as_array)
+        .ok_or("controller handover preparation lacks final controllers")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or("invalid preparation controller")
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let preparation_observed_at = preparation_object
+        .get("observed_at_unix")
+        .and_then(Value::as_u64)
+        .ok_or("controller handover preparation lacks observation time")?;
+    let preparation_after_management = handover_json_evidence(
+        preparation_object
+            .get("after_management_status_response_json_hex")
+            .and_then(Value::as_str)
+            .ok_or("controller handover preparation lacks management evidence")?,
+        preparation_object
+            .get("after_management_status_response_sha256")
+            .and_then(Value::as_str)
+            .ok_or("controller handover preparation lacks management digest")?,
+    )?;
+    let mut preparation_controller_values = Vec::new();
+    collect_json_key(
+        &preparation_after_management,
+        "controllers",
+        &mut preparation_controller_values,
+    );
+    let preparation_management_controllers = preparation_controller_values
+        .first()
+        .and_then(|value| value.as_array())
+        .ok_or("controller handover preparation management controllers are malformed")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or("invalid preparation controller")
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let mut preparation_module_values = Vec::new();
+    collect_json_key(
+        &preparation_after_management,
+        "module_hash",
+        &mut preparation_module_values,
+    );
+    let preparation_module = preparation_module_values
+        .first()
+        .and_then(|value| management_module_sha256(value))
+        .ok_or("controller handover preparation module is malformed")?;
+    let preparation_root_envelope = handover_json_evidence(
+        preparation_object
+            .get("before_root_registration_response_json_hex")
+            .and_then(Value::as_str)
+            .ok_or("controller handover preparation lacks pre-registration Root evidence")?,
+        preparation_object
+            .get("before_root_registration_response_sha256")
+            .and_then(Value::as_str)
+            .ok_or("controller handover preparation lacks pre-registration Root digest")?,
+    )?;
+    let preparation_root_bytes = decode_hex(
+        preparation_root_envelope
+            .get("response_bytes")
+            .and_then(Value::as_str)
+            .ok_or("controller handover preparation Root evidence lacks raw Candid")?,
+    )?;
+    let preparation_root =
+        Decode!(&preparation_root_bytes, SnsCanistersView).map_err(|error| error.to_string())?;
+    let submission_bytes = decode_hex(&handover.registration_submission_json_hex)?;
+    let submission: HandoverRegistrationSubmission =
+        serde_json::from_slice(&submission_bytes).map_err(|error| error.to_string())?;
+    let submission_root_envelope: Value =
+        serde_json::from_slice(&decode_hex(&submission.root_query_response_hex)?)
+            .map_err(|error| error.to_string())?;
+    let submission_root_bytes = decode_hex(
+        submission_root_envelope
+            .get("response_bytes")
+            .and_then(Value::as_str)
+            .ok_or("registration submission Root query lacks raw Candid")?,
+    )?;
+    let submission_root =
+        Decode!(&submission_root_bytes, SnsCanistersView).map_err(|error| error.to_string())?;
+    let governance_envelope = handover_json_evidence(
+        &handover.registration_governance_response_json_hex,
+        &handover.registration_governance_response_sha256,
+    )?;
+    let governance_bytes = decode_hex(
+        governance_envelope
+            .get("response_bytes")
+            .and_then(Value::as_str)
+            .ok_or("registration Governance evidence lacks raw Candid")?,
+    )?;
+    let governance_response =
+        Decode!(&governance_bytes, GetProposalResponse).map_err(|error| error.to_string())?;
+    let Some(GetProposalResult::Proposal(registration_proposal)) = governance_response.result
+    else {
+        return Err("SNS registration proposal is unavailable".into());
+    };
+    let root_envelope = handover_json_evidence(
+        &handover.registration_root_response_json_hex,
+        &handover.registration_root_response_sha256,
+    )?;
+    let root_bytes = decode_hex(
+        root_envelope
+            .get("response_bytes")
+            .and_then(Value::as_str)
+            .ok_or("registration Root evidence lacks raw Candid")?,
+    )?;
+    let root = Decode!(&root_bytes, SnsCanistersView).map_err(|error| error.to_string())?;
+    let bridge =
+        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    let registration_action_matches = matches!(
+        registration_proposal.proposal.as_ref().and_then(|proposal| proposal.action.as_ref()),
+        Some(SnsProposalAction::RegisterDappCanisters(action))
+            if action.canister_ids == [bridge]
+    );
+    let preparation_is_valid = preparation_object
+        .get("schema_version")
+        .and_then(Value::as_u64)
+        == Some(5)
+        && preparation_object.get("stage").and_then(Value::as_str) == Some("co_controller_ready")
+        && preparation_object
+            .get("source_revision")
+            .and_then(Value::as_str)
+            == Some(handover.source_revision.as_str())
+        && preparation_object
+            .get("source_tree_sha256")
+            .and_then(Value::as_str)
+            == Some(handover.source_tree_sha256.as_str())
+        && preparation_object
+            .get("gate_b_manifest_sha256")
+            .and_then(Value::as_str)
+            == Some(handover.gate_b_manifest_sha256.as_str())
+        && preparation_object.get("command_argv")
+            == serde_json::to_value(&handover.command_argv).ok().as_ref()
+        && preparation_controllers
+            == BTreeSet::from([installer.to_string(), KINIC_ROOT.to_string()])
+        && preparation_management_controllers == preparation_controllers
+        && preparation_root
+            .dapps
+            .iter()
+            .all(|canister| *canister != bridge)
+        && preparation_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256);
+    let submission_response = decode_hex(&submission.proposal_response_hex)?;
+    let submission_is_valid = submission.schema_version == 1
+        && submission.kind == "sns-dapp-registration-submission"
+        && !submission.release_id.is_empty()
+        && submission.source_revision == handover.source_revision
+        && submission.source_tree_sha256 == handover.source_tree_sha256
+        && submission.gate_b_manifest_sha256 == handover.gate_b_manifest_sha256
+        && submission.governance_canister_id == KINIC_GOVERNANCE
+        && submission.sns_root_canister_id == KINIC_ROOT
+        && submission.bridge_canister_id == profile.bridge_canister_id
+        && submission.proposer_principal == *installer
+        && valid_sha256(&submission.neuron_subaccount)
+        && submission.proposal_id == handover.registration_proposal_id
+        && submission.proposal_id > 0
+        && submission.submitted_at_unix >= preparation_observed_at
+        && valid_sha256(&submission.proposal_sha256)
+        && submission.preparation_receipt_sha256 == preparation_digest
+        && valid_sha256(&submission.reviewed_handover_sha256)
+        && hex(&Sha256::digest(&submission_root_bytes)).len() == 64
+        && submission_root
+            .dapps
+            .iter()
+            .all(|canister| *canister != bridge)
+        && hex(&Sha256::digest(&decode_hex(
+            &submission.root_query_response_hex,
+        )?)) == submission.root_query_response_sha256
+        && hex(&Sha256::digest(&submission_response)) == submission.proposal_response_sha256
+        && submission
+            .root_command_argv
+            .iter()
+            .any(|value| value == "list_sns_canisters")
+        && submission
+            .proposal_command_argv
+            .iter()
+            .any(|value| value == "manage_neuron");
+    let proposal_is_valid = registration_proposal.id.as_ref().map(|id| id.id)
+        == Some(handover.registration_proposal_id)
+        && registration_proposal.decided_timestamp_seconds != 0
+        && registration_proposal.executed_timestamp_seconds >= submission.submitted_at_unix
+        && registration_proposal.executed_timestamp_seconds >= preparation_observed_at
+        && registration_proposal.executed_timestamp_seconds <= handover.observed_at_unix
+        && registration_proposal.failed_timestamp_seconds == 0
+        && registration_proposal.failure_reason.is_none()
+        && registration_action_matches;
+    let registration_is_complete = root
+        .dapps
+        .iter()
+        .filter(|canister| **canister == bridge)
+        .count()
+        == 1;
+    if handover.schema_version != 5
         || !checkpoint_is_valid
         || !recovery_source_is_valid
+        || !preparation_is_valid
+        || !submission_is_valid
+        || !proposal_is_valid
+        || !registration_is_complete
+        || !preparation_digest.eq_ignore_ascii_case(&handover.preparation_receipt_sha256)
+        || !hex(&Sha256::digest(&submission_bytes))
+            .eq_ignore_ascii_case(&handover.registration_submission_sha256)
         || handover.stage != "complete"
         || handover.bridge_canister_id != profile.bridge_canister_id
         || handover.sns_root_canister_id != KINIC_ROOT
         || !principal(&handover.executing_principal)
         || handover.command_argv.len() < required_prefix.len()
         || handover.command_argv[..required_prefix.len()] != required_prefix
-        || remove_all_count != 1
+        || remove_all_count != 0
         || add_controller_positions.len() != 1
         || handover
             .command_argv
@@ -4912,7 +5200,9 @@ fn validate_controller_handover_completion(
         || handover.pre_send_cycles_balance < profile.parameters.cycles_floor
         || handover.pre_send_cycles_balance < handover.pre_send_required_freezing_cycles
     {
-        return Err("controller handover evidence is not an atomic SNS Root-only transfer".into());
+        return Err(format!(
+            "controller handover evidence is not a staged SNS registration transfer: checkpoint={checkpoint_is_valid} recovery={recovery_source_is_valid} preparation={preparation_is_valid} submission={submission_is_valid} proposal={proposal_is_valid} registration={registration_is_complete} request={request_binding_is_valid}"
+        ));
     }
     Ok(())
 }
@@ -8528,6 +8818,8 @@ fn decode_handover_query(method: &str, path: &Path) -> Result<Value, String> {
         "storage_integrity_check" | "get_release_storage_integrity" => {
             decoded!(StorageIntegrityResultView)
         }
+        "get_registration_proposal" => decoded!(GetProposalResponse),
+        "list_sns_canisters" => decoded!(SnsCanistersView),
         _ => return Err("unsupported handover query".into()),
     };
     Ok(serde_json::json!({"response_bytes":hex(&bytes), "decoded":decoded}))
@@ -12236,6 +12528,21 @@ fn run() -> Result<(), String> {
                 Path::new(&args[6]),
             )?;
         }
+        Some("validate-controller-handover-preparation") if args.len() == 7 => {
+            let path = Path::new(&args[6]);
+            let manifest_sha256 = validate_controller_handover_recovery_files(
+                Path::new(&args[2]),
+                Path::new(&args[3]),
+                Path::new(&args[4]),
+                Path::new(&args[5]),
+                path,
+            )?;
+            let preparation: Value = read_json(path)?;
+            if preparation.get("stage").and_then(Value::as_str) != Some("co_controller_ready") {
+                return Err("controller handover preparation is incomplete".into());
+            }
+            println!("controller_handover_preparation=pass manifest_sha256={manifest_sha256}");
+        }
         Some("validate-controller-handover-recovery") if args.len() == 7 => {
             let manifest_sha256 = validate_controller_handover_recovery_files(
                 Path::new(&args[2]),
@@ -14799,7 +15106,7 @@ mod tests {
         let source_tree = "b".repeat(64);
         let profile_sha = "c".repeat(64);
         let manifest = ReleaseManifest {
-            schema_version: 4,
+            schema_version: 5,
             release_id: release_id.into(),
             test_only: false,
             source_revision: source_revision.clone(),
@@ -15253,6 +15560,11 @@ mod tests {
         profile.deployment_block = 0;
         let installer = test_principal(31);
         let json_bytes = |value: Value| serde_json::to_vec(&value).unwrap();
+        let before_root_candid = Encode!(&SnsCanistersView { dapps: vec![] }).unwrap();
+        let before_root = json_bytes(serde_json::json!({
+            "response_bytes": hex(&before_root_candid),
+            "decoded": {"dapps": []},
+        }));
         let before_management = json_bytes(serde_json::json!({
             "controllers": [installer],
             "module_hash": profile.bridge_canister_wasm_sha256.clone(),
@@ -15294,7 +15606,7 @@ mod tests {
             "Ok":{"deposits_paused":false,"withdrawals_paused":false}
         }));
         let mut handover = ControllerHandover {
-            schema_version: 4,
+            schema_version: 5,
             stage: "complete".into(),
             observed_at_unix: now - 95,
             source_revision: "1".repeat(40),
@@ -15314,7 +15626,6 @@ mod tests {
                 "bridge-canister",
                 "-e",
                 "production",
-                "--remove-all-controllers",
                 "--add-controller",
                 KINIC_ROOT,
                 "--force",
@@ -15339,6 +15650,8 @@ mod tests {
             after_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
             before_management_status_response_json_hex: hex(&before_management),
             before_management_status_response_sha256: hex(&Sha256::digest(&before_management)),
+            before_root_registration_response_json_hex: hex(&before_root),
+            before_root_registration_response_sha256: hex(&Sha256::digest(&before_root)),
             pre_send_management_status_response_json_hex: hex(&before_management),
             pre_send_management_status_response_sha256: hex(&Sha256::digest(&before_management)),
             pre_send_bridge_status_response_json_hex: hex(&bridge_status),
@@ -15390,6 +15703,15 @@ mod tests {
             recovery_source_checkpoint_json_hex: String::new(),
             recovery_source_checkpoint_sha256: String::new(),
             recovered_without_request_id: false,
+            registration_proposal_id: 0,
+            preparation_receipt_json_hex: String::new(),
+            preparation_receipt_sha256: String::new(),
+            registration_submission_json_hex: String::new(),
+            registration_submission_sha256: String::new(),
+            registration_governance_response_json_hex: String::new(),
+            registration_governance_response_sha256: String::new(),
+            registration_root_response_json_hex: String::new(),
+            registration_root_response_sha256: String::new(),
         };
         let bind_checkpoints = |handover: &mut ControllerHandover, source_stage: &str| {
             let mut checkpoint = serde_json::to_value(&*handover).unwrap();
@@ -15405,6 +15727,8 @@ mod tests {
             );
             object.retain(|key, _| {
                 !key.starts_with("after_")
+                    && !key.starts_with("registration_")
+                    && !key.starts_with("preparation_")
                     && !matches!(
                         key.as_str(),
                         "final_controllers"
@@ -15425,6 +15749,8 @@ mod tests {
             object.insert("stage".into(), Value::from(source_stage));
             object.retain(|key, _| {
                 !key.starts_with("after_")
+                    && !key.starts_with("registration_")
+                    && !key.starts_with("preparation_")
                     && !matches!(
                         key.as_str(),
                         "final_controllers"
@@ -15438,15 +15764,200 @@ mod tests {
             handover.recovery_source_checkpoint_sha256 = hex(&Sha256::digest(&source));
         };
         bind_checkpoints(&mut handover, "controller_update_submitted");
+        let co_management = json_bytes(serde_json::json!({
+            "controllers": [installer.clone(), KINIC_ROOT],
+            "module_hash": profile.bridge_canister_wasm_sha256.clone(),
+        }));
+        let mut preparation = serde_json::to_value(&handover).unwrap();
+        preparation["stage"] = Value::from("co_controller_ready");
+        preparation["observed_at_unix"] = Value::from(now - 98);
+        preparation["final_controllers"] = serde_json::json!([installer.clone(), KINIC_ROOT]);
+        preparation["after_management_status_response_json_hex"] = Value::from(hex(&co_management));
+        preparation["after_management_status_response_sha256"] =
+            Value::from(hex(&Sha256::digest(&co_management)));
+        let preparation = serde_json::to_vec(&preparation).unwrap();
+        handover.preparation_receipt_json_hex = hex(&preparation);
+        handover.preparation_receipt_sha256 = hex(&Sha256::digest(&preparation));
+        let submission_root_candid = Encode!(&SnsCanistersView { dapps: vec![] }).unwrap();
+        let submission_root_envelope = json_bytes(serde_json::json!({
+            "response_bytes": hex(&submission_root_candid),
+        }));
+        let proposal_response = b"proposal-response".to_vec();
+        let submission = HandoverRegistrationSubmission {
+            schema_version: 1,
+            kind: "sns-dapp-registration-submission".into(),
+            release_id: "release-1".into(),
+            source_revision: handover.source_revision.clone(),
+            source_tree_sha256: handover.source_tree_sha256.clone(),
+            gate_b_manifest_sha256: handover.gate_b_manifest_sha256.clone(),
+            governance_canister_id: KINIC_GOVERNANCE.into(),
+            sns_root_canister_id: KINIC_ROOT.into(),
+            bridge_canister_id: profile.bridge_canister_id.clone(),
+            proposer_principal: installer.clone(),
+            neuron_subaccount: "6".repeat(64),
+            proposal_id: 42,
+            submitted_at_unix: now - 97,
+            proposal_sha256: "7".repeat(64),
+            preparation_receipt_sha256: handover.preparation_receipt_sha256.clone(),
+            reviewed_handover_sha256: "8".repeat(64),
+            root_query_response_hex: hex(&submission_root_envelope),
+            root_query_response_sha256: hex(&Sha256::digest(&submission_root_envelope)),
+            proposal_response_hex: hex(&proposal_response),
+            proposal_response_sha256: hex(&Sha256::digest(&proposal_response)),
+            root_command_argv: vec!["list_sns_canisters".into()],
+            proposal_command_argv: vec!["manage_neuron".into()],
+        };
+        let submission = serde_json::to_vec(&submission).unwrap();
+        handover.registration_submission_json_hex = hex(&submission);
+        handover.registration_submission_sha256 = hex(&Sha256::digest(&submission));
+        handover.registration_proposal_id = 42;
+        let governance_candid = Encode!(&GetProposalResponse {
+            result: Some(GetProposalResult::Proposal(Box::new(ProposalDataView {
+                id: Some(ProposalId { id: 42 }),
+                failure_reason: None,
+                failed_timestamp_seconds: 0,
+                decided_timestamp_seconds: now - 96,
+                proposal: Some(ProposalView {
+                    action: Some(SnsProposalAction::RegisterDappCanisters(
+                        RegisterDappCanistersView {
+                            canister_ids: vec![
+                                Principal::from_text(&profile.bridge_canister_id).unwrap()
+                            ],
+                        },
+                    )),
+                    summary: "register Bridge".into(),
+                }),
+                executed_timestamp_seconds: now - 96,
+            }))),
+        })
+        .unwrap();
+        let governance_envelope = json_bytes(serde_json::json!({
+            "response_bytes": hex(&governance_candid),
+        }));
+        handover.registration_governance_response_json_hex = hex(&governance_envelope);
+        handover.registration_governance_response_sha256 =
+            hex(&Sha256::digest(&governance_envelope));
+        let root_candid = Encode!(&SnsCanistersView {
+            dapps: vec![Principal::from_text(&profile.bridge_canister_id).unwrap()],
+        })
+        .unwrap();
+        let root_envelope = json_bytes(serde_json::json!({
+            "response_bytes": hex(&root_candid),
+        }));
+        handover.registration_root_response_json_hex = hex(&root_envelope);
+        handover.registration_root_response_sha256 = hex(&Sha256::digest(&root_envelope));
         assert!(validate_controller_handover_continuity(&handover, &profile, &installer).is_ok());
-        assert!(validate_controller_handover_completion(
+        let handover_result = validate_controller_handover_completion(
             &handover,
             &profile,
             &installer,
             now - 100,
             now,
+        );
+        assert!(handover_result.is_ok(), "{handover_result:?}");
+        let set_registration_proposal =
+            |value: &mut ControllerHandover,
+             proposal_id: u64,
+             executed: u64,
+             failed: bool,
+             target: Principal| {
+                let candid = Encode!(&GetProposalResponse {
+                    result: Some(GetProposalResult::Proposal(Box::new(ProposalDataView {
+                        id: Some(ProposalId { id: proposal_id }),
+                        failure_reason: failed.then(|| GovernanceErrorView {
+                            error_message: "failed".into(),
+                            error_type: 1,
+                        }),
+                        failed_timestamp_seconds: if failed { now - 96 } else { 0 },
+                        decided_timestamp_seconds: now - 96,
+                        proposal: Some(ProposalView {
+                            action: Some(SnsProposalAction::RegisterDappCanisters(
+                                RegisterDappCanistersView {
+                                    canister_ids: vec![target]
+                                },
+                            )),
+                            summary: "register Bridge".into(),
+                        }),
+                        executed_timestamp_seconds: executed,
+                    }))),
+                })
+                .unwrap();
+                let envelope = json_bytes(serde_json::json!({"response_bytes":hex(&candid)}));
+                value.registration_governance_response_json_hex = hex(&envelope);
+                value.registration_governance_response_sha256 = hex(&Sha256::digest(&envelope));
+            };
+        let mut unexecuted_registration = handover.clone();
+        set_registration_proposal(
+            &mut unexecuted_registration,
+            42,
+            0,
+            false,
+            Principal::from_text(&profile.bridge_canister_id).unwrap(),
+        );
+        assert!(validate_controller_handover_completion(
+            &unexecuted_registration,
+            &profile,
+            &installer,
+            now - 100,
+            now,
         )
-        .is_ok());
+        .is_err());
+        let mut failed_registration = handover.clone();
+        set_registration_proposal(
+            &mut failed_registration,
+            42,
+            now - 96,
+            true,
+            Principal::from_text(&profile.bridge_canister_id).unwrap(),
+        );
+        assert!(validate_controller_handover_completion(
+            &failed_registration,
+            &profile,
+            &installer,
+            now - 100,
+            now,
+        )
+        .is_err());
+        let mut wrong_registration_target = handover.clone();
+        set_registration_proposal(
+            &mut wrong_registration_target,
+            42,
+            now - 96,
+            false,
+            Principal::anonymous(),
+        );
+        assert!(validate_controller_handover_completion(
+            &wrong_registration_target,
+            &profile,
+            &installer,
+            now - 100,
+            now,
+        )
+        .is_err());
+        let mut missing_root_registration = handover.clone();
+        let no_dapps = Encode!(&SnsCanistersView { dapps: vec![] }).unwrap();
+        let no_dapps_envelope = json_bytes(serde_json::json!({"response_bytes":hex(&no_dapps)}));
+        missing_root_registration.registration_root_response_json_hex = hex(&no_dapps_envelope);
+        missing_root_registration.registration_root_response_sha256 =
+            hex(&Sha256::digest(&no_dapps_envelope));
+        assert!(validate_controller_handover_completion(
+            &missing_root_registration,
+            &profile,
+            &installer,
+            now - 100,
+            now,
+        )
+        .is_err());
+        let mut proposal_id_drift = handover.clone();
+        proposal_id_drift.registration_proposal_id = 43;
+        assert!(validate_controller_handover_completion(
+            &proposal_id_drift,
+            &profile,
+            &installer,
+            now - 100,
+            now,
+        )
+        .is_err());
         let mut recovered_without_request = handover.clone();
         recovered_without_request.request_id.clear();
         recovered_without_request.response_stdout_hex.clear();
@@ -15618,6 +16129,21 @@ mod tests {
             validate_controller_handover_continuity(&controller_race, &profile, &installer)
                 .is_err()
         );
+        let mut personal_controller_retained = handover.clone();
+        personal_controller_retained.final_controllers =
+            vec![installer.clone(), KINIC_ROOT.to_string()];
+        personal_controller_retained.after_management_status_response_json_hex =
+            hex(&co_management);
+        personal_controller_retained.after_management_status_response_sha256 =
+            hex(&Sha256::digest(&co_management));
+        assert!(validate_controller_handover_completion(
+            &personal_controller_retained,
+            &profile,
+            &installer,
+            now - 100,
+            now,
+        )
+        .is_err());
         let provider_independence = provider_independence_receipt(
             &profile,
             now - 30,
