@@ -7390,6 +7390,13 @@ enum ActivationAttestationFreshness {
     AllowStaleForUnchangedUiAssets,
 }
 
+struct ProductionHandoverValidationContext {
+    minimum_deployment_block: u64,
+    manifest_created_at_unix: u64,
+    now: u64,
+    attestation_freshness: ActivationAttestationFreshness,
+}
+
 #[cfg(test)]
 fn validate_production_handover_canister_state(
     profile: &Profile,
@@ -7403,26 +7410,25 @@ fn validate_production_handover_canister_state(
     validate_production_handover_observation(
         profile,
         installer,
-        gate_a_receipt
-            .bridge_deployment_block_number
-            .max(gate_a_receipt.timelock_deployment_block_number),
         activation,
         observation,
-        manifest_created_at_unix,
-        now,
-        ActivationAttestationFreshness::Required,
+        &ProductionHandoverValidationContext {
+            minimum_deployment_block: gate_a_receipt
+                .bridge_deployment_block_number
+                .max(gate_a_receipt.timelock_deployment_block_number),
+            manifest_created_at_unix,
+            now,
+            attestation_freshness: ActivationAttestationFreshness::Required,
+        },
     )
 }
 
 fn validate_production_handover_observation(
     profile: &Profile,
     installer: Principal,
-    minimum_deployment_block: u64,
     activation: &ProductionHandoverActivationBinding<'_>,
     observation: &ProductionHandoverCanisterObservation<'_>,
-    manifest_created_at_unix: u64,
-    now: u64,
-    attestation_freshness: ActivationAttestationFreshness,
+    context: &ProductionHandoverValidationContext,
 ) -> Result<(), String> {
     if !matches!(observation.lifecycle, ProductionLifecycleView::Activated) {
         return Err("production Canister must be Activated before handover".into());
@@ -7492,11 +7498,11 @@ fn validate_production_handover_observation(
     validate_activation_attestation_with_pause_and_freshness(
         profile,
         attestation,
-        manifest_created_at_unix,
-        minimum_deployment_block,
-        now,
+        context.manifest_created_at_unix,
+        context.minimum_deployment_block,
+        context.now,
         Some(false),
-        attestation_freshness,
+        context.attestation_freshness,
     )
 }
 
@@ -7841,12 +7847,14 @@ fn verify_production_live_state(
     validate_production_handover_observation(
         &live_profile,
         installer,
-        minimum_deployment_block,
         activation,
         &observation,
-        manifest_created_at_unix,
-        now_unix()?,
-        attestation_freshness,
+        &ProductionHandoverValidationContext {
+            minimum_deployment_block,
+            manifest_created_at_unix,
+            now: now_unix()?,
+            attestation_freshness,
+        },
     )?;
     Ok(())
 }
@@ -13864,14 +13872,17 @@ mod tests {
             validate_production_handover_observation(
                 &profile,
                 installer,
-                gate_a_receipt
-                    .bridge_deployment_block_number
-                    .max(gate_a_receipt.timelock_deployment_block_number),
                 &activation,
                 &observation,
-                created,
-                now,
-                ActivationAttestationFreshness::AllowStaleForUnchangedUiAssets,
+                &ProductionHandoverValidationContext {
+                    minimum_deployment_block: gate_a_receipt
+                        .bridge_deployment_block_number
+                        .max(gate_a_receipt.timelock_deployment_block_number),
+                    manifest_created_at_unix: created,
+                    now,
+                    attestation_freshness:
+                        ActivationAttestationFreshness::AllowStaleForUnchangedUiAssets,
+                },
             )
         };
         let stale_assets_only = validate_assets_only_attestation(&stale);
