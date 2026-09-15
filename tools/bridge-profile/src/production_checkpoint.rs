@@ -654,6 +654,7 @@ pub(super) fn verify_ui(
     };
     super::verify_production_live_state(
         &roots.gate_b_profile,
+        &roots.gate_b_sha256,
         candid::Principal::from_text(&checkpoint.controller).map_err(|error| error.to_string())?,
         &activation,
         Some(&verified.terminal),
@@ -668,6 +669,74 @@ pub(super) fn verify_ui(
         )?)) != verified.evidence_sha256
     {
         return Err("production UI inputs changed during live validation".into());
+    }
+    println!(
+        "production_ui=live-pass schema=36 activation=execute manifest_sha256={}",
+        roots.gate_b_sha256
+    );
+    Ok(())
+}
+
+pub(super) fn verify_ui_after_handover(
+    evidence_path: &Path,
+    rpc_path: &Path,
+    runtime_path: &Path,
+    handover_path: &Path,
+    upgrade_proposal_id: u64,
+) -> Result<(), String> {
+    let verified = read_evidence(evidence_path)?;
+    let rpc_bytes = read_bounded(rpc_path, MAX_BYTES)?;
+    let runtime_bytes = read_bounded(runtime_path, MAX_BYTES)?;
+    if ui_runtime(&verified, &rpc_bytes)? != runtime_bytes {
+        return Err("SNS UI runtime differs from the approved checkpoint".into());
+    }
+    let handover_bytes = read_bounded(handover_path, 16 * MAX_BYTES)?;
+    let handover: super::ControllerHandover =
+        serde_json::from_slice(&handover_bytes).map_err(|e| e.to_string())?;
+    let roots = &verified.checkpoint.roots;
+    let mut profile = roots.gate_b_profile.clone();
+    profile.bridge_canister_wasm_sha256 = verified.module_sha256.clone();
+    profile.canister_schema_version = super::CURRENT_STABLE_SCHEMA_VERSION;
+    super::validate_controller_handover_completion(
+        &handover,
+        &profile,
+        &verified.checkpoint.controller,
+        roots.gate_b_created_at_unix,
+        super::now_unix()?,
+    )?;
+    if handover.gate_b_manifest_sha256 != roots.gate_b_sha256
+        || handover.operational_config_seal_receipt_sha256 != roots.seal_sha256
+        || handover.controller_schedule_receipt_sha256 != roots.schedule_sha256
+        || handover.controller_execute_receipt_sha256 != roots.execute_sha256
+        || handover.observed_at_unix < verified.checkpoint.verified_at_unix
+    {
+        return Err("SNS handover is disconnected from the checkpoint roots".into());
+    }
+    super::verify_same_wasm_sns_upgrade(&profile, upgrade_proposal_id, handover.observed_at_unix)?;
+    let activation = super::ProductionHandoverActivationBinding {
+        governance_operation_id: roots.activation.governance_operation_id,
+        finalized_block_number: roots.activation.finalized_block_number,
+        timelock_operation_id: &roots.activation.timelock_operation_id,
+        transaction_hash: &roots.activation.transaction_hash,
+        confirmed_generation: roots.activation.confirmed_generation,
+        confirmed_signed_at_ns: &roots.activation.confirmed_signed_at_ns,
+        expected_module_sha256: &verified.module_sha256,
+    };
+    super::verify_production_live_state(
+        &roots.gate_b_profile,
+        &roots.gate_b_sha256,
+        candid::Principal::from_text(super::KINIC_ROOT).map_err(|e| e.to_string())?,
+        &activation,
+        Some(&verified.terminal),
+        roots.gate_b_created_at_unix,
+        roots.deployment_block_number,
+    )?;
+    if read_bounded(handover_path, 16 * MAX_BYTES)? != handover_bytes
+        || read_bounded(rpc_path, MAX_BYTES)? != rpc_bytes
+        || read_bounded(runtime_path, MAX_BYTES)? != runtime_bytes
+        || read_evidence(evidence_path)?.evidence_sha256 != verified.evidence_sha256
+    {
+        return Err("SNS UI verification inputs changed".into());
     }
     println!(
         "production_ui=live-pass schema=36 activation=execute manifest_sha256={}",

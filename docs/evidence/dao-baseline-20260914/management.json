@@ -1,0 +1,18 @@
+{
+  "observed_at": "2026-09-14T01:57:47.136339+00:00",
+  "command": [
+    "icp",
+    "canister",
+    "status",
+    "bridge-canister",
+    "-e",
+    "production",
+    "--identity",
+    "production",
+    "--json"
+  ],
+  "exit_code": 0,
+  "stdout": "{\"id\":\"lb5i5-ziaaa-aaaar-qcgwq-cai\",\"name\":\"bridge-canister\",\"status\":\"Running\",\"settings\":{\"controllers\":[\"lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe\"],\"compute_allocation\":\"0\",\"memory_allocation\":\"0\",\"freezing_threshold\":\"2_592_000\",\"reserved_cycles_limit\":\"5_000_000_000_000\",\"wasm_memory_limit\":\"3_221_225_472\",\"wasm_memory_threshold\":\"0\",\"log_memory_limit\":\"4_096\",\"log_visibility\":{\"type\":\"Controllers\"},\"environment_variables\":[]},\"module_hash\":\"0xbf0477947b06a06d31aa32b52992a1b775fca0c9b4c98bf3129037d47abedd64\",\"memory_size\":\"18_802_704\",\"cycles\":\"3_615_929_371_307\",\"reserved_cycles\":\"0\",\"idle_cycles_burned_per_day\":\"3_516_050_499\",\"query_stats\":{\"num_calls_total\":\"1_632\",\"num_instructions_total\":\"5_816_590_460\",\"request_payload_bytes_total\":\"65_722\",\"response_payload_bytes_total\":\"975_256\"}}\n",
+  "stderr": "",
+  "stdout_sha256": "5777b661430833cab1fa64324917f57321b744977a4488f970f2570f6ac6930f"
+}

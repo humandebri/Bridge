@@ -199,6 +199,48 @@ pub enum ProductionLifecycle {
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SnsActivationProposal {
+    pub previous_governance_operation_id: u64,
+}
+
+pub(crate) fn validate_sns_activation(
+    proposal: &SnsActivationProposal,
+    schedule: bool,
+) -> Result<String, String> {
+    let lifecycle = production_lifecycle().map_err(|error| format!("{error:?}"))?;
+    let status = activation_status().map_err(|error| format!("{error:?}"))?;
+    validate_sns_activation_state(proposal, schedule, lifecycle, &status)?;
+    Ok(format!(
+        "{} KINIC Bridge reactivation after confirmed governance operation {}. Base relay and Finalized confirmation are required separately.",
+        if schedule { "Schedule the 24-hour Timelock for" } else { "Execute the scheduled" },
+        proposal.previous_governance_operation_id,
+    ))
+}
+
+fn validate_sns_activation_state(
+    proposal: &SnsActivationProposal,
+    schedule: bool,
+    lifecycle: ProductionLifecycle,
+    status: &ActivationStatus,
+) -> Result<(), String> {
+    let previous = status
+        .last_confirmed_activation
+        .as_ref()
+        .ok_or("Initial activation must be completed before DAO reactivation")?;
+    if !::bridge_core::kernel::sns_activation_proposal_allowed(
+        lifecycle == ProductionLifecycle::Activated,
+        status.deposits_paused,
+        proposal.previous_governance_operation_id == previous.governance_operation_id,
+        schedule,
+        status.pending_timelock_operation.is_some(),
+        previous.phase == "schedule",
+    ) {
+        return Err("Proposal does not match the current paused activation state".into());
+    }
+    Ok(())
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct OperationalConfigSealReceipt {
     pub lifecycle: ProductionLifecycle,
     pub activation_attestation: crate::config::ActivationAttestation,
@@ -2411,6 +2453,70 @@ fn keccak(value: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sns_activation_proposals_bind_the_confirmed_predecessor_and_phase() {
+        use super::{
+            validate_sns_activation_state, ActivationConfirmationView, ActivationOperationView,
+            ActivationStatus, ProductionLifecycle, SnsActivationProposal,
+        };
+        let proposal = SnsActivationProposal {
+            previous_governance_operation_id: 7,
+        };
+        let mut status = ActivationStatus {
+            deposits_paused: true,
+            pending_timelock_operation: None,
+            last_confirmed_activation: Some(ActivationConfirmationView {
+                phase: "execute".into(),
+                governance_operation_id: 7,
+                timelock_operation_id: vec![1; 32],
+                transaction_hash: vec![2; 32],
+                receipt_block_number: 99,
+                generation: 0,
+                signed_at_ns: 100,
+            }),
+        };
+        let validate = |proposal: &SnsActivationProposal, schedule, state: &ActivationStatus| {
+            validate_sns_activation_state(proposal, schedule, ProductionLifecycle::Activated, state)
+        };
+        assert!(validate(&proposal, true, &status).is_ok());
+        assert!(validate(&proposal, false, &status).is_err());
+        assert!(validate_sns_activation_state(
+            &proposal,
+            true,
+            ProductionLifecycle::OperationalConfigSealed,
+            &status
+        )
+        .is_err());
+        status.deposits_paused = false;
+        assert!(validate(&proposal, true, &status).is_err());
+        status.deposits_paused = true;
+        status.pending_timelock_operation = Some(ActivationOperationView {
+            operation_id: vec![1; 32],
+            salt: vec![3; 32],
+        });
+        status.last_confirmed_activation.as_mut().unwrap().phase = "schedule".into();
+        status
+            .last_confirmed_activation
+            .as_mut()
+            .unwrap()
+            .governance_operation_id = 8;
+        assert!(validate(&proposal, true, &status).is_err());
+        assert!(validate(&proposal, false, &status).is_err());
+        let next = SnsActivationProposal {
+            previous_governance_operation_id: 8,
+        };
+        assert!(validate(&next, false, &status).is_ok());
+        status.pending_timelock_operation = None;
+        assert!(validate(&next, false, &status).is_err());
+        // A canceled schedule may be replaced by a new, explicitly bound proposal.
+        assert!(validate(&next, true, &status).is_ok());
+        let encoded = candid::encode_one(&next).unwrap();
+        assert_eq!(
+            candid::decode_one::<SnsActivationProposal>(&encoded).unwrap(),
+            next
+        );
+        assert!(candid::decode_one::<SnsActivationProposal>(&[68, 73, 68, 76, 0, 0]).is_err());
+    }
     use super::{
         action_authorized, activation_base_preflight_matches, activation_confirmation_view,
         activation_operation_id, activation_postcondition_matches, activation_salt,

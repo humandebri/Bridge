@@ -197,7 +197,12 @@ function verifyProductionUiLive(profileFile) {
   const checkpointEvidence = process.env.BRIDGE_CHECKPOINT_EVIDENCE
   const uiRpcConfig = process.env.BRIDGE_UI_RPC_CONFIG
   const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
-  if (!checkpointEvidence || !uiRpcConfig || !productionInstallerIdentity) {
+  const handover = process.env.BRIDGE_SNS_HANDOVER_RECEIPT
+  const upgradeProposal = process.env.BRIDGE_SNS_UPGRADE_PROPOSAL_ID
+  if (Boolean(handover) !== Boolean(upgradeProposal)) {
+    throw new Error("SNS UI verification requires both handover receipt and upgrade proposal ID")
+  }
+  if (!checkpointEvidence || !uiRpcConfig || (!handover && !productionInstallerIdentity)) {
     throw new Error(
       "Production UI deploy requires approved checkpoint evidence, reviewed UI RPC configuration, and production installer identity",
     )
@@ -216,10 +221,13 @@ function verifyProductionUiLive(profileFile) {
     "cargo",
     [
       ...cargoArgs,
-      "verify-production-checkpoint-ui-live",
+      handover
+        ? "verify-production-checkpoint-ui-sns-live"
+        : "verify-production-checkpoint-ui-live",
       checkpointEvidence,
       uiRpcConfig,
       profileFile,
+      ...(handover && upgradeProposal ? [handover, upgradeProposal] : []),
     ],
     { cwd: sourceRoot, encoding: "utf8" },
   )

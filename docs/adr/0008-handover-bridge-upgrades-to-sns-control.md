@@ -4,7 +4,15 @@ status: accepted
 
 # Bridge canisterをupgrade可能にしてSNS管理へ移管する
 
-Bridge canisterはupgrade可能にする。初回activationと本番計測中はproduction identityを単独controllerとして保持できる。初回executeのConfirmed完了は内部bootstrap activation authorityだけを永久に消費し、外部controller設定の変更時期を決めない。運用者が別途承認して移管する場合はSNS Rootを唯一のcontrollerとし、以後はSNS Governanceの採択proposalだけがupgradeを承認する。
+Bridge canisterはupgrade可能にする。本番公開後のDAO操作実証中もproduction identityを単独controllerとして保持する。DAO proposalによる再開を実証した後、観察期間を固定せず運用者が移譲時期を別途判断する。初回executeのConfirmed完了は内部bootstrap activation authorityだけを永久に消費し、外部controller設定の変更時期を決めない。運用者が別途承認して移管する場合はSNS Rootを唯一のcontrollerとし、以後はSNS Governanceの採択proposalだけがupgradeを承認する。
+
+## 段階的な移譲
+
+1. 個人単独controllerと現在のemergency pause principalを保持して、SNS custom proposalからschedule／execute reactivationを実証する。手数料や受取先の本番変更はこの実証に含めない。
+2. 明示承認後にSNS Rootを追加controllerとして設定し、個人identityとRootの共同controllerを確認する。その後に標準`RegisterDappCanisters` proposalを実行し、Rootへの登録とRoot単独controllerへの遷移を確認する。登録済み状態からこの手順を開始しない。
+3. 標準`UpgradeSnsControlledCanister` proposalで同一Wasmをupgradeし、保存状態と資産受付の継続を確認して移譲完了とする。emergency pause principalは削除しない。
+
+本番SNS Rootの登録処理はRoot以外のcontrollerを削除する。testflightで共同controllerが残る挙動を本番へ適用しない。個人controllerを保持したまま標準SNS upgradeを実証する経路は採用しない。移譲後に登録やupgradeが失敗しても個人による直接修復を前提にしない。
 
 ## Considered Options
 
@@ -17,7 +25,7 @@ Bridge canisterはupgrade可能にする。初回activationと本番計測中は
 
 - production identityがcontrollerであること自体は、初回activation後の本番資産受付を禁止しない。受付可否はGate B、Confirmed execute、pause状態と運用limitで決める。
 - unpause後の7日・各10件の本番計測と`fee-cycles-measurements.json`はhandoverの認可入力にしない。移管は初期運用値、seal／schedule／execute receipt、live RuntimeBinding、current profile Wasmへ束縛し、別の明示承認を必要とする。
-- handover送信直前はproduction identityだけをcontrollerとし、ActivatedかつBase Deposit／WithdrawalとIC Depositをすべてunpausedにする。完了条件はcontroller一覧がSNS Rootだけであることとし、開発者identity、fallback identity、NNS Rootを残さない。
+- Root追加直前はproduction identityだけをcontrollerとし、ActivatedかつBase Deposit／WithdrawalとIC Depositをすべてunpausedにする。Root追加後はproduction identityとSNS Rootの正確な二者を要求し、この共同controller期間だけで登録proposalを提出する。完了条件はproposalの実行、Rootへの一意な登録、controller一覧がSNS Rootだけであることとし、開発者identity、fallback identity、NNS Rootを残さない。
 - 初回install hashとlive moduleを同一視せず、post-Gate-A policy transitionと通常upgrade receiptからcurrent profile Wasmまでのchainを検証する。
 - controller変更前後のmodule、RuntimeBinding、storage integrity、activation／pause状態、record／audit countをraw evidenceへ保存してcontinuityを検証する。運用中stateの空化は要求しない。
 - handover後のupgradeはSNS proposalにWasm hash、source revision、Verus結果、テスト結果、stable schema互換性を添付する。
