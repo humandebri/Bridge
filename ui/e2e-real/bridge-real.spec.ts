@@ -213,7 +213,9 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
     BigInt(initial.indexBlocksSynced) + 4n,
   )
   await openHistory(page)
-  await expect(page.getByText("Success", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("Mint complete", { exact: true }).first()).toBeVisible({
+    timeout: 30_000,
+  })
   for (const heading of [
     "Direction",
     "Base tx",
@@ -234,7 +236,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   const nextStepHeader = page.getByText("Next step", { exact: true }).filter({ visible: true })
   const completedDepositNextStep = page
     .locator("article")
-    .filter({ hasText: "Success" })
+    .filter({ hasText: "Mint complete" })
     .first()
     .getByText("—", { exact: true })
   const nextStepHeaderBox = await nextStepHeader.boundingBox()
@@ -248,7 +250,9 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await page.reload()
   await expect(page.getByRole("button", { name: /IC wallet connected as /i })).toBeVisible()
   await expect(page.getByRole("button", { name: "Connect IC wallet", exact: true })).toHaveCount(0)
-  await expect(page.getByText("Success", { exact: true }).first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText("Mint complete", { exact: true }).first()).toBeVisible({
+    timeout: 30_000,
+  })
 
   const beforeWithdrawal = await controlState(request)
   const bridgeUpdateGate = await holdIcUpdateMethod(page, "continue_withdrawal")
@@ -409,14 +413,14 @@ test("claims an expired deposit refund from History", async ({ page, request }) 
     has: page.getByText(depositLabel, { exact: true }),
   })
   await expect(refundRow).toHaveCount(1)
-  await expect(refundRow.getByRole("button", { name: "Claim refund", exact: true })).toBeVisible()
+  await expect(refundRow.getByRole("button", { name: "Check refund", exact: true })).toBeVisible()
   const refundResponse = page.waitForResponse(
     (candidate) =>
       candidate.request().method() === "POST" &&
       candidate.url().endsWith("/ic/request-deposit-refund"),
     { timeout: 120_000 },
   )
-  await refundRow.getByRole("button", { name: "Claim refund", exact: true }).click()
+  await refundRow.getByRole("button", { name: "Check refund", exact: true }).click()
   const completedRefund = await refundResponse
   expect(completedRefund.request().postDataJSON()).toMatchObject({ id: depositId })
   expect(completedRefund.ok()).toBe(true)
@@ -428,7 +432,7 @@ test("claims an expired deposit refund from History", async ({ page, request }) 
   await expect(refundedRow).toHaveCount(1)
   await expect(refundedRow.getByText("Refunded", { exact: true })).toBeVisible({ timeout: 30_000 })
   await expect(
-    refundedRow.getByRole("button", { name: /Claim refund|Request refund/ }),
+    refundedRow.getByRole("button", { name: /Check refund|Claim refund|Request refund/ }),
   ).toHaveCount(0)
 })
 
