@@ -91,6 +91,7 @@ install_solc() {
 install_ci_tools() {
   install_didc
   install_icp
+  PATH="$BIN_DIR:$PATH" "$ROOT/scripts/prepare-sns-test-runtime.sh"
   # Ensure the mount destinations the isolation image expects exist even when
   # the proof toolchain (Lean/Verus/Z3) is intentionally not installed.
   mkdir -p "$HOME/.elan/toolchains"

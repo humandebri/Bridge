@@ -25,6 +25,10 @@ mkdir -p "$CANDIDATE/ui" "$CANDIDATE/contracts" "$CANDIDATE/verification/lean" \
   "$CANDIDATE/scripts" \
   "$POLICY/scripts" "$DEPENDENCIES/node_modules" "$DEPENDENCIES/ui/node_modules" \
   "$POLICY/ui/.e2e-cache" "$SCRATCH"
+mkdir -p "$POLICY/.tools/sns-test-runtime"
+for asset in sns-governance-canister.wasm sns-root-canister.wasm sns-governance-canister.cjs sns-root-canister.cjs; do
+  printf 'runtime-fixture\n' >"$POLICY/.tools/sns-test-runtime/$asset"
+done
 git -C "$CANDIDATE" init --quiet
 printf 'fixture\n' >"$POLICY/scripts/fixture.txt"
 printf 'candidate-added\n' >"$CANDIDATE/scripts/candidate-added.sh"
@@ -81,6 +85,8 @@ docker run --rm \
   --mount "type=bind,src=$POLICY/ui/.e2e-cache,dst=/workspace/ui/.e2e-cache,readonly" \
   --mount "type=bind,src=$SCRATCH/e2e-runtime,dst=/workspace/ui/.e2e-runtime" \
   --mount "type=bind,src=$SCRATCH/empty-tools,dst=/workspace/.tools,readonly" \
+  --mount "type=bind,src=$POLICY/.tools/sns-test-runtime,dst=/opt/bridge-sns-runtime,readonly" \
+  --env BRIDGE_SNS_TEST_RUNTIME=/opt/bridge-sns-runtime \
   --env PLAYWRIGHT_BROWSERS_PATH=/home/runner/.cache/ms-playwright \
   "$IMAGE" /bin/bash -ceu '
     git -C /workspace status --short >/dev/null
@@ -106,6 +112,11 @@ docker run --rm \
     grep -qx fixture /workspace/scripts/fixture.txt
     test -f /scratch/candidate-scripts/candidate-added.sh
     grep -qx candidate-modified /scratch/candidate-scripts/fixture.txt
+    for asset in sns-governance-canister.wasm sns-root-canister.wasm sns-governance-canister.cjs sns-root-canister.cjs; do
+      test -s "$BRIDGE_SNS_TEST_RUNTIME/$asset"
+    done
+    ! touch "$BRIDGE_SNS_TEST_RUNTIME/write"
+    ! curl --connect-timeout 2 --max-time 3 https://github.com
     ! touch /workspace/candidate-write
     ! touch /workspace/node_modules/dependency-write
     ! touch /workspace/.tools/tool-write
