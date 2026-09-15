@@ -1,3 +1,4 @@
+import { clearTransferFacts } from "@/lib/transfer-state"
 import { releaseFinalizedMintAttempt } from "@/lib/mint-execution"
 import { clearMintObservations } from "@/lib/mint-observation"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
@@ -172,6 +173,7 @@ const pendingExpectation = {
 }
 const pendingMint = { ...pendingExpectation, transactionHash: pendingHash }
 const record = {
+  deposit_id: Array(32).fill(0x11),
   state: { AuthorizationAvailable: null },
   mint_authorization: [
     {
@@ -191,9 +193,11 @@ describe("MintAuthorizationAction pending retry", () => {
   afterEach(() => {
     deploymentProfile.bridgeAddress = originalBridgeAddress
     cleanup()
+    vi.restoreAllMocks()
   })
 
   beforeEach(() => {
+    clearTransferFacts()
     mocks.rememberMintRecovery.mockReset().mockResolvedValue(true)
     mocks.wasMintRequested.mockReset().mockReturnValue(false)
     clearMintObservations()
@@ -494,6 +498,29 @@ describe("MintAuthorizationAction pending retry", () => {
     expect(mocks.writeContractAsync).not.toHaveBeenCalled()
   })
 
+  it("observes a submitted mint while the browser tab is hidden", async () => {
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
+    const onProgress = vi.fn()
+    mocks.getTransactionReceipt.mockResolvedValue({
+      status: "reverted",
+      blockNumber: 101n,
+      blockHash: finalizedBlockHash,
+      logs: [],
+    })
+    render(<MintAuthorizationAction record={record} onProgress={onProgress} />, {
+      wrapper: Wrapper,
+    })
+    await waitFor(() =>
+      expect(onProgress).toHaveBeenCalledWith({
+        phase: "included",
+        transactionHash: pendingHash,
+        blockNumber: 101n,
+        outcome: "reverted",
+      }),
+    )
+    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
+  })
+
   it("does not offer a retry for a reverted receipt before its block is finalized", async () => {
     const onProgress = vi.fn()
     mocks.getTransactionReceipt.mockResolvedValue({
@@ -578,7 +605,7 @@ describe("MintAuthorizationAction pending retry", () => {
     fireEvent(document, new Event("visibilitychange"))
     fireEvent.click(await screen.findByRole("button", { name: "Review saved transaction" }))
     fireEvent.click(await screen.findByRole("button", { name: "Clear saved transaction" }))
-    fireEvent.click(await screen.findByRole("button", { name: "Claim refund" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Check refund" }))
 
     expect(mocks.removePendingMint).toHaveBeenCalledWith(pendingExpectation)
     expect(onRequestRefund).toHaveBeenCalledOnce()
@@ -736,7 +763,7 @@ describe("MintAuthorizationAction pending retry", () => {
 
   it("revalidates_the_authorization_only_after_acquiring_the_wallet_prompt_lock", async () => {
     mocks.readPendingMint.mockReturnValue(undefined)
-    vi.mocked(navigator.locks.request).mockImplementation((async (
+    vi.spyOn(navigator.locks, "request").mockImplementation((async (
       _name: string,
       _options: unknown,
       action: (lock: null) => Promise<void>,
@@ -846,7 +873,7 @@ describe("MintAuthorizationAction pending retry", () => {
     savedPendingMint = pendingMint
     view.rerender(<DepositActivityRow {...props} actioningId="refresh" />)
 
-    expect(screen.getByText("Mint pending")).toBeInTheDocument()
+    expect(screen.getByText("Confirming mint")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Mint on Base" })).not.toBeInTheDocument()
     expect(
       await screen.findByText("Submitted on Base; refreshing transaction status."),
@@ -867,7 +894,7 @@ describe("MintAuthorizationAction pending retry", () => {
         /The mint authorization has expired, so no Base transaction will be sent/,
       ),
     ).toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Claim refund" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Check refund" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Mint on Base" })).not.toBeInTheDocument()
   })
 
@@ -880,7 +907,7 @@ describe("MintAuthorizationAction pending retry", () => {
       wrapper: Wrapper,
     })
 
-    expect(screen.queryByRole("button", { name: "Claim refund" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Check refund" })).not.toBeInTheDocument()
     expect(await screen.findByRole("button", { name: "Mint on Base" })).toBeEnabled()
   })
 
@@ -906,7 +933,7 @@ describe("MintAuthorizationAction pending retry", () => {
       wrapper: Wrapper,
     })
 
-    const button = await screen.findByRole("button", { name: "Claim refund" })
+    const button = await screen.findByRole("button", { name: "Check refund" })
     fireEvent.click(button)
     expect(onRequestRefund).toHaveBeenCalledOnce()
   })
@@ -922,9 +949,9 @@ describe("MintAuthorizationAction pending retry", () => {
     })
 
     expect(
-      await screen.findByText(/Latest Base time is unavailable, but it is not required/),
+      await screen.findByText("The deadline has passed. Check if you can get a refund."),
     ).toBeInTheDocument()
-    const button = screen.getByRole("button", { name: "Claim refund" })
+    const button = screen.getByRole("button", { name: "Check refund" })
     fireEvent.click(button)
     expect(onRequestRefund).toHaveBeenCalledOnce()
   })

@@ -1,3 +1,8 @@
+vi.mock("wagmi", () => ({ useChainId: () => 8453 }))
+vi.mock("@/features/status/use-status", () => ({
+  useRuntimeValidation: () => ({ data: undefined, refetch: vi.fn() }),
+  useRuntimeHeartbeat: () => ({ refetch: vi.fn() }),
+}))
 import { act, cleanup, render, waitFor } from "@testing-library/react"
 import type { Hex } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -11,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   notifyWithdrawal: vi.fn(),
   continueWithdrawal: vi.fn(),
   getReceipt: vi.fn(),
+  receiptDetails: vi.fn(),
   getBlock: vi.fn(),
   revertQuorum: vi.fn(),
   readPending: vi.fn(),
@@ -47,12 +53,15 @@ vi.mock("@/lib/base-transaction-observation", async () => {
       ),
   }
 })
-vi.mock("@/lib/transaction-recovery", () => ({ withdrawalReceiptDetails: async () => ({}) }))
+vi.mock("@/lib/transaction-recovery", () => ({
+  withdrawalReceiptDetails: mocks.receiptDetails,
+  TransactionEvidenceMismatch: class TransactionEvidenceMismatch extends Error {},
+}))
 
 vi.mock("@/features/bridge/bridge-progress-provider", () => ({
   useBridgeProgress: () => ({
     progress: mocks.progress,
-    update: mocks.update,
+    update: updateWithoutSource,
     setAction: mocks.setAction,
     completeWithdrawal: mocks.completeWithdrawalProgress,
   }),
@@ -98,6 +107,7 @@ vi.mock("@/config/profile", () => ({
   deploymentProfile: { icHost: "https://ic.example", bridgeCanisterId: "aaaaa-aa" },
 }))
 
+import { TransactionEvidenceMismatch } from "@/lib/transaction-recovery"
 import { NotifyWithdrawalCallError } from "@/lib/ic/withdrawal-notification-client"
 import { SettlementConfirmationCoordinator } from "./settlement-confirmation-coordinator"
 
@@ -138,6 +148,7 @@ beforeEach(() => {
   mocks.readPending.mockImplementation(() => mocks.pendingEntries)
   mocks.getReceipt.mockResolvedValue({ status: "success", blockNumber: 10n, blockHash })
   mocks.getBlock.mockResolvedValue({ number: 9n, hash: blockHash })
+  mocks.receiptDetails.mockResolvedValue({ id: new Uint8Array(32).fill(7) })
   mocks.revertQuorum.mockResolvedValue(true)
   mocks.removePending.mockResolvedValue(undefined)
   mocks.markNotified.mockImplementation(
@@ -200,9 +211,25 @@ beforeEach(() => {
   })
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+})
 
 describe("SettlementConfirmationCoordinator", () => {
+  it("observes an included withdrawal while the browser tab is hidden", async () => {
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
+    render(<SettlementConfirmationCoordinator />)
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenCalledWith(
+        "withdraw:1",
+        expect.objectContaining({ phase: "base-withdrawal-included" }),
+      ),
+    )
+    expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
+  })
+
   it("keeps_a_successful_included_withdrawal_pending_until_the_Base_finalized_head_reaches_its_block", async () => {
     render(<SettlementConfirmationCoordinator />)
 
@@ -221,16 +248,18 @@ describe("SettlementConfirmationCoordinator", () => {
 
     mocks.update.mockClear()
     mocks.getReceipt.mockRejectedValue(new Error("RPC unavailable"))
-    await act(() => {
+    act(() => {
       document.dispatchEvent(new Event("visibilitychange"))
     })
     await waitFor(() => expect(mocks.getReceipt).toHaveBeenCalledTimes(2))
-    expect(mocks.update).not.toHaveBeenCalled()
+    expect(mocks.update).toHaveBeenCalledWith("withdraw:1", {
+      observationError: "Transfer status could not be refreshed. Retrying.",
+    })
 
     const missing = new Error("Receipt missing")
     missing.name = "TransactionReceiptNotFoundError"
     mocks.getReceipt.mockRejectedValue(missing)
-    await act(() => {
+    act(() => {
       document.dispatchEvent(new Event("visibilitychange"))
     })
     await waitFor(() =>
@@ -776,4 +805,288 @@ describe("SettlementConfirmationCoordinator", () => {
 
     expect(mocks.getReceipt).not.toHaveBeenCalled()
   })
+})
+
+const withdrawalId = notifiedPending.notification.withdrawalId
+const icRecord = (state: Record<string, null>) => ({
+  withdrawal_id: new Uint8Array(32).fill(7),
+  state,
+})
+const wakeObserver = async () => {
+  await act(async () => {
+    document.dispatchEvent(new Event("visibilitychange"))
+  })
+}
+const unqueueDisplayed = () => {
+  mocks.pendingEntries = []
+  mocks.progress = { ...mocks.progress, withdrawal: { owner: "aaaaa-aa", withdrawalId } }
+}
+const expectReadOnly = () => {
+  expect(mocks.notifyWithdrawal).not.toHaveBeenCalled()
+  expect(mocks.continueWithdrawal).not.toHaveBeenCalled()
+  expect(mocks.markAttempt).not.toHaveBeenCalled()
+  expect(mocks.markNotified).not.toHaveBeenCalled()
+  expect(mocks.removePending).not.toHaveBeenCalled()
+}
+
+describe("displayed withdrawal observation after another tab removes the queue", () => {
+  it("withdrawal_queue_removal_still_observes_paid", async () => {
+    mocks.pendingEntries = [notifiedPending]
+    mocks.getWithdrawal.mockResolvedValue([icRecord({ Pending: null })])
+    const view = render(<SettlementConfirmationCoordinator />)
+    await waitFor(() => expect(mocks.update).toHaveBeenCalled())
+    unqueueDisplayed()
+    view.rerender(<SettlementConfirmationCoordinator />)
+    mocks.getWithdrawal.mockResolvedValue([icRecord({ Paid: null })])
+    await wakeObserver()
+    await waitFor(() =>
+      expect(mocks.completeWithdrawalProgress).toHaveBeenCalledWith({
+        transactionHash: hash,
+        owner: "aaaaa-aa",
+        withdrawalId,
+      }),
+    )
+    expectReadOnly()
+  })
+
+  it("unqueued_withdrawal_recovers_validated_id_without_resending", async () => {
+    mocks.pendingEntries = []
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
+    mocks.getWithdrawal.mockResolvedValue([icRecord({ Paid: null })])
+    render(<SettlementConfirmationCoordinator />)
+    await waitFor(() => expect(mocks.completeWithdrawalProgress).toHaveBeenCalled())
+    expect(mocks.receiptDetails).toHaveBeenCalledWith(hash, "aaaaa-aa")
+    expectReadOnly()
+  })
+
+  it("unqueued_withdrawal_errors_and_missing_records_never_complete", async () => {
+    unqueueDisplayed()
+    mocks.getWithdrawal
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([icRecord({ Paid: null })])
+    render(<SettlementConfirmationCoordinator />)
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenCalledWith(
+        "withdraw:1",
+        expect.objectContaining({ observationError: expect.any(String) }),
+      ),
+    )
+    expect(mocks.completeWithdrawalProgress).not.toHaveBeenCalled()
+    await wakeObserver()
+    expect(mocks.getWithdrawal).toHaveBeenCalledTimes(2)
+    expect(mocks.completeWithdrawalProgress).not.toHaveBeenCalled()
+    await wakeObserver()
+    expect(mocks.completeWithdrawalProgress).toHaveBeenCalledTimes(1)
+    expectReadOnly()
+  })
+
+  it("unqueued_withdrawal_hold_is_attention_and_mismatched_id_is_rejected", async () => {
+    unqueueDisplayed()
+    mocks.getWithdrawal
+      .mockResolvedValueOnce([icRecord({ ReconciliationHold: null })])
+      .mockResolvedValue([
+        { ...icRecord({ Paid: null }), withdrawal_id: new Uint8Array(32).fill(8) },
+      ])
+    render(<SettlementConfirmationCoordinator />)
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenCalledWith(
+        "withdraw:1",
+        expect.objectContaining({
+          phase: "attention",
+          attentionMessage: "Payout needs reconciliation.",
+        }),
+      ),
+    )
+    await wakeObserver()
+    expect(mocks.update).toHaveBeenLastCalledWith(
+      "withdraw:1",
+      expect.objectContaining({ issue: "conflict" }),
+    )
+    expect(mocks.completeWithdrawalProgress).not.toHaveBeenCalled()
+    expectReadOnly()
+  })
+
+  it("unqueued_withdrawal_visibility_and_interval_share_inflight_read", async () => {
+    vi.useFakeTimers()
+    unqueueDisplayed()
+    let resolve!: (value: unknown) => void
+    mocks.getWithdrawal.mockReturnValue(
+      new Promise((done) => {
+        resolve = done
+      }),
+    )
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible")
+    render(<SettlementConfirmationCoordinator />)
+    await act(async () => {})
+    visibility.mockReturnValue("hidden")
+    await wakeObserver()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    visibility.mockReturnValue("visible")
+    await wakeObserver()
+    expect(mocks.getWithdrawal).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      resolve([icRecord({ Paid: null })])
+    })
+    expect(mocks.completeWithdrawalProgress).toHaveBeenCalledTimes(1)
+    expectReadOnly()
+  })
+
+  it("unqueued_withdrawal_stale_response_cannot_change_current_presentation", async () => {
+    for (const replacement of [
+      { transactionHash: `0x${"55".repeat(32)}` },
+      { destination: "2vxsx-fae" },
+      { withdrawal: { owner: "aaaaa-aa", withdrawalId: `0x${"08".repeat(32)}` } },
+      { destination: "2vxsx-fae", withdrawal: { owner: "2vxsx-fae", withdrawalId } },
+      { transfer: { generation: 2 } },
+      undefined,
+    ]) {
+      unqueueDisplayed()
+      mocks.progress = {
+        ...mocks.progress,
+        id: "withdraw:1",
+        direction: "withdraw",
+        phase: "ledger-payout",
+        transactionHash: hash,
+        destination: "aaaaa-aa",
+        transfer: { generation: 1 },
+      }
+      let resolve!: (value: unknown) => void
+      mocks.getWithdrawal.mockReturnValue(
+        new Promise((done) => {
+          resolve = done
+        }),
+      )
+      const view = render(<SettlementConfirmationCoordinator />)
+      await act(async () => {})
+      mocks.progress = replacement ? { ...mocks.progress, ...replacement } : undefined
+      view.rerender(<SettlementConfirmationCoordinator />)
+      mocks.update.mockClear()
+      await act(async () => {
+        resolve([icRecord({ Paid: null })])
+      })
+      expect(mocks.update).not.toHaveBeenCalled()
+      expect(mocks.completeWithdrawalProgress).not.toHaveBeenCalled()
+      view.unmount()
+    }
+  })
+
+  it("unqueued_withdrawal_unmount_ignores_inflight_paid", async () => {
+    unqueueDisplayed()
+    let resolve!: (value: unknown) => void
+    mocks.getWithdrawal.mockReturnValue(
+      new Promise((done) => {
+        resolve = done
+      }),
+    )
+    const view = render(<SettlementConfirmationCoordinator />)
+    await act(async () => {})
+    view.unmount()
+    await act(async () => {
+      resolve([icRecord({ Paid: null })])
+    })
+    expect(mocks.completeWithdrawalProgress).not.toHaveBeenCalled()
+    expect(mocks.update).not.toHaveBeenCalled()
+  })
+
+  it("unqueued_withdrawal_revert_requires_finality_and_independent_quorum", async () => {
+    mocks.pendingEntries = []
+    mocks.getReceipt.mockResolvedValue({ status: "reverted", blockNumber: 10n, blockHash })
+    render(<SettlementConfirmationCoordinator />)
+    await waitFor(() => expect(mocks.update).toHaveBeenCalled())
+    expect(mocks.revertQuorum).not.toHaveBeenCalled()
+    mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
+    mocks.revertQuorum.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    await wakeObserver()
+    expect(mocks.update).not.toHaveBeenCalledWith(
+      "withdraw:1",
+      expect.objectContaining({ outcome: "reverted" }),
+    )
+    await wakeObserver()
+    expect(mocks.update).toHaveBeenCalledWith(
+      "withdraw:1",
+      expect.objectContaining({ outcome: "reverted" }),
+    )
+    expect(mocks.getWithdrawal).not.toHaveBeenCalled()
+    expectReadOnly()
+  })
+})
+
+it("unqueued_withdrawal_rejects_mismatched_transaction_or_destination_evidence", async () => {
+  mocks.pendingEntries = []
+  mocks.getBlock.mockResolvedValue({ number: 10n, hash: blockHash })
+  mocks.receiptDetails.mockRejectedValue(
+    new TransactionEvidenceMismatch("The withdrawal destination does not match this transfer."),
+  )
+  render(<SettlementConfirmationCoordinator />)
+  await waitFor(() =>
+    expect(mocks.update).toHaveBeenCalledWith(
+      "withdraw:1",
+      expect.objectContaining({ issue: "conflict" }),
+    ),
+  )
+  expect(mocks.getWithdrawal).not.toHaveBeenCalled()
+  expect(mocks.completeWithdrawalProgress).not.toHaveBeenCalled()
+  expectReadOnly()
+})
+
+it("queued_withdrawal_late_paid_does_not_complete_replaced_or_dismissed_presentation", async () => {
+  for (const replacement of [
+    { destination: "2vxsx-fae", withdrawal: { owner: "2vxsx-fae", withdrawalId } },
+    { transfer: { generation: 2 } },
+    undefined,
+  ]) {
+    mocks.pendingEntries = [notifiedPending]
+    mocks.progress = {
+      id: "withdraw:1",
+      direction: "withdraw",
+      phase: "ledger-payout",
+      transactionHash: hash,
+      destination: "aaaaa-aa",
+      transfer: { generation: 1 },
+    }
+    let resolve!: (value: unknown) => void
+    mocks.getWithdrawal.mockReturnValue(
+      new Promise((done) => {
+        resolve = done
+      }),
+    )
+    const view = render(<SettlementConfirmationCoordinator />)
+    await act(async () => {})
+    mocks.progress = replacement ? { ...mocks.progress, ...replacement } : undefined
+    view.rerender(<SettlementConfirmationCoordinator />)
+    await act(async () => {
+      resolve([icRecord({ Paid: null })])
+    })
+    expect(mocks.completeWithdrawalProgress).not.toHaveBeenCalled()
+    expect(mocks.update).not.toHaveBeenCalled()
+    view.unmount()
+  }
+})
+
+function updateWithoutSource(
+  id: string,
+  { observationSource: _source, ...patch }: Record<string, unknown>,
+) {
+  mocks.update(id, patch)
+}
+
+it("queued_withdrawal_late_evidence_still_reaches_terminal_conflict_reducer", async () => {
+  mocks.pendingEntries = [notifiedPending]
+  mocks.progress = {
+    ...mocks.progress,
+    phase: "attention",
+    transfer: { generation: 1, outcome: "reverted" },
+  }
+  mocks.getWithdrawal.mockResolvedValue([icRecord({ Paid: null })])
+  render(<SettlementConfirmationCoordinator />)
+  await waitFor(() =>
+    expect(mocks.completeWithdrawalProgress).toHaveBeenCalledWith({
+      transactionHash: hash,
+      owner: "aaaaa-aa",
+      withdrawalId,
+    }),
+  )
 })

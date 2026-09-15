@@ -223,7 +223,7 @@ describe("latest bridge progress persistence", () => {
       { label: "IC token approval", status: "complete", note: "Not required" },
       { label: "IC deposit transaction", status: "complete" },
       { label: "Bridge authorization", status: "complete" },
-      { label: "Base mint transaction", status: "complete" },
+      { label: "Base mint transaction", status: "current" },
     ])
 
     const withdrawal = createBridgeProgress({

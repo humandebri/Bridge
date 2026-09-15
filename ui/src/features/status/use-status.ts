@@ -140,7 +140,7 @@ export function useCurrentBaseQuote(options: AutomaticQueryOptions = {}) {
     enabled,
     staleTime,
     refetchInterval,
-    refetchIntervalInBackground: false,
+    refetchIntervalInBackground: true,
     refetchOnWindowFocus: refetchInterval !== undefined,
     refetchOnReconnect: refetchInterval !== undefined,
     queryFn: async () => {
@@ -163,7 +163,7 @@ export function useFinalizedBaseClock(options: AutomaticQueryOptions = {}) {
     enabled,
     staleTime,
     refetchInterval,
-    refetchIntervalInBackground: false,
+    refetchIntervalInBackground: true,
     refetchOnWindowFocus: refetchInterval !== undefined,
     refetchOnReconnect: refetchInterval !== undefined,
     queryFn: async () => {
@@ -181,7 +181,7 @@ export function useLatestBaseClock(options: AutomaticQueryOptions = {}) {
     enabled,
     staleTime,
     refetchInterval,
-    refetchIntervalInBackground: false,
+    refetchIntervalInBackground: true,
     refetchOnWindowFocus: refetchInterval !== undefined,
     refetchOnReconnect: refetchInterval !== undefined,
     queryFn: async () => {

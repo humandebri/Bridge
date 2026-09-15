@@ -1,3 +1,12 @@
+import { assertTransferActionAllowed } from "@/lib/transfer-state"
+import {
+  initialTransferFacts,
+  readTransferFacts,
+  reduceTransfer,
+  publishTransferFacts,
+  subscribeTransfers,
+  type TransferIssue,
+} from "@/lib/transfer-state"
 import { rememberMintRecovery, wasMintRequested } from "@/lib/mint-recovery"
 import { loadIcHistoryOwner } from "@/lib/ic-history-owner"
 import { readLatestBridgeProgress } from "@/lib/bridge-progress"
@@ -70,7 +79,9 @@ export type MintProgressEvent =
     }
   | { phase: "finalizing"; transactionHash: `0x${string}`; blockNumber: bigint }
   | { phase: "finalized"; transactionHash: `0x${string}`; blockNumber: bigint }
-  | { phase: "attention"; message: string; transactionHash?: `0x${string}` }
+  | { phase: "recorded"; transactionHash: `0x${string}` }
+  | { phase: "unavailable"; message: string }
+  | { phase: "attention"; issue?: TransferIssue; message: string; transactionHash?: `0x${string}` }
 
 export function MintAuthorizationAction({
   record,
@@ -79,7 +90,7 @@ export function MintAuthorizationAction({
   claimingRefund = false,
   autoPromptOwner,
   onMintConfirmed,
-  onProgress,
+  onProgress: onProgressProp,
   headless = false,
   registerAction,
 }: {
@@ -97,6 +108,66 @@ export function MintAuthorizationAction({
     pending?: boolean
   }) => void
 }) {
+  const transferKey = `deposit:${toHex(Uint8Array.from(record.deposit_id)).toLowerCase()}`
+  const transferGeneration = useSyncExternalStore(
+    subscribeTransfers,
+    () => readTransferFacts(transferKey)?.generation ?? 0,
+    () => 0,
+  )
+  const onProgress = useCallback(
+    (event: MintProgressEvent) => {
+      const facts =
+        readTransferFacts(transferKey) ??
+        initialTransferFacts(transferKey, "deposit", "awaiting-base-mint")
+      const source =
+        event.phase === "preparing" ||
+        event.phase === "awaiting-wallet" ||
+        event.phase === "attention"
+          ? "wallet"
+          : "base"
+      const envelope = {
+        identity: transferKey,
+        generation: transferGeneration,
+        source,
+        revision: (facts.revisions[source] ?? 0) + 1,
+      } as const
+      const next =
+        event.phase === "storage-warning" || event.phase === "unavailable"
+          ? reduceTransfer(facts, {
+              ...envelope,
+              type: "warning",
+              cause: event.phase === "storage-warning" ? "storage" : "transport",
+              message: event.message,
+            })
+          : reduceTransfer(facts, {
+              ...envelope,
+              type: "observed",
+              phase:
+                event.phase === "finalized" || event.phase === "recorded"
+                  ? "complete"
+                  : event.phase === "attention"
+                    ? "attention"
+                    : event.phase === "included"
+                      ? "base-mint-included"
+                      : event.phase === "finalizing"
+                        ? "base-mint-finalizing"
+                        : event.phase === "submitted"
+                          ? "base-mint-submitted"
+                          : "awaiting-base-mint",
+              outcome:
+                event.phase === "finalized" || event.phase === "recorded" ? "minted" : undefined,
+              recordingPending:
+                event.phase === "recorded" ? false : event.phase === "finalized" ? true : undefined,
+              issue: event.phase === "attention" ? event.issue : undefined,
+              message: event.phase === "attention" ? event.message : undefined,
+              transactionHash: "transactionHash" in event ? event.transactionHash : undefined,
+            })
+      if (next === facts) return
+      publishTransferFacts(next)
+      onProgressProp?.(event)
+    },
+    [onProgressProp, transferKey, transferGeneration],
+  )
   const { address } = useAccount()
   const [restoredMint] = useState(
     () =>
@@ -219,9 +290,13 @@ export function MintAuthorizationAction({
     )
       return
     let active = true
+    let running = false
     const checkReceipt = async () => {
-      if (document.visibilityState !== "visible") return
-      const observation = await observeMint(pending)
+      if (!active || running) return
+      running = true
+      const observation = await observeMint(pending).finally(() => {
+        running = false
+      })
       if (!active) return
       setReceiptConfirmed(observation.status === "success" && observation.finalized)
       setMintRecorded(observation.recorded)
@@ -255,6 +330,7 @@ export function MintAuthorizationAction({
           onProgress?.({
             phase: "attention",
             transactionHash: pending.transactionHash,
+            issue: "reverted",
             message: "The Base transaction reverted. Review the authorization before retrying.",
           })
         }
@@ -263,14 +339,22 @@ export function MintAuthorizationAction({
         onProgress?.({
           phase: "attention",
           transactionHash: pending.transactionHash,
+          issue: "conflict",
           message: "The Base receipt does not match this mint authorization.",
         })
       } else {
         // The observer already preserves success through transport errors. A submitted
         // status here can carry newer reorg evidence even when the next read failed.
         setReceiptObservation(observation.unavailable ? "unavailable" : "checking")
-        onProgress?.({ phase: "submitted", transactionHash: pending.transactionHash })
+        if (observation.unavailable)
+          onProgress?.({
+            phase: "unavailable",
+            message: "Base status could not be refreshed. Retrying.",
+          })
+        else onProgress?.({ phase: "submitted", transactionHash: pending.transactionHash })
       }
+      if (observation.recorded)
+        onProgress({ phase: "recorded", transactionHash: pending.transactionHash })
     }
 
     void checkReceipt()
@@ -325,6 +409,7 @@ export function MintAuthorizationAction({
         toast.error("Connect the gas-paying wallet on Base")
         return
       }
+      assertTransferActionAllowed(transferKey)
       await startMintExecution({
         key: executionKey,
         wallet: address,
@@ -349,7 +434,10 @@ export function MintAuthorizationAction({
             throw new Error("Browser storage is unavailable. Retry after storage is available.")
           return result
         },
-        beforeWallet: checkMintDeadline,
+        beforeWallet: (context) => {
+          assertTransferActionAllowed(transferKey)
+          checkMintDeadline(context)
+        },
         send: ({ validated }) =>
           writeContractAsync({
             account: address,
@@ -378,6 +466,7 @@ export function MintAuthorizationAction({
       pendingExpectation,
       chainId,
       executionKey,
+      transferKey,
       record,
       runtime.data,
       writeContractAsync,
@@ -401,6 +490,7 @@ export function MintAuthorizationAction({
     ) {
       progressCallback.current?.({
         phase: "attention",
+        issue: execution.phase === "unknown" ? "unknown" : "stopped",
         message: redactRpcUrls(mintExecutionMessage(execution) ?? "Mint preflight failed"),
       })
     }
@@ -442,6 +532,11 @@ export function MintAuthorizationAction({
     setTerminalReverted(false)
     await removePendingMint(pendingExpectation)
     releaseFinalizedMintAttempt(executionKey)
+    const previous = readTransferFacts(transferKey)
+    publishTransferFacts({
+      ...initialTransferFacts(transferKey, "deposit", "awaiting-base-mint"),
+      generation: (previous?.generation ?? 0) + 1,
+    })
     setPending(undefined)
     setReceiptConfirmed(false)
     setReceiptObservation("checking")
@@ -471,8 +566,43 @@ export function MintAuthorizationAction({
   const mintPending = mint.isPending
 
   useEffect(() => {
+    if (finalizedDeadlinePassed && !pending && !mintPending)
+      onProgress?.({
+        phase: "attention",
+        issue: execution.phase === "unknown" ? "refund-ready" : "expired",
+        message: "The deadline has passed. Check if you can get a refund.",
+      })
+  }, [finalizedDeadlinePassed, mintPending, onProgress, pending, execution.phase])
+  const refundCallback = useRef(onRequestRefund)
+  useEffect(() => {
+    refundCallback.current = onRequestRefund
+  }, [onRequestRefund])
+  const canRequestRefund = Boolean(onRequestRefund)
+  useEffect(() => {
     if (!registerAction) return
-    if (pending || identityConflict || authorizationExpired || !address || latestClockUnavailable) {
+    if (
+      finalizedDeadlinePassed &&
+      !pending &&
+      !mintPending &&
+      !identityConflict &&
+      canRequestRefund
+    ) {
+      registerAction({
+        label: claimingRefund ? "Checking…" : "Check refund",
+        pending: claimingRefund,
+        run: () => refundCallback.current?.(),
+      })
+      return () => registerAction(undefined)
+    }
+
+    if (
+      pending ||
+      execution.phase === "unknown" ||
+      identityConflict ||
+      authorizationExpired ||
+      !address ||
+      latestClockUnavailable
+    ) {
       registerAction(undefined)
       return
     }
@@ -488,6 +618,9 @@ export function MintAuthorizationAction({
     return () => registerAction(undefined)
   }, [
     address,
+    canRequestRefund,
+    claimingRefund,
+    finalizedDeadlinePassed,
     identityConflict,
     latestClockUnavailable,
     execution,
@@ -499,15 +632,6 @@ export function MintAuthorizationAction({
     authorizationExpired,
     write.isPending,
   ])
-
-  useEffect(() => {
-    if (finalizedDeadlinePassed && !pending && !mintPending)
-      onProgress?.({
-        phase: "attention",
-        message:
-          "The Mint Authorization expired before a Base transaction was submitted. Open History to confirm the refund path.",
-      })
-  }, [finalizedDeadlinePassed, mintPending, onProgress, pending])
 
   useEffect(() => {
     if (
@@ -579,12 +703,12 @@ export function MintAuthorizationAction({
           Browser storage is unavailable. Keep this page open while the transaction is checked.
         </p>
       )}
-      {restoredMint && !pending && (
+      {restoredMint && !pending && execution.phase !== "unknown" && !finalizedDeadlinePassed && (
         <p role="status">
           Checking Base for a completed mint. Wallet submission will not restart automatically.
         </p>
       )}
-      {execution.phase !== "idle" && (
+      {execution.phase !== "idle" && !(finalizedDeadlinePassed && !pending) && (
         <div className="space-y-1" role="status">
           {mintExecutionMessage(execution) && (
             <p>{redactRpcUrls(mintExecutionMessage(execution)!)}</p>
@@ -604,7 +728,7 @@ export function MintAuthorizationAction({
           </Button>
         </div>
       )}
-      {!compact && (
+      {!compact && !(finalizedDeadlinePassed && !pending) && (
         <>
           <p className="font-bold text-black">
             {pending ? "Base mint transaction" : "Mint Authorization ready"}
@@ -654,18 +778,14 @@ export function MintAuthorizationAction({
           </p>
         </div>
       ) : finalizedDeadlinePassed && !pending ? (
-        <div className="space-y-2">
-          <p className="text-xs font-bold text-[#8a4b08]">
-            The authorization deadline passed and Base Finalized time now permits the refund check.
+        <div className="space-y-2" role="alert">
+          <p className="font-bold text-[#8a4b08]">
+            {execution.phase === "unknown" ? "Mint status unknown" : "Mint authorization expired"}
           </p>
-          {latestClockUnavailable && (
-            <p className="text-xs font-bold text-[#8a4b08]">
-              Latest Base time is unavailable, but it is not required for the finalized refund path.
-            </p>
-          )}
+          <p className="text-sm">The deadline has passed. Check if you can get a refund.</p>
           {onRequestRefund && (
             <Button size="sm" variant="ghost" disabled={claimingRefund} onClick={onRequestRefund}>
-              {claimingRefund ? "Checking Base…" : "Claim refund"}
+              {claimingRefund ? "Checking…" : "Check refund"}
             </Button>
           )}
         </div>
@@ -687,7 +807,7 @@ export function MintAuthorizationAction({
           )}
           {finalizedDeadlinePassed && onRequestRefund && (
             <Button size="sm" variant="ghost" disabled={claimingRefund} onClick={onRequestRefund}>
-              {claimingRefund ? "Checking Base…" : "Claim refund"}
+              {claimingRefund ? "Checking…" : "Check refund"}
             </Button>
           )}
         </div>
