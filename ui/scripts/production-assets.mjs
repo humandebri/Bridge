@@ -193,7 +193,12 @@ function verifyProductionUiLive(profileFile, assetsOnly) {
   const checkpointEvidence = process.env.BRIDGE_CHECKPOINT_EVIDENCE
   const uiRpcConfig = process.env.BRIDGE_UI_RPC_CONFIG
   const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
-  if (!checkpointEvidence || !uiRpcConfig || !productionInstallerIdentity) {
+  const handover = process.env.BRIDGE_SNS_HANDOVER_RECEIPT
+  const upgradeProposal = process.env.BRIDGE_SNS_UPGRADE_PROPOSAL_ID
+  if (Boolean(handover) !== Boolean(upgradeProposal)) {
+    throw new Error("SNS UI verification requires both handover receipt and upgrade proposal ID")
+  }
+  if (!checkpointEvidence || !uiRpcConfig || (!handover && !productionInstallerIdentity)) {
     throw new Error(
       "Production UI deploy requires approved checkpoint evidence, reviewed UI RPC configuration, and production installer identity",
     )
@@ -212,17 +217,21 @@ function verifyProductionUiLive(profileFile, assetsOnly) {
     "cargo",
     [
       ...cargoArgs,
-      assetsOnly
-        ? "verify-production-checkpoint-ui-assets-only-live"
-        : "verify-production-checkpoint-ui-live",
+      handover
+        ? "verify-production-checkpoint-ui-sns-live"
+        : assetsOnly
+          ? "verify-production-checkpoint-ui-assets-only-live"
+          : "verify-production-checkpoint-ui-live",
       checkpointEvidence,
       uiRpcConfig,
       profileFile,
+      ...(handover && upgradeProposal ? [handover, upgradeProposal] : []),
     ],
     { cwd: sourceRoot, encoding: "utf8" },
   )
+  const assetsOnlyMarker = assetsOnly && !handover
   const manifestSha256 = new RegExp(
-    `^production_ui=${assetsOnly ? "assets-only-live-pass" : "live-pass"} schema=36 activation=execute manifest_sha256=([0-9a-fA-F]{64})$`,
+    `^production_ui=${assetsOnlyMarker ? "assets-only-live-pass" : "live-pass"} schema=36 activation=execute manifest_sha256=([0-9a-fA-F]{64})$`,
     "m",
   ).exec(gateOutput)?.[1]
   if (!manifestSha256) {

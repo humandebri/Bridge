@@ -562,6 +562,10 @@ type PublicConfigInitializationError = variant {
   StorageFailure;
   DerivationUnavailable;
 };
+type ReleaseUpgradeObservation = record {
+  completed_at_ns : nat64;
+  upgrader : principal;
+};
 type RequestDepositRefundError = variant {
   AutomaticProgressPending : record { next_run_at_ns : opt nat64 };
   NotClaimable;
@@ -604,45 +608,46 @@ type Result_13 = variant {
   Ok : ProductionLifecycle;
   Err : BaseGovernanceError;
 };
-type Result_14 = variant {
+type Result_14 = variant { Ok : text; Err : StorageMaintenanceError };
+type Result_15 = variant {
   Ok : vec opt WithdrawalView;
   Err : GetWithdrawalsError;
 };
-type Result_15 = variant { Ok; Err : PublicConfigInitializationError };
-type Result_16 = variant { Ok : DepositIdPage; Err : ListDepositIdsError };
-type Result_17 = variant {
+type Result_16 = variant { Ok; Err : PublicConfigInitializationError };
+type Result_17 = variant { Ok : DepositIdPage; Err : ListDepositIdsError };
+type Result_18 = variant {
   Ok : NonterminalDepositRefPage;
   Err : ListDepositIdsError;
 };
-type Result_18 = variant {
+type Result_19 = variant {
   Ok : WithdrawalHistoryPage;
   Err : ListWithdrawalsError;
-};
-type Result_19 = variant {
-  Ok : NotifyDepositMintReceipt;
-  Err : NotifyDepositMintError;
 };
 type Result_2 = variant {
   Ok : SettlementActionResult;
   Err : SettlementActionError;
 };
 type Result_20 = variant {
+  Ok : NotifyDepositMintReceipt;
+  Err : NotifyDepositMintError;
+};
+type Result_21 = variant {
   Ok : NotifyWithdrawalReceipt;
   Err : NotifyWithdrawalError;
 };
-type Result_21 = variant { Ok; Err : AdminError };
-type Result_22 = variant {
+type Result_22 = variant { Ok; Err : AdminError };
+type Result_23 = variant {
   Ok : ChecksumRefreshStatus;
   Err : StorageMaintenanceError;
 };
-type Result_23 = variant { Ok : DepositReceipt; Err : DepositError };
-type Result_24 = variant { Ok : DepositView; Err : RequestDepositRefundError };
-type Result_25 = variant { Ok : FeePayoutReceipt; Err : AdminError };
-type Result_26 = variant {
+type Result_24 = variant { Ok : DepositReceipt; Err : DepositError };
+type Result_25 = variant { Ok : DepositView; Err : RequestDepositRefundError };
+type Result_26 = variant { Ok : FeePayoutReceipt; Err : AdminError };
+type Result_27 = variant {
   Ok : OperationalConfigSealReceipt;
   Err : BaseGovernanceError;
 };
-type Result_27 = variant { Ok : text; Err : StorageMaintenanceError };
+type Result_28 = variant { Ok : text; Err : text };
 type Result_3 = variant {
   Ok : FeePayoutActionResult;
   Err : SettlementActionError;
@@ -757,6 +762,9 @@ type SigningFailureClass = variant {
   CallRejected;
   RecoveryMismatch;
 };
+type SnsActivationProposal = record {
+  previous_governance_operation_id : nat64;
+};
 type StatusCounts = record {
   retained_audit_events : nat64;
   reconciliation_holds : nat64;
@@ -832,34 +840,41 @@ service : (BridgeInitArgs) -> {
   get_operational_config : () -> (Result_11) query;
   get_pending_base_governance_transaction : () -> (Result_12) query;
   get_production_lifecycle : () -> (Result_13) query;
+  get_release_operational_config : () -> (Result_11) query;
+  get_release_storage_integrity : () -> (Result_14) query;
+  get_release_upgrade_observation : () -> (opt ReleaseUpgradeObservation) query;
   get_runtime_binding : () -> (RuntimeBinding) query;
   get_withdrawal : (blob) -> (opt WithdrawalView) query;
-  get_withdrawals : (vec blob) -> (Result_14) query;
+  get_withdrawals : (vec blob) -> (Result_15) query;
   icrc10_supported_standards : () -> (vec Icrc10SupportedStandard) query;
   icrc21_canister_call_consent_message : (Icrc21ConsentMessageRequest) -> (
       Icrc21ConsentMessageResponse,
     );
-  initialize_public_config : () -> (Result_15);
-  list_deposit_ids : (ListDepositIdsArgs) -> (Result_16) query;
-  list_nonterminal_deposit_refs : (ListDepositIdsArgs) -> (Result_17) query;
-  list_withdrawals : (ListWithdrawalsArgs) -> (Result_18) query;
-  notify_deposit_mint : (NotifyDepositMintArgs) -> (Result_19);
-  notify_withdrawal : (NotifyWithdrawalArgs) -> (Result_20);
-  pause_new_deposits : () -> (Result_21);
+  initialize_public_config : () -> (Result_16);
+  list_deposit_ids : (ListDepositIdsArgs) -> (Result_17) query;
+  list_nonterminal_deposit_refs : (ListDepositIdsArgs) -> (Result_18) query;
+  list_withdrawals : (ListWithdrawalsArgs) -> (Result_19) query;
+  notify_deposit_mint : (NotifyDepositMintArgs) -> (Result_20);
+  notify_withdrawal : (NotifyWithdrawalArgs) -> (Result_21);
+  pause_new_deposits : () -> (Result_22);
   prepare_base_governance_action : (BaseGovernanceAction) -> (Result_6);
   prepare_base_governance_replacement : (
       PrepareBaseGovernanceReplacementArgs,
     ) -> (Result_6);
   prepare_next_emergency_base_action : () -> (Result_6);
   refresh_activation_attestation : () -> (Result_7);
-  refresh_storage_checksum : (nat64) -> (Result_22);
-  request_deposit : (DepositArgs) -> (Result_23);
-  request_deposit_refund : (blob) -> (Result_24);
-  request_fee_payout : (nat) -> (Result_25);
-  rotate_fee_recipient : (FeeRecipientConfig) -> (Result_21);
-  rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_21);
+  refresh_storage_checksum : (nat64) -> (Result_23);
+  request_deposit : (DepositArgs) -> (Result_24);
+  request_deposit_refund : (blob) -> (Result_25);
+  request_fee_payout : (nat) -> (Result_26);
+  rotate_fee_recipient : (FeeRecipientConfig) -> (Result_22);
+  rotate_pause_principal : (RotatePausePrincipalArgs) -> (Result_22);
   schedule_activation : () -> (Result_6);
-  seal_operational_config : (OperationalConfigArgs) -> (Result_26);
+  seal_operational_config : (OperationalConfigArgs) -> (Result_27);
+  sns_execute_activation : (SnsActivationProposal) -> ();
+  sns_schedule_activation : (SnsActivationProposal) -> ();
   start_storage_validation : () -> (Result_4);
-  storage_integrity_check : () -> (Result_27) query;
+  storage_integrity_check : () -> (Result_14) query;
+  validate_sns_execute_activation : (SnsActivationProposal) -> (Result_28);
+  validate_sns_schedule_activation : (SnsActivationProposal) -> (Result_28);
 }

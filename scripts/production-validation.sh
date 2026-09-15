@@ -388,11 +388,27 @@ production_validate_gate() {
   revision="$(git -C "$source_root" rev-parse HEAD)"
   tree="$(git -C "$source_root" archive HEAD | shasum -a 256 | awk '{print $1}')"
   read -r manifest_revision manifest_tree < <(python3 -c 'import json,sys;m=json.load(open(sys.argv[1]));print(m.get("source_revision",""),m.get("source_tree_sha256",""))' "$bundle/release-manifest.json")
+  local checkpoint_handover=0 checkpoint_module checkpoint_metadata
+  if [[ ( "$mode" == handover || "$mode" == handover-recover ) && -n "${BRIDGE_CHECKPOINT_EVIDENCE:-}" ]]; then
+    checkpoint_handover=1
+  else
   [[ "$revision" == "$manifest_revision" && "$tree" == "$(printf '%s' "$manifest_tree" | tr '[:upper:]' '[:lower:]')" ]] || { echo "release bundle is not bound to the fixed clean source" >&2; return 1; }
+  fi
   [[ "$expected_hash" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "invalid expected Gate manifest hash" >&2; return 1; }
   target="$(mktemp -d "${TMPDIR:-/tmp}/bridge-driver-validator.XXXXXX")"
   CARGO_TARGET_DIR="$target" cargo build --locked --quiet --release --manifest-path "$source_root/Cargo.toml" -p bridge-profile || { rm -rf "$target"; return 1; }
   profile_bin="$target/release/bridge-profile"
+  if [[ "$checkpoint_handover" -eq 1 ]]; then
+    checkpoint_metadata="$("$profile_bin" validate-production-checkpoint-evidence "$BRIDGE_CHECKPOINT_EVIDENCE")" || { rm -rf "$target"; return 1; }
+    checkpoint_module="$(python3 -I -S - "$checkpoint_metadata" "$revision" "$tree" <<'PY_META'
+import json,sys
+value=json.loads(sys.argv[1])
+if value['source']!={'revision':sys.argv[2],'tree_sha256':sys.argv[3]} or value['runtime']['schema_version']!=36:
+ raise SystemExit('handover requires the exact current-source v36 checkpoint terminal')
+print(value['module_sha256'])
+PY_META
+)" || { rm -rf "$target"; return 1; }
+  fi
   if [[ "$mode" == gate-a ]]; then output="$("$profile_bin" validate-bundle --offline "$bundle")" || { rm -rf "$target"; return 1; }
   elif [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }
   elif [[ "$mode" == handover || "$mode" == handover-recover ]]; then
@@ -452,12 +468,26 @@ production_validate_gate() {
     actual_hash="${BASH_REMATCH[1]}"
   fi
   [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "driver Gate manifest hash mismatch" >&2; return 1; }
+  if [[ "$checkpoint_handover" -eq 1 ]]; then
+    production_run_proof_gate "$source_root" "$revision" "$tree" || { rm -rf "$target"; return 1; }
+    for build_index in 1 2; do
+      CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$target/repro-$build_index"         icp build bridge-canister -e production --project-root-override "$source_root" >/dev/null || { rm -rf "$target"; return 1; }
+      [[ "$(shasum -a 256 "$target/repro-$build_index/wasm32-unknown-unknown/release/bridge_canister.wasm" | awk '{print $1}')" == "$checkpoint_module" ]] || {
+        rm -rf "$target"; echo "handover module is not reproducible from current source" >&2; return 1;
+      }
+    done
+    production_require_clean_source "$source_root" || { rm -rf "$target"; return 1; }
+    [[ "$(git -C "$source_root" rev-parse HEAD)" == "$revision" && "$(git -C "$source_root" archive HEAD | shasum -a 256 | awk '{print $1}')" == "$tree" ]] || {
+      rm -rf "$target"; echo "handover source changed during validation" >&2; return 1;
+    }
+  else
   if [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live || "$mode" == handover || "$mode" == handover-recover ]]; then
     production_validate_gate_b_source_chain "$source_root" "$bundle" || { rm -rf "$target"; return 1; }
   fi
   production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
   "$source_root/scripts/rebuild-release-artifacts.sh" \
     "$bundle" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
+  fi
   if [[ "$mode" == gate-b-pre-seal ]]; then
     rm -rf "$target"
     return 0

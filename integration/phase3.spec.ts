@@ -1,8 +1,9 @@
+import { setupRealSns } from "./sns-runtime";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { freemem, loadavg, tmpdir, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import { IDL } from "@icp-sdk/core/candid";
 import { Principal } from "@icp-sdk/core/principal";
@@ -27,6 +28,7 @@ if (schema35WasmSha256 === undefined) {
 const mockWasm = resolve(root, "target/wasm32-unknown-unknown/release/mock_external.wasm");
 const wasmBytes = new Map<string, Buffer>();
 function readWasm(path: string): Buffer {
+  if (path === schema35BridgeWasm) buildSchema35Predecessor();
   const cached = wasmBytes.get(path);
   if (cached) return cached;
   const bytes = readFileSync(path);
@@ -46,6 +48,44 @@ function phaseName(value: Record<string, unknown>): string {
 }
 function debugJson(value: unknown): string {
   return JSON.stringify(value, (_key, item) => typeof item === "bigint" ? `${item}n` : item);
+}
+function readOptionalText(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+function diagnosticCommand(command: string, args: string[]): string {
+  try {
+    return execFileSync(command, args, { encoding: "utf8" }).trim();
+  } catch (error) {
+    return `unavailable: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+function capturePocketIcResources(serverPid: number): Record<string, unknown> {
+  const processSnapshot = diagnosticCommand("ps", [
+    "-eo",
+    "pid=,ppid=,%cpu=,%mem=,rss=,etime=,stat=,command=",
+  ]).split("\n").filter((line) => {
+    const fields = line.trim().split(/\s+/, 3);
+    return Number(fields[0]) === serverPid
+      || Number(fields[1]) === serverPid
+      || line.includes("pocket-ic");
+  });
+  return {
+    captured_at: new Date().toISOString(),
+    server_pid: serverPid,
+    node_rss_bytes: process.memoryUsage().rss,
+    system_free_memory_bytes: freemem(),
+    system_total_memory_bytes: totalmem(),
+    load_average: loadavg(),
+    cgroup_memory_current: readOptionalText("/sys/fs/cgroup/memory.current"),
+    cgroup_memory_max: readOptionalText("/sys/fs/cgroup/memory.max"),
+    cgroup_memory_events: readOptionalText("/sys/fs/cgroup/memory.events"),
+    disk: diagnosticCommand("df", ["-Pk", root, tmpdir()]),
+    pocket_ic_processes: processSnapshot,
+  };
 }
 function buildSchema35Predecessor(): void {
   if (existsSync(schema35BridgeWasm)
@@ -87,6 +127,9 @@ describe("Phase 3 PocketIC saga", () => {
   let server: ChildProcess | undefined;
   let pic: PocketIc | undefined;
   let serverUrl = "";
+  let pocketIcMonitor: ReturnType<typeof setInterval> | undefined;
+  let lastPocketIcResources: Record<string, unknown> | undefined;
+  let serverShutdownRequested = false;
 
   async function setup(
     activate = true,
@@ -130,6 +173,7 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_block_timestamp(BigInt(Math.floor((await pic!.getTime()) / 1_000)));
     await (evm.actor as any).set_deposit_mints_paused(true);
     await (evm.actor as any).set_withdrawals_paused(true);
+    bridge.actor.setPrincipal(controller);
     const operationalConfig: any = await (bridge.actor as any).get_operational_config();
     expect(operationalConfig).toHaveProperty("Ok");
     expect(await (evm.actor as any).set_deployment_postconditions(
@@ -625,9 +669,11 @@ describe("Phase 3 PocketIC saga", () => {
     return result;
   }
 
-  // Cold CI workers compile the pinned predecessor before starting PocketIC.
   beforeAll(async () => {
-    buildSchema35Predecessor();
+    // A stale or host-incompatible predecessor is expensive to replace. Validate
+    // and, if necessary, rebuild it before PocketIC starts so both workloads do
+    // not compete for the trusted runner's memory.
+    readWasm(schema35BridgeWasm);
     const probe = createServer();
     const port = await new Promise<number>((resolvePort, reject) => {
       probe.once("error", reject);
@@ -639,7 +685,32 @@ describe("Phase 3 PocketIC saga", () => {
     });
     serverUrl = `http://127.0.0.1:${port}`;
     server = spawn(resolve("node_modules/@dfinity/pic/pocket-ic"), ["--port", String(port), "--hard-ttl", "1800"], { stdio: "inherit" });
+    server.once("spawn", () => {
+      if (server?.pid === undefined) return;
+      lastPocketIcResources = capturePocketIcResources(server.pid);
+      pocketIcMonitor = setInterval(() => {
+        if (server?.pid !== undefined) lastPocketIcResources = capturePocketIcResources(server.pid);
+      }, 5_000);
+      pocketIcMonitor.unref();
+    });
+    server.once("error", (error) => {
+      console.error(`[pocketic-spawn-error] ${debugJson({ message: error.message })}`);
+    });
+    server.once("exit", (code, signal) => {
+      if (pocketIcMonitor !== undefined) clearInterval(pocketIcMonitor);
+      if (!serverShutdownRequested) {
+        console.error(`[pocketic-unexpected-exit] ${debugJson({
+          code,
+          signal,
+          last_resources: lastPocketIcResources,
+          exit_resources: server?.pid === undefined ? null : capturePocketIcResources(server.pid),
+        })}`);
+      }
+    });
     for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (server.exitCode !== null || server.signalCode !== null) {
+        throw new Error(`PocketIC exited before readiness: code=${server.exitCode} signal=${server.signalCode}`);
+      }
       try {
         await fetch(serverUrl);
         return;
@@ -651,7 +722,24 @@ describe("Phase 3 PocketIC saga", () => {
   }, 600_000);
 
   afterAll(async () => {
-    server?.kill();
+    serverShutdownRequested = true;
+    if (pocketIcMonitor !== undefined) clearInterval(pocketIcMonitor);
+    if (server !== undefined && server.exitCode === null && server.signalCode === null) {
+      await new Promise<void>((resolveStopped) => {
+        const timeout = setTimeout(() => {
+          if (server!.exitCode === null && server!.signalCode === null) server!.kill("SIGKILL");
+          resolveStopped();
+        }, 10_000);
+        server!.once("exit", () => {
+          clearTimeout(timeout);
+          resolveStopped();
+        });
+        if (!server!.kill("SIGTERM")) {
+          clearTimeout(timeout);
+          resolveStopped();
+        }
+      });
+    }
   });
 
   beforeEach(async () => {
@@ -3228,6 +3316,119 @@ describe("Phase 3 PocketIC saga", () => {
   });
 
 
+
+  async function real_sns_reactivation_and_production_registration() {
+    const sns = await setupRealSns(pic!);
+    const { evm, bridge, init, controller, confirmationRelayerPrincipal } =
+      await setup(true, { governance_principal: sns.governanceId }, bridgeWasm, true, true);
+    for (const [phase, id] of [["schedule", 1000n], ["execute", 1001n]] as const) {
+      await sns.propose({ AddGenericNervousSystemFunction: {
+        id, name: `Bridge ${phase} reactivation`, description: [], function_type: [{ GenericNervousSystemFunction: {
+          topic: [{ DappCanisterManagement: null }], target_canister_id: [bridge.canisterId], target_method_name: [`sns_${phase}_activation`],
+          validator_canister_id: [bridge.canisterId], validator_method_name: [`validate_sns_${phase}_activation`],
+        } }],
+      } });
+    }
+    bridge.actor.setPrincipal(init.pause_principal);
+    expect(await bridge.actor.pause_new_deposits()).toHaveProperty("Ok");
+    await evm.actor.set_deposit_mints_paused(true);
+    await evm.actor.set_withdrawals_paused(true);
+    const payloadType = IDL.Record({ previous_governance_operation_id: IDL.Nat64 });
+    const previous = (await bridge.actor.get_activation_status()).Ok.last_confirmed_activation[0].governance_operation_id;
+    const payload = IDL.encode([payloadType], [{ previous_governance_operation_id: previous }]);
+    const validatorBefore = await bridge.actor.get_activation_status();
+    expect(await bridge.actor.validate_sns_schedule_activation({previous_governance_operation_id: previous})).toHaveProperty("Ok");
+    expect(await bridge.actor.get_activation_status()).toEqual(validatorBefore);
+    const unadopted = await sns.submitUnadopted({ExecuteGenericNervousSystemFunction:{function_id:1000n,payload:new Uint8Array(payload)}});
+    expect(unadopted.decided_timestamp_seconds).toBe(0n);
+    expect(unadopted.executed_timestamp_seconds).toBe(0n);
+    expect((await bridge.actor.get_pending_base_governance_transaction()).Ok).toEqual([]);
+    await expect(sns.propose({ExecuteGenericNervousSystemFunction:{function_id:9999n,payload:new Uint8Array(payload)}})).rejects.toThrow();
+    await expect(sns.propose({ExecuteGenericNervousSystemFunction:{function_id:1000n,payload:new Uint8Array(IDL.encode([],[]))}})).rejects.toThrow();
+    bridge.actor.setPrincipal(controller);
+    await expect(bridge.actor.sns_schedule_activation({previous_governance_operation_id: previous})).rejects.toThrow();
+    await sns.propose({ ExecuteGenericNervousSystemFunction: { function_id: 1000n, payload: new Uint8Array(payload) } });
+    expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText())).toEqual([controller.toText()]);
+    const scheduled = (await bridge.actor.get_pending_base_governance_transaction()).Ok[0];
+    expect(scheduled.kind).toHaveProperty("ScheduleActivation");
+    expect((await bridge.actor.get_bridge_status()).deposits_paused).toBe(true);
+    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
+    expect(await bridge.actor.confirm_base_governance_transaction({operation_id: scheduled.operation_id, transaction_hash: scheduled.transaction_hash})).toHaveProperty("Ok.succeeded",true);
+    await expect(sns.propose({ ExecuteGenericNervousSystemFunction: { function_id: 1000n, payload: new Uint8Array(payload) } })).rejects.toThrow();
+    const executePayload = IDL.encode([payloadType], [{previous_governance_operation_id: scheduled.operation_id}]);
+    // SNS completion only prepares a signature; an early Base execution still reverts.
+    await sns.propose({ ExecuteGenericNervousSystemFunction: {function_id: 1001n, payload: new Uint8Array(executePayload)} });
+    const early = (await bridge.actor.get_pending_base_governance_transaction()).Ok[0];
+    await evm.actor.set_receipt_mode({Reverted: null});
+    expect(await bridge.actor.confirm_base_governance_transaction({operation_id:early.operation_id, transaction_hash:early.transaction_hash})).toHaveProperty("Err.TransactionReverted.operation_id",early.operation_id);
+    expect((await bridge.actor.get_bridge_status()).deposits_paused).toBe(true);
+    await evm.actor.set_receipt_mode({Confirmed: null});
+    await pic!.advanceTime(5 * 60_000 + 1);
+    await pic!.tick(5);
+    await sns.propose({ ExecuteGenericNervousSystemFunction: {function_id: 1001n, payload: new Uint8Array(executePayload)} });
+    const executed = (await bridge.actor.get_pending_base_governance_transaction()).Ok[0];
+    expect(executed.kind).toHaveProperty("ExecuteActivation");
+    await evm.actor.set_deposit_mints_paused(false);
+    await evm.actor.set_withdrawals_paused(false);
+    expect(await bridge.actor.confirm_base_governance_transaction({operation_id: executed.operation_id, transaction_hash: executed.transaction_hash})).toHaveProperty("Ok.succeeded",true);
+    expect((await bridge.actor.get_bridge_status()).deposits_paused).toBe(false);
+    const beforeUpgradeRuntime = await bridge.actor.get_runtime_binding();
+    const upgradeWasm = readWasm(bridgeWasm);
+    const chunkHashes: Uint8Array[] = [];
+    const targetSubnetId = (await pic!.getCanisterSubnetId(bridge.canisterId))!;
+    for (let offset = 0; offset < upgradeWasm.length; offset += 1_000_000) {
+      const chunk = upgradeWasm.subarray(offset, offset + 1_000_000);
+      const response = await pic!.updateCall({canisterId:Principal.managementCanister(),sender:controller,targetSubnetId,
+        method:"upload_chunk",arg:IDL.encode([IDL.Record({canister_id:IDL.Principal,chunk:IDL.Vec(IDL.Nat8)})],[{canister_id:bridge.canisterId,chunk}])});
+      const [uploaded]: any = IDL.decode([IDL.Record({hash:IDL.Vec(IDL.Nat8)})],response);
+      expect(Buffer.from(uploaded.hash)).toEqual(createHash("sha256").update(chunk).digest());
+      chunkHashes.push(uploaded.hash);
+    }
+    // Production-mode Root registration removes the personal co-controller.
+    await pic!.updateCanisterSettings({canisterId: bridge.canisterId, sender: controller, controllers: [controller,sns.rootId]});
+    expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText()).sort())
+      .toEqual([controller.toText(),sns.rootId.toText()].sort());
+    const unadoptedRegistration = await sns.submitUnadopted({RegisterDappCanisters: {canister_ids: [bridge.canisterId]}});
+    expect(unadoptedRegistration.executed_timestamp_seconds).toBe(0n);
+    expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText()).sort())
+      .toEqual([controller.toText(),sns.rootId.toText()].sort());
+    await sns.propose({RegisterDappCanisters: {canister_ids: [bridge.canisterId]}});
+    expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText())).toEqual([sns.rootId.toText()]);
+    expect((await sns.snsRoot.list_sns_canisters({})).dapps.map((p: Principal) => p.toText())).toContain(bridge.canisterId.toText());
+    expect(await bridge.actor.get_release_upgrade_observation()).toEqual([]);
+    // A real Root acknowledgement can precede a failed post_upgrade.
+    const trapExport = Buffer.from("canister_post_upgrade");
+    const trapWasm = Buffer.from([0,97,115,109,1,0,0,0,1,4,1,96,0,0,3,2,1,0,
+      7,trapExport.length+4,1,trapExport.length,...trapExport,0,0,10,5,1,3,0,0,11]);
+    await sns.propose({UpgradeSnsControlledCanister: {canister_id:[bridge.canisterId],new_canister_wasm:trapWasm,
+      canister_upgrade_arg:[new Uint8Array(IDL.encode([],[]))],mode:[3],canister_upgrade_options:[],chunked_canister_wasm:[]}});
+    await pic!.tick(50);
+    const failedStatus = await pic!.canisterStatus({canisterId:bridge.canisterId,sender:sns.rootId});
+    expect(Buffer.from(failedStatus.moduleHash!)).toEqual(createHash("sha256").update(upgradeWasm).digest());
+    expect(await bridge.actor.get_release_upgrade_observation()).toEqual([]);
+    const upgradeStartedAt = BigInt(await pic!.getTime()) * 1_000_000n;
+    await sns.propose({UpgradeSnsControlledCanister: {canister_id: [bridge.canisterId], new_canister_wasm: new Uint8Array(),
+      canister_upgrade_arg: [new Uint8Array(IDL.encode([],[]))], mode: [3], canister_upgrade_options: [], chunked_canister_wasm: [{store_canister_id:[bridge.canisterId],wasm_module_hash:createHash("sha256").update(upgradeWasm).digest(),chunk_hashes_list:chunkHashes}]}});
+    let completion = await bridge.actor.get_release_upgrade_observation();
+    for (let attempt = 0; attempt < 40 && completion.length === 0; attempt++) {
+      await pic!.tick(5);
+      completion = await bridge.actor.get_release_upgrade_observation();
+    }
+    expect(completion).toHaveLength(1);
+    expect(completion[0].upgrader.toText()).toBe(sns.rootId.toText());
+    expect(completion[0].completed_at_ns).toBeGreaterThanOrEqual(upgradeStartedAt);
+    expect((await bridge.actor.get_bridge_status()).deposits_paused).toBe(false);
+    expect(await bridge.actor.get_runtime_binding()).toEqual(beforeUpgradeRuntime);
+    const finalStatus = await pic!.canisterStatus({canisterId:bridge.canisterId,sender:sns.rootId});
+    expect(Buffer.from(finalStatus.moduleHash!)).toEqual(createHash("sha256").update(upgradeWasm).digest());
+    bridge.actor.setPrincipal(controller);
+    expect(await bridge.actor.get_operational_config()).toHaveProperty("Err.Unauthorized");
+    expect(await bridge.actor.get_release_operational_config()).toHaveProperty("Ok");
+    expect(await bridge.actor.get_release_storage_integrity()).toHaveProperty("Ok");
+    expect(await requestDefaultDeposit(bridge)).toHaveProperty("Ok");
+  }
+
+  it("real SNS reactivation and production registration", real_sns_reactivation_and_production_registration, 300_000);
 
   async function activation_is_only_resume_path() {
     const { evm, bridge, init, runtimePrincipal, confirmationRelayerPrincipal } = await setup();

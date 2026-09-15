@@ -153,6 +153,7 @@ run_versions() {
     "$ROOT/scripts/production-activate-driver.sh" \
     "$ROOT/scripts/production-seal-driver.sh" \
     "$ROOT/scripts/production-handover-driver.sh" \
+    "$ROOT/scripts/production-handover-registration-proposal.sh" \
     "$ROOT/scripts/production-canister-upgrade.sh" \
     "$ROOT/scripts/base-sepolia-experiment/experiment.sh" \
     "$ROOT/scripts/test_base_sepolia_experiment.sh" \
@@ -178,6 +179,7 @@ run_versions() {
   python3 "$ROOT/scripts/test_proof_fingerprint_candidate_scripts.py"
   python3 "$ROOT/scripts/test_ci_modes.py"
   python3 "$ROOT/scripts/test_trusted_pr_gate.py"
+  python3 "$ROOT/scripts/test_sns_test_runtime.py"
   python3 "$ROOT/scripts/test_trusted_staging_layout.py"
   "$ROOT/scripts/test_ci_guards.sh"
   "$ROOT/scripts/test_production_canister_bootstrap.sh"
@@ -187,6 +189,7 @@ run_versions() {
   "$ROOT/scripts/test_production_canister_upgrade.sh"
   "$ROOT/scripts/test_production_activation.sh"
   "$ROOT/scripts/test_production_handover.sh"
+  "$ROOT/scripts/test_production_handover_registration.sh"
   bash "$ROOT/scripts/test_base_sepolia_experiment.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"
   python3 "$ROOT/scripts/plan007/test_sepolia_e2e.py"

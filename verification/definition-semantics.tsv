@@ -4,7 +4,7 @@ BridgeSpec.ClaimContracts.AuthorizationBinding	specification	docs/adr/0023-use-w
 BridgeSpec.ClaimContracts.AutomaticRetryLimit	specification	docs/canister-state-machine.md	automatic laneかつfailures<limitのときだけ許可
 BridgeSpec.ClaimContracts.CanonicalProbe	specification	docs/bridge-flow.md	predicateは番号の一致と同値
 BridgeSpec.ClaimContracts.CommittedQuote	specification	docs/canister-state-machine.md	純額は正、gross=純額+fee、終端宛先・純額は初期保存quoteと一致
-BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding	specification	docs/canister-state-machine.md	単一matchかつmetadataの厳密一致
+BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding	specification	docs/canister-state-machine.md	activationの単一match・metadata厳密一致と、Rootによる採択・移譲後のupgrade完了hook
 BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy	specification	docs/canister-state-machine.md	認可済み・非実行中・balance≤thresholdのときだけ要求可能
 BridgeSpec.ClaimContracts.DepositAdmission	specification	docs/canister-state-machine.md	fee・正の純額・一件上限・window上限を満たす
 BridgeSpec.ClaimContracts.DepositBacking	specification	docs/canister-state-machine.md	backingを保存し、各操作で規定会計差分を適用
