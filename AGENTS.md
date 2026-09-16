@@ -2,7 +2,7 @@
 
 ## Production compatibility policy
 
-- The production Bridge Canister is deployed at stable schema v36 (live-confirmed 2026-09-09), with module SHA-256 `6192841b3c2b5c28c6decea307e7c8e23700ab9bb00e6e593d74857478563c75`. The next prepared release is a corrected v36 upgrade; do not assume the first v35-to-v36 upgrade is still pending.
+- The production Bridge Canister is deployed at stable schema v36 (live-confirmed 2026-09-16), with module SHA-256 `bf0477947b06a06d31aa32b52992a1b775fca0c9b4c98bf3129037d47abedd64`. The active checkpoint is the reviewed rotation with SHA-256 `ddde10ae0f73d3af735eee84d0d2619bc2c565bf4501a36f842983f7bed4498b`, rooted in the immutable v35 Gate B and the two verified v36 suffix upgrades. Treat `6192841b...` and `d48d4737...` as historical terminals only; do not use them as the current production baseline.
 - Normal current-release Gate B validation must accept only v36. Historical verification may accept exactly the deployed v35 or current v36 only when every profile, Gate A receipt, upgrade-chain terminal, Wasm binding, and live RuntimeBinding converges on the same version.
 - Production UI authorization requires a verified v36 terminal rooted in the immutable v35 Gate B. Until checkpoint approval and driver cutover, use the exact historical upgrade chain; afterward use the source-approved checkpoint plus verified suffix. The UI gate must reject a live v35 terminal. v34, v37, disconnected or mixed-version evidence, aliases, shims, and runtime fallbacks must fail closed.
 - For formats and APIs that have not been deployed, replace obsolete shapes directly and update all callers, tests, fixtures, and documentation in the same change. Do not add compatibility shims or fallbacks unless the user explicitly requests them.

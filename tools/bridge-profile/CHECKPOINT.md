@@ -1,17 +1,20 @@
 # Production upgrade checkpoint implementation status
 
-The initial checkpoint has been reviewed and approved with SHA-256
-`58a14e603e51e9a6e00feaad1c5c2b4be965b8031b5300f7138224e207a890a9`.
-Its five upgrade receipts reach the live-confirmed v36 module below. Generation
-used source `731c71d54bed08c4a54d919c569d92c5dac484ff`; the audit manifest retains
-the 23 input artifact hashes and original locations. Keep the formal archives.
+The active rotated checkpoint has been reviewed with SHA-256
+`ddde10ae0f73d3af735eee84d0d2619bc2c565bf4501a36f842983f7bed4498b`.
+It retains the initial five-receipt history and adds the verified upgrades to
+`d48d4737...` and `bf047794...`. The terminal source is
+`16cd903af92878ffe13294cf1dc577550ba1340c`; the rotation input evidence has
+SHA-256 `a8bee156e29e4d30b6d430248c42e10657a221b4aa136fe85f3d55474fee0894`.
+Keep the formal signed archives outside the repository.
 Production driver cutover and final release verification are separate steps.
 
-Production was queried on 2026-09-09: schema v36, module SHA-256
-`6192841b3c2b5c28c6decea307e7c8e23700ab9bb00e6e593d74857478563c75`.
-This release prepares a corrected v36 upgrade, not the initial v35-to-v36
-migration. Generate and review the historical checkpoint, pin its approved hash
-in a separate commit, then switch the production upgrade and UI drivers.
+Production was queried again on 2026-09-16: schema v36, module SHA-256
+`bf0477947b06a06d31aa32b52992a1b775fca0c9b4c98bf3129037d47abedd64`.
+The live module, preserved release artifact, successful upgrade receipt and
+deterministic rebuild converge on that terminal. A later current-source v36
+upgrade remains necessary before SNS handover because the live module predates
+the release-scoped storage integrity query used by the handover completion gate.
 
 Implemented foundations:
 
