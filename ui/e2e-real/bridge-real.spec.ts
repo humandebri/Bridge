@@ -111,6 +111,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
     nextDepositSequence: "1",
   })
 
+  await postControl(request, "/test/sync-base-clock", {})
   await page.reload()
   await expect(page.getByRole("button", { name: /EVM wallet connected as 0xf39F/i })).toBeVisible()
   await expect(page.getByRole("button", { name: /IC wallet connected as /i })).toBeVisible()
@@ -137,7 +138,6 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   expect(BigInt(initial.ledgerBalance) - BigInt(afterRecovery.ledgerBalance)).toBe(
     200_000_000n + 2n * BigInt(initial.ledgerFee),
   )
-  await postControl(request, "/test/sync-base-clock", {})
   await expect
     .poll(async () => BigInt((await controlState(request)).bsnsBalance), { timeout: 60_000 })
     .toBe(199_000_000n)

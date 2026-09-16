@@ -628,10 +628,12 @@ pub(super) fn render_ui(
     )
 }
 
-pub(super) fn verify_ui(
+fn verify_ui_with_freshness(
     evidence_path: &Path,
     rpc_path: &Path,
     runtime_path: &Path,
+    attestation_freshness: super::ActivationAttestationFreshness,
+    success: &str,
 ) -> Result<(), String> {
     let verified = read_evidence(evidence_path)?;
     let rpc_bytes = read_bounded(rpc_path, MAX_BYTES)?;
@@ -654,12 +656,15 @@ pub(super) fn verify_ui(
     };
     super::verify_production_live_state(
         &roots.gate_b_profile,
-        &roots.gate_b_sha256,
         candid::Principal::from_text(&checkpoint.controller).map_err(|error| error.to_string())?,
         &activation,
         Some(&verified.terminal),
-        roots.gate_b_created_at_unix,
-        roots.deployment_block_number,
+        &super::ProductionLiveStateContext {
+            gate_b_sha256: &roots.gate_b_sha256,
+            manifest_created_at_unix: roots.gate_b_created_at_unix,
+            minimum_deployment_block: roots.deployment_block_number,
+            attestation_freshness,
+        },
     )?;
     if read_bounded(rpc_path, MAX_BYTES)? != rpc_bytes
         || read_bounded(runtime_path, MAX_BYTES)? != runtime_bytes
@@ -671,10 +676,38 @@ pub(super) fn verify_ui(
         return Err("production UI inputs changed during live validation".into());
     }
     println!(
-        "production_ui=live-pass schema=36 activation=execute manifest_sha256={}",
+        "production_ui={success} schema=36 activation=execute manifest_sha256={}",
         roots.gate_b_sha256
     );
     Ok(())
+}
+
+pub(super) fn verify_ui(
+    evidence_path: &Path,
+    rpc_path: &Path,
+    runtime_path: &Path,
+) -> Result<(), String> {
+    verify_ui_with_freshness(
+        evidence_path,
+        rpc_path,
+        runtime_path,
+        super::ActivationAttestationFreshness::Required,
+        "live-pass",
+    )
+}
+
+pub(super) fn verify_ui_assets_only(
+    evidence_path: &Path,
+    rpc_path: &Path,
+    runtime_path: &Path,
+) -> Result<(), String> {
+    verify_ui_with_freshness(
+        evidence_path,
+        rpc_path,
+        runtime_path,
+        super::ActivationAttestationFreshness::AllowStaleForUnchangedUiAssets,
+        "assets-only-live-pass",
+    )
 }
 
 pub(super) fn verify_ui_after_handover(
@@ -724,12 +757,15 @@ pub(super) fn verify_ui_after_handover(
     };
     super::verify_production_live_state(
         &roots.gate_b_profile,
-        &roots.gate_b_sha256,
         candid::Principal::from_text(super::KINIC_ROOT).map_err(|e| e.to_string())?,
         &activation,
         Some(&verified.terminal),
-        roots.gate_b_created_at_unix,
-        roots.deployment_block_number,
+        &super::ProductionLiveStateContext {
+            gate_b_sha256: &roots.gate_b_sha256,
+            manifest_created_at_unix: roots.gate_b_created_at_unix,
+            minimum_deployment_block: roots.deployment_block_number,
+            attestation_freshness: super::ActivationAttestationFreshness::Required,
+        },
     )?;
     if read_bounded(handover_path, 16 * MAX_BYTES)? != handover_bytes
         || read_bounded(rpc_path, MAX_BYTES)? != rpc_bytes

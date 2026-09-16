@@ -17,6 +17,10 @@ import {
 } from "node:fs"
 import { dirname, relative, resolve, sep } from "node:path"
 import { tmpdir } from "node:os"
+import {
+  deploymentProfileBootstrap,
+  requireUnchangedProductionProfile,
+} from "./production-profile-continuity.mjs"
 
 const uiRoot = resolve(import.meta.dirname, "..")
 const sourceRoot = resolve(uiRoot, "..")
@@ -176,24 +180,16 @@ function validateReceipt(receipt, identity, built, projectId) {
   }
 }
 
-/** @param {string} targetRoot @param {string} raw */
-async function installRuntimeProfile(targetRoot, raw) {
-  const { deploymentProfileSchema } = await import("../src/config/profile.ts")
-  const parsedProfile = deploymentProfileSchema.parse(JSON.parse(raw))
-  const publicProfile = {
-    ...parsedProfile,
-    deploymentBlock: parsedProfile.deploymentBlock?.toString() ?? null,
-  }
-  const publicRaw = JSON.stringify(publicProfile)
-  writeFileSync(
-    resolve(targetRoot, profileBootstrap),
-    `globalThis.__KINIC_DEPLOYMENT_PROFILE_JSON__ = ${JSON.stringify(publicRaw)};\n`,
-    { flag: "wx", mode: 0o400 },
-  )
+/** @param {string} targetRoot @param {string} publicRaw */
+function installRuntimeProfile(targetRoot, publicRaw) {
+  writeFileSync(resolve(targetRoot, profileBootstrap), deploymentProfileBootstrap(publicRaw), {
+    flag: "wx",
+    mode: 0o400,
+  })
 }
 
-/** @param {string} profileFile */
-function verifyProductionUiLive(profileFile) {
+/** @param {string} profileFile @param {boolean} assetsOnly */
+function verifyProductionUiLive(profileFile, assetsOnly) {
   const checkpointEvidence = process.env.BRIDGE_CHECKPOINT_EVIDENCE
   const uiRpcConfig = process.env.BRIDGE_UI_RPC_CONFIG
   const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
@@ -223,7 +219,9 @@ function verifyProductionUiLive(profileFile) {
       ...cargoArgs,
       handover
         ? "verify-production-checkpoint-ui-sns-live"
-        : "verify-production-checkpoint-ui-live",
+        : assetsOnly
+          ? "verify-production-checkpoint-ui-assets-only-live"
+          : "verify-production-checkpoint-ui-live",
       checkpointEvidence,
       uiRpcConfig,
       profileFile,
@@ -231,10 +229,11 @@ function verifyProductionUiLive(profileFile) {
     ],
     { cwd: sourceRoot, encoding: "utf8" },
   )
-  const manifestSha256 =
-    /^production_ui=live-pass schema=36 activation=execute manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
-      gateOutput,
-    )?.[1]
+  const assetsOnlyMarker = assetsOnly && !handover
+  const manifestSha256 = new RegExp(
+    `^production_ui=${assetsOnlyMarker ? "assets-only-live-pass" : "live-pass"} schema=36 activation=execute manifest_sha256=([0-9a-fA-F]{64})$`,
+    "m",
+  ).exec(gateOutput)?.[1]
   if (!manifestSha256) {
     throw new Error("Fixed bridge-profile did not authorize the live production UI")
   }
@@ -251,9 +250,14 @@ async function validateProductionProfile(profileFile) {
   /** @type {typeof globalThis & { __KINIC_DEPLOYMENT_PROFILE_JSON__?: string }} */
   const deploymentGlobal = globalThis
   deploymentGlobal.__KINIC_DEPLOYMENT_PROFILE_JSON__ = raw.trim()
-  const { releaseProfileSchema } = await import("../src/config/profile.ts")
+  const { deploymentProfileSchema, releaseProfileSchema } = await import("../src/config/profile.ts")
   const releaseProfile = releaseProfileSchema.parse(JSON.parse(raw))
-  return { raw, releaseProfile }
+  const parsedProfile = deploymentProfileSchema.parse(JSON.parse(raw))
+  const publicRaw = JSON.stringify({
+    ...parsedProfile,
+    deploymentBlock: parsedProfile.deploymentBlock?.toString() ?? null,
+  })
+  return { raw, publicRaw, releaseProfile }
 }
 
 /** @param {SourceIdentity} expected */
@@ -267,12 +271,22 @@ async function requireUnchangedSourceIdentity(expected) {
   }
 }
 
-/** @param {ArtifactReceipt} receipt @param {string} rawProfile @param {import("zod").output<typeof import("../src/config/profile.ts").releaseProfileSchema>} releaseProfile @param {string} profileFile @param {SourceIdentity} identity */
-async function deployFrozenAssets(receipt, rawProfile, releaseProfile, profileFile, identity) {
+/** @param {ArtifactReceipt} receipt @param {string} rawProfile @param {string} publicProfile @param {import("zod").output<typeof import("../src/config/profile.ts").releaseProfileSchema>} releaseProfile @param {string} profileFile @param {SourceIdentity} identity @param {boolean} assetsOnly @param {boolean} dryRun */
+async function deployFrozenAssets(
+  receipt,
+  rawProfile,
+  publicProfile,
+  releaseProfile,
+  profileFile,
+  identity,
+  assetsOnly,
+  dryRun,
+) {
   const frozenRoot = mkdtempSync(resolve(tmpdir(), "kinic-ui-deploy."))
   const frozen = resolve(frozenRoot, "assets")
   const frozenConfig = resolve(frozenRoot, "wrangler.production.jsonc")
   try {
+    if (assetsOnly) await requireUnchangedProductionProfile(publicProfile)
     mkdirSync(frozen, { mode: 0o700 })
     for (const file of receipt.files) {
       const source = resolve(distRoot, file.path)
@@ -284,7 +298,7 @@ async function deployFrozenAssets(receipt, rawProfile, releaseProfile, profileFi
       }
       chmodSync(target, 0o400)
     }
-    await installRuntimeProfile(frozen, rawProfile)
+    installRuntimeProfile(frozen, publicProfile)
     const configBytes = readOrdinaryFile(productionWranglerConfig)
     const reviewedConfig = execFileSync("git", [
       "-C",
@@ -304,13 +318,15 @@ async function deployFrozenAssets(receipt, rawProfile, releaseProfile, profileFi
     }
     chmodSync(frozen, 0o500)
     await requireUnchangedSourceIdentity(identity)
-    const manifestSha256 = verifyProductionUiLive(profileFile)
+    const manifestSha256 = verifyProductionUiLive(profileFile, assetsOnly)
     if (readOrdinaryFile(profileFile).toString("utf8") !== rawProfile) {
       throw new Error("Production UI runtime profile changed after assets were frozen")
     }
     const { assertProductionUiProfile } = await import("../src/config/deploy-safety.ts")
     assertProductionUiProfile(releaseProfile, manifestSha256)
+    if (assetsOnly) await requireUnchangedProductionProfile(publicProfile)
     const deployArgs = ["exec", "wrangler", "deploy", "--config", frozenConfig, "--assets", frozen]
+    if (dryRun) deployArgs.push("--dry-run")
     const deployed = spawnSync("pnpm", deployArgs, {
       cwd: uiRoot,
       env: process.env,
@@ -330,10 +346,10 @@ async function deployFrozenAssets(receipt, rawProfile, releaseProfile, profileFi
 
 const [, , mode, receiptPath, profileFile] = process.argv
 try {
-  const modes = ["generate", "verify", "deploy"]
+  const modes = ["generate", "verify", "deploy", "check-assets-only", "deploy-assets-only"]
   if (!receiptPath || !modes.includes(mode)) {
     throw new Error(
-      "usage: production-assets.mjs {generate|verify|deploy} RECEIPT [UI_RUNTIME_PROFILE]",
+      "usage: production-assets.mjs {generate|verify|deploy|check-assets-only|deploy-assets-only} RECEIPT [UI_RUNTIME_PROFILE]",
     )
   }
   const identity = await sourceIdentity()
@@ -354,10 +370,19 @@ try {
   } else {
     const receipt = JSON.parse(readFileSync(receiptPath, "utf8"))
     validateReceipt(receipt, identity, built, projectId)
-    if (mode === "deploy") {
-      if (!profileFile) throw new Error("deploy requires the UI runtime profile")
-      const { raw, releaseProfile } = await validateProductionProfile(profileFile)
-      await deployFrozenAssets(receipt, raw, releaseProfile, profileFile, identity)
+    if (["deploy", "check-assets-only", "deploy-assets-only"].includes(mode)) {
+      if (!profileFile) throw new Error(`${mode} requires the UI runtime profile`)
+      const { raw, publicRaw, releaseProfile } = await validateProductionProfile(profileFile)
+      await deployFrozenAssets(
+        receipt,
+        raw,
+        publicRaw,
+        releaseProfile,
+        profileFile,
+        identity,
+        mode !== "deploy",
+        mode === "check-assets-only",
+      )
     }
     process.stdout.write(`ui_artifact_set_sha256=${built.artifact_set_sha256}\n`)
   }

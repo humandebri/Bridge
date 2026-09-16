@@ -53,11 +53,21 @@ Migration and execution contract:
    RPC_CONFIG RUNTIME`. Historical rendering/live inspection commands are named
    `audit-render-production-ui-runtime` and `audit-verify-production-ui-live`;
    production scripts never call them.
+   For an asset-only release, `verify-production-checkpoint-ui-assets-only-live
+   EVIDENCE RPC_CONFIG RUNTIME` preserves every live binding and stored
+   attestation content check while permitting an attestation older than five
+   minutes. The UI deploy script additionally requires the proposed public
+   runtime profile to be byte-identical to the profile already served from the
+   production origin before and immediately before Wrangler runs.
 6. Complete impacted and final clean-source release validation before declaring
    deployment readiness. Candidate approval does not authorize production calls.
 
 Live activation attestation freshness remains five minutes. Refreshing it is a
 production update call, not a read-only query; obtain execution authorization.
+This freshness requirement is unchanged for normal UI releases. The explicit
+asset-only command is valid only when it proves that the deployed runtime
+profile is unchanged; it does not authorize an RPC, evidence, Canister, or
+runtime-profile change.
 
 Checkpoint approval will attest to a reviewed historical validation result. It
 will not replace current-source proof receipts, live canister validation, or
