@@ -313,20 +313,20 @@ if [[ -n "$CASE_ALIAS" ]]; then
 fi
 
 if [[ -d /Volumes/KINGSTON/KINIC/bridge-production-prep-d85b7ce ]]; then
-  MOUNT_OUTPUT="$(mount)"
-  case "$MOUNT_OUTPUT" in
-    *' on /Volumes/KINGSTON '*'noowners'*)
-      if PATH="$T/bin:$PATH" BRIDGE_ICP_IDENTITY=production \
-        "$T/source/scripts/production-canister-install.sh" --plan "$T/plan.json" \
-        --wasm "$T/bridge-canister.wasm" \
-        --receipt "/Volumes/KINGSTON/KINIC/bridge-production-prep-d85b7ce/.ownership-test-$$.json" \
-        >"$T/noowners.log" 2>&1; then
-        echo "production Canister installer accepted a filesystem that ignores ownership" >&2
-        exit 1
-      fi
-      grep -q 'filesystem must enforce file ownership' "$T/noowners.log"
-      ;;
-  esac
+  if mount | awk '
+    index($0, " on /Volumes/KINGSTON ") && index($0, "noowners") { found = 1 }
+    END { exit(found ? 0 : 1) }
+  '; then
+    if PATH="$T/bin:$PATH" BRIDGE_ICP_IDENTITY=production \
+      "$T/source/scripts/production-canister-install.sh" --plan "$T/plan.json" \
+      --wasm "$T/bridge-canister.wasm" \
+      --receipt "/Volumes/KINGSTON/KINIC/bridge-production-prep-d85b7ce/.ownership-test-$$.json" \
+      >"$T/noowners.log" 2>&1; then
+      echo "production Canister installer accepted a filesystem that ignores ownership" >&2
+      exit 1
+    fi
+    grep -q 'filesystem must enforce file ownership' "$T/noowners.log"
+  fi
 fi
 
 export FOREIGN_OWNER_OUTPUT="$T/out/foreign-owner.json"

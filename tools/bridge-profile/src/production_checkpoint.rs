@@ -9,7 +9,7 @@ const MAX_BYTES: u64 = 1024 * 1024;
 const APPROVED: &[(&str, &str, &str)] = &[(
     "lb5i5-ziaaa-aaaar-qcgwq-cai",
     "0x7b72801ae91badc13e721f869a65464d350790e6e521f3a9c948b1de5e67ecce",
-    "58a14e603e51e9a6e00feaad1c5c2b4be965b8031b5300f7138224e207a890a9",
+    "ddde10ae0f73d3af735eee84d0d2619bc2c565bf4501a36f842983f7bed4498b",
 )];
 
 #[derive(Deserialize)]
