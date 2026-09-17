@@ -135,6 +135,8 @@ export PATH="$T/bin:$PATH"
 printf '{"kind":"seal","initial_operational_parameters_sha256":"1111"}\n' >"$T/operational-config-seal-receipt.json"
 printf '{"kind":"schedule","seal_receipt_sha256":"2222"}\n' >"$T/controller-schedule-receipt.json"
 printf '{"kind":"execute","schedule_receipt_sha256":"3333"}\n' >"$T/controller-execute-receipt.json"
+printf '{"schema_version":5,"phase":"schedule"}\n' >"$T/dao-schedule-receipt.json"
+printf '{"schema_version":5,"phase":"execute"}\n' >"$T/dao-execute-receipt.json"
 
 run_handover() {
   local evidence="$1"
@@ -161,6 +163,8 @@ run_completion() {
   BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$T/operational-config-seal-receipt.json" \
   BRIDGE_CONTROLLER_SCHEDULE_RECEIPT="$T/controller-schedule-receipt.json" \
   BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/controller-execute-receipt.json" \
+  BRIDGE_DAO_SCHEDULE_RECEIPT="${DAO_SCHEDULE_PATH-$T/dao-schedule-receipt.json}" \
+  BRIDGE_DAO_EXECUTE_RECEIPT="${DAO_EXECUTE_PATH-$T/dao-execute-receipt.json}" \
   BRIDGE_ICP_IDENTITY=production \
   BRIDGE_HANDOVER_MODE=complete \
   BRIDGE_HANDOVER_EVIDENCE_FILE="$preparation" \
@@ -220,6 +224,14 @@ json.dump({'schema_version':1,'kind':'sns-dapp-registration-submission','bridge_
  'preparation_receipt_sha256':hashlib.sha256(preparation).hexdigest(),'proposal_id':42},open(target,'w'))
 PY
 updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+DAO_SCHEDULE_PATH="$T/missing-dao-schedule.json"
+DAO_EXECUTE_PATH="$T/missing-dao-execute.json"
+if run_completion "$T/handover.json" "$T/registration-submission.json" \
+  "$T/handover-without-dao.json" >/dev/null 2>&1; then
+  echo "handover completed without DAO reactivation receipts" >&2; exit 1
+fi
+unset DAO_SCHEDULE_PATH DAO_EXECUTE_PATH
+[[ ! -e "$T/handover-without-dao.json" ]]
 run_completion "$T/handover.json" "$T/registration-submission.json" "$T/handover-complete.json"
 updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
 [[ "$updates_before" == "$updates_after" ]]
@@ -482,9 +494,10 @@ PY
 printf '{}\n' >"$T/unverified-checkpoint.json"
 updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
 if BRIDGE_CHECKPOINT_EVIDENCE="$T/unverified-checkpoint.json" \
-  BRIDGE_DAO_SCHEDULE_RECEIPT="$T/controller-schedule-receipt.json" \
-  BRIDGE_DAO_EXECUTE_RECEIPT="$T/controller-execute-receipt.json" \
-  run_handover "$T/unverified-checkpoint-output.json" >/dev/null 2>&1; then
+  run_handover "$T/unverified-checkpoint-output.json" >"$T/unverified-checkpoint.log" 2>&1; then
   echo "handover accepted an unverified checkpoint" >&2; exit 1
+fi
+if rg -q 'DAO (schedule|execute) receipt' "$T/unverified-checkpoint.log"; then
+  echo "handover preparation still required DAO reactivation receipts" >&2; exit 1
 fi
 [[ "$updates_before" == "$(rg -c 'settings update bridge-canister' "$TRACE" || true)" ]]
