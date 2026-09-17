@@ -683,7 +683,7 @@ export function MintAuthorizationAction({
   const payerDiffers = Boolean(address && address.toLowerCase() !== recipient.toLowerCase())
   const pendingLabel =
     receiptObservation === "sequencer-success"
-      ? "Success"
+      ? "Mint included"
       : receiptObservation === "sequencer-reverted"
         ? "Transaction reverted"
         : receiptObservation === "unavailable"
@@ -708,7 +708,7 @@ export function MintAuthorizationAction({
           Checking Base for a completed mint. Wallet submission will not restart automatically.
         </p>
       )}
-      {execution.phase !== "idle" && !(finalizedDeadlinePassed && !pending) && (
+      {!compact && execution.phase !== "idle" && !(finalizedDeadlinePassed && !pending) && (
         <div className="space-y-1" role="status">
           {mintExecutionMessage(execution) && (
             <p>{redactRpcUrls(mintExecutionMessage(execution)!)}</p>
@@ -767,16 +767,20 @@ export function MintAuthorizationAction({
           Deposit identity conflict. Do not submit another transaction.
         </p>
       ) : receiptConfirmed && pending ? (
-        <div>
-          <p className="font-bold text-[#176b3a]">Success</p>
-          <p className="text-xs text-[var(--muted)]">
-            {mintRecorded
-              ? "Recorded on IC"
-              : notificationUnavailable
-                ? "IC recording will retry automatically"
-                : "Waiting for IC recording"}
-          </p>
-        </div>
+        compact ? (
+          <span className="text-sm text-[var(--muted)]">—</span>
+        ) : (
+          <div>
+            <p className="font-bold text-[#176b3a]">Mint complete</p>
+            {!mintRecorded && (
+              <p className="text-xs text-[var(--muted)]">
+                {notificationUnavailable
+                  ? "IC recording will retry automatically"
+                  : "Waiting for IC recording"}
+              </p>
+            )}
+          </div>
+        )
       ) : finalizedDeadlinePassed && !pending ? (
         <div className="space-y-2" role="alert">
           <p className="font-bold text-[#8a4b08]">
@@ -821,11 +825,15 @@ export function MintAuthorizationAction({
             </p>
           )}
           {pending ? (
-            <p
-              className={`text-xs font-bold ${receiptObservation === "sequencer-success" ? "text-[#176b3a]" : receiptObservation === "sequencer-reverted" ? "text-[#8a4b08]" : "text-[var(--muted)]"}`}
-            >
-              {pendingLabel}
-            </p>
+            compact ? (
+              <span className="text-sm text-[var(--muted)]">—</span>
+            ) : (
+              <p
+                className={`text-xs font-bold ${receiptObservation === "sequencer-success" ? "text-[#176b3a]" : receiptObservation === "sequencer-reverted" ? "text-[#8a4b08]" : "text-[var(--muted)]"}`}
+              >
+                {pendingLabel}
+              </p>
+            )
           ) : (
             <Button
               size={compact ? "sm" : "lg"}

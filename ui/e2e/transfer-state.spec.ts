@@ -81,3 +81,41 @@ test("withdrawal waits for IC payment and survives a late notification", async (
   await expect(page.getByTestId("history-title")).toHaveText("Withdrawal complete")
   await expect(page.getByRole("status")).toContainText("Withdrawal complete")
 })
+
+for (const width of [1280, 390]) {
+  test(`included mint can Finish and history stays compact at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await page.goto(fixtureUrl)
+    const row = page.getByRole("region", { name: "Included mint history" })
+    await expect(row.getByRole("button", { name: "Copy mint diagnostics" })).toHaveCount(0)
+    await expect(row.getByRole("link")).toHaveCount(2)
+    for (const link of await row.getByRole("link").all()) {
+      expect(await link.evaluate((el) => getComputedStyle(el).color)).toBe(
+        "oklch(0.546 0.245 262.881)",
+      )
+    }
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true)
+    await page.getByRole("button", { name: "Start deposit" }).click()
+    await expect(page.getByRole("button", { name: "Finish", exact: true })).toHaveCount(0)
+    await signal(page, "Recover")
+    await expect(page.getByRole("status")).toContainText("Mint included")
+    await expect(page.getByRole("dialog").locator(".animate-spin")).toHaveCount(0)
+    await page.getByRole("button", { name: "Finish", exact: true }).click()
+    await expect(page.getByRole("dialog")).toHaveCount(0)
+    await expect(page.getByRole("button", { name: /Open transfer progress/ })).toHaveCount(0)
+    await page.reload()
+    await expect(page.getByRole("dialog")).toHaveCount(0)
+    await expect(page.getByRole("button", { name: /Open transfer progress/ })).toHaveCount(0)
+  })
+}
+
+test("completed mint history has no redundant recording confirmation", async ({ page }) => {
+  await page.goto(fixtureUrl)
+  await page.getByRole("button", { name: "Complete history mint" }).click()
+  const row = page.getByRole("region", { name: "Included mint history" })
+  await expect(row.getByText("Mint complete", { exact: true })).toBeVisible()
+  await expect(row.getByText("Recorded on IC")).toHaveCount(0)
+  await expect(row.getByText(/Waiting for IC recording/)).toHaveCount(0)
+})

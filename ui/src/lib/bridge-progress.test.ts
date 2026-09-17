@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { browserLocalStorage } from "./browser-lock"
 import {
+  isDepositInteractionComplete,
+  isDepositTransactionComplete,
   bridgeProgressLabel,
   bridgeProgressSteps,
   createBridgeProgress,
@@ -223,8 +225,23 @@ describe("latest bridge progress persistence", () => {
       { label: "IC token approval", status: "complete", note: "Not required" },
       { label: "IC deposit transaction", status: "complete" },
       { label: "Bridge authorization", status: "complete" },
-      { label: "Base mint transaction", status: "current" },
+      { label: "Base mint transaction", status: "complete" },
     ])
+
+    expect(isDepositInteractionComplete(deposit)).toBe(true)
+    expect(isDepositTransactionComplete(deposit)).toBe(false)
+    expect(isDepositInteractionComplete({ ...deposit, phase: "base-mint-finalizing" })).toBe(true)
+    for (const patch of [
+      { phase: "base-mint-submitted" as const },
+      { baseTransactionOutcome: "reverted" as const },
+      { baseTransactionOutcome: undefined },
+      { transactionHash: undefined },
+      { receiptBlockNumber: undefined },
+      { issue: "unknown" as const },
+      { issue: "conflict" as const },
+      { direction: "withdraw" as const },
+    ])
+      expect(isDepositInteractionComplete({ ...deposit, ...patch })).toBe(false)
 
     const withdrawal = createBridgeProgress({
       direction: "withdraw",

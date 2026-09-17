@@ -1076,18 +1076,11 @@ export function DepositActivityRow({
         >
           {presentation.title}
         </Badge>
-        {presentation.description && <p className="mt-1 text-xs">{presentation.description}</p>}
-        {mintedOnBase && mintRecording && (
-          <p className="mt-1 text-xs text-[var(--muted)]">
-            {mintRecording === "recorded"
-              ? "Recorded on IC"
-              : mintRecording === "retrying"
-                ? "IC recording will retry automatically"
-                : mintRecording === "pending"
-                  ? "Waiting for IC recording"
-                  : "Confirming on Base"}
-          </p>
-        )}
+        {mintedOnBase && !terminal && mintRecording === "retrying" ? (
+          <p className="mt-1 text-xs text-[var(--muted)]">IC recording will retry automatically</p>
+        ) : presentation.description ? (
+          <p className="mt-1 text-xs">{presentation.description}</p>
+        ) : null}
         {!mintedOnBase && !mintSubmitted && progress && <AutomaticProgress progress={progress} />}
         {!mintedOnBase && refund && "RefundAmountTooSmall" in refund.reason && (
           <p className="mt-1 text-xs font-bold text-[var(--muted)]">
@@ -1124,7 +1117,7 @@ export function DepositActivityRow({
           <span className="text-sm text-[var(--muted)]">
             {discoveryEnabled ? "取引を自動検索中" : "Transaction confirmation unavailable"}
           </span>
-        ) : mintedOnBase ? (
+        ) : mintFinalization === "minted" ? (
           <span className="text-sm text-[var(--muted)]">—</span>
         ) : "AuthorizationAvailable" in record.state ? (
           <MintAuthorizationAction
@@ -1259,9 +1252,9 @@ function WithdrawalActivityRow({
       </div>
       <div>
         <MobileLabel>Status</MobileLabel>
-        <p className="mb-1 text-xs text-[var(--muted)]">
-          {record.baseNeedsReview ? "Base receipt needs rechecking" : "Base: Success"}
-        </p>
+        {record.baseNeedsReview && (
+          <p className="mb-1 text-xs text-[var(--muted)]">Base receipt needs rechecking</p>
+        )}
         <Badge
           tone={
             needsAttention || pendingAttempt?.failure

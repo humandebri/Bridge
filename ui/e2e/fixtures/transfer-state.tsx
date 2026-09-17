@@ -1,3 +1,7 @@
+import { useState } from "react"
+import { deploymentProfile } from "@/config/profile"
+import { DepositActivityRow } from "@/routes/history"
+import type { DepositView } from "@/generated/bridge.did"
 import { createRoot } from "react-dom/client"
 import {
   BridgeProgressProvider,
@@ -6,8 +10,49 @@ import {
 import { useTransferPresentation } from "@/features/bridge/use-transfer-presentation"
 import { initialTransferFacts, transferIdentity } from "@/lib/transfer-state"
 import "@/styles.css"
+deploymentProfile.snsRootCanisterId = "aaaaa-aa"
 const depositId = `0x${"11".repeat(32)}` as const
+const historyDeposit: DepositView = {
+  base_recipient: new Uint8Array(20).fill(3),
+  deposit_id: new Uint8Array(32).fill(1),
+  quote: [{ net_amount: 90n, service_fee: 10n }],
+  max_service_fee: 10n,
+  funding_ledger_block_index: [1n],
+  from_subaccount: [],
+  last_settlement_stop_reason: [],
+  created_at_ns: 1n,
+  state: { AuthorizationAvailable: null },
+  available_refund_amount: [100n],
+  owner_sequence: 1n,
+  mint_receipt: [],
+  mint_authorization: [
+    {
+      finalized_block_number: 10n,
+      signature: [],
+      deposit_id: new Uint8Array(32).fill(1),
+      issued_at_timestamp: 900n,
+      domain_name: "KINIC Bridge",
+      charged_service_fee: 10n,
+      recipient: new Uint8Array(20).fill(3),
+      domain_version: "1",
+      authorization_epoch: 1n,
+      max_service_fee: 10n,
+      deadline: 1_000n,
+      signature_dispatch_attempt: 1,
+      chain_id: 84_532n,
+      finalized_block_hash: new Uint8Array(32).fill(2),
+      finalized_block_timestamp: 900n,
+      verifying_contract: new Uint8Array(20).fill(4),
+      digest: new Uint8Array(32).fill(5),
+      gross_amount: 100n,
+    },
+  ],
+  automatic_progress: [],
+  gross_amount: 100n,
+  refund: [],
+}
 function Harness() {
+  const [historyComplete, setHistoryComplete] = useState(false)
   const bridge = useBridgeProgress()
   const history = useTransferPresentation(
     initialTransferFacts(
@@ -21,6 +66,25 @@ function Harness() {
   return (
     <main className="p-8">
       <h1>Transfer state fixture</h1>
+      <section className="mx-auto max-w-6xl" aria-label="Included mint history">
+        <DepositActivityRow
+          item={{
+            key: "history-included",
+            direction: "to-base",
+            createdAtNs: 1n,
+            deposit: historyComplete
+              ? { ...historyDeposit, state: { Minted: null } }
+              : historyDeposit,
+          }}
+          mintFinalization="minted"
+          mintRecording={historyComplete ? "recorded" : "confirming"}
+          mintTransactionHash={`0x${"ab".repeat(32)}`}
+          writesEnabled={false}
+          onRequestRefund={async () => {}}
+          onContinue={async () => {}}
+        />
+      </section>
+      <button onClick={() => setHistoryComplete(true)}>Complete history mint</button>
       <p data-testid="history-title">{history.title}</p>
       <button
         onClick={() =>
@@ -102,6 +166,9 @@ function Harness() {
             bridge.update(bridge.progress.id, {
               observationSource: "base",
               phase: "base-mint-included",
+              transactionHash: `0x${"22".repeat(32)}`,
+              receiptBlockNumber: "123",
+              baseTransactionOutcome: "success",
               observationError: undefined,
             })
         }}
