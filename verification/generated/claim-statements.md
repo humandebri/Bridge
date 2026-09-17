@@ -1,976 +1,976 @@
 # Claim statements and specification correspondence
 
-Leanが解釈した命題型・主要定義。証明本体は出力しない。仕様との意味的一致や独立カーネル検査の証拠ではない。
+Proposition types and major definitions interpreted by Lean. Proof bodies are omitted. This is not evidence of semantic agreement with the specification or independent kernel checking.
 
 Toolchain: `leanprover/lean4:v4.30.0`
 
 ## claim: activation_preflight
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: ControlPlane到達状態、非pause、activationCount>0
+Premises: Reachable ControlPlane state, not paused, activationCount>0
 
-結論: 最後のactivationはvalidated
+Conclusion: The last activation is validated
 
-未証明境界: 初期activationCount=0は除外。外部観測の正しさは前提
+Unproved boundary: Excludes the initial activationCount=0 case. Correctness of external observations is assumed
 
-証拠・外部仮定: `claims.tsv:activation_preflight` / `claims.tsv:activation_preflight`
+Evidence and external assumptions: `claims.tsv:activation_preflight` / `claims.tsv:activation_preflight`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.activation_preflight_witness : BridgeSpec.ClaimContracts.ActivationPreflight
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.ActivationPreflight`
+Major definitions: `BridgeSpec.ClaimContracts.ActivationPreflight`
 
 ## claim: authorization_binding
 
-仕様: `docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md`
+Specification: `docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md`
 
-前提: authorization commitまたは署名installが受理
+Premises: Authorization commit or signature installation is accepted
 
-結論: domain・epoch・IC起点900秒期限を束縛し、署名時にu64範囲と残り300秒以上
+Conclusion: Binds the domain, epoch, and 900-second deadline from IC time; signing requires the u64 range and at least 300 seconds remaining
 
-未証明境界: 署名の暗号学的真正性・IC時刻とNatの対応は外部仮定
+Unproved boundary: Cryptographic signature authenticity and correspondence between IC time and Nat are external assumptions
 
-証拠・外部仮定: `claims.tsv:authorization_binding` / `claims.tsv:authorization_binding`
+Evidence and external assumptions: `claims.tsv:authorization_binding` / `claims.tsv:authorization_binding`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.authorization_binding_witness : BridgeSpec.ClaimContracts.AuthorizationBinding
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.AuthorizationBinding`, `BridgeSpec.MintAuthorization.installSignature`, `BridgeSpec.signatureTimeAllowed`, `BridgeSpec.MintAuthorization.Authorization.valid`
+Major definitions: `BridgeSpec.ClaimContracts.AuthorizationBinding`, `BridgeSpec.MintAuthorization.installSignature`, `BridgeSpec.signatureTimeAllowed`, `BridgeSpec.MintAuthorization.Authorization.valid`
 
 ## claim: automatic_retry_limit
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: laneと失敗回数・上限を入力
+Premises: Inputs are the lane, failure count, and limit
 
-結論: automatic laneかつfailures<limitのときだけ許可
+Conclusion: Allowed only for the automatic lane with failures<limit
 
-未証明境界: 失敗回数の永続化と停止後のuser再開は別証拠
+Unproved boundary: Persistence of the failure count and user resumption after stopping require separate evidence
 
-証拠・外部仮定: `claims.tsv:automatic_retry_limit` / `claims.tsv:automatic_retry_limit`
+Evidence and external assumptions: `claims.tsv:automatic_retry_limit` / `claims.tsv:automatic_retry_limit`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.automatic_retry_limit_witness : BridgeSpec.ClaimContracts.AutomaticRetryLimit
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.AutomaticRetryLimit`
+Major definitions: `BridgeSpec.ClaimContracts.AutomaticRetryLimit`
 
 ## claim: canonical_probe
 
-仕様: `docs/bridge-flow.md`
+Specification: `docs/bridge-flow.md`
 
-前提: receiptとsnapshotのblock番号
+Premises: Receipt and snapshot block numbers
 
-結論: predicateは番号の一致と同値
+Conclusion: The predicate is equivalent to equality of the numbers
 
-未証明境界: 番号一致だけではcanonical hashの真正性は保証しない
+Unproved boundary: Number equality alone does not guarantee canonical hash authenticity
 
-証拠・外部仮定: `claims.tsv:canonical_probe` / `claims.tsv:canonical_probe`
+Evidence and external assumptions: `claims.tsv:canonical_probe` / `claims.tsv:canonical_probe`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.canonical_probe_witness : BridgeSpec.ClaimContracts.CanonicalProbe
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.CanonicalProbe`, `BridgeSpec.Protocol.Safe`, `BridgeSpec.Protocol.filterSafeStoredState`
+Major definitions: `BridgeSpec.ClaimContracts.CanonicalProbe`, `BridgeSpec.Protocol.Safe`, `BridgeSpec.Protocol.filterSafeStoredState`
 
 ## claim: committed_quote
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: commit受理、初期Safeと受理されたtrace
+Premises: Commit accepted, initially Safe, and an accepted trace
 
-結論: 純額は正、gross=純額+fee、終端宛先・純額は初期保存quoteと一致
+Conclusion: The net amount is positive, gross=net+fee, and the terminal recipient and net amount match the initially stored quote
 
-未証明境界: 本番からLean traceへの完全な写像は未証明
+Unproved boundary: A complete mapping from production to Lean traces is unproved
 
-証拠・外部仮定: `claims.tsv:committed_quote` / `claims.tsv:committed_quote`
+Evidence and external assumptions: `claims.tsv:committed_quote` / `claims.tsv:committed_quote`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.committed_quote_witness : BridgeSpec.ClaimContracts.CommittedQuote
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.CommittedQuote`, `BridgeSpec.Protocol.Safe`, `BridgeSpec.Protocol.filterSafeStoredState`
+Major definitions: `BridgeSpec.ClaimContracts.CommittedQuote`, `BridgeSpec.Protocol.Safe`, `BridgeSpec.Protocol.filterSafeStoredState`
 
 ## claim: confirmed_activation_evidence_binding
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: activationのmatch個数・generation・signedAt、upgrade完了hookのcallerと時刻を入力
+Premises: Inputs are the activation match count, generation, signedAt, and the upgrade completion hook's caller and timestamp
 
-結論: activationは単一matchとmetadata厳密一致。SNS更新はRootの完了hookが採択・移譲後かつ未来でない
+Conclusion: Activation requires a single match and exact metadata equality. For SNS upgrades, the Root completion hook must follow adoption and handoff and must not be in the future
 
-未証明境界: IC callbackとcaller・時刻の真正性、同時upgradeがないこと、SNSとIC実行完了は外部仮定
+Unproved boundary: IC callback, caller, and timestamp authenticity, absence of concurrent upgrades, and completion of SNS and IC execution are external assumptions
 
-証拠・外部仮定: `claims.tsv:confirmed_activation_evidence_binding` / `claims.tsv:confirmed_activation_evidence_binding`
+Evidence and external assumptions: `claims.tsv:confirmed_activation_evidence_binding` / `claims.tsv:confirmed_activation_evidence_binding`
 
-レビュー理由: 同一Wasmのproposal受理とpost_upgrade完了を区別する判定を追加。実SNSの失敗と完了を別途検証する。
+Review rationale: Adds a distinction between acceptance of a same-Wasm proposal and completion of post_upgrade. Actual SNS failure and completion are verified separately.
 
 ```lean
 BridgeSpec.ClaimContracts.confirmed_activation_evidence_binding_witness : BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding`
+Major definitions: `BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding`
 
 ## claim: cycles_top_up_request_policy
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: balance・threshold・inProgress・authorizedを入力
+Premises: Inputs are balance, threshold, inProgress, and authorized
 
-結論: 認可済み・非実行中・balance≤thresholdのときだけ要求可能
+Conclusion: A request is allowed only when authorized, not in progress, and balance≤threshold
 
-未証明境界: launcherの補充実行や将来残高回復は未証明
+Unproved boundary: Launcher replenishment and future balance recovery are unproved
 
-証拠・外部仮定: `claims.tsv:cycles_top_up_request_policy` / `claims.tsv:cycles_top_up_request_policy`
+Evidence and external assumptions: `claims.tsv:cycles_top_up_request_policy` / `claims.tsv:cycles_top_up_request_policy`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.cycles_top_up_request_policy_witness : BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy`
+Major definitions: `BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy`
 
 ## claim: deposit_admission
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: admitDepositが純額を返す
+Premises: admitDeposit returns a net amount
 
-結論: fee・正の純額・一件上限・window上限を満たす
+Conclusion: The fee, positive net amount, per-deposit limit, and window limit are satisfied
 
-未証明境界: 局所モデルは予約量を独立入力に持たない。本番の予約込み受付は別Verus義務
+Unproved boundary: The local model has no independent reserved-amount input. Production admission including reservations has a separate Verus obligation
 
-証拠・外部仮定: `claims.tsv:deposit_admission` / `claims.tsv:deposit_admission`
+Evidence and external assumptions: `claims.tsv:deposit_admission` / `claims.tsv:deposit_admission`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.deposit_admission_witness : BridgeSpec.ClaimContracts.DepositAdmission
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.DepositAdmission`
+Major definitions: `BridgeSpec.ClaimContracts.DepositAdmission`
 
 ## claim: deposit_backing
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: 初期会計不変条件と受理されたsignature・mint・refund履歴
+Premises: Initial accounting invariant and accepted signature, mint, and refund history
 
-結論: backingを保存し、各操作で規定会計差分を適用
+Conclusion: Preserves backing and applies the prescribed accounting deltas for each operation
 
-未証明境界: 会計モデルのphaseは実外部操作を証明しない
+Unproved boundary: An accounting model phase does not prove actual external operations
 
-証拠・外部仮定: `claims.tsv:deposit_backing` / `claims.tsv:deposit_backing`
+Evidence and external assumptions: `claims.tsv:deposit_backing` / `claims.tsv:deposit_backing`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.deposit_backing_witness : BridgeSpec.ClaimContracts.DepositBacking
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.DepositBacking`, `BridgeSpec.GlobalHistory.AccountingInvariant`, `BridgeSpec.GlobalHistory.Backed`, `BridgeSpec.GlobalHistory.eventDelta`
+Major definitions: `BridgeSpec.ClaimContracts.DepositBacking`, `BridgeSpec.GlobalHistory.AccountingInvariant`, `BridgeSpec.GlobalHistory.Backed`, `BridgeSpec.GlobalHistory.eventDelta`
 
 ## claim: deposit_identity_preflight
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: IdentityHistory到達状態で候補preflightが受理
+Premises: Candidate preflight is accepted in a reachable IdentityHistory state
 
-結論: 候補IDは処理済みではない
+Conclusion: The candidate ID has not been processed
 
-未証明境界: RPCの真正性とinstall instanceの一意性は外部境界
+Unproved boundary: RPC authenticity and install instance uniqueness are external boundaries
 
-証拠・外部仮定: `claims.tsv:deposit_identity_preflight` / `claims.tsv:deposit_identity_preflight`
+Evidence and external assumptions: `claims.tsv:deposit_identity_preflight` / `claims.tsv:deposit_identity_preflight`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.deposit_identity_preflight_witness : BridgeSpec.ClaimContracts.DepositIdentityPreflight
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.DepositIdentityPreflight`
+Major definitions: `BridgeSpec.ClaimContracts.DepositIdentityPreflight`
 
 ## claim: epoch_invalidation
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: 既存authorizationまたはretiredSigner≠replacementSigner
+Premises: An existing authorization or retiredSigner≠replacementSigner
 
-結論: 認可の再発行を拒否し、旧signerは未来epochでも拒否
+Conclusion: Rejects authorization reissuance and rejects the old signer even in future epochs
 
-未証明境界: 署名回復・epoch更新のEVM実行は別証拠
+Unproved boundary: Signature recovery and EVM execution of epoch updates require separate evidence
 
-証拠・外部仮定: `claims.tsv:epoch_invalidation` / `claims.tsv:epoch_invalidation`
+Evidence and external assumptions: `claims.tsv:epoch_invalidation` / `claims.tsv:epoch_invalidation`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.epoch_invalidation_witness : BridgeSpec.ClaimContracts.EpochInvalidation
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.EpochInvalidation`
+Major definitions: `BridgeSpec.ClaimContracts.EpochInvalidation`
 
 ## claim: exact_mint_finalization
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: completeMintが受理
+Premises: completeMint is accepted
 
-結論: 成功receiptはfinalized以下で、deposit・recipient・digestがauthorization一致
+Conclusion: The successful receipt is at or below finalized, and deposit, recipient, and digest match the authorization
 
-未証明境界: hashやRPC digestの非0は真正性証明ではない。暗号とcanonicalityは外部仮定
+Unproved boundary: Nonzero hashes or RPC digests do not prove authenticity. Cryptography and canonicality are external assumptions
 
-証拠・外部仮定: `claims.tsv:exact_mint_finalization` / `claims.tsv:exact_mint_finalization`
+Evidence and external assumptions: `claims.tsv:exact_mint_finalization` / `claims.tsv:exact_mint_finalization`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.exact_mint_finalization_witness : BridgeSpec.ClaimContracts.ExactMintFinalization
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.ExactMintFinalization`, `BridgeSpec.MintAuthorization.MintEvidence.valid`
+Major definitions: `BridgeSpec.ClaimContracts.ExactMintFinalization`, `BridgeSpec.MintAuthorization.MintEvidence.valid`
 
 ## claim: expiry_refund
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: startExpiredRefundが受理
+Premises: startExpiredRefund is accepted
 
-結論: 未処理・deposit/digest一致・期限を厳密に超過、会計backingを保存
+Conclusion: Unprocessed, matching deposit/digest, strictly past the deadline; preserves accounting backing
 
-未証明境界: Finalized証拠の真正性と実Ledger転送は外部境界
+Unproved boundary: Finalized evidence authenticity and actual Ledger transfers are external boundaries
 
-証拠・外部仮定: `claims.tsv:expiry_refund` / `claims.tsv:expiry_refund`
+Evidence and external assumptions: `claims.tsv:expiry_refund` / `claims.tsv:expiry_refund`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.expiry_refund_witness : BridgeSpec.ClaimContracts.ExpiryRefund
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.ExpiryRefund`, `BridgeSpec.MintAuthorization.ExpiryEvidence.valid`
+Major definitions: `BridgeSpec.ClaimContracts.ExpiryRefund`, `BridgeSpec.MintAuthorization.ExpiryEvidence.valid`
 
 ## claim: fee_accounting_once
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: 初期Depositからの受理traceと署名install
+Premises: Accepted trace from the initial Deposit and signature installation
 
-結論: fee credit回数は高々1で、署名時のfee差分はauthorizationの値
+Conclusion: At most one fee credit; the fee delta at signing equals the authorization value
 
-未証明境界: GlobalHistoryとDepositHistoryを本番履歴へ接続する完全証明はない
+Unproved boundary: There is no complete proof connecting GlobalHistory and DepositHistory to production histories
 
-証拠・外部仮定: `claims.tsv:fee_accounting_once` / `claims.tsv:fee_accounting_once`
+Evidence and external assumptions: `claims.tsv:fee_accounting_once` / `claims.tsv:fee_accounting_once`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.fee_accounting_once_witness : BridgeSpec.ClaimContracts.FeeAccountingOnce
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.FeeAccountingOnce`, `BridgeSpec.MintAuthorization.installSignature`, `BridgeSpec.signatureTimeAllowed`, `BridgeSpec.MintAuthorization.Authorization.valid`
+Major definitions: `BridgeSpec.ClaimContracts.FeeAccountingOnce`, `BridgeSpec.MintAuthorization.installSignature`, `BridgeSpec.signatureTimeAllowed`, `BridgeSpec.MintAuthorization.Authorization.valid`
 
 ## claim: fee_payout
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: feePayoutAllowedが受理
+Premises: feePayoutAllowed is accepted
 
-結論: pendingと新規debitはreserve内、成功時だけdebitを計上
+Conclusion: Pending and new debits fit within the reserve; debit is accounted for only on success
 
-未証明境界: 外部転送結果の正しさと永続化は外部境界
+Unproved boundary: Correctness of external transfer results and persistence are external boundaries
 
-証拠・外部仮定: `claims.tsv:fee_payout` / `claims.tsv:fee_payout`
+Evidence and external assumptions: `claims.tsv:fee_payout` / `claims.tsv:fee_payout`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.fee_payout_witness : BridgeSpec.ClaimContracts.FeePayout
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.FeePayout`
+Major definitions: `BridgeSpec.ClaimContracts.FeePayout`
 
 ## claim: fee_recipient_rotation
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: rotateFeeRecipientが受理
+Premises: rotateFeeRecipient is accepted
 
-結論: pending payoutは0、残高・既計上feeは保存しrecipientを更新
+Conclusion: Pending payout is zero; updates the recipient while preserving balances and previously accounted fees
 
-未証明境界: 本番認可とSQL commitは別証拠
+Unproved boundary: Production authorization and SQL commit require separate evidence
 
-証拠・外部仮定: `claims.tsv:fee_recipient_rotation` / `claims.tsv:fee_recipient_rotation`
+Evidence and external assumptions: `claims.tsv:fee_recipient_rotation` / `claims.tsv:fee_recipient_rotation`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.fee_recipient_rotation_witness : BridgeSpec.ClaimContracts.FeeRecipientRotation
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.FeeRecipientRotation`
+Major definitions: `BridgeSpec.ClaimContracts.FeeRecipientRotation`
 
 ## claim: funding_attempt_lifecycle
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: funding outcome enumを入力
+Premises: Input is a funding outcome enum
 
-結論: 成功・duplicate・曖昧・retryable・確定失敗を規定decisionへ分類
+Conclusion: Classifies success, duplicate, ambiguous, retryable, and definitive failure into their prescribed decisions
 
-未証明境界: enumへの外部結果のdecodeとSQL transactionは別証拠
+Unproved boundary: Decoding external results into the enum and SQL transactions require separate evidence
 
-証拠・外部仮定: `claims.tsv:funding_attempt_lifecycle` / `claims.tsv:funding_attempt_lifecycle`
+Evidence and external assumptions: `claims.tsv:funding_attempt_lifecycle` / `claims.tsv:funding_attempt_lifecycle`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.funding_attempt_lifecycle_witness : BridgeSpec.ClaimContracts.FundingAttemptLifecycle
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.FundingAttemptLifecycle`, `BridgeSpec.Protocol.Safe`, `BridgeSpec.Protocol.filterSafeStoredState`
+Major definitions: `BridgeSpec.ClaimContracts.FundingAttemptLifecycle`, `BridgeSpec.Protocol.Safe`, `BridgeSpec.Protocol.filterSafeStoredState`
 
 ## claim: funding_reconciliation_freshness
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: absence・finalScan・dedupExpiredのboolを入力
+Premises: Inputs are absence, finalScan, and dedupExpired booleans
 
-結論: fresh scanが必要な条件とrelease可能条件を区別
+Conclusion: Distinguishes conditions requiring a fresh scan from conditions permitting release
 
-未証明境界: 完全履歴・経過時刻・scan結果の真正性は外部境界
+Unproved boundary: Complete history, elapsed time, and scan result authenticity are external boundaries
 
-証拠・外部仮定: `claims.tsv:funding_reconciliation_freshness` / `claims.tsv:funding_reconciliation_freshness`
+Evidence and external assumptions: `claims.tsv:funding_reconciliation_freshness` / `claims.tsv:funding_reconciliation_freshness`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.funding_reconciliation_freshness_witness : BridgeSpec.ClaimContracts.FundingReconciliationFreshness
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.FundingReconciliationFreshness`, `BridgeSpec.Protocol.Safe`, `BridgeSpec.Protocol.filterSafeStoredState`
+Major definitions: `BridgeSpec.ClaimContracts.FundingReconciliationFreshness`, `BridgeSpec.Protocol.Safe`, `BridgeSpec.Protocol.filterSafeStoredState`
 
 ## claim: governance_confirmation_authorization
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: callerと現在のrelayer・governance・pauseをNatで表現
+Premises: The caller and current relayer, governance, and pause principals are represented as Nat
 
-結論: 非0かつ許可された三者のいずれかだけ受理
+Conclusion: Accepts only a nonzero caller matching one of the three authorized principals
 
-未証明境界: Natの0とanonymous Principalの対応、controller取得は本番側境界
+Unproved boundary: Correspondence between Nat zero and the anonymous Principal, and controller retrieval, are production boundaries
 
-証拠・外部仮定: `claims.tsv:governance_confirmation_authorization` / `claims.tsv:governance_confirmation_authorization`
+Evidence and external assumptions: `claims.tsv:governance_confirmation_authorization` / `claims.tsv:governance_confirmation_authorization`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.governance_confirmation_authorization_witness : BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization`
+Major definitions: `BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization`
 
 ## claim: governance_nonce_chain_binding
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: ControlPlane到達状態に最後のgovernance chainがある
+Premises: A reachable ControlPlane state has a last governance chain
 
-結論: governance chainはconfigured chainと一致
+Conclusion: The governance chain matches the configured chain
 
-未証明境界: RPC観測chainIdやprovider切替耐性は主張しない
+Unproved boundary: Does not claim an RPC-observed chainId or resistance to provider chain switching
 
-証拠・外部仮定: `claims.tsv:governance_nonce_chain_binding` / `claims.tsv:governance_nonce_chain_binding`
+Evidence and external assumptions: `claims.tsv:governance_nonce_chain_binding` / `claims.tsv:governance_nonce_chain_binding`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.governance_nonce_chain_binding_witness : BridgeSpec.ClaimContracts.GovernanceNonceChainBinding
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.GovernanceNonceChainBinding`
+Major definitions: `BridgeSpec.ClaimContracts.GovernanceNonceChainBinding`
 
 ## claim: governance_transaction_affordability
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: observedWei<requiredWei
+Premises: Decoded finalized and safe balances and a checked required amount
 
-結論: requiredWei以下の残高では支払可能条件を満たさない
+Conclusion: The decision reports their minimum and accepts exactly when both balances cover the required amount, including equality
 
-未証明境界: 必要額見積りや外部残高照会は証明しない
+Unproved boundary: External balance authenticity and fee-estimate adequacy remain assumptions; shared-expression Verus binds the production decision
 
-証拠・外部仮定: `claims.tsv:governance_transaction_affordability` / `claims.tsv:governance_transaction_affordability`
+Evidence and external assumptions: `claims.tsv:governance_transaction_affordability` / `claims.tsv:governance_transaction_affordability`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Bind the conservative minimum and acceptance boundary to the production-shared decision and its negative fixture.
 
 ```lean
 BridgeSpec.ClaimContracts.governance_transaction_affordability_witness : BridgeSpec.ClaimContracts.GovernanceTransactionAffordability
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.GovernanceTransactionAffordability`
+Major definitions: `BridgeSpec.ClaimContracts.GovernanceTransactionAffordability`, `BridgeSpec.ClaimContracts.governanceAffordabilityDecision`
 
 ## claim: hold_resolution
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: holdRetryAllowedが受理
+Premises: holdRetryAllowed is accepted
 
-結論: exact successまたはcomplete absenceが存在
+Conclusion: Exact success or complete absence exists
 
-未証明境界: 入力boolから証拠の真正性は導けない
+Unproved boundary: Evidence authenticity cannot be derived from input booleans
 
-証拠・外部仮定: `claims.tsv:hold_resolution` / `claims.tsv:hold_resolution`
+Evidence and external assumptions: `claims.tsv:hold_resolution` / `claims.tsv:hold_resolution`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.hold_resolution_witness : BridgeSpec.ClaimContracts.HoldResolution
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.HoldResolution`
+Major definitions: `BridgeSpec.ClaimContracts.HoldResolution`
 
 ## claim: initial_activation_authorization
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: bootstrap・governance・sealed・phase・migration分類入力
+Premises: Inputs classify bootstrap, governance, sealed state, phase, and migration
 
-結論: bootstrap期間の認可と消費、seal caller条件、migration分類を規定
+Conclusion: Specifies bootstrap authorization and consumption, seal caller conditions, and migration classification
 
-未証明境界: migration分類の定義展開だけでは実復元を証明しない
+Unproved boundary: Unfolding the migration classification definition alone does not prove actual restoration
 
-証拠・外部仮定: `claims.tsv:initial_activation_authorization` / `claims.tsv:initial_activation_authorization`
+Evidence and external assumptions: `claims.tsv:initial_activation_authorization` / `claims.tsv:initial_activation_authorization`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.initial_activation_authorization_witness : BridgeSpec.ClaimContracts.InitialActivationAuthorization
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.InitialActivationAuthorization`
+Major definitions: `BridgeSpec.ClaimContracts.InitialActivationAuthorization`
 
 ## claim: lease_lane_isolation
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: lane claim decisionがallow
+Premises: The lane claim decision is allow
 
-結論: 対象は非activeでlane capacity未満
+Conclusion: The target is inactive and below lane capacity
 
-未証明境界: lane入力の分類とruntime dispatcherは別証拠
+Unproved boundary: Lane input classification and the runtime dispatcher require separate evidence
 
-証拠・外部仮定: `claims.tsv:lease_lane_isolation` / `claims.tsv:lease_lane_isolation`
+Evidence and external assumptions: `claims.tsv:lease_lane_isolation` / `claims.tsv:lease_lane_isolation`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.lease_lane_isolation_witness : BridgeSpec.ClaimContracts.LeaseLaneIsolation
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.LeaseLaneIsolation`, `BridgeSpec.GlobalHistory.AccountingInvariant`, `BridgeSpec.GlobalHistory.Backed`, `BridgeSpec.GlobalHistory.eventDelta`
+Major definitions: `BridgeSpec.ClaimContracts.LeaseLaneIsolation`, `BridgeSpec.GlobalHistory.AccountingInvariant`, `BridgeSpec.GlobalHistory.Backed`, `BridgeSpec.GlobalHistory.eventDelta`
 
 ## claim: lease_outcome
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: lease outcome predicateとGlobalHistory更新が受理
+Premises: The lease outcome predicate and GlobalHistory update are accepted
 
-結論: leaseはactiveでgeneration一致、会計不変条件と他recordを保存
+Conclusion: The lease is active with a matching generation; preserves accounting invariants and other records
 
-未証明境界: async実行・SQL行選択・callbackの外部効果は別証拠
+Unproved boundary: Async execution, SQL row selection, and external callback effects require separate evidence
 
-証拠・外部仮定: `claims.tsv:lease_outcome` / `claims.tsv:lease_outcome`
+Evidence and external assumptions: `claims.tsv:lease_outcome` / `claims.tsv:lease_outcome`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.lease_outcome_witness : BridgeSpec.ClaimContracts.LeaseOutcome
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.LeaseOutcome`, `BridgeSpec.GlobalHistory.AccountingInvariant`, `BridgeSpec.GlobalHistory.Backed`, `BridgeSpec.GlobalHistory.eventDelta`
+Major definitions: `BridgeSpec.ClaimContracts.LeaseOutcome`, `BridgeSpec.GlobalHistory.AccountingInvariant`, `BridgeSpec.GlobalHistory.Backed`, `BridgeSpec.GlobalHistory.eventDelta`
 
 ## claim: ledger_block_provenance
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: Ledger indexをinstallする受理trace
+Premises: An accepted trace installing Ledger indices
 
-結論: 既存indexを保持し、競合を拒否し、refundにはfunding indexが必要
+Conclusion: Preserves existing indices, rejects conflicts, and requires a funding index for refunds
 
-未証明境界: index値の履歴真正性とSQL行選択は外部仮定
+Unproved boundary: Historical authenticity of index values and SQL row selection are external assumptions
 
-証拠・外部仮定: `claims.tsv:ledger_block_provenance` / `claims.tsv:ledger_block_provenance`
+Evidence and external assumptions: `claims.tsv:ledger_block_provenance` / `claims.tsv:ledger_block_provenance`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.ledger_block_provenance_witness : BridgeSpec.ClaimContracts.LedgerBlockProvenance
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.LedgerBlockProvenance`
+Major definitions: `BridgeSpec.ClaimContracts.LedgerBlockProvenance`
 
 ## claim: nonterminal_deposit_index_consistency
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: DepositPhaseを入力
+Premises: Input is a DepositPhase
 
-結論: refunded・cancelled・minted以外だけindex対象
+Conclusion: Only phases other than refunded, cancelled, and minted are indexed
 
-未証明境界: SQL index維持と実record走査は別証拠
+Unproved boundary: SQL index maintenance and actual record scans require separate evidence
 
-証拠・外部仮定: `claims.tsv:nonterminal_deposit_index_consistency` / `claims.tsv:nonterminal_deposit_index_consistency`
+Evidence and external assumptions: `claims.tsv:nonterminal_deposit_index_consistency` / `claims.tsv:nonterminal_deposit_index_consistency`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.nonterminal_deposit_index_consistency_witness : BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency`
+Major definitions: `BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency`
 
 ## claim: notification_quota_isolation
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: 通知受付・ingestion predicateが受理
+Premises: Notification admission and ingestion predicates accept
 
-結論: global・caller・ingestion上限未満、cooldownはhash一致かつ期限未満
+Conclusion: Below global, caller, and ingestion limits; cooldown requires matching hashes and time before expiry
 
-未証明境界: 永続カウンタ・期間更新・caller真正性は別証拠
+Unproved boundary: Persistent counters, period updates, and caller authenticity require separate evidence
 
-証拠・外部仮定: `claims.tsv:notification_quota_isolation` / `claims.tsv:notification_quota_isolation`
+Evidence and external assumptions: `claims.tsv:notification_quota_isolation` / `claims.tsv:notification_quota_isolation`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.notification_quota_isolation_witness : BridgeSpec.ClaimContracts.NotificationQuotaIsolation
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.NotificationQuotaIsolation`
+Major definitions: `BridgeSpec.ClaimContracts.NotificationQuotaIsolation`
 
 ## claim: operational_config_seal
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: sealedとcandidateValidの入力
+Premises: Inputs are sealed and candidateValid
 
-結論: 未sealかつ候補有効の場合だけsealし、asset操作はsealedの場合だけ許可
+Conclusion: Seals only when not already sealed and the candidate is valid; allows asset operations only when sealed
 
-未証明境界: 呼出し元が真偽入力を正しく作ることと永続化は別証拠
+Unproved boundary: Correct construction of boolean inputs by callers and persistence require separate evidence
 
-証拠・外部仮定: `claims.tsv:operational_config_seal` / `claims.tsv:operational_config_seal`
+Evidence and external assumptions: `claims.tsv:operational_config_seal` / `claims.tsv:operational_config_seal`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.operational_config_seal_witness : BridgeSpec.ClaimContracts.OperationalConfigSeal
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.OperationalConfigSeal`
+Major definitions: `BridgeSpec.ClaimContracts.OperationalConfigSeal`
 
 ## claim: paid_call_cycle_reserve
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: reserve+attachedCycles+margin≤liquid、実請求額≤予算
+Premises: reserve+attachedCycles+margin≤liquid, actual charge≤budget
 
-結論: 課金後もreserveを残す
+Conclusion: Preserves the reserve after charging
 
-未証明境界: ICの実課金・返却とruntime会計は外部境界
+Unproved boundary: Actual IC charges, refunds, and runtime accounting are external boundaries
 
-証拠・外部仮定: `claims.tsv:paid_call_cycle_reserve` / `claims.tsv:paid_call_cycle_reserve`
+Evidence and external assumptions: `claims.tsv:paid_call_cycle_reserve` / `claims.tsv:paid_call_cycle_reserve`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.paid_call_cycle_reserve_witness : BridgeSpec.ClaimContracts.PaidCallCycleReserve
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.PaidCallCycleReserve`
+Major definitions: `BridgeSpec.ClaimContracts.PaidCallCycleReserve`
 
 ## claim: payment_identity
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: GlobalHistoryのpayoutまたはrecord更新が受理
+Premises: A GlobalHistory payout or record update is accepted
 
-結論: payoutの純額・宛先はrecordに一致し、別IDのrecordは不変
+Conclusion: The payout net amount and recipient match the record; records with other IDs remain unchanged
 
-未証明境界: callbackのpaid phase自体は実送金の証拠ではない
+Unproved boundary: The callback's paid phase alone is not evidence of an actual transfer
 
-証拠・外部仮定: `claims.tsv:payment_identity` / `claims.tsv:payment_identity`
+Evidence and external assumptions: `claims.tsv:payment_identity` / `claims.tsv:payment_identity`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.payment_identity_witness : BridgeSpec.ClaimContracts.PaymentIdentity
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.PaymentIdentity`, `BridgeSpec.GlobalHistory.AccountingInvariant`, `BridgeSpec.GlobalHistory.Backed`, `BridgeSpec.GlobalHistory.eventDelta`
+Major definitions: `BridgeSpec.ClaimContracts.PaymentIdentity`, `BridgeSpec.GlobalHistory.AccountingInvariant`, `BridgeSpec.GlobalHistory.Backed`, `BridgeSpec.GlobalHistory.eventDelta`
 
 ## claim: pending_queue
 
-仕様: `docs/bridge-flow.md`
+Specification: `docs/bridge-flow.md`
 
-前提: blockedな既存entryまたはstorage書込失敗
+Premises: An existing blocked entry or a storage write failure
 
-結論: blocked retryを保持し、書込失敗時はsessionを保持してdurable結果なし
+Conclusion: Preserves blocked retries; on write failure, retains the session with no durable result
 
-未証明境界: Web Locks・browser storage原子性は外部仮定
+Unproved boundary: Web Locks and browser storage atomicity are external assumptions
 
-証拠・外部仮定: `claims.tsv:pending_queue` / `claims.tsv:pending_queue`
+Evidence and external assumptions: `claims.tsv:pending_queue` / `claims.tsv:pending_queue`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.pending_queue_witness : BridgeSpec.ClaimContracts.PendingQueue
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.PendingQueue`
+Major definitions: `BridgeSpec.ClaimContracts.PendingQueue`
 
 ## claim: refund_evidence_enforcement
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: 初期Depositからの受理trace中に期限切れrefund開始がある
+Premises: An accepted trace from the initial Deposit includes the start of an expired refund
 
-結論: 未処理・deposit/digest一致・strict expiryが必要
+Conclusion: Requires unprocessed status, matching deposit/digest, and strict expiry
 
-未証明境界: RPC canonicalityと履歴真正性は外部仮定
+Unproved boundary: RPC canonicality and history authenticity are external assumptions
 
-証拠・外部仮定: `claims.tsv:refund_evidence_enforcement` / `claims.tsv:refund_evidence_enforcement`
+Evidence and external assumptions: `claims.tsv:refund_evidence_enforcement` / `claims.tsv:refund_evidence_enforcement`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.refund_evidence_enforcement_witness : BridgeSpec.ClaimContracts.RefundEvidenceEnforcement
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.RefundEvidenceEnforcement`, `BridgeSpec.MintAuthorization.ExpiryEvidence.valid`
+Major definitions: `BridgeSpec.ClaimContracts.RefundEvidenceEnforcement`, `BridgeSpec.MintAuthorization.ExpiryEvidence.valid`
 
 ## claim: refund_request_authorization
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: 受理prefix後のrequestExpiredRefundが受理
+Premises: requestExpiredRefund is accepted after an accepted prefix
 
-結論: authenticated=trueかつdepositProcessed=false
+Conclusion: Requires authenticated=true and depositProcessed=false
 
-未証明境界: callerは既存recordの宛先・金額を変更できないことは本番側証拠
+Unproved boundary: Production evidence establishes that callers cannot change an existing record's recipient or amount
 
-証拠・外部仮定: `claims.tsv:refund_request_authorization` / `claims.tsv:refund_request_authorization`
+Evidence and external assumptions: `claims.tsv:refund_request_authorization` / `claims.tsv:refund_request_authorization`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.refund_request_authorization_witness : BridgeSpec.ClaimContracts.RefundRequestAuthorization
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.RefundRequestAuthorization`
+Major definitions: `BridgeSpec.ClaimContracts.RefundRequestAuthorization`
 
 ## claim: reservation_commit
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: 有限幅境界内の予約計算と受理された予約解放
+Premises: Reservation arithmetic within finite-width bounds and an accepted reservation release
 
-結論: 予約+候補の合計を保存し、解放は正確に0、二重解放を拒否
+Conclusion: Preserves the reservation-plus-candidate total, releases to exactly zero, and rejects double release
 
-未証明境界: GlobalHistoryの解放イベント自体には時刻証拠がない
+Unproved boundary: The GlobalHistory release event itself contains no timing evidence
 
-証拠・外部仮定: `claims.tsv:reservation_commit` / `claims.tsv:reservation_commit`
+Evidence and external assumptions: `claims.tsv:reservation_commit` / `claims.tsv:reservation_commit`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.reservation_commit_witness : BridgeSpec.ClaimContracts.ReservationCommit
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.ReservationCommit`
+Major definitions: `BridgeSpec.ClaimContracts.ReservationCommit`
 
 ## claim: reservation_lifecycle
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: GlobalHistoryの予約解放イベントが受理
+Premises: A GlobalHistory reservation release event is accepted
 
-結論: 予約を正確に0へし、二重解放を拒否
+Conclusion: Sets the reservation to exactly zero and rejects double release
 
-未証明境界: 期限判断はDepositHistoryと本番側の別証拠
+Unproved boundary: Expiry decisions require separate DepositHistory and production evidence
 
-証拠・外部仮定: `claims.tsv:reservation_lifecycle` / `claims.tsv:reservation_lifecycle`
+Evidence and external assumptions: `claims.tsv:reservation_lifecycle` / `claims.tsv:reservation_lifecycle`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.reservation_lifecycle_witness : BridgeSpec.ClaimContracts.ReservationLifecycle
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.ReservationLifecycle`, `BridgeSpec.GlobalHistory.AccountingInvariant`, `BridgeSpec.GlobalHistory.Backed`, `BridgeSpec.GlobalHistory.eventDelta`
+Major definitions: `BridgeSpec.ClaimContracts.ReservationLifecycle`, `BridgeSpec.GlobalHistory.AccountingInvariant`, `BridgeSpec.GlobalHistory.Backed`, `BridgeSpec.GlobalHistory.eventDelta`
 
 ## claim: runtime_attestation_reuse
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: 到達ControlPlane状態に再利用domainがある
+Premises: A reachable ControlPlane state has a reuse domain
 
-結論: 再利用domainは現在のinstall domainと一致
+Conclusion: The reuse domain matches the current install domain
 
-未証明境界: runtime不変性、warm観測の正しさ、保存と再利用経路は別証拠
+Unproved boundary: Runtime immutability, correctness of warm observations, and persistence/reuse paths require separate evidence
 
-証拠・外部仮定: `claims.tsv:runtime_attestation_reuse` / `claims.tsv:runtime_attestation_reuse`
+Evidence and external assumptions: `claims.tsv:runtime_attestation_reuse` / `claims.tsv:runtime_attestation_reuse`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.runtime_attestation_reuse_witness : BridgeSpec.ClaimContracts.RuntimeAttestationReuse
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.RuntimeAttestationReuse`
+Major definitions: `BridgeSpec.ClaimContracts.RuntimeAttestationReuse`
 
 ## claim: service_fee_maximum
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: fee上下限の局所predicateとDeposit署名履歴
+Premises: Local fee-bound predicates and Deposit signing history
 
-結論: fee変更は固定範囲内、署名fee計上は一度だけ
+Conclusion: Fee changes stay within fixed bounds; signing fees are accounted for once
 
-未証明境界: pending payoutのtrace上限は別のreserve性質。全実行のfee設定写像は未証明
+Unproved boundary: The pending payout trace bound is a separate reserve property. A fee-configuration mapping for all executions is unproved
 
-証拠・外部仮定: `claims.tsv:service_fee_maximum` / `claims.tsv:service_fee_maximum`
+Evidence and external assumptions: `claims.tsv:service_fee_maximum` / `claims.tsv:service_fee_maximum`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.service_fee_maximum_witness : BridgeSpec.ClaimContracts.ServiceFeeMaximum
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.ServiceFeeMaximum`, `BridgeSpec.Protocol.Safe`, `BridgeSpec.Protocol.filterSafeStoredState`
+Major definitions: `BridgeSpec.ClaimContracts.ServiceFeeMaximum`, `BridgeSpec.Protocol.Safe`, `BridgeSpec.Protocol.filterSafeStoredState`
 
 ## claim: settlement_backing
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: 初期会計不変条件と受理された履歴・payout
+Premises: Initial accounting invariant and accepted history/payout
 
-結論: backingを保存し、escrow・feeReserve・未決済債務へ規定差分を適用
+Conclusion: Preserves backing and applies prescribed deltas to escrow, feeReserve, and outstanding liabilities
 
-未証明境界: 実Ledger送金とSQLの原子性は外部境界
+Unproved boundary: Actual Ledger transfers and SQL atomicity are external boundaries
 
-証拠・外部仮定: `claims.tsv:settlement_backing` / `claims.tsv:settlement_backing`
+Evidence and external assumptions: `claims.tsv:settlement_backing` / `claims.tsv:settlement_backing`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.settlement_backing_witness : BridgeSpec.ClaimContracts.SettlementBacking
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.SettlementBacking`, `BridgeSpec.GlobalHistory.AccountingInvariant`, `BridgeSpec.GlobalHistory.Backed`, `BridgeSpec.GlobalHistory.eventDelta`
+Major definitions: `BridgeSpec.ClaimContracts.SettlementBacking`, `BridgeSpec.GlobalHistory.AccountingInvariant`, `BridgeSpec.GlobalHistory.Backed`, `BridgeSpec.GlobalHistory.eventDelta`
 
 ## claim: signing_cycle_reserve
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: reserve+signingCost+margin≤liquid、実請求額≤見積り
+Premises: reserve+signingCost+margin≤liquid, actual charge≤estimate
 
-結論: 請求後もreserveを残す
+Conclusion: Preserves the reserve after billing
 
-未証明境界: IC課金額と見積りの対応は外部仮定
+Unproved boundary: Correspondence between IC charges and estimates is an external assumption
 
-証拠・外部仮定: `claims.tsv:signing_cycle_reserve` / `claims.tsv:signing_cycle_reserve`
+Evidence and external assumptions: `claims.tsv:signing_cycle_reserve` / `claims.tsv:signing_cycle_reserve`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.signing_cycle_reserve_witness : BridgeSpec.ClaimContracts.SigningCycleReserve
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.SigningCycleReserve`
+Major definitions: `BridgeSpec.ClaimContracts.SigningCycleReserve`
 
 ## claim: withdrawal_admission_boundary
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
-前提: withdrawalIdAdmissibleが受理
+Premises: withdrawalIdAdmissible is accepted
 
-結論: minimumは非0でobservedはminimum以上
+Conclusion: The minimum is nonzero and observed is at least the minimum
 
-未証明境界: Natと32byte big-endian IDの対応は共有predicateとテスト
+Unproved boundary: Correspondence between Nat and 32-byte big-endian IDs is covered by a shared predicate and tests
 
-証拠・外部仮定: `claims.tsv:withdrawal_admission_boundary` / `claims.tsv:withdrawal_admission_boundary`
+Evidence and external assumptions: `claims.tsv:withdrawal_admission_boundary` / `claims.tsv:withdrawal_admission_boundary`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.withdrawal_admission_boundary_witness : BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary`
+Major definitions: `BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary`
 
 ## claim: withdrawal_finality_quorum
 
-仕様: `docs/bridge-flow.md`
+Specification: `docs/bridge-flow.md`
 
-前提: 三providerのheadまたはidentityからcheckpointを選択
+Premises: Selects a checkpoint from three providers' heads or identities
 
-結論: 二者が高さをattestし、identity版は高さとhashの二者一致
+Conclusion: Two providers attest the height; the identity variant requires agreement on both height and hash
 
-未証明境界: providerの正しいchain設定と応答真正性は外部仮定
+Unproved boundary: Correct provider chain configuration and response authenticity are external assumptions
 
-証拠・外部仮定: `claims.tsv:withdrawal_finality_quorum` / `claims.tsv:withdrawal_finality_quorum`
+Evidence and external assumptions: `claims.tsv:withdrawal_finality_quorum` / `claims.tsv:withdrawal_finality_quorum`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.withdrawal_finality_quorum_witness : BridgeSpec.ClaimContracts.WithdrawalFinalityQuorum
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.WithdrawalFinalityQuorum`
+Major definitions: `BridgeSpec.ClaimContracts.WithdrawalFinalityQuorum`
 
 ## claim: withdrawal_finalization
 
-仕様: `docs/bridge-flow.md`
+Specification: `docs/bridge-flow.md`
 
-前提: receipt成功・canonical・blockを入力
+Premises: Inputs are receipt success, canonicality, and block
 
-結論: notifyには成功かつfinalized以下かつcanonicalが必要、finalized不在ならretry
+Conclusion: Notify requires success, a block at or below finalized, and canonicality; missing finalized yields retry
 
-未証明境界: provider応答とブラウザ実装全体は証明しない
+Unproved boundary: Does not prove provider responses or the entire browser implementation
 
-証拠・外部仮定: `claims.tsv:withdrawal_finalization` / `claims.tsv:withdrawal_finalization`
+Evidence and external assumptions: `claims.tsv:withdrawal_finalization` / `claims.tsv:withdrawal_finalization`
 
-レビュー理由: 初回対応表。命題・依存定義・外部境界を分離して登録。
+Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
 
 ```lean
 BridgeSpec.ClaimContracts.withdrawal_finalization_witness : BridgeSpec.ClaimContracts.WithdrawalFinalization
 ```
 
-主要定義: `BridgeSpec.ClaimContracts.WithdrawalFinalization`
+Major definitions: `BridgeSpec.ClaimContracts.WithdrawalFinalization`
 
 ## liveness: deposit_terminal_progress_lemmas
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
-前提: 対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作
+Premises: Continuous admissibility of the target terminal operation, weak fairness, external availability from readyAt onward, and registered user/keeper actions
 
-結論: mintの条件付き含意とrefundの条件付き含意の論理積。共通実行の二者択一ではない
+Conclusion: Conjunction of conditional mint and refund implications, not an either/or guarantee for one shared execution
 
-未証明境界: 本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない
+Unproved boundary: Production scheduling and derivation of admissibility from receipt of funds are unproved. Excluded from release claims
 
-証拠・外部仮定: `conditional-liveness.tsv:deposit_terminal_progress_lemmas` / `conditional-liveness.tsv:deposit_terminal_progress_lemmas`
+Evidence and external assumptions: `conditional-liveness.tsv:deposit_terminal_progress_lemmas` / `conditional-liveness.tsv:deposit_terminal_progress_lemmas`
 
-レビュー理由: 初回対応表。条件付き補題と本番の到達性を区別。
+Review rationale: Initial correspondence table. Distinguishes conditional lemmas from production reachability.
 
 ```lean
 BridgeSpec.Liveness.deposit_terminal_progress_lemmas : BridgeSpec.Liveness.DepositTerminalProgressLemmas
 ```
 
-主要定義: `BridgeSpec.Liveness.DepositTerminalProgressLemmas`, `BridgeSpec.Liveness.AdmissibleUntilOccurs`, `BridgeSpec.Liveness.CommonOperationalAssumptions`, `BridgeSpec.Liveness.WeakFair`
+Major definitions: `BridgeSpec.Liveness.DepositTerminalProgressLemmas`, `BridgeSpec.Liveness.AdmissibleUntilOccurs`, `BridgeSpec.Liveness.CommonOperationalAssumptions`, `BridgeSpec.Liveness.WeakFair`
 
 ## liveness: expired_deposit_eventually_refunded
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
-前提: 対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作
+Premises: Continuous admissibility of the target terminal operation, weak fairness, external availability from readyAt onward, and registered user/keeper actions
 
-結論: 対象depositがrefundedへ到達
+Conclusion: The target deposit reaches refunded
 
-未証明境界: 本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない
+Unproved boundary: Production scheduling and derivation of admissibility from receipt of funds are unproved. Excluded from release claims
 
-証拠・外部仮定: `conditional-liveness.tsv:expired_deposit_eventually_refunded` / `conditional-liveness.tsv:expired_deposit_eventually_refunded`
+Evidence and external assumptions: `conditional-liveness.tsv:expired_deposit_eventually_refunded` / `conditional-liveness.tsv:expired_deposit_eventually_refunded`
 
-レビュー理由: 初回対応表。条件付き補題と本番の到達性を区別。
+Review rationale: Initial correspondence table. Distinguishes conditional lemmas from production reachability.
 
 ```lean
 BridgeSpec.Liveness.expired_deposit_eventually_refunded : BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded
 ```
 
-主要定義: `BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded`, `BridgeSpec.Liveness.AdmissibleUntilOccurs`, `BridgeSpec.Liveness.CommonOperationalAssumptions`, `BridgeSpec.Liveness.WeakFair`
+Major definitions: `BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded`, `BridgeSpec.Liveness.AdmissibleUntilOccurs`, `BridgeSpec.Liveness.CommonOperationalAssumptions`, `BridgeSpec.Liveness.WeakFair`
 
 ## liveness: funded_deposit_eventually_minted
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
-前提: 対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作
+Premises: Continuous admissibility of the target terminal operation, weak fairness, external availability from readyAt onward, and registered user/keeper actions
 
-結論: 対象depositがmintedへ到達
+Conclusion: The target deposit reaches minted
 
-未証明境界: 本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない
+Unproved boundary: Production scheduling and derivation of admissibility from receipt of funds are unproved. Excluded from release claims
 
-証拠・外部仮定: `conditional-liveness.tsv:funded_deposit_eventually_minted` / `conditional-liveness.tsv:funded_deposit_eventually_minted`
+Evidence and external assumptions: `conditional-liveness.tsv:funded_deposit_eventually_minted` / `conditional-liveness.tsv:funded_deposit_eventually_minted`
 
-レビュー理由: 初回対応表。条件付き補題と本番の到達性を区別。
+Review rationale: Initial correspondence table. Distinguishes conditional lemmas from production reachability.
 
 ```lean
 BridgeSpec.Liveness.funded_deposit_eventually_minted : BridgeSpec.Liveness.FundedDepositEventuallyMinted
 ```
 
-主要定義: `BridgeSpec.Liveness.FundedDepositEventuallyMinted`, `BridgeSpec.Liveness.AdmissibleUntilOccurs`, `BridgeSpec.Liveness.CommonOperationalAssumptions`, `BridgeSpec.Liveness.WeakFair`
+Major definitions: `BridgeSpec.Liveness.FundedDepositEventuallyMinted`, `BridgeSpec.Liveness.AdmissibleUntilOccurs`, `BridgeSpec.Liveness.CommonOperationalAssumptions`, `BridgeSpec.Liveness.WeakFair`
 
 ## liveness: funding_failure_eventually_cancelled
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
-前提: 対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作
+Premises: Continuous admissibility of the target terminal operation, weak fairness, external availability from readyAt onward, and registered user/keeper actions
 
-結論: 対象depositがcancelledへ到達
+Conclusion: The target deposit reaches cancelled
 
-未証明境界: 本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない
+Unproved boundary: Production scheduling and derivation of admissibility from receipt of funds are unproved. Excluded from release claims
 
-証拠・外部仮定: `conditional-liveness.tsv:funding_failure_eventually_cancelled` / `conditional-liveness.tsv:funding_failure_eventually_cancelled`
+Evidence and external assumptions: `conditional-liveness.tsv:funding_failure_eventually_cancelled` / `conditional-liveness.tsv:funding_failure_eventually_cancelled`
 
-レビュー理由: 初回対応表。条件付き補題と本番の到達性を区別。
+Review rationale: Initial correspondence table. Distinguishes conditional lemmas from production reachability.
 
 ```lean
 BridgeSpec.Liveness.funding_failure_eventually_cancelled : BridgeSpec.Liveness.FundingFailureEventuallyCancelled
 ```
 
-主要定義: `BridgeSpec.Liveness.FundingFailureEventuallyCancelled`, `BridgeSpec.Liveness.AdmissibleUntilOccurs`, `BridgeSpec.Liveness.CommonOperationalAssumptions`, `BridgeSpec.Liveness.WeakFair`
+Major definitions: `BridgeSpec.Liveness.FundingFailureEventuallyCancelled`, `BridgeSpec.Liveness.AdmissibleUntilOccurs`, `BridgeSpec.Liveness.CommonOperationalAssumptions`, `BridgeSpec.Liveness.WeakFair`
 
 ## liveness: withdrawal_eventually_paid
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
-前提: 対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作
+Premises: Continuous admissibility of the target terminal operation, weak fairness, external availability from readyAt onward, and registered user/keeper actions
 
-結論: 対象withdrawalがpaidへ到達
+Conclusion: The target withdrawal reaches paid
 
-未証明境界: 本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない
+Unproved boundary: Production scheduling and derivation of admissibility from receipt of funds are unproved. Excluded from release claims
 
-証拠・外部仮定: `conditional-liveness.tsv:withdrawal_eventually_paid` / `conditional-liveness.tsv:withdrawal_eventually_paid`
+Evidence and external assumptions: `conditional-liveness.tsv:withdrawal_eventually_paid` / `conditional-liveness.tsv:withdrawal_eventually_paid`
 
-レビュー理由: 初回対応表。条件付き補題と本番の到達性を区別。
+Review rationale: Initial correspondence table. Distinguishes conditional lemmas from production reachability.
 
 ```lean
 BridgeSpec.Liveness.committed_withdrawal_eventually_paid : BridgeSpec.Liveness.WithdrawalEventuallyPaid
 ```
 
-主要定義: `BridgeSpec.Liveness.WithdrawalEventuallyPaid`, `BridgeSpec.Liveness.AdmissibleUntilOccurs`, `BridgeSpec.Liveness.CommonOperationalAssumptions`, `BridgeSpec.Liveness.WeakFair`
+Major definitions: `BridgeSpec.Liveness.WithdrawalEventuallyPaid`, `BridgeSpec.Liveness.AdmissibleUntilOccurs`, `BridgeSpec.Liveness.CommonOperationalAssumptions`, `BridgeSpec.Liveness.WeakFair`
 
 ## Shared definitions
 
 ### BridgeSpec.ClaimContracts.ActivationPreflight
 
-specification: 最後のactivationはvalidated
+specification: The last activation is validated
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.ActivationPreflight : Prop
@@ -983,9 +983,9 @@ BridgeSpec.ClaimContracts.ActivationPreflight : Prop
 
 ### BridgeSpec.ClaimContracts.AuthorizationBinding
 
-specification: domain・epoch・IC起点900秒期限を束縛し、署名時にu64範囲と残り300秒以上
+specification: Binds the domain, epoch, and 900-second deadline from IC time; signing requires the u64 range and at least 300 seconds remaining
 
-仕様: `docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md`
+Specification: `docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md`
 
 ```lean
 BridgeSpec.ClaimContracts.AuthorizationBinding : Prop
@@ -1023,9 +1023,9 @@ And
 
 ### BridgeSpec.ClaimContracts.AutomaticRetryLimit
 
-specification: automatic laneかつfailures<limitのときだけ許可
+specification: Allowed only for the automatic lane with failures<limit
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.AutomaticRetryLimit : Prop
@@ -1036,9 +1036,9 @@ BridgeSpec.ClaimContracts.AutomaticRetryLimit : Prop
 
 ### BridgeSpec.ClaimContracts.CanonicalProbe
 
-specification: predicateは番号の一致と同値
+specification: The predicate is equivalent to equality of the numbers
 
-仕様: `docs/bridge-flow.md`
+Specification: `docs/bridge-flow.md`
 
 ```lean
 BridgeSpec.ClaimContracts.CanonicalProbe : Prop
@@ -1051,9 +1051,9 @@ And
 
 ### BridgeSpec.ClaimContracts.CommittedQuote
 
-specification: 純額は正、gross=純額+fee、終端宛先・純額は初期保存quoteと一致
+specification: The net amount is positive, gross=net+fee, and the terminal recipient and net amount match the initially stored quote
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.CommittedQuote : Prop
@@ -1075,9 +1075,9 @@ And
 
 ### BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding
 
-specification: activationの単一match・metadata厳密一致と、Rootによる採択・移譲後のupgrade完了hook
+specification: A single activation match with exact metadata equality, and a Root upgrade completion hook after adoption and handoff
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding : Prop
@@ -1103,9 +1103,9 @@ And
 
 ### BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy
 
-specification: 認可済み・非実行中・balance≤thresholdのときだけ要求可能
+specification: A request is allowed only when authorized, not in progress, and balance≤threshold
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy : Prop
@@ -1118,9 +1118,9 @@ BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy : Prop
 
 ### BridgeSpec.ClaimContracts.DepositAdmission
 
-specification: fee・正の純額・一件上限・window上限を満たす
+specification: The fee, positive net amount, per-deposit limit, and window limit are satisfied
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.DepositAdmission : Prop
@@ -1146,9 +1146,9 @@ And
 
 ### BridgeSpec.ClaimContracts.DepositBacking
 
-specification: backingを保存し、各操作で規定会計差分を適用
+specification: Preserves backing and applies the prescribed accounting deltas for each operation
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.DepositBacking : Prop
@@ -1206,9 +1206,9 @@ And
 
 ### BridgeSpec.ClaimContracts.DepositIdentityPreflight
 
-specification: 候補IDは処理済みではない
+specification: The candidate ID has not been processed
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.DepositIdentityPreflight : Prop
@@ -1220,9 +1220,9 @@ BridgeSpec.ClaimContracts.DepositIdentityPreflight : Prop
 
 ### BridgeSpec.ClaimContracts.EpochInvalidation
 
-specification: 認可の再発行を拒否し、旧signerは未来epochでも拒否
+specification: Rejects authorization reissuance and rejects the old signer even in future epochs
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.EpochInvalidation : Prop
@@ -1244,9 +1244,9 @@ And
 
 ### BridgeSpec.ClaimContracts.ExactMintFinalization
 
-specification: 成功receiptはfinalized以下で、deposit・recipient・digestがauthorization一致
+specification: The successful receipt is at or below finalized, and deposit, recipient, and digest match the authorization
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.ExactMintFinalization : Prop
@@ -1272,9 +1272,9 @@ And
 
 ### BridgeSpec.ClaimContracts.ExpiryRefund
 
-specification: 未処理・deposit/digest一致・期限を厳密に超過、会計backingを保存
+specification: Unprocessed, matching deposit/digest, strictly past the deadline; preserves accounting backing
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.ExpiryRefund : Prop
@@ -1299,9 +1299,9 @@ And
 
 ### BridgeSpec.ClaimContracts.FeeAccountingOnce
 
-specification: fee credit回数は高々1で、署名時のfee差分はauthorizationの値
+specification: At most one fee credit; the fee delta at signing equals the authorization value
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.FeeAccountingOnce : Prop
@@ -1322,9 +1322,9 @@ And
 
 ### BridgeSpec.ClaimContracts.FeePayout
 
-specification: pendingと新規debitはreserve内、成功時だけdebitを計上
+specification: Pending and new debits fit within the reserve; debit is accounted for only on success
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.FeePayout : Prop
@@ -1340,9 +1340,9 @@ And
 
 ### BridgeSpec.ClaimContracts.FeeRecipientRotation
 
-specification: pending payoutは0、残高・既計上feeは保存しrecipientを更新
+specification: Pending payout is zero; updates the recipient while preserving balances and previously accounted fees
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.FeeRecipientRotation : Prop
@@ -1362,9 +1362,9 @@ And
 
 ### BridgeSpec.ClaimContracts.FundingAttemptLifecycle
 
-specification: 成功・duplicate・曖昧・retryable・確定失敗を規定decisionへ分類
+specification: Classifies success, duplicate, ambiguous, retryable, and definitive failure into their prescribed decisions
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.FundingAttemptLifecycle : Prop
@@ -1388,9 +1388,9 @@ And
 
 ### BridgeSpec.ClaimContracts.FundingReconciliationFreshness
 
-specification: fresh scanが必要な条件とrelease可能条件を区別
+specification: Distinguishes conditions requiring a fresh scan from conditions permitting release
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.FundingReconciliationFreshness : Prop
@@ -1423,9 +1423,9 @@ And
 
 ### BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization
 
-specification: 非0かつ許可された三者のいずれかだけ受理
+specification: Accepts only a nonzero caller matching one of the three authorized principals
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization : Prop
@@ -1442,9 +1442,9 @@ BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization : Prop
 
 ### BridgeSpec.ClaimContracts.GovernanceNonceChainBinding
 
-specification: governance chainはconfigured chainと一致
+specification: The governance chain matches the configured chain
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.GovernanceNonceChainBinding : Prop
@@ -1457,20 +1457,27 @@ BridgeSpec.ClaimContracts.GovernanceNonceChainBinding : Prop
 
 ### BridgeSpec.ClaimContracts.GovernanceTransactionAffordability
 
-specification: requiredWei以下の残高では支払可能条件を満たさない
+specification: The conservative balance decision reports the minimum and accepts exactly when both observed balances cover requiredWei
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.GovernanceTransactionAffordability : Prop
-∀ (observedWei requiredWei : Nat), LT.lt.{0} observedWei requiredWei → Not (LE.le.{0} requiredWei observedWei)
+∀ (finalized safe required : Nat),
+  And
+    (Eq.{1} (Prod.fst.{0, 0} (BridgeSpec.ClaimContracts.governanceAffordabilityDecision finalized safe required))
+      (Min.min.{0} finalized safe))
+    (Iff
+      (Eq.{1} (Prod.snd.{0, 0} (BridgeSpec.ClaimContracts.governanceAffordabilityDecision finalized safe required))
+        Bool.true)
+      (And (LE.le.{0} required finalized) (LE.le.{0} required safe)))
 ```
 
 ### BridgeSpec.ClaimContracts.HoldResolution
 
-specification: exact successまたはcomplete absenceが存在
+specification: Exact success or complete absence exists
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.HoldResolution : Prop
@@ -1483,9 +1490,9 @@ And
 
 ### BridgeSpec.ClaimContracts.InitialActivationAuthorization
 
-specification: bootstrap期間の認可と消費、seal caller条件、migration分類を規定
+specification: Specifies bootstrap authorization and consumption, seal caller conditions, and migration classification
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.InitialActivationAuthorization : Prop
@@ -1526,9 +1533,9 @@ And
 
 ### BridgeSpec.ClaimContracts.LeaseLaneIsolation
 
-specification: 対象は非activeでlane capacity未満
+specification: The target is inactive and below lane capacity
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.LeaseLaneIsolation : Prop
@@ -1542,9 +1549,9 @@ And
 
 ### BridgeSpec.ClaimContracts.LeaseOutcome
 
-specification: leaseはactiveでgeneration一致、会計不変条件と他recordを保存
+specification: The lease is active with a matching generation; preserves accounting invariants and other records
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.LeaseOutcome : Prop
@@ -1557,9 +1564,9 @@ And
 
 ### BridgeSpec.ClaimContracts.LedgerBlockProvenance
 
-specification: 既存indexを保持し、競合を拒否し、refundにはfunding indexが必要
+specification: Preserves existing indices, rejects conflicts, and requires a funding index for refunds
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.LedgerBlockProvenance : Prop
@@ -1568,9 +1575,9 @@ BridgeSpec.LedgerBlockProvenance.ClaimContract
 
 ### BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency
 
-specification: refunded・cancelled・minted以外だけindex対象
+specification: Only phases other than refunded, cancelled, and minted are indexed
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency : Prop
@@ -1583,9 +1590,9 @@ BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency : Prop
 
 ### BridgeSpec.ClaimContracts.NotificationQuotaIsolation
 
-specification: global・caller・ingestion上限未満、cooldownはhash一致かつ期限未満
+specification: Below global, caller, and ingestion limits; cooldown requires matching hashes and time before expiry
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.NotificationQuotaIsolation : Prop
@@ -1604,9 +1611,9 @@ And
 
 ### BridgeSpec.ClaimContracts.OperationalConfigSeal
 
-specification: 未sealかつ候補有効の場合だけsealし、asset操作はsealedの場合だけ許可
+specification: Seals only when not already sealed and the candidate is valid; allows asset operations only when sealed
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.OperationalConfigSeal : Prop
@@ -1620,9 +1627,9 @@ And
 
 ### BridgeSpec.ClaimContracts.PaidCallCycleReserve
 
-specification: 課金後もreserveを残す
+specification: Preserves the reserve after charging
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.PaidCallCycleReserve : Prop
@@ -1634,9 +1641,9 @@ BridgeSpec.ClaimContracts.PaidCallCycleReserve : Prop
 
 ### BridgeSpec.ClaimContracts.PaymentIdentity
 
-specification: payoutの純額・宛先はrecordに一致し、別IDのrecordは不変
+specification: The payout net amount and recipient match the record; records with other IDs remain unchanged
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.PaymentIdentity : Prop
@@ -1659,9 +1666,9 @@ And
 
 ### BridgeSpec.ClaimContracts.PendingQueue
 
-specification: blocked retryを保持し、書込失敗時はsessionを保持してdurable結果なし
+specification: Preserves blocked retries; on write failure, retains the session with no durable result
 
-仕様: `docs/bridge-flow.md`
+Specification: `docs/bridge-flow.md`
 
 ```lean
 BridgeSpec.ClaimContracts.PendingQueue : Prop
@@ -1681,9 +1688,9 @@ And
 
 ### BridgeSpec.ClaimContracts.RefundEvidenceEnforcement
 
-specification: 未処理・deposit/digest一致・strict expiryが必要
+specification: Requires unprocessed status, matching deposit/digest, and strict expiry
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.RefundEvidenceEnforcement : Prop
@@ -1708,9 +1715,9 @@ BridgeSpec.ClaimContracts.RefundEvidenceEnforcement : Prop
 
 ### BridgeSpec.ClaimContracts.RefundRequestAuthorization
 
-specification: authenticated=trueかつdepositProcessed=false
+specification: Requires authenticated=true and depositProcessed=false
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.RefundRequestAuthorization : Prop
@@ -1727,9 +1734,9 @@ BridgeSpec.ClaimContracts.RefundRequestAuthorization : Prop
 
 ### BridgeSpec.ClaimContracts.ReservationCommit
 
-specification: 予約+候補の合計を保存し、解放は正確に0、二重解放を拒否
+specification: Preserves the reservation-plus-candidate total, releases to exactly zero, and rejects double release
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.ReservationCommit : Prop
@@ -1742,9 +1749,9 @@ And
 
 ### BridgeSpec.ClaimContracts.ReservationLifecycle
 
-specification: 予約を正確に0へし、二重解放を拒否
+specification: Sets the reservation to exactly zero and rejects double release
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.ReservationLifecycle : Prop
@@ -1766,9 +1773,9 @@ And
 
 ### BridgeSpec.ClaimContracts.RuntimeAttestationReuse
 
-specification: 再利用domainは現在のinstall domainと一致
+specification: The reuse domain matches the current install domain
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.RuntimeAttestationReuse : Prop
@@ -1781,9 +1788,9 @@ BridgeSpec.ClaimContracts.RuntimeAttestationReuse : Prop
 
 ### BridgeSpec.ClaimContracts.ServiceFeeMaximum
 
-specification: fee変更は固定範囲内、署名fee計上は一度だけ
+specification: Fee changes stay within fixed bounds; signing fees are accounted for once
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.ServiceFeeMaximum : Prop
@@ -1796,9 +1803,9 @@ And
 
 ### BridgeSpec.ClaimContracts.SettlementBacking
 
-specification: backingを保存し、escrow・feeReserve・未決済債務へ規定差分を適用
+specification: Preserves backing and applies prescribed deltas to escrow, feeReserve, and outstanding liabilities
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.SettlementBacking : Prop
@@ -1833,9 +1840,9 @@ And
 
 ### BridgeSpec.ClaimContracts.SigningCycleReserve
 
-specification: 請求後もreserveを残す
+specification: Preserves the reserve after billing
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.SigningCycleReserve : Prop
@@ -1847,9 +1854,9 @@ BridgeSpec.ClaimContracts.SigningCycleReserve : Prop
 
 ### BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary
 
-specification: minimumは非0でobservedはminimum以上
+specification: The minimum is nonzero and observed is at least the minimum
 
-仕様: `docs/canister-state-machine.md`
+Specification: `docs/canister-state-machine.md`
 
 ```lean
 BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary : Prop
@@ -1860,9 +1867,9 @@ BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary : Prop
 
 ### BridgeSpec.ClaimContracts.WithdrawalFinalityQuorum
 
-specification: 二者が高さをattestし、identity版は高さとhashの二者一致
+specification: Two providers attest the height; the identity variant requires agreement on both height and hash
 
-仕様: `docs/bridge-flow.md`
+Specification: `docs/bridge-flow.md`
 
 ```lean
 BridgeSpec.ClaimContracts.WithdrawalFinalityQuorum : Prop
@@ -1877,9 +1884,9 @@ And
 
 ### BridgeSpec.ClaimContracts.WithdrawalFinalization
 
-specification: notifyには成功かつfinalized以下かつcanonicalが必要、finalized不在ならretry
+specification: Notify requires success, a block at or below finalized, and canonicality; missing finalized yields retry
 
-仕様: `docs/bridge-flow.md`
+Specification: `docs/bridge-flow.md`
 
 ```lean
 BridgeSpec.ClaimContracts.WithdrawalFinalization : Prop
@@ -1896,11 +1903,24 @@ And
       BridgeSpec.WithdrawalFinalizationDecision.retry)
 ```
 
+### BridgeSpec.ClaimContracts.governanceAffordabilityDecision
+
+specification: Returns the smaller observed balance and the inclusive affordability comparison
+
+Specification: `docs/canister-state-machine.md`
+
+```lean
+BridgeSpec.ClaimContracts.governanceAffordabilityDecision : Nat → Nat → Nat → Prod.{0, 0} Nat Bool
+fun finalized safe required =>
+  have observed := Min.min.{0} finalized safe;
+  Prod.mk.{0, 0} observed (Decidable.decide (LE.le.{0} required observed))
+```
+
 ### BridgeSpec.GlobalHistory.AccountingInvariant
 
-model-support: ID一意性・集計一致・backing・予約のrecord種別だけを拘束する
+model-support: Constrains only ID uniqueness, aggregate agreement, backing, and the record types holding reservations
 
-仕様: `verification/README.md`
+Specification: `verification/README.md`
 
 ```lean
 BridgeSpec.GlobalHistory.AccountingInvariant : BridgeSpec.GlobalHistory.GlobalState → Prop
@@ -1917,7 +1937,7 @@ fun state =>
 
 specification: escrow=baseSupply+feeReserve+unmintedLiability+unreleasedLiability
 
-仕様: `verification/README.md`
+Specification: `verification/README.md`
 
 ```lean
 BridgeSpec.GlobalHistory.Backed : BridgeSpec.GlobalHistory.Economic → Prop
@@ -1933,9 +1953,9 @@ fun economic =>
 
 ### BridgeSpec.GlobalHistory.eventDelta
 
-model-support: 会計イベントの選択。callback phaseは実Ledger送金を認証しない
+model-support: Selection of accounting events. Callback phases do not authenticate actual Ledger transfers
 
-仕様: `verification/README.md`
+Specification: `verification/README.md`
 
 ```lean
 BridgeSpec.GlobalHistory.eventDelta : BridgeSpec.GlobalHistory.Record → BridgeSpec.GlobalHistory.Event → Option.{0} BridgeSpec.GlobalHistory.Delta
@@ -2013,9 +2033,9 @@ fun record event =>
 
 ### BridgeSpec.Liveness.AdmissibleUntilOccurs
 
-model-support: 対象終端イベントが選択まで常時受理可能であるという仮定
+model-support: Assumes the target terminal event remains admissible until selected
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
 ```lean
 BridgeSpec.Liveness.AdmissibleUntilOccurs : BridgeSpec.Liveness.Execution → BridgeSpec.GlobalHistory.Event → Nat → Prop
@@ -2030,20 +2050,20 @@ fun execution event start =>
 
 ### BridgeSpec.Liveness.CommonOperationalAssumptions
 
-model-support: readyAt以降の継続的な可用性とweak fairnessをまとめた仮定
+model-support: Combines continuous availability from readyAt onward with weak fairness
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
 ```lean
 BridgeSpec.Liveness.CommonOperationalAssumptions : BridgeSpec.Liveness.Execution → Nat → Type
--- 構造・帰納型の型。フィールド等の変更もソースdigestで通知する。
+-- Structure or inductive type. Source digests also report field and other changes.
 ```
 
 ### BridgeSpec.Liveness.DepositTerminalProgressLemmas
 
-model-support: mintの条件付き含意とrefundの条件付き含意の論理積。共通実行の二者択一ではない
+model-support: Conjunction of conditional mint and refund implications, not an either/or guarantee for one shared execution
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
 ```lean
 BridgeSpec.Liveness.DepositTerminalProgressLemmas : Prop
@@ -2052,9 +2072,9 @@ And BridgeSpec.Liveness.FundedDepositEventuallyMinted BridgeSpec.Liveness.Expire
 
 ### BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded
 
-model-support: 対象depositがrefundedへ到達
+model-support: The target deposit reaches refunded
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
 ```lean
 BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded : Prop
@@ -2070,9 +2090,9 @@ BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded : Prop
 
 ### BridgeSpec.Liveness.FundedDepositEventuallyMinted
 
-model-support: 対象depositがmintedへ到達
+model-support: The target deposit reaches minted
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
 ```lean
 BridgeSpec.Liveness.FundedDepositEventuallyMinted : Prop
@@ -2087,9 +2107,9 @@ BridgeSpec.Liveness.FundedDepositEventuallyMinted : Prop
 
 ### BridgeSpec.Liveness.FundingFailureEventuallyCancelled
 
-model-support: 対象depositがcancelledへ到達
+model-support: The target deposit reaches cancelled
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
 ```lean
 BridgeSpec.Liveness.FundingFailureEventuallyCancelled : Prop
@@ -2103,9 +2123,9 @@ BridgeSpec.Liveness.FundingFailureEventuallyCancelled : Prop
 
 ### BridgeSpec.Liveness.WeakFair
 
-model-support: 継続的に有効な具体イベントが将来選択されるという仮定
+model-support: Assumes a continuously enabled concrete event is eventually selected
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
 ```lean
 BridgeSpec.Liveness.WeakFair : BridgeSpec.Liveness.Execution → Prop
@@ -2119,9 +2139,9 @@ fun execution =>
 
 ### BridgeSpec.Liveness.WithdrawalEventuallyPaid
 
-model-support: 対象withdrawalがpaidへ到達
+model-support: The target withdrawal reaches paid
 
-仕様: `verification/conditional-liveness.md`
+Specification: `verification/conditional-liveness.md`
 
 ```lean
 BridgeSpec.Liveness.WithdrawalEventuallyPaid : Prop
@@ -2138,9 +2158,9 @@ BridgeSpec.Liveness.WithdrawalEventuallyPaid : Prop
 
 ### BridgeSpec.MintAuthorization.Authorization.valid
 
-specification: 認可のdomain・epoch・金額・IC起点期限の一致。digestの暗号計算は対象外
+specification: Matching authorization domain, epoch, amount, and IC-origin deadline. Cryptographic digest computation is excluded
 
-仕様: `verification/README.md`
+Specification: `verification/README.md`
 
 ```lean
 BridgeSpec.MintAuthorization.Authorization.valid : BridgeSpec.MintAuthorization.Authorization → BridgeSpec.MintAuthorization.AuthorizationOrigin → Prop
@@ -2174,9 +2194,9 @@ fun authorization origin =>
 
 ### BridgeSpec.MintAuthorization.ExpiryEvidence.valid
 
-specification: decode済み未処理証拠とstrict expiryの照合
+specification: Matches decoded unprocessed evidence and strict expiry
 
-仕様: `verification/README.md`
+Specification: `verification/README.md`
 
 ```lean
 BridgeSpec.MintAuthorization.ExpiryEvidence.valid : BridgeSpec.MintAuthorization.ExpiryEvidence →
@@ -2208,9 +2228,9 @@ fun evidence authorization origin =>
 
 ### BridgeSpec.MintAuthorization.MintEvidence.valid
 
-specification: decode済みmint証拠のfield照合。非0hashの真正性は外部前提
+specification: Matches decoded mint evidence fields. Authenticity of nonzero hashes is an external premise
 
-仕様: `verification/README.md`
+Specification: `verification/README.md`
 
 ```lean
 BridgeSpec.MintAuthorization.MintEvidence.valid : BridgeSpec.MintAuthorization.MintEvidence → BridgeSpec.MintAuthorization.Authorization → Prop
@@ -2259,9 +2279,9 @@ fun evidence authorization =>
 
 ### BridgeSpec.MintAuthorization.installSignature
 
-specification: 署名時の残り300秒、有限幅、fee一回性を検査する抽象遷移
+specification: Abstract transition checking 300 seconds remaining at signing, finite-width bounds, and fee accounting once
 
-仕様: `verification/README.md`
+Specification: `verification/README.md`
 
 ```lean
 BridgeSpec.MintAuthorization.installSignature : BridgeSpec.MintAuthorization.DepositState → Nat → Option.{0} BridgeSpec.MintAuthorization.DepositState
@@ -2300,9 +2320,9 @@ fun state observedTimestamp =>
 
 ### BridgeSpec.Protocol.Safe
 
-model-support: 統合単一recordモデルの会計・quote・lease条件。全runtime安全性ではない
+model-support: Accounting, quote, and lease conditions of the integrated single-record model, not overall runtime safety
 
-仕様: `verification/README.md`
+Specification: `verification/README.md`
 
 ```lean
 BridgeSpec.Protocol.Safe : BridgeSpec.Protocol.ProtocolState → Prop
@@ -2340,9 +2360,9 @@ fun state =>
 
 ### BridgeSpec.Protocol.filterSafeStoredState
 
-model-support: Safeを条件として受理する抽象フィルタ。本番decodeやmigrationではない
+model-support: Abstract filter accepting states under the Safe condition, not production decoding or migration
 
-仕様: `verification/README.md`
+Specification: `verification/README.md`
 
 ```lean
 BridgeSpec.Protocol.filterSafeStoredState : BridgeSpec.Protocol.ProtocolState → Option.{0} BridgeSpec.Protocol.ProtocolState
@@ -2351,9 +2371,9 @@ fun stored => ite.{1} (BridgeSpec.Protocol.Safe stored) (Option.some.{0} stored)
 
 ### BridgeSpec.signatureTimeAllowed
 
-specification: u64期限・加算overflow拒否・最低残存300秒のpredicate
+specification: Predicate for a u64 deadline, rejection of addition overflow, and at least 300 seconds remaining
 
-仕様: `verification/README.md`
+Specification: `verification/README.md`
 
 ```lean
 BridgeSpec.signatureTimeAllowed : Nat → Nat → Bool
@@ -2369,7 +2389,7 @@ fun observedTimestamp deadline =>
 | Source | Lines | Declarations | SHA-256 |
 |---|---:|---:|---|
 | verification/lean/BridgeSpec/AuditExport.lean | 18 | 1 | 71f528152dcd1c0a250ae213e0d250e8c4a46d42002c38d579b13679dd7bf501 |
-| verification/lean/BridgeSpec/ClaimContracts.lean | 633 | 106 | 3d8f15747089cba5ba9eda5a60b7492225698d5f45ad94196ce7eceb102d1c12 |
+| verification/lean/BridgeSpec/ClaimContracts.lean | 639 | 107 | c9b78c3d0f847ebfdcb06b013805eada5964bed831c23eefe7128c1f9abd36c3 |
 | verification/lean/BridgeSpec/Claims.lean | 226 | 28 | f74ffe05f86fbdfa4e94095bdc2dc64a1dd3ed94c947a4b800af6433dada3430 |
 | verification/lean/BridgeSpec/ControlPlane.lean | 323 | 32 | 57e6656b42d4da34726d8e69bfe129939d7649070923beddc9c5fdce8876936c |
 | verification/lean/BridgeSpec/DepositAuthorization.lean | 586 | 48 | 737633200787c8db2275d4a8408e8bad75754e04415c9cbc435b934660ca001e |
@@ -2398,6 +2418,7 @@ fun observedTimestamp deadline =>
 | verification/lean/fail/DriftedConfirmedActivationEvidence.lean | 6 | 0 | cce72323186747a19ebd7bd19393b75624c5b5f5a330eebb6a24b6c75aa1df5a |
 | verification/lean/fail/EvidencelessMint.lean | 19 | 2 | 7d248eb1e8b57cfd2e9f2c3d3892e03b495934fbc920278146a056cca36b2c96 |
 | verification/lean/fail/FinalizedTimestampDeadline.lean | 7 | 0 | 614a8705cfd818db1749f072723d51e18f07d03b750a882a3f8d1fdb2935a212 |
+| verification/lean/fail/GovernanceLargerBalance.lean | 4 | 0 | 58f4ebfcedb3e3bfb34a83bb6f55d603d5a9b5ac1f7c6f9ca01ff0d0a557f1d1 |
 | verification/lean/fail/IncompleteAbsence.lean | 15 | 0 | 22ed9af027b854b148ed57fd103aa4cf9707a4366943ce43b4276e3ca4cbad62 |
 | verification/lean/fail/IncompleteExpiryAudit.lean | 22 | 2 | 4c30cb6604648725bea1d9a376cd758efedc2bbbc029c26088ed070229be55bd |
 | verification/lean/fail/IncompleteMintAudit.lean | 21 | 2 | 34a54671a3271bf8efb75d8ffa94483006cb795bca44a73eeccd29384ed3ec1c |

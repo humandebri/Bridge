@@ -2,20 +2,20 @@
 status: accepted
 ---
 
-# Base Adminの実行境界にOpenZeppelin TimelockControllerを使う
+# Use OpenZeppelin TimelockController as the Base Admin execution boundary
 
-Base Adminの危険方向操作はOpenZeppelin Contracts 5.6.1の`TimelockController`を経由する。
-TimelockをBridgeより先にdeployし、初期minimum delayを24時間、Canister由来Governance Operatorをproposer/executor、別derivationのIndependent Cancellerをcanceller、追加adminを`address(0)`として構成する。
-Timelock自身だけが`DEFAULT_ADMIN_ROLE`を持つ。構築後のTimelock role集合は凍結し、自己callを含むgrant、revoke、renounceを拒否する。role変更は、新しい承認済みrole集合のTimelockを配置してBridgeのTimelock rotationを行う。
+Route Base Admin operations that increase risk through OpenZeppelin Contracts 5.6.1 `TimelockController`.
+Deploy the Timelock before the Bridge with an initial minimum delay of 24 hours, the Canister-derived Governance Operator as proposer/executor, the separately derived Independent Canceller as canceller, and `address(0)` as additional admin.
+Only the Timelock itself holds `DEFAULT_ADMIN_ROLE`. Generic grant, revoke, and renounce calls are frozen, including self-calls. A delayed self-call to `rotateOperationalMembers` is the sole exception: it atomically rotates the proposer/executor pair and independent canceller while preserving nonzero, distinct roles. The Bridge's Timelock address is immutable; replacing the Timelock contract is not an available recovery operation.
 
 ## Considered Options
 
-- Bridge内部に独自queueと時刻判定を持つ案は、Bridge ABIと監査対象を増やし、既存の検証済み実装を重複させるため採用しない。
-- executorをpermissionlessにする案はschedule内容を書き換える権限を与えないが、本構成では実行主体をCanister由来Governance Operatorへ限定する方針を優先して採用しない。
-- deployerへ暫定adminを付与する案はdelayを迂回できる期間を作るため採用しない。
+- Reject a custom queue and time checks inside the Bridge because they expand the ABI and audit scope and duplicate an already verified implementation.
+- Reject a permissionless executor: although it cannot alter scheduled operations, this configuration prioritizes restricting execution to the Canister-derived Governance Operator.
+- Reject granting temporary admin authority to the deployer because it creates a period in which the delay can be bypassed.
 
 ## Consequences
 
-- 外部EOAからBridgeのBase Admin関数を直接呼んでも失敗し、CanisterがTimelockへscheduleして24時間後にexecuteする。
-- Bridgeは候補addressのbytecode、`getMinDelay() >= 24 hours`、候補自身の`DEFAULT_ADMIN_ROLE`保持をrotation時に検証する。
-- proposer/executorはCanister由来Governance Operator、cancellerは別derivationのIndependent Cancellerへ固定し、人間walletへroleを付与しない。role集合は構築後に凍結する。
+- Direct calls from external EOAs to Bridge Base Admin functions fail; the Canister schedules through Timelock and executes after 24 hours.
+- At construction, the Bridge verifies Timelock bytecode, `getMinDelay() >= 24 hours`, and the Timelock's own possession of `DEFAULT_ADMIN_ROLE`.
+- Keep one Canister-derived Governance Operator as proposer/executor and one separately derived Independent Canceller. Grant no roles to human wallets. Governed recovery rotates these operational members through the delayed self-call, together with the Bridge Signer and Runtime Administrator in one batch.

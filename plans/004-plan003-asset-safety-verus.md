@@ -1,7 +1,7 @@
-# Plan 004: Plan 003の資産安全境界をVerusで証明する
+# Plan 004: Prove Plan 003 asset-safety boundaries with Verus
 
-> **履歴資料**：この本文はPlan 004完了時点の証明境界を記録している。現行の証明台帳は`verification/`を正本とする。
-> 現行仕様はリポジトリ直下の`README.md`と`docs/`を参照する。
+> **Historical record:** this document records proof boundaries at Plan 004 completion. `verification/` is authoritative for the current proof ledger.
+> See the repository-root `README.md` and `docs/` for current specifications.
 
 ## Status
 
@@ -12,17 +12,17 @@
 
 ## Implemented boundary
 
-- reserve、nonce、fee payout、administrator、audit sequence、EVM rankの判断をallocation・I/Oなしのproduction共有kernelへ集約した。
-- 同じ式をVerus specから参照し、境界、単調性、優先順、overflow拒否、role×action許可集合を証明した。
-- proof manifestで全資産安全kernelをpass proofと領域別negative fixtureへ対応付け、CIで欠落とproof escapeを拒否する。
-- 外部応答とstable/async原子性は信頼境界として残し、Rust、storage reopen、PicJSでcoordinatorとの結合を検査する。
+- Consolidated reserve, nonce, fee payout, administrator, audit sequence, and EVM rank decisions into production-shared kernels without allocation or I/O.
+- Verus specifications reference the same expressions, proving boundaries, monotonicity, priority, overflow rejection, and allowed role×action sets.
+- The proof manifest maps every asset-safety kernel to passing proofs and domain-specific negative fixtures; CI rejects omissions and proof escapes.
+- External responses and stable/async atomicity remain trust boundaries. Rust, storage reopen, and PicJS checks validate coordinator integration.
 
 ## Verification
 
-- Rust exhaustive testはu128/u64境界と全administrator action×roleを列挙する。
-- 各negative fixtureは単独でpostcondition violationになることをCIが最後まで検査する。
-- `scripts/ci-local.sh checks`でRust、Wasm、Candid、PicJS、ICP、Foundry、SMT、Verusを一括検査する。
+- Exhaustive Rust tests enumerate u128/u64 boundaries and every administrator action×role.
+- CI fully checks each negative fixture independently for a postcondition violation.
+- `scripts/ci-local.sh checks` runs Rust, Wasm, Candid, PicJS, ICP, Foundry, SMT, and Verus checks together.
 
 ## Deferred
 
-- provider・Ledger・Index・archive応答の真正性、本番reserve値、鍵保管、mainnet deployはPlan 005/006の対象とする。
+- Provider/Ledger/Index/archive response authenticity, production reserve values, key custody, and mainnet deployment belong to Plans 005/006.

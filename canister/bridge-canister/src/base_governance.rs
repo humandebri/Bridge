@@ -1366,22 +1366,27 @@ async fn require_affordable(
         evm_rpc::signer_eth_balance_at(config, governance_operator, finalized),
         evm_rpc::signer_eth_balance_safe(config, governance_operator)
     );
-    let observed_wei = conservative_observed_balance(
+    if let Some(error) = affordability_error(
         finalized_balance.map_err(|_| BaseGovernanceError::ObservationUnavailable)?,
         safe_balance.map_err(|_| BaseGovernanceError::ObservationUnavailable)?,
-    );
-    if let Some(error) = affordability_error(observed_wei, required_wei) {
+        required_wei,
+    ) {
         return Err(error);
     }
     Ok(())
 }
 
-fn conservative_observed_balance(finalized_wei: u128, safe_wei: u128) -> u128 {
-    finalized_wei.min(safe_wei)
-}
-
-fn affordability_error(observed_wei: u128, required_wei: u128) -> Option<BaseGovernanceError> {
-    (observed_wei < required_wei).then_some(BaseGovernanceError::InsufficientGovernanceBalance {
+fn affordability_error(
+    finalized_wei: u128,
+    safe_wei: u128,
+    required_wei: u128,
+) -> Option<BaseGovernanceError> {
+    let (observed_wei, affordable) = ::bridge_core::kernel::governance_affordability_decision(
+        finalized_wei,
+        safe_wei,
+        required_wei,
+    );
+    (!affordable).then_some(BaseGovernanceError::InsufficientGovernanceBalance {
         observed_wei,
         required_wei,
     })
@@ -2520,10 +2525,9 @@ mod tests {
     use super::{
         action_authorized, activation_base_preflight_matches, activation_confirmation_view,
         activation_operation_id, activation_postcondition_matches, activation_salt,
-        affordability_error, confirmation_caller_authorized, conservative_observed_balance,
-        control_plane_rotation_arguments, control_plane_rotation_postcondition_matches,
-        execute_activation_calldata, initial_fee, minimum_fee_bump,
-        operational_config_lifecycle_result, pending_signature_action,
+        affordability_error, confirmation_caller_authorized, control_plane_rotation_arguments,
+        control_plane_rotation_postcondition_matches, execute_activation_calldata, initial_fee,
+        minimum_fee_bump, operational_config_lifecycle_result, pending_signature_action,
         schedule_activation_calldata, selector, transaction_authorized, word_u128,
         BaseGovernanceError, GovernanceAction, PendingSignatureAction,
         ACTIVATION_TIMELOCK_DELAY_SECONDS,
@@ -2600,11 +2604,15 @@ mod tests {
 
     #[test]
     fn governance_affordability_uses_conservative_balance_and_exact_boundary() {
-        assert_eq!(conservative_observed_balance(11, 10), 10);
-        assert_eq!(conservative_observed_balance(9, 10), 9);
-        assert_eq!(affordability_error(10, 10), None);
+        assert_eq!(affordability_error(11, 10, 10), None);
+        assert_eq!(affordability_error(10, 11, 10), None);
+        assert_eq!(affordability_error(10, 10, 10), None);
         assert_eq!(
-            affordability_error(9, 10),
+            affordability_error(9, 11, 10),
+            affordability_error(11, 9, 10)
+        );
+        assert_eq!(
+            affordability_error(9, 10, 10),
             Some(BaseGovernanceError::InsufficientGovernanceBalance {
                 observed_wei: 9,
                 required_wei: 10,
@@ -2622,7 +2630,7 @@ mod tests {
             Ok(PendingSignatureAction::Sign)
         );
         assert_eq!(
-            affordability_error(9, 10),
+            affordability_error(9, 10, 10),
             Some(BaseGovernanceError::InsufficientGovernanceBalance {
                 observed_wei: 9,
                 required_wei: 10,

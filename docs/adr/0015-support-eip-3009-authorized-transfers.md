@@ -2,31 +2,31 @@
 status: accepted
 ---
 
-# bSNSでEIP-3009署名送金を提供する
+# Support EIP-3009 authorized transfers in bSNS
 
-bSNSはERC-20を維持し、Base上のx402 `exact`決済で直接利用できるようにEIP-3009の署名送金を実装する。
-標準ERC-20のままPermit2だけを使う方法でもx402決済は可能だが、外部proxyに依存せず、利用者の1回の署名をfacilitatorがsettleできる経路をbSNS自身で提供する。
-bSNSは非アップグレード型であり、後からの機能追加には再deployが必要になるため、Phase 1のinterface凍結前に採用する。
+Keep bSNS ERC-20-compatible and implement EIP-3009 authorized transfers for direct use in x402 `exact` payments on Base.
+Standard ERC-20 with Permit2 can also support x402 payments, but bSNS itself should provide a path where a facilitator settles a single user signature without an external proxy.
+Because bSNS is non-upgradeable and adding features later requires redeployment, adopt this before freezing the Phase 1 interface.
 
 ## Considered Options
 
-- 標準ERC-20とPermit2だけを使う案は、token contractの実装を増やさない一方で、x402決済を外部のPermit2 contractとproxyに依存させるため、唯一の経路にはしない。
-  通常のERC-20 allowanceは維持するため、Permit2も代替経路として利用できる。
-- ERC-2612だけを追加する案は、署名によってallowanceを設定する規格であり、x402のEIP-3009直接送金を提供しないため採用しない。
-- ERC-721を追加する案は、非代替tokenの所有権移転を定義する規格であり、ICRC-1 tokenをraw unitで1:1に裏付けるbSNSの性質と一致しないため採用しない。
+- Do not make standard ERC-20 plus Permit2 the only path: it avoids additional token implementation but makes x402 payments depend on an external Permit2 contract and proxy.
+  Standard ERC-20 allowances remain available, so Permit2 can still be used as an alternative.
+- Reject adding only ERC-2612 because it sets allowances by signature and does not provide x402's direct EIP-3009 transfers.
+- Reject adding ERC-721 because it defines nonfungible ownership transfers and does not match bSNS's 1:1 raw-unit backing of an ICRC-1 token.
 
 ## Consequences
 
-- bSNSは`transferWithAuthorization`、`receiveWithAuthorization`、`authorizationState`、`cancelAuthorization`を提供し、authorizationの使用と取消しをeventに記録する。
-- EIP-712 domainはtoken name、固定version `"1"`、実行chain ID、bSNS contract addressへ署名を束縛する。
-  別chainまたは別contractで作られた署名を受理しない。
-  固定versionは`version()`、domain全体はEIP-5267 `eip712Domain()`から取得可能にする。
-- authorization nonceはauthorizerごとの単一namespaceで管理する。
-  使用済みまたは取消済みのnonceは、どのauthorization送金関数からも再利用できない。
-- `receiveWithAuthorization`はcallerと受取人の一致を要求し、第三者が署名を流用して送金だけを先に実行するfront-runningを防ぐ。
-- authorization送金は既存balanceの移転だけを許可し、mintとburnの権限を追加しない。
-  Bridgeだけが供給量を操作するという制約は維持する。
-- x402 resource serverとfacilitatorの運用および互換性検証はBridgeの責務に含めず、Bridgeの配置・activationをblockしない。
+- bSNS exposes `transferWithAuthorization`, `receiveWithAuthorization`, `authorizationState`, and `cancelAuthorization`, recording authorization use and cancellation in events.
+- The EIP-712 domain binds signatures to the token name, fixed version `"1"`, execution chain ID, and bSNS contract address.
+  Reject signatures created for another chain or contract.
+  Expose the fixed version through `version()` and the full domain through EIP-5267 `eip712Domain()`.
+- Manage authorization nonces in a single namespace per authorizer.
+  Used or cancelled nonces cannot be reused by any authorized transfer function.
+- `receiveWithAuthorization` requires caller and recipient equality, preventing a third party from reusing the signature to front-run only the transfer.
+- Authorized transfers may move only existing balances; they add no mint or burn authority.
+  Preserve the constraint that only the Bridge can change supply.
+- Operating and checking compatibility of x402 resource servers and facilitators are outside the Bridge's responsibilities and do not block Bridge deployment or activation.
 
-EIP-3009の署名形式とsecurity considerationsは[EIP-3009](https://eips.ethereum.org/EIPS/eip-3009)を正本とする。
-x402連携を別途提供する場合、利用可能なEVM tokenの判定はその連携時点の[x402 Network & Token Support](https://docs.x402.org/core-concepts/network-and-token-support)に従う。
+[EIP-3009](https://eips.ethereum.org/EIPS/eip-3009) is authoritative for its signature format and security considerations.
+If x402 integration is provided separately, determine supported EVM tokens using the [x402 Network & Token Support](https://docs.x402.org/core-concepts/network-and-token-support) documentation current at integration time.

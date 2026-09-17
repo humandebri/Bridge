@@ -2,27 +2,27 @@
 status: superseded
 ---
 
-# Base adminを即時停止と遅延回復の権限に分割する
+# Split Base admin authority into immediate pause and delayed recovery
 
-このADRの人間wallet構成はPlan 006のSNS中心・Canister操作型権限モデルで置換された。現行構成は人間のBase Admin/Canceller walletを置かず、Bridge Canisterが別derivationからGovernance Operator、Runtime Administrator、Independent Cancellerを生成する。
+The human-wallet configuration in this ADR was replaced by Plan 006's SNS-centered, Canister-operated authority model. The current configuration has no human Base Admin/Canceller wallets; the Bridge Canister derives the Governance Operator, Runtime Administrator, and Independent Canceller on separate paths.
 
-Base contractのMint limitとwindow長はdeploy時に固定する。Runtime Administratorはpauseと上限内Service Fee変更を即時実行できる。unpauseとrole rotationはtimelockを経由するBase Admin hardware walletだけが実行でき、cancellerは独立hardware walletへ分離する。本決定はADR 0007をsupersedeし、Governance Executorを導入しない。
+Fix Base contract mint limits and window duration at deployment. The Runtime Administrator can immediately pause and change the Service Fee within the cap. Only the Base Admin hardware wallet can unpause and rotate roles through a timelock, with cancellation assigned to a separate hardware wallet. This decision supersedes ADR 0007 and does not introduce a Governance Executor.
 
 ## Considered Options
 
-- SNS Governanceを承認主体としGovernance Executorをadapterとする案（ADR 0007）は復活させない。ICP側にEVM署名用の専用canisterと固定allowlistの維持を要求し、実装と監査の範囲が管理操作の頻度に見合わないためである。
-- adminを置かずBase contractの全パラメータとroleをimmutableにする案は、bridge signerのrotationが不可能になり、canister reinstallでthreshold ECDSA addressが変わった時点でBridgeが恒久停止するため不採用とする。
-- 単一のadmin鍵からBridgeを直接管理する案は、鍵漏洩時にunpauseとrole rotationが即時実行されるため不採用とする。
-- operational Bridge canisterがadmin transactionも署名する案は、ADR 0007が却下した理由（Bridge侵害時にBase側の安全制限も失う）が引き続き有効であり不採用とする。
-- 即時pauseとService Fee変更をRuntime Administrator、遅延回復をtimelock付きBase Admin walletへ分ける案を採用する。
+- Do not revive SNS Governance approval with a Governance Executor adapter (ADR 0007). It requires a dedicated EVM-signing canister and a maintained fixed allowlist on ICP, imposing implementation and audit scope disproportionate to administration frequency.
+- Reject making all Base contract parameters and roles immutable without an admin: Bridge Signer rotation would be impossible, permanently stopping the Bridge if canister reinstall changes its threshold ECDSA address.
+- Reject direct Bridge administration by a single admin key because a leaked key would permit immediate unpause and role rotation.
+- Reject having the operational Bridge canister also sign admin transactions; ADR 0007's reason still applies: Bridge compromise would remove Base safety constraints.
+- Adopt separation of immediate pause and Service Fee changes through the Runtime Administrator from delayed recovery through a timelocked Base Admin wallet.
 
 ## Consequences
 
-- Runtime AdministratorのBase側権限はpauseと`MAX_SERVICE_FEE`以内のService Fee変更に限定する。
-- Base Adminのunpauseとrole rotationはtimelock（初期値72時間）の待機を経て実行する。
-- Base Admin walletはtimelockのproposerとexecutorを担い、cancellerは独立hardware walletだけが担う。timelock遅延の短縮は拒否し、構築後のTimelock role集合は凍結する。role変更は新Timelockの配置とBridge rotationで行う。
-- Per-Deposit Limit、Mint Throughput Limit、window長を変更するselectorは公開しない。
-- Base Admin walletはSNS Governanceの外に立つ運用主体である。ICP側の信頼主体（ADR 0008のSNS Governance）と対称でないことをUIと文書で明示する。
-- `MAX_SERVICE_FEE`などimmutableと定めた値はBase Adminでも変更できない。
-- Base Adminはmint、refund、escrow資産への権限を持たない。
-- Base Admin Timelockの具体構成はADR 0016に従う。
+- Limit the Runtime Administrator's Base permissions to pause and Service Fee changes within `MAX_SERVICE_FEE`.
+- Base Admin unpause and role rotation must wait for the timelock (initially 72 hours).
+- The Canister-derived Governance Operator is the Timelock proposer/executor; a separately derived Independent Canceller holds the canceller role. Generic role changes remain frozen. Delayed self-calls may atomically rotate these operational members; the Bridge Timelock address remains immutable. Production delay remains at least 24 hours.
+- Expose no selectors to change the Per-Deposit Limit, Mint Throughput Limit, or window duration.
+- The Base Admin wallet is an operator outside SNS Governance. The UI and documentation must state this asymmetry with the ICP trust authority (SNS Governance in ADR 0008).
+- Even Base Admin cannot change values declared immutable, such as `MAX_SERVICE_FEE`.
+- Base Admin has no authority over minting, refunds, or escrow assets.
+- Follow ADR 0016 for the concrete Base Admin Timelock configuration.

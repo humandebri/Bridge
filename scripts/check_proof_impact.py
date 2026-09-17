@@ -94,9 +94,18 @@ class ImpactArea:
 
 
 @dataclass(frozen=True)
+class SourceExclusion:
+    identifier: str
+    path: str
+    kind: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class ImpactManifest:
     roots: tuple[WatchedRoot, ...]
     areas: tuple[ImpactArea, ...]
+    exclusions: tuple[SourceExclusion, ...] = ()
 
 
 def _parts(value: str) -> tuple[str, ...]:
@@ -174,6 +183,7 @@ def load_manifest(repo_root: Path = ROOT) -> ImpactManifest:
     manifest_path = repo_root / "verification" / "proof-impact.tsv"
     roots: list[WatchedRoot] = []
     raw_areas: list[ImpactArea] = []
+    exclusions: list[SourceExclusion] = []
     for number, line in enumerate(
         manifest_path.read_text(encoding="utf-8").splitlines(), start=1
     ):
@@ -185,6 +195,28 @@ def load_manifest(repo_root: Path = ROOT) -> ImpactManifest:
             if value3 != "-" or not value2.startswith("."):
                 raise ValueError(f"invalid watched root row {number}")
             roots.append(WatchedRoot(identifier, value1.rstrip("/"), value2))
+        elif kind == "exclude":
+            path = PurePosixPath(value1)
+            if (
+                value2 not in {"presentation", "generated"}
+                or path.is_absolute()
+                or ".." in path.parts
+                or any(char in value1 for char in "*?[];")
+                or not value1.startswith("ui/src/")
+                or path.suffix not in {".ts", ".tsx"}
+                or len(value3.strip()) < 16
+                or not (repo_root / path).is_file()
+            ):
+                raise ValueError(f"invalid exact source exclusion: {number}")
+            generated = {
+                "ui/src/generated/abi/bridge.generated.ts",
+                "ui/src/generated/abi/bsns.generated.ts",
+                "ui/src/generated/bridge.did.ts",
+                "ui/src/generated/bridge.idl.ts",
+            }
+            if (value1 in generated) != (value2 == "generated"):
+                raise ValueError(f"generated exclusion lacks a codegen check: {value1}")
+            exclusions.append(SourceExclusion(identifier, value1, value2, value3))
         elif kind == "area":
             raw_areas.append(
                 ImpactArea(identifier, _parts(value1), _parts(value2), _parts(value3))
@@ -219,6 +251,13 @@ def load_manifest(repo_root: Path = ROOT) -> ImpactManifest:
     for source in registered_sources:
         if not source_path(source, repo_root).is_file():
             raise ValueError(f"missing registered safety source: {source}")
+    excluded = [entry.path for entry in exclusions]
+    if len(excluded) != len(set(excluded)) or len({entry.identifier for entry in exclusions}) != len(exclusions):
+        raise ValueError("duplicate source exclusion")
+    if set(excluded) & set(registered_sources):
+        raise ValueError("source is both registered and excluded")
+    if set(excluded) & _claim_production_sources(repo_root):
+        raise ValueError("claim production source cannot be excluded")
     missing_production_sources = _claim_production_sources(repo_root) - set(
         registered_sources
     )
@@ -238,10 +277,12 @@ def load_manifest(repo_root: Path = ROOT) -> ImpactManifest:
             for path in watched_path.rglob(f"*{watched.suffix}")
             if path.is_file()
         )
-    missing = expected_sources - set(registered_sources)
+    if set(excluded) - expected_sources:
+        raise ValueError("source exclusion is outside watched roots")
+    missing = expected_sources - set(registered_sources) - set(excluded)
     if missing:
         raise ValueError(f"unregistered safety sources: {sorted(missing)}")
-    return ImpactManifest(tuple(roots), areas)
+    return ImpactManifest(tuple(roots), areas, tuple(exclusions))
 
 
 def classify_paths(
@@ -252,6 +293,7 @@ def classify_paths(
     }
     selected: set[ImpactArea] = set()
     unregistered: list[str] = []
+    excluded = {entry.path for entry in manifest.exclusions}
     for raw_path in paths:
         path = PurePosixPath(raw_path).as_posix()
         if not path or path == ".":
@@ -259,6 +301,8 @@ def classify_paths(
         area = source_to_area.get(path)
         if area is not None:
             selected.add(area)
+            continue
+        if path in excluded:
             continue
         if any(
             path.startswith(watched.path + "/") and path.endswith(watched.suffix)

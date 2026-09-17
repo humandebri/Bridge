@@ -4,10 +4,10 @@ superseded_by: ADR 0023
 normative: false
 ---
 
-# Deposit EVM confirmationをフロント通知で開始する
+# Start Deposit EVM confirmation through frontend notification
 
-> **非規範的な履歴文書:** [ADR 0023](../../0023-use-wallet-funded-eip712-mint-authorization.md)が本ADRをsupersedeした。以下は旧Canister発Mint transaction方式の履歴であり、実装根拠として使用しない。
+> **Non-normative historical document:** [ADR 0023](../../0023-use-wallet-funded-eip712-mint-authorization.md) superseded this ADR. The following describes the former Canister-originated mint transaction approach and must not be used as an implementation basis.
 
-Canister発のEVM operationは`MintDeposit`だけである。フロントはreceiptとFinalized headを観測し、認証済みIC walletから`confirm_deposit`を呼ぶ。Canisterは保存済みtransactionとの一致とcanonical Finalized到達をEVM RPC quorumで再検証する。
+`MintDeposit` is the only Canister-originated EVM operation. The frontend observes the receipt and Finalized head, then calls `confirm_deposit` from an authenticated IC wallet. The Canister revalidates the saved transaction match and canonical Finalized inclusion through EVM RPC quorum.
 
-WithdrawalにはCanister発EVM transactionがないため、`confirm_withdrawal`、pending EVM confirmation、timer fallbackを持たない。`continue_withdrawal`はLedger transferまたは履歴照合だけを進める。
+Withdrawals have no Canister-originated EVM transactions, so there is no `confirm_withdrawal`, pending EVM confirmation, or timer fallback. `continue_withdrawal` advances only Ledger transfers or history reconciliation.

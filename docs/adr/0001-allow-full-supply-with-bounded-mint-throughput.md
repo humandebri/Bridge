@@ -2,20 +2,20 @@
 status: accepted
 ---
 
-# 全量移動を許容し、Deposit単位とmint流量を制限する
+# Allow full-supply transfers with per-Deposit and mint throughput limits
 
-BridgeはSNSトークン全量がBaseへ移動する可能性を受け入れるため、Bridge Exposureに総量上限を設けない。安全制御は、非アップグレード型Base contractが強制するPer-Deposit LimitとMint Throughput Limitで行う。1回上限だけでは要求分割で回避できるため、短時間のmint総量も制限する。
+The Bridge accepts the possibility that the entire SNS token supply moves to Base, so it imposes no total cap on Bridge Exposure. Safety controls are the Per-Deposit Limit and Mint Throughput Limit enforced by the non-upgradeable Base contract. Since a per-request limit can be bypassed by splitting requests, aggregate minting over a short period is also limited.
 
 ## Considered Options
 
-- Bridge ExposureをSNS総供給の一定割合に制限する案は、全量移動という目的を妨げるため不採用とする。
-- Per-Deposit Limitだけを設ける案は、連続要求で被害上限にならないため不採用とする。
-- Per-Deposit LimitとMint Throughput Limitを併用し、時間経過により全量移動を可能にする案を採用する。
+- Reject capping Bridge Exposure at a fraction of SNS total supply because it conflicts with allowing full-supply transfers.
+- Reject a Per-Deposit Limit alone because consecutive requests would bypass the intended damage bound.
+- Adopt both a Per-Deposit Limit and a Mint Throughput Limit, allowing the full supply to move over time.
 
 ## Consequences
 
-- 制限対象は新規Deposit mintだけとする。WithdrawalはBase上でburnした時点で`Committed`となり、refund mintや再mint経路を持たない。
-- 各DepositへPer-Deposit Limitを適用し、同じfixed window内の新規mint量を共有Mint Throughput Limitへ累積する。
-- 制限値はraw unitで定義し、token decimalsの表示変換を安全判断へ使用しない。
-- Verusで、各Depositが1回上限を超えないことと、mint流量が予約済み量を含めて保存されることを証明対象にする。
-- 本決定は累積移動量またはBridge Exposureの上限を保証しない。短時間の障害・侵害・入力ミスに対する被害速度を制御する。
+- Limits apply only to new Deposit mints. A Withdrawal becomes `Committed` when burned on Base and has no refund mint or re-mint path.
+- Apply the Per-Deposit Limit to each Deposit and accumulate new mint amounts within the same fixed window against the shared Mint Throughput Limit.
+- Define limits in raw units; do not use token-decimal display conversions in safety decisions.
+- Use Verus to prove that each Deposit respects the per-request limit and that mint throughput accounting is preserved, including reserved amounts.
+- This decision does not guarantee a cap on cumulative transfers or Bridge Exposure. It controls the rate of damage from short-lived failures, compromise, or input errors.

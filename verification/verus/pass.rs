@@ -320,7 +320,22 @@ proof fn reserve_requirement_is_monotone(floor: int, unit: int, small: int, larg
         floor + unit * small <= floor + unit * large
 {
     vstd::arithmetic::mul::lemma_mul_inequality(small, large, unit);
+    vstd::arithmetic::mul::lemma_mul_is_commutative(unit, small);
+    vstd::arithmetic::mul::lemma_mul_is_commutative(unit, large);
 }
+
+proof fn governance_affordability_uses_both_balances(
+    finalized: int, safe: int, required: int,
+)
+    ensures
+        kernel::governance_affordability_decision_spec(finalized, safe, required).0
+            == if finalized <= safe { finalized } else { safe },
+        kernel::governance_affordability_decision_spec(finalized, safe, required).1
+            <==> finalized >= required && safe >= required,
+        kernel::governance_affordability_decision_spec(required, required, required).1,
+        !kernel::governance_affordability_decision_spec(required - 1, required, required).1,
+        !kernel::governance_affordability_decision_spec(required, required - 1, required).1,
+{}
 
 proof fn governance_transaction_liability_is_checked(
     gas_limit: int,

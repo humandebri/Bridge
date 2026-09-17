@@ -2,6 +2,6 @@
 status: accepted
 ---
 
-# Bridge constructorでbSNSを生成する
+# Create bSNS in the Bridge constructor
 
-Bridge contractはconstructor内でbSNSを生成し、bSNSの供給操作権限を生成元Bridgeへimmutableに固定する。個別deploy後のinitializerは一時的な未設定状態を作り、予測address方式はdeploy手順へ不要な循環依存を持ち込むため採用しない。
+The Bridge contract creates bSNS in its constructor and immutably assigns supply authority to the creating Bridge. Reject a separate post-deployment initializer because it creates a temporarily unconfigured state, and reject predicted addresses because they introduce unnecessary circular dependencies into deployment.

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import re
+import tomllib
+from functools import lru_cache
 from pathlib import Path
 
 from check_transition_manifest import strip_comments_and_strings
@@ -172,6 +174,153 @@ def validate_proof_binding(
         raise ValueError(
             f"Verus proof ensures does not reference registered spec: {proof}/{spec}"
         )
+
+
+def production_cfg(expression: str, *, wasm: bool, features: frozenset[str] = frozenset()) -> bool:
+    """Evaluate only the reviewed production configuration; unknown predicates fail closed."""
+    expression = expression.strip()
+    call = re.fullmatch(r"(all|any|not)\s*\((.*)\)", expression, re.S)
+    if call:
+        arguments = _split_top_level(call.group(2))
+        values = [production_cfg(arg, wasm=wasm, features=features) for arg in arguments]
+        if call.group(1) == "not":
+            if len(values) != 1:
+                raise ValueError("invalid not cfg")
+            return not values[0]
+        return all(values) if call.group(1) == "all" else any(values)
+    if expression in {"test", "verus_keep_ghost", "debug_assertions"}:
+        return False
+    if expression in {'feature = "test-deployment"', 'feature = "storage-serde"'}:
+        return expression.split('"')[1] in features
+    if expression == 'target_arch = "wasm32"':
+        return wasm
+    raise ValueError(f"unsupported production cfg: {expression}")
+
+
+def production_source(source: str, *, wasm: bool, features: frozenset[str] = frozenset()) -> str:
+    """Remove inactive cfg items/blocks before resolving functions and kernel calls."""
+    cleaned = strip_comments_and_strings(source)
+    result = list(cleaned)
+    index = 0
+    attribute = re.compile(r"#(!?)\s*\[")
+    while (match := attribute.search(cleaned, index)) is not None:
+        start = match.start()
+        content, end = _balanced(cleaned, match.end() - 1, "[", "]")
+        raw = source[match.end():end - 1].strip()
+        if not re.match(r"cfg(?:_attr)?\b", raw):
+            index = end
+            continue
+        if match.group(1):
+            # Inner cfg applies to the containing module/file, never just the next item.
+            raise ValueError("inner production cfg requires an explicit reviewed module binding")
+        enabled = True
+        if raw.startswith("cfg_attr"):
+            args, _ = _balanced(raw, raw.index("("), "(", ")")
+            parts = _split_top_level(args)
+            if len(parts) < 2:
+                raise ValueError("invalid cfg_attr")
+            active = production_cfg(parts[0], wasm=wasm, features=features)
+            for nested in parts[1:]:
+                if nested.startswith("cfg("):
+                    value = production_cfg(nested[4:-1], wasm=wasm, features=features)
+                    enabled = enabled and (not active or value)
+                elif not re.fullmatch(r"(?:derive|allow|warn|deny|expect)\s*\(.*\)", nested, re.S):
+                    raise ValueError(f"unsupported production cfg_attr: {nested}")
+        else:
+            if not raw.startswith("cfg(") or not raw.endswith(")"):
+                raise ValueError("invalid cfg attribute")
+            enabled = production_cfg(raw[4:-1], wasm=wasm, features=features)
+        if enabled:
+            index = end
+            continue
+        # Skip other outer attributes attached to this same item.
+        cursor = end
+        while True:
+            while cursor < len(cleaned) and cleaned[cursor].isspace():
+                cursor += 1
+            following = attribute.match(cleaned, cursor)
+            if following is None:
+                break
+            _, cursor = _balanced(cleaned, following.end() - 1, "[", "]")
+        stack = []
+        pairs = {"(": ")", "[": "]"}
+        while cursor < len(cleaned):
+            char = cleaned[cursor]
+            if char in pairs:
+                stack.append(pairs[char])
+            elif stack and char == stack[-1]:
+                stack.pop()
+            elif not stack and char == "{":
+                _, cursor = _balanced(cleaned, cursor, "{", "}")
+                break
+            elif not stack and char in ";,":
+                cursor += 1
+                break
+            cursor += 1
+        else:
+            raise ValueError("unterminated inactive cfg item")
+        result[start:cursor] = ["\n" if c == "\n" else " " for c in cleaned[start:cursor]]
+        index = cursor
+    return "".join(result)
+
+
+def reviewed_production_features(repo_root: Path) -> dict[Path, frozenset[str]]:
+    """Bind cfg evaluation to the reviewed Cargo feature graph, not the target alone."""
+    core = repo_root / "canister/bridge-core"
+    canister = repo_root / "canister/bridge-canister"
+    profile = repo_root / "tools/bridge-profile"
+    manifests = {root: tomllib.loads((root / "Cargo.toml").read_text())
+                 for root in (core, canister, profile)}
+    if (
+        manifests[core].get("features") != {"storage-serde": ["dep:serde"]}
+        or manifests[canister].get("features") != {"default": [], "test-deployment": []}
+        or manifests[canister].get("dependencies", {}).get("bridge-core")
+        != {"path": "../bridge-core", "features": ["storage-serde"]}
+        or manifests[profile].get("features", {}) != {}
+        or manifests[profile].get("dependencies", {}).get("bridge-core")
+        != {"path": "../../canister/bridge-core"}
+    ):
+        raise ValueError("production Cargo feature configuration differs from the reviewed profile")
+    return {core / "src": frozenset({"storage-serde"}),
+            canister / "src": frozenset(), profile / "src": frozenset()}
+
+
+@lru_cache(maxsize=None)
+def _production_file_source(path: Path, wasm: bool, features: frozenset[str]) -> str:
+    return production_source(path.read_text(encoding="utf-8"), wasm=wasm, features=features)
+
+
+def production_module_source(path: Path) -> str:
+    wasm = not path.is_relative_to(ROOT / "tools")
+    root = next(root for root in PRODUCTION_ROOTS if path.is_relative_to(root))
+    features = reviewed_production_features(ROOT)[root]
+    relative = path.relative_to(root)
+    parts = list(relative.parts)
+    if parts[-1] in {"lib.rs", "main.rs"}:
+        modules = []
+    elif parts[-1] == "mod.rs":
+        modules = parts[:-1]
+    else:
+        modules = parts[:-1] + [path.stem]
+    parent = root / ("main.rs" if root.is_relative_to(ROOT / "tools") else "lib.rs")
+    directory = root
+    for module in modules:
+        source = _production_file_source(parent, wasm, features)
+        declarations = list(re.finditer(rf"\bmod\s+{re.escape(module)}\s*;", source))
+        declarations = [match for match in declarations
+                        if source[:match.start()].count("{") == source[:match.start()].count("}")]
+        if len(declarations) != 1 or re.search(r"#\s*\[\s*path\s*=", source):
+            raise ValueError(f"production module is inactive or unresolved: {path}")
+        flat = directory / f"{module}.rs"
+        nested = directory / module / "mod.rs"
+        candidates = [candidate for candidate in (flat, nested) if candidate.is_file()]
+        if len(candidates) != 1:
+            raise ValueError(f"ambiguous production module: {module}")
+        parent = candidates[0]
+        directory = directory / module
+    if parent != path:
+        raise ValueError(f"production module does not resolve to call-site: {path}")
+    return _production_file_source(path, wasm, features)
 
 
 def production_call_site_path(path_text: str) -> Path:
@@ -378,12 +527,13 @@ def main() -> int:
     obligations = parse_verus_manifest(manifest.decode())
     validate_derived_dependencies(obligations)
     kernel_source = KERNEL.read_text(encoding="utf-8")
-    cleaned_kernel = strip_comments_and_strings(kernel_source)
     pass_bytes = PASS.read_bytes()
     pass_source = pass_bytes.decode()
     cleaned_pass = strip_comments_and_strings(pass_source)
     require_trusted_execution_context()
-    cleaned_sources: dict[Path, str] = {KERNEL.resolve(): cleaned_kernel}
+    # Keep the unfiltered kernel for Verus/shared-expression analysis only.
+    # Every production call-site, including kernel.rs, must resolve through cfg.
+    cleaned_sources: dict[Path, str] = {}
 
     for obligation in obligations.values():
         fixture = FAIL / obligation.fixture
@@ -414,9 +564,7 @@ def main() -> int:
             path_text, function = call_site.split("#")
             path = production_call_site_path(path_text)
             if path not in cleaned_sources:
-                cleaned_sources[path] = strip_comments_and_strings(
-                    path.read_text(encoding="utf-8")
-                )
+                cleaned_sources[path] = production_module_source(path)
             cleaned = cleaned_sources[path]
             body = rust_body(cleaned, function)
             if not production_call_is_canonical(

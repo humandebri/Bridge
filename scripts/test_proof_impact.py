@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import check_proof_impact
 import proof_fingerprint
-from check_claim_manifest import CLAIM_REPORT_SCHEMA, build_claim_report
+from check_claim_manifest import CLAIM_REPORT_SCHEMA, build_claim_report, checked_vector_sections
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +23,59 @@ class ProofImpactTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.manifest = check_proof_impact.load_manifest()
+
+    def test_multiple_claim_vector_sections_are_checked_individually(self):
+        available = {"lease_lane_cases", "manual_claim_cases"}
+        self.assertEqual(set(checked_vector_sections("lease_lane_cases;manual_claim_cases", available)), available)
+        self.assertEqual(checked_vector_sections("-", available), [])
+        for value in ("lease_lane_cases;missing", "manual_claim_cases;manual_claim_cases"):
+            with self.assertRaises(ValueError):
+                checked_vector_sections(value, available)
+
+    def test_ui_unregistered_source_is_rejected_and_storage_is_owned(self):
+        for path in ("ui/src/lib/new-policy.ts", "ui/src/features/new-action.tsx"):
+            with self.assertRaisesRegex(ValueError, "unregistered"):
+                check_proof_impact.classify_paths([path], self.manifest)
+        impact = check_proof_impact.classify_paths(["ui/src/lib/browser-lock.ts"], self.manifest)
+        self.assertIn("pending_queue", impact["claims"])
+        self.assertIn("exact_mint_finalization", impact["claims"])
+
+    def test_source_exclusions_are_exact_unique_and_not_claim_sources(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "verification").mkdir()
+            shutil.copy(ROOT / "verification/claims.tsv", root / "verification/claims.tsv")
+            manifest = ROOT / "verification/proof-impact.tsv"
+            for area in self.manifest.areas:
+                for path in area.sources:
+                    target = root / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.touch()
+            for entry in self.manifest.exclusions:
+                target = root / entry.path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.touch()
+            for watched in self.manifest.roots:
+                (root / watched.path).mkdir(parents=True, exist_ok=True)
+            destination = root / "verification/proof-impact.tsv"
+            original = manifest.read_text()
+            for row in (
+                "exclude\tbad\tui/src/lib/*\tpresentation\tAn invalid broad exclusion",
+                "exclude\tbad\tui/src/lib/browser-lock.ts\tpresentation\tA registered safety source",
+                "exclude\tbad\tui/src/lib/pending-confirmations.ts\tpresentation\tA claim production source",
+                "exclude\tbad\tui/src/components/ui/button.tsx\tpresentation\tA duplicate source exemption",
+                "exclude\tbad\tui/src/lib/utils.ts\tgenerated\tNo codegen checker owns this file",
+            ):
+                with self.subTest(row=row):
+                    destination.write_text(original + row + "\n")
+                    with self.assertRaises(ValueError):
+                        check_proof_impact.load_manifest(root)
+            destination.write_text(original)
+            check_proof_impact.load_manifest(root)
+            (root / "ui/src/new-policy.ts").write_text("export const value = true")
+            with self.assertRaisesRegex(ValueError, "unregistered"):
+                check_proof_impact.load_manifest(root)
 
     def test_deposit_kernel_routes_to_all_claims_and_stages(self) -> None:
         impact = check_proof_impact.classify_paths(

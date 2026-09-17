@@ -1,247 +1,247 @@
-# KINIC–Base Bridge 実装計画
+# KINIC–Base Bridge implementation plan
 
-> 本文中の旧polling間隔と優先度schedulerは歴史的設計である。現在はADR 0019のstable settlement executor、ADR 0023のwallet送信型Mint Authorization、障害時だけのrate limit付き手動Retryを正本とする。
+> The former polling intervals and priority scheduler below are historical designs. The current sources of truth are ADR 0019's stable settlement executor, ADR 0023's wallet-submitted Mint Authorizations, and rate-limited manual Retry only after failures.
 
-本計画は `docs/adr/` のADRと `docs/glossary.md` の用語定義に基づく。
-用語は `docs/glossary.md` の定義に従い、本文では再定義しない。
+This plan follows the ADRs in `docs/adr/` and terminology in `docs/glossary.md`.
+Use the definitions in `docs/glossary.md`; this document does not redefine them.
 
-SNS GovernanceをIC/Base双方の最終trust rootとする。Base操作はBridge Canisterが別derivation pathから導出するGovernance Operatorで署名し、外部relayerが送信する。人間のEVM管理鍵は置かない。
-Bridge はKINICトークン専用にデプロイする（ADR 0010）。複数SNS tokenを扱う分岐は導入しない。
-Mainnet Ledgerは`73mez-iiaaa-aaaaq-aaasq-cai`、Indexは`7vojr-tyaaa-aaaaq-aaatq-cai`に固定する。Archive canisterはLedgerから動的に発見する。
+SNS Governance is the ultimate trust root for both IC and Base. The Bridge Canister signs Base operations through a Governance Operator derived on a separate path; an external relayer submits them. There are no human EVM administration keys.
+Deploy the Bridge exclusively for KINIC (ADR 0010). Do not introduce branching for multiple SNS tokens.
+Fix the mainnet Ledger to `73mez-iiaaa-aaaaq-aaasq-cai` and Index to `7vojr-tyaaa-aaaaq-aaatq-cai`. Discover archive canisters dynamically through the Ledger.
 
-## 現在の進捗
+## Current progress
 
-Base contractのPhase 1EとPlan 001〜004は完了している。
-Bridge canisterはstable schema v36、外部連携、Settlement Reserve、stable settlement executor、EIP-712 Mint Authorization、運用管理、Verus証明まで実装済みである。
-Plan 005の7日・各10件の本番計測とPlan 006のRPC rehearsal／monitor drillはunpause後のGate Cへ移動した。これらはGate Bまたはcontroller handoverを認可しない。SNS proposal型activation receiptはhandover後の再activation用として保持する。初回activationはseal時に固定したproduction controllerによるseal／schedule／execute、匿名relay、固定confirmation relayerの役割分離経路を使い、Confirmed executeで内部bootstrap authorityを永久に消費する。外部controllerを外す時期は自動化せず運用者が別途決定し、変更前でも初回execute後のactivation権限は既存Governance principalだけに限定する。Plan 007のlocal staging構成とPocketIC/Anvil/frontend E2Eは実装済みで、追加wallet互換性と追加5 scenarioの外部実行は明示承認待ちだがproduction activationをblockしない。
+Base contract Phase 1E and Plans 001–004 are complete.
+The Bridge canister implements stable schema v36, external integrations, Settlement Reserve, stable settlement executor, EIP-712 Mint Authorization, operational administration, and Verus proofs.
+Plan 005's seven-day, 10-per-type production measurements and Plan 006's RPC rehearsal/monitor drill moved to Gate C after unpause. They do not authorize Gate B or controller handover. Retain SNS-proposal activation receipts for reactivation after handover. Initial activation separates seal/schedule/execute by the production controller fixed at seal time, anonymous relay, and the fixed confirmation relayer; Confirmed execute permanently consumes internal bootstrap authority. Operators separately decide when to remove the external controller; this is not automated. Even before removal, only the existing Governance principal has activation authority after initial execute. Plan 007 local staging and PocketIC/Anvil/frontend E2E are implemented; external runs for additional wallet compatibility and five additional scenarios await explicit approval but do not block production activation.
 
-## 全体構成
+## Architecture
 
-実装対象は次の 3 つのコンポーネントである。
+Implementation covers three components:
 
-- **Base contract 群**：bSNS ERC-20 と Bridge contract。デプロイ後にアップグレードしない（ADR 0001）。
-- **Bridge canister**：ICP 側の Rust canister。escrow、Deposit と Withdrawal の状態機械、EVM への署名送信を担う。アップグレード可能とし、運用者が別途承認した時期にSNS管理へ移管する（ADR 0008）。
-- **形式検証**：canister 側は Verus、contract 側は Solidity SMTChecker。各 ADR が指定する証明義務を対象とする。
+- **Base contracts**: bSNS ERC-20 and Bridge contracts. Non-upgradeable after deployment (ADR 0001).
+- **Bridge canister**: the Rust canister on ICP, handling escrow, Deposit/Withdrawal state machines, and signing/submission to EVM. Upgradeable, with handover to SNS control at a separately approved time (ADR 0008).
+- **Formal verification**: Verus for the canister and Solidity SMTChecker for contracts, covering obligations specified by each ADR.
 
-依存関係は次のとおりである。
-Base contract のインターフェース（イベント、Withdrawal 状態、fee 制約）が canister 側の状態機械の前提になるため、contract を先に確定させる。
-形式検証は各コンポーネントの実装と並走させ、後付けにしない。
+Dependencies are as follows.
+Finalize the contracts first because their interfaces—events, Withdrawal states, and fee constraints—are assumptions of the canister state machine.
+Develop formal verification alongside each component, rather than adding it afterward.
 
-## Phase 0: 基盤整備
+## Phase 0: Foundations
 
-- リポジトリ構成を決める（`contracts/`、`canister/`、`docs/` の分離）。
-- Solidity 側のツールチェーン（Foundry と SMTChecker）を整備する。
-- Rust 側のツールチェーン（ic-cdk、ic-stable-structures、Verus）を整備する。
-- ローカル実行環境を用意する（PocketIC と anvil、または同等の EVM ローカルノード）。
-- CI で build、test、SMTChecker、Verus を回す骨格を作る。
+- Define repository structure, separating `contracts/`, `canister/`, and `docs/`.
+- Set up the Solidity toolchain: Foundry and SMTChecker.
+- Set up the Rust toolchain: ic-cdk, ic-stable-structures, and Verus.
+- Prepare a local runtime: PocketIC and anvil or an equivalent local EVM node.
+- Establish CI for builds, tests, SMTChecker, and Verus.
 
-**完了条件**：空実装の contract と canister がローカルで deploy でき、CI が通る。
+**Completion:** empty contract and canister implementations deploy locally and CI passes.
 
 ## Phase 1: Base contract
 
-bSNS ERC-20 と Bridge contract を実装する。
-アップグレード不能である以上、この Phase の設計ミスは再デプロイでしか直せない。
-ADR が contract 側へ課す制約をすべてこの Phase で実装する。
+Implement bSNS ERC-20 and the Bridge contract.
+Because they are non-upgradeable, design errors in this phase require redeployment.
+Implement every contract-side constraint imposed by the ADRs in this phase.
 
-Phase 1Aで確定したconstructor、型、関数、event、error、権限表は`docs/base-interface.md`を正本とする。
-Bridgeはconstructor内でbSNSを生成し（ADR 0014）、BaseのService FeeをcanisterがFinalized blockで読む正本とする（ADR 0013）。
-EIP-3009の追加interfaceはPhase 1Aの正本とselector/topic testへ反映済みである（ADR 0015）。
-Phase 1BでbSNS、EIP-3009、Deposit mint、Per-Deposit Limit、deploy時起点のfixed-window Mint Throughput Limitを実装済みである。
-Phase 1CのWithdrawalは、`createWithdrawal`内でtransfer、burn、固定quoteを`Committed`へ原子的に記録する現在形へ置換済みである。Base側のacknowledgement、cancel、refundは存在しない。
-Phase 1DでService Fee変更、独立pause、固定limit、role rotation、OpenZeppelinの24時間Timelock統合を実装済みである。
-Phase 1Eで検証を閉じ、ABIを凍結済みである。
+`docs/base-interface.md` is authoritative for constructors, types, functions, events, errors, and authority tables finalized in Phase 1A.
+The Bridge creates bSNS in its constructor (ADR 0014); Base Service Fee is the source of truth read by the canister at Finalized blocks (ADR 0013).
+The additional EIP-3009 interface is reflected in the Phase 1A specification and selector/topic tests (ADR 0015).
+Phase 1B implements bSNS, EIP-3009, Deposit minting, Per-Deposit Limit, and fixed-window Mint Throughput Limit starting at deployment.
+Phase 1C Withdrawals have been replaced by the current design: `createWithdrawal` atomically records transfer, burn, and a fixed quote as `Committed`. There is no Base acknowledgement, cancellation, or refund.
+Phase 1D implements Service Fee changes, independent pauses, fixed limits, role rotation, and OpenZeppelin's 24-hour Timelock integration.
+Phase 1E completes validation and freezes the ABI.
 
 ### 1-1. bSNS ERC-20
 
-- Bridgeable SNS Token を 1:1 で裏付ける ERC-20 とする（ADR 0002）。
-- 投票権、neuron 権限、Governance 用 identity mapping をいっさい持たせない（ADR 0002）。
-- mint と burn の権限を Bridge contract に限定する。
+- Implement an ERC-20 backed 1:1 by Bridgeable SNS Tokens (ADR 0002).
+- Provide no voting rights, neuron permissions, or Governance identity mapping (ADR 0002).
+- Restrict mint and burn authority to the Bridge contract.
 
-### 1-2. EIP-3009署名送金（ADR 0015）
+### 1-2. EIP-3009 authorized transfers (ADR 0015)
 
-- `transferWithAuthorization`と`receiveWithAuthorization`を実装し、x402 `exact`決済がbSNSを直接settleできるようにする。
-- `authorizationState`と`cancelAuthorization`を実装し、使用済みと取消済みのnonceをauthorizerごとの単一namespaceで再利用できないようにする。
-- EIP-712 domainをtoken name、固定version `"1"`、実行chain ID、bSNS contract addressへ束縛する。
-- `receiveWithAuthorization`ではcallerと受取人の一致を要求する。
-- authorization送金は既存balanceの移転だけに限定し、Bridge以外へmintとburnの権限を与えない。
-- Foundryで正常送金、replay、期限の前後、署名者とdomainの不一致、取消し、`receiveWithAuthorization`の受取人検査をテストする。
-- 標準ERC-20のallowanceを維持し、Permit2を代替のx402決済経路として妨げない。
+- Implement `transferWithAuthorization` and `receiveWithAuthorization` so x402 `exact` payments can settle bSNS directly.
+- Implement `authorizationState` and `cancelAuthorization`, preventing reuse of used or cancelled nonces in a single namespace per authorizer.
+- Bind the EIP-712 domain to the token name, fixed version `"1"`, execution chain ID, and bSNS contract address.
+- Require caller/recipient equality in `receiveWithAuthorization`.
+- Limit authorized transfers to existing balances; grant mint/burn authority to nobody except the Bridge.
+- Use Foundry to test successful transfers, replay, validity boundaries, signer/domain mismatches, cancellation, and `receiveWithAuthorization` recipient checks.
+- Preserve standard ERC-20 allowances and Permit2 as an alternative x402 payment path.
 
-### 1-3. Deposit mint の流量制御（ADR 0001、0012）
+### 1-3. Deposit mint throughput control (ADRs 0001, 0012)
 
-- Per-Deposit Limit を各 Deposit に適用する。
-- Mint Throughput Limit を fixed window（初期値 1 時間）の新規 deposit mint 総量に適用する。window 境界バーストの 2 倍係数は上限値の導出（`docs/parameters.md`）で織り込む。
-- 両制限とwindow長はdeploy時のimmutable値とし、raw unitで定義する。decimalsの表示変換を判定に使わない。
-- Withdrawal IDからburnを取り消すBase refund/remint経路を持たない。Bridge Signerの通常Deposit mint権限は別のtrust assumptionとする。
-- 各DepositにPer-Deposit Limitを適用し、同じfixed window内のmintを共有Mint Throughput Limitへ累積する。
+- Apply the Per-Deposit Limit to each Deposit.
+- Apply the Mint Throughput Limit to total new Deposit mints in a fixed window (initially one hour). Include the factor-of-two boundary burst in limit derivation (`docs/parameters.md`).
+- Make both limits and window duration immutable at deployment and define them in raw units. Do not use decimal display conversions for decisions.
+- Provide no Base refund/re-mint path that reverses a burn by Withdrawal ID. Treat the Bridge Signer's normal Deposit mint authority as a separate trust assumption.
+- Apply the Per-Deposit Limit to each Deposit and accumulate mints in the same fixed window against the shared Mint Throughput Limit.
 
-### 1-4. Withdrawal 状態機械（ADR 0018）
+### 1-4. Withdrawal state machine (ADR 0018)
 
-- Base Withdrawalは`None → Committed`だけを持ち、`Committed`を不可逆な終端状態とする。
-- `createWithdrawal`でtransfer、burn、Service Fee、`amountOut`、IC Accountを一つのtransactionへ固定する。
-- ICP送金後のBase transactionやWithdrawal向けEVM operationを作らない。
+- Base Withdrawals have only `None → Committed`, with `Committed` irreversible and terminal.
+- Fix transfer, burn, Service Fee, `amountOut`, and IC Account in one `createWithdrawal` transaction.
+- Create no post-ICP-transfer Base transaction or Withdrawal EVM operation.
 
-### 1-5. Service Fee（ADR 0004）
+### 1-5. Service Fee (ADR 0004)
 
-- immutable な `MAX_SERVICE_FEE` を raw unit でデプロイ時に固定する。
-- `0 <= service_fee <= MAX_SERVICE_FEE` を超える fee 変更を contract 側でも拒否する。
-- Withdrawal の `maxServiceFee` と実行時Service Feeの比較により、処理中の fee 変更から利用者を保護する。
-- WithdrawalのLedger FeeはBridgeが負担し、利用者の固定`amountOut`を減額しない。
+- Fix immutable `MAX_SERVICE_FEE` in raw units at deployment.
+- The contract also rejects fee changes outside `MIN_SERVICE_FEE <= service_fee <= MAX_SERVICE_FEE`.
+- Compare Withdrawal `maxServiceFee` with execution-time Service Fee to protect users during fee changes.
+- The Bridge pays Withdrawal Ledger Fees without reducing the user's fixed `amountOut`.
 
-### 1-6. 管理権限の分割（ADR 0005、0009）
+### 1-6. Administration authority separation (ADRs 0005, 0009)
 
-- Withdrawal受付を継続できない残高を運用監視で検出したとき、Runtime Administratorが新規Withdrawalをpauseし、既存Settlementだけを継続する。Bridge contractやCanisterによる自動pauseは行わない。
-- 即時操作（pause、上限内Service Fee変更）をRuntime Administratorのroleに割り当てる。
-- 遅延操作（unpause、role rotation）はCanister由来Governance OperatorだけがTimelock経由で実行する。人間のEVM管理鍵とhardware walletは置かず、timelock遅延は24時間とする。
-- limitを変更するfunctionとselectorは公開しない。
-- Base Admin に mint、refund、escrow 資産への権限を与えない。
+- When monitoring detects balances insufficient for continued Withdrawal admission, the Runtime Administrator pauses new Withdrawals while existing Settlements continue. Neither the Bridge contract nor Canister pauses automatically.
+- Assign immediate actions—pause and Service Fee changes within the cap—to the Runtime Administrator role.
+- Only the Canister-derived Governance Operator executes delayed actions—unpause and role rotation—through Timelock. Use no human EVM administration key or hardware wallet; the delay is 24 hours.
+- Expose no limit-changing functions or selectors.
+- Grant Base Admin no authority over minting, refunds, or escrow assets.
 
-### 1-7. SMTChecker による証明（ADR 0004）
+### 1-7. SMTChecker proofs (ADR 0004)
 
-- Service Fee の上限制約。
-- fee の二重計上防止と、成功前の fee 確定禁止。
-- recipient 変更時の fee reserve 保存。
-- fee reserve を超える送金の禁止。
+- Service Fee cap constraints.
+- Prevention of double fee accounting and fee finalization before success.
+- Fee reserve preservation on recipient changes.
+- Prohibition of payouts exceeding the fee reserve.
 
-**完了条件**：Foundry テストと SMTChecker が通り、Phase 1EのABI snapshotとfixtureでインターフェース（イベント、関数シグネチャ）を凍結できる。
+**Completion:** Foundry tests and SMTChecker pass, and Phase 1E ABI snapshots/fixtures freeze interfaces, including events and function signatures.
 
-### 1-8. Contract検証とABI凍結
+### 1-8. Contract validation and ABI freeze
 
-- concrete `Bridge`と`BSNS`のcanonical ABI snapshotを追跡し、interface subsetとconstructor、struct、enumの形状をCIで検査する。
-- Foundryのfuzzを1000 runs、stateful invariantを256 runs・depth 100・`fail_on_revert`で実行する。
-- Deposit mint、Withdrawal exposure、terminal state、roleとfee safetyをproduction共有library、unit test、stateful invariantで検証する。
-- EIP-3009 authorizationのnonce namespaceとrollbackをunit・fuzz testで検証する。
-- LCOVでlines 76.00%、branches 74.00%、functions 68.00%以上を要求し、空・欠損・不正LCOVを拒否する。statement値は使用しない。
-- 証明義務と外部仮定を`verification/obligations.md`へ記録する。
+- Track canonical concrete `Bridge` and `BSNS` ABI snapshots; check interface subsets and constructor, struct, and enum shapes in CI.
+- Run Foundry fuzzing with 1000 runs and stateful invariants with 256 runs, depth 100, and `fail_on_revert`.
+- Validate Deposit minting, Withdrawal exposure, terminal states, roles, and fee safety using production-shared libraries, unit tests, and stateful invariants.
+- Test EIP-3009 authorization nonce namespaces and rollback through unit and fuzz tests.
+- Require LCOV lines ≥76.00%, branches ≥74.00%, and functions ≥68.00%; reject empty, missing, or invalid LCOV. Do not use statement coverage.
+- Record proof obligations and external assumptions in `verification/obligations.md`.
 
-**完了条件**：ABI snapshot、selector/topic fixture、Foundry fuzz/invariant、SMT pass/negative、LCOV coverage閾値、local smoke、CIが同一判定で通り、Phase 1E以後のABI変更は別計画と再レビューを要する。
+**Completion:** ABI snapshots, selector/topic fixtures, Foundry fuzz/invariants, SMT pass/negative checks, LCOV thresholds, local smoke, and CI agree and pass. ABI changes after Phase 1E require a separate plan and renewed review.
 
-## Phase 2: Bridge canister の状態機械
+## Phase 2: Bridge canister state machine
 
-Deposit と Withdrawal の状態機械を、外部呼び出しを mock した純粋なロジックとして先に実装する。
-外部呼び出し（ICRC ledger、EVM RPC、threshold ECDSA）を分離しておくのは、Verus の証明対象を決定的なロジックに限定するためである。
+First implement Deposit and Withdrawal state machines as pure logic with mocked external calls.
+Separate ICRC ledger, EVM RPC, and threshold ECDSA calls to confine Verus proofs to deterministic logic.
 
-Phase 2で決定的状態機械と最初のstable schema、観測queryを実装した。
-後続のPlan 002と003および現行ADRで外部連携、運用状態、settlement executor、fund-before-formal-deposit、wallet-funded EIP-712 Mint Authorization、役割別governance nonce lane、確定activation evidenceを追加し、現行stable schemaはv36である。
+Phase 2 implemented the deterministic state machine, initial stable schema, and observation queries.
+Subsequent Plans 002/003 and current ADRs added external integrations, operational state, settlement executor, fund-before-formal-deposit, wallet-funded EIP-712 Mint Authorization, role-specific Governance nonce lanes, and confirmed activation evidence. The current format is stable schema v36.
 
-### 2-1. state 設計（ADR 0008、0010）
+### 2-1. State design (ADRs 0008, 0010)
 
-- KINICトークン専用とし、state とデプロイ構成から token ID による分岐を排除する。
-- 全 state を ic-stable-structures に直接保存し、`pre_upgrade` で全 serialize する設計を避ける。
-- 未完了の Deposit、Withdrawal、EVM transaction、Reconciliation Hold を upgrade 後に再開できる表現にする。
-- 本番初回deployまではstable schemaを直接置換し、migration、dual-read、fallbackを追加しない。現行version以外はfail closedとする。
-- schema versionは`bridge_metadata`だけを正本とし、現行形式はschema v36・record wire v30とする。
-- Deposit record、owner sequence、Base recipientは単一envelopeへ保存する。pending EVM、open hold、nonterminal Withdrawalの件数は対応indexのtable countを正本とする。
-- Withdrawal primary rowとliability index、合計額、stop reason集計はtyped SQLite transactionで同時に更新し、change-log triggerへ依存しない。
+- Dedicate the system to KINIC; remove token-ID branching from state and deployment configuration.
+- Persist all state directly in ic-stable-structures; avoid serializing everything in `pre_upgrade`.
+- Represent unfinished Deposits, Withdrawals, EVM transactions, and Reconciliation Holds so they can resume after upgrades.
+- Before initial production deployment, replace stable schemas directly without migrations, dual reads, or fallbacks. Fail closed for any version other than current.
+- Use only `bridge_metadata` as the source of truth for schema version; the current format is schema v36/record wire v30.
+- Save Deposit record, owner sequence, and Base recipient in one envelope. Use corresponding index table counts as authoritative counts for pending EVM, open Holds, and nonterminal Withdrawals.
+- Update Withdrawal primary rows, liability indexes, totals, and stop-reason aggregates together in typed SQLite transactions without relying on change-log triggers.
 
-### 2-2. Deposit フロー（ADR 0001、0004、0005）
+### 2-2. Deposit flow (ADRs 0001, 0004, 0005)
 
-1. 受付時はlocal pause、入力、`gross_amount > 100_000`を検査し、有料Base preflightより前に、正式Depositと分離したbounded funding attemptへ固定transfer identity、消費済みquota、active reservationを保存してcycle reserveを確認する。
-2. admission成功後だけfresh Base preflightを行い、同じupdate callでICRC-2 pullを実行する。成功または`Duplicate`だけを正式Depositへ昇格する。BaseまたはLedgerの確定的失敗はattemptとactive reservationを削除するがquotaは戻さず、曖昧・callback消失は同じidentityでreconciliationする。
-3. freshな観測でquoteとmint予約を原子的に確定する。観測不能・不一致・stale observationでは返金せず再観測する。
-4. 認可発行前のBase pause、fee拒否、上限超過では`RefundAvailable`にし、任意の非anonymous callerの明示請求時にrecord固定の元accountへ`gross_amount - 100_000`を送る。認可発行後はstrict deadlineとcanonical未処理証拠を確認し、`gross_amount - charged_service_fee - 100_000`を送る。初回pull fee、確定service fee、refund Ledger feeは返さない。曖昧結果はRefund Reconciliation Holdへ移し、任意の非anonymous callerの再請求で照合する。
-5. Mint Authorization署名の保存時だけService Feeをfee reserveへ一度計上する。Base mint成否でこのfeeを戻さず、fee payoutは確定済みreserveだけを使用する。
+1. On admission, check local pause, inputs, and `gross_amount > 100_000`. Before paid Base preflight, save fixed transfer identity, consumed quota, and active reservation in a bounded funding attempt separate from formal Deposits, and check the cycle reserve.
+2. After admission succeeds, persist `Dispatched` and perform the ICRC-2 pull. Only success or `Duplicate` permits paid Base preflight and promotion to a formal Deposit; a preflight failure does not discard funded assets. Definitive Ledger failure deletes the attempt and reservation and returns its quota within the same window. Ambiguous results or lost callbacks reconcile the same transfer identity.
+3. Atomically finalize quote and mint reservation from fresh observations. Reobserve instead of refunding when observations are unavailable, inconsistent, or stale.
+4. Before Authorization issuance, Base pause, fee rejection, or exceeded limits enter `RefundAvailable`; an explicit claim by any non-anonymous caller sends `gross_amount - 100_000` to the original account fixed in the record. After issuance, require the strict deadline and canonical unprocessed evidence, then send `gross_amount - charged_service_fee - 100_000`. Do not return the initial pull fee, finalized Service Fee, or refund Ledger fee. Ambiguous results enter Refund Reconciliation Hold and reconcile on renewed claims from any non-anonymous caller.
+5. Credit the Service Fee to the fee reserve exactly once only when saving the Mint Authorization signature. Do not reverse it based on Base mint outcome; fee payouts use only finalized reserves.
 
-### 2-3. Withdrawal フロー（ADR 0004、0011、0018）
+### 2-3. Withdrawal flow (ADRs 0004, 0011, 0018)
 
-1. `createWithdrawal` receipt、単一event、`Committed`状態、Bridge signerとruntimeを同一2-of-3 quorum Finalized blockへ束縛して検証する。
-2. 検証証拠、Withdrawal record、release job、transfer identity、監査eventを一つのSQLite transactionで保存してからICRC transferを開始する。
-3. 固定`amountOut = amount - chargedServiceFee`を送り、Ledger FeeはBridgeが負担する。
-4. transfer成功または`Duplicate`で`Paid`へ終端化し、結果不明はReconciliation Holdで完全履歴を照合する。
+1. Verify the `createWithdrawal` receipt, single event, `Committed` state, Bridge Signer, and runtime bound to the same 2-of-3 quorum Finalized block.
+2. Save verification evidence, Withdrawal record, release job, transfer identity, and audit event in one SQLite transaction before starting the ICRC transfer.
+3. Send fixed `amountOut = amount - chargedServiceFee`; the Bridge pays the Ledger Fee.
+4. Transfer success or `Duplicate` terminates as `Paid`; unknown results reconcile complete history in Reconciliation Hold.
 
-### 2-4. 会計の分離（ADR 0004、0005）
+### 2-4. Separate accounting (ADRs 0004, 0005)
 
-- fee reserve を Bridge Exposure の裏付け資産と分離して会計する。
-- fee 送金は確定済み fee reserve だけを対象とし、裏付け資産に到達できない構造にする。
-- Fee Recipient 変更時、未送金の確定済み fee reserve 全体を新 recipient へ帰属させる。recipient 別 bucket を持たない。
+- Account for fee reserves separately from assets backing Bridge Exposure.
+- Restrict fee payouts to finalized fee reserves so they cannot reach backing assets.
+- A Fee Recipient change assigns the entire unpaid finalized fee reserve to the new recipient. Keep no per-recipient buckets.
 
-**完了条件**：mock 環境で Deposit と Withdrawal の全状態遷移が単体テストで検証される。
+**Completion:** unit tests verify every Deposit and Withdrawal state transition in a mock environment.
 
-## Phase 3: 外部連携
+## Phase 3: External integrations
 
-Phase 3のICRC adapter、Base Finalized監視、EIP-712 Mint Authorization、Governance専用threshold ECDSA署名lane、外部Governance relayer、Reconciliation Hold履歴照合、公開Deposit APIは実装済みである。
-PicJSでDeposit、Withdrawal、Holdのupgrade保持、stuck receiptを検証する。
+Phase 3 implements the ICRC adapter, Base Finalized monitoring, EIP-712 Mint Authorization, Governance-only threshold ECDSA signing lane, external Governance relayer, Reconciliation Hold history matching, and public Deposit API.
+Use PicJS to verify preservation of Deposits, Withdrawals, and Holds through upgrades, and stuck receipts.
 
-### 3-1. EVM 連携（ADR 0005、0011）
+### 3-1. EVM integration (ADRs 0005, 0011)
 
-- Deposit Mintはthreshold ECDSAでEIP-712 Authorizationへ署名し、Base walletがtransactionを送信する。Mint用nonce、raw transaction、gas reserveは持たない。
-- 初期contract配置は外部EOAがTimelock、Bridgeの順に実行し、配置後にroleを残さない。Governance Operator、Runtime Administrator、Independent Cancellerの各laneではCanisterが独立したnonceと署名済みgenerationを保持し、権限なしrelayerがbroadcast、Finalized待機、確定通知を行う。Canisterのrebroadcast、receipt timer、自動replacementは持たず、明示要求されたreplacementだけを該当laneの同一nonceで最大3回再署名する。
-- Withdrawalの受付観測は`eth_getLogs`で発見し、Finalized headの状態読みで確定する。読み取りは3 provider中2の合意を要求する。
+- For Deposit mints, threshold ECDSA signs EIP-712 Authorizations and Base wallets submit transactions. There are no mint nonces, raw transactions, or gas reserves.
+- An external EOA initially deploys Timelock, then Bridge, retaining no roles afterward. For Governance Operator, Runtime Administrator, and Independent Canceller lanes, the Canister retains independent nonces and signed generations; an unprivileged relayer broadcasts, waits for Finalized status, and notifies confirmation. There is no Canister rebroadcast, receipt timer, or automatic replacement. Re-sign only explicitly requested replacements, at most three times at the same nonce in the corresponding lane.
+- Discover Withdrawal admission through `eth_getLogs` and confirm through Finalized-head state reads. Reads require agreement from two of three providers.
 
-### 3-2. Settlement Reserve と stable executor（ADR 0005、0019）
+### 3-2. Settlement Reserve and stable executor (ADRs 0005, 0019)
 
-- cycles floorとsettlement cycle ceilingを署名、RPC、Ledger処理のために維持する。ETHはBase transactionを送信するGovernance Operator、Runtime Administrator、Independent Cancellerへroleごとに必要な上限まで個別に補充する。
-- 未処理Authorizationの論理Mint capacityをterminal状態まで予約するが、Deposit admissionへMint gasやETH reserveを含めない。
-- stable executorのjobは型付きkindごとのclaim policyとrecord単位leaseを持ち、Deposit、Withdrawal、fee payoutを混同しない。
-- lease generationは単調増加とし、stale callback、同一recordの重複claim、進行中scheduled jobのgeneric manual claimを拒否する。automatic、public manual、Governance recovery laneは独立した上限を持つ。
-- cycles制約または論理Mint capacityを満たせないとき、新規Depositの受付を停止する。
-- Governance gas価格、EVM RPC費用、management canister call費用の上限評価を外部仮定として文書化し、監査対象にする。
+- Maintain cycles floor and settlement cycle ceiling for signing, RPC, and Ledger processing. Replenish ETH separately up to the required cap for each Base-sending role: Governance Operator, Runtime Administrator, and Independent Canceller.
+- Reserve logical mint capacity for unprocessed Authorizations until terminal state, but exclude mint gas and ETH reserves from Deposit admission.
+- Stable executor jobs use typed-kind claim policies and per-record leases; do not conflate Deposits, Withdrawals, and fee payouts.
+- Lease generations increase monotonically. Reject stale callbacks, duplicate claims for one record, and generic manual claims of in-progress scheduled jobs. Automatic, public manual, and Governance recovery lanes have independent caps.
+- Stop new Deposit admission when cycles constraints or logical mint capacity cannot be met.
+- Document and audit Governance gas price, EVM RPC cost, and management canister call cost upper bounds as external assumptions.
 
-Settlement Reserve、stable executor、新規Deposit pause、Fee Recipient、fee payout、stable監査ログはPlan 003およびADR 0019の構成で実装済みである。
-本番の数値と鍵保管方式はPlan 005と006で確定する。
+Settlement Reserve, stable executor, new Deposit pause, Fee Recipient, fee payouts, and stable audit logs are implemented according to Plan 003 and ADR 0019.
+Plans 005 and 006 finalize production values and key custody.
 
-### 3-3. Reconciliation Hold（ADR 0006）
+### 3-3. Reconciliation Hold (ADR 0006)
 
-- deduplication 期間内は、同一の `created_at_time`、memo、amount、fee、from、to、spender でだけ再試行する。
-- 期間経過後は ICRC-3 と index 履歴で照合する。archive を含む検索範囲の完全性と同期済み watermark を確認し、memo 単独で判定しない。
-- 履歴サービスの遅延、欠落、archive 障害がある間は「存在しない」と判定しない。
-- 成否を確定できない要求を Reconciliation Hold へ無期限に留め、時間経過による再送、Deposit 返金、Base Refund を禁止する。
-- Governance による解除は証拠に基づく成否確定に限定し、証拠なしの再送と返金を強制できない API にする。
+- During deduplication, retry only with identical `created_at_time`, memo, amount, fee, from, to, and spender.
+- Afterward, reconcile ICRC-3 and index history, checking complete search coverage including archives and synchronized watermarks; never match by memo alone.
+- Do not conclude absence while history services lag, data is missing, or archives fail.
+- Retain requests with unresolved outcomes in Reconciliation Hold indefinitely; prohibit resubmission, Deposit refunds, or Base Refunds based on elapsed time.
+- Limit Governance resolution to evidence-based success/failure determination; the API must not permit forced resubmission or refunds without evidence.
 
-**完了条件**：PocketIC とローカル EVM ノードによる統合テストで、正常系、失敗系、Reconciliation Hold 遷移が検証される。
+**Completion:** PocketIC/local EVM integration tests verify success, failure, and Reconciliation Hold transitions.
 
-## Phase 4: 管理権限
+## Phase 4: Administration authority
 
-Plan 003で管理権限と監査ログを実装済みである。
+Plan 003 implements administration authority and audit logs.
 
-- 単一pause principalはIC/Base双方のpause、記録済みpending Timelock cancel、許可済みSettlementの進行だけを実行できる。
-- SNS Governanceだけが通常時の再開、pause principal rotation、Fee Recipient、fee payout、Service Fee、Timelock schedule/executeを実行できる。初回activationのschedule/executeだけは、seal時に固定したproduction controllerを一時的な例外とする。
-- Base操作はMint Signerと、Governance Operator、Runtime Administrator、Independent Cancellerの各管理laneを分離し、任意target/calldata/raw transaction/nonce APIを公開しない。
-- 人間のEVM address、controller identity、初回deployerへ永続roleを与えない。
-- SNS-token feeからBase gas用ETHへの自動変換は行わず、運用者がrunbookに従って補充する。
+- The single pause principal can only pause IC/Base, cancel recorded pending Timelock operations, and advance permitted Settlements.
+- Only SNS Governance may perform normal resume, pause principal rotation, Fee Recipient changes, fee payouts, Service Fee changes, and Timelock schedule/execute. The production controller fixed at seal time is a temporary exception only for initial activation schedule/execute.
+- Separate Mint Signer from Governance Operator, Runtime Administrator, and Independent Canceller administration lanes. Expose no arbitrary target, calldata, raw transaction, or nonce API.
+- Grant no permanent roles to human EVM addresses, controller identities, or the initial deployer.
+- Do not automatically convert SNS-token fees into Base gas ETH; operators replenish according to the runbook.
 
-## Phase 5: 形式検証（Verus）
+## Phase 5: Formal verification (Verus)
 
-Plan 004でproduction共有kernelの証明とnegative fixtureを実装済みである。
-証明はWasmごとに再実行し、過去版の証明を新しいupgradeへ流用しない（ADR 0008）。
+Plan 004 implements production-shared kernel proofs and negative fixtures.
+Rerun proofs for each Wasm; do not reuse a previous version's proofs for a new upgrade (ADR 0008).
 
-- 各DepositのquoteがService Fee上限、正のnet額、Per-Deposit Limit、Mint Throughput Limitを満たし、quote確定時だけmint予約へ移ること。Withdrawal専用のBase refund/remint経路がなく、処理済みDeposit IDをreplayできないこと（ADR 0018、0021）。
-- canonical観測とLedger成功を前提に、1件のWithdrawalがBase `Committed`からCanister `Paid`へ進み、`Paid`後に再送・減額・送金先変更されないこと（ADR 0018）。外部サービスのlivenessは主張しない。
-- Service Feeの上限制約、二重計上防止、成功前のfee確定禁止、未完了payoutがない場合のrecipient変更によるreserve保存、fee reserveを超える送金の禁止（ADR 0004）。
-- Deposit受付がcandidateを含むSettlement Reserveを満たし、candidateからreservedへの移行で必要資源量を減らさないこと（ADR 0005）。
-- stable settlement executorのleaseがrecordとlaneへ束縛され、generationが単調増加し、stale callback、同一recordの重複claim、scheduled/leased jobの手動迂回を拒否すること（ADR 0019、0023）。
-- release対象claimは`Claims.lean`、有限幅モデルは`FiniteWidthModel.lean`、model refinementは`ModelRefinement.lean`、統合traceは`Protocol.lean`へ分離し、claim台帳、vector section、production consumer、外部仮定をCIで完全一致させる。model refinementはproduction全体の証明とは呼ばず、生成vectorによるbounded conformanceとして扱う。release driverは自己申告attestationを受理せず、不可逆操作直前にclean sourceからproof gateと二重artifact buildを再実行する。
-- Reconciliation Hold から新規 transfer または補償状態へ直接遷移しないこと（ADR 0006）。
+- Each Deposit quote satisfies the Service Fee cap, positive net amount, Per-Deposit Limit, and Mint Throughput Limit; mint reservation occurs only at quote finalization. There is no Withdrawal-specific Base refund/re-mint path, and processed Deposit IDs cannot replay (ADRs 0018, 0021).
+- Assuming canonical observations and Ledger success, a Withdrawal progresses from Base `Committed` to Canister `Paid`, after which it cannot be resent, reduced, or redirected (ADR 0018). Do not claim external service liveness.
+- Service Fee caps, no double accounting, no fee finalization before success, reserve preservation on recipient changes without unfinished payouts, and no payouts exceeding the fee reserve (ADR 0004).
+- Deposit admission meets the Settlement Reserve including the candidate, and transition from candidate to reserved does not reduce required resources (ADR 0005).
+- Stable executor leases bind to records and lanes, generations increase monotonically, and stale callbacks, duplicate claims, and manual bypass of scheduled/leased jobs are rejected (ADRs 0019, 0023).
+- Separate release claims into `Claims.lean`, finite-width models into `FiniteWidthModel.lean`, model refinement into `ModelRefinement.lean`, and integrated traces into `Protocol.lean`. CI requires exact agreement among claim ledgers, vector sections, production consumers, and external assumptions. Treat model refinement as bounded conformance through generated vectors, not proof of the entire production implementation. Release drivers reject self-reported attestations and rerun the proof gate and double artifact build from clean source immediately before irreversible operations.
+- No direct transition from Reconciliation Hold to a new transfer or compensating state (ADR 0006).
 
-証明範囲は資産の 1:1 裏付けと上記の性質に限定し、cross-chain governance を含めない（ADR 0002）。
+Proof scope is limited to 1:1 asset backing and these properties; it excludes cross-chain governance (ADR 0002).
 
-## Phase 6: 初回activation、本番計測、SNS移管
+## Phase 6: Initial activation, production measurements, and SNS handover
 
-- production controllerを単独controllerとして保持したまま、固定運用値をsealし、Gate Bと個別承認後に初回schedule／executeを行う。
-- 初回executeのConfirmed完了時に内部bootstrap activation authorityを永久に消費し、外部controller設定を変えなくても以後はGovernance principalだけを認可する。
-- upgrade 前後で未完了のDeposit Authorization、Withdrawal、Governance EVM transaction、Reconciliation Holdが再開できることを、実データ相当のstateで検証する。
-- unpause後に7日・各10件以上の本番計測とGate C証跡を収集する。結果は運用値を自動更新せず、handoverの認可入力または実施時期の自動決定にも使わない。
-- 別途明示承認された時期にhandoverを実行する場合は、初期運用値、seal／schedule／execute receipt、live RuntimeBinding、post-Gate-A upgrade chainをcurrent profile Wasmへ束縛する。送信直前はproduction identity一件だけのcontroller、Activated、Base両flowとIC Depositのunpausedを必須にし、変更前後のmodule、runtime、storage integrity、運用状態のcontinuityを保存する。空stateは要求せず、変更後のcontroller一覧はSNS Rootだけにして開発者identity、fallback identity、NNS Rootを残さない。
-- handover 後の upgrade proposal に添付する成果物（Wasm hash、source revision、Verus 結果、テスト結果、stable schema 互換性）の生成を CI で自動化する。
-- EIP-3009はbSNSの任意連携機能とし、x402 resource serverやfacilitatorとの互換性をBridgeの配置・activation条件に含めない（ADR 0015）。
-- UI 側の要件として、Deposit 前に bSNS では投票と投票報酬を得られないことを明示する（ADR 0002）。UI 実装が別リポジトリの場合は要件として引き渡す。
+- Retain the production controller as sole controller, seal fixed operating values, and perform initial schedule/execute only after Gate B and separate approval.
+- Confirmed completion of initial execute permanently consumes internal bootstrap activation authority; subsequent operations authorize only the Governance principal even without external controller changes.
+- Using production-like state, verify that unfinished Deposit Authorizations, Withdrawals, Governance EVM transactions, and Reconciliation Holds resume across upgrades.
+- After unpause, collect at least seven days and 10-per-type production measurements and Gate C evidence. Results neither automatically update operating values nor authorize or automatically schedule handover.
+- If handover occurs at a separately approved time, bind initial operating values, seal/schedule/execute receipts, live RuntimeBinding, and the post-Gate-A upgrade chain to the current profile Wasm. Immediately before submission, require the production identity as sole controller, Activated state, and unpaused Base flows and IC Deposits. Preserve pre/post-change module, runtime, storage integrity, and operational continuity. Do not require empty state; afterward SNS Root must be the sole controller, retaining no developer identity, fallback identity, or NNS Root.
+- Automate CI generation of artifacts for post-handover upgrade proposals: Wasm hash, source revision, Verus results, test results, and stable schema compatibility.
+- EIP-3009 is an optional bSNS integration feature; x402 resource server/facilitator compatibility is not a Bridge deployment or activation condition (ADR 0015).
+- The UI must state before Deposit that bSNS provides no voting rights or voting rewards (ADR 0002). If implemented in another repository, hand over this requirement.
 
-**完了条件**：初回activationはcontroller activation receiptとactive状態の検証で完了する。SNS移管は、運用者が時期を別途承認した後にhandover checklistとSNS proposal upgradeを完了した時点で別に判定する。
+**Completion:** initial activation completes with a controller activation receipt and verified active state. SNS handover is assessed separately after operators approve its timing and the handover checklist and SNS proposal upgrade are completed.
 
-## 未完了事項
+## Remaining work
 
-Plan 005の初回activation前条件は、承認済み初期運用値、単一pause principal、固定limit、pre-seal／live Gate Bである。RPC rehearsal、monitor drill、7日以上のBase feeと各10件以上の本番governance gas／settlement cyclesはunpause後のGate Cで収集し、設定を自動変更しない。5/15/60は本番ゲートではなく公開後の監視目標とする。
-初回activationのmainnet candidateは認証済みGate A／Gate Bとschedule／execute activation receiptが揃うまで`validated`にしない。
-Plan 006のrepository実装は完了している。SNS Rootへの実controller handoverとSNS proposal upgradeは、運用者が時期を別途承認した後の完了条件として分離する。
+Plan 005's initial activation prerequisites are approved initial operating values, a single pause principal, fixed limits, and pre-seal/live Gate B. Collect RPC rehearsal, monitor drill, at least seven days of Base fees, and at least 10 production Governance gas/settlement cycles samples each in Gate C after unpause, without automatically changing configuration. Treat 5/15/60 as post-publication monitoring targets, not production gates.
+Do not mark the initial activation mainnet candidate `validated` until authenticated Gate A/Gate B and schedule/execute activation receipts are complete.
+Plan 006 repository implementation is complete. Actual SNS Root controller handover and SNS proposal upgrade remain separate completion conditions after operators independently approve timing.
 
-## Phase 間の依存とマイルストーン
+## Phase dependencies and milestones
 
-| Phase | 内容 | 前提 |
+| Phase | Scope | Prerequisites |
 |---|---|---|
-| 0 | 基盤整備 | なし |
+| 0 | Foundations | None |
 | 1 | Base contract | Phase 0 |
-| 2 | canister 状態機械 | Phase 1 のインターフェース凍結 |
-| 3 | 外部連携 | Phase 2 |
-| 4 | 管理権限 | Phase 2（Phase 3 と並行可） |
-| 5 | Verus 証明 | Phase 2 以降と並走 |
-| 6 | 初回activation・本番計測・SNS移管 | Phase 1〜5 すべて、対象 SNS トークンの確定、初期運用値と鍵管理詳細の確定 |
+| 2 | Canister state machine | Phase 1 interface freeze |
+| 3 | External integrations | Phase 2 |
+| 4 | Administration authority | Phase 2; may run alongside Phase 3 |
+| 5 | Verus proofs | Alongside Phase 2 onward |
+| 6 | Initial activation, production measurements, SNS handover | All Phases 1–5; target SNS token, initial operating values, and key management details finalized |

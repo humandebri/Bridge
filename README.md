@@ -1,31 +1,31 @@
 # KINIC–Base Bridge
 
-KINICトークンをICPとBaseの間で1:1に裏付けるBridge。
+A bridge that maintains 1:1 backing for KINIC tokens between ICP and Base.
 
-## 現在の状態
+## Current status
 
-[実装計画の索引](plans/README.md)を進捗の正本とする。
+The [implementation plan index](plans/README.md) is the source of truth for progress.
 
-| 対象 | 状態 | 残作業 |
+| Scope | Status | Remaining work |
 |---|---|---|
-| Plan 001〜004 | 完了 | 履歴資料として保持 |
-| Plan 005 | 進行中 | 初期運用値と固定limitの確定。10回・7日計測とpause/cancel経路演習はunpause後のGate C |
-| Plan 006 | リポジトリ実装済み | 13 artifact Gate B、本番activation、mainnet evidence。SNS handover時期は別判断 |
-| Plan 007 | Local完了 / External待ち | 非blockingのwallet互換性・追加障害シナリオ |
-| Production | Base／ICともpause配置済み | 13 artifact Gate Bと本番activation完了まで資産受付禁止 |
+| Plans 001–004 | Complete | Retained as historical records |
+| Plan 005 | In progress | Finalize initial operating values and fixed limits. The 10-run, seven-day measurements and pause/cancel drills belong to Gate C after unpause |
+| Plan 006 | Implemented in the repository | Gate B with 13 artifacts, production activation, and mainnet evidence. SNS handover timing is a separate decision |
+| Plan 007 | Local complete / External pending | Nonblocking wallet compatibility checks and additional failure scenarios |
+| Production | Deployed paused on both Base and IC | No asset admission until Gate B with 13 artifacts and production activation are complete |
 
-`bridge-core`はDeposit、Withdrawal、Mint Authorization、Reconciliation Hold、Settlement Reserve、会計の決定的な遷移を担う。
-`bridge-canister`はstable schema v36・record wire v30の単一SQLite DBへ状態を保存し、owner sequence型Deposit API、状態照会、ICRC Ledger、EVM RPC、threshold ECDSA、運用管理APIを接続する。
-ICP→BaseではCanisterはFinalized Base snapshotで状態・fee・pauseを確認し、IC合意時刻の発行時点から10分を期限とするEIP-712 Mint Authorizationへ署名する。署名install時に5分以上残っていなければservice feeを計上せず停止し、Base transactionは生成・送信しない。任意のBase walletが残り5分以上で`mintDepositWithAuthorization`を送り、そのwalletがgasを支払う。Solidityは別途、現在のBase時刻から最大15分のdeadline上限を強制する。
-期限後、既存のBase Finalized snapshotを使うdeadline順の上限付きローカル走査でmint予約だけを解放する。Depositごとのtimerや個別Base照合、自動返金は行わない。任意の非anonymous Principalが`request_deposit_refund`を明示実行すると、同じcanonical Finalized blockで期限超過と`isDepositProcessed`を照合し、未処理ならrecordに固定された元account・金額・transfer identityでLedger refund、処理済みならexact `DepositMinted` eventとcanonical receiptを保存して`Minted`へ進む。RPC不一致、event欠落、digest不一致では資金を動かさない。
-Mint用ETH reserve、gas見積り、nonce、raw transaction、rebroadcast、replacementは存在しない。Base governanceではCanisterがGovernance Operatorのtransactionをthreshold署名し、外部`governance-relayer` CLIだけがbroadcast、Finalized待機、確定通知を行う。自動replacementはなく、Governanceの明示要求時だけ同一nonceを最大3回、12.5%以上fee bumpして再署名する。
-Base側はKINICを表すERC-20（`name = "KINIC"`、`symbol = "KINIC"`）、EIP-3009、DepositとWithdrawal、独立pause、固定limit、上限内Service Fee変更、role rotationを実装し、危険方向の操作をOpenZeppelinの24時間Timelockへ接続している。
+`bridge-core` handles deterministic transitions for Deposits, Withdrawals, Mint Authorizations, Reconciliation Holds, Settlement Reserves, and accounting.
+`bridge-canister` persists state in a single SQLite database with stable schema v36 and record wire v30, connecting the owner-sequence Deposit API, status queries, ICRC Ledger, EVM RPC, threshold ECDSA, and operational administration APIs.
+For ICP→Base, the Canister checks state, fees, and pause status against a Finalized Base snapshot, then signs an EIP-712 Mint Authorization expiring 15 minutes after issuance according to IC consensus time. If fewer than five minutes remain when the signature is installed, it stops without accruing a service fee; it does not create or submit a Base transaction. Any Base wallet can submit `mintDepositWithAuthorization` with at least five minutes remaining, paying the gas itself. Solidity separately enforces a deadline no more than 15 minutes ahead of the current Base time.
+After expiry, a bounded local scan in deadline order uses the existing Base Finalized snapshot to release only mint reservations. There are no per-Deposit timers, individual Base reconciliation calls, or automatic refunds. When any non-anonymous Principal explicitly calls `request_deposit_refund`, expiry and `isDepositProcessed` are checked at the same canonical Finalized block. If unprocessed, the Ledger refund uses the original account, amount, and transfer identity fixed in the record; if processed, the exact `DepositMinted` event and canonical receipt are saved and the Deposit advances to `Minted`. RPC disagreement, a missing event, or a digest mismatch must not move funds.
+There is no mint ETH reserve, gas estimation, nonce, raw transaction, rebroadcast, or replacement. For Base governance, the Canister threshold-signs Governance Operator transactions, and only the external `governance-relayer` CLI broadcasts them, waits for Finalized confirmation, and notifies the Canister. Replacement is never automatic: only an explicit Governance request can re-sign the same nonce, at most three times, with a fee bump of at least 12.5%.
+The Base implementation includes the ERC-20 representing KINIC (`name = "KINIC"`, `symbol = "KINIC"`), EIP-3009, Deposits and Withdrawals, independent pauses, fixed limits, Service Fee changes within the cap, and role rotation. Operations that increase risk go through OpenZeppelin's 24-hour Timelock.
 
-Base→ICP Withdrawalはユーザーが`createWithdrawal`を送信し、その同一transactionでbSNSの`transferFrom`、burn、固定受取額を持つ`Committed`化を原子的に実行する。Canisterは同じcanonical Finalized block hashへ束縛したreceipt、event、Withdrawal state、Bridge snapshotをquorumで検証し、固定IC Accountへの債務とtransfer identityを保存する。通知成功後にUIがbrowser identityで`continue_withdrawal`を1回実行し、未完了ならHistoryの明示操作ごとにLedger送金または照合を最大1 external step進める。Canister timerによるWithdrawal再試行、Base refund、release acknowledgementはない。Finalized headまたはcanonical hashが2-of-3で収束しない場合はfail closedとし、Safeへfallbackしない。
+For Base→ICP Withdrawals, the user submits `createWithdrawal`, which atomically executes bSNS `transferFrom`, burns the tokens, and enters `Committed` with a fixed payout in the same transaction. The Canister verifies the receipt, event, Withdrawal state, and Bridge snapshot by quorum, all bound to the same canonical Finalized block hash, and stores the liability to a fixed IC Account and the transfer identity. After successful notification, the UI calls `continue_withdrawal` once using the browser identity. If incomplete, each explicit History action advances the Ledger transfer or reconciliation by at most one external step. There are no Canister timer retries for Withdrawals, Base refunds, or release acknowledgements. If the Finalized head or canonical hash does not converge by 2-of-3 quorum, processing fails closed without falling back to Safe.
 
-本番BridgeはBase／ICともpause状態で配置済みである。初期運用値を含む13 artifact Gate B、Canister操作型production preflight、schedule／execute activationが完了するまで本番資産を受け付けない。10回・7日計測、pause/cancel経路演習、主要5 scenarioはunpause後のGate C運用証跡であり、Gate B、activation、controller handoverを認可しない。SNS handoverの時期は運用者が別途判断し、Plan 007の追加wallet互換性と追加5 scenarioは非blockingで継続する。
+The production Bridge is deployed paused on both Base and IC. Production assets must not be accepted until Gate B with 13 artifacts (including initial operating values), the Canister-driven production preflight, and scheduled/executed activation are complete. The 10-run, seven-day measurements, pause/cancel drills, and five core scenarios are Gate C operational evidence collected after unpause; they do not authorize Gate B, activation, or controller handover. Operators decide SNS handover timing separately, while Plan 007's additional wallet compatibility checks and five additional scenarios continue as nonblocking work.
 
-Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実行フローは[docs/bridge-flow.md](docs/bridge-flow.md)、実装計画は[docs/implementation-plan.md](docs/implementation-plan.md)、用語は[docs/glossary.md](docs/glossary.md)、安全上の決定は[docs/adr](docs/adr)を参照する。RPC providerのchain bindingとruntime quorumの保証境界は[ADR 0024](docs/adr/0024-validate-rpc-chain-binding-before-runtime.md)を正本とする。
+Start with the [documentation index](docs/README.md). See [docs/base-interface.md](docs/base-interface.md) for the Base ABI, [docs/bridge-flow.md](docs/bridge-flow.md) for execution flows, [docs/implementation-plan.md](docs/implementation-plan.md) for implementation phases, [docs/glossary.md](docs/glossary.md) for terminology, and [docs/adr](docs/adr) for safety decisions. [ADR 0024](docs/adr/0024-validate-rpc-chain-binding-before-runtime.md) is the source of truth for the guarantees and boundaries of RPC provider chain binding and runtime quorum.
 
 ## KINIC mainnet canister
 
@@ -34,11 +34,11 @@ Base ABIは[docs/base-interface.md](docs/base-interface.md)、ブリッジの実
 | Ledger | `73mez-iiaaa-aaaaq-aaasq-cai` |
 | Index | `7vojr-tyaaa-aaaaq-aaatq-cai` |
 
-Bridge canisterはこのLedgerとIndexだけを対象とする。Ledger metadataは`name = "KINIC"`、`symbol = "KINIC"`、`decimals = 8`である。Archive canisterは増設され得るためIDを固定せず、LedgerのICRC-3 archive discovery結果を使用する。
+The Bridge canister targets only this Ledger and Index. Ledger metadata is `name = "KINIC"`, `symbol = "KINIC"`, and `decimals = 8`. Archive canisters may be added, so their IDs are not fixed; use the Ledger's ICRC-3 archive discovery results.
 
-通常の`bridge-canister` artifactはBase mainnet（chain ID `8453`）と上記Ledger/Indexを初期化時に必須とする。PocketIC・Anvil向けの任意bindingはdefault無効の`test-deployment` featureだけが受理し、`target/test-deployment/`へ分離してbuildする。本番artifactへこのfeatureを付けない。
+The standard `bridge-canister` artifact requires Base mainnet (chain ID `8453`) and the Ledger/Index above at initialization. Arbitrary bindings for PocketIC and Anvil are accepted only by the `test-deployment` feature, which is disabled by default and built separately under `target/test-deployment/`. Never enable this feature for a production artifact.
 
-## 固定ツール
+## Pinned tools
 
 | Tool | Version |
 |---|---:|
@@ -55,10 +55,10 @@ Bridge canisterはこのLedgerとIndexだけを対象とする。Ledger metadata
 | Node.js | 24.14.0 |
 | pnpm | 11.0.8 |
 
-Rustは`rust-toolchain.toml`、Rust依存は`Cargo.lock`、Leanは`lean-toolchain`、Solidity compilerとEVM targetは`contracts/foundry.toml`、OpenZeppelinはgit submoduleのcommitで固定する。
-Verusが内部で要求するRust 1.96.0はCIのVerus導入stepで別途固定する。
+Rust is pinned in `rust-toolchain.toml`, Rust dependencies in `Cargo.lock`, Lean in `lean-toolchain`, the Solidity compiler and EVM target in `contracts/foundry.toml`, and OpenZeppelin by its Git submodule commit.
+Rust 1.96.0, required internally by Verus, is pinned separately in the CI Verus installation step.
 
-## 新規cloneの準備
+## Prepare a fresh clone
 
 ```bash
 git submodule update --init --recursive
@@ -67,12 +67,12 @@ pnpm --dir ui install --frozen-lockfile
 pnpm --dir ui exec playwright install chromium
 ```
 
-上記の固定ツールを導入したうえで`scripts/ci-local.sh versions`を実行する。
-CIでの固定ツール導入手順は[`.github/workflows/ci.yml`](.github/workflows/ci.yml)を参照する。
+Install the pinned tools above, then run `scripts/ci-local.sh versions`.
+See [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for the CI installation procedure for pinned tools.
 
-## 検証
+## Validation
 
-開発中は変更領域に対応するfast modeを実行する。
+During development, run the fast mode for the area being changed.
 
 ```bash
 scripts/ci-local.sh rust-fast
@@ -80,7 +80,7 @@ scripts/ci-local.sh contracts-fast
 scripts/ci-local.sh ui-fast
 ```
 
-Wasm・PocketIC統合、coverage、ブラウザE2Eは必要に応じて個別に実行する。
+Run Wasm/PocketIC integration, coverage, and browser E2E checks individually as needed.
 
 ```bash
 scripts/ci-local.sh rust-integration
@@ -88,16 +88,16 @@ scripts/ci-local.sh contracts-coverage
 scripts/ci-local.sh ui-e2e
 ```
 
-Solidity coverageはLCOVのlines 76.00%、branches 74.00%、functions 68.00%以上を要求する。LCOVの欠損、空入力、ゼロ母数、不正値は失敗とし、Timelock除外は維持する。statement coverageは合否にも表示にも使用しない。
+Solidity coverage requires LCOV lines ≥76.00%, branches ≥74.00%, and functions ≥68.00%. Missing LCOV, empty input, zero denominators, and invalid values fail the check; Timelock exclusions remain in place. Statement coverage is neither evaluated nor displayed.
 
-安全性関連変更では、次の4つを別の終端として扱う。
+For safety-related changes, distinguish these four completion points:
 
-1. 実装完了: code、test、manifest、documentationの変更が揃っている。
-2. PR検証完了: 変更pathから選ばれたproof stageと対象testが成功している。これは正式なproof receiptを生成しない。
-3. release検証完了: current source fingerprintと一致する全10 stageのcomplete proof receiptがある。
-4. deploy承認: Canister upgrade、frontend publish、Base transactionなどの外部変更が明示承認されている。
+1. Implementation complete: code, tests, manifests, and documentation are updated.
+2. PR validation complete: the proof stages selected from changed paths and the applicable tests pass. This does not generate a formal proof receipt.
+3. Release validation complete: a complete proof receipt covers all 10 stages and matches the current source fingerprint.
+4. Deployment approved: external changes such as a Canister upgrade, frontend publication, or Base transaction have explicit approval.
 
-proof合格は自動deployを意味しない。高コストproofの前に、登録driftを含む軽量検査を完了させる。
+Passing proofs does not trigger deployment. Complete lightweight checks, including registration drift checks, before expensive proofs.
 
 ```bash
 git diff --check
@@ -110,33 +110,33 @@ python3 scripts/check_claim_manifest.py
 python3 scripts/check_claim_test_manifest.py --validate-only
 ```
 
-PRではclassifierが出力したchanged-paths JSONを使い、影響stageだけを実行する。
+For PRs, use the classifier's changed-paths JSON to run only impacted stages.
 
 ```bash
 scripts/ci-local.sh proofs-impacted /path/to/changed-paths.json
 ```
 
-このmodeは`verification/proof-impact.tsv`のstage unionだけを実行し、正式なproof receiptを作らない。production kernel、状態遷移、Solidity policy、proof実行基盤の変更はmanifestにより全10 stageが選択される。positive Lean stageはnegative fixture stageと常に対で実行される。
+This mode runs only the stage union selected by `verification/proof-impact.tsv` and does not create a formal proof receipt. The manifest selects all 10 stages for changes to production kernels, state transitions, Solidity policy, or proof infrastructure. Positive Lean stages always run together with their negative fixture stages.
 
-軽量検査と対象testが成功し、重複gateとwriterがないことを確認してから、release candidateまたはproduction driverでcurrent fingerprintの完全proofを一度実行する。長時間実行時は完全ログを保持する。
+After lightweight checks and applicable tests pass, confirm that there are no duplicate gates or writers, then run the complete proof gate once against the current fingerprint for the release candidate or production driver. Preserve the complete log for long runs.
 
 ```bash
 qrun -- scripts/ci-local.sh proofs
 ```
 
-PRは`trusted-pr-gate`のatomic gate matrixに任せる。手元で全検証が必要な場合だけ次を使う。
+PRs use the atomic gate matrix in `trusted-pr-gate`. Use the following only when full local validation is needed.
 
 ```bash
 scripts/ci-local.sh checks
 ```
 
-main pushと手動release candidateでは全検証とローカルdeploy smokeを実行する。
+Main pushes and manual release candidates run full validation and the local deployment smoke test.
 
 ```bash
 scripts/ci-local.sh all
 ```
 
-既存の集約modeとその他の個別実行:
+Existing aggregate modes and other individual commands:
 
 ```bash
 scripts/ci-local.sh versions
@@ -149,52 +149,52 @@ scripts/ci-local.sh smoke
 scripts/ci-local.sh real
 ```
 
-GitHub Actionsの`trusted-pr-gate`は`pull_request_target`でbase branch版classifierだけを実行し、PRの正確なhead SHAをread-only・secretなしのephemeral runnerで検証する。classifierは`policy`、`rust-fast`、`rust-integration`、`contracts-fast`、`proofs-impacted`、`ui-fast`、`ui-e2e`、`real`、`icp`、`certora`のatomic gateを選ぶ。文書だけなら計算gateはなく、deployment文書はexact-head reviewだけを要求する。workflow、CI中枢、未登録production source、submodule、未知pathは全gateへfail closedする。test、validation、dependency変更は対象gateに加えてexact-head reviewを要求する。PRでは`contracts-coverage`を実行しない。
-bootstrap merge後にBranch ProtectionまたはRulesetで`trusted-pr-gate`をrequiredかつstrictに設定する必要がある。`main`へのpushはclassifierを使わず、再利用可能な`bridge-full-ci`で`scripts/ci-local.sh all`を1回実行する。定期cronはなく、障害調査とrelease candidateには`workflow_dispatch`で対象SHAを指定する。
+GitHub Actions `trusted-pr-gate` runs only the base branch classifier under `pull_request_target`, validating the PR's exact head SHA on a read-only, secret-free ephemeral runner. The classifier selects the atomic gates `policy`, `rust-fast`, `rust-integration`, `contracts-fast`, `proofs-impacted`, `ui-fast`, `ui-e2e`, `real`, `icp`, and `certora`. Documentation-only changes select no computation gates; deployment documentation requires only exact-head review. Workflows, core CI files, unregistered production sources, submodules, and unknown paths fail closed to all gates. Test, validation, and dependency changes require exact-head review in addition to applicable gates. PRs do not run `contracts-coverage`.
+After the bootstrap merge, configure `trusted-pr-gate` as required and strict in Branch Protection or a Ruleset. Pushes to `main` do not use the classifier: the reusable `bridge-full-ci` runs `scripts/ci-local.sh all` once. There is no scheduled cron; use `workflow_dispatch` with a target SHA for failure investigation and release candidates.
 
-`contracts`はPhase 1A interfaceのselectorと型順序に加え、concrete ABI snapshot、bSNS、EIP-3009、Deposit、Withdrawal、管理権限、Timelock、stateful invariant、LCOV coverage閾値を検証する。
-`proofs`はLeanをcross-chain protocolの正式な抽象仕様としてビルドし、`sorry`・`admit`を拒否する。
-Leanから生成した追跡対象のconformance vectorをRust、Solidity、TypeScriptの実装に適用し、各vector sectionについてmanifestにない仕様・定理・consumerのdriftを拒否する。
-manifestに登録したconsumerはsectionとproduction symbolへの構造的な結合を検査してから許可済みrunnerで個別実行し、対象testが正確に1件成功した場合だけ対応済みと判定する。
-この照合は列挙した境界値に対する限定的なconformanceであり、各言語実装全体の完全なsemantic refinementではない。
-productionと共有するDeposit、Withdrawal、管理判定coreはSMTCheckerとVerusでも証明し、意図的に制約を欠くfixtureが拒否されることを確認する。Verus proofは非executableでは登録specを`ensures`へ、executableでは登録kernelの戻り式をnamed returnと`ensures`へ結合し、obligation側の支援claim集合、claim側の参照集合、production-bound evidence必須集合をそれぞれ完全一致させる。claimが参照する全Verus義務が直接production-bound、または同じclaimのproduction-boundな`executable`／`shared-expression`だけに依存する`derived`として被覆されない限り、claim全体をproduction実装証明済みへ昇格させない。Solidityのproof linkはcompiler AST上の完全なcontract・overload signatureと直接call graphへ解決し、Bridge wrapperでは`digest`の生成元、署名回復、`evaluateMint`入力全フィールドと`effects`生成元、再代入の不在、commit引数の宣言IDと順序を結合する。Halmosは署名検証後の`_commitAuthorizedMint`境界についてstate反映、mint量、外部call失敗時のrollbackをsymbolic検査する。SMTとHalmosはともに`supporting`であり、Verusの`derived`義務と同様にclaimの部分証拠として扱い、単独ではproduction実装済みのclaimへ昇格しない。production transaction testはwrapper、認証、event、永続化を含む具体的なend-to-end挙動を担う。
-`ui`はABI/Candid drift、typecheck、lint、unit test、build、desktop/mobile Playwrightを実行する。`real`は実Ledger suiteとAnvilを使うPlaywright統合テストを実行し、`all`にも含まれるが短時間用の`checks`には含まれない。
-証明範囲と外部仮定は[verification/README.md](verification/README.md)と[verification/obligations.md](verification/obligations.md)に記録する。
+`contracts` validates Phase 1A interface selectors and type ordering, concrete ABI snapshots, bSNS, EIP-3009, Deposits, Withdrawals, administration permissions, Timelock, stateful invariants, and LCOV coverage thresholds.
+`proofs` builds Lean as the formal abstract specification of the cross-chain protocol and rejects `sorry` and `admit`.
+Tracked conformance vectors generated from Lean are applied to the Rust, Solidity, and TypeScript implementations. Each vector section rejects specification, theorem, or consumer drift not registered in the manifest.
+Manifest-registered consumers are checked for structural binding to their section and production symbol, then executed individually with an approved runner. A consumer counts as covered only when exactly one target test passes.
+This comparison establishes limited conformance for enumerated boundary values, not complete semantic refinement of each language implementation.
+The Deposit, Withdrawal, and administration decision cores shared with production are also proved with SMTChecker and Verus; deliberately underconstrained fixtures must be rejected. For non-executable Verus proofs, the registered specification is bound to `ensures`; for executable proofs, the registered kernel's return expression is bound to a named return and `ensures`. The obligation-side supporting claim set, claim-side reference set, and required production-bound evidence set must each match exactly. A claim cannot be promoted to proved production implementation unless every referenced Verus obligation is directly production-bound or covered as `derived` using only production-bound `executable`/`shared-expression` obligations for that same claim. Solidity proof links resolve full contract and overload signatures and the direct call graph in the compiler AST. For the Bridge wrapper, they bind the origin of `digest`, signature recovery, every `evaluateMint` input field, the origin of `effects`, absence of reassignment, and declaration IDs and ordering of commit arguments. Halmos symbolically checks state effects, mint amounts, and rollback on external call failure at the `_commitAuthorizedMint` boundary after signature verification. SMT and Halmos are both `supporting`; like Verus `derived` obligations, they provide partial claim evidence and cannot independently promote a claim to proved production implementation. Production transaction tests cover concrete end-to-end behavior, including wrappers, authentication, events, and persistence.
+`ui` runs ABI/Candid drift checks, typechecking, lint, unit tests, builds, and desktop/mobile Playwright. `real` runs Playwright integration tests with the real Ledger suite and Anvil; it is included in `all` but not the shorter `checks` mode.
+Proof scope and external assumptions are documented in [verification/README.md](verification/README.md) and [verification/obligations.md](verification/obligations.md).
 
-ABI snapshotは次で明示的に更新し、通常のCIは更新を行わず差分だけを検出する。
+Update ABI snapshots explicitly with the commands below. Normal CI only detects differences and does not update them.
 
 ```bash
 python3 scripts/abi_snapshot.py --update
 python3 scripts/abi_snapshot.py --check
 ```
 
-Leanの仕様変更後はconformance vectorを明示的に更新し、通常のCIは生成結果との差分だけを検出する。
+After changing the Lean specification, explicitly update conformance vectors. Normal CI only checks for differences from generated output.
 
 ```bash
 python3 scripts/protocol_vectors.py --update
 python3 scripts/protocol_vectors.py --check
 ```
 
-42件のrelease対象claim、抽象・有限幅・trace定理、型付きVerus/SMT/Halmos obligation、明示的なimplementation basis、production link、transaction test、外部仮定は[verification/claims.tsv](verification/claims.tsv)で統一管理し、証拠statusはgateが算出する。vector consumerは[verification/refinement-manifest.tsv](verification/refinement-manifest.tsv)で管理する。不可逆なproduction操作の直前にはproof gateに続いてWasmとcontract runtimeをclean sourceから二回buildし、release manifestとのhash完全一致を要求する。
+The 43 release claims, abstract/finite-width/trace theorems, typed Verus/SMT/Halmos obligations, explicit implementation bases, production links, transaction tests, and external assumptions are managed in [verification/claims.tsv](verification/claims.tsv); the gate computes evidence status. Vector consumers are managed in [verification/refinement-manifest.tsv](verification/refinement-manifest.tsv). Immediately before irreversible production operations, the proof gate is followed by two builds of the Wasm and contract runtime from clean source, requiring exact hash matches with the release manifest.
 
-## ローカルdeploy
+## Local deployment
 
-`smoke`は次を自動実行する。
+`smoke` automatically performs the following:
 
-1. 新規networkの起動時だけ、port 8000が使用中なら`gateway.port`を一時的に空きportへ変更する。
-2. ICP CLI内蔵のローカルPocketIC networkを起動する。
-3. `bridge-canister`をdeployし、`Running`と`get_bridge_status`のschema version 36、全count 0を確認する。
-4. Anvilをchain ID 31337で起動する。
-5. 24時間delay、Canister由来Governance Operator限定のproposer/executor/canceller、自己adminでOpenZeppelin `TimelockController`をdeployする。
-6. Timelock addressをBase Adminとして`Bridge`をdeployし、constructorが生成したbSNSのruntime bytecode、相互参照、metadataを確認する。
-7. Bridge Signerからsmoke用Depositをmintし、ユーザーの`createWithdrawal`によるatomic burnと`Committed`固定quoteを確認する。Withdrawal用の追加Base transactionと再mint selectorが存在しないことも確認する。
-8. Canister由来Governance OperatorのService Fee変更とpause、外部EOAからの直接unpause拒否、24時間前のTimelock execute拒否、経過後のCanister実行によるunpauseを確認する。
-9. Withdrawalのburn後の残高・supply、mint window、Withdrawal連番を確認する。
-10. 本スクリプトが起動したprocessだけを終了し、一時変更した`icp.yaml`を復元する。
+1. Only when starting a new network, temporarily set `gateway.port` to an available port if port 8000 is occupied.
+2. Start the local PocketIC network bundled with ICP CLI.
+3. Deploy `bridge-canister` and verify `Running`, schema version 36 in `get_bridge_status`, and zero for all counts.
+4. Start Anvil with chain ID 31337.
+5. Deploy OpenZeppelin `TimelockController` with a 24-hour delay, the Canister-derived Governance Operator as the sole proposer/executor/canceller, and self-administration.
+6. Deploy `Bridge` with the Timelock address as Base Admin, then verify the runtime bytecode, cross-references, and metadata of the bSNS created by its constructor.
+7. Mint a smoke-test Deposit through the Bridge Signer and verify atomic burn and the fixed `Committed` quote through the user's `createWithdrawal`. Also verify that no additional Base transaction or re-mint selector exists for Withdrawals.
+8. Verify Service Fee changes and pause through the Canister-derived Governance Operator, rejection of direct unpause by an external EOA, rejection of Timelock execution before 24 hours, and unpause through Canister execution after the delay.
+9. Verify post-burn Withdrawal balances and supply, the mint window, and Withdrawal sequence numbers.
+10. Stop only processes started by this script and restore the temporary changes to `icp.yaml`.
 
-既に起動中の当該ICP project networkは設定を変更せず再利用し、停止しない。実行中に`icp.yaml`が別途変更された場合、その変更を上書きしない。port 8545に別EVM nodeが存在する場合は再利用せず停止する。
+An already-running network for this ICP project is reused without changing its configuration or stopping it. Changes made independently to `icp.yaml` during the run are not overwritten. If another EVM node occupies port 8545, the script stops rather than reusing it.
 
-手動確認:
+Manual checks:
 
 ```bash
 scripts/prepare_local_network.py --project-root . --write
@@ -205,6 +205,6 @@ icp canister status bridge-canister -e local --json --project-root-override .
 icp network stop --project-root-override .
 ```
 
-手動実行の`prepare_local_network.py --write`は`icp.yaml`を永続的に変更する。必要なら停止後に利用者が元のportへ戻す。
+A manual `prepare_local_network.py --write` permanently changes `icp.yaml`. Restore the original port after stopping the network if needed.
 
-本番初回deployでv35／wire v30が配置済みである。確定activation証跡を追加する現行v36へはpost-upgradeで一度だけ原子的に移行し、通常reopen、その他の旧・未知schema、dual-read、fallbackはfail closedとする。現在のstagingも同じCanister・deployment instance・Base contract bindingを維持したreview済みv35→v36 upgradeだけを受理し、その後はcurrent-schema upgradeだけを許可する。v7 staging evidenceは読取専用とし、resumeまたはv8へのmigrationを行わない。
+The initial production deployment installed v35/wire v30. Migration to the current v36, which adds confirmed activation evidence, is atomic and runs exactly once during post-upgrade; normal reopen, other old or unknown schemas, dual reads, and fallbacks fail closed. Current staging likewise accepts only the reviewed v35→v36 upgrade that preserves the same Canister, deployment instance, and Base contract binding, followed only by current-schema upgrades. v7 staging evidence remains read-only and must not be resumed or migrated to v8.

@@ -45,20 +45,20 @@ def main() -> None:
     wire_version = int(wire_match.group(1))
     checks = (
         ("README.md", r"(?:stable schema v|schema version )(\d+)", 2),
-        ("verification/README.md", r"schema v(\d+)再オープン", 1),
+        ("verification/README.md", r"schema v(\d+) reopening", 1),
         ("docs/bridge-flow.md", r"SQLite schema v(\d+)", 1),
         ("docs/canister-state-machine.md", r"(?:Stable schema v|schema v)(\d+)", 2),
         (
             "docs/runbooks/operations.md",
-            r"(?:stable schemaはv|schema v)(\d+)(?:、record wireはv\d+|またはwire v\d+)",
+            r"Current formats are stable schema v(\d+)",
             2,
         ),
         (
             "deployments/sepolia-staging/evidence/README.md",
-            r"schema v(\d+)／wire v\d+",
+            r"schema v(\d+)/wire v\d+",
             1,
         ),
-        ("docs/implementation-plan.md", r"(?:stable schema v|現行stable schemaはv)(\d+)", 2),
+        ("docs/implementation-plan.md", r"stable schema v(\d+)", 2),
         (
             "canister/bridge-canister/src/storage/mod.rs",
             r"INSERT INTO bridge_metadata VALUES \(1, (\d+), \d+\);",
@@ -98,13 +98,13 @@ def main() -> None:
         ("docs/canister-state-machine.md", r"record wire version v(\d+)", 1),
         (
             "docs/runbooks/operations.md",
-            r"(?:stable schemaはv\d+、record wireはv|schema v\d+またはwire v)(\d+)",
+            r"Current formats are stable schema v\d+(?: and |/)record wire v(\d+)",
             2,
         ),
         ("docs/implementation-plan.md", r"record wire v(\d+)", 1),
         (
             "deployments/sepolia-staging/evidence/README.md",
-            r"schema v\d+／wire v(\d+)",
+            r"schema v\d+/wire v(\d+)",
             1,
         ),
         (

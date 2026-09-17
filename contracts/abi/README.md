@@ -1,12 +1,12 @@
 # Concrete ABI snapshots
 
-`Bridge.json`と`BSNS.json`はPhase 1Eで凍結するconcrete contract ABIのcanonical snapshotである。
+`Bridge.json` and `BSNS.json` are canonical snapshots of the concrete contract ABIs frozen in Phase 1E.
 
-snapshotは次で明示的に再生成し、通常の検証は`--check`で差分だけを拒否する。
+Regenerate snapshots explicitly as follows; normal validation uses `--check` only to reject differences.
 
 ```bash
 python3 scripts/abi_snapshot.py --update
 python3 scripts/abi_snapshot.py --check
 ```
 
-interfaceのsubset、constructor引数順、struct field順、enum ordinal、function・error・eventのselectorとtopicはFoundry fixtureでも検査する。
+Foundry fixtures also check interface subsets, constructor argument order, struct field order, enum ordinals, and function/error/event selectors and topics.

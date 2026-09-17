@@ -1,7 +1,7 @@
-# Plan 003: Settlement Reserve・Runtime Administrator
+# Plan 003: Settlement Reserve / Runtime Administrator
 
-> **履歴資料**：この本文はPlan 003完了時点の実装境界を記録している。現行実装は明示操作型Settlementを使用する。
-> 現行仕様はリポジトリ直下の`README.md`と`docs/`を参照する。
+> **Historical record:** this document records implementation boundaries at Plan 003 completion. The current implementation uses explicit Settlement operations.
+> See the repository-root `README.md` and `docs/` for current specifications.
 
 ## Status
 
@@ -12,20 +12,20 @@
 
 ## Implemented boundary
 
-- ETHとcyclesを別単位で保守的に予約し、非終端Withdrawal数から必要Settlement Reserveをchecked arithmeticで算出する。残高観測不能または不足時はICRC pull前に新規Depositだけを拒否する。
-- EVM operationはnonce未割当のQueued intentとしてcalldataを固定し、acknowledgement/refundをmintより先にnonce割当する。Prepared以降はnonce順と同一raw transactionを維持する。
-- この当時の複数admin案はPlan 006で置換済みである。現行は単一pause principalが安全操作だけ、SNS GovernanceがFee Recipient、fee payout、再開、role管理を実行する。
-- fee payoutはamount、ledger fee、recipient、transfer identityを送信前にstable memoryへ保存する。成功とDuplicateだけでfee reserveを減算し、曖昧結果は履歴照合までHoldする。
-- append-only監査ログはpause/resume、rotation、Fee Recipient、fee payout、reserve gate、Base Service Fee観測変更をsequence順に保持する。
-- 本番未デプロイ方針に従い現行schema v4だけを受理し、legacy migrationは持たない。
+- Reserve ETH and cycles conservatively in separate units; checked-compute required Settlement Reserve from nonterminal Withdrawal counts. If balances are unavailable or insufficient, reject only new Deposits before ICRC pull.
+- Fix EVM operation calldata as Queued intents without nonces, assigning nonces to acknowledgement/refund before mint. From Prepared onward, preserve nonce order and identical raw transactions.
+- The multiple-admin design from this period was replaced by Plan 006. Currently, one pause principal performs safety actions only; SNS Governance handles Fee Recipient, fee payouts, resume, and role management.
+- Before fee payout submission, persist amount, Ledger fee, recipient, and transfer identity in stable memory. Debit fee reserves only on success or Duplicate; Hold ambiguous results until history reconciliation.
+- Append-only audit logs retain pause/resume, rotation, Fee Recipient, fee payouts, reserve gates, and observed Base Service Fee changes in sequence order.
+- Under the pre-production policy, accept only current schema v4 with no legacy migration.
 
 ## Verification
 
-- Rust coreはreserve境界、overflow、fee reserve算術、EVM状態順序を検査する。
-- PicJSは資産移動saga、pause/resume、reserve不足時のpull未実行、監査ログ、fee payoutをPocketIC上で検査する。
-- `scripts/ci-local.sh checks`でRust、Wasm、Candid、PicJS、ICP、Foundry、SMT、Verusを一括検査する。
+- Rust core checks reserve boundaries, overflow, fee-reserve arithmetic, and EVM state ordering.
+- PicJS checks asset-moving sagas, pause/resume, no pull under reserve shortage, audit logs, and fee payouts on PocketIC.
+- `scripts/ci-local.sh checks` runs Rust, Wasm, Candid, PicJS, ICP, Foundry, SMT, and Verus checks together.
 
 ## Deferred
 
-- 本番reserve数値、鍵の最終保管方式、mainnet deployはPlan 005/006で確定する。
-- fee bump、manual Hold resolution、任意transaction送信は導入しない。
+- Plans 005/006 finalize production reserve values, key custody, and mainnet deployment.
+- Introduce no fee bumps, manual Hold resolution, or arbitrary transaction submission.

@@ -75,13 +75,19 @@ theorem governance_confirmation_authorization_claim :
     GovernanceConfirmationAuthorization :=
   governance_confirmation_authorization_witness
 
+def governanceAffordabilityDecision (finalized safe required : Nat) : Nat × Bool :=
+  let observed := min finalized safe
+  (observed, decide (required ≤ observed))
+
 def GovernanceTransactionAffordability : Prop :=
-  ∀ observedWei requiredWei : Nat,
-    observedWei < requiredWei → ¬requiredWei ≤ observedWei
+  ∀ finalized safe required : Nat,
+    (governanceAffordabilityDecision finalized safe required).1 = min finalized safe ∧
+    ((governanceAffordabilityDecision finalized safe required).2 = true ↔
+      required ≤ finalized ∧ required ≤ safe)
 
 theorem governance_transaction_affordability_witness : GovernanceTransactionAffordability := by
-  intro observedWei requiredWei insufficient affordable
-  omega
+  intro finalized safe required
+  simp [governanceAffordabilityDecision, Nat.le_min]
 
 def SigningCycleReserve : Prop :=
   ∀ liquid reserve signingCost callMargin charged : Nat,

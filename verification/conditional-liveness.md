@@ -1,21 +1,20 @@
-# 条件付きliveness補助定理
+# Conditional liveness lemmas
 
-`conditional-liveness.tsv`の5件はrelease-safety claimではなく、Leanの補助定理である。
-いずれも、対象の終端遷移が選択されるまでadmissibleであり続けること、weak fairness、
-外部system・storage・time・cyclesの進行、および列挙されたuserまたはkeeper actionを
-前件に置く。
+The five entries in `conditional-liveness.tsv` are auxiliary Lean theorems, not release-safety claims.
+Each assumes that the target terminal transition remains admissible until selected, weak fairness,
+progress of external systems, storage, time, and cycles, and the enumerated user or keeper
+actions.
 
-Depositの3件は、自動処理が初回を含む連続3回の一時失敗で停止した後、非anonymous主体が同じ
-recordへ`continue_deposit`を必要回数だけ明示実行することも外部仮定に置く。cycles
-top-upの成功だけではこの仮定を満たさず、自動retryも再開しない。
+The three Deposit results additionally assume that, after automatic processing stops on three consecutive transient failures including the initial attempt, a non-anonymous principal
+explicitly calls `continue_deposit` on the same record as many times as required. A successful cycles
+top-up alone does not satisfy this assumption or restart automatic retries.
 
-proof gateのpassが示すのは、これらの含意がproject-local axiomなしにtypecheckすること
-だけである。production schedulerや外部systemが前件を満たすこと、またはproduction
-実装からadmissibilityが導出できることは証明していない。このためrelease summaryでは
-`conditional-liveness`として分離し、`release-ready`にも`implementation-proved`にも
-数えない。
+A passing proof gate establishes only that these implications typecheck without project-local axioms.
+It does not prove that production schedulers or external systems satisfy their premises, or that admissibility
+can be derived from the production implementation. The release summary therefore reports these results separately
+as `conditional-liveness`, counting them as neither `release-ready` nor `implementation-proved`.
 
-`DepositTerminalProgressLemmas`は、mint到達の条件付き含意とrefund到達の条件付き含意を組にした補題である。
-それぞれが自分の実行とadmissibilityを量化するため、同じDepositの同じ実行について「mintまたはrefundへ必ず到達する」という命題ではない。
-5件の登録にはこの組を含むが、release保証を追加するものではない。
-`CommonOperationalAssumptions`はreadyAt以降に可用性が継続することを要求し、単発の成功だけでは前提を満たさない。
+`DepositTerminalProgressLemmas` pairs a conditional implication for reaching mint with one for reaching refund.
+Each quantifies over its own execution and admissibility; it does not state that the same execution of the same Deposit must reach either mint or refund.
+The five registered entries include this pair, which adds no release guarantee.
+`CommonOperationalAssumptions` requires continuing availability from readyAt onward; a single success does not satisfy the premise.
