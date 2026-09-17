@@ -1,47 +1,47 @@
 # KINIC token publication
 
-このrunbookは、Base mainnetへ配置済みのKINIC ERC-20をBaseScanへ公開し、公式ロゴとproject情報を登録する手順である。BaseScanの申請と審査はGate A、Gate B、activationの認可条件ではなく、本番資産受付の開始後に実施してよい。
+This runbook publishes the deployed KINIC ERC-20 on Base mainnet to BaseScan and registers official logo/project information. BaseScan submission/review does not authorize Gate A, Gate B, or activation and may occur after production asset admission begins.
 
-## 対象の固定
+## Fix the target
 
-- `Bridge`はdeposit、withdrawal、pause、limit、fee、roleを管理するcontractである。
-- `BSNS`はウォレットとBaseScanへ登録するKINIC ERC-20 contractである。申請対象アドレスにはBridgeではなく、検証済みGate B profileの`bsnsAddress`を使う。
-- `BridgeTimelockController`は危険方向の管理操作を遅延させるcontractである。
-- token metadataは`name = "KINIC"`、`symbol = "KINIC"`、`decimals = 8`に固定する。
+- `Bridge` manages Deposits, Withdrawals, pause, limits, fees, and roles.
+- `BSNS` is the KINIC ERC-20 registered with wallets and BaseScan. Use `bsnsAddress` from the verified Gate B profile as the submission target, not the Bridge address.
+- `BridgeTimelockController` delays administration operations that increase risk.
+- Fix token metadata to `name = "KINIC"`, `symbol = "KINIC"`, and `decimals = 8`.
 
-推測したアドレス、Gate Aのdeployment blockが`0`のpre-deploy profile、staging profileは使用しない。Gate B profile、`Bridge.bsns()`のFinalized応答、BSNSの`bridge()`応答を照合し、相互参照が一致しなければ申請を停止する。
+Use no guessed addresses, pre-deployment Gate A profiles with deployment block `0`, or staging profiles. Compare Gate B profile, Finalized `Bridge.bsns()`, and BSNS `bridge()` responses; stop submission if cross-references disagree.
 
-## 公開前確認
+## Pre-publication checks
 
-1. production UIから次のURLが認証、cookie、redirectなしで`200`を返すことを確認する。
-   - `https://<official-domain>/kinic-token-logo.svg`（`Content-Type: image/svg+xml`）
-   - `https://<official-domain>/kinic-token-logo-64.png`（`Content-Type: image/png`）
-2. SVGが32×32、PNGが透過64×64であり、明暗両背景で同じKINIC markとして表示されることを確認する。
-3. official website、project description、contact email、SNSの完全なHTTPS URLを確定する。descriptionは比較表現や誇張を含まない中立文とする。
-4. 秘密鍵、seed、keystore password、credential、credential入りRPC URLを申請資料またはrepositoryへ保存しない。
+1. Verify the following production UI URLs return `200` without authentication, cookies, or redirects.
+   - `https://<official-domain>/kinic-token-logo.svg` (`Content-Type: image/svg+xml`)
+   - `https://<official-domain>/kinic-token-logo-64.png` (`Content-Type: image/png`)
+2. Verify SVG dimensions of 32×32 and transparent PNG dimensions of 64×64, rendering the same KINIC mark on light/dark backgrounds.
+3. Finalize official website, project description, contact email, and full HTTPS social URLs. Use a neutral description without comparisons or exaggeration.
+4. Store no private keys, seeds, keystore passwords, credentials, or credential-bearing RPC URLs in submission materials or the repository.
 
 ## Contract source verification
 
-1. BaseScanで`BridgeTimelockController`、`Bridge`、`BSNS`の順にsource codeをverifyする。
-2. repositoryで固定したSolidity compiler、optimizer、EVM target、constructor argumentsを使用し、BaseScan上のdeployed bytecodeとの一致を確認する。
-3. BSNSのconstructor argumentsには`KINIC`、`KINIC`、`8`、検証済みBridge addressを使う。
-4. 3 contractすべてのCode画面でsourceが公開され、実アドレスと検証URLが対応していることを確認する。Token Update申請前のsource verification要件は[BaseScanの説明](https://info.basescan.org/how-to-verify-contracts/)に従う。
+1. Verify source code on BaseScan in order: `BridgeTimelockController`, `Bridge`, `BSNS`.
+2. Use repository-pinned Solidity compiler, optimizer, EVM target, and constructor arguments; confirm equality with deployed bytecode on BaseScan.
+3. BSNS constructor arguments are `KINIC`, `KINIC`, `8`, and the verified Bridge address.
+4. Confirm published source on all three Code pages and matching actual addresses/verification URLs. Follow [BaseScan's verification instructions](https://info.basescan.org/how-to-verify-contracts/) for source-verification prerequisites before Token Update.
 
 ## Ownership verification
 
-`BSNS`はEOAが直接配置せず、Bridge constructorが生成する。そのため通常のdeployer EOA署名だけで完了すると仮定しない。[BaseScanのcontract-created-by-contract案内](https://info.basescan.org/what-is-contract-created-by-contract/)に従ってBaseScan supportへ連絡し、Bridge deployerまたはBaseScanが指定した主体による署名で関与を証明する。
+`BSNS` is created by the Bridge constructor, not directly by an EOA. Do not assume a normal deployer EOA signature alone suffices. Follow [BaseScan's contract-created-by-contract guidance](https://info.basescan.org/what-is-contract-created-by-contract/), contacting support and proving involvement through the Bridge deployer or the signer specified by BaseScan.
 
-署名要求のdomain、対象BSNS address、BaseScan username、日時を署名前に確認する。BaseScanが要求していない任意messageへ署名しない。秘密鍵をWebフォーム、support ticket、repositoryへ入力しない。
+Before signing, check the request domain, target BSNS address, BaseScan username, and timestamp. Never sign arbitrary messages not requested by BaseScan. Never enter private keys into web forms, support tickets, or the repository.
 
-## Token Update申請
+## Token Update submission
 
-1. ownership確認済みのBSNS addressからToken Updateを1件だけ提出する。
-2. metadataへ`KINIC`、`KINIC`、`8`を入力し、公式website、完全なSNS URL、中立なdescription、公開SVG URLを指定する。
-3. ロゴ、名称、symbolが第三者projectを偽装せず、KINICの承認済みbrand assetであることを確認する。
-4. 送信前に全項目を再確認する。申請後は同じaddressへ重複申請せず、追加情報の要求には元の申請threadで回答する。[BaseScan Token Info Submission Guidelines](https://info.basescan.org/how-to-update-token-info/)を正本とする。
+1. Submit exactly one Token Update for the ownership-verified BSNS address.
+2. Enter metadata `KINIC`, `KINIC`, `8`, plus official website, complete social URLs, neutral description, and public SVG URL.
+3. Verify logo, name, and symbol are approved KINIC brand assets and do not impersonate another project.
+4. Recheck all fields before submission. Do not submit duplicates for the same address; answer additional-information requests in the original thread. [BaseScan Token Info Submission Guidelines](https://info.basescan.org/how-to-update-token-info/) are authoritative.
 
-## 掲載確認と記録
+## Verify and record publication
 
-BaseScanのtoken pageで名称、symbol、decimals、ロゴ、website、SNS、verified source、`Add Token to MetaMask`導線を確認する。ウォレット側ではBase mainnetを選択し、表示されたcontract addressがGate B profileの`bsnsAddress`と一致することを確認する。
+On the BaseScan token page, check name, symbol, decimals, logo, website, social links, verified source, and `Add Token to MetaMask`. In wallets, select Base mainnet and verify the displayed contract address matches Gate B profile `bsnsAddress`.
 
-運用記録に残す値は、申請日、対象BSNS address、3 contractのverification URL、BaseScan受付番号、掲載確認日だけとする。署名本文、signature、private key、credential、個人情報は記録しない。掲載内容が不正確な場合は新規申請を重ねず、元の申請に返信して訂正を依頼する。
+Record only submission date, target BSNS address, three contract verification URLs, BaseScan reference number, and publication-verification date. Record no signed message, signature, private key, credentials, or personal information. If content is inaccurate, reply to the original submission requesting correction rather than submitting again.

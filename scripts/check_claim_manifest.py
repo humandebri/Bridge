@@ -231,6 +231,13 @@ def checked_solidity_function_link(value: str) -> tuple[Path, str]:
     return path, signature
 
 
+def checked_vector_sections(value: str, available: set[str]) -> list[str]:
+    selected = items(value)
+    if len(selected) != len(set(selected)) or set(selected) - available:
+        raise ValueError(f"unknown or duplicate refinement vector section: {value}")
+    return selected
+
+
 def require_exact_claim_coverage(
     label: str,
     declared: dict[str, set[str]],
@@ -697,8 +704,7 @@ def build_claim_report() -> dict[str, object]:
             )
         for assumption in items(assumption_ids):
             actual_assumption_dependencies[assumption].add(claim_id)
-        if vectors != "-" and vectors not in vector_sections:
-            raise ValueError(f"unknown refinement vector section for {claim_id}: {vectors}")
+        selected_vectors = checked_vector_sections(vectors, vector_sections)
 
         production_text = "\n".join(
             path.read_text(encoding="utf-8") for path, _ in production
@@ -750,9 +756,8 @@ def build_claim_report() -> dict[str, object]:
             if value.startswith("verus:")
         )
         typed_basis.extend(
-            {"kind": "bounded-conformance", "id": vectors}
-            for _ in [0]
-            if vectors != "-"
+            {"kind": "bounded-conformance", "id": section}
+            for section in selected_vectors
         )
         typed_basis.extend(
             {"kind": "supporting-smt", "id": obligation_id}

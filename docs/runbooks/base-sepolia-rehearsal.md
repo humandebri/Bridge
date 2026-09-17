@@ -1,41 +1,41 @@
-# Base Sepolia contract実験
+# Base Sepolia contract experiment
 
-このrunbookは、Base Sepolia上でTimelock、Bridge、bSNSのcontract-only実験を再開または再実行する手順を定める。
-実際のtransaction送信とmanifest更新は`scripts/base-sepolia-experiment/`のstate machineを使用する。
-IC canisterとKINIC Ledgerは接続しない。
+This runbook defines how to resume or rerun the contract-only Timelock, Bridge, and bSNS experiment on Base Sepolia.
+Use the state machine in `scripts/base-sepolia-experiment/` for actual transaction submission and manifest updates.
+Do not connect an IC canister or KINIC Ledger.
 
-## 実験の境界
+## Experiment boundaries
 
-- networkはBase Sepolia、chain IDは`84532`とする。
-- 公開RPCの初期値は`https://base-sepolia-rpc.publicnode.com`とする。
-- RPC URL、chain ID、各URLの接続先chainはrehearsal期間中固定する。deploy・activation前preflightで3 providerすべての`eth_chainId`を個別確認し、1件でも失敗または不一致なら開始しない。
-- credentialを含むRPC URLは公開manifestへ保存される可能性があるため使用しない。
-- 実験walletはtest-onlyとし、本番鍵や本番ceremonyへ再利用しない。
-- 今回のdeployerはBase Admin walletとRuntime Administratorを兼ねる。
-- Bridge signerは別walletとする。
-- この構成は本番profileのrole分離を満たさない。
+- Network: Base Sepolia; chain ID `84532`.
+- Default public RPC: `https://base-sepolia-rpc.publicnode.com`.
+- Fix RPC URLs, chain ID, and each URL's upstream chain throughout the rehearsal. Individually check `eth_chainId` on all three providers before deployment/activation; do not start on any failure or mismatch.
+- Do not use credential-bearing RPC URLs because they may be saved in the public manifest.
+- Use test-only wallets, never reusing them for production keys or ceremonies.
+- This experiment's deployer doubles as Base Admin wallet and Runtime Administrator.
+- Use a separate Bridge Signer wallet.
+- This configuration does not satisfy production-profile role separation.
 
-## 公開値
+## Public values
 
-- **Deployer、Base Admin、Runtime Administrator**：`0x7F4743128368CdeD5413E8c42C9Bd689ea64D192`
-- **Bridge signer**：`0xF96808b465638E88Ed4602b3852Ce7AC92E57721`
-- **Timelock delay**：`259200`秒（72時間）
-- **Per-Deposit Limit**：`1000000000` raw
-- **Mint Window Limit**：`10000000000` raw
-- **Mint Window Duration**：`3600`秒
-- **MAX_SERVICE_FEE**：`10000000` raw
-- **Initial Service Fee**：`1000000` raw
+- **Deployer, Base Admin, Runtime Administrator**: `0x7F4743128368CdeD5413E8c42C9Bd689ea64D192`
+- **Bridge signer**: `0xF96808b465638E88Ed4602b3852Ce7AC92E57721`
+- **Timelock delay**: `259200` seconds (72 hours).
+- **Per-Deposit Limit**: `1000000000` raw
+- **Mint Window Limit**: `10000000000` raw
+- **Mint Window Duration**: `3600` seconds.
+- **MAX_SERVICE_FEE**: `10000000` raw
+- **Initial Service Fee**: `1000000` raw
 
-上記は2026年7月13日にデプロイ済みの旧実験値であり、証跡として変更しない。
-次回の再デプロイでは **Per-Deposit Limit**と**Mint Window Limit**をそれぞれ`15000000000000` raw（150,000 KINIC、総供給量の約2.5%）、**MAX_SERVICE_FEE**を`1000000000` raw（10 KINIC）、**Initial Service Fee**を`50000000` raw（0.5 KINIC）とする。
+These are historical experiment values deployed on July 13, 2026; preserve them as evidence.
+For the next redeployment, set **Per-Deposit Limit** and **Mint Window Limit** each to `15000000000000` raw (150,000 KINIC, approximately 2.5% of total supply), **MAX_SERVICE_FEE** to `1000000000` raw (10 KINIC), and **Initial Service Fee** to `50000000` raw (0.5 KINIC).
 
-2026年7月13日のpreflight観測では、chain IDは`84532`、deployer残高は`99000000000000000` wei、nonceは`0`だった。
-観測blockと時刻は日付別manifestに保存する。
+July 13, 2026 preflight observed chain ID `84532`, deployer balance `99000000000000000` wei, and nonce `0`.
+Save the observed block and timestamp in the dated manifest.
 
-## 鍵の準備
+## Key preparation
 
-private key、seed、keystore passwordをリポジトリ、shell引数、shell historyへ保存しない。
-Foundryの暗号化keystoreへ対話入力し、keystore passwordはmacOS Keychainへ対話入力する。
+Never save private keys, seeds, or keystore passwords in the repository, shell arguments, or shell history.
+Enter keys interactively into encrypted Foundry keystores and passwords interactively into macOS Keychain.
 
 ```sh
 cast wallet import kinic-base-sepolia-experiment --interactive
@@ -52,13 +52,13 @@ security add-generic-password -U \
   -w
 ```
 
-`-w`は最後の引数に置く。
-`security`が対話入力した値を非表示でKeychainへ保存する。
+Place `-w` last.
+`security` saves the interactively entered value to Keychain without displaying it.
 
-## 実行stage
+## Execution stages
 
-各stageは現在のmanifest stateを検査し、完了済みtransactionを再送しない。
-署名が必要なstageはKeychain wrapperから実行する。
+Each stage checks current manifest state and never resubmits completed transactions.
+Run stages requiring signatures through the Keychain wrapper.
 
 ```sh
 scripts/base-sepolia-experiment/run-with-keychain.sh preflight
@@ -67,7 +67,7 @@ scripts/base-sepolia-experiment/run-with-keychain.sh flow
 scripts/base-sepolia-experiment/run-with-keychain.sh schedule
 ```
 
-stageは次の順で進む。
+Proceed in this order:
 
 ```text
 PREFLIGHT
@@ -78,22 +78,22 @@ PREFLIGHT
   -> COMPLETE
 ```
 
-`preflight`はchain ID、wallet address、Foundry test、ABI drift、固定limit selectorの不存在、deploy gas、最大実験費用を確認する。
-推定最大費用が`0.02 ETH`を超える場合はbroadcastしない。
+`preflight` checks chain ID, wallet addresses, Foundry tests, ABI drift, absence of mutable-limit selectors, deployment gas, and maximum experiment cost.
+Do not broadcast if estimated maximum cost exceeds `0.02 ETH`.
 
-`deploy`はBridge signerへのtest ETH送金、72時間Timelock、Bridgeの順にdeployする。
-Bridgeはconstructor内でbSNSを生成する。
-各transactionはFinalized block到達まで確認し、30分以内に確認できなければ同じnonceの代替transactionを送らず停止する。
+`deploy` first sends test ETH to the Bridge Signer, then deploys the 72-hour Timelock and Bridge.
+The Bridge creates bSNS in its constructor.
+Confirm each transaction through a Finalized block. If unconfirmed after 30 minutes, stop without submitting a replacement at the same nonce.
 
-`flow`はDeposit mint、Withdrawal作成、Service Fee変更、DepositとWithdrawalのpauseを実行する。Withdrawal後の追加Base transactionは存在しないことも確認する。
+`flow` performs Deposit minting, Withdrawal creation, Service Fee changes, and pauses Deposits/Withdrawals. Also verify that no additional Base transaction follows a Withdrawal.
 
-`schedule`はDepositとWithdrawalのunpauseをTimelockへbatch scheduleする。
-直後のexecuteを実transactionとして送信し、revert receiptと72時間delayを確認する。
+`schedule` schedules Deposit/Withdrawal unpause as a Timelock batch.
+Immediately submit execute as a real transaction, verifying its reverted receipt and the 72-hour delay.
 
-## 72時間後の再開
+## Resume after 72 hours
 
-EIP-712対応Bridgeで新規生成したmanifestの`timelock_operation.ready_timestamp`以降に`resume`を実行する。旧ABIのmanifestは再利用しない。
-`resume`はschedule済みpayloadを変更せずexecuteし、unpauseを確認した後、両方向を再びpauseしてService Feeを初期値へ戻す。
+Run `resume` at or after `timelock_operation.ready_timestamp` in a newly generated manifest for an EIP-712-compatible Bridge. Never reuse old-ABI manifests.
+`resume` executes the unchanged scheduled payload, verifies unpause, then pauses both directions again and restores the initial Service Fee.
 
 ```sh
 jq '.timelock_operation.ready_timestamp' deployments/base-sepolia-contract-experiment.json
@@ -101,28 +101,28 @@ scripts/base-sepolia-experiment/run-with-keychain.sh resume
 scripts/base-sepolia-experiment/experiment.sh verify
 ```
 
-`verify`はread-onlyであり、contract code、role、固定limit、asset state、全receipt、Finalized block、最終pauseをRPCから再読する。
+`verify` is read-only, rereading contract code, roles, fixed limits, asset state, all receipts, Finalized blocks, and final pause state through RPC.
 
-## manifestの扱い
+## Manifest handling
 
-`deployments/base-sepolia-contract-experiment.json`は実行開始時に新規生成されるstate machineの作業用manifestである。
-スクリプトがaddress、nonce、transaction hash、receipt block、confirmation、runtime bytecode hash、check結果を更新する。
+`deployments/base-sepolia-contract-experiment.json` is the working state-machine manifest created when execution starts.
+Scripts update addresses, nonces, transaction hashes, receipt blocks, confirmations, runtime bytecode hashes, and check results.
 
-日付別の公開記録は`deployments/base-sepolia/YYYY-MM-DD/manifest.json`へ保存する。
-未実行項目は`pending`とし、addressやtransaction hashを推測で埋めない。
-実験完了時は作業用manifestの検証済み公開値を日付別manifestへ反映する。
+Save dated public records to `deployments/base-sepolia/YYYY-MM-DD/manifest.json`.
+Leave unexecuted items `pending`; never invent addresses or transaction hashes.
+At experiment completion, copy verified public values from the working manifest into the dated manifest.
 
-次の情報はどちらのmanifestにも保存しない。
+Store none of the following in either manifest:
 
-- private keyとseed
-- keystore passwordとpassword file
+- Private keys or seeds.
+- Keystore passwords or password files.
 - hardware wallet backup
-- credential付きRPC URL
-- shell環境の秘密値
+- Credential-bearing RPC URLs.
+- Secret shell environment values.
 
-## 終了条件
+## Completion criteria
 
-実験終了時はBridgeがtest-onlyであることをmanifestへ残す。
-2026年7月13日の旧実験では、Deposit mintとWithdrawalはpause状態、Service Feeは`1000000` rawとする。
-次回の再デプロイでは初期Service Feeを`50000000` rawとする。asset-flow試験では管理者変更を確認し、完了前に`50000000` rawへ戻す。
-Timelock、Bridge、bSNSのaddressとruntime bytecode hash、全transactionのconfirmationを`verify`で再確認する。
+Record the Bridge's test-only status in the manifest at completion.
+For the historical July 13, 2026 experiment, Deposit minting and Withdrawals remain paused and Service Fee is `1000000` raw.
+For the next redeployment, initial Service Fee is `50000000` raw. Test administrator fee changes during asset flows and restore `50000000` raw before completion.
+Use `verify` to recheck Timelock, Bridge, and bSNS addresses/runtime bytecode hashes and every transaction confirmation.

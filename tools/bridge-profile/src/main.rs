@@ -1762,25 +1762,6 @@ enum ProductionLifecycleResultView {
     Err(Reserved),
 }
 
-#[derive(CandidType, Deserialize)]
-#[allow(dead_code)]
-struct EmergencyPauseReceiptView {
-    caller: Principal,
-    local_deposits_paused: bool,
-    local_pause_audit_sequence: u64,
-    local_pause_audit_sha256: Vec<u8>,
-    base_actions_queued: bool,
-    base_action_count: u8,
-    base_action_plan_sha256: Vec<u8>,
-}
-
-#[derive(CandidType, Deserialize)]
-#[allow(dead_code)]
-enum EmergencyPauseResultView {
-    Ok(EmergencyPauseReceiptView),
-    Err(Reserved),
-}
-
 struct ValidatedBundle {
     root: PathBuf,
     manifest: ReleaseManifest,

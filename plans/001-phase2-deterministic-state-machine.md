@@ -1,165 +1,167 @@
-# Plan 001: Phase 2の決定的Bridge状態機械を実装する
+# Plan 001: Implement the Phase 2 deterministic Bridge state machine
 
-> **履歴資料**：この本文はPlan 001の実装時点における前提と完了条件を記録している。現行実装はCanister timerを使わない明示操作型Settlementである。
-> 現行仕様はリポジトリ直下の`README.md`と`docs/`を参照する。
+> **Historical record:** this document records assumptions and completion criteria at Plan 001 implementation time. The current implementation uses explicit Settlement operations without Canister timers.
+> See the repository-root `README.md` and `docs/` for current specifications.
 
-> **実行者向け指示**: この計画を上から順に実行し、各ステップの検証結果を確認してから次へ進むこと。`STOP条件`に該当した場合は実装を続けず、差分と判断材料を報告すること。完了時は`plans/README.md`の状態を更新する。
+> **Executor instructions:** execute this plan in order, verifying each step before proceeding. If a `STOP condition` applies, stop implementation and report the diff and decision evidence. Update `plans/README.md` when complete.
 
-> **ドリフト確認（最初に実行）**: `git diff --stat 5fc223c..HEAD -- Cargo.toml canister/bridge-core canister/bridge-canister scripts/ci-local.sh docs/adr/0008-handover-bridge-upgrades-to-sns-control.md docs/implementation-plan.md`。対象ファイルにPhase 2の意図と異なる変更がある場合、下記Current stateを現行コードと照合し、不一致ならSTOPする。
+> **Drift check (run first):** `git diff --stat 5fc223c..HEAD -- Cargo.toml canister/bridge-core canister/bridge-canister scripts/ci-local.sh docs/adr/0008-handover-bridge-upgrades-to-sns-control.md docs/implementation-plan.md`. If these files contain changes outside Phase 2 intent, compare Current state below with current code and STOP on disagreement.
 
 ## Status
 
 - **Priority**: P1
-- **Effort**: L（複数日。core、stable schema、Candid境界、回帰テストを含む）
-- **Risk**: HIGH（asset-moving処理の前提となる永続状態と公開Candid境界を初めて導入する）
-- **Depends on**: なし（Base contractのABI凍結済みが前提）
+- **Effort**: L (multiple days; includes core, stable schema, Candid boundaries, and regression tests).
+- **Risk**: HIGH (first introduction of persistent state and public Candid boundaries underlying asset-moving operations).
+- **Depends on**: None (assumes the Base contract ABI is frozen).
 - **Category**: tech-debt / tests / direction
 - **Planned at**: commit `5fc223c`, 2026-07-13
 
-## なぜ必要か
+## Rationale
 
-Base側のbSNS、Deposit、Withdrawal、pause、Timelock、ABI snapshotはPhase 1Eで検証済みだが、ICP側のBridge canisterはまだ空のCandid serviceで、pure coreにも業務ロジックがない。現在のままではDepositのescrow、WithdrawalのRelease/Refund、EVM transaction、Reconciliation Hold、upgrade後の再開を表現できず、Base contractを安全に呼び出す主体が存在しない。
+Base bSNS, Deposits, Withdrawals, pause, Timelock, and ABI snapshots were validated in Phase 1E, but the ICP Bridge canister still has an empty Candid service and the pure core has no domain logic. It cannot represent Deposit escrow, Withdrawal Release/Refund, EVM transactions, Reconciliation Hold, or post-upgrade resumption; no component can safely call the Base contract.
 
-この計画では、外部ledger・EVM・threshold ECDSAを呼ばない決定的coreと、IC stable memoryへ直接保存するcanister stateを先に作る。外部I/Oを後続Plan 002へ分離することで、リトライ、冪等性、rollback、terminal stateを単体テストとVerusの対象にできる。
+First build a deterministic core without external Ledger, EVM, or threshold ECDSA calls and canister state stored directly in IC stable memory. Separating external I/O into Plan 002 makes retries, idempotency, rollback, and terminal states subject to unit tests and Verus proofs.
 
 ## Current state
 
-- `canister/bridge-core/src/lib.rs:1-4` — dependency-free Rust crateだが、Phase 0の説明だけで、型・状態・遷移・テストがない。
-- `canister/bridge-canister/src/lib.rs:1-6` — `ic_cdk::export_candid!()`だけを公開し、asset-movingまたは管理update methodが存在しない。
-- `canister/bridge-canister/bridge.did:1` — Candid serviceは`service : () -> {};`で空。
-- `Cargo.toml:1-17` — workspaceは`bridge-core`と`bridge-canister`、Rust 1.97.0、`candid 0.10.32`、`ic-cdk 0.20.2`を固定している。`ic-stable-structures`はまだ依存していない。
-- `scripts/ci-local.sh:53-63` — Rust gateはfmt、clippy、workspace test、Wasm build、local-network preparationを実行する。core testとschema testはこのgateに載せる。
-- `scripts/ci-local.sh:138-141` — ICP build gateは`icp project show`と`icp build bridge-canister`だけで、Candidの業務APIやupgrade互換性は未検査である。
-- `docs/adr/0008-handover-bridge-upgrades-to-sns-control.md` — stable structuresへ直接保存し、全stateを`pre_upgrade`でserializeしないこと、未完了Deposit/Withdrawal/EVM transaction/Reconciliation Holdをupgrade後に再開できることを要求している。
-- `docs/implementation-plan.md:110-127` — Phase 2はstate設計、Settlement Reserveを侵食しないDeposit受付、Service Fee保護、Deposit flowを定義する。Phase 3の外部連携より先にpure logicを作る方針である。
-- `docs/parameters.md:16-57` — Mint Throughput Limit、Per-Deposit Limit、`MAX_SERVICE_FEE`、Settlement Reserveの値はTBDである。Plan 001では値を埋めず、raw unitとchecked arithmeticの契約だけを持つ。
+- `canister/bridge-core/src/lib.rs:1-4` — dependency-free Rust crate containing only a Phase 0 description; no types, states, transitions, or tests.
+- `canister/bridge-canister/src/lib.rs:1-6` — exposes only `ic_cdk::export_candid!()`; no asset-moving or administration update methods.
+- `canister/bridge-canister/bridge.did:1` — empty Candid service: `service : () -> {};`.
+- `Cargo.toml:1-17` — workspace contains `bridge-core` and `bridge-canister`, pinning Rust 1.97.0, `candid 0.10.32`, and `ic-cdk 0.20.2`. No `ic-stable-structures` dependency yet.
+- `scripts/ci-local.sh:53-63` — Rust gate runs fmt, clippy, workspace tests, Wasm build, and local-network preparation. Add core and schema tests here.
+- `scripts/ci-local.sh:138-141` — ICP build gate runs only `icp project show` and `icp build bridge-canister`; domain Candid APIs and upgrade compatibility are not yet checked.
+- `docs/adr/0008-handover-bridge-upgrades-to-sns-control.md` — requires direct stable-structure storage without whole-state `pre_upgrade` serialization and resumption of unfinished Deposits, Withdrawals, EVM transactions, and Reconciliation Holds after upgrade.
+- `docs/implementation-plan.md:110-127` — Phase 2 defines state design, Deposit admission preserving Settlement Reserve, Service Fee protection, and Deposit flow. Pure logic precedes Phase 3 external integration.
+- `docs/parameters.md:16-57` — Mint Throughput Limit, Per-Deposit Limit, `MAX_SERVICE_FEE`, and Settlement Reserve values are TBD. Plan 001 defines only raw-unit and checked-arithmetic contracts, without filling in values.
 
-### 守るべき設計語彙と制約
+### Required terminology and constraints
 
-- `docs/glossary.md`のDeposit、Withdrawal、Bridge Exposure、Service Fee、Settlement Reserve、Reconciliation Holdをそのまま状態名・コメント・テスト名に使う。`Withdrawal Settlement`はBaseの`Pending → Released`または`Pending → Refunded`の一方だけで終端する。
-- ADR 0001/0004/0005/0006/0008の決定を変更しない。特に、refundは新規Deposit mint throughputを消費せず、Service Feeは成功確定時だけ確定し、不明なledger transferは時間経過だけで再送・返金しない。
-- Base contractのABIは`docs/base-interface.md`と`contracts/abi/*.json`が正本であり、Plan 001ではSolidity ABIを変更しない。
-- 外部I/Oはcoreから呼ばない。ICRC ledger、EVM RPC、threshold ECDSA、timer、management canister、HTTPを導入するのはPlan 002以後とする。
+- Use Deposit, Withdrawal, Bridge Exposure, Service Fee, Settlement Reserve, and Reconciliation Hold from `docs/glossary.md` in state names, comments, and test names. `Withdrawal Settlement` terminates through exactly one of Base `Pending → Released` or `Pending → Refunded`.
+- Preserve ADRs 0001/0004/0005/0006/0008. In particular, refunds do not consume new Deposit mint throughput, Service Fees finalize only on confirmed success, and ambiguous Ledger transfers are not resent or refunded solely due to elapsed time.
+- `docs/base-interface.md` and `contracts/abi/*.json` are authoritative for the Base ABI. Plan 001 does not change Solidity ABI.
+- The core performs no external I/O. Introduce ICRC Ledger, EVM RPC, threshold ECDSA, timers, management canister calls, and HTTP only in Plan 002 or later.
 
 ## Commands you will need
 
-| 目的 | コマンド | 成功条件 |
+| Purpose | Command | Success criterion |
 |---|---|---|
-| Drift check | `git diff --stat 5fc223c..HEAD -- Cargo.toml canister/bridge-core canister/bridge-canister scripts/ci-local.sh docs/adr/0008-handover-bridge-upgrades-to-sns-control.md docs/implementation-plan.md` | Phase 2の未計画差分がない |
+| Drift check | `git diff --stat 5fc223c..HEAD -- Cargo.toml canister/bridge-core canister/bridge-canister scripts/ci-local.sh docs/adr/0008-handover-bridge-upgrades-to-sns-control.md docs/implementation-plan.md` | No unplanned Phase 2 changes |
 | Rust format | `cargo fmt --manifest-path Cargo.toml --all --check` | exit 0 |
-| Rust lint | `cargo clippy --manifest-path Cargo.toml --workspace --all-targets -- -D warnings` | exit 0、warningなし |
-| Unit/property tests | `cargo test --manifest-path Cargo.toml --workspace` | coreとcanisterの全testがpass |
+| Rust lint | `cargo clippy --manifest-path Cargo.toml --workspace --all-targets -- -D warnings` | Exit 0, no warnings |
+| Unit/property tests | `cargo test --manifest-path Cargo.toml --workspace` | All core and canister tests pass |
 | Wasm build | `cargo build --manifest-path Cargo.toml --target wasm32-unknown-unknown --release -p bridge-canister` | exit 0 |
-| ICP build | `scripts/ci-local.sh icp` | Candid生成を含むcanister buildがpass |
-| Full regression | `scripts/ci-local.sh checks` | Rust、contract、SMT、Verus、ICP buildがpass |
+| ICP build | `scripts/ci-local.sh icp` | Canister build, including Candid generation, passes |
+| Full regression | `scripts/ci-local.sh checks` | Rust, contracts, SMT, Verus, and ICP build pass |
 
 ## Scope
 
-**In scope（変更してよいファイル）**:
+**In scope (files allowed to change):**
 
-- `Cargo.toml`、`Cargo.lock` — stable structures等の必要な依存を固定する。
-- `canister/bridge-core/src/lib.rs`、`canister/bridge-core/tests/*.rs` — pure domain types、遷移、会計、不変条件、unit/property tests。
-- `canister/bridge-canister/src/lib.rs`、`canister/bridge-canister/bridge.did` — stable memory adapterとasset-movingを行わないread-only Candid境界。
-- `canister/bridge-canister/tests/*.rs` — stable schemaの再オープン・upgrade相当テスト。実際のPocketIC upgrade testを追加する場合もこのディレクトリに限定する。
-- `docs/`のPhase 2状態遷移・stable schema文書、および`verification/README.md`の証明境界追記。
-- Plan 001に必要なCI test invocationの最小変更（既存の`contracts` gateやBase ABIを変更しない）。
+- `Cargo.toml`, `Cargo.lock` — pin required dependencies such as stable structures.
+- `canister/bridge-core/src/lib.rs`, `canister/bridge-core/tests/*.rs` — pure domain types, transitions, accounting, invariants, and unit/property tests.
+- `canister/bridge-canister/src/lib.rs`, `canister/bridge-canister/bridge.did` — stable memory adapter and read-only Candid boundaries without asset movement.
+- `canister/bridge-canister/tests/*.rs` — stable schema reopen/upgrade-equivalent tests. Any actual PocketIC upgrade tests also belong here.
+- Phase 2 state-transition/stable-schema documentation under `docs/`, and proof-boundary additions to `verification/README.md`.
+- Minimal CI test-invocation changes required by Plan 001; preserve the existing `contracts` gate and Base ABI.
 
-**Out of scope（触らない）**:
+**Out of scope (do not change):**
 
-- `contracts/src/**`、`contracts/test/**`、`contracts/abi/**` — Phase 1Eで凍結済みのBase contractとABI。
-- ICRC ledger transfer、EVM RPC送信、threshold ECDSA、nonce queue、Settlement Reserveの実コスト計算、Runtime Administrator、Fee Recipient運用 — Plan 002/003へ延期する。
-- `docs/parameters.md`のTBD数値、Base Admin wallet、SNS Root handover、mainnet/testnet deploy — Plan 005/006へ延期する。KINIC LedgerとIndexの本番識別子は確定済みである。x402 facilitatorはBridgeの配置・activation範囲外とする。
-- `pre_upgrade`で全stateを一括serializeする実装。stable structuresのmemory layoutを正本にする。
+- `contracts/src/**`, `contracts/test/**`, `contracts/abi/**` — Base contracts and ABI frozen in Phase 1E.
+- ICRC Ledger transfers, EVM RPC submission, threshold ECDSA, nonce queues, actual Settlement Reserve cost calculations, Runtime Administrator, and Fee Recipient operations — defer to Plans 002/003.
+- TBD values in `docs/parameters.md`, Base Admin wallets, SNS Root handover, and mainnet/testnet deployment — defer to Plans 005/006. Production KINIC Ledger/Index IDs are already fixed. x402 facilitators are outside Bridge deployment/activation scope.
+- Whole-state serialization in `pre_upgrade`. Stable structures' memory layout is authoritative.
 
 ## Steps
 
-### Step 1: 状態遷移表と数値境界を先に固定する
+### Step 1: Fix state-transition tables and numeric boundaries first
 
-`docs/`にPhase 2の状態遷移表を追加し、Deposit、Withdrawal、EVM transaction、Reconciliation Holdの各状態、許可遷移、入力、成功後のstorage変更、失敗時の不変条件、idempotent retry、conflicting retryを明記する。Baseの`WithdrawalStatus`はBase側のrecordと一致させ、ICP側の実行状態は別enumにして混同しない。
+Add Phase 2 transition tables under `docs/` for Deposits, Withdrawals, EVM transactions, and Reconciliation Holds. Specify states, allowed transitions, inputs, post-success storage effects, failure invariants, idempotent retries, and conflicting retries. Match Base `WithdrawalStatus` to Base records and use a separate enum for ICP execution state.
 
-Depositでは`grossAmount`、利用者の`maxServiceFee`、実行時Service Fee、net mint量、Settlement Reserve予約の関係を定義する。WithdrawalではBase burn量、`minAmountOut`、ledger fee、Service Fee、Release/Refund結果、同一要求の再試行を定義する。`u128`へ縮小するか、Candid `Nat`を保持するかは、対象SNS ledgerの最大値を文書化してから決める。根拠なしに`as u128`やunchecked castを置かない。
+For Deposits, define relationships among `grossAmount`, user `maxServiceFee`, execution-time Service Fee, net mint amount, and Settlement Reserve reservations. For Withdrawals, define Base burn amount, `minAmountOut`, Ledger fee, Service Fee, Release/Refund outcomes, and retries. Choose `u128` narrowing versus Candid `Nat` only after documenting the target SNS Ledger maximum; no unjustified `as u128` or unchecked casts.
 
-**Verify**: `rg -n "Pending|Released|Refunded|Reconciliation Hold|Service Fee|Settlement Reserve" docs/` → 4つの状態機械と数値境界の記述が見つかり、各状態に許可遷移と拒否遷移がある。
+**Verify**: `rg -n "Pending|Released|Refunded|Reconciliation Hold|Service Fee|Settlement Reserve" docs/` finds all four state machines and numeric boundaries, with allowed and rejected transitions for each state.
 
-### Step 2: dependency-freeなpure coreを実装する
+### Step 2: Implement a dependency-free pure core
 
-`bridge-core`に、checked amount arithmetic、request identity、Deposit/Withdrawal/EVM/Reconciliationの状態型、`CoreError`、決定的なtransition関数を追加する。transitionは新しいstateまたは明示的なerrorを返し、error時に入力stateを変更しない。外部呼び出しは`Command`または副作用のないdecisionとして返し、core自身はledger・EVM・IC runtimeへアクセスしない。
+Add checked amount arithmetic, request identities, Deposit/Withdrawal/EVM/Reconciliation state types, `CoreError`, and deterministic transition functions to `bridge-core`. Transitions return new state or explicit errors without mutating input state on failure. Represent external calls as `Command` or side-effect-free decisions; the core does not access Ledger, EVM, or IC runtime.
 
-最低限、次を実装する。
+Implement at least:
 
-- Deposit受付前に、Service Fee上限、`maxServiceFee`、net mint量、Per-Deposit/throughputの入力を検査し、Settlement Reserve予約が不足する場合は受付を拒否するdecision。
-- Depositのpull、Base mint送信、成功確定、失敗、Reconciliation Hold、refund可能状態をID付きで冪等に管理するdecision。
-- WithdrawalのBase observed、Release送信、Release確定、Base Refund、terminal状態を排他的に管理するdecision。
-- Service Feeは成功確定までfee reserveへ計上せず、Base Refundとcancelでは計上しない。
-- 不明なledger結果はReconciliation Holdに固定し、同じtransfer identity以外の再送と証拠なし補償を拒否する。
+- Pre-Deposit checks for Service Fee cap, `maxServiceFee`, net mint amount, Per-Deposit/throughput inputs, rejecting admission when the Settlement Reserve reservation is insufficient.
+- Idempotent, ID-bound decisions for Deposit pull, Base mint submission, confirmed success, failure, Reconciliation Hold, and refundable states.
+- Mutually exclusive decisions for Withdrawal Base observation, Release submission/confirmation, Base Refund, and terminal states.
+- No Service Fee credit before confirmed success; none on Base Refund or cancellation.
+- Unknown Ledger outcomes remain in Reconciliation Hold; reject resubmission with another transfer identity and compensation without evidence.
 
-**Verify**: `cargo test --manifest-path Cargo.toml --package bridge-core` → pure core testがpassし、`cargo clippy --manifest-path Cargo.toml --workspace --all-targets -- -D warnings` → warningなし。
+**Verify**: `cargo test --manifest-path Cargo.toml --package bridge-core` passes pure core tests; `cargo clippy --manifest-path Cargo.toml --workspace --all-targets -- -D warnings` reports no warnings.
 
-### Step 3: coreの不変条件・冪等性・境界テストを追加する
+### Step 3: Add core invariant, idempotency, and boundary tests
 
-既存のSolidity invariantの考え方をRust coreにも適用し、入力stateとcommand列を生成するtest helperを作る。少なくとも次をテストする。
+Apply existing Solidity invariant concepts to the Rust core, building helpers that generate input states and command sequences. Test at least:
 
-- Deposit成功のnet amountとfee reserveの保存、失敗時のstate不変、同一IDの再実行、異なるpayloadのconflict拒否。
-- Withdrawalの`Pending → Released`と`Pending → Refunded`の排他、terminal retryの同一内容成功、異なる内容拒否、Release後のRefund拒否。
-- `totalSupply + Pending + Released`相当のBridge Exposure保存、refundがDeposit throughputを消費しないこと、Service Fee変更が既存pending settlementを書き換えないこと。
-- `ReconciliationHold`から新しいtransfer、refund、Base補償へ直接遷移しないこと。
-- 0、最大値、feeがamountを超える場合、ID重複、空payload、unknown ID、算術overflow/underflow。
+- Preservation of successful Deposit net amounts and fee reserves, unchanged state on failure, same-ID retries, and rejection of conflicting payloads.
+- Exclusivity of Withdrawal `Pending → Released` and `Pending → Refunded`, successful identical terminal retries, rejection of different content, and no Refund after Release.
+- Bridge Exposure preservation equivalent to `totalSupply + Pending + Released`, refunds not consuming Deposit throughput, and Service Fee changes not rewriting existing pending settlements.
+- No direct transition from `ReconciliationHold` to a new transfer, refund, or Base compensation.
+- Zero, maxima, fee greater than amount, duplicate IDs, empty payloads, unknown IDs, and arithmetic overflow/underflow.
 
-property test dependencyを追加する場合は、Rust 1.97.0で維持でき、テスト専用であることを確認する。追加不要なら決定的な複数case table testを優先し、検証対象を曖昧にしない。
+If adding a property-testing dependency, verify Rust 1.97.0 support and test-only use. Otherwise prefer deterministic multi-case table tests with explicit coverage.
 
-**Verify**: `cargo test --manifest-path Cargo.toml --package bridge-core` →上記ケースを含む全testがpass。`cargo test --manifest-path Cargo.toml --workspace` →他crateを含め全pass。
+**Verify**: `cargo test --manifest-path Cargo.toml --package bridge-core` passes all cases above; `cargo test --manifest-path Cargo.toml --workspace` passes across all crates.
 
-### Step 4: stable structures adapterとschema versionを実装する
+### Step 4: Implement the stable structures adapter and schema version
 
-`bridge-canister`はstable SQLiteへcore stateを直接保存し、`pre_upgrade`で全stateをblob化しない。各recordのkey、stable value encoding、schema version、migration方針を文書化する。
+`bridge-canister` stores core state directly in stable SQLite instead of converting all state to a blob in `pre_upgrade`. Document record keys, stable value encoding, schema version, and migration policy.
 
-adapterはcoreのtransitionを呼び出し、成功したdecisionだけをstable mapへ反映する。外部I/Oが未実装のPhase 2では、asset-moving update endpointを公開しない。読み取りqueryは、state version、pause/acceptance state、未完了件数、Reconciliation Hold件数など、秘密や署名materialを含まない最小情報に限定する。
+The adapter calls core transitions and applies only successful decisions to stable maps. Phase 2 has no external I/O and exposes no asset-moving update endpoints. Limit queries to minimal nonsecret, nonsigning data such as state version, pause/admission state, unfinished counts, and Reconciliation Hold counts.
 
-同一のテストmemoryを閉じて再オープンし、schema versionを確認して、Deposit、Withdrawal、EVM transaction、Reconciliation Holdの未完了recordが同じ状態で読めることをテストする。旧schemaを読む必要がある場合は明示的なmigration関数とfixtureを追加し、暗黙のdefaultで欠損資産を作らない。
+Close and reopen the same test memory, verify schema version, and confirm unfinished Deposit, Withdrawal, EVM transaction, and Reconciliation Hold records retain identical state. If reading an old schema is necessary, add explicit migration functions and fixtures; do not create missing assets through implicit defaults.
 
-**Verify**: `cargo test --manifest-path Cargo.toml --package bridge-canister` → stable mapの書込み・再オープン・schema検査がpass。`cargo build --manifest-path Cargo.toml --target wasm32-unknown-unknown --release -p bridge-canister` → exit 0。
+**Verify**: `cargo test --manifest-path Cargo.toml --package bridge-canister` passes stable-map write/reopen/schema checks; `cargo build --manifest-path Cargo.toml --target wasm32-unknown-unknown --release -p bridge-canister` exits 0.
 
-### Step 5: read-only Candid境界と回帰gateを固定する
+### Step 5: Fix read-only Candid boundaries and regression gates
 
-`bridge.did`と`ic_cdk::export_candid!()`の生成結果を一致させる。Phase 2のCandidはread-only queryだけにし、callerが任意のDeposit/Withdrawal遷移を発動できるupdate methodを追加しない。queryのrecord/variant名はStep 1の状態語彙と一致させ、将来のasset-moving API用に予約した名前を安易に公開しない。
+Make `bridge.did` match `ic_cdk::export_candid!()` output. Phase 2 Candid exposes read-only queries only; do not add updates allowing arbitrary callers to trigger Deposit/Withdrawal transitions. Align query record/variant names with Step 1 terminology; do not casually expose names reserved for future asset-moving APIs.
 
-既存の`ci-local.sh`のRust/ICP gateへ必要最小限のCandid生成・schema testを接続する。Base contract、ABI snapshot、SMT negative fixture、Verus fixtureの判定を変更しない。
+Connect only necessary Candid generation/schema tests to existing `ci-local.sh` Rust/ICP gates. Preserve Base contracts, ABI snapshots, SMT negative fixture checks, and Verus fixture checks.
 
-**Verify**: `scripts/ci-local.sh rust` → fmt、clippy、workspace test、Wasm build、local-network preparationがpass。`scripts/ci-local.sh icp` → ICP project show/buildがpass。`scripts/ci-local.sh checks` →全既存gateがpass。
+**Verify**: `scripts/ci-local.sh rust` passes fmt, clippy, workspace tests, Wasm build, and local-network preparation; `scripts/ci-local.sh icp` passes project show/build; `scripts/ci-local.sh checks` passes all existing gates.
 
 ## Test plan
 
-- `canister/bridge-core/tests/`で状態遷移表の全許可・拒否遷移、terminal idempotency、fee・reserve・exposure算術をテーブルテストする。
-- `canister/bridge-canister/tests/`でstable memoryの再オープン、schema version、旧fixtureからのmigration（採用した場合）、queryが副作用を持たないことを検証する。
-- Rust testは本物のICRC ledgerやEVM RPCへ接続しない。外部adapterを追加するテストはPlan 002で行う。
-- 構造上のパターンは`verification/smt/pass/WithdrawalState.sol`、`contracts/test/BridgeWithdrawal.t.sol`、`contracts/test/BridgeInvariant.t.sol`の不変条件・terminal state・idempotencyの考え方を参照する。ただしSolidity ABIや型を直接コピーしない。
+- Table-test all allowed/rejected transitions, terminal idempotency, and fee/reserve/exposure arithmetic in `canister/bridge-core/tests/`.
+- Test stable-memory reopen, schema versions, old-fixture migration if adopted, and side-effect-free queries in `canister/bridge-canister/tests/`.
+- Rust tests do not connect to real ICRC Ledgers or EVM RPC. External adapter tests belong to Plan 002.
+- Use invariant, terminal-state, and idempotency patterns from `verification/smt/pass/WithdrawalState.sol`, `contracts/test/BridgeWithdrawal.t.sol`, and `contracts/test/BridgeInvariant.t.sol`; do not directly copy Solidity ABI or types.
 
-## Done criteria
+## Historical done criteria
 
-- [ ] `docs/`にDeposit、Withdrawal、EVM transaction、Reconciliation HoldのPhase 2状態遷移表がある。
-- [ ] `bridge-core`が外部I/Oなしでchecked transition、error、idempotency、fee/exposure/reserve invariantsを実装している。
-- [ ] `cargo test --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --all --check`がexit 0。
-- [ ] stable stateが`ic-stable-structures`へ直接保存され、全stateを`pre_upgrade`でserializeする実装がない。
-- [ ] stable schemaの再オープンテストが、未完了Deposit、Withdrawal、EVM transaction、Reconciliation Holdを保持する。
-- [ ] Phase 2のCandidはread-only queryだけで、任意callerがasset-moving遷移を起こせない。
-- [ ] `cargo build --target wasm32-unknown-unknown --release -p bridge-canister`と`scripts/ci-local.sh checks`がpassする。
-- [ ] `git status --short`がPlan 001のScope外ファイルを変更していない。
-- [ ] `plans/README.md`の001行が更新されている。
+The unchecked entries below preserve the original plan checklist; they are not a current validation receipt. Current evidence is governed by the release claim ledger and current-source validation gates.
+
+- [ ] `docs/` contains Phase 2 transition tables for Deposits, Withdrawals, EVM transactions, and Reconciliation Holds.
+- [ ] `bridge-core` implements checked transitions, errors, idempotency, and fee/exposure/reserve invariants without external I/O.
+- [ ] `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo fmt --all --check` exit 0.
+- [ ] Stable state is stored directly in `ic-stable-structures`; no whole-state `pre_upgrade` serialization exists.
+- [ ] Stable schema reopen tests preserve unfinished Deposits, Withdrawals, EVM transactions, and Reconciliation Holds.
+- [ ] Phase 2 Candid contains only read-only queries; arbitrary callers cannot trigger asset-moving transitions.
+- [ ] `cargo build --target wasm32-unknown-unknown --release -p bridge-canister` and `scripts/ci-local.sh checks` pass.
+- [ ] `git status --short` shows no changes outside Plan 001 scope.
+- [ ] The 001 row in `plans/README.md` is updated.
 
 ## STOP conditions
 
-- 対象SNS ledgerのamount上限が決まらず、`u128`とCandid `Nat`の選択を安全に根拠付けられない。
-- core transitionが外部I/O、timer、caller、乱数、現在時刻に依存する必要が出た。
-- stable schemaを変更しないと未完了stateを再オープンできない、または旧fixtureの意味を復元できない。
-- Phase 2のread-only境界にasset-moving update methodを追加しないとテストできない。
-- 既存のBase ABI、`contracts/`、`contracts/abi/`を変更する必要が出た。
-- `cargo clippy`、workspace test、Wasm build、ICP buildのいずれかが2回の合理的な修正後も失敗する。
-- 依存追加でRust 1.97.0、pinned lockfile、wasm32 buildが維持できない。
+- The target SNS Ledger amount maximum is unresolved, preventing a justified choice between `u128` and Candid `Nat`.
+- Core transitions need external I/O, timers, caller identity, randomness, or current time.
+- Unfinished state cannot reopen without schema changes, or the meaning of old fixtures cannot be recovered.
+- Testing requires an asset-moving update method in the Phase 2 read-only boundary.
+- Existing Base ABI, `contracts/`, or `contracts/abi/` must change.
+- Clippy, workspace tests, Wasm build, or ICP build still fails after two reasonable repairs.
+- A dependency addition cannot preserve Rust 1.97.0, pinned lockfiles, or wasm32 builds.
 
 ## Maintenance notes
 
-- Plan 002のICRC/EVM adapterは、ここで固定したcore transitionとstable key/schemaを呼び出すだけにし、外部失敗を新しい状態へ変換する。core APIをadapter都合で緩めない。
-- Plan 003のRuntime Administratorは、Phase 2のqueryで未完了件数、reserve、Reconciliation Holdを安全に観測できることを前提にする。
-- Plan 004のVerusでは、pure coreのtransitionと不変条件をproductionと同じ関数から証明対象にする。`Nat`/`u128`境界を別の未検証変換として増やさない。
-- Reviewでは、caller認証がquery/updateの境界にないこと、retryがconflicting payloadを受理しないこと、stable schemaの変更がupgradeを壊さないことを重点確認する。
-- `docs/parameters.md`のTBD値はこの計画では埋めない。対象SNSと運用監視が確定したPlan 005で、導出式と外部仮定を一緒に更新する。
+- Plan 002 ICRC/EVM adapters should only call the fixed core transitions and stable keys/schema, translating external failures into states. Do not weaken core APIs for adapter convenience.
+- Plan 003 Runtime Administrator assumes Phase 2 queries safely expose unfinished counts, reserves, and Reconciliation Holds.
+- Plan 004 Verus proofs must cover pure-core transitions and invariants from the same production functions. Do not add separate unverified `Nat`/`u128` conversions.
+- Review especially the absence of caller authentication at query/update boundaries, rejection of conflicting retry payloads, and preservation of upgrade compatibility through stable schema changes.
+- Do not fill TBD values in `docs/parameters.md` in this plan. Update derivation formulas and external assumptions together in Plan 005 after target SNS and monitoring are fixed.

@@ -175,6 +175,7 @@ test "$(cat {shlex.quote(str(stages))})" = 'claim-manifest'
             'python3 "$ROOT/scripts/check_proof_impact.py"',
             'python3 "$ROOT/scripts/check_claim_manifest.py"',
             'python3 "$ROOT/scripts/check_claim_test_manifest.py" --validate-only',
+            'python3 "$ROOT/scripts/check_failure_manifests.py"',
         ]
         positions = [body.index(command) for command in expected]
         self.assertEqual(positions, sorted(positions))

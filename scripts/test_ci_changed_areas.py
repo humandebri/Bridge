@@ -108,7 +108,8 @@ class ChangedAreaTests(unittest.TestCase):
             with self.subTest(path=path):
                 expected = (
                     ("ui-fast", "ui-e2e", "real", "proofs-impacted")
-                    if path == "ui/src/lib/withdrawal-submit.ts"
+                    if path in {"ui/src/lib/withdrawal-submit.ts", "ui/src/lib/deposit-intents.ts", "ui/src/lib/deposit-history.ts"}
+                    else ci_changed_areas.GATES if path == "ui/src/lib/future-settlement-module.ts"
                     else ("ui-fast", "ui-e2e", "real")
                 )
                 self.assert_areas([path], *expected)
@@ -296,6 +297,11 @@ class ChangedAreaTests(unittest.TestCase):
         path = "canister/bridge-core/src/new_policy.rs"
         self.assert_areas([path], *ci_changed_areas.GATES)
         self.assert_review([path], True)
+
+    def test_unregistered_ui_source_runs_every_area(self):
+        for path in ("ui/src/lib/new-policy.ts", "ui/src/new-action.tsx"):
+            self.assert_areas([path], *ci_changed_areas.GATES)
+            self.assert_review([path], True)
 
     def test_unknown_path_mixed_with_docs_runs_every_area(self) -> None:
         self.assert_areas(

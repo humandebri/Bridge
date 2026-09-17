@@ -162,6 +162,7 @@ run_versions() {
     "$ROOT/scripts/trusted-pr-container.sh"
   "$ROOT/scripts/check_tool_versions.sh"
   "$ROOT/scripts/test_tool_version_gate.sh"
+  python3 "$ROOT/scripts/test_schema_consistency.py"
   python3 "$ROOT/scripts/check_schema_consistency.py"
   python3 "$ROOT/scripts/check_no_obsolete_release_dependencies.py"
   python3 "$ROOT/scripts/test_no_obsolete_release_dependencies.py"
@@ -720,10 +721,14 @@ run_policy_vector_consumers() {
 }
 
 run_proof_preflight() {
+  pnpm --dir "$ROOT/ui" run codegen:abi:check
+  pnpm --dir "$ROOT/ui" run codegen:candid:check
+  python3 "$ROOT/scripts/test_schema_consistency.py"
   python3 "$ROOT/scripts/check_schema_consistency.py"
   python3 "$ROOT/scripts/check_proof_impact.py"
   python3 "$ROOT/scripts/check_claim_manifest.py"
   python3 "$ROOT/scripts/check_claim_test_manifest.py" --validate-only
+  python3 "$ROOT/scripts/check_failure_manifests.py"
 }
 
 run_refinement_gate() {

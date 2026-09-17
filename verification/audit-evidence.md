@@ -1,37 +1,37 @@
 # External audit evidence matrix
 
-照合の`NoProgress`分類とfunding recoveryの揮発性実行guardは、
-`automatic_retry_limit`、`hold_resolution`、`fee_payout`、
-`funding_reconciliation_freshness`の登録済みRust/PocketICテストで検証する。
-既存の回数計算・不在確定の数式証明は、scan状態比較や非同期callbackの排他性まで
-証明するものではない。後者にはICの逐次メッセージ実行、CDKのfuture破棄時の
-guard解放、upgrade後のtimer初期化という実行環境上の前提が残る。
+The reconciliation `NoProgress` classification and the volatile funding recovery execution guard are covered by registered Rust/PocketIC tests for
+`automatic_retry_limit`, `hold_resolution`, `fee_payout`,
+`funding_reconciliation_freshness`.
+Existing arithmetic proofs for attempt counting and confirmed absence do not establish scan-state comparisons
+or exclusion between asynchronous callbacks. These retain runtime assumptions about sequential IC message execution,
+guard release when the CDK drops a future, and timer initialization after upgrades.
 
-監査時の正本は、`verification/claims.tsv`から決定的に生成されるschema 7の
-`verification/output/claim-report.json`である。JSONの各`claims[]`要素が一つのclaimに
-対応し、次を別々に表示する。
+The authoritative audit record is schema 7
+`verification/output/claim-report.json`, deterministically generated from `verification/claims.tsv`. Each `claims[]` entry
+represents one claim and displays the following separately:
 
-- `assurance_target`: release判定対象か、モデル補助証拠か。
-- `required_strength`: 当該claimがreleaseに必要とする最低強度。
-- `evidence_strength`: `abstract-proved`、`production-linked`、
-  `implementation-proved`のいずれか。
-- `typed_implementation_basis`: production symbol、transaction test、production-bound
-  Verus、bounded conformance、supporting SMT/Halmosの種別付き一覧。
-- `release_blockers`: production link、transaction test、要求強度の不足。
-- `unproved_reasons`と`external`: 未結合proof境界と外部仮定。
+- `assurance_target`: whether the claim is a release target or supporting model evidence.
+- `required_strength`: the minimum evidence strength needed for release.
+- `evidence_strength`: `abstract-proved`, `production-linked`,
+  or `implementation-proved`.
+- `typed_implementation_basis`: production symbols, transaction tests, production-bound
+  Verus, bounded conformance, and supporting SMT/Halmos evidence, with their types.
+- `release_blockers`: missing production links, transaction tests, or required evidence strength.
+- `unproved_reasons` and `external`: unbound proof boundaries and external assumptions.
 
-`release-ready`は外部仮定やTCBがないことを意味しない。manifestとchecker側固定policyで
-完全一致したtarget・最低強度、および宣言したproduction結合を満たすことだけを意味する。
-現在の固定policyは43件すべてをrelease対象とし、25件へ`implementation-proved`、18件へ
-`production-linked`を要求する。SMT、Halmos、生成vector、model-only
-Verusはsupporting evidenceであり、それ単独で`implementation-proved`にならない。
+`release-ready` does not mean there are no external assumptions or TCB. It means only that the target and minimum strength
+exactly match the manifest and fixed checker policy, and that the declared production bindings are satisfied.
+The current fixed policy makes all 43 claims release targets, requiring `implementation-proved` for 25 and
+`production-linked` for 18. SMT, Halmos, generated vectors, and model-only
+Verus are supporting evidence and cannot independently establish `implementation-proved` status.
 
-条件付きliveness 5件は`claims[]`に含めず、`conditional_liveness[]`へ分離する。それらの
-Lean定理、強い仮定、production未結合境界は`conditional-liveness.tsv`と
-`conditional-liveness.md`を参照する。定理の完全修飾名、命題型、仮定集合は固定policyと
-完全一致させ、Leanによる型検査とaxiom dependency検査を行う。
+The five conditional liveness results are separate in `conditional_liveness[]`, outside `claims[]`. Their
+Lean theorems, strong assumptions, and production-unbound boundaries are documented in `conditional-liveness.tsv` and
+`conditional-liveness.md`. Fully qualified theorem names, proposition types, and assumption sets must exactly match the fixed policy,
+and undergo Lean typechecking and axiom dependency checks.
 
-監査提出前には固定toolchainで`scripts/ci-local.sh proofs`を実行し、receipt schema 8の
-source fingerprint、全10 stageの`pass`、`complete: true`、43件の`release-ready`、
-`release-blocked: 0`、`model-support: 0`、25/18件の証拠強度区分を確認する。receipt自体はgit追跡せず、監査対象checkout
-から再生成する。
+Before audit submission, run `scripts/ci-local.sh proofs` with the pinned toolchain and check receipt schema 8:
+the source fingerprint, `pass` for all 10 stages, `complete: true`, 43 `release-ready` claims,
+`release-blocked: 0`, `model-support: 0`, and the 25/18 evidence-strength partition. The receipt is not tracked in Git;
+regenerate it from the checkout being audited.

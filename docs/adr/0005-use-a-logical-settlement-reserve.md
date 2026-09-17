@@ -2,24 +2,24 @@
 status: accepted
 ---
 
-# Settlement用cyclesとMint capacityを論理予約する
+# Logically reserve settlement cycles and mint capacity
 
-Bridgeは単一canisterのcycles残高を共有する。新規Depositが既存operationのSettlement用cyclesを侵食しないよう、非終端liabilityの保守的最大費用を論理予約する。Mint Authorizationのcapacityは`AuthorizationPending`または`AuthorizationAvailable`の間だけ別に予約する。Base control-planeはGovernance Operator、Runtime Administrator、Independent Cancellerごとにsigner、nonce lane、ETH残高を分離し、送信候補transactionごとに必要liabilityを検査する。Deposit MintのBase gasは利用者walletが負担するため、Deposit admissionのETH reserveには含めない。
+The Bridge shares one canister cycles balance. Logically reserve the conservative maximum cost of nonterminal liabilities so new Deposits cannot consume cycles needed to settle existing operations. Reserve Mint Authorization capacity separately only while `AuthorizationPending` or `AuthorizationAvailable`. The Base control plane separates signers, nonce lanes, and ETH balances for the Governance Operator, Runtime Administrator, and Independent Canceller, checking the required liability for each candidate transaction. User wallets pay Base gas for Deposit mints, so it is not part of an ETH reserve for Deposit admission.
 
 ## Considered Options
 
-- DepositとSettlementでcanisterを物理分離する案は、資金移動、監視、復旧、権限管理を増やすため不採用とする。
-- cyclesとMint capacityを無条件に共有する案は、新規Depositが既存operationの実行資源を消費できるため不採用とする。
-- 共有cycles残高内の論理予約、Mint capacity予約、record指定の明示操作、Base control-plane roleの物理分離を採用する。
+- Reject physically separating Deposit and Settlement canisters because it adds fund transfers, monitoring, recovery, and authority management.
+- Reject unconditional sharing of cycles and mint capacity because new Deposits could consume execution resources needed by existing operations.
+- Adopt logical reservation within the shared cycles balance, mint capacity reservations, explicit record-specific operations, and physical separation of Base control-plane roles.
 
 ## Consequences
 
-- Settlementは利用者または管理者が指定したrecordだけを処理する。
-- Settlement Reserveを満たせない場合、新規DepositをICP ledgerからpullする前に受付を停止する。
-- 必要なSettlement cycles reserveは運用floorに加え、すべての非終端liabilityの保守的最大費用を含める。
-- Mint capacityは`AuthorizationPending`／`AuthorizationAvailable`の間だけ予約し、Mint確定またはdeadline超過による`RefundAvailable`移行時に解放する。Base mint gas用ETHは予約しない。
-- Base control-plane transactionは、選択されたsender roleのFinalizedとSafeの保守的なETH残高がcandidate liabilityを満たす場合だけ署名する。後続relayは固定済みtransactionを送信する。別の固定ETH floorは設けない。
-- Withdrawal受付を継続できない残高では、Base contractの新規Withdrawalをpauseし、既存Settlementだけを継続する。
-- Verusで、Deposit受付がSettlement Reserveを侵食しないことを証明する。
-- gas価格、EVM RPC費用、management canister call費用の上限評価は外部仮定として監査する。
-- 論理予約は悪意あるcanister upgradeに対する物理隔離ではない。
+- Settlement processes only records specified by a user or administrator.
+- If the Settlement Reserve cannot be met, stop admitting new Deposits before pulling from the ICP ledger.
+- The required settlement cycles reserve includes the operating floor plus the conservative maximum cost of every nonterminal liability.
+- Reserve mint capacity only during `AuthorizationPending`/`AuthorizationAvailable`, releasing it on mint confirmation or transition to `RefundAvailable` after the deadline. Do not reserve ETH for Base mint gas.
+- Sign a Base control-plane transaction only if the selected sender role's conservative Finalized and Safe ETH balances cover the candidate liability. Subsequent relay submits the fixed transaction. There is no separate fixed ETH floor.
+- When the balance cannot support continued Withdrawal admission, pause new Withdrawals on the Base contract and continue only existing Settlements.
+- Use Verus to prove that Deposit admission does not consume the Settlement Reserve.
+- Audit upper-bound estimates for gas prices, EVM RPC costs, and management canister call costs as external assumptions.
+- Logical reservation does not provide physical isolation against a malicious canister upgrade.

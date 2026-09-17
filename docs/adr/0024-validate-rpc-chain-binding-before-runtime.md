@@ -2,33 +2,33 @@
 status: accepted
 ---
 
-# RPC chain bindingを稼働前に検証する
+# Validate RPC chain binding before runtime
 
-Bridgeのconfigured chain IDはinstall domainを構成する設定値であり、Finalized block responseから観測した値ではない。Custom RPCを使う環境では、operatorがRPC URL、期待chain ID、各URLの接続先chainをdeployment lifetimeにわたって固定する。deploy・activation前preflightはreview済みの3 endpointすべてへ`eth_chainId`を実行し、到達不能、不正応答、期待chain IDとの不一致が1件でもあればfail closedにする。
+The Bridge's configured chain ID is a configuration value defining the install domain, not a value observed in a Finalized block response. In environments using Custom RPC, operators fix the RPC URLs, expected chain ID, and each URL's upstream chain for the deployment lifetime. Preflight before deployment and activation calls `eth_chainId` on all three reviewed endpoints and fails closed if any endpoint is unreachable, returns an invalid response, or reports a different chain ID.
 
-本番Base MainnetのCanister outcallは公式EVM RPC Canisterの組み込み`BaseMainnet` provider群を使用し、`custom_evm_rpc_urls`は空配列に固定する。Gate Aはoffline artifactとconstructor条件だけを検証し、配置後のruntime、role、pause、chain bindingはCanisterが公式経路から取得するactivation attestationを正本とする。直接Custom RPC 3件の照合はstaging monitor drillだけに限定し、本番profile、release bundle、UIへURLを注入しない。Base Sepolia stagingと`test-deployment` buildでは、review済みのCustom RPC 3件を使用する。staging Wasmの一方向provider置換例外は、現在review済みのOnFinality集合からreview済みのdRPC集合への置換だけを許可する。旧・新URL配列、順序、両digest、Base Sepolia chain ID、公式EVM RPC Canister IDをすべて固定し、新集合への同値再実行以外の変更はtrapする。production Wasmはこの型・decoder・置換経路をコンパイルしない。置換理由とIC経由の診断証拠は[ADR 0026](0026-replace-staging-onfinality-with-drpc.md)を正本とする。
+Production Base Mainnet Canister outcalls use the official EVM RPC Canister's built-in `BaseMainnet` providers, with `custom_evm_rpc_urls` fixed to an empty array. Gate A verifies only offline artifacts and constructor conditions. Post-deployment runtime, roles, pause, and chain binding use activation attestation obtained by the Canister through the official route as the source of truth. Direct checks against three Custom RPC endpoints are limited to staging monitor drills; do not inject URLs into production profiles, release bundles, or the UI. Base Sepolia staging and `test-deployment` builds use three reviewed Custom RPC endpoints. The staging Wasm's one-way provider replacement exception permits only replacement of the currently reviewed OnFinality set with the reviewed dRPC set. Fix the old/new URL arrays, order, both digests, Base Sepolia chain ID, and official EVM RPC Canister ID; trap any change except an equivalent rerun with the new set. Production Wasm does not compile this type, decoder, or replacement path. [ADR 0026](0026-replace-staging-onfinality-with-drpc.md) is authoritative for the replacement rationale and diagnostic evidence through IC.
 
-runtimeの`BaseMainnet(None)`は公式EVM RPC Canisterの既定provider poolから3 providerを選択し、2 responseの一致を要求する。この2-of-3 quorumは、Finalized観測、canonical block hash、receipt、contract stateなどの応答不一致と1 provider障害を扱う。`notify_withdrawal`のFinalized観測だけは最新headの完全一致ではなく、2 provider以上が証言する最大checkpointを選び、その高さのcanonical block hashをexact 2-of-3で再取得する。他のruntime snapshot、deposit、refundのFinalized head取得は変更しない。既定provider registryの変更、correlated compromise、provider URLまたはその接続先chainが稼働中に切り替わる脅威への検知手段ではなく、これらは外部仮定として残る。stagingの固定置換時は保存済みFinalized水位を保持しつつruntime attestation cacheを失効させ、次のEVM観測で新provider集合からruntime codeを再確認する。この設計では稼働中の`eth_chainId`反復検証も、期限付きchain attestationも行わない。
+Runtime `BaseMainnet(None)` selects three providers from the official EVM RPC Canister's default pool and requires two matching responses. This 2-of-3 quorum handles response disagreement and one provider failure for Finalized observations, canonical block hashes, receipts, contract state, and related data. Only `notify_withdrawal` Finalized observation selects the greatest checkpoint attested by at least two providers instead of requiring an exact latest-head match, then retrieves that height's canonical hash by exact 2-of-3. Other runtime snapshots and Deposit/refund Finalized head retrieval remain unchanged. This does not detect changes to the default provider registry, correlated compromise, or runtime switching of provider URLs or their upstream chains; these remain external assumptions. The fixed staging replacement preserves the saved Finalized watermark but invalidates the runtime attestation cache, requiring the next EVM observation to recheck runtime code through the new provider set. This design does not repeatedly validate `eth_chainId` at runtime or use expiring chain attestations.
 
-## 記録の意味
+## Record semantics
 
-- `FinalizedObservation`は、RPCから実測したFinalized block番号、block hash、観測時刻だけを保持する。
-- RPC auditのrequest digestはconfigured chain IDへ束縛する。quorum response digestはchain IDをRPC観測結果として含めない。
-- stable `FinalizedObservationRecord.chain_id`は、保存したblock観測をinstall domainへ束縛するconfigured chain IDである。RPC responseから取得したchain IDではない。
-- Mint evidence、EIP-712 domain、Governance nonceなどのchain bindingにはconfigured chain IDを使用する。
-- stable recordと現在のconfigのbinding不一致、および異なるinstall-domain record間の競合は引き続き拒否する。
+- `FinalizedObservation` stores only the Finalized block number, block hash, and observation time measured through RPC.
+- RPC audit request digests bind the configured chain ID. Quorum response digests do not include the chain ID as an RPC-observed value.
+- Stable `FinalizedObservationRecord.chain_id` is the configured chain ID binding a saved block observation to the install domain. It is not a chain ID obtained from an RPC response.
+- Use the configured chain ID for chain binding in mint evidence, EIP-712 domains, Governance nonces, and similar data.
+- Continue rejecting binding mismatches between stable records and current configuration and conflicts between records from different install domains.
 
-## 不採用案
+## Rejected alternatives
 
-- 各runtime operationで`eth_chainId`を呼ぶ案は、設定時に検証済みで稼働中不変とする接続先を反復検証するだけであり、本設計の脅威モデルには追加の安全性を与えないため採用しない。
-- 期限付きchain attestationを更新する案は、provider接続先の稼働中切替を別の脅威として導入するため採用しない。
-- configured chain IDを`FinalizedObservation`へ代入して同じ設定値と比較する案は、RPC観測を証明しないtautologyになるため採用しない。
-- configured chain IDをquorum response auditへ含める案は、設定値をproviderの応答値として誤読させるため採用しない。
+- Reject calling `eth_chainId` for every runtime operation: it merely rechecks an upstream already verified at configuration time and assumed immutable during operation, adding no safety under this threat model.
+- Reject refreshing expiring chain attestations because it introduces runtime provider-chain switching as a separate threat.
+- Reject assigning the configured chain ID to `FinalizedObservation` and comparing it with the same configuration: that is a tautology and does not prove RPC observation.
+- Reject including the configured chain ID in quorum response audits because it could be misread as a provider-returned value.
 
-## 再検討条件
+## Conditions for reconsideration
 
-今回固定したstagingの一方向置換を超えてRPC URL、configured chain ID、または各URLの接続先chainを稼働中に変更可能にする場合は、この決定を再検討する。その変更では、attestationの失効条件、stable install-domain binding、audit意味論、既存recordの扱い、runtime quorumの責務を新しい脅威モデルに基づいて設計し直す。
+Reconsider this decision if RPC URLs, the configured chain ID, or each URL's upstream chain become mutable at runtime beyond the fixed one-way staging replacement. Redesign attestation invalidation, stable install-domain binding, audit semantics, handling of existing records, and runtime quorum responsibilities for the new threat model.
 
-claimが依存する外部仮定とfail-closed動作の機械可読な正本は`verification/assumptions.tsv`の`rpc_provider_chain_configuration`とする。operator手順は`docs/runbooks/operations.md`、rehearsal条件は`docs/runbooks/evm-rpc-canister-rehearsal.md`、証跡要件は`deployments/evidence-v1/README.md`に従う。
+The machine-readable source of truth for claim dependencies on external assumptions and fail-closed behavior is `rpc_provider_chain_configuration` in `verification/assumptions.tsv`. Follow `docs/runbooks/operations.md` for operator procedures, `docs/runbooks/evm-rpc-canister-rehearsal.md` for rehearsal conditions, and `deployments/evidence-v1/README.md` for evidence requirements.
 
-stagingの直接Custom RPC rehearsalとmonitor drillはunpause後のGate C運用証跡であり、Gate B、activation、controller handoverを認可しない。Gate Bのproduction chain bindingは、`provider-independence.json`、公式EVM RPC Canisterの`BaseMainnet`既定pool、およびfresh activation attestationを正本とする。
+Direct Custom RPC rehearsals and monitor drills in staging are Gate C operational evidence after unpause; they do not authorize Gate B, activation, or controller handover. Production chain binding for Gate B uses `provider-independence.json`, the official EVM RPC Canister's default `BaseMainnet` pool, and fresh activation attestation as authoritative evidence.

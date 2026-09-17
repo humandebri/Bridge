@@ -14,6 +14,7 @@ from check_claim_manifest import checked_link
 ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_LEAN_FAILURE_SHA256 = {
+    "GovernanceLargerBalance.lean": "58f4ebfcedb3e3bfb34a83bb6f55d603d5a9b5ac1f7c6f9ca01ff0d0a557f1d1",
     "QuoteChangedDuringTrace.lean": "9a520139c90b0736b11e639ee117cd5e8d2b58e7f36ef7fe039ebbb7b72fa645",
     "SignatureTooLate.lean": "bdd74ab81077e94e7f16dedce8b2dd0bd5db6a71c6d31e57e6fae72dc9fbc106",
     "RefundAfterReservationReplay.lean": "398008e4f37597fc27cdc61909bfe32312895afa6bb84128a5d01a252b164afd",

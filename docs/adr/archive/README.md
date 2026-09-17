@@ -1,10 +1,10 @@
 # ADR archive
 
-このディレクトリ以下は、後続ADRにより置換された非規範的な意思決定履歴である。実装、運用、レビューの正本として使用しない。
+This directory contains non-normative decision history superseded by later ADRs. Do not use it as the source of truth for implementation, operations, or review.
 
 ## Deposit confirmation
 
-- [ADR 0017: Settlement confirmationの自動確認](deposit-confirmation/0017-automate-settlement-confirmation.md)
-- [ADR 0020: Deposit EVM confirmationをフロント通知で開始する](deposit-confirmation/0020-use-wallet-confirmed-frontend-evm-confirmation.md)
+- [ADR 0017: Automate settlement confirmation](deposit-confirmation/0017-automate-settlement-confirmation.md)
+- [ADR 0020: Start Deposit EVM confirmation through frontend notification](deposit-confirmation/0020-use-wallet-confirmed-frontend-evm-confirmation.md)
 
-これらが前提とした`MintDeposit`、`confirm_deposit`、Canister発Mint transactionは廃止済みである。Deposit Mintの現行仕様は[ADR 0023: Base walletが送信するEIP-712 Mint Authorizationを使う](../0023-use-wallet-funded-eip712-mint-authorization.md)を正本とする。
+The `MintDeposit`, `confirm_deposit`, and Canister-originated mint transactions assumed by these records have been removed. [ADR 0023: Use wallet-submitted EIP-712 Mint Authorizations](../0023-use-wallet-funded-eip712-mint-authorization.md) is the source of truth for current Deposit minting.

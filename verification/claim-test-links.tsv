@@ -528,3 +528,4 @@ pending_queue	ui/src/features/bridge/settlement-confirmation-coordinator.test.ts
 withdrawal_finalization	ui/src/features/bridge/settlement-confirmation-coordinator.test.tsx	queued_withdrawal_late_evidence_still_reaches_terminal_conflict_reducer
 pending_queue	ui/src/routes/-history.test.tsx	history_automatic_refresh_preserves_slow_inflight_queries_across_visibility_changes
 expiry_refund	ui/src/routes/-history.test.tsx	history_automatic_refresh_preserves_slow_inflight_queries_across_visibility_changes
+deposit_admission	ui/src/features/bridge/bridge-page-auto-refresh.test.tsx	accepts_net_deposit_limit_boundary

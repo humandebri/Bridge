@@ -1,11 +1,11 @@
-# Emergency pause principal運用
+# Emergency pause principal operations
 
-永続的な人間管理資格情報は、Bridge Canisterの安全操作だけを呼べる単一のIC hardware identityである。release approver、IC finance principal、人間のEVM管理鍵は使用しない。初回activation期間だけは、配置済みSNS Root pause principalをproduction controller identityへproduction専用upgradeで移行し、同じidentityがcontrollerとemergency pauseを兼任する。この例外を解消する時期は運用者が別途決定し、自動期限や自動rotationは設けない。
+The permanent human administration credential is one IC hardware identity authorized only for Bridge Canister safety actions. Use no release approver, IC finance principal, or human EVM administration key. During initial activation only, a production-only upgrade migrates the deployed SNS Root pause principal to the production controller identity, which temporarily holds both controller and emergency-pause roles. Operators separately decide when to end this exception; there is no automatic expiry or rotation.
 
-1. steady-state用emergency pause hardware identityを生成する場合は、SNS Governance、fee recipient、controllerと異なるprincipalであることを確認する。初回activation期間のproduction identity兼任は上記の明示例外とする。
-2. 同じidentityから`emergency_pause`とgovernance relayerの`drain-emergency`を実行し、test canisterでIC pause、Base両flow pause、記録済みpending Timelock operationのcancelを演習する。
-3. schema v4の`monitor-drill.json`へprincipal、実request ID、audit sequence、audit digest、障害起点・検知・確認・両側pauseの順序付き時刻を記録する。5/15/60は公開後の監視目標であり、unpause後のGate C運用証跡はpause/cancel経路の成功を要求する。この証跡はGate B、activation、controller handoverを認可しない。秘密、seed、device backupは記録しない。
-4. 将来のrotationは運用者が時期を明示承認した後、KINIC SNS Governanceの固定generic functionだけから実行する。旧principalはrotation完了後に権限を持たない。
+1. When creating a steady-state emergency pause hardware identity, ensure its principal differs from SNS Governance, Fee Recipient, and controller. Initial-activation production-identity overlap is the explicit exception above.
+2. From the same identity, run `emergency_pause` and Governance relayer `drain-emergency` on a test canister, rehearsing IC pause, both Base flow pauses, and cancellation of recorded pending Timelock operations.
+3. Record principal, actual request ID, audit sequence/digest, and ordered incident/detection/acknowledgement/both-side-pause timestamps in schema v4 `monitor-drill.json`. 5/15/60 are post-publication monitoring targets; post-unpause Gate C evidence requires successful pause/cancel paths. This evidence does not authorize Gate B, activation, or controller handover. Store no secrets, seeds, or device backups.
+4. Future rotation runs only through the fixed KINIC SNS Governance generic function after operators explicitly approve timing. The former principal loses authority once rotation completes.
 
-Mint Signer、Governance Operator、Runtime Administrator、Independent CancellerはBridge Canisterがrole別derivationから導出する。Mint SignerはEIP-712署名だけを行いETHを必要としない。ETH補充はBase transactionを送信する各control-plane roleへの送金だけを許可し、送金元へcontract roleを付与しない。
-pause principalはBase pauseと記録済みTimelock cancelの署名準備、署名成果物取得、明示replacement、Finalized確定通知だけを実行できる。Service Fee、activation schedule/execute、resumeは実行できない。
+The Bridge Canister derives Mint Signer, Governance Operator, Runtime Administrator, and Independent Canceller per role. Mint Signer only signs EIP-712 and needs no ETH. Permit ETH replenishment only to Base-sending control-plane roles; grant no contract roles to funding senders.
+The pause principal may only prepare signatures for Base pause/recorded Timelock cancellation, retrieve signed artifacts, request explicit replacements, and notify Finalized confirmation. It cannot change Service Fees, schedule/execute activation, or resume.

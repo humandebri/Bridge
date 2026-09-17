@@ -1,75 +1,75 @@
-# 30分で確認するBridge証明の骨格
+# A 30-minute guide to the Bridge proofs
 
-## 命題と保証対象（5分）
+## Propositions and assurance targets (5 minutes)
 
-**Claim contract**は、release claimごとのLean命題である。
-**本番証拠**は、その命題を支える共有kernelのVerus義務、有限個のvector照合、transaction testである。
-両者の接続と外部仮定は[claim台帳](claims.tsv)を参照する。
-[仕様対応表](claim-semantics.tsv)は前提と結論を説明し、[主要定義表](definition-semantics.tsv)は共通概念の意味を一か所に置く。
-新しい表から証拠強度を算出することはない。
+A **claim contract** is the Lean proposition for a release claim.
+**Production evidence** consists of Verus obligations for shared kernels, finite vector comparisons, and transaction tests supporting that proposition.
+See the [claim ledger](claims.tsv) for their connections and external assumptions.
+The [specification correspondence table](claim-semantics.tsv) explains premises and conclusions; the [major definitions table](definition-semantics.tsv) centralizes shared concepts.
+These new tables do not compute evidence strength.
 
-[statement一覧](generated/claim-statements.md)では、witnessの型から命題定義へ進み、前提が強すぎないか、結論が仕様の一部を落としていないかを確認する。
-たとえば署名のfee一回性と最低残存時間は別の条件であり、両方を命題で確認する。
+In the [statement catalog](generated/claim-statements.md), follow witness types to proposition definitions and check whether premises are too strong or conclusions omit part of the specification.
+For example, fee accounting once at signing and the minimum remaining validity period are separate conditions; check that the proposition includes both.
 
-## 会計差分から履歴へ（10分）
+## From accounting deltas to histories (10 minutes)
 
-GlobalHistoryのbackingは、escrowがBase supply、fee reserve、未mint債務、未release債務の合計に等しいという条件である。
-署名は未mint債務からfee reserveへ移し、mintは未mint債務からBase supplyへ移す。
-refundはescrowと未mint債務を同額減らす。
-payoutではescrow減少とfee reserve増加の合計が未release債務の減少と一致する。
+GlobalHistory backing requires escrow to equal the sum of Base supply, fee reserve, unminted liabilities, and unreleased liabilities.
+Signing moves value from unminted liabilities to fee reserve; minting moves it from unminted liabilities to Base supply.
+Refunds reduce escrow and unminted liabilities by the same amount.
+For payouts, the sum of the escrow decrease and fee reserve increase equals the decrease in unreleased liabilities.
 
-この差分をrecordと全体集計へ同時に適用する。
-一歩の保存定理は、IDの一意性、record合計と集計の一致、backing、予約を持つrecordがDepositであることを保存する。
-別IDのrecordが変わらないことは独立した補題で示す。
-受理履歴の長さに関する帰納法が、一歩の保存を履歴全体へ拡張する。
+These deltas are applied to the record and aggregate totals together.
+The single-step preservation theorem preserves ID uniqueness, agreement between record sums and aggregates, backing, and the requirement that records holding reservations are Deposits.
+A separate lemma shows that records with other IDs remain unchanged.
+Induction on the length of accepted histories extends single-step preservation to the entire history.
 
-ここでの`AccountingInvariant`は実Ledger操作の認証条件を含まない。
-`ModelBoundaries.accounting_invariant_does_not_certify_payment`は、会計条件を満たすrecordが、送金をせずcallbackでpaidへ移る例である。
-これは会計モデルの表現範囲を固定する例であり、本番でそのcallbackが受理されるという主張ではない。
+Here, `AccountingInvariant` does not include authentication conditions for actual Ledger operations.
+`ModelBoundaries.accounting_invariant_does_not_certify_payment` gives an example where a record satisfies accounting conditions yet moves to paid through a callback without a transfer.
+This fixes the accounting model's expressive boundary; it does not claim that production accepts that callback.
 
-## 個別の保証と抽象化（8分）
+## Individual guarantees and abstractions (8 minutes)
 
-DepositHistoryは認可の発行から終端までの履歴を扱う。
-署名イベントはIC観測時刻を受け取り、期限のu64範囲、加算のoverflow拒否、残り300秒以上を検査する。
-300秒ちょうどを受理し、299秒、期限超過、最大時刻での加算を拒否する。
-本番の最低残存時間predicateとの一致は有限幅モデルの定理とRustのvector consumerで結び付ける。
-暗号署名そのものとIC時刻の真正性は外部仮定である。
+DepositHistory covers histories from authorization issuance to termination.
+Signature events receive an IC observation timestamp and check the deadline's u64 range, rejection of addition overflow, and at least 300 seconds of remaining validity.
+Exactly 300 seconds is accepted; 299 seconds, expired deadlines, and addition at the maximum timestamp are rejected.
+Correspondence with the production minimum-remaining-time predicate is linked through a finite-width model theorem and the Rust vector consumer.
+Cryptographic signatures themselves and IC timestamp authenticity remain external assumptions.
 
-統合Protocolでは、保存したquoteの宛先と純額が各遷移で変わらないことを示す。
-その保存則を履歴へ拡張し、最終withdrawalの値が初期状態の保存quoteに一致することを導く。
-`pending_payout_is_bounded_by_reserve_across_trace`はpayout予約とreserveの関係を示す補題であり、service feeの上下限は局所predicateの定理で確認する。
+The integrated Protocol proves that the stored quote's recipient and net amount remain unchanged across transitions.
+Extending this preservation rule across histories shows that final withdrawal values match the initial state's stored quote.
+`pending_payout_is_bounded_by_reserve_across_trace` relates payout reservations to reserves; local predicate theorems check Service Fee bounds.
 
-`filterSafeStoredState`はSafeを前提に状態を受理する抽象フィルタである。
-その出力がSafeである証明から、実際のSQLite decodeやschema migrationの安全性は導けない。
-本番の復元は既存のRustとPocketICのtransaction test、SQLiteの原子性、固定schemaの外部条件に依存する。
+`filterSafeStoredState` is an abstract filter accepting states under the Safe condition.
+A proof that its output is Safe does not establish safety of actual SQLite decoding or schema migration.
+Production restoration depends on existing Rust and PocketIC transaction tests, SQLite atomicity, and external fixed-schema conditions.
 
-条件付きlivenessは、対象終端操作が選択されるまで常時受理可能であり、必要な外部操作が可能で、dispatcherがweakly fairであることから到達性を導く。
-資金受領からこの受理可能性を導く証明はない。
-`DepositTerminalProgressLemmas`はmintの含意とrefundの含意の論理積であり、同じ実行についての二者択一を表す命題ではない。
+Conditional liveness derives reachability from continuous admissibility of the target terminal operation until selection, availability of required external operations, and weak fairness of the dispatcher.
+No proof derives this admissibility from receipt of funds.
+`DepositTerminalProgressLemmas` is the conjunction of mint and refund implications, not an either/or proposition about one shared execution.
 
-## 変更をレビューする手順（7分）
+## Reviewing changes (7 minutes)
 
-まず仕様対応表の前提、結論、未証明境界を確認する。
-次にstatement一覧と主要定義の差分を読み、初期値との関係、有限幅、認可条件、受理条件が失われていないか確認する。
-実装との対応はclaim台帳に戻り、共有kernelを検査する義務と、モデルだけの補題を区別する。
+First inspect premises, conclusions, and unproved boundaries in the specification correspondence table.
+Then review statement and major-definition diffs for lost relationships to initial values, finite-width constraints, authorization conditions, or acceptance conditions.
+Return to the claim ledger for implementation correspondence, distinguishing obligations that check shared kernels from model-only lemmas.
 
-命題や主要定義を変更したら対応表の説明または`review_note`も更新する。
-生成物は次のコマンドで更新する。
+After changing a proposition or major definition, update its correspondence-table description or `review_note`.
+Regenerate artifacts with the following commands.
 
 ```sh
 python3 scripts/check_claim_semantics.py --write
-python3 scripts/check_claim_semantics.py --base-sha <trusted-baseの40桁SHA>
+python3 scripts/check_claim_semantics.py --base-sha <40-character-trusted-base-SHA>
 ```
 
-比較元は指定したGit commitから読む。
-同じcandidateのJSONを書き換えるだけでレビューを不要にはできない。
-trusted CIでは既存の`BRIDGE_TRUSTED_BASE_SHA`を使い、`verification/`への変更に必要な対象HEADのレビューを維持する。
-比較元にsnapshotがない初回導入はbootstrapとして表示する。
-既存trusted-baseが新しい検査コードを含まない間は、ローカル検証と既存のbootstrap手順が必要である。
+The comparison baseline is read from the specified Git commit.
+Rewriting the same candidate's JSON cannot eliminate review requirements.
+Trusted CI uses the existing `BRIDGE_TRUSTED_BASE_SHA` and retains the exact-head review requirement for changes to `verification/`.
+An initial introduction with no snapshot in the baseline is reported as bootstrap.
+While the existing trusted base lacks the new checker code, local verification and the existing bootstrap procedure remain necessary.
 
-ソースdigestはコメントや証明の書き換えも通知する。
-この通知は意味が変わったことの証明ではなく、人が差分を読むための保守的な検査である。
-主要定義に列挙していない依存定義や構造の変更もソースdigestに現れるため、該当ソースの差分を確認する。
+Source digests also report comment or proof-body changes.
+This is a conservative prompt for human diff review, not proof that semantics changed.
+Changes to dependent definitions or structures outside the major-definition list also appear in source digests; review the corresponding source diffs.
 
-独立カーネルでの検査は未導入である。
-現行の公理依存検査と通常のLean buildが通ることを、独立カーネルの結果として報告しない。
+Independent kernel checking has not been introduced.
+Do not report passing axiom dependency checks and ordinary Lean builds as independent kernel results.

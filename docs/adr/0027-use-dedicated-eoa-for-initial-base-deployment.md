@@ -1,17 +1,21 @@
-# ADR 0027: 初回Base配置に専用EOAを使う
+---
+status: accepted
+---
 
-## 決定
+# ADR 0027: Use a dedicated EOA for initial Base deployment
 
-TimelockとBridgeの初回配置は、freshな専用EOAがTimelock、Bridgeの順に行う。EOAは暗号化Foundry keystoreと別password fileでrelayerだけが扱い、release profileにはEOA address、開始nonce、予測CREATE address、gas／fee上限だけを固定する。単一の`BASE_RPC_URL`はtransaction送信transportであり、profile、bundle、UI、evidenceには保存しない。
+## Decision
 
-送信直前にBase Mainnet chain ID、pending nonce、残高、両CREATE addressを再検査する。nonce driftでは送信せずprofileの再承認へ戻る。結果不明時はcheckpointに記録した同一transactionを追跡し、自動再deployや次nonceの送信をしない。reverted receiptは直ちに停止する。
+A fresh dedicated EOA performs the initial deployments in order: Timelock, then Bridge. Only the relayer handles the EOA through an encrypted Foundry keystore and separate password file. The release profile fixes only the EOA address, starting nonce, predicted CREATE addresses, and gas/fee caps. A single `BASE_RPC_URL` is the transaction transport; do not save it in profiles, bundles, the UI, or evidence.
 
-Timelockのproposer/executorはGovernance Operator、cancellerは別derivationのIndependent Canceller、追加adminはzero addressとし、BridgeのRuntime AdministratorもGovernance Operatorとは別derivationにする。Bridgeの管理先はTimelockに固定し、専用EOAにはTimelock、Bridge、bSNSのrole、owner、adminを与えない。Gate Aはoffline artifactとconstructor条件を先に承認する。配置後のruntime、constructor postcondition、role、pause、相互参照はBridge Canisterが公式EVM RPC Canisterの組み込み`BaseMainnet`から取得した監査記録で検証し、Gate Bへ束縛する。配置検証後に残余ETHを回収し、回収transactionを記録してkeystoreを運用対象から外す。
+Immediately before submission, recheck Base Mainnet chain ID, pending nonce, balance, and both CREATE addresses. On nonce drift, do not submit; return for profile reapproval. If the outcome is unknown, track the same transaction recorded in the checkpoint; never automatically redeploy or submit the next nonce. A reverted receipt stops processing immediately.
 
-## 帰結
+Set the Timelock proposer/executor to the Governance Operator, canceller to the separately derived Independent Canceller, and additional admin to the zero address. Derive the Bridge Runtime Administrator separately from the Governance Operator. Fix Bridge administration to the Timelock; grant the dedicated EOA no role, ownership, or admin authority in Timelock, Bridge, or bSNS. Gate A approves offline artifacts and constructor conditions first. Verify post-deployment runtime, constructor postconditions, roles, pause, and cross-references using audit records obtained by the Bridge Canister from the official EVM RPC Canister's built-in `BaseMainnet`, binding them to Gate B. After deployment verification, recover remaining ETH, record the recovery transaction, and retire the keystore from operations.
 
-Canisterはcontract creation、deploy署名、deploy nonce、deploy replacement、deploy confirmation状態を持たない。配置後のBase管理transactionは用途別に、activationとcontrol-plane rotationをGovernance Operator、pauseとService Fee変更をRuntime Administrator、Timelock cancelをIndependent Cancellerがthreshold署名する。署名済みraw transactionの取得とbroadcastは匿名公開し、Finalized検証を開始するconfirmationだけをrelease profileへ固定した専用relayer Principal、Governance principal、Pause principalへ制限する。通常の署名要求と明示replacementはGovernance/Pause principalだけに許可する。初回schedule／executeと、それらのpending transactionの冪等resume／上限内replacementだけは、seal時に固定したproduction controllerを一時的な例外とする。confirmation callerの報告内容は信用せず、Canisterが保存済みhashと公式EVM RPC CanisterのFinalized観測を照合する。
+## Consequences
 
-confirmationはcaller認可をsingleflightとRPCより前に行い、安価なoperation/hash検査と既存singleflightを適用する。追加のstable rate limitとcooldownはこの決定には含めない。専用relayer identityにはcontroller、Governance/Pause、EVM鍵、contract role、資産移動権限を与えない。
+The Canister holds no contract creation, deployment signing, deployment nonce, deployment replacement, or deployment confirmation state. Post-deployment Base administration uses separate threshold signers: Governance Operator for activation and control-plane rotation, Runtime Administrator for pause and Service Fee changes, and Independent Canceller for Timelock cancellation. Retrieving and broadcasting signed raw transactions are anonymously public; only confirmation that starts Finalized verification is restricted to the dedicated relayer Principal fixed in the release profile, Governance principal, or Pause principal. Normal signing requests and explicit replacements require Governance/Pause principals. A temporary exception permits the production controller fixed at seal time to perform initial schedule/execute and idempotent resume or bounded replacement of those pending transactions. Do not trust confirmation callers' reports; the Canister compares saved hashes with official EVM RPC Canister Finalized observations.
 
-Gate AはBootstrap運用値でのCanister導入とpause状態のBase配置完了を表す。初回activation前はlive情報から導出した初期運用値を一回限りsealし、13 artifactのpre-seal／live Gate Bを完了する。RPC rehearsal、monitor drill、7日以上のBase feeと各10件以上の本番governance gas／settlement cycles、keeper drill、monitoring receiptはunpause後のGate Cへ分離する。これらはcontroller handoverの認可入力にせず、計測結果は運用値を自動更新しない。controller handoverとSNS upgradeは初回activationやGate Cから独立し、運用者が時期を別途承認した場合だけ実行して証跡chainへ接続する。
+Authorize confirmation callers before singleflight and RPC, then apply inexpensive operation/hash checks and existing singleflight. This decision adds no stable rate limit or cooldown. The dedicated relayer identity receives no controller, Governance/Pause, EVM key, contract role, or asset-transfer authority.
+
+Gate A represents Canister installation with Bootstrap operating values and completed paused Base deployment. Before initial activation, seal initial operating values derived from live information exactly once and complete the 13-artifact pre-seal/live Gate B. RPC rehearsals, monitor drills, at least seven days of Base fee measurements and at least 10 production governance gas/settlement cycles samples each, keeper drills, and monitoring receipts belong to Gate C after unpause. They are not controller handover authorization inputs, and measurements do not automatically update operating values. Controller handover and SNS upgrades are independent of initial activation and Gate C; perform them and connect them to the evidence chain only when operators separately approve the timing.

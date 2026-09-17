@@ -1544,6 +1544,12 @@ describe("deposit refund and recipient admission", () => {
         },
       },
     })
+  it("applies the per-deposit limit to net minted amount", accepts_net_deposit_limit_boundary)
+  function accepts_net_deposit_limit_boundary() {
+    expect(() => gate(1000n)).not.toThrow()
+    expect(() => gate(1020n)).not.toThrow()
+    expect(() => gate(1021n)).toThrow("per-deposit limit")
+  }
   it(
     "rejects a net amount equal to the refund fee and accepts one unit above",
     rejects_a_net_amount_equal_to_the_refund_fee_and_accepts_one_unit_above,

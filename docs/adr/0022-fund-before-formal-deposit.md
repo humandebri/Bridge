@@ -2,14 +2,14 @@
 status: accepted
 ---
 
-# Ledger funding成功後だけ正式Depositを作成する
+# Create formal Deposits only after successful Ledger funding
 
-`request_deposit`は正式Depositとは別のstable funding attemptを`Prepared`で作成し、低コストadmission quotaの消費、active funding reservationの追加、cycle reserveの確認を一つのtransactionで行う。quotaまたはcycle reserveの拒否時はBase RPCとICRC-2 pullを開始しない。admission成功後は固定identityのICRC-2 pullを先に行い、SuccessまたはDuplicateで資産に束縛された要求だけがCanister負担のfresh Base preflightへ進む。資金を持たないSybil Principalは共有verification capacityやBase RPC cyclesを消費できない。
+`request_deposit` creates a stable funding attempt in `Prepared`, separate from formal Deposits. One transaction consumes the low-cost admission quota, adds an active funding reservation, and checks the cycle reserve. Rejection by quota or cycle reserve must not start Base RPC or an ICRC-2 pull. After admission, perform the fixed-identity ICRC-2 pull first; only requests bound to assets by Success or Duplicate proceed to fresh Base preflight at the Canister's expense. Unfunded Sybil Principals cannot consume shared verification capacity or Base RPC cycles.
 
-SuccessまたはDuplicateでは、preflight結果にかかわらずattemptを`EscrowedUnquoted`の正式Depositへ原子的に昇格する。Ledger資産移転後に公開recordを作らない失敗は許可せず、Base拒否・一時障害はsettlementの再試行またはrefundで解決する。Ledger結果不明では同じidentityを束縛した`FundingReconciliationHold`へ昇格する。Insufficient Allowance、Insufficient FundsなどLedgerの確定失敗ではattemptとactive reservationを削除し、record、history、sequence、jobを残さない。
+On Success or Duplicate, atomically promote the attempt to a formal `EscrowedUnquoted` Deposit regardless of the preflight result. After Ledger asset movement, failure without creating a public record is prohibited; resolve Base rejection or temporary failures through settlement retries or refunds. Unknown Ledger results promote to `FundingReconciliationHold` bound to the same identity. Definitive Ledger failures such as Insufficient Allowance or Insufficient Funds delete the attempt and active reservation, leaving no record, history, sequence, or job.
 
-retryable failureは同じidentityを120秒だけ保持する。retry期限前の再送はBase preflightを反復せず、期限後も保存済みattemptを使うためquotaを二重消費しない。callback消失は専用の低優先recovery scanでLedger履歴を照合し、成功なら昇格し、24時間のdedup期間と60秒のsubnet時刻安全余裕を厳密に過ぎてから開始したfresh scanで完全な不存在を確認できた場合だけreservationを解放する。
+Retryable failures retain the same identity for only 120 seconds. Resubmission before the retry deadline does not repeat Base preflight; after the deadline, the saved attempt still prevents double quota consumption. Lost callbacks are reconciled against Ledger history by a dedicated low-priority recovery scan. Success promotes the attempt; release the reservation only when a fresh scan begun strictly after the 24-hour deduplication period plus a 60-second subnet-time safety margin proves complete absence.
 
-Deposit pauseは新しいfunding reservationの作成を拒否する。reservation作成後にpauseへ遷移しても、不可逆なLedger pullの成功または結果不明は正式Depositへ昇格し、ユーザー資金を公開recordなしで滞留させない。
+Deposit pause rejects creation of new funding reservations. Even if pause begins after reservation creation, a successful or ambiguous irreversible Ledger pull must promote to a formal Deposit, preventing user funds from being stranded without a public record.
 
-公開状態に`FundingPending`は存在しない。確定失敗は`FundingRejected`、一時失敗は`FundingUnavailable`として返す。この決定時点ではschema v35／wire v30へ直接置換した。その後の本番導入を受け、確定activation証跡を追加するv35→v36だけをpost-upgradeで一度移行し、その他の旧・未知versionはfail closedにする。
+There is no public `FundingPending` state. Return `FundingRejected` for definitive failures and `FundingUnavailable` for temporary failures. At the time of this decision, the format was directly replaced with schema v35/wire v30. Following production deployment, allow only the one-time post-upgrade v35→v36 migration adding confirmed activation evidence; all other old or unknown versions fail closed.

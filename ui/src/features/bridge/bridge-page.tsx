@@ -116,9 +116,9 @@ export function validatedDepositWriteGate(input: {
   const quote = observation.snapshot
   if (!quote) throw new Error("Finalized Base snapshot is unavailable")
   if (quote.depositsPaused) throw new Error("Deposits are paused on Base")
-  if (amount > quote.perDepositLimit)
-    throw new Error("Amount exceeds the current per-deposit limit")
   if (amount <= quote.serviceFee) throw new Error("Amount must exceed the current service fee")
+  if (amount - quote.serviceFee > quote.perDepositLimit)
+    throw new Error("Amount exceeds the current per-deposit limit")
   if (amount - quote.serviceFee <= ledger.fee)
     throw new Error("Amount must exceed the service fee plus the refund ledger fee")
   const windowEndsAt = quote.startedAt + quote.duration

@@ -1,26 +1,26 @@
-# Plan 005: KINIC本番パラメータ・emergency pause運用実証
+# Plan 005: KINIC production parameters and emergency pause demonstrations
 
 ## Status
 
 - **State**: IN PROGRESS
-- **Initial activation evidence**: exact schedule／execute gas estimate、10件以上の異なるFinalized fee block、idle cycles burn、実pause principal、固定limit
-- **Post-unpause Gate C evidence**: pause/cancel経路演習、7日以上のBase fee分布とgovernance gas／settlement cycles各10件以上。観測値を運用設定へ自動反映しない。
+- **Initial activation evidence**: exact schedule/execute gas estimates, at least 10 distinct Finalized fee blocks, idle cycles burn, the actual pause principal, and fixed limits.
+- **Post-unpause Gate C evidence**: pause/cancel drills, at least seven days of Base fee distributions, and at least 10 Governance gas/settlement cycles samples each. Do not automatically apply observations to operating configuration.
 
 ## Implemented locally
 
-- KINIC Ledger/Index/Root/Governanceの一次証跡と確定済みfee設定
-- 保守的parameter derivationとdeployment profile検証CLI
-- deploy後に変更不能なMint limitとCanister由来Governance OperatorのTimelock構成
-- Bridgeのrequest-time reserve gate、Safe観測時刻、手動pause API
-- threshold signer補充、単一emergency pause principalの監視演習とrunbook
+- Primary evidence for KINIC Ledger/Index/Root/Governance and finalized fee settings.
+- Conservative parameter derivation and deployment-profile validation CLI.
+- Mint limits immutable after deployment and Timelock configuration with a Canister-derived Governance Operator.
+- Bridge request-time reserve gates, Safe observation timestamps, and manual pause APIs.
+- Threshold signer replenishment, monitoring drills for one emergency pause principal, and runbooks.
 
-初回activation evidenceが欠ける間はmainnet candidateを`validated`にしない。pause/cancel演習を含むGate C evidenceはunpause後の運用評価として別に収集し、初回activationまたはcontroller handoverを認可しない。release approver、finance principal、複数pause principal、人間のEVM管理鍵は要求しない。
+Do not mark a mainnet candidate `validated` while initial activation evidence is missing. Collect Gate C evidence, including pause/cancel drills, separately as post-unpause operational evaluation; it does not authorize initial activation or controller handover. Require no release approver, finance principal, multiple pause principals, or human EVM administration keys.
 
-初期cycles値はpause状態の`idle_cycles_burned_per_day`と固定settlement ceilingから次式で求める。
+Derive initial cycles values from paused `idle_cycles_burned_per_day` and the fixed settlement ceiling as follows.
 
 ```text
 settlement cycle ceiling = 5,000,000,000 cycles
 cycles floor = (idle cycles burn/day + 5,000,000,000) × 30 × 2
 ```
 
-初期fee証跡はexact schedule／execute calldataのestimateと10件以上の異なるFinalized blockを使い、gas limitを最大estimateの130%から1,000単位で切り上げ、priority feeをp95×4、max feeをbase fee p99×20、L1 ceilingをp99×10とする。quote validityは90秒、13,000／60,000／15,000 bps multiplierは固定する。fee cap超過またはcycles不足ならtransactionを生成・送信しない。Mint Throughput LimitとPer-Deposit Limitはderiveせず、監視5/15/60目標と許容最大被害額に基づく承認済みraw値をprofileへ固定する。pause/cancel演習の経路成功と5/15/60の達成は、どちらも公開後のGate C運用評価とする。
+Initial fee evidence uses exact schedule/execute calldata estimates and at least 10 distinct Finalized blocks. Set the gas limit to 130% of the maximum estimate rounded up to 1,000, priority fee to p95×4, max fee to base fee p99×20, and L1 ceiling to p99×10. Fix quote validity at 90 seconds and multipliers at 13,000/60,000/15,000 bps. Do not create or submit transactions when fee caps are exceeded or cycles are insufficient. Do not derive the Mint Throughput Limit or Per-Deposit Limit here; fix approved raw values in the profile based on 5/15/60 monitoring targets and maximum acceptable damage. Both successful pause/cancel paths and meeting 5/15/60 belong to post-publication Gate C operational evaluation.

@@ -94,11 +94,22 @@ SAFE_SOURCE_PREFIXES = (
     "ui/public/",
     "ui/src/",
 )
-WATCHED_PRODUCTION_SOURCES = (
-    ("canister/bridge-core/src/", ".rs"),
-    ("canister/bridge-canister/src/", ".rs"),
-    ("contracts/src/", ".sol"),
-)
+@lru_cache(maxsize=1)
+def _proof_watch_policy() -> tuple[tuple[tuple[str, str], ...], frozenset[str]]:
+    # Share the manifest roots with the proof gate; unknown files still select all gates.
+    roots = []
+    excluded = set()
+    for line in (ROOT / "verification/proof-impact.tsv").read_text().splitlines():
+        row = line.split("\t")
+        if len(row) != 5:
+            raise ValueError("invalid proof impact manifest row")
+        if row[0] == "root":
+            roots.append((row[2].rstrip("/") + "/", row[3]))
+        elif row[0] == "exclude":
+            excluded.add(row[2])
+        elif row[0] != "area":
+            raise ValueError("unknown proof impact row")
+    return tuple(roots), frozenset(excluded)
 
 
 @lru_cache(maxsize=1)
@@ -231,10 +242,11 @@ def _enable(result: dict[str, bool], *gates: str) -> None:
 
 
 def _is_unregistered_production_source(path: str) -> bool:
+    roots, excluded = _proof_watch_policy()
     return any(
         path.startswith(prefix) and path.endswith(suffix)
-        for prefix, suffix in WATCHED_PRODUCTION_SOURCES
-    ) and path not in _proof_owned_paths()
+        for prefix, suffix in roots
+    ) and path not in _proof_owned_paths() and path not in excluded
 
 
 def classify(paths: list[str]) -> dict[str, bool]:

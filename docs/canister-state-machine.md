@@ -1,98 +1,104 @@
-# Bridge canister状態機械
+# Bridge canister state machine
 
-## 永続化と実行境界
+## Persistence and execution boundaries
 
-`bridge-core`はcaller、時刻、ICRC Ledger、EVM RPC、Candid、storageに依存しない決定的な状態遷移を定義する。`bridge-canister`は単一SQLite DBへ状態を保存し、Ledger、EVM RPC、threshold ECDSA、管理API、stable job executorを接続する。
+`bridge-core` defines deterministic state transitions independent of caller, time, ICRC Ledger, EVM RPC, Candid, and storage. `bridge-canister` persists state in a single SQLite database and connects the Ledger, EVM RPC, threshold ECDSA, administration APIs, and stable job executor.
 
-通常の再オープンはstable schema v36、record wire version v30だけを受理する。Productionとtest-deploymentの`post_upgrade`だけは配置済みversion 35／wire v30からv36への一度限りのatomic migrationを受理し、それ以外の旧schema、未知schema、未知wire、decode不能なDBはfail closedで起動を拒否する。現在のstagingも同じCanisterとdeployment instanceを保つupgradeだけを受理し、一度限りのreinstall履歴を再実行またはresumeしない。
-upgrade検証はcurrent schema v36のrecord・config・quota・auditを保持するsame-Wasm再オープン、version 35からのactivation evidence migration、その他の旧schema・wireの拒否を検証する。
+Normal reopen accepts only stable schema v36 and record wire version v30. Only production and test-deployment `post_upgrade` accept the one-time atomic migration from deployed version 35/wire v30 to v36; all other old/unknown schemas, unknown wire formats, and undecodable databases fail closed and refuse startup. Current staging also accepts only upgrades preserving the same Canister and deployment instance; never replay or resume the one-time reinstall history.
+Upgrade validation checks same-Wasm reopening with current-schema v36 records, configuration, quotas, and audit state preserved, activation evidence migration from version 35, and rejection of other old schemas/wire formats.
 
-`settlement_jobs`が実行中・停止中Settlementの正本である。Depositとfee payoutはtimerが自動claimし、Withdrawalは明示的な`continue_withdrawal`だけがmanual claimする。Withdrawal通知時はrecordと固定transfer identityだけをatomic保存し、jobを作らない。外部`await`前に署名dispatchやLedger transfer identityを永続化し、lease generationとDB上の状態だけが実行権を決める。
+`settlement_jobs` is authoritative for running and stopped Settlements. Timers automatically claim Deposits and fee payouts; only explicit `continue_withdrawal` manually claims Withdrawals. Withdrawal notification atomically saves only the record and fixed transfer identity, without creating a job. Persist signature dispatch or Ledger transfer identity before external `await`; only lease generation and database state determine execution authority.
 
-Mint用Base transaction laneは存在しない。Governance laneはnonce、署名済みgeneration、raw transactionとhashだけを永続化する。Canisterはbroadcast、receipt監視、rebroadcast、自動replacementを行わず、外部relayerが送信後に指定hashのFinalized結果をCanisterへ通知する。
+There is no Base mint transaction lane. The Governance lane persists only nonce, signed generation, raw transaction, and hash. The Canister does not broadcast, monitor receipts, rebroadcast, or automatically replace transactions; after submission, the external relayer notifies the Canister of the specified hash's Finalized result.
 
-## Deposit（ICP → Base）
+## Deposit (ICP → Base)
 
-Deposit IDはdomain-separated hashの`(canister ID, Base chain ID, Bridge address, deployment instance ID, caller, owner_sequence)`で決まり、同じinstall domainとsequenceの異なるpayloadは`DepositConflict`になる。受付時は有料Base preflightより先に、正式Depositとは別の`Prepared` funding attempt、固定transfer identity、消費済みdeposit quota、active funding reservationを保存し、cycle reserveを確認する。このadmission成功後だけ、同じcanonical Base snapshotで候補IDが未処理であることを確認し、attemptを`Dispatched`へ進めて同じupdate callでICRC-2 pullを行う。Base preflightまたはLedgerの確定的失敗ではattemptとactive reservationを削除するが、開始済みpreflightのquotaは戻さない。
+Deposit IDs are domain-separated hashes of `(canister ID, Base chain ID, Bridge address, deployment instance ID, caller, owner_sequence)`; a different payload with the same install domain and sequence causes `DepositConflict`. Admission saves a `Prepared` funding attempt, fixed transfer identity, consumed Deposit quota, and active funding reservation, and checks the cycle reserve. Persist `Dispatched` before the ICRC-2 pull. Only Ledger success or `Duplicate` permits paid Base preflight; promote funded assets even if that preflight fails so settlement can retry or refund them. Definitive Ledger failure removes the attempt and reservation and returns quota only within its original window. Unfunded attempts must not retain shared verification capacity.
 
 ```text
 FundingAttempt
-  ├─ Ledger成功 / Duplicate → EscrowedUnquoted
-  ├─ Base/Ledger確定的失敗 → attempt削除（正式Depositなし、quotaは保持）
-  └─ Ledger結果不明        → FundingReconciliationHold
-                                ├─ 成功証拠       → EscrowedUnquoted
-                                └─ 完全な不存在証拠 → Cancelled
+  ├─ Ledger success / Duplicate → EscrowedUnquoted
+  ├─ Definitive Ledger failure → delete attempt (no formal Deposit; return same-window quota)
+  └─ Unknown Ledger outcome → FundingReconciliationHold
+                                ├─ Success evidence → EscrowedUnquoted
+                                └─ Complete absence evidence → Cancelled
 
 EscrowedUnquoted
-  ├─ Finalized quote・capacity予約 → AuthorizationPending
-  ├─ pause・fee・limit拒否         → RefundPending → Refunded
-  └─ RPC障害・観測不一致           → 停止（返金しない）
+  ├─ Finalized quote and capacity reservation → AuthorizationPending
+  ├─ Pause/fee/limit rejection → RefundAvailable
+  └─ RPC failure / observation disagreement → stopped (no refund)
 
 AuthorizationPending
-  ├─ 同一digestへのthreshold ECDSA署名 → AuthorizationAvailable
-  └─ 認可発行前の確定失敗               → RefundAvailable
+  ├─ Threshold ECDSA signature over the same digest → AuthorizationAvailable
+  └─ Definitive failure before Authorization issuance → RefundAvailable
 
 AuthorizationAvailable
-  └─ Finalized timestampがdeadline超過
-       → RefundAvailable（予約解放、Base未照合）
+  ├─ notify_deposit_mint with exact canonical Finalized evidence → Minted
+  └─ Finalized timestamp exceeds deadline
+       → RefundAvailable (reservation released; Base not reconciled)
 
 RefundAvailable
-  └─ owner claim（Base outcallなし） → RefundPending → Refunded
+  └─ Non-anonymous claim before Authorization issuance (no Base outcall) → RefundPending → Refunded
 
 RefundAvailable
-  └─ owner claim
-       ├─ exact Mint証拠        → Minted
-       ├─ Finalized未処理証拠  → RefundPending → Refunded
-       └─ 不一致・証拠欠落     → fail closed（資金移動なし）
+  ├─ notify_deposit_mint with exact canonical Finalized evidence → Minted
+  └─ Non-anonymous claim after Authorization issuance
+       ├─ Exact mint evidence → Minted
+       ├─ Finalized unprocessed evidence → RefundPending → Refunded
+       └─ Disagreement / missing evidence → fail closed (no fund movement)
 
 RefundPending
-  └─ Ledger結果不明 → RefundReconciliationHold
-                         └─ 非anonymous callerの再請求で同一transferを照合
+  └─ Unknown Ledger outcome → RefundReconciliationHold
+                         └─ Renewed claim by non-anonymous caller reconciles the same transfer
 ```
 
-1. `EscrowedUnquoted → AuthorizationPending`では、Finalized Base snapshot、quote、全Authorization field、EIP-712 domain、digest、作成元Finalized block number/hash/timestamp、mint capacity予約、jobを一つのSQLite transactionで保存する。
-2. Finalized Base snapshotは状態・fee・pause・返金証拠だけに使う。deadlineはIC合意時刻の`issued_at_timestamp`へ固定TTL 15分（900秒）をchecked-addして一度だけ決め、Finalized timestampとの加算関係を持たない。
-3. threshold ECDSAの`await`前にdispatch済みフラグとattempt番号を保存する。timeout、callback消失、upgrade後も同一digestだけを再署名し、deadlineやpayloadを変更しない。65-byte署名はlow-s `r || s || v`へ正規化し、復元addressが期待するMint Signerと一致した場合だけ、同じtransactionでservice feeを一度だけfee reserveへ計上して公開する。
-4. `AuthorizationAvailable`では任意Base walletが署名済みpayloadをcontractへ送り、そのwalletがgasを支払う。Canisterは期間中のtransactionやreceiptを追跡しない。
-5. 署名installはIC合意時刻で残り300秒以上の場合だけ許可する。300秒ちょうどを受理し、299秒以下では署名とservice fee計上を行わず、Finalized未処理証拠を待つ。新規Depositなどで取得したBase Finalized snapshotを使うdeadline順indexは、`finalized_timestamp > deadline`だけを期限切れとし、等値では予約を保持する。
-6. backlogが残る場合は未処理予約を保守的に過大計上する。新規受付上限を正確に判定できなければretry可能エラーにし、過少計上しない。新規Depositがなければ予約枠も消費されないため、期限処理timerは設けない。
-7. 任意の非anonymous Principalが`request_deposit_refund`を呼ぶとRefundを進める。宛先、金額、transfer identityは既存recordに固定され、caller入力を受けない。認可発行前の`RefundAvailable`はBase outcallなしで`gross - refund ledger fee`を送る。最初のICRC-2 pull feeはWallet負担のまま戻さない。
-8. 認可発行済みの`RefundAvailable`では、同じcanonical Finalized block hashへruntime identity、signer、epoch、strict deadline、`isDepositProcessed(depositId)`をEIP-1898で束縛する。`processed == false`だけを`gross - charged service fee - refund ledger fee`で返金する。service fee、初回pull fee、refund feeは返さない。
-9. `processed == true`なら、作成元blockから観測Finalized headまでの`DepositMinted`を取得し、件数1、contract、digest、recipient、amount、fee、canonical成功receiptを検証して`Minted`へ進む。event欠落・複数・内容不一致、RPC不一致、Finalized停止、runtime不一致では資金を動かさない。
-10. Ledger結果不明は同一transfer identityを`RefundReconciliationHold`に保持する。timer retryは行わず、任意の非anonymous callerの再請求で照合を1 step進める。Duplicateは同一送金の成功として扱い、完全な不存在証拠なしに別identityを発行しない。
-11. pause、unpause、epoch変更、signer rotationは各遷移前に作られた未期限AuthorizationをContract上で失効させるが、早期返金の根拠にはしない。元のdeadlineとFinalized未処理証拠を必ず通す。
+1. `EscrowedUnquoted → AuthorizationPending` saves the Finalized Base snapshot, quote, all Authorization fields, EIP-712 domain, digest, originating Finalized block number/hash/timestamp, mint capacity reservation, and job in one SQLite transaction.
+2. Use the Finalized Base snapshot only for state, fees, pause, and refund evidence. Determine the deadline exactly once by checked addition of a fixed 15-minute (900-second) TTL to `issued_at_timestamp` in IC consensus time; it is not computed by adding to the Finalized timestamp.
+3. Save the dispatched flag and attempt number before threshold ECDSA `await`. After timeout, callback loss, or upgrade, re-sign only the same digest without changing deadline or payload. Normalize the 65-byte signature to low-s `r || s || v`; only when the recovered address matches the expected Mint Signer, credit the Service Fee exactly once to the fee reserve and publish the signature in the same transaction.
+4. In `AuthorizationAvailable`, any Base wallet may submit the signed payload to the contract and pay gas. The Canister does not track transactions or receipts during this period.
+5. Permit signature installation only with at least 300 seconds remaining in IC consensus time. Accept exactly 300 seconds; at 299 seconds or less, do not install the signature or accrue the Service Fee, and wait for Finalized unprocessed evidence. The deadline-ordered index using Base Finalized snapshots from new Deposits or other operations treats only `finalized_timestamp > deadline` as expired, retaining reservations at equality.
+6. While backlog remains, conservatively overcount unprocessed reservations. Return a retryable error if new admission limits cannot be evaluated accurately; never undercount. Without new Deposits, no additional reservation capacity is consumed, so there is no expiry timer.
+7. Any non-anonymous Principal may advance a refund with `request_deposit_refund`. Recipient, amount, and transfer identity are fixed in the existing record, not caller inputs. Before Authorization issuance, `RefundAvailable` sends `gross - refund ledger fee` without a Base outcall. The initial ICRC-2 pull fee remains paid by the wallet and is not returned.
+8. For `RefundAvailable` after Authorization issuance, use EIP-1898 to bind runtime identity, signer, epoch, strict deadline, and `isDepositProcessed(depositId)` to the same canonical Finalized block hash. Only `processed == false` permits refunding `gross - charged service fee - refund ledger fee`. The Service Fee, initial pull fee, and refund fee are not returned.
+9. If `processed == true`, retrieve `DepositMinted` from the originating block through the observed Finalized head. Verify exactly one event, contract, digest, recipient, amount, fee, and canonical successful receipt before advancing to `Minted`. Missing/multiple/mismatched events, RPC disagreement, stalled Finalized progress, or runtime mismatch must not move funds.
+10. Retain the same transfer identity in `RefundReconciliationHold` for unknown Ledger results. Do not retry by timer; each renewed claim from any non-anonymous caller advances one reconciliation step. Treat Duplicate as success of the same transfer; issue no new identity without complete absence evidence.
+11. Pause, unpause, epoch changes, and signer rotation invalidate unexpired Authorizations created before each transition on the contract, but do not justify early refunds. Always require the original deadline and Finalized unprocessed evidence.
 
-未処理Authorizationはdeadline超過を観測するまでmint window liabilityとして予約する。Deposit admissionはMint Signer ETH、gas price、nonceへ依存しない。cycles floorとsettlement cycle ceilingは署名、明示Refund時のRPC・Ledger処理のため維持する。
+Reserve unprocessed Authorizations as mint-window liabilities until deadline expiry is observed. Deposit admission does not depend on Mint Signer ETH, gas prices, or nonces. Retain the cycles floor and settlement cycle ceiling for signing and RPC/Ledger processing during explicit refunds.
 
-## Withdrawal（Base → ICP）
+## Withdrawal (Base → ICP)
 
-WithdrawalはBase walletが`createWithdrawal`を送り、同一transactionでbSNSの`transferFrom`、burn、固定受取額を持つ`Committed` recordを作る。Canisterはtransactionを生成しない。
+For a Withdrawal, the Base wallet submits `createWithdrawal`, atomically performing bSNS `transferFrom`, burn, and creation of a `Committed` record with a fixed payout. The Canister does not create the transaction.
 
 ```text
 Base Committed
   → notify_withdrawal(transaction_hash)
-  → canonical Finalized receipt・event・state・snapshot検証
-  → Observed → ReleasePending（自動jobなし）
-  → continue_withdrawal（1 call 1 external step）
-       ├─ 成功 → Paid
+  → Verify canonical Finalized receipt, event, state, and snapshot
+  → Observed → ReleasePending (no automatic job)
+  → continue_withdrawal (1 call 1 external step)
+       ├─ Success → Paid
        └─ ReconciliationHold
-            ├─ 成功証拠 → Paid
-            └─ 完全な不存在証拠 → 新identityのReleasePending（送金は次回）
+            ├─ Success evidence → Paid
+            └─ Complete absence evidence → ReleasePending with new identity (transfer on next call)
 ```
 
-UIはtransaction hashと通知attempt状態をv7形式でlocalStorageへ保存し、Finalized event検出後の初回だけdeployment-scopedなbrowser identityから`notify_withdrawal`を自動実行する。通信切断または`Busy`の短期再試行は1回、`TransactionNotConfirmed`後のhead進行再通知も1回に制限し、その他の失敗はProgressまたはHistoryの明示操作で再開する。成功後は同じidentityで`continue_withdrawal`を1回だけ呼び、非終端ならHistoryの`Continue payout`へ移る。通知・継続にIC walletの署名やICRC-21同意取得は使用しない。Canisterは各providerのFinalized block番号とhashを保持し、同一番号・同一hashへexact 2-of-3が一致したcheckpointだけを採用する。receiptのcanonical probeを維持し、event、`getWithdrawal`、Bridge snapshotをcheckpoint hashへ束縛する。Ledger結果不明は時間経過だけで失敗扱いにせず、LedgerとIndexの完全なwatermarkで不存在を証明できるまでHoldを維持する。
+The UI saves the transaction hash and notification attempt state in v7 localStorage format, automatically calling `notify_withdrawal` through a deployment-scoped browser identity only on initial Finalized event detection. Limit short retries after disconnection or `Busy` to one, and notifications after head advancement following `TransactionNotConfirmed` to one; other failures require explicit Progress or History actions. After success, call `continue_withdrawal` once with the same identity; nonterminal results move to History's `Continue payout`. Notification and continuation require no IC wallet signature or ICRC-21 consent. The Canister retains each provider's Finalized block number and hash, accepting only checkpoints with exact 2-of-3 agreement on both. Preserve the receipt's canonical probe and bind the event, `getWithdrawal`, and Bridge snapshot to the checkpoint hash. Do not treat an unknown Ledger result as failure merely because time passes; retain Hold until complete Ledger and Index watermarks prove absence.
 
-## 公開APIと権限
+## Public APIs and authority
 
-| API | 呼び出し元 | 役割 |
+| API | Caller | Responsibility |
 |---|---|---|
-| `request_deposit` | Deposit owner | Ledger pullとAuthorization作成開始 |
-| `request_deposit_refund` | 任意の非anonymous Principal | claimable amount確認、必要なFinalized照合、固定Ledger refundまたはhold再照合 |
-| `notify_withdrawal` | 任意の非anonymous Principal | Finalized Withdrawalのpermissionless通知。送金先はBase eventへ束縛 |
-| `continue_withdrawal` | 任意の非anonymous Principal | 固定内容のLedger releaseまたは照合を最大1 external step進める |
-| Base governance prepare/status/replace/confirm | Governance、またはpause/cancelに限りpause principal | 外部relayer向け署名成果物とFinalized確定 |
-| `prepare_next_emergency_base_action` | Governance、pause principal | emergency queueのpause/cancelを順に署名 |
-| `get_deposit` / `get_deposit_by_owner_sequence` | 公開query | Authorization、deadline、signature、状態を照会 |
-| `get_bridge_status` | 公開query | Finalized観測、epoch、Governance reserve、schedulerを照会 |
+| `request_deposit` | Deposit owner | Start Ledger pull and Authorization creation |
+| `request_deposit_refund` | Any non-anonymous Principal | Check claimable amount, perform required Finalized reconciliation, execute fixed Ledger refund or reconcile Hold |
+| `notify_withdrawal` | Any non-anonymous Principal | Permissionless Finalized Withdrawal notification; recipient bound to the Base event |
+| `continue_withdrawal` | Any non-anonymous Principal | Advance fixed Ledger release or reconciliation by at most one external step |
+| Base governance prepare/status/replace/confirm | Governance, or pause principal for pause/cancel only | Signed artifacts for the external relayer and Finalized confirmation |
+| `prepare_next_emergency_base_action` | Governance, pause principal | Sign emergency queue pause/cancel actions in order |
+| `get_deposit` / `get_deposit_by_owner_sequence` | Public query | Query Authorization, deadline, signature, and state |
+| `get_bridge_status` | Public query | Query Finalized observations, epoch, Governance reserve, and scheduler |
 
-SNS Governance principalは通常時のresume、principal rotation、Fee Recipient、fee payout、Service Fee、Timelock操作を行う。Bootstrap中のsealはcurrent controllerだけに許可し、そのprincipalをbootstrap activation controllerとして固定する。内部bootstrap activation authorityが残り、固定principalがcontrollerである間は、pause中の初回schedule／executeとpending resume/replacementをそのprincipalだけに許可する。初回executeのConfirmed完了時に内部authorityを永久に消費し、外部controller設定の変更時期にかかわらず以後のactivation権限を既存Governance principalへ切り替える。controller権限を使う各外部await後はmanagement canisterのcontroller集合が固定principal一件だけであることを再確認し、削除・追加・置換時はcommit前に拒否する。pause principalは緊急pauseと許可された進行だけを行う。Mint SignerはEIP-712 Authorization専用、Governance OperatorはCanister発Base governance transaction専用で、derivation pathとETH管理を分離する。
+The SNS Governance principal handles normal resume, principal rotation, Fee Recipient, fee payouts, Service Fee, and Timelock operations. During Bootstrap, only the current controller may seal, fixing that principal as the bootstrap activation controller. While internal bootstrap activation authority remains and the fixed principal remains controller, only that principal may perform initial paused schedule/execute and pending resume/replacement. Confirmation of the first execute permanently consumes the internal authority and transfers subsequent activation authority to the existing Governance principal, regardless of when external controller settings change. After every external await using controller authority, recheck that the management canister's controller set contains only the fixed principal; reject removal, addition, or replacement before commit. The pause principal performs only emergency pause and permitted progress. Mint Signer is dedicated to EIP-712 Authorizations and Governance Operator to Canister-originated Base governance transactions, with separate derivation paths and ETH management.
+
+## Governance transaction affordability
+
+Before signing, compute the checked transaction liability and read the Governance Operator balance at Finalized and Safe. The shared kernel returns `observed = min(finalized, safe)` and accepts exactly when `observed >= required`. Equality is affordable; either balance below the requirement rejects without consuming a nonce or changing a pending replacement generation. RPC authenticity and the adequacy of the configured fee ceiling remain external assumptions.
