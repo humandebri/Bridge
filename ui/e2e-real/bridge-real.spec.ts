@@ -335,7 +335,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await openHistory(page)
   await page
     .locator("header")
-    .filter({ has: page.getByRole("heading", { name: "Bridge history" }) })
+    .filter({ has: page.getByRole("heading", { name: "Your history" }) })
     .getByRole("button", { name: "Refresh", exact: true })
     .click()
   await expect(page.getByText("Transfer needs attention", { exact: true })).toBeVisible()

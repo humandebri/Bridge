@@ -652,7 +652,7 @@ function HistoryPage() {
     <div className="route-enter mx-auto max-w-6xl pt-8 md:pt-12">
       <header className="mb-8 flex items-end justify-between gap-4">
         <div>
-          <h1 className="font-display text-[42px] leading-[1.1]">Bridge history</h1>
+          <h1 className="font-display text-[42px] leading-[1.1]">Your history</h1>
         </div>
         <Button variant="ghost" disabled={refreshing} onClick={() => void refresh()}>
           <RefreshCcw className={refreshing ? "size-4 animate-spin" : "size-4"} />
