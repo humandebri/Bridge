@@ -3339,6 +3339,11 @@ describe("Phase 3 PocketIC saga", () => {
     const validatorBefore = await bridge.actor.get_activation_status();
     expect(await bridge.actor.validate_sns_schedule_activation({previous_governance_operation_id: previous})).toHaveProperty("Ok");
     expect(await bridge.actor.get_activation_status()).toEqual(validatorBefore);
+    // Stage Root as co-controller before any DAO reactivation proposal. An
+    // unadopted proposal must leave the production controller recoverable.
+    await pic!.updateCanisterSettings({canisterId: bridge.canisterId, sender: controller, controllers: [controller,sns.rootId]});
+    expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText()).sort())
+      .toEqual([controller.toText(),sns.rootId.toText()].sort());
     const unadopted = await sns.submitUnadopted({ExecuteGenericNervousSystemFunction:{function_id:1000n,payload:new Uint8Array(payload)}});
     expect(unadopted.decided_timestamp_seconds).toBe(0n);
     expect(unadopted.executed_timestamp_seconds).toBe(0n);
@@ -3348,7 +3353,8 @@ describe("Phase 3 PocketIC saga", () => {
     bridge.actor.setPrincipal(controller);
     await expect(bridge.actor.sns_schedule_activation({previous_governance_operation_id: previous})).rejects.toThrow();
     await sns.propose({ ExecuteGenericNervousSystemFunction: { function_id: 1000n, payload: new Uint8Array(payload) } });
-    expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText())).toEqual([controller.toText()]);
+    expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText()).sort())
+      .toEqual([controller.toText(),sns.rootId.toText()].sort());
     const scheduled = (await bridge.actor.get_pending_base_governance_transaction()).Ok[0];
     expect(scheduled.kind).toHaveProperty("ScheduleActivation");
     expect((await bridge.actor.get_bridge_status()).deposits_paused).toBe(true);
@@ -3372,6 +3378,8 @@ describe("Phase 3 PocketIC saga", () => {
     await evm.actor.set_withdrawals_paused(false);
     expect(await bridge.actor.confirm_base_governance_transaction({operation_id: executed.operation_id, transaction_hash: executed.transaction_hash})).toHaveProperty("Ok.succeeded",true);
     expect((await bridge.actor.get_bridge_status()).deposits_paused).toBe(false);
+    expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText()).sort())
+      .toEqual([controller.toText(),sns.rootId.toText()].sort());
     const beforeUpgradeRuntime = await bridge.actor.get_runtime_binding();
     const upgradeWasm = readWasm(bridgeWasm);
     const chunkHashes: Uint8Array[] = [];
@@ -3384,10 +3392,7 @@ describe("Phase 3 PocketIC saga", () => {
       expect(Buffer.from(uploaded.hash)).toEqual(createHash("sha256").update(chunk).digest());
       chunkHashes.push(uploaded.hash);
     }
-    // Production-mode Root registration removes the personal co-controller.
-    await pic!.updateCanisterSettings({canisterId: bridge.canisterId, sender: controller, controllers: [controller,sns.rootId]});
-    expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText()).sort())
-      .toEqual([controller.toText(),sns.rootId.toText()].sort());
+    // Registration is a separate later boundary and removes the personal co-controller.
     const unadoptedRegistration = await sns.submitUnadopted({RegisterDappCanisters: {canister_ids: [bridge.canisterId]}});
     expect(unadoptedRegistration.executed_timestamp_seconds).toBe(0n);
     expect((await pic!.getControllers(bridge.canisterId)).map(p => p.toText()).sort())
