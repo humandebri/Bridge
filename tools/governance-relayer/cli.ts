@@ -140,6 +140,43 @@ async function main(): Promise<void> {
       printArtifact(artifact)
       return
     }
+    case "recover-sns-activation": {
+      const phase = requiredOption(options, "phase")
+      if (phase !== "schedule" && phase !== "execute") {
+        throw new Error("--phase must be schedule or execute")
+      }
+      const pending = unwrap(await actor.get_pending_base_governance_transaction())
+      const artifact = selectPendingActivationArtifact(pending, phase)
+      const submissionBytes = await readFile(requiredOption(options, "submission-file"))
+      const preparationBytes = await readFile(requiredOption(options, "preparation-file"))
+      const authorization = snsActivationAuthorization(
+        phase,
+        JSON.parse(submissionBytes.toString("utf8")),
+        JSON.parse(preparationBytes.toString("utf8")),
+        artifact,
+        requiredEnv("BRIDGE_GATE_B_MANIFEST_SHA256").toLowerCase(),
+        requiredEnv("BRIDGE_CANISTER_ID"),
+        requiredEnv("BRIDGE_SNS_ROOT_CANISTER_ID"),
+        createHash("sha256").update(submissionBytes).digest("hex"),
+        createHash("sha256").update(preparationBytes).digest("hex"),
+      )
+      const artifactPath = requiredOption(options, "artifact-file")
+      await writeOrMatchArtifact(artifact, artifactPath)
+      const authorizationPath = requiredOption(options, "authorization-file")
+      await writeOrMatchExactJson(authorization, authorizationPath)
+      const artifactBytes = await readFile(artifactPath)
+      const authorizationBytes = await readFile(authorizationPath)
+      await writeOrMatchExactJson({
+        schema_version: 1,
+        phase,
+        gate_b_manifest_sha256: authorization.gate_b_manifest_sha256,
+        artifact_sha256: createHash("sha256").update(artifactBytes).digest("hex"),
+        authorization_receipt_sha256: createHash("sha256").update(authorizationBytes).digest("hex"),
+        bound_at_unix: authorization.authorized_at_unix,
+      }, requiredOption(options, "binding-file"))
+      printArtifact(artifact)
+      return
+    }
     case "relay": {
       const rpc = rpcClient()
       const artifact = await pendingArtifact(actor, options)
@@ -367,7 +404,97 @@ export function storedActivationConfirmationIdentity(value: unknown): {
 }
 
 export function commandRequiresIdentity(command: string): boolean {
-  return !new Set(["status", "relay", "recover-activation"]).has(command)
+  return !new Set(["status", "relay", "recover-activation", "recover-sns-activation"]).has(command)
+}
+
+export function snsActivationAuthorization(
+  phase: "schedule" | "execute",
+  submissionValue: unknown,
+  preparationValue: unknown,
+  artifact: SignedBaseGovernanceTransaction,
+  expectedGate: string,
+  bridgeCanisterId: string,
+  rootCanisterId: string,
+  submissionSha256: string,
+  preparationSha256: string,
+): Record<string, unknown> {
+  if (!submissionValue || typeof submissionValue !== "object" || Array.isArray(submissionValue)
+    || !preparationValue || typeof preparationValue !== "object" || Array.isArray(preparationValue)) {
+    throw new Error("SNS activation evidence is malformed")
+  }
+  const submission = submissionValue as Record<string, unknown>
+  const preparation = preparationValue as Record<string, unknown>
+  const submittedAt = submission.submitted_at_unix
+  const previousOperationId = submission.previous_governance_operation_id
+  const expectedMethod = `sns_${phase}_activation`
+  const expectedValidator = `validate_${expectedMethod}`
+  const payloadHex = submission.payload_hex
+  const executingPrincipal = preparation.executing_principal
+  const controllers = preparation.final_controllers
+  if (submission.schema_version !== 4
+    || submission.phase !== phase
+    || submission.gate_b_manifest_sha256 !== expectedGate
+    || submission.bridge_canister_id !== bridgeCanisterId
+    || submission.governance_canister_id !== "74ncn-fqaaa-aaaaq-aaasa-cai"
+    || submission.target_method_name !== expectedMethod
+    || submission.validator_canister_id !== bridgeCanisterId
+    || submission.validator_method_name !== expectedValidator
+    || typeof submission.proposal_id !== "number"
+    || !Number.isSafeInteger(submission.proposal_id)
+    || submission.proposal_id <= 0
+    || typeof submission.function_id !== "number"
+    || !Number.isSafeInteger(submission.function_id)
+    || submission.function_id < 1000
+    || typeof submittedAt !== "number"
+    || !Number.isSafeInteger(submittedAt)
+    || submittedAt <= 0
+    || typeof previousOperationId !== "number"
+    || !Number.isSafeInteger(previousOperationId)
+    || previousOperationId < 0
+    || typeof payloadHex !== "string"
+    || !/^(?:[0-9a-f]{2})+$/.test(payloadHex)
+    || submission.payload_sha256
+      !== createHash("sha256").update(Buffer.from(payloadHex, "hex")).digest("hex")) {
+    throw new Error("SNS activation submission differs from the reviewed release")
+  }
+  if (preparation.schema_version !== 5
+    || preparation.stage !== "co_controller_ready"
+    || preparation.gate_b_manifest_sha256 !== expectedGate
+    || preparation.bridge_canister_id !== bridgeCanisterId
+    || preparation.sns_root_canister_id !== rootCanisterId
+    || typeof executingPrincipal !== "string"
+    || !Array.isArray(controllers)
+    || controllers.length !== 2
+    || new Set(controllers).size !== 2
+    || !controllers.includes(executingPrincipal)
+    || !controllers.includes(rootCanisterId)) {
+    throw new Error("SNS activation requires the exact evidenced co-controller state")
+  }
+  if (artifact.operation_id !== BigInt(previousOperationId) + 1n
+    || activationPhase(artifact) !== phase
+    || artifact.signed_at_ns < BigInt(submittedAt) * 1_000_000_000n) {
+    throw new Error("Live activation artifact is not derived from the SNS proposal")
+  }
+  if (!/^[0-9a-f]{64}$/.test(submissionSha256)
+    || !/^[0-9a-f]{64}$/.test(preparationSha256)) {
+    throw new Error("SNS activation evidence digest is malformed")
+  }
+  return {
+    schema_version: 1,
+    kind: "sns-activation-proposal-authorization",
+    phase,
+    gate_b_manifest_sha256: expectedGate,
+    bridge_canister_id: bridgeCanisterId,
+    sns_root_canister_id: rootCanisterId,
+    certified_controller_set: [...controllers].sort(),
+    proposal_id: submission.proposal_id,
+    function_id: submission.function_id,
+    governance_operation_id: artifact.operation_id.toString(),
+    payload_sha256: submission.payload_sha256,
+    submission_sha256: submissionSha256,
+    preparation_receipt_sha256: preparationSha256,
+    authorized_at_unix: submittedAt,
+  }
 }
 
 function rpcClient(): RelayerRpc {
@@ -537,6 +664,16 @@ async function writeOrMatchArtifact(
 
 async function writeJsonNew(value: unknown, path: string): Promise<void> {
   await writeJsonExclusiveAtomic(value, path)
+}
+
+async function writeOrMatchExactJson(value: unknown, path: string): Promise<void> {
+  try {
+    await writeJsonNew(value, path)
+  } catch (error) {
+    if (!hasErrorCode(error, "EEXIST") || hasCleanupError(error)) throw error
+    const stored = await readExistingJson(path)
+    if (JSON.stringify(stored) !== JSON.stringify(value)) throw error
+  }
 }
 
 export function confirmationEvidenceMatches(stored: unknown, candidate: unknown): boolean {
@@ -988,6 +1125,7 @@ const COMMAND_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   "seal-operational-config": ["help", "parameters-file", "receipt-file"],
   status: ["help", "operation-id"],
   "recover-activation": ["help", "phase", "artifact-file", "authorization-file"],
+  "recover-sns-activation": ["help", "phase", "submission-file", "preparation-file", "artifact-file", "authorization-file", "binding-file"],
   relay: ["help", "operation-id", "artifact-file", "authorization-file", "binding-file"],
   confirm: ["help", "operation-id", "transaction-hash", "hash", "artifact-file", "authorization-file", "binding-file", "receipt-file"],
   replace: ["help", "operation-id", "max-fee", "priority-fee", "artifact-file", "output-artifact-file"],
@@ -1116,6 +1254,7 @@ Commands:
   prepare --action pause-deposits|pause-withdrawals|cancel-timelock|set-service-fee [--value N]
   status [--operation-id N]
   recover-activation --phase schedule|execute --authorization-file FILE --artifact-file FILE
+  recover-sns-activation --phase schedule|execute --submission-file FILE --preparation-file FILE --authorization-file FILE --binding-file FILE --artifact-file FILE
   relay --artifact-file FILE [--authorization-file FILE --binding-file FILE] [--operation-id N]
   confirm --artifact-file FILE [--authorization-file FILE --binding-file FILE] --receipt-file NEW_FILE [--operation-id N] [--hash 0x...]
   run [--operation-id N]
@@ -1129,6 +1268,7 @@ Commands:
 Environment:
   BRIDGE_CANISTER_ID  Bridge Canister principal
   IC_IDENTITY_PEM    Required for confirm, run, prepare, replace, activation prepare, attestation, and emergency commands
+  BRIDGE_SNS_ROOT_CANISTER_ID  Required for SNS activation recovery
   BASE_RPC_URL       Base JSON-RPC URL
   IC_HOST            Optional IC API host (defaults to https://icp-api.io)
 `)

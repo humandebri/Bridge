@@ -240,14 +240,18 @@ PY
 # Freeze one externally supplied receipt through a no-follow descriptor before
 # validation so a later path swap cannot change the bytes authorized for use.
 production_freeze_receipt() {
-  local source="$1" destination="$2" label="${3:-receipt}"
-  python3 - "$source" "$destination" "$label" <<'PY'
+  local source="$1" destination="$2" label="${3:-receipt}" maximum_bytes="${4:-16777216}"
+  [[ "$maximum_bytes" =~ ^[1-9][0-9]*$ && "$maximum_bytes" -le 541065216 ]] || {
+    echo "$label has an invalid freeze size limit" >&2; return 1;
+  }
+  python3 - "$source" "$destination" "$label" "$maximum_bytes" <<'PY'
 import os,stat,sys
-source,destination,label=sys.argv[1:]
+source,destination,label,maximum=sys.argv[1:]
+maximum=int(maximum)
 fd=os.open(source,os.O_RDONLY|os.O_NOFOLLOW)
 try:
  info=os.fstat(fd)
- if not stat.S_ISREG(info.st_mode) or info.st_size>16*1024*1024:
+ if not stat.S_ISREG(info.st_mode) or info.st_size>maximum:
   raise SystemExit(f'{label} is not a bounded regular file')
  chunks=[]
  while True:
@@ -388,7 +392,7 @@ production_validate_gate() {
   revision="$(git -C "$source_root" rev-parse HEAD)"
   tree="$(git -C "$source_root" archive HEAD | shasum -a 256 | awk '{print $1}')"
   read -r manifest_revision manifest_tree < <(python3 -c 'import json,sys;m=json.load(open(sys.argv[1]));print(m.get("source_revision",""),m.get("source_tree_sha256",""))' "$bundle/release-manifest.json")
-  local checkpoint_handover=0 checkpoint_module checkpoint_metadata
+  local checkpoint_handover=0 checkpoint_module checkpoint_revision checkpoint_metadata checkpoint_fields
   if [[ ( "$mode" == handover || "$mode" == handover-recover ) && -n "${BRIDGE_CHECKPOINT_EVIDENCE:-}" ]]; then
     checkpoint_handover=1
   else
@@ -400,14 +404,23 @@ production_validate_gate() {
   profile_bin="$target/release/bridge-profile"
   if [[ "$checkpoint_handover" -eq 1 ]]; then
     checkpoint_metadata="$("$profile_bin" validate-production-checkpoint-evidence "$BRIDGE_CHECKPOINT_EVIDENCE")" || { rm -rf "$target"; return 1; }
-    checkpoint_module="$(python3 -I -S - "$checkpoint_metadata" "$revision" "$tree" <<'PY_META'
+    checkpoint_fields="$(python3 -I -S - "$checkpoint_metadata" <<'PY_META'
 import json,sys
-value=json.loads(sys.argv[1])
-if value['source']!={'revision':sys.argv[2],'tree_sha256':sys.argv[3]} or value['runtime']['schema_version']!=36:
- raise SystemExit('handover requires the exact current-source v36 checkpoint terminal')
-print(value['module_sha256'])
+value=json.loads(sys.argv[1]); source=value.get('source',{})
+if value.get('runtime',{}).get('schema_version')!=36:
+ raise SystemExit('handover requires a v36 checkpoint terminal')
+module=value.get('module_sha256',''); revision=source.get('revision',''); tree=source.get('tree_sha256','')
+if any(len(item)!=length or any(ch not in '0123456789abcdef' for ch in item) for item,length in ((module,64),(revision,40),(tree,64))):
+ raise SystemExit('handover checkpoint source or module identity is malformed')
+print(module,revision)
 PY_META
 )" || { rm -rf "$target"; return 1; }
+    read -r checkpoint_module checkpoint_revision <<<"$checkpoint_fields"
+    git -C "$source_root" merge-base --is-ancestor "$checkpoint_revision" "$revision" || {
+      rm -rf "$target"
+      echo "handover checkpoint source is not an ancestor of the current source" >&2
+      return 1
+    }
   fi
   if [[ "$mode" == gate-a ]]; then output="$("$profile_bin" validate-bundle --offline "$bundle")" || { rm -rf "$target"; return 1; }
   elif [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }

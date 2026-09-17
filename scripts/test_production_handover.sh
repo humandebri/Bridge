@@ -42,13 +42,57 @@ version = "0.0.0"
 LOCK
 cat >"$T/source/src/main.rs" <<'RS'
 use std::{env,fs};
-fn main(){let a:Vec<String>=env::args().skip(1).collect();if a[0]=="decode-handover-query"{print!("{}",fs::read_to_string(&a[2]).unwrap())}else if a[0]=="verify-production-canister-handover"{let counter=env::var("TRACE").unwrap()+".verify";let n=fs::read_to_string(&counter).ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(0);fs::write(&counter,(n+1).to_string()).unwrap();let valid=a.len()==5&&fs::read_to_string(&a[2]).is_ok_and(|v|v.contains("\"kind\":\"seal\"")&&v.contains("\"initial_operational_parameters_sha256\":\"1111\""))&&fs::read_to_string(&a[3]).is_ok_and(|v|v.contains("\"kind\":\"schedule\"")&&v.contains("\"seal_receipt_sha256\":\"2222\""))&&fs::read_to_string(&a[4]).is_ok_and(|v|v.contains("\"kind\":\"execute\"")&&v.contains("\"schedule_receipt_sha256\":\"3333\""));if (n>0&&env::var("HANDOVER_PRE_SEND_ACTIVE_DRIFT").as_deref()==Ok("true"))||!valid||["HANDOVER_BOOTSTRAP","HANDOVER_SEALED","HANDOVER_ATTESTATION_MISSING","HANDOVER_ATTESTATION_STALE","HANDOVER_ATTESTATION_PREDEPLOY","HANDOVER_PROFILE_DRIFT","HANDOVER_CONTROLLER_DRIFT","HANDOVER_MODULE_DRIFT","HANDOVER_INITIAL_PARAMETERS_DRIFT","HANDOVER_SEAL_RECEIPT_DRIFT","HANDOVER_SCHEDULE_RECEIPT_DRIFT","HANDOVER_EXECUTE_RECEIPT_DRIFT","HANDOVER_RUNTIME_BINDING_DRIFT","HANDOVER_RESERVE_DRIFT","HANDOVER_STORAGE_INTEGRITY_DRIFT","HANDOVER_IC_DEPOSITS_PAUSED","HANDOVER_BASE_DEPOSITS_PAUSED","HANDOVER_BASE_WITHDRAWALS_PAUSED"].iter().any(|name|env::var(name).as_deref()==Ok("true")){std::process::exit(1)}println!("production_canister_handover=verified")}else if a[0]=="verify-production-canister-predeploy"{println!("production_canister_predeploy=verified")}else if a[0]=="validate-production-handover-candidate"{println!("production_handover_candidate=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-controller-handover-recovery"{println!("controller_handover_recovery=pass manifest_sha256={}","a".repeat(64))}else if a[0]=="validate-controller-handover-preparation"&&env::var("HANDOVER_COMPLETION_VALIDATOR_FAIL").as_deref()==Ok("true"){std::process::exit(1)}else if a[0]=="validate-bundle"&&env::var("REJECT_CURRENT_GATE_B").as_deref()==Ok("true"){std::process::exit(1)}else{println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}","a".repeat(64))}}
+fn main() {
+    let a: Vec<String> = env::args().skip(1).collect();
+    if a[0] == "decode-handover-query" {
+        print!("{}", fs::read_to_string(&a[2]).unwrap())
+    } else if a[0] == "validate-production-checkpoint-evidence" {
+        println!(
+            "{{\"module_sha256\":\"{}\",\"runtime\":{{\"schema_version\":36}},\"source\":{{\"revision\":\"{}\",\"tree_sha256\":\"{}\"}}}}",
+            env::var("CHECKPOINT_MODULE").unwrap(),
+            env::var("CHECKPOINT_SOURCE_REVISION").unwrap(),
+            env::var("CHECKPOINT_SOURCE_TREE").unwrap()
+        )
+    } else if a[0] == "verify-production-canister-handover" {
+        let counter = env::var("TRACE").unwrap() + ".verify";
+        let n = fs::read_to_string(&counter).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+        fs::write(&counter, (n + 1).to_string()).unwrap();
+        let valid = a.len() == 5
+            && fs::read_to_string(&a[2]).is_ok_and(|v| v.contains("\"kind\":\"seal\"") && v.contains("\"initial_operational_parameters_sha256\":\"1111\""))
+            && fs::read_to_string(&a[3]).is_ok_and(|v| v.contains("\"kind\":\"schedule\"") && v.contains("\"seal_receipt_sha256\":\"2222\""))
+            && fs::read_to_string(&a[4]).is_ok_and(|v| v.contains("\"kind\":\"execute\"") && v.contains("\"schedule_receipt_sha256\":\"3333\""));
+        if (n > 0 && env::var("HANDOVER_PRE_SEND_ACTIVE_DRIFT").as_deref() == Ok("true"))
+            || !valid
+            || ["HANDOVER_BOOTSTRAP", "HANDOVER_SEALED", "HANDOVER_ATTESTATION_MISSING", "HANDOVER_ATTESTATION_STALE", "HANDOVER_ATTESTATION_PREDEPLOY", "HANDOVER_PROFILE_DRIFT", "HANDOVER_CONTROLLER_DRIFT", "HANDOVER_MODULE_DRIFT", "HANDOVER_INITIAL_PARAMETERS_DRIFT", "HANDOVER_SEAL_RECEIPT_DRIFT", "HANDOVER_SCHEDULE_RECEIPT_DRIFT", "HANDOVER_EXECUTE_RECEIPT_DRIFT", "HANDOVER_RUNTIME_BINDING_DRIFT", "HANDOVER_RESERVE_DRIFT", "HANDOVER_STORAGE_INTEGRITY_DRIFT", "HANDOVER_IC_DEPOSITS_PAUSED", "HANDOVER_BASE_DEPOSITS_PAUSED", "HANDOVER_BASE_WITHDRAWALS_PAUSED"].iter().any(|name| env::var(name).as_deref() == Ok("true"))
+        {
+            std::process::exit(1)
+        }
+        println!("production_canister_handover=verified")
+    } else if a[0] == "verify-production-canister-predeploy" {
+        println!("production_canister_predeploy=verified")
+    } else if a[0] == "validate-production-handover-candidate" {
+        println!("production_handover_candidate=pass manifest_sha256={}", "a".repeat(64))
+    } else if a[0] == "validate-controller-handover-recovery" {
+        println!("controller_handover_recovery=pass manifest_sha256={}", "a".repeat(64))
+    } else if a[0] == "validate-controller-handover-preparation" && env::var("HANDOVER_COMPLETION_VALIDATOR_FAIL").as_deref() == Ok("true") {
+        std::process::exit(1)
+    } else if a[0] == "validate-bundle" && env::var("REJECT_CURRENT_GATE_B").as_deref() == Ok("true") {
+        std::process::exit(1)
+    } else {
+        println!("gate_b=pre_seal-pass authorizing=seal manifest_sha256={}", "a".repeat(64))
+    }
+}
 RS
 git -C "$T/source" init -q
 git -C "$T/source" config user.email bridge-test@example.invalid
 git -C "$T/source" config user.name bridge-test
 git -C "$T/source" add .
 git -C "$T/source" commit -qm 'handover fixture'
+CHECKPOINT_REVISION="$(git -C "$T/source" rev-parse HEAD)"
+CHECKPOINT_TREE="$(git -C "$T/source" archive HEAD | shasum -a 256 | awk '{print $1}')"
+printf 'current handover policy\n' >"$T/source/POLICY.md"
+git -C "$T/source" add POLICY.md
+git -C "$T/source" commit -qm 'current handover policy'
 REVISION="$(git -C "$T/source" rev-parse HEAD)"
 TREE="$(git -C "$T/source" archive HEAD | shasum -a 256 | awk '{print $1}')"
 printf '{"kind":"production-controller-bootstrap-upgrade","source_revision":"%s","source_tree_sha256":"%s"}\n' \
@@ -74,6 +118,9 @@ cat >"$T/bin/icp" <<'SH'
 #!/usr/bin/env bash
 echo "icp $*" >>"$TRACE"
 if [[ "$*" == *'identity principal'* ]]; then echo 'aaaaa-aa'
+elif [[ "${1:-}" == build ]]; then
+  mkdir -p "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release"
+  printf 'checkpoint-module' >"$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/bridge_canister.wasm"
 elif [[ "$*" == *'status bridge-canister -e production -i'* ]]; then echo "${HANDOVER_CANISTER_ID:-2vxsx-fae}"
 elif [[ "$*" == *get_bridge_status* ]]; then
   calls="$(cat "$TRACE.bridge-calls" 2>/dev/null || printf 0)"; printf '%s\n' "$((calls+1))" >"$TRACE.bridge-calls"; reserve="${HANDOVER_RESERVE_SUFFICIENT:-true}"; paused="${HANDOVER_PAUSED:-false}"
@@ -135,6 +182,8 @@ export PATH="$T/bin:$PATH"
 printf '{"kind":"seal","initial_operational_parameters_sha256":"1111"}\n' >"$T/operational-config-seal-receipt.json"
 printf '{"kind":"schedule","seal_receipt_sha256":"2222"}\n' >"$T/controller-schedule-receipt.json"
 printf '{"kind":"execute","schedule_receipt_sha256":"3333"}\n' >"$T/controller-execute-receipt.json"
+printf '{"schema_version":5,"phase":"schedule"}\n' >"$T/dao-schedule-receipt.json"
+printf '{"schema_version":5,"phase":"execute"}\n' >"$T/dao-execute-receipt.json"
 
 run_handover() {
   local evidence="$1"
@@ -161,6 +210,8 @@ run_completion() {
   BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$T/operational-config-seal-receipt.json" \
   BRIDGE_CONTROLLER_SCHEDULE_RECEIPT="$T/controller-schedule-receipt.json" \
   BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/controller-execute-receipt.json" \
+  BRIDGE_DAO_SCHEDULE_RECEIPT="${DAO_SCHEDULE_PATH-$T/dao-schedule-receipt.json}" \
+  BRIDGE_DAO_EXECUTE_RECEIPT="${DAO_EXECUTE_PATH-$T/dao-execute-receipt.json}" \
   BRIDGE_ICP_IDENTITY=production \
   BRIDGE_HANDOVER_MODE=complete \
   BRIDGE_HANDOVER_EVIDENCE_FILE="$preparation" \
@@ -220,6 +271,14 @@ json.dump({'schema_version':1,'kind':'sns-dapp-registration-submission','bridge_
  'preparation_receipt_sha256':hashlib.sha256(preparation).hexdigest(),'proposal_id':42},open(target,'w'))
 PY
 updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+DAO_SCHEDULE_PATH="$T/missing-dao-schedule.json"
+DAO_EXECUTE_PATH="$T/missing-dao-execute.json"
+if run_completion "$T/handover.json" "$T/registration-submission.json" \
+  "$T/handover-without-dao.json" >/dev/null 2>&1; then
+  echo "handover completed without DAO reactivation receipts" >&2; exit 1
+fi
+unset DAO_SCHEDULE_PATH DAO_EXECUTE_PATH
+[[ ! -e "$T/handover-without-dao.json" ]]
 run_completion "$T/handover.json" "$T/registration-submission.json" "$T/handover-complete.json"
 updates_after="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
 [[ "$updates_before" == "$updates_after" ]]
@@ -482,9 +541,56 @@ PY
 printf '{}\n' >"$T/unverified-checkpoint.json"
 updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
 if BRIDGE_CHECKPOINT_EVIDENCE="$T/unverified-checkpoint.json" \
-  BRIDGE_DAO_SCHEDULE_RECEIPT="$T/controller-schedule-receipt.json" \
-  BRIDGE_DAO_EXECUTE_RECEIPT="$T/controller-execute-receipt.json" \
-  run_handover "$T/unverified-checkpoint-output.json" >/dev/null 2>&1; then
+  run_handover "$T/unverified-checkpoint-output.json" >"$T/unverified-checkpoint.log" 2>&1; then
   echo "handover accepted an unverified checkpoint" >&2; exit 1
 fi
+if rg -q 'DAO (schedule|execute) receipt' "$T/unverified-checkpoint.log"; then
+  echo "handover preparation still required DAO reactivation receipts" >&2; exit 1
+fi
 [[ "$updates_before" == "$(rg -c 'settings update bridge-canister' "$TRACE" || true)" ]]
+
+# A reviewed checkpoint may predate policy-only source commits. It remains
+# authorizing only when it is an ancestor and the current source reproduces its
+# exact terminal module twice. Its evidence envelope may exceed 16 MiB.
+CHECKPOINT_MODULE_SHA="$(printf 'checkpoint-module' | shasum -a 256 | awk '{print $1}')"
+truncate -s 17825792 "$T/large-checkpoint-evidence.json"
+CHECKPOINT_SOURCE_REVISION="$CHECKPOINT_REVISION" \
+CHECKPOINT_SOURCE_TREE="$CHECKPOINT_TREE" \
+CHECKPOINT_MODULE="$CHECKPOINT_MODULE_SHA" \
+BRIDGE_CHECKPOINT_EVIDENCE="$T/large-checkpoint-evidence.json" \
+HANDOVER_MODULE="$CHECKPOINT_MODULE_SHA" HANDOVER_POST_MODULE="$CHECKPOINT_MODULE_SHA" \
+run_handover "$T/checkpoint-handover.json"
+[[ "$(rg -c '^icp build bridge-canister -e production ' "$TRACE")" -ge 2 ]]
+
+updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+if CHECKPOINT_SOURCE_REVISION=0000000000000000000000000000000000000000 \
+  CHECKPOINT_SOURCE_TREE="$CHECKPOINT_TREE" CHECKPOINT_MODULE="$CHECKPOINT_MODULE_SHA" \
+  BRIDGE_CHECKPOINT_EVIDENCE="$T/large-checkpoint-evidence.json" \
+  HANDOVER_MODULE="$CHECKPOINT_MODULE_SHA" HANDOVER_POST_MODULE="$CHECKPOINT_MODULE_SHA" \
+  run_handover "$T/non-ancestor-checkpoint.json" >/dev/null 2>&1; then
+  echo "handover accepted a checkpoint outside current source ancestry" >&2; exit 1
+fi
+[[ "$updates_before" == "$(rg -c 'settings update bridge-canister' "$TRACE" || true)" ]]
+[[ ! -e "$T/non-ancestor-checkpoint.json" ]]
+
+updates_before="$(rg -c 'settings update bridge-canister' "$TRACE" || true)"
+if CHECKPOINT_SOURCE_REVISION="$CHECKPOINT_REVISION" \
+  CHECKPOINT_SOURCE_TREE="$CHECKPOINT_TREE" CHECKPOINT_MODULE="$(printf 'b%.0s' {1..64})" \
+  BRIDGE_CHECKPOINT_EVIDENCE="$T/large-checkpoint-evidence.json" \
+  HANDOVER_MODULE="$(printf 'b%.0s' {1..64})" HANDOVER_POST_MODULE="$(printf 'b%.0s' {1..64})" \
+  run_handover "$T/checkpoint-module-mismatch.json" >/dev/null 2>&1; then
+  echo "handover accepted a checkpoint module not reproducible from current source" >&2; exit 1
+fi
+[[ "$updates_before" == "$(rg -c 'settings update bridge-canister' "$TRACE" || true)" ]]
+[[ ! -e "$T/checkpoint-module-mismatch.json" ]]
+
+truncate -s 541065217 "$T/oversized-checkpoint-evidence.json"
+if CHECKPOINT_SOURCE_REVISION="$CHECKPOINT_REVISION" \
+  CHECKPOINT_SOURCE_TREE="$CHECKPOINT_TREE" CHECKPOINT_MODULE="$CHECKPOINT_MODULE_SHA" \
+  BRIDGE_CHECKPOINT_EVIDENCE="$T/oversized-checkpoint-evidence.json" \
+  HANDOVER_MODULE="$CHECKPOINT_MODULE_SHA" HANDOVER_POST_MODULE="$CHECKPOINT_MODULE_SHA" \
+  run_handover "$T/oversized-checkpoint.json" >/dev/null 2>&1; then
+  echo "handover accepted checkpoint evidence above the verifier limit" >&2; exit 1
+fi
+[[ "$updates_before" == "$(rg -c 'settings update bridge-canister' "$TRACE" || true)" ]]
+[[ ! -e "$T/oversized-checkpoint.json" ]]

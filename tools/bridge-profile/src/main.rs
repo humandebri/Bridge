@@ -7969,6 +7969,9 @@ fn verify_production_canister_handover_state(
     production_ui_runtime_profile: Option<(&Path, &Path)>,
     production_ui_upgrade_evidence: Option<&Path>,
 ) -> Result<ValidatedBundle, String> {
+    let checkpoint_without_dao_reactivation = env::var_os("BRIDGE_CHECKPOINT_EVIDENCE").is_some()
+        && env::var_os("BRIDGE_DAO_SCHEDULE_RECEIPT").is_none()
+        && env::var_os("BRIDGE_DAO_EXECUTE_RECEIPT").is_none();
     let live_context = if production_ui_upgrade_evidence.is_some() {
         SealReceiptLiveContext::ProductionUiPostUpgrade
     } else {
@@ -8045,7 +8048,11 @@ fn verify_production_canister_handover_state(
             minimum_deployment_block: gate_a_receipt
                 .bridge_deployment_block_number
                 .max(gate_a_receipt.timelock_deployment_block_number),
-            attestation_freshness: ActivationAttestationFreshness::Required,
+            attestation_freshness: if checkpoint_without_dao_reactivation {
+                ActivationAttestationFreshness::AllowStaleForUnchangedUiAssets
+            } else {
+                ActivationAttestationFreshness::Required
+            },
         },
     )?;
     Ok(bundle)
@@ -9065,6 +9072,51 @@ fn validate_gate_b_management_snapshot(
         controllers,
         module_hash,
     )
+}
+
+fn validate_dao_activation_management_snapshot(
+    bundle: &ValidatedBundle,
+    controllers: &[Principal],
+    module_hash: &[u8],
+) -> Result<(), String> {
+    let preparation = match env::var("BRIDGE_HANDOVER_PREPARATION_RECEIPT") {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => {
+            return validate_gate_b_management_snapshot(bundle, controllers, module_hash)
+        }
+        Err(_) => return Err("invalid handover preparation receipt path".into()),
+    };
+    let required_path = |name: &str| -> Result<String, String> {
+        env::var(name).map_err(|_| format!("joint-controller DAO activation requires {name}"))
+    };
+    let seal = required_path("BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT")?;
+    let schedule = required_path("BRIDGE_CONTROLLER_SCHEDULE_RECEIPT")?;
+    let execute = required_path("BRIDGE_CONTROLLER_ACTIVATION_RECEIPT")?;
+    validate_controller_handover_recovery_files(
+        &bundle.root,
+        Path::new(&seal),
+        Path::new(&schedule),
+        Path::new(&execute),
+        Path::new(&preparation),
+    )?;
+    let installer = gate_b_controller(bundle)?;
+    if !dao_activation_controller_set_matches(installer, controllers)?
+        || !hex(module_hash).eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
+    {
+        return Err("DAO activation requires the exact evidenced production identity and SNS Root controller set".into());
+    }
+    Ok(())
+}
+
+fn dao_activation_controller_set_matches(
+    installer: Principal,
+    controllers: &[Principal],
+) -> Result<bool, String> {
+    let expected = BTreeSet::from([
+        installer,
+        Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?,
+    ]);
+    Ok(controllers.len() == 2 && controllers.iter().copied().collect::<BTreeSet<_>>() == expected)
 }
 
 fn validate_current_profile_management_snapshot(
@@ -11351,7 +11403,7 @@ fn verify_activation(
         controllers,
         module_hash,
     } = snapshot;
-    validate_gate_b_management_snapshot(bundle, &controllers, &module_hash)?;
+    validate_dao_activation_management_snapshot(bundle, &controllers, &module_hash)?;
 
     let decoded = Decode!(&proposal_raw, GetProposalResponse).map_err(|error| error.to_string())?;
     let proposal = match decoded.result {
@@ -11536,7 +11588,7 @@ fn verify_schedule_receipt_live(
         controllers,
         module_hash,
     } = snapshot;
-    validate_gate_b_management_snapshot(bundle, &controllers, &module_hash)?;
+    validate_dao_activation_management_snapshot(bundle, &controllers, &module_hash)?;
 
     let decoded = Decode!(&proposal_raw, GetProposalResponse).map_err(|error| error.to_string())?;
     let proposal = match decoded.result {
@@ -17932,6 +17984,16 @@ mod tests {
         .is_err());
         assert!(validate_gate_b_management_snapshot(&bundle, &[installer], &[0; 32]).is_err());
         let root_controller = Principal::from_text(KINIC_ROOT).unwrap();
+        assert!(
+            dao_activation_controller_set_matches(installer, &[installer, root_controller],)
+                .unwrap()
+        );
+        assert!(!dao_activation_controller_set_matches(installer, &[root_controller]).unwrap());
+        assert!(!dao_activation_controller_set_matches(
+            installer,
+            &[installer, root_controller, Principal::anonymous()],
+        )
+        .unwrap());
         assert!(validate_post_handover_management_snapshot(
             &bundle.profile,
             &[root_controller],

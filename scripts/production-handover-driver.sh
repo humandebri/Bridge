@@ -75,10 +75,16 @@ BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$TMP/seal-receipt.json"
 BRIDGE_CONTROLLER_SCHEDULE_RECEIPT="$TMP/schedule-receipt.json"
 BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$TMP/execute-receipt.json"
 BRIDGE_HANDOVER_VALIDATOR_BIN="$TMP/bridge-profile"
+if [[ "$BRIDGE_HANDOVER_MODE" == complete ]]; then
+  : "${BRIDGE_DAO_SCHEDULE_RECEIPT:?handover completion requires the DAO schedule receipt}"
+  : "${BRIDGE_DAO_EXECUTE_RECEIPT:?handover completion requires the DAO execute receipt}"
+fi
 if [[ -n "${BRIDGE_CHECKPOINT_EVIDENCE:-}" ]]; then
-  : "${BRIDGE_DAO_SCHEDULE_RECEIPT:?checkpoint handover requires the DAO schedule receipt}"
-  : "${BRIDGE_DAO_EXECUTE_RECEIPT:?checkpoint handover requires the DAO execute receipt}"
-  production_freeze_receipt "$BRIDGE_CHECKPOINT_EVIDENCE" "$TMP/approved-checkpoint.json" "approved checkpoint evidence"
+  # Checkpoint evidence may contain the bounded, hex-encoded production upgrade
+  # suffix. Match the verifier's 516 MiB envelope limit without widening the
+  # default 16 MiB receipt bound.
+  production_freeze_receipt "$BRIDGE_CHECKPOINT_EVIDENCE" "$TMP/approved-checkpoint.json" \
+    "approved checkpoint evidence" 541065216
   export BRIDGE_CHECKPOINT_EVIDENCE="$TMP/approved-checkpoint.json"
 fi
 if [[ -n "${BRIDGE_DAO_SCHEDULE_RECEIPT:-}" || -n "${BRIDGE_DAO_EXECUTE_RECEIPT:-}" ]]; then
