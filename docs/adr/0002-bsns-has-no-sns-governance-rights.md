@@ -2,20 +2,20 @@
 status: accepted
 ---
 
-# bSNSにSNS Governanceの権利を持たせない
+# Give bSNS no SNS Governance rights
 
-bSNSはBridgeable SNS Tokenを1:1で裏付けるBase上の流通トークンに限定し、SNS Governanceの投票権、neuron権限、投票報酬を持たせない。Governanceへ参加する利用者はbSNSをburnしてICP上のSNSトークンをreleaseし、neuronへstakeする。
+Restrict bSNS to a circulating token on Base backed 1:1 by Bridgeable SNS Tokens, without SNS Governance voting rights, neuron permissions, or voting rewards. Users wishing to participate in Governance must burn bSNS, release SNS tokens on ICP, and stake them in a neuron.
 
 ## Considered Options
 
-- Base保有量をsnapshotしてcross-chain votingを提供する案は、transfer中の投票権、二重投票防止、delegation、投票期間中の残高固定が新たなprotocolを必要とするため不採用とする。
-- Bridge canisterがescrow残高を代理stake・代理投票する案は、利用者ごとの意思を表現できず、Bridgeへ過大なGovernance権限を集中させるため不採用とする。
-- bSNSを投票権のない1:1裏付けtokenとする案を採用する。
+- Reject cross-chain voting based on Base balance snapshots because voting rights during transfers, double-vote prevention, delegation, and balance locking during voting would require a new protocol.
+- Reject proxy staking and voting of escrow balances by the Bridge canister because it cannot represent each user's intent and would concentrate excessive Governance authority in the Bridge.
+- Adopt bSNS as a token with 1:1 backing and no voting rights.
 
 ## Consequences
 
-- neuronへstake中のSNSトークンはBridgeable SNS Tokenではない。利用者はneuronをdissolveしてdisburseするまでDepositできない。
-- Bridge escrowのSNSトークンをstake、投票、treasury運用、貸付へ使用しない。
-- UIはDeposit前に、bSNSでは投票と投票報酬を得られないことを明示する。
-- bSNS所有者へSNS neuron permissionを付与せず、Base addressとPrincipalのGovernance用identity mappingを導入しない。
-- Bridgeの会計と形式証明は資産の1:1裏付けに限定し、cross-chain governanceを証明範囲へ含めない。
+- SNS tokens staked in neurons are not Bridgeable SNS Tokens. Users cannot deposit them until the neuron is dissolved and disbursed.
+- Do not use SNS tokens in Bridge escrow for staking, voting, treasury investment, or lending.
+- Before a Deposit, the UI must state that bSNS does not provide voting rights or voting rewards.
+- Do not grant SNS neuron permissions to bSNS holders or introduce a Governance identity mapping between Base addresses and Principals.
+- Bridge accounting and formal proofs cover 1:1 asset backing; cross-chain governance is outside the proof scope.

@@ -1,6 +1,6 @@
 # Deployment profiles
 
-`bridge-profile`は秘密を含まないJSON profileと計測evidenceを検査する。
+`bridge-profile` validates secret-free JSON profiles and measurement evidence.
 
 ```sh
 cargo run -p bridge-profile -- derive measurements.json
@@ -10,13 +10,13 @@ cargo run -p bridge-profile -- validate-bundle --offline evidence/release-id
 cargo run -p bridge-profile -- verify-live schedule evidence/release-id
 ```
 
-24時間後のexecute認可では同じ位置のphaseを`execute`に替える。
+For execute authorization after 24 hours, replace the phase in the same position with `execute`.
 
-`derive`と`fee-cycles-measurements.template.json`はunpause後のGate C計測用である。schema v3のgovernance gas、settlement cycles、fee系列を各10件以上要求し、Base fee sampleは最初と最後の観測が7日以上離れていなければ失敗する。この7日計測をGate B、初期seal、schedule、executeの前提にしてはならない。Gate Bの初期値は別の`initial-operational-parameters.json`から導出する。通常デプロイ前に使う`validate`は`test_assets_only = true`を必ず拒否し、Sepolia rehearsalだけが明示的な`validate-test`を使える。
+`derive` and `fee-cycles-measurements.template.json` are for Gate C measurements after unpause. Require at least 10 samples each in schema v3 Governance gas, settlement cycles, and fee series; Base fee samples fail unless first and last observations are at least seven days apart. Never make these seven-day measurements prerequisites for Gate B, initial seal, schedule, or execute. Derive Gate B initial values separately from `initial-operational-parameters.json`. Normal pre-deployment `validate` always rejects `test_assets_only = true`; only Sepolia rehearsals may explicitly use `validate-test`.
 
-本番配置と資産受付開始は、必ず`production-release.sh`を経由する。`deploy`のGate Aはoffline artifact、profile、constructor条件だけを検証する。Bridge contractとBridge Canisterはいずれも初期pause状態で配置され、この段階では資産を受け付けない。配置後のruntime、role、pause、chain bindingは、Canisterが公式EVM RPC Canisterの組み込み`BaseMainnet`から取得して保存するactivation attestationをGate Bで検証する。
+Production deployment and asset admission must go through `production-release.sh`. `deploy` Gate A verifies only offline artifacts, profiles, and constructor conditions. Deploy both Bridge contract and Bridge Canister initially paused, admitting no assets. Gate B verifies post-deployment runtime, roles, pause, and chain binding through activation attestation retrieved and saved by the Canister using the official EVM RPC Canister's built-in `BaseMainnet`.
 
-production CanisterはBase contract用release profileとは独立したschema 2の`production-canister-plan.json`から一度だけinstallする。`deployments/production-canister-plan.template.json`をrepo外へ複製し、bootstrapで確定したCanister ID、clean source、Wasm、初期設定を埋める。`scripts/production-canister-install.sh`だけがtyped planをCandid binaryへ変換し、`--mode install --args-format bin`でinstallする。`reinstall`、`auto`、暗黙buildは使用しない。public config初期化、全storage検査、checksum、Bootstrap lifecycle、空state、pause、cycles reserve、RuntimeBinding、controller/module hashの全postconditionを満たしたschema 3 receiptだけを後続profileの根拠にする。
+Install the production Canister exactly once from a schema 2 `production-canister-plan.json`, independent of the Base contract release profile. Copy `deployments/production-canister-plan.template.json` outside the repository and fill in the bootstrapped Canister ID, clean source, Wasm, and initial configuration. Only `scripts/production-canister-install.sh` converts the typed plan to Candid binary and installs with `--mode install --args-format bin`. Never use `reinstall`, `auto`, or implicit builds. Subsequent profiles may rely only on a schema 3 receipt satisfying every postcondition: public-config initialization, complete storage checks, checksum, Bootstrap lifecycle, empty state, pause, cycles reserve, RuntimeBinding, and controller/module hash.
 
 ```sh
 scripts/production-release.sh deploy --bundle evidence/release-id \
@@ -25,11 +25,11 @@ scripts/production-release.sh deploy --bundle evidence/release-id \
   --receipt evidence/release-id/gate-a-receipt.json -- scripts/production-deploy-driver.sh
 ```
 
-Gate AとBaseのpause配置まではprofileにも同じBootstrap運用値を要求する。初回Governance operation IDは、Gate Aが証明するfresh・emptyなBootstrap stateのcounter既定値から0を導出する。OperationalConfigSealedまではprepare経路が到達不能であり、通常upgrade receiptがstable public state continuityを固定する。sealは送信前、await後、stable commit内でlive counterが0のままか再検証し、不一致ならBootstrapを維持してfail closedにする。配置後は、このIDとdeployment instanceから導出したsalt、Governance Operator sender、Timelock target、value 0、Bridgeの2つのunpause payload、zero predecessor、24時間delayから再構成できるexact `scheduleBatch` / `executeBatch` calldataのgas estimate、10件以上の異なるFinalized fee block、idle cycles burnを`initial-operational-parameters.json`へ記録する。Gate B profileでは固定式から導出したgovernance EVM fee 8項目、`cycles_floor`、`settlement_cycle_ceiling`だけを置換し、それ以外のGate A profile driftを拒否する。
+Require the same Bootstrap operating values in the profile through Gate A and paused Base deployment. Derive initial Governance operation ID 0 from the default counter in the fresh, empty Bootstrap state proved by Gate A. Preparation is unreachable until OperationalConfigSealed, and normal upgrade receipts fix stable public-state continuity. Seal rechecks counter 0 before submission, after await, and within stable commit; disagreement preserves Bootstrap and fails closed. After deployment, record exact `scheduleBatch` / `executeBatch` gas estimates, at least 10 distinct Finalized fee blocks, and idle cycles burn in `initial-operational-parameters.json`. Reconstruct calldata from this ID, deployment-instance-derived salt, Governance Operator sender, Timelock target, value 0, the two Bridge unpause payloads, zero predecessor, and 24-hour delay. In the Gate B profile, replace only eight Governance EVM fee fields, `cycles_floor`, and `settlement_cycle_ceiling` using fixed derivation formulas; reject all other Gate A profile drift.
 
-配置後はproduction installerを単独controllerとして残したまま、Canisterをpause状態で運用設定を一度だけsealする。pre-seal Gate BはGate A lineage、proof、`initial-operational-parameters.json`と導出値を構造検証し、sealだけを認可する。seal後、schedule/executeのprepare wrapperが固定confirmation relayerでFinalized attestationをrefreshし、pause、reserve、live module hash、installer単独controllerを含むfresh live Gate Bを通過した場合だけproduction controllerのprepareへ進む。固定artifactを匿名relay、固定confirmation relayerがconfirmする。24時間後もprepare wrapper内でfresh live Gate Bとcontroller schedule receiptを検証してから、同じ三段階で固定`execute_activation`を実行する。confirm成功だけでは完了扱いにせず、`verify-controller-activation`がFinalized Base結果とCanister状態を束縛したreceiptを発行するまでpauseを維持する。初回executeの確定と同じstable transactionでbootstrap activation認可だけを永久に消費し、production installer自体はユーザーが別途判断するまでcontrollerとして残す。以後は緊急pauseしてもbootstrap認可は復活せず、activationは既存Governance principalだけがprepareできる。SNS custom functionは初回activationに使用しない。7日計測、keeper drill、monitoring receiptはunpause後のGate Cで行う。SNS Root単独controllerへのhandoverとSNS同一Wasm upgradeは初回activationやGate Cから独立し、ユーザーが時期を別途判断した場合だけ実行する。任意のunpause commandは受け付けない。
+After deployment, keep the production installer as sole controller and seal operating configuration exactly once while the Canister remains paused. Pre-seal Gate B structurally verifies Gate A lineage, proofs, `initial-operational-parameters.json`, and derived values, authorizing only seal. After seal, schedule/execute preparation wrappers refresh Finalized attestation through the fixed confirmation relayer and proceed to production-controller preparation only after fresh live Gate B checks pause, reserves, live module hash, and installer-only control. Relay the fixed artifact anonymously, then confirm through the fixed relayer. After 24 hours, the preparation wrapper again verifies fresh live Gate B and the controller schedule receipt before the same three-step execution of fixed `execute_activation`. Confirmation success alone is insufficient; retain pause until `verify-controller-activation` issues a receipt binding Finalized Base results and Canister state. The stable transaction confirming initial execute permanently consumes only bootstrap activation authority; the installer remains controller until the user separately decides otherwise. Emergency pause never restores bootstrap authority; only the existing Governance principal can prepare subsequent activation. Do not use SNS custom functions for initial activation. Seven-day measurements, keeper drills, and monitoring receipts belong to Gate C after unpause. SNS Root-only handover and same-Wasm SNS upgrades are independent of initial activation/Gate C and occur only at separately chosen times. Accept no arbitrary unpause command.
 
-`initial-operational-parameters.json`の`governance_operation_id`は初回固定値`0`であり、driverがseal送信前に検証する。`seal_operational_config`の公開引数は`OperationalConfigArgs`一つだけとし、Canisterは内部固定値`0`をawait前、await後、stable commit内で次のstable governance operation IDと照合する。不一致ならsealせずBootstrapを維持する。
+`governance_operation_id` in `initial-operational-parameters.json` is fixed initially at `0`, checked by the driver before seal submission. `seal_operational_config` accepts only one public `OperationalConfigArgs` argument. The Canister compares internal constant `0` with the next stable Governance operation ID before await, after await, and within stable commit; mismatch prevents seal and preserves Bootstrap.
 
 ```sh
 export VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id-from-ui-assets-receipt>
@@ -54,49 +54,51 @@ scripts/production-release.sh activate "${COMMON[@]}" --step confirm \
   -- scripts/production-activate-driver.sh
 ```
 
-`VITE_WALLETCONNECT_PROJECT_ID`はschema 2 `ui-assets.json`に記録された値と一致させる。scheduleと24時間後のexecuteを別shellで実行する場合も、各shellで同じ値を設定する。
+`VITE_WALLETCONNECT_PROJECT_ID` must match schema 2 `ui-assets.json`. Set the same value in each shell even when schedule and execute 24 hours later run separately.
 
-24時間後の`execute`はfresh Gate Bを要求し、全stepで`--prior-schedule-receipt`と`UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE`を必須とする。release wrapperはprepare前に`verify-controller-schedule-receipt-live`を実行し、receipt内部digest、installer単独controller、module hash、canonical Finalized Base Timelock pending状態が一致しなければ停止する。confirm後も`verify-controller-activation execute`がcontroller activation receiptを発行するまで資産受付開始を完了扱いにしない。pending transactionのfee replacementはrelay前に`--step replace`をproduction controllerで実行し、元artifact、authorization、binding、profileの回数・fee上限へ束縛した新しいartifactを使用する。署名前に停止してCanisterの`Prepared`だけが残った場合、5分のauthorization期限内なら同じprepareを冪等再開する。期限切れなら古いauthorizationを再利用せず、fresh live Gate Bから新しいauthorization artifactを耐久化してから同じstable operationを再開する。
+`execute` after 24 hours requires fresh Gate B and `--prior-schedule-receipt` plus `UNPAUSE_PRODUCTION_ASSET_ACCEPTANCE` at every step. Before preparation, the release wrapper runs `verify-controller-schedule-receipt-live`, stopping unless receipt digests, installer-only control, module hash, and canonical Finalized Base Timelock pending state match. After confirmation, do not consider asset admission complete until `verify-controller-activation execute` issues the activation receipt. For pending fee replacement, run `--step replace` with the production controller before relay, using a new artifact bound to the original artifact, authorization, binding, and profile count/fee caps. If execution stopped before signing and only Canister `Prepared` remains, resume the same preparation idempotently within the five-minute authorization lifetime. After expiry, do not reuse old authorization; persist a new authorization artifact from fresh live Gate B before resuming the same stable operation.
 
-bundle欠落、test profile、source/profile drift、Gate失敗では後続コマンドを起動しない。Gate Aのdeployコマンドにunpauseまたはresume操作を混在させることも拒否する。
-Gate A profileの`deployment_block`は未配置を示す`0`に固定する。deploy前にwrapperはCanister install receiptをtyped profileとclean sourceへ照合する。Base transaction送信直前には、そのreceiptもpredeploy verifierへ渡し、certified `read_state`のmodule hashがreceiptとprofileのWasm SHA-256の両方へ一致し、controller集合がreceiptのinstaller principal単独であることを再確認する。deploy後、wrapperは実receipt blockを入れた`<receipt>.post-deploy-profile.json`を生成し、そのSHA-256とinstall receipt全体をschema 2 Gate A receiptへ固定する。Gate Bはこのpost-deploy profileだけを使う別のlive manifestとし、`parent_gate_a_manifest_sha256`がreceiptのGate A hashと一致し、source/code binding、post-deploy profile hash、実deployment block、install時のCanister identity/module/runtime/pauseが一致しなければならない。さらにGate B profileの`deployment_block`だけを0へ戻したcanonical hashがreceiptのGate A profile hashと一致する必要があり、他fieldの変更は拒否される。staging monitor drillの直接RPC検証は`production-live-preflight.sh verify-monitor-drill BUNDLE`だけを使い、本番Base状態の正本にはしない。
-外部`--receipt`はGate B bundle内の`gate-a-receipt.json`とbyte単位で一致しなければならない。
+Missing bundles, test profiles, source/profile drift, or gate failure must prevent subsequent commands. Reject mixing unpause/resume into Gate A deployment commands.
+Fix Gate A profile `deployment_block` to `0` for undeployed state. Before deployment, the wrapper matches the Canister install receipt to the typed profile and clean source. Immediately before Base submission, pass that receipt to the predeploy verifier, rechecking certified `read_state` module hash against both receipt and profile Wasm SHA-256, and requiring the receipt installer principal as sole controller. After deployment, generate `<receipt>.post-deploy-profile.json` with the actual receipt block, embedding its SHA-256 and the full install receipt in a schema 2 Gate A receipt. Gate B is a separate live manifest based only on that post-deploy profile; `parent_gate_a_manifest_sha256` must match the receipt's Gate A hash, together with source/code binding, post-deploy profile hash, actual deployment block, and installed Canister identity/module/runtime/pause. The canonical hash with only Gate B profile `deployment_block` reset to 0 must also match the receipt's Gate A profile hash; reject other field changes. Use direct RPC verification only through `production-live-preflight.sh verify-monitor-drill BUNDLE` for staging monitor drills, never as the authoritative production Base state.
+The external `--receipt` must be byte-identical to `gate-a-receipt.json` in the Gate B bundle.
 
-初回contract deployだけ一時EOAを使用し、deployerへroleを残さない。以後のBase管理操作はBridge Canisterがrole別derivationで導出するGovernance Operator、Runtime Administrator、Independent Cancellerから送信する。production IC操作は`BRIDGE_ICP_IDENTITY`とICP CLIへ統一し、`dfx`を使用しない。Timelockの初回activationは、seal時に固定したproduction controllerによるprepare、匿名relay、固定confirmation relayer confirmのschedule/execute二段階とし、各段階でlive preflightを再実行する。初回execute確定後はcontroller集合を変更しなくてもbootstrap activation認可が永久に消費され、以後のactivationは既存Governance principal認可だけを使う。失敗または曖昧結果ではIC/Base pauseを維持し、同じsigned transactionを追跡する。
+Use a temporary EOA only for initial contract deployment, retaining no deployer roles. Subsequent Base administration uses the Bridge Canister's separately derived Governance Operator, Runtime Administrator, and Independent Canceller. Standardize production IC operations on `BRIDGE_ICP_IDENTITY` and ICP CLI; never use `dfx`. Initial Timelock activation has schedule/execute phases, each with preparation by the production controller fixed at seal, anonymous relay, fixed-relayer confirmation, and fresh live preflight. Confirmed initial execute permanently consumes bootstrap authority even without controller changes; subsequent activation uses only existing Governance authorization. On failure or ambiguity, keep IC/Base paused and track the same signed transaction.
 
-production CanisterはGate A確定前にpause状態でinstallし、固有のMint SignerとGovernance Operatorをprofileへ固定する。Gate A deploy driverは外部指定のconstructor JSONを使用せず、固定sourceからbuildした`bridge-profile`でbundle内profileを一時directoryへ再生成し、稼働中Canisterの2 addressとpause状態を照合してからcontract deploymentへ渡す。Canisterの再installやdeployment binding APIは実行しない。
+Install the production Canister paused before finalizing Gate A, fixing its unique Mint Signer and Governance Operator in the profile. Gate A deploy drivers do not use externally supplied constructor JSON. A `bridge-profile` built from fixed source regenerates the bundle profile into a temporary directory, checks both live Canister addresses and pause state, then passes it to contract deployment. Do not reinstall the Canister or call deployment-binding APIs.
 
-profileはCanisterから導出してBaseのFinalized attestationと照合するMint SignerとGovernance Operator、current stable schema、公式EVM RPC Canister ID、単一emergency pause principal、Wasm/bytecode hash、Timelock、固定limit、fee/liveness/reserve関係を含む。Timelock delayはprofileとlive stateの完全一致を要求する。`timelock.runtime_code_hash`は`0x`付き32-byte Keccak runtime code hashであり、生成されたBridge constructor引数、配置直後の実code hash、Gate B Finalized attestationの三者が一致しなければならない。配置後にGate A receiptがBridge/Timelockのcanonical deployment transaction・blockを記録し、Gate Bは公式EVM RPC Canister経由でcurrent runtimeとroleを再照合する。監視欄は通知routingのSHA-256と、検知5分、担当確認15分、Base/IC双方pause 60分のSLOを正確に記録する。
+Profiles include Canister-derived Mint Signer and Governance Operator matched against Finalized Base attestation, current stable schema, official EVM RPC Canister ID, one emergency pause principal, Wasm/bytecode hashes, Timelock, fixed limits, and fee/liveness/reserve relationships. Timelock delay must exactly match profile and live state. `timelock.runtime_code_hash` is a `0x`-prefixed 32-byte Keccak runtime code hash; generated Bridge constructor arguments, actual post-deployment code hash, and Gate B Finalized attestation must agree. Gate A receipts record canonical Bridge/Timelock deployment transactions/blocks; Gate B rechecks runtime and roles through the official EVM RPC Canister. Monitoring fields record notification-routing SHA-256 and exact SLOs: five-minute detection, 15-minute acknowledgement, and pause on Base/IC within 60 minutes.
 
-Gate Aはpre-deploy profileとBridge/BSNSの5 build artifact、合計6 artifactを束縛する。Canister install receiptは7番目のartifactへ追加せず、schema 2 Gate A receipt内へ完全に埋め込み、Gate Bへ推移的に継承する。Gate Bはcurrent releaseの6 build artifactに、初期運用値、provider independence、UI、Gate A receipt、不変Gate A profile、production controller upgrade receipt、post-Gate-A policy transitionを加えた正確に13 artifactである。provider independenceはSNS Motionではなく、release source/profile/current Wasm、公式EVM RPC Canister、`BaseMainnet`既定pool、空custom URL、runtime固定3-provider/2-thresholdをschema 2 receiptへ束縛する。既定provider registryと各upstream chainは外部仮定として残す。Gate AでinstallしたWasmとcontroller-bootstrap Wasmが異なる場合は、typed upgrade receiptがsole controller、通常upgrade、前後module、schema、pause、storage/public-state continuityを証明し、policy transitionがそのreceipt hashを固定する。RPC rehearsal、monitor drill、keeper drill、monitoring receipt、7日計測はGate Bに含めず、稼働後のGate Cで要求するが、controller handoverの認可入力にはしない。controller handoverとSNS upgradeもGate Bには含めず、Gate Cが実施時期を決定するものではない。release approver署名と鍵ceremonyは使用しない。Mint Signerはprofile、認証済みCanister公開設定、freshなFinalized Base attestationの三者一致で検証する。x402はBridgeの配置・activation条件ではない。
+Gate A binds the pre-deployment profile plus five Bridge/BSNS build artifacts, six total. Do not add the Canister install receipt as a seventh artifact; embed it fully in the schema 2 Gate A receipt and inherit it transitively into Gate B. Gate B contains exactly 13 artifacts: six current-release build artifacts plus initial operating values, provider independence, UI, Gate A receipt, immutable Gate A profile, production controller upgrade receipt, and post-Gate-A policy transition. Provider independence is not an SNS Motion: its schema 2 receipt binds release source/profile/current Wasm, official EVM RPC Canister, default `BaseMainnet` pool, empty custom URLs, and runtime-fixed three-provider/two-threshold configuration. Default provider registry and upstream chains remain external assumptions. If Gate A install Wasm differs from controller-bootstrap Wasm, a typed upgrade receipt proves sole control, normal upgrade, pre/post modules, schema, pause, and storage/public-state continuity; policy transition fixes its hash. Exclude RPC rehearsals, monitor/keeper drills, monitoring receipts, and seven-day measurements from Gate B; require them in post-launch Gate C, but not for controller handover authorization. Handover/SNS upgrade also remain outside Gate B; Gate C does not determine their timing. Use no release-approver signatures or key ceremony. Verify Mint Signer by profile, Canister public configuration from signature-verified queries, and fresh Finalized Base attestation agreement. x402 is not a deployment/activation condition.
 
-`validate-bundle --offline`はGate Aの正式なoffline認可判定として`gate_a=pass authorizing=true`だけを成功出力する。`verify-live`はGate Bの構造に加え、5分以内のactivation attestation、公開RuntimeBinding、reserve、production installer identity単独controller、live module hashを認証済みCanister応答で照合する。schedule/execute receiptの検証も初回activationでは同じcontroller条件を使用する。SNS Root単独controllerと同一Wasm SNS upgradeは、ユーザーが時期を別途判断した場合の独立したhandover検証へ分離する。権限principal、rate/cycles policy、Governance fee、固定Ledger feeは、公開RuntimeBindingの`operational_config_sha256`をrelease profileから再構成した値と照合する。実値の確認はcontroller/governance限定`get_operational_config`を使う。認証またはpostconditionが欠ければ非ゼロ終了する。
+`validate-bundle --offline` succeeds only with `gate_a=pass authorizing=true` as formal offline Gate A authorization. In addition to Gate B structure, `verify-live` checks activation attestation no older than five minutes, public RuntimeBinding, reserves, installer-only control, and live module hash through authenticated Canister responses. Initial activation schedule/execute receipt verification uses the same controller condition. SNS Root-only control and same-Wasm SNS upgrades belong to independent handover verification at a separately chosen time. Match authority principals, rate/cycles policy, Governance fees, and fixed Ledger fee by comparing public RuntimeBinding `operational_config_sha256` with the value reconstructed from the release profile. Use controller/Governance-only `get_operational_config` to inspect actual values. Missing response authentication or postconditions causes nonzero exit.
 
-production Bridge Canisterはstable schema v36で稼働している。修正版v36とUIの公開済み証跡は以下のローカル配置で管理する。
-通常のcurrent Gate Bはv36限定を維持する。
-upgradeとUI公開は、sourceにSHA-256を固定した承認済みcheckpointと追加receiptを使用する。
-`BRIDGE_CHECKPOINT_EVIDENCE`はcheckpoint本体と順序付き追加履歴を含み、通常公開で古いGate Bやactivation receiptを再読込しない。
-`verify-production-checkpoint-ui-live`はv36終端、認証済みRuntimeBindingとmodule、Activated、unpaused、索引完成、fresh attestationを検証する。
-公開用runtime profileはevidence全体と`BRIDGE_UI_RPC_CONFIG`のレビュー済み設定へ束縛する。
-controller専用queryには`BRIDGE_PRODUCTION_INSTALLER_IDENTITY`を使い、承認済みの単独controllerと一致させる。
-UI asset receiptは公開するclean sourceとWalletConnect project IDから新規生成する。
-正式履歴は監査用に保持し、checkpointの生成とrotationは自動承認しない。
-実際のupgrade receiptと更新後のlive公開認可が得られるまで新UIを公開しない。
-手順と停止点は[運用runbook](../docs/runbooks/operations.md)を参照する。
+Query response authentication means signature verification via `call_with_verification()`. It does not certify the returned application state. Module hashes and controller sets are verified separately through certified `read_state` responses.
 
-credential、seed、private key、hardware wallet backup、credential入りRPC URLはprofileやevidenceへ記録しない。
+The production Bridge Canister runs stable schema v36. Published evidence for corrected v36 and the UI uses the local layout below.
+Normal current-release Gate B remains v36-only.
+Upgrades and UI publication use an approved checkpoint with source-pinned SHA-256 plus additional receipts.
+`BRIDGE_CHECKPOINT_EVIDENCE` contains the checkpoint and ordered additional history; normal publication does not reread old Gate B or activation receipts.
+`verify-production-checkpoint-ui-live` verifies a v36 terminal, RuntimeBinding from signature-verified queries and module hash from certified `read_state`, Activated and unpaused state, complete indexes, and fresh attestation.
+Bind publication runtime profiles to the complete evidence and reviewed `BRIDGE_UI_RPC_CONFIG`.
+Use `BRIDGE_PRODUCTION_INSTALLER_IDENTITY` for controller-only queries, matching the approved sole controller.
+Generate a new UI asset receipt from the clean source being published and WalletConnect project ID.
+Retain formal history for audit; do not automatically approve checkpoint creation or rotation.
+Do not publish the new UI until actual upgrade receipts and refreshed live publication authorization are available.
+See the [operations runbook](../docs/runbooks/operations.md) for procedures and stop points.
 
-## production証跡のローカル配置
+Never record credentials, seeds, private keys, hardware-wallet backups, or credential-bearing RPC URLs in profiles or evidence.
 
-| 配置 | 内容 | Git |
+## Local production evidence layout
+
+| Location | Contents | Git |
 | --- | --- | --- |
-| `deployments/checkpoints/` | sourceでhash承認済みのcheckpoint本体 | 管理する |
-| `artifacts/production/80d9ebb/` | 公開済みWasm、UI file ledgerとassets、preflight、完全gate証跡 | 管理しない |
-| `artifacts/production/80d9ebb/execution/` | 成功upgrade receipt・署名済みsidecar・追加evidence・UI公開記録 | 管理しない |
-| `artifacts/production/80d9ebb/private/` | 秘密を含み得るレビュー済みRPC設定 | 管理しない、directory 700／file 600 |
-| `artifacts/audit/checkpoint-migration-20260910/` | 過去の正式証跡、元の監査manifest、新旧pathとhashの配置manifest | 管理しない、別途backup |
+| `deployments/checkpoints/` | Checkpoints with hashes approved in source | Tracked |
+| `artifacts/production/80d9ebb/` | Published Wasm, UI file ledger/assets, preflight, and complete gate evidence | Untracked |
+| `artifacts/production/80d9ebb/execution/` | Successful upgrade receipts, signed sidecars, additional evidence, UI publication records | Untracked |
+| `artifacts/production/80d9ebb/private/` | Reviewed RPC configuration that may contain secrets | Untracked; directory 700 / file 600 |
+| `artifacts/audit/checkpoint-migration-20260910/` | Historical formal evidence, original audit manifest, path/hash relocation manifest | Untracked; back up separately |
 
-通常の追加upgrade・UI検証で使う既存履歴は次の1ファイルであり、audit directoryは入力にしない。
+Use only the following existing-history file for normal additional upgrades/UI validation; do not use the audit directory as input.
 
 ```sh
 BRIDGE_CHECKPOINT_EVIDENCE="$PWD/artifacts/production/80d9ebb/execution/checkpoint-evidence-after-upgrade.json"
@@ -104,46 +106,46 @@ BRIDGE_UI_RUNTIME_PROFILE_FILE="$PWD/artifacts/production/80d9ebb/execution/ui-r
 BRIDGE_UI_RPC_CONFIG="$PWD/artifacts/production/80d9ebb/private/ui-rpc-config.json"
 ```
 
-これは公開済みreleaseの参照先である。次のreleaseは別のdirectoryに新しいWasm、preflight、UI receiptを生成する。過去のreceipt中のsource revisionやpathを現在値へ書き換えない。新しいcommitではclean source／tree bindingを改めて満たす必要があり、過去のpreflightをそのままexecuteに渡さない。
+This references the published release. Generate new Wasm, preflight, and UI receipts in a separate directory for the next release. Never rewrite historical receipt source revisions or paths to current values. A new commit must satisfy clean source/tree binding anew; do not pass old preflight directly to execute.
 
-署名済みreceiptと元監査manifestはbyte不変で保管し、`relocation-manifest.json`で旧pathから新path・backup先へ対応付ける。今回のレポ外backupは同一KINGSTONボリューム上であり、媒体障害への備えには別媒体への追加backupが必要。唯一の正式receiptは削除しない。
+Preserve signed receipts and original audit manifests byte-for-byte. Map old paths to new paths/backup locations through `relocation-manifest.json`. The external backup made for this relocation is on the same KINGSTON volume; protection against media failure requires another backup on separate media. Never delete the sole formal receipt.
 
-`artifacts/production/`と`artifacts/audit/`はroot `.gitignore`で除外し、現行proof fingerprintの探索対象外である。除外設定は検証契約を弱めるために拡張しない。Git管理のcheckpointはsource内の承認hashで検証する。配置変更後はfingerprint不変・ignore・commit後のclean-treeを確認する。
+Root `.gitignore` excludes `artifacts/production/` and `artifacts/audit/` from Git and current proof fingerprint traversal. Do not expand exclusions to weaken validation contracts. Verify tracked checkpoints against source-approved hashes. After relocation, check unchanged fingerprints, ignore behavior, and a clean tree after commit.
 
-buildやPocketICのTMPDIRはこれらの深いdirectoryに置かず、十分な空き容量のある外部ボリューム上の短いpathを使う（macOS Unix socket長制限）。固定ツール、active worktree、秘密鍵は証跡整理の削除対象に含めない。
+Do not put build/PocketIC TMPDIR under these deep directories; use a short path on an external volume with sufficient space due to macOS Unix socket limits. Fixed tools, active worktrees, and private keys are not deletion targets for evidence organization.
 
 ## IC mainnet × Base Sepolia test staging
 
-Plan 007のIC stagingは、現在の`sepolia-staging` bindingに固定された`bridge-sepolia`（`rlhjx-iyaaa-aaaaf-qcnyq-cai`）、deployment instance、Base contracts、signer、共有`testicrc` Ledger/Indexを維持する。2026-08-27/28のreinstallとfresh-stack作成は一度限りの履歴であり、再実行またはresumeしない。配置済みschema v35はsame-instance `upgrade`でv36へ一度だけ移行し、wire v30を維持する。その後はv36のreview済みupgradeだけを許可する。test frontendはIC Asset Canisterへ配置せず、静的assetをCloudflare Worker `kinic-bridge-ui-test`から配信する。KINIC Ledger、Base Mainnet、SNSには触れない。
+Plan 007 IC staging preserves `bridge-sepolia` (`rlhjx-iyaaa-aaaaf-qcnyq-cai`), deployment instance, Base contracts, signer, and shared `testicrc` Ledger/Index fixed in current `sepolia-staging` bindings. Reinstall/fresh-stack creation on 2026-08-27/28 is one-time history, never rerun or resumed. Migrate deployed schema v35 once to v36 through same-instance `upgrade`, preserving wire v30; thereafter allow only reviewed v36 upgrades. Serve the test frontend's static assets through Cloudflare Worker `kinic-bridge-ui-test`, not an IC Asset Canister. Do not touch KINIC Ledger, Base Mainnet, or SNS.
 
-外部配置前にリポジトリ直下の`scripts/plan007-local-gate.sh /secure/work/local-e2e.json`をclean commitで実行し、repo外へ証跡を発行する。dirty treeまたはhash driftでは証跡を発行しない。外部deploy、cycles投入、Base Sepolia transaction、Cloudflare Worker公開はそれぞれ別の明示承認後に行う。
+Before external deployment, run repository-root `scripts/plan007-local-gate.sh /secure/work/local-e2e.json` from a clean commit, issuing evidence outside the repository. Dirty trees or hash drift must produce no evidence. External deployment, cycles funding, Base Sepolia transactions, and Cloudflare Worker publication each require separate explicit approval.
 
-外部stageはschema v8だけを`scripts/plan007/staging-e2e-driver.sh`で新規初期化し、`bootstrap_attestation → preflight → current_schema_upgrade → post_upgrade_binding → frontend_publish → smoke_e2e → wallet_e2e → refund_rehearsal → rpc_rehearsal → live_acceptance`の順で記録する。v7証跡は読取専用履歴であり、resume、migration、dual-read、現行合格判定に使わない。RPC rehearsalのpause後は`live_acceptance`が別operationのreactivationとunpaused postconditionを検証し、全条件を満たしたv8だけを`SHORT_DELAY_LIVE`とする。異なるinstance、reinstall、旧・未知schema、未登録module／Candidの組はfail closedにする。
+Initialize only schema v8 external stages through `scripts/plan007/staging-e2e-driver.sh`, recording `bootstrap_attestation → preflight → current_schema_upgrade → post_upgrade_binding → frontend_publish → smoke_e2e → wallet_e2e → refund_rehearsal → rpc_rehearsal → live_acceptance`. v7 evidence is read-only history, never resumed, migrated, dual-read, or used for current passing decisions. After RPC rehearsal pause, `live_acceptance` verifies separate-operation reactivation and unpaused postconditions; only fully passing v8 reaches `SHORT_DELAY_LIVE`. Different instances, reinstall, old/unknown schemas, or unregistered module/Candid combinations fail closed.
 
-既存staging Bridge Canister IDは`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`を正本とし、新しいmappingを作らない。既存`testicrc`を新規作成対象としてmappingへ追加しない。frontendは`deployments/sepolia-staging/frontend-profile.json`が完成するまでbuildまたは公開せず、完成後に`ui`のstaging artifact driverでCloudflare Worker `kinic-bridge-ui-test`へ公開する。test frontendはBase Mainnet、production Canister ID、非公式EVM RPC Canister IDを拒否し、TEST bannerを常時表示する。
+Use existing `bridge-sepolia` in `.icp/data/mappings/sepolia-staging.ids.json` as the authoritative staging Canister ID; create no new mapping. Do not add existing `testicrc` as a creation target. Do not build/publish the frontend before `deployments/sepolia-staging/frontend-profile.json` is complete; afterward publish through the `ui` staging artifact driver to `kinic-bridge-ui-test`. The test frontend rejects Base Mainnet, production Canister IDs, and unofficial EVM RPC Canister IDs, always displaying a TEST banner.
 
-## ICP mainnet上のBase Sepolia staging Bridge deploy先
+## Base Sepolia staging Bridge target on IC mainnet
 
-deploy先は既存`rlhjx-iyaaa-aaaaf-qcnyq-cai`とし、`.icp/data/mappings/sepolia-staging.ids.json`の`bridge-sepolia`をそのまま使う。既存deployment instance、minimum Withdrawal ID、Base contract bindingを保ち、配置済みschema v35からv36への一度限りのmigrationまたはv36／wire v30を維持する`upgrade`だけを許可する。`install`、`reinstall`、`auto`を拒否し、将来reinstall用のinit templateやrender/validate commandは提供しない。
+Target existing `rlhjx-iyaaa-aaaaf-qcnyq-cai`, reusing `bridge-sepolia` in `.icp/data/mappings/sepolia-staging.ids.json`. Preserve deployment instance, minimum Withdrawal ID, and Base contract binding. Permit only `upgrade` performing the one-time deployed-v35→v36 migration or preserving v36/wire v30. Reject `install`, `reinstall`, and `auto`; provide no future-reinstall init templates or render/validate commands.
 
-deploy前に対象IDとcontrollerを再確認し、必要なcyclesを補充する。test-only stagingであり、本番資産、production controller handover、SNS操作には使用しない。
+Before deployment, recheck target ID/controllers and replenish required cycles. This is test-only staging; do not use it for production assets, production controller handover, or SNS operations.
 
 ## Base Sepolia contract-only experiment
 
-[`scripts/base-sepolia-experiment/`](../scripts/base-sepolia-experiment/)は、固定limit版Bridgeと72時間Timelockの実transaction検証を段階実行する。
-再開手順と秘密情報の扱いは[`docs/runbooks/base-sepolia-rehearsal.md`](../docs/runbooks/base-sepolia-rehearsal.md)に記録する。
+[`scripts/base-sepolia-experiment/`](../scripts/base-sepolia-experiment/) performs staged real-transaction validation of the fixed-limit Bridge and 72-hour Timelock.
+Resume procedures and secret handling are documented in [`docs/runbooks/base-sepolia-rehearsal.md`](../docs/runbooks/base-sepolia-rehearsal.md).
 
-作業中の公開manifestは`base-sepolia-contract-experiment.json`へスクリプトが新規生成する。旧Canister発Mint ABIで作成された作業用manifestは再利用せず、EIP-712対応Bridgeの再deploy演習から作り直す。
-各回の公開スナップショットは`deployments/base-sepolia/YYYY-MM-DD/manifest.json`へ保存し、未実行項目を推測値で埋めない。
-2026年7月13日の記録は[`base-sepolia/2026-07-13/manifest.json`](base-sepolia/2026-07-13/manifest.json)を参照する。この記録は旧Canister発Mint ABIの履歴証跡であり、現行deploy、preflight、release evidenceには使用しない。
+Scripts create the working public manifest at `base-sepolia-contract-experiment.json`. Do not reuse manifests made with the old Canister-originated mint ABI; recreate them from an EIP-712-compatible Bridge redeployment rehearsal.
+Save each public snapshot to `deployments/base-sepolia/YYYY-MM-DD/manifest.json`; never fill unexecuted items with estimates.
+See [`base-sepolia/2026-07-13/manifest.json`](base-sepolia/2026-07-13/manifest.json) for the July 13, 2026 record. It is historical evidence for the former Canister-originated mint ABI, not current deployment, preflight, or release evidence.
 
-実験用deployerがBase Admin walletとRuntime Administratorを兼任するため、本番role分離の証跡としては使用しない。
-private key、seed、keystore password、credential付きRPC URLは保存しない。
+Because the experimental deployer doubles as Base Admin wallet and Runtime Administrator, it is not evidence of production role separation.
+Never save private keys, seeds, keystore passwords, or credential-bearing RPC URLs.
 
-## EVM RPC Canister経由の実演習
+## Live rehearsal through the EVM RPC Canister
 
-[`scripts/evm-rpc-rehearsal/`](../scripts/evm-rpc-rehearsal/)は、IC上のtest Bridgeから公式EVM RPC Canisterを経由するBase Sepolia実演習の証跡をfail closedで記録する。
-通常CIは外部transactionを送信せず、recorderとlive-only guardだけを検査する。
-実行条件、scenario、秘密情報の扱いは[`docs/runbooks/evm-rpc-canister-rehearsal.md`](../docs/runbooks/evm-rpc-canister-rehearsal.md)を参照する。
+[`scripts/evm-rpc-rehearsal/`](../scripts/evm-rpc-rehearsal/) records fail-closed evidence for live Base Sepolia rehearsals from a test Bridge on IC through the official EVM RPC Canister.
+Normal CI submits no external transactions; it checks only the recorder and live-only guards.
+See [`docs/runbooks/evm-rpc-canister-rehearsal.md`](../docs/runbooks/evm-rpc-canister-rehearsal.md) for execution conditions, scenarios, and secret handling.
 
-公式Canisterとprovider quorumがcanonical Finalized chainを返すことは外部仮定として証跡に残す。
+Record as an external assumption that the official Canister and provider quorum return the canonical Finalized chain.

@@ -79,6 +79,18 @@ fn confirmed_activation_evidence_requires_one_hash_and_exact_metadata() {
 
 #[test]
 fn reserve_boundaries_and_overflow_are_checked() {
+    for finalized in [0, 1, 9, 10, 11, u128::MAX - 1, u128::MAX] {
+        for safe in [0, 1, 9, 10, 11, u128::MAX - 1, u128::MAX] {
+            for required in [0, 1, 9, 10, 11, u128::MAX - 1, u128::MAX] {
+                let (observed, affordable) = bridge_core::kernel::governance_affordability_decision(
+                    finalized, safe, required,
+                );
+                assert_eq!(observed, finalized.min(safe));
+                assert_eq!(affordable, finalized >= required && safe >= required);
+            }
+        }
+    }
+
     assert_eq!(checked_requirement(0, 0, 0), Some(0));
     assert_eq!(checked_requirement(7, 3, 4), Some(19));
     assert_eq!(

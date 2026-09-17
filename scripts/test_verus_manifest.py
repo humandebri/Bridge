@@ -2,10 +2,19 @@
 """Regression tests for typed Verus strength and production binding checks."""
 
 import unittest
+import shutil
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
+import check_verus_manifest as checker
 from check_transition_manifest import production_body_calls, strip_comments_and_strings
 from check_verus_manifest import (
     ROOT,
+    production_cfg,
+    reviewed_production_features,
+    production_source,
+    production_module_source,
     production_call_is_canonical,
     production_call_site_path,
     rust_body,
@@ -16,6 +25,13 @@ from check_verus_manifest import (
     verus_spec_body,
 )
 from verus_manifest import parse_verus_manifest
+
+
+def copy_reviewed_cargo_profiles(destination: Path) -> None:
+    for relative in ("canister/bridge-core/Cargo.toml", "canister/bridge-canister/Cargo.toml", "tools/bridge-profile/Cargo.toml"):
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
 
 
 class VerusManifestParserTests(unittest.TestCase):
@@ -420,6 +436,80 @@ fn registered_proof()
         with self.assertRaisesRegex(ValueError, "outside Rust production roots"):
             production_call_site_path("scripts/test_verus_manifest.py")
 
+    def test_production_cfg_rejects_test_only_function_and_module(self):
+        for source in (
+            '#[cfg(test)] fn caller() { ::bridge_core::kernel::target(); }',
+            '#[cfg(feature = "test-deployment")] fn caller() { ::bridge_core::kernel::target(); }',
+            '#[cfg(any(test, feature = "test-deployment"))] mod nested { fn caller() { ::bridge_core::kernel::target(); } }',
+            '#[cfg_attr(not(test), cfg(test))] fn caller() { ::bridge_core::kernel::target(); }',
+        ):
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, "resolve exactly once"):
+                rust_body(production_source(source, wasm=True), "caller")
+
+    def test_inactive_call_block_does_not_establish_production_binding(self):
+        for condition in ('test', 'feature = "test-deployment"', 'not(target_arch = "wasm32")'):
+            source = 'fn caller() { #[cfg(' + condition + ')] { ::bridge_core::kernel::target(); } }'
+            body = rust_body(production_source(source, wasm=True), "caller")
+            self.assertFalse(production_call_is_canonical(body, "target", ROOT / "canister/bridge-canister/src/api.rs"))
+
+    def test_feature_cfg_uses_the_crate_profile_not_just_wasm(self):
+        features = reviewed_production_features(ROOT)
+        source = '#[cfg(feature = "storage-serde")] fn caller() { crate::kernel::target(); }'
+        canister_features = features[ROOT / "canister/bridge-canister/src"]
+        with self.assertRaisesRegex(ValueError, "resolve exactly once"):
+            rust_body(production_source(source, wasm=True, features=canister_features), "caller")
+        core_features = features[ROOT / "canister/bridge-core/src"]
+        self.assertIn("kernel", rust_body(production_source(source, wasm=True, features=core_features), "caller"))
+
+    def test_changed_cargo_feature_configuration_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative, old, new in (
+                ("canister/bridge-canister/Cargo.toml", "default = []", 'default = ["test-deployment"]'),
+                ("canister/bridge-canister/Cargo.toml", ', features = ["storage-serde"]', ''),
+                ("canister/bridge-core/Cargo.toml", "[features]", '[features]\ndefault = ["storage-serde"]'),
+                ("tools/bridge-profile/Cargo.toml", "[dependencies]", '[features]\ndefault = ["test-deployment"]\ntest-deployment = []\n[dependencies]'),
+            ):
+                copy_reviewed_cargo_profiles(root)
+                target = root / relative
+                target.write_text(target.read_text().replace(old, new, 1))
+                with self.subTest(relative=relative, old=old), self.assertRaisesRegex(ValueError, "Cargo feature configuration"):
+                    reviewed_production_features(root)
+
+    def test_production_cfg_preserves_real_wasm_call(self):
+        source = '#[cfg(all(not(test), not(feature = "test-deployment"), target_arch = "wasm32"))] fn caller() { ::bridge_core::kernel::target(); }'
+        body = rust_body(production_source(source, wasm=True), "caller")
+        self.assertTrue(production_call_is_canonical(body, "target", ROOT / "canister/bridge-canister/src/api.rs"))
+        self.assertIn("audit_next", rust_body(production_module_source(ROOT / "canister/bridge-canister/src/storage/mod.rs"), "prepare_audit_batch"))
+
+    def test_external_module_cfg_and_path_override_cannot_bind_dead_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            copy_reviewed_cargo_profiles(root)
+            source_root = root / "canister/bridge-core/src"
+            source_root.mkdir(parents=True)
+            caller = source_root / "caller.rs"
+            caller.write_text("fn caller() { crate::kernel::target(); }")
+            for declaration in (
+                '#[cfg(test)] mod caller;',
+                'mod nested { mod caller; }',
+                '#[path = "other.rs"] mod caller;',
+            ):
+                parent = source_root / "lib.rs"
+                parent.write_text(declaration)
+                from check_verus_manifest import _production_file_source
+                _production_file_source.cache_clear()
+                with self.subTest(declaration=declaration), patch("check_verus_manifest.ROOT", root), patch("check_verus_manifest.PRODUCTION_ROOTS", (source_root,)):
+                    with self.assertRaisesRegex(ValueError, "inactive or unresolved"):
+                        production_module_source(caller)
+
+    def test_unknown_production_cfg_fails_closed(self):
+        for condition in ('feature = "future-mode"', 'future_flag', 'any(test, future_flag)'):
+            with self.subTest(condition=condition), self.assertRaisesRegex(ValueError, "unsupported production cfg"):
+                production_cfg(condition, wasm=True)
+        with self.assertRaisesRegex(ValueError, "inner production cfg"):
+            production_source('#![cfg(test)] fn caller() {}', wasm=True)
+
     def test_accepts_bridge_profile_as_a_rust_production_root(self) -> None:
         self.assertEqual(
             production_call_site_path("tools/bridge-profile/src/main.rs"),
@@ -545,6 +635,38 @@ fn registered_proof()
                 parameter_names=rust_function_parameter_names(source, "caller"),
             )
         )
+
+
+class KernelProductionCfgTests(unittest.TestCase):
+    def test_main_rejects_inactive_or_unknown_kernel_call_site(self) -> None:
+        original_read_text = Path.read_text
+        signature = "pub const fn deposit_releases_reservation(state: u8, event: u8) -> bool {"
+        for cfg in ('test', 'feature = "test-deployment"', 'unknown_production_flag'):
+            def read_mutated_kernel(path, *args, **kwargs):
+                source = original_read_text(path, *args, **kwargs)
+                if path.resolve() == checker.KERNEL.resolve():
+                    self.assertEqual(source.count(signature), 1)
+                    return source.replace(signature, f"#[cfg({cfg})]\n{signature}", 1)
+                return source
+
+            with self.subTest(cfg=cfg), patch.object(Path, "read_text", read_mutated_kernel):
+                checker._production_file_source.cache_clear()
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "production call-site function must resolve exactly once: "
+                        "deposit_releases_reservation/0|unsupported production cfg",
+                    ):
+                        checker.main()
+                finally:
+                    checker._production_file_source.cache_clear()
+
+    def test_main_accepts_production_kernel_call_site(self) -> None:
+        checker._production_file_source.cache_clear()
+        try:
+            self.assertEqual(checker.main(), 0)
+        finally:
+            checker._production_file_source.cache_clear()
 
 
 if __name__ == "__main__":

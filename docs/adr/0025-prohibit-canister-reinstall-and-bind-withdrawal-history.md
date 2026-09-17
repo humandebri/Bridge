@@ -1,26 +1,26 @@
-# ADR 0025: Canister reinstallを禁止しWithdrawal履歴境界を固定する
+# ADR 0025: Prohibit Canister reinstall and fix the Withdrawal history boundary
 
-## 状態
+## Status
 
-採用
+Accepted
 
-## 文脈
+## Context
 
-Bridge Canisterのreinstallはstable stateを失う一方、Base Bridge contractのWithdrawal event履歴は残る。同じBase contractへ空のCanisterを接続すると、過去に処理済みのWithdrawal IDを新規通知として再受理できる。deployment instanceによるIC側identity分離だけでは、Base上の既存eventを未処理に戻す問題を防げない。
+Reinstalling the Bridge Canister loses stable state while the Base Bridge contract's Withdrawal event history remains. Connecting an empty Canister to the same Base contract can admit previously processed Withdrawal IDs as new notifications. Separating IC-side identities by deployment instance alone does not prevent existing Base events from becoming unprocessed again.
 
-## 決定
+## Decision
 
-初期化済みの永続Canisterは、同じdeployment instanceを保つreview済みupgradeだけで更新する。配置済みstable schema v35／record wire v30から現行v36へは、確定activation証跡を復元する一度限りのpost-upgrade migrationだけを許可する。reinstall、instance変更、その他の旧schema、未知schema、未登録wireはdeployment gateとstorage reopenで拒否する。
+Update an initialized persistent Canister only through reviewed upgrades preserving the same deployment instance. Permit only the one-time post-upgrade migration from deployed stable schema v35/record wire v30 to current v36, restoring confirmed activation evidence. Deployment gates and storage reopen reject reinstall, instance changes, other old schemas, unknown schemas, and unregistered wire formats.
 
-現在のBase Sepolia stagingは、2026-08-27/28に明示承認され完了した一度限りのdestructive reinstallとfresh-stack作成を履歴証跡として固定する。そのCanister ID、deployment instance、minimum Withdrawal ID、Base contracts、signerをactive stackとして維持し、この履歴を再実行、resume、別stackの認可に使わない。staging evidence schema v8の`bootstrap_attestation`は履歴artifactのhashとactive bindingの一致だけを検証する。今後の更新にも上記same-instance current-schema upgrade規則を適用する。
+Treat the explicitly approved, completed one-time destructive reinstall and fresh-stack creation on 2026-08-27/28 as fixed historical evidence for current Base Sepolia staging. Preserve that Canister ID, deployment instance, minimum Withdrawal ID, Base contracts, and signer as the active stack; do not replay or resume this history or use it to authorize another stack. Staging evidence schema v8 `bootstrap_attestation` verifies only historical artifact hashes and active binding matches. Future updates also follow the same-instance, current-schema upgrade rules above.
 
-初回install時には、非ゼロ32-byteのinclusive `minimum_withdrawal_id`をimmutable configへ設定する。通常の新規deploymentでは1を使う。test-deploymentの現行schemaにはstaging boundaryを空のliability stateで一度だけ設定する経路を残すが、旧schema migrationや履歴を失ったreinstallの復旧には使用しない。同じ値の再適用以外は拒否する。
+At initial install, set a nonzero 32-byte inclusive `minimum_withdrawal_id` in immutable configuration. Use 1 for normal new deployments. Current-schema test deployments retain a path to set a staging boundary once with empty liability state; do not use it for old-schema migration or recovery from a reinstall that lost history. Reject all changes except reapplying the same value.
 
-Canisterはcanonical Withdrawal eventを確認した後、record作成、Ledger call、liability変更より前に、event IDが境界以上かを256-bit big-endian比較する。境界未満は型付きエラーでfail closedにする。
+After verifying the canonical Withdrawal event, but before record creation, Ledger calls, or liability changes, the Canister compares the event ID with the boundary as a 256-bit big-endian value. IDs below the boundary fail closed with a typed error.
 
-## 帰結
+## Consequences
 
-- reinstallによる履歴消失を通常運用の選択肢から除外する。
-- production未配置であっても、active staging stackの履歴を再び失うreinstallや、別instanceへの置換を通常運用へ戻さない。
-- 一度限りの過去reinstallはimmutableな監査証跡としてのみ保持し、v7 evidenceのresumeやv8へのmigrationを行わない。
-- 一度設定した境界は同一値だけを冪等に受理し、別値への変更を拒否する。
+- Exclude history-destroying reinstall from normal operations.
+- Even before production deployment, do not restore reinstall that loses active staging history or replacement with another instance as normal operational options.
+- Retain the historical one-time reinstall solely as immutable audit evidence; do not resume v7 evidence or migrate it to v8.
+- Once set, accept only the identical boundary idempotently and reject changes to another value.

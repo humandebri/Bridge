@@ -2,7 +2,7 @@
   "schema": 1,
   "lean_version": "Lean 4.30.0 commit d024af099ca4bf2c86f649261ebf59565dc8c622",
   "toolchain": "leanprover/lean4:v4.30.0",
-  "exporter_sha256": "6abaa7400745eb69ce85dc461632b5d7d64156919590cd614907ae9f0f75de73",
+  "exporter_sha256": "0c93ff184cdb2e043e576124ad1a1281478b9059f1325e46b6edcda7a93d9528",
   "sources": {
     "verification/lean/BridgeSpec/AuditExport.lean": {
       "sha256": "71f528152dcd1c0a250ae213e0d250e8c4a46d42002c38d579b13679dd7bf501",
@@ -10,9 +10,9 @@
       "source_declarations": 1
     },
     "verification/lean/BridgeSpec/ClaimContracts.lean": {
-      "sha256": "3d8f15747089cba5ba9eda5a60b7492225698d5f45ad94196ce7eceb102d1c12",
-      "lines": 633,
-      "source_declarations": 106
+      "sha256": "c9b78c3d0f847ebfdcb06b013805eada5964bed831c23eefe7128c1f9abd36c3",
+      "lines": 639,
+      "source_declarations": 107
     },
     "verification/lean/BridgeSpec/Claims.lean": {
       "sha256": "f74ffe05f86fbdfa4e94095bdc2dc64a1dd3ed94c947a4b800af6433dada3430",
@@ -154,6 +154,11 @@
       "lines": 7,
       "source_declarations": 0
     },
+    "verification/lean/fail/GovernanceLargerBalance.lean": {
+      "sha256": "58f4ebfcedb3e3bfb34a83bb6f55d603d5a9b5ac1f7c6f9ca01ff0d0a557f1d1",
+      "lines": 4,
+      "source_declarations": 0
+    },
     "verification/lean/fail/IncompleteAbsence.lean": {
       "sha256": "22ed9af027b854b148ed57fd103aa4cf9707a4366943ce43b4276e3ca4cbad62",
       "lines": 15,
@@ -271,576 +276,576 @@
       "id": "activation_preflight",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.ActivationPreflight",
-      "premises": "ControlPlane到達状態、非pause、activationCount>0",
-      "conclusion": "最後のactivationはvalidated",
-      "boundary": "初期activationCount=0は除外。外部観測の正しさは前提",
+      "premises": "Reachable ControlPlane state, not paused, activationCount>0",
+      "conclusion": "The last activation is validated",
+      "boundary": "Excludes the initial activationCount=0 case. Correctness of external observations is assumed",
       "evidence": "claims.tsv:activation_preflight",
       "external": "claims.tsv:activation_preflight",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "authorization_binding",
       "specification": "docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md",
       "definitions": "BridgeSpec.ClaimContracts.AuthorizationBinding;BridgeSpec.MintAuthorization.installSignature;BridgeSpec.signatureTimeAllowed;BridgeSpec.MintAuthorization.Authorization.valid",
-      "premises": "authorization commitまたは署名installが受理",
-      "conclusion": "domain・epoch・IC起点900秒期限を束縛し、署名時にu64範囲と残り300秒以上",
-      "boundary": "署名の暗号学的真正性・IC時刻とNatの対応は外部仮定",
+      "premises": "Authorization commit or signature installation is accepted",
+      "conclusion": "Binds the domain, epoch, and 900-second deadline from IC time; signing requires the u64 range and at least 300 seconds remaining",
+      "boundary": "Cryptographic signature authenticity and correspondence between IC time and Nat are external assumptions",
       "evidence": "claims.tsv:authorization_binding",
       "external": "claims.tsv:authorization_binding",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "automatic_retry_limit",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.AutomaticRetryLimit",
-      "premises": "laneと失敗回数・上限を入力",
-      "conclusion": "automatic laneかつfailures<limitのときだけ許可",
-      "boundary": "失敗回数の永続化と停止後のuser再開は別証拠",
+      "premises": "Inputs are the lane, failure count, and limit",
+      "conclusion": "Allowed only for the automatic lane with failures<limit",
+      "boundary": "Persistence of the failure count and user resumption after stopping require separate evidence",
       "evidence": "claims.tsv:automatic_retry_limit",
       "external": "claims.tsv:automatic_retry_limit",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "canonical_probe",
       "specification": "docs/bridge-flow.md",
       "definitions": "BridgeSpec.ClaimContracts.CanonicalProbe;BridgeSpec.Protocol.Safe;BridgeSpec.Protocol.filterSafeStoredState",
-      "premises": "receiptとsnapshotのblock番号",
-      "conclusion": "predicateは番号の一致と同値",
-      "boundary": "番号一致だけではcanonical hashの真正性は保証しない",
+      "premises": "Receipt and snapshot block numbers",
+      "conclusion": "The predicate is equivalent to equality of the numbers",
+      "boundary": "Number equality alone does not guarantee canonical hash authenticity",
       "evidence": "claims.tsv:canonical_probe",
       "external": "claims.tsv:canonical_probe",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "committed_quote",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.CommittedQuote;BridgeSpec.Protocol.Safe;BridgeSpec.Protocol.filterSafeStoredState",
-      "premises": "commit受理、初期Safeと受理されたtrace",
-      "conclusion": "純額は正、gross=純額+fee、終端宛先・純額は初期保存quoteと一致",
-      "boundary": "本番からLean traceへの完全な写像は未証明",
+      "premises": "Commit accepted, initially Safe, and an accepted trace",
+      "conclusion": "The net amount is positive, gross=net+fee, and the terminal recipient and net amount match the initially stored quote",
+      "boundary": "A complete mapping from production to Lean traces is unproved",
       "evidence": "claims.tsv:committed_quote",
       "external": "claims.tsv:committed_quote",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "confirmed_activation_evidence_binding",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding",
-      "premises": "activationのmatch個数・generation・signedAt、upgrade完了hookのcallerと時刻を入力",
-      "conclusion": "activationは単一matchとmetadata厳密一致。SNS更新はRootの完了hookが採択・移譲後かつ未来でない",
-      "boundary": "IC callbackとcaller・時刻の真正性、同時upgradeがないこと、SNSとIC実行完了は外部仮定",
+      "premises": "Inputs are the activation match count, generation, signedAt, and the upgrade completion hook's caller and timestamp",
+      "conclusion": "Activation requires a single match and exact metadata equality. For SNS upgrades, the Root completion hook must follow adoption and handoff and must not be in the future",
+      "boundary": "IC callback, caller, and timestamp authenticity, absence of concurrent upgrades, and completion of SNS and IC execution are external assumptions",
       "evidence": "claims.tsv:confirmed_activation_evidence_binding",
       "external": "claims.tsv:confirmed_activation_evidence_binding",
-      "review_note": "同一Wasmのproposal受理とpost_upgrade完了を区別する判定を追加。実SNSの失敗と完了を別途検証する。"
+      "review_note": "Adds a distinction between acceptance of a same-Wasm proposal and completion of post_upgrade. Actual SNS failure and completion are verified separately."
     },
     {
       "kind": "claim",
       "id": "cycles_top_up_request_policy",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy",
-      "premises": "balance・threshold・inProgress・authorizedを入力",
-      "conclusion": "認可済み・非実行中・balance≤thresholdのときだけ要求可能",
-      "boundary": "launcherの補充実行や将来残高回復は未証明",
+      "premises": "Inputs are balance, threshold, inProgress, and authorized",
+      "conclusion": "A request is allowed only when authorized, not in progress, and balance≤threshold",
+      "boundary": "Launcher replenishment and future balance recovery are unproved",
       "evidence": "claims.tsv:cycles_top_up_request_policy",
       "external": "claims.tsv:cycles_top_up_request_policy",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "deposit_admission",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.DepositAdmission",
-      "premises": "admitDepositが純額を返す",
-      "conclusion": "fee・正の純額・一件上限・window上限を満たす",
-      "boundary": "局所モデルは予約量を独立入力に持たない。本番の予約込み受付は別Verus義務",
+      "premises": "admitDeposit returns a net amount",
+      "conclusion": "The fee, positive net amount, per-deposit limit, and window limit are satisfied",
+      "boundary": "The local model has no independent reserved-amount input. Production admission including reservations has a separate Verus obligation",
       "evidence": "claims.tsv:deposit_admission",
       "external": "claims.tsv:deposit_admission",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "deposit_backing",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.DepositBacking;BridgeSpec.GlobalHistory.AccountingInvariant;BridgeSpec.GlobalHistory.Backed;BridgeSpec.GlobalHistory.eventDelta",
-      "premises": "初期会計不変条件と受理されたsignature・mint・refund履歴",
-      "conclusion": "backingを保存し、各操作で規定会計差分を適用",
-      "boundary": "会計モデルのphaseは実外部操作を証明しない",
+      "premises": "Initial accounting invariant and accepted signature, mint, and refund history",
+      "conclusion": "Preserves backing and applies the prescribed accounting deltas for each operation",
+      "boundary": "An accounting model phase does not prove actual external operations",
       "evidence": "claims.tsv:deposit_backing",
       "external": "claims.tsv:deposit_backing",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "deposit_identity_preflight",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.DepositIdentityPreflight",
-      "premises": "IdentityHistory到達状態で候補preflightが受理",
-      "conclusion": "候補IDは処理済みではない",
-      "boundary": "RPCの真正性とinstall instanceの一意性は外部境界",
+      "premises": "Candidate preflight is accepted in a reachable IdentityHistory state",
+      "conclusion": "The candidate ID has not been processed",
+      "boundary": "RPC authenticity and install instance uniqueness are external boundaries",
       "evidence": "claims.tsv:deposit_identity_preflight",
       "external": "claims.tsv:deposit_identity_preflight",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "epoch_invalidation",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.EpochInvalidation",
-      "premises": "既存authorizationまたはretiredSigner≠replacementSigner",
-      "conclusion": "認可の再発行を拒否し、旧signerは未来epochでも拒否",
-      "boundary": "署名回復・epoch更新のEVM実行は別証拠",
+      "premises": "An existing authorization or retiredSigner≠replacementSigner",
+      "conclusion": "Rejects authorization reissuance and rejects the old signer even in future epochs",
+      "boundary": "Signature recovery and EVM execution of epoch updates require separate evidence",
       "evidence": "claims.tsv:epoch_invalidation",
       "external": "claims.tsv:epoch_invalidation",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "exact_mint_finalization",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.ExactMintFinalization;BridgeSpec.MintAuthorization.MintEvidence.valid",
-      "premises": "completeMintが受理",
-      "conclusion": "成功receiptはfinalized以下で、deposit・recipient・digestがauthorization一致",
-      "boundary": "hashやRPC digestの非0は真正性証明ではない。暗号とcanonicalityは外部仮定",
+      "premises": "completeMint is accepted",
+      "conclusion": "The successful receipt is at or below finalized, and deposit, recipient, and digest match the authorization",
+      "boundary": "Nonzero hashes or RPC digests do not prove authenticity. Cryptography and canonicality are external assumptions",
       "evidence": "claims.tsv:exact_mint_finalization",
       "external": "claims.tsv:exact_mint_finalization",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "expiry_refund",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.ExpiryRefund;BridgeSpec.MintAuthorization.ExpiryEvidence.valid",
-      "premises": "startExpiredRefundが受理",
-      "conclusion": "未処理・deposit/digest一致・期限を厳密に超過、会計backingを保存",
-      "boundary": "Finalized証拠の真正性と実Ledger転送は外部境界",
+      "premises": "startExpiredRefund is accepted",
+      "conclusion": "Unprocessed, matching deposit/digest, strictly past the deadline; preserves accounting backing",
+      "boundary": "Finalized evidence authenticity and actual Ledger transfers are external boundaries",
       "evidence": "claims.tsv:expiry_refund",
       "external": "claims.tsv:expiry_refund",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "fee_accounting_once",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.FeeAccountingOnce;BridgeSpec.MintAuthorization.installSignature;BridgeSpec.signatureTimeAllowed;BridgeSpec.MintAuthorization.Authorization.valid",
-      "premises": "初期Depositからの受理traceと署名install",
-      "conclusion": "fee credit回数は高々1で、署名時のfee差分はauthorizationの値",
-      "boundary": "GlobalHistoryとDepositHistoryを本番履歴へ接続する完全証明はない",
+      "premises": "Accepted trace from the initial Deposit and signature installation",
+      "conclusion": "At most one fee credit; the fee delta at signing equals the authorization value",
+      "boundary": "There is no complete proof connecting GlobalHistory and DepositHistory to production histories",
       "evidence": "claims.tsv:fee_accounting_once",
       "external": "claims.tsv:fee_accounting_once",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "fee_payout",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.FeePayout",
-      "premises": "feePayoutAllowedが受理",
-      "conclusion": "pendingと新規debitはreserve内、成功時だけdebitを計上",
-      "boundary": "外部転送結果の正しさと永続化は外部境界",
+      "premises": "feePayoutAllowed is accepted",
+      "conclusion": "Pending and new debits fit within the reserve; debit is accounted for only on success",
+      "boundary": "Correctness of external transfer results and persistence are external boundaries",
       "evidence": "claims.tsv:fee_payout",
       "external": "claims.tsv:fee_payout",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "fee_recipient_rotation",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.FeeRecipientRotation",
-      "premises": "rotateFeeRecipientが受理",
-      "conclusion": "pending payoutは0、残高・既計上feeは保存しrecipientを更新",
-      "boundary": "本番認可とSQL commitは別証拠",
+      "premises": "rotateFeeRecipient is accepted",
+      "conclusion": "Pending payout is zero; updates the recipient while preserving balances and previously accounted fees",
+      "boundary": "Production authorization and SQL commit require separate evidence",
       "evidence": "claims.tsv:fee_recipient_rotation",
       "external": "claims.tsv:fee_recipient_rotation",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "funding_attempt_lifecycle",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.FundingAttemptLifecycle;BridgeSpec.Protocol.Safe;BridgeSpec.Protocol.filterSafeStoredState",
-      "premises": "funding outcome enumを入力",
-      "conclusion": "成功・duplicate・曖昧・retryable・確定失敗を規定decisionへ分類",
-      "boundary": "enumへの外部結果のdecodeとSQL transactionは別証拠",
+      "premises": "Input is a funding outcome enum",
+      "conclusion": "Classifies success, duplicate, ambiguous, retryable, and definitive failure into their prescribed decisions",
+      "boundary": "Decoding external results into the enum and SQL transactions require separate evidence",
       "evidence": "claims.tsv:funding_attempt_lifecycle",
       "external": "claims.tsv:funding_attempt_lifecycle",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "funding_reconciliation_freshness",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.FundingReconciliationFreshness;BridgeSpec.Protocol.Safe;BridgeSpec.Protocol.filterSafeStoredState",
-      "premises": "absence・finalScan・dedupExpiredのboolを入力",
-      "conclusion": "fresh scanが必要な条件とrelease可能条件を区別",
-      "boundary": "完全履歴・経過時刻・scan結果の真正性は外部境界",
+      "premises": "Inputs are absence, finalScan, and dedupExpired booleans",
+      "conclusion": "Distinguishes conditions requiring a fresh scan from conditions permitting release",
+      "boundary": "Complete history, elapsed time, and scan result authenticity are external boundaries",
       "evidence": "claims.tsv:funding_reconciliation_freshness",
       "external": "claims.tsv:funding_reconciliation_freshness",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "governance_confirmation_authorization",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization",
-      "premises": "callerと現在のrelayer・governance・pauseをNatで表現",
-      "conclusion": "非0かつ許可された三者のいずれかだけ受理",
-      "boundary": "Natの0とanonymous Principalの対応、controller取得は本番側境界",
+      "premises": "The caller and current relayer, governance, and pause principals are represented as Nat",
+      "conclusion": "Accepts only a nonzero caller matching one of the three authorized principals",
+      "boundary": "Correspondence between Nat zero and the anonymous Principal, and controller retrieval, are production boundaries",
       "evidence": "claims.tsv:governance_confirmation_authorization",
       "external": "claims.tsv:governance_confirmation_authorization",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "governance_nonce_chain_binding",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.GovernanceNonceChainBinding",
-      "premises": "ControlPlane到達状態に最後のgovernance chainがある",
-      "conclusion": "governance chainはconfigured chainと一致",
-      "boundary": "RPC観測chainIdやprovider切替耐性は主張しない",
+      "premises": "A reachable ControlPlane state has a last governance chain",
+      "conclusion": "The governance chain matches the configured chain",
+      "boundary": "Does not claim an RPC-observed chainId or resistance to provider chain switching",
       "evidence": "claims.tsv:governance_nonce_chain_binding",
       "external": "claims.tsv:governance_nonce_chain_binding",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "governance_transaction_affordability",
       "specification": "docs/canister-state-machine.md",
-      "definitions": "BridgeSpec.ClaimContracts.GovernanceTransactionAffordability",
-      "premises": "observedWei<requiredWei",
-      "conclusion": "requiredWei以下の残高では支払可能条件を満たさない",
-      "boundary": "必要額見積りや外部残高照会は証明しない",
+      "definitions": "BridgeSpec.ClaimContracts.GovernanceTransactionAffordability;BridgeSpec.ClaimContracts.governanceAffordabilityDecision",
+      "premises": "Decoded finalized and safe balances and a checked required amount",
+      "conclusion": "The decision reports their minimum and accepts exactly when both balances cover the required amount, including equality",
+      "boundary": "External balance authenticity and fee-estimate adequacy remain assumptions; shared-expression Verus binds the production decision",
       "evidence": "claims.tsv:governance_transaction_affordability",
       "external": "claims.tsv:governance_transaction_affordability",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Bind the conservative minimum and acceptance boundary to the production-shared decision and its negative fixture."
     },
     {
       "kind": "claim",
       "id": "hold_resolution",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.HoldResolution",
-      "premises": "holdRetryAllowedが受理",
-      "conclusion": "exact successまたはcomplete absenceが存在",
-      "boundary": "入力boolから証拠の真正性は導けない",
+      "premises": "holdRetryAllowed is accepted",
+      "conclusion": "Exact success or complete absence exists",
+      "boundary": "Evidence authenticity cannot be derived from input booleans",
       "evidence": "claims.tsv:hold_resolution",
       "external": "claims.tsv:hold_resolution",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "initial_activation_authorization",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.InitialActivationAuthorization",
-      "premises": "bootstrap・governance・sealed・phase・migration分類入力",
-      "conclusion": "bootstrap期間の認可と消費、seal caller条件、migration分類を規定",
-      "boundary": "migration分類の定義展開だけでは実復元を証明しない",
+      "premises": "Inputs classify bootstrap, governance, sealed state, phase, and migration",
+      "conclusion": "Specifies bootstrap authorization and consumption, seal caller conditions, and migration classification",
+      "boundary": "Unfolding the migration classification definition alone does not prove actual restoration",
       "evidence": "claims.tsv:initial_activation_authorization",
       "external": "claims.tsv:initial_activation_authorization",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "lease_lane_isolation",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.LeaseLaneIsolation;BridgeSpec.GlobalHistory.AccountingInvariant;BridgeSpec.GlobalHistory.Backed;BridgeSpec.GlobalHistory.eventDelta",
-      "premises": "lane claim decisionがallow",
-      "conclusion": "対象は非activeでlane capacity未満",
-      "boundary": "lane入力の分類とruntime dispatcherは別証拠",
+      "premises": "The lane claim decision is allow",
+      "conclusion": "The target is inactive and below lane capacity",
+      "boundary": "Lane input classification and the runtime dispatcher require separate evidence",
       "evidence": "claims.tsv:lease_lane_isolation",
       "external": "claims.tsv:lease_lane_isolation",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "lease_outcome",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.LeaseOutcome;BridgeSpec.GlobalHistory.AccountingInvariant;BridgeSpec.GlobalHistory.Backed;BridgeSpec.GlobalHistory.eventDelta",
-      "premises": "lease outcome predicateとGlobalHistory更新が受理",
-      "conclusion": "leaseはactiveでgeneration一致、会計不変条件と他recordを保存",
-      "boundary": "async実行・SQL行選択・callbackの外部効果は別証拠",
+      "premises": "The lease outcome predicate and GlobalHistory update are accepted",
+      "conclusion": "The lease is active with a matching generation; preserves accounting invariants and other records",
+      "boundary": "Async execution, SQL row selection, and external callback effects require separate evidence",
       "evidence": "claims.tsv:lease_outcome",
       "external": "claims.tsv:lease_outcome",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "ledger_block_provenance",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.LedgerBlockProvenance",
-      "premises": "Ledger indexをinstallする受理trace",
-      "conclusion": "既存indexを保持し、競合を拒否し、refundにはfunding indexが必要",
-      "boundary": "index値の履歴真正性とSQL行選択は外部仮定",
+      "premises": "An accepted trace installing Ledger indices",
+      "conclusion": "Preserves existing indices, rejects conflicts, and requires a funding index for refunds",
+      "boundary": "Historical authenticity of index values and SQL row selection are external assumptions",
       "evidence": "claims.tsv:ledger_block_provenance",
       "external": "claims.tsv:ledger_block_provenance",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "nonterminal_deposit_index_consistency",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency",
-      "premises": "DepositPhaseを入力",
-      "conclusion": "refunded・cancelled・minted以外だけindex対象",
-      "boundary": "SQL index維持と実record走査は別証拠",
+      "premises": "Input is a DepositPhase",
+      "conclusion": "Only phases other than refunded, cancelled, and minted are indexed",
+      "boundary": "SQL index maintenance and actual record scans require separate evidence",
       "evidence": "claims.tsv:nonterminal_deposit_index_consistency",
       "external": "claims.tsv:nonterminal_deposit_index_consistency",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "notification_quota_isolation",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.NotificationQuotaIsolation",
-      "premises": "通知受付・ingestion predicateが受理",
-      "conclusion": "global・caller・ingestion上限未満、cooldownはhash一致かつ期限未満",
-      "boundary": "永続カウンタ・期間更新・caller真正性は別証拠",
+      "premises": "Notification admission and ingestion predicates accept",
+      "conclusion": "Below global, caller, and ingestion limits; cooldown requires matching hashes and time before expiry",
+      "boundary": "Persistent counters, period updates, and caller authenticity require separate evidence",
       "evidence": "claims.tsv:notification_quota_isolation",
       "external": "claims.tsv:notification_quota_isolation",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "operational_config_seal",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.OperationalConfigSeal",
-      "premises": "sealedとcandidateValidの入力",
-      "conclusion": "未sealかつ候補有効の場合だけsealし、asset操作はsealedの場合だけ許可",
-      "boundary": "呼出し元が真偽入力を正しく作ることと永続化は別証拠",
+      "premises": "Inputs are sealed and candidateValid",
+      "conclusion": "Seals only when not already sealed and the candidate is valid; allows asset operations only when sealed",
+      "boundary": "Correct construction of boolean inputs by callers and persistence require separate evidence",
       "evidence": "claims.tsv:operational_config_seal",
       "external": "claims.tsv:operational_config_seal",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "paid_call_cycle_reserve",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.PaidCallCycleReserve",
-      "premises": "reserve+attachedCycles+margin≤liquid、実請求額≤予算",
-      "conclusion": "課金後もreserveを残す",
-      "boundary": "ICの実課金・返却とruntime会計は外部境界",
+      "premises": "reserve+attachedCycles+margin≤liquid, actual charge≤budget",
+      "conclusion": "Preserves the reserve after charging",
+      "boundary": "Actual IC charges, refunds, and runtime accounting are external boundaries",
       "evidence": "claims.tsv:paid_call_cycle_reserve",
       "external": "claims.tsv:paid_call_cycle_reserve",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "payment_identity",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.PaymentIdentity;BridgeSpec.GlobalHistory.AccountingInvariant;BridgeSpec.GlobalHistory.Backed;BridgeSpec.GlobalHistory.eventDelta",
-      "premises": "GlobalHistoryのpayoutまたはrecord更新が受理",
-      "conclusion": "payoutの純額・宛先はrecordに一致し、別IDのrecordは不変",
-      "boundary": "callbackのpaid phase自体は実送金の証拠ではない",
+      "premises": "A GlobalHistory payout or record update is accepted",
+      "conclusion": "The payout net amount and recipient match the record; records with other IDs remain unchanged",
+      "boundary": "The callback's paid phase alone is not evidence of an actual transfer",
       "evidence": "claims.tsv:payment_identity",
       "external": "claims.tsv:payment_identity",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "pending_queue",
       "specification": "docs/bridge-flow.md",
       "definitions": "BridgeSpec.ClaimContracts.PendingQueue",
-      "premises": "blockedな既存entryまたはstorage書込失敗",
-      "conclusion": "blocked retryを保持し、書込失敗時はsessionを保持してdurable結果なし",
-      "boundary": "Web Locks・browser storage原子性は外部仮定",
+      "premises": "An existing blocked entry or a storage write failure",
+      "conclusion": "Preserves blocked retries; on write failure, retains the session with no durable result",
+      "boundary": "Web Locks and browser storage atomicity are external assumptions",
       "evidence": "claims.tsv:pending_queue",
       "external": "claims.tsv:pending_queue",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "refund_evidence_enforcement",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.RefundEvidenceEnforcement;BridgeSpec.MintAuthorization.ExpiryEvidence.valid",
-      "premises": "初期Depositからの受理trace中に期限切れrefund開始がある",
-      "conclusion": "未処理・deposit/digest一致・strict expiryが必要",
-      "boundary": "RPC canonicalityと履歴真正性は外部仮定",
+      "premises": "An accepted trace from the initial Deposit includes the start of an expired refund",
+      "conclusion": "Requires unprocessed status, matching deposit/digest, and strict expiry",
+      "boundary": "RPC canonicality and history authenticity are external assumptions",
       "evidence": "claims.tsv:refund_evidence_enforcement",
       "external": "claims.tsv:refund_evidence_enforcement",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "refund_request_authorization",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.RefundRequestAuthorization",
-      "premises": "受理prefix後のrequestExpiredRefundが受理",
-      "conclusion": "authenticated=trueかつdepositProcessed=false",
-      "boundary": "callerは既存recordの宛先・金額を変更できないことは本番側証拠",
+      "premises": "requestExpiredRefund is accepted after an accepted prefix",
+      "conclusion": "Requires authenticated=true and depositProcessed=false",
+      "boundary": "Production evidence establishes that callers cannot change an existing record's recipient or amount",
       "evidence": "claims.tsv:refund_request_authorization",
       "external": "claims.tsv:refund_request_authorization",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "reservation_commit",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.ReservationCommit",
-      "premises": "有限幅境界内の予約計算と受理された予約解放",
-      "conclusion": "予約+候補の合計を保存し、解放は正確に0、二重解放を拒否",
-      "boundary": "GlobalHistoryの解放イベント自体には時刻証拠がない",
+      "premises": "Reservation arithmetic within finite-width bounds and an accepted reservation release",
+      "conclusion": "Preserves the reservation-plus-candidate total, releases to exactly zero, and rejects double release",
+      "boundary": "The GlobalHistory release event itself contains no timing evidence",
       "evidence": "claims.tsv:reservation_commit",
       "external": "claims.tsv:reservation_commit",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "reservation_lifecycle",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.ReservationLifecycle;BridgeSpec.GlobalHistory.AccountingInvariant;BridgeSpec.GlobalHistory.Backed;BridgeSpec.GlobalHistory.eventDelta",
-      "premises": "GlobalHistoryの予約解放イベントが受理",
-      "conclusion": "予約を正確に0へし、二重解放を拒否",
-      "boundary": "期限判断はDepositHistoryと本番側の別証拠",
+      "premises": "A GlobalHistory reservation release event is accepted",
+      "conclusion": "Sets the reservation to exactly zero and rejects double release",
+      "boundary": "Expiry decisions require separate DepositHistory and production evidence",
       "evidence": "claims.tsv:reservation_lifecycle",
       "external": "claims.tsv:reservation_lifecycle",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "runtime_attestation_reuse",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.RuntimeAttestationReuse",
-      "premises": "到達ControlPlane状態に再利用domainがある",
-      "conclusion": "再利用domainは現在のinstall domainと一致",
-      "boundary": "runtime不変性、warm観測の正しさ、保存と再利用経路は別証拠",
+      "premises": "A reachable ControlPlane state has a reuse domain",
+      "conclusion": "The reuse domain matches the current install domain",
+      "boundary": "Runtime immutability, correctness of warm observations, and persistence/reuse paths require separate evidence",
       "evidence": "claims.tsv:runtime_attestation_reuse",
       "external": "claims.tsv:runtime_attestation_reuse",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "service_fee_maximum",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.ServiceFeeMaximum;BridgeSpec.Protocol.Safe;BridgeSpec.Protocol.filterSafeStoredState",
-      "premises": "fee上下限の局所predicateとDeposit署名履歴",
-      "conclusion": "fee変更は固定範囲内、署名fee計上は一度だけ",
-      "boundary": "pending payoutのtrace上限は別のreserve性質。全実行のfee設定写像は未証明",
+      "premises": "Local fee-bound predicates and Deposit signing history",
+      "conclusion": "Fee changes stay within fixed bounds; signing fees are accounted for once",
+      "boundary": "The pending payout trace bound is a separate reserve property. A fee-configuration mapping for all executions is unproved",
       "evidence": "claims.tsv:service_fee_maximum",
       "external": "claims.tsv:service_fee_maximum",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "settlement_backing",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.SettlementBacking;BridgeSpec.GlobalHistory.AccountingInvariant;BridgeSpec.GlobalHistory.Backed;BridgeSpec.GlobalHistory.eventDelta",
-      "premises": "初期会計不変条件と受理された履歴・payout",
-      "conclusion": "backingを保存し、escrow・feeReserve・未決済債務へ規定差分を適用",
-      "boundary": "実Ledger送金とSQLの原子性は外部境界",
+      "premises": "Initial accounting invariant and accepted history/payout",
+      "conclusion": "Preserves backing and applies prescribed deltas to escrow, feeReserve, and outstanding liabilities",
+      "boundary": "Actual Ledger transfers and SQL atomicity are external boundaries",
       "evidence": "claims.tsv:settlement_backing",
       "external": "claims.tsv:settlement_backing",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "signing_cycle_reserve",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.SigningCycleReserve",
-      "premises": "reserve+signingCost+margin≤liquid、実請求額≤見積り",
-      "conclusion": "請求後もreserveを残す",
-      "boundary": "IC課金額と見積りの対応は外部仮定",
+      "premises": "reserve+signingCost+margin≤liquid, actual charge≤estimate",
+      "conclusion": "Preserves the reserve after billing",
+      "boundary": "Correspondence between IC charges and estimates is an external assumption",
       "evidence": "claims.tsv:signing_cycle_reserve",
       "external": "claims.tsv:signing_cycle_reserve",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "withdrawal_admission_boundary",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary",
-      "premises": "withdrawalIdAdmissibleが受理",
-      "conclusion": "minimumは非0でobservedはminimum以上",
-      "boundary": "Natと32byte big-endian IDの対応は共有predicateとテスト",
+      "premises": "withdrawalIdAdmissible is accepted",
+      "conclusion": "The minimum is nonzero and observed is at least the minimum",
+      "boundary": "Correspondence between Nat and 32-byte big-endian IDs is covered by a shared predicate and tests",
       "evidence": "claims.tsv:withdrawal_admission_boundary",
       "external": "claims.tsv:withdrawal_admission_boundary",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "withdrawal_finality_quorum",
       "specification": "docs/bridge-flow.md",
       "definitions": "BridgeSpec.ClaimContracts.WithdrawalFinalityQuorum",
-      "premises": "三providerのheadまたはidentityからcheckpointを選択",
-      "conclusion": "二者が高さをattestし、identity版は高さとhashの二者一致",
-      "boundary": "providerの正しいchain設定と応答真正性は外部仮定",
+      "premises": "Selects a checkpoint from three providers' heads or identities",
+      "conclusion": "Two providers attest the height; the identity variant requires agreement on both height and hash",
+      "boundary": "Correct provider chain configuration and response authenticity are external assumptions",
       "evidence": "claims.tsv:withdrawal_finality_quorum",
       "external": "claims.tsv:withdrawal_finality_quorum",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "claim",
       "id": "withdrawal_finalization",
       "specification": "docs/bridge-flow.md",
       "definitions": "BridgeSpec.ClaimContracts.WithdrawalFinalization",
-      "premises": "receipt成功・canonical・blockを入力",
-      "conclusion": "notifyには成功かつfinalized以下かつcanonicalが必要、finalized不在ならretry",
-      "boundary": "provider応答とブラウザ実装全体は証明しない",
+      "premises": "Inputs are receipt success, canonicality, and block",
+      "conclusion": "Notify requires success, a block at or below finalized, and canonicality; missing finalized yields retry",
+      "boundary": "Does not prove provider responses or the entire browser implementation",
       "evidence": "claims.tsv:withdrawal_finalization",
       "external": "claims.tsv:withdrawal_finalization",
-      "review_note": "初回対応表。命題・依存定義・外部境界を分離して登録。"
+      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
     },
     {
       "kind": "liveness",
       "id": "deposit_terminal_progress_lemmas",
       "specification": "verification/conditional-liveness.md",
       "definitions": "BridgeSpec.Liveness.DepositTerminalProgressLemmas;BridgeSpec.Liveness.AdmissibleUntilOccurs;BridgeSpec.Liveness.CommonOperationalAssumptions;BridgeSpec.Liveness.WeakFair",
-      "premises": "対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作",
-      "conclusion": "mintの条件付き含意とrefundの条件付き含意の論理積。共通実行の二者択一ではない",
-      "boundary": "本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない",
+      "premises": "Continuous admissibility of the target terminal operation, weak fairness, external availability from readyAt onward, and registered user/keeper actions",
+      "conclusion": "Conjunction of conditional mint and refund implications, not an either/or guarantee for one shared execution",
+      "boundary": "Production scheduling and derivation of admissibility from receipt of funds are unproved. Excluded from release claims",
       "evidence": "conditional-liveness.tsv:deposit_terminal_progress_lemmas",
       "external": "conditional-liveness.tsv:deposit_terminal_progress_lemmas",
-      "review_note": "初回対応表。条件付き補題と本番の到達性を区別。"
+      "review_note": "Initial correspondence table. Distinguishes conditional lemmas from production reachability."
     },
     {
       "kind": "liveness",
       "id": "expired_deposit_eventually_refunded",
       "specification": "verification/conditional-liveness.md",
       "definitions": "BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded;BridgeSpec.Liveness.AdmissibleUntilOccurs;BridgeSpec.Liveness.CommonOperationalAssumptions;BridgeSpec.Liveness.WeakFair",
-      "premises": "対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作",
-      "conclusion": "対象depositがrefundedへ到達",
-      "boundary": "本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない",
+      "premises": "Continuous admissibility of the target terminal operation, weak fairness, external availability from readyAt onward, and registered user/keeper actions",
+      "conclusion": "The target deposit reaches refunded",
+      "boundary": "Production scheduling and derivation of admissibility from receipt of funds are unproved. Excluded from release claims",
       "evidence": "conditional-liveness.tsv:expired_deposit_eventually_refunded",
       "external": "conditional-liveness.tsv:expired_deposit_eventually_refunded",
-      "review_note": "初回対応表。条件付き補題と本番の到達性を区別。"
+      "review_note": "Initial correspondence table. Distinguishes conditional lemmas from production reachability."
     },
     {
       "kind": "liveness",
       "id": "funded_deposit_eventually_minted",
       "specification": "verification/conditional-liveness.md",
       "definitions": "BridgeSpec.Liveness.FundedDepositEventuallyMinted;BridgeSpec.Liveness.AdmissibleUntilOccurs;BridgeSpec.Liveness.CommonOperationalAssumptions;BridgeSpec.Liveness.WeakFair",
-      "premises": "対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作",
-      "conclusion": "対象depositがmintedへ到達",
-      "boundary": "本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない",
+      "premises": "Continuous admissibility of the target terminal operation, weak fairness, external availability from readyAt onward, and registered user/keeper actions",
+      "conclusion": "The target deposit reaches minted",
+      "boundary": "Production scheduling and derivation of admissibility from receipt of funds are unproved. Excluded from release claims",
       "evidence": "conditional-liveness.tsv:funded_deposit_eventually_minted",
       "external": "conditional-liveness.tsv:funded_deposit_eventually_minted",
-      "review_note": "初回対応表。条件付き補題と本番の到達性を区別。"
+      "review_note": "Initial correspondence table. Distinguishes conditional lemmas from production reachability."
     },
     {
       "kind": "liveness",
       "id": "funding_failure_eventually_cancelled",
       "specification": "verification/conditional-liveness.md",
       "definitions": "BridgeSpec.Liveness.FundingFailureEventuallyCancelled;BridgeSpec.Liveness.AdmissibleUntilOccurs;BridgeSpec.Liveness.CommonOperationalAssumptions;BridgeSpec.Liveness.WeakFair",
-      "premises": "対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作",
-      "conclusion": "対象depositがcancelledへ到達",
-      "boundary": "本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない",
+      "premises": "Continuous admissibility of the target terminal operation, weak fairness, external availability from readyAt onward, and registered user/keeper actions",
+      "conclusion": "The target deposit reaches cancelled",
+      "boundary": "Production scheduling and derivation of admissibility from receipt of funds are unproved. Excluded from release claims",
       "evidence": "conditional-liveness.tsv:funding_failure_eventually_cancelled",
       "external": "conditional-liveness.tsv:funding_failure_eventually_cancelled",
-      "review_note": "初回対応表。条件付き補題と本番の到達性を区別。"
+      "review_note": "Initial correspondence table. Distinguishes conditional lemmas from production reachability."
     },
     {
       "kind": "liveness",
       "id": "withdrawal_eventually_paid",
       "specification": "verification/conditional-liveness.md",
       "definitions": "BridgeSpec.Liveness.WithdrawalEventuallyPaid;BridgeSpec.Liveness.AdmissibleUntilOccurs;BridgeSpec.Liveness.CommonOperationalAssumptions;BridgeSpec.Liveness.WeakFair",
-      "premises": "対象終端操作の継続的admissibility、weak fairness、readyAt以降の外部可用性、登録されたuser/keeper操作",
-      "conclusion": "対象withdrawalがpaidへ到達",
-      "boundary": "本番schedulerや資金受領からのadmissibility導出は未証明。release claimに含めない",
+      "premises": "Continuous admissibility of the target terminal operation, weak fairness, external availability from readyAt onward, and registered user/keeper actions",
+      "conclusion": "The target withdrawal reaches paid",
+      "boundary": "Production scheduling and derivation of admissibility from receipt of funds are unproved. Excluded from release claims",
       "evidence": "conditional-liveness.tsv:withdrawal_eventually_paid",
       "external": "conditional-liveness.tsv:withdrawal_eventually_paid",
-      "review_note": "初回対応表。条件付き補題と本番の到達性を区別。"
+      "review_note": "Initial correspondence table. Distinguishes conditional lemmas from production reachability."
     }
   ],
   "definitions": [
@@ -848,265 +853,271 @@
       "name": "BridgeSpec.ClaimContracts.ActivationPreflight",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "最後のactivationはvalidated"
+      "meaning": "The last activation is validated"
     },
     {
       "name": "BridgeSpec.ClaimContracts.AuthorizationBinding",
       "role": "specification",
       "specification": "docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md",
-      "meaning": "domain・epoch・IC起点900秒期限を束縛し、署名時にu64範囲と残り300秒以上"
+      "meaning": "Binds the domain, epoch, and 900-second deadline from IC time; signing requires the u64 range and at least 300 seconds remaining"
     },
     {
       "name": "BridgeSpec.ClaimContracts.AutomaticRetryLimit",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "automatic laneかつfailures<limitのときだけ許可"
+      "meaning": "Allowed only for the automatic lane with failures<limit"
     },
     {
       "name": "BridgeSpec.ClaimContracts.CanonicalProbe",
       "role": "specification",
       "specification": "docs/bridge-flow.md",
-      "meaning": "predicateは番号の一致と同値"
+      "meaning": "The predicate is equivalent to equality of the numbers"
     },
     {
       "name": "BridgeSpec.ClaimContracts.CommittedQuote",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "純額は正、gross=純額+fee、終端宛先・純額は初期保存quoteと一致"
+      "meaning": "The net amount is positive, gross=net+fee, and the terminal recipient and net amount match the initially stored quote"
     },
     {
       "name": "BridgeSpec.ClaimContracts.ConfirmedActivationEvidenceBinding",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "activationの単一match・metadata厳密一致と、Rootによる採択・移譲後のupgrade完了hook"
+      "meaning": "A single activation match with exact metadata equality, and a Root upgrade completion hook after adoption and handoff"
     },
     {
       "name": "BridgeSpec.ClaimContracts.CyclesTopUpRequestPolicy",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "認可済み・非実行中・balance≤thresholdのときだけ要求可能"
+      "meaning": "A request is allowed only when authorized, not in progress, and balance≤threshold"
     },
     {
       "name": "BridgeSpec.ClaimContracts.DepositAdmission",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "fee・正の純額・一件上限・window上限を満たす"
+      "meaning": "The fee, positive net amount, per-deposit limit, and window limit are satisfied"
     },
     {
       "name": "BridgeSpec.ClaimContracts.DepositBacking",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "backingを保存し、各操作で規定会計差分を適用"
+      "meaning": "Preserves backing and applies the prescribed accounting deltas for each operation"
     },
     {
       "name": "BridgeSpec.ClaimContracts.DepositIdentityPreflight",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "候補IDは処理済みではない"
+      "meaning": "The candidate ID has not been processed"
     },
     {
       "name": "BridgeSpec.ClaimContracts.EpochInvalidation",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "認可の再発行を拒否し、旧signerは未来epochでも拒否"
+      "meaning": "Rejects authorization reissuance and rejects the old signer even in future epochs"
     },
     {
       "name": "BridgeSpec.ClaimContracts.ExactMintFinalization",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "成功receiptはfinalized以下で、deposit・recipient・digestがauthorization一致"
+      "meaning": "The successful receipt is at or below finalized, and deposit, recipient, and digest match the authorization"
     },
     {
       "name": "BridgeSpec.ClaimContracts.ExpiryRefund",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "未処理・deposit/digest一致・期限を厳密に超過、会計backingを保存"
+      "meaning": "Unprocessed, matching deposit/digest, strictly past the deadline; preserves accounting backing"
     },
     {
       "name": "BridgeSpec.ClaimContracts.FeeAccountingOnce",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "fee credit回数は高々1で、署名時のfee差分はauthorizationの値"
+      "meaning": "At most one fee credit; the fee delta at signing equals the authorization value"
     },
     {
       "name": "BridgeSpec.ClaimContracts.FeePayout",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "pendingと新規debitはreserve内、成功時だけdebitを計上"
+      "meaning": "Pending and new debits fit within the reserve; debit is accounted for only on success"
     },
     {
       "name": "BridgeSpec.ClaimContracts.FeeRecipientRotation",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "pending payoutは0、残高・既計上feeは保存しrecipientを更新"
+      "meaning": "Pending payout is zero; updates the recipient while preserving balances and previously accounted fees"
     },
     {
       "name": "BridgeSpec.ClaimContracts.FundingAttemptLifecycle",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "成功・duplicate・曖昧・retryable・確定失敗を規定decisionへ分類"
+      "meaning": "Classifies success, duplicate, ambiguous, retryable, and definitive failure into their prescribed decisions"
     },
     {
       "name": "BridgeSpec.ClaimContracts.FundingReconciliationFreshness",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "fresh scanが必要な条件とrelease可能条件を区別"
+      "meaning": "Distinguishes conditions requiring a fresh scan from conditions permitting release"
     },
     {
       "name": "BridgeSpec.ClaimContracts.GovernanceConfirmationAuthorization",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "非0かつ許可された三者のいずれかだけ受理"
+      "meaning": "Accepts only a nonzero caller matching one of the three authorized principals"
     },
     {
       "name": "BridgeSpec.ClaimContracts.GovernanceNonceChainBinding",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "governance chainはconfigured chainと一致"
+      "meaning": "The governance chain matches the configured chain"
     },
     {
       "name": "BridgeSpec.ClaimContracts.GovernanceTransactionAffordability",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "requiredWei以下の残高では支払可能条件を満たさない"
+      "meaning": "The conservative balance decision reports the minimum and accepts exactly when both observed balances cover requiredWei"
     },
     {
       "name": "BridgeSpec.ClaimContracts.HoldResolution",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "exact successまたはcomplete absenceが存在"
+      "meaning": "Exact success or complete absence exists"
     },
     {
       "name": "BridgeSpec.ClaimContracts.InitialActivationAuthorization",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "bootstrap期間の認可と消費、seal caller条件、migration分類を規定"
+      "meaning": "Specifies bootstrap authorization and consumption, seal caller conditions, and migration classification"
     },
     {
       "name": "BridgeSpec.ClaimContracts.LeaseLaneIsolation",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "対象は非activeでlane capacity未満"
+      "meaning": "The target is inactive and below lane capacity"
     },
     {
       "name": "BridgeSpec.ClaimContracts.LeaseOutcome",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "leaseはactiveでgeneration一致、会計不変条件と他recordを保存"
+      "meaning": "The lease is active with a matching generation; preserves accounting invariants and other records"
     },
     {
       "name": "BridgeSpec.ClaimContracts.LedgerBlockProvenance",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "既存indexを保持し、競合を拒否し、refundにはfunding indexが必要"
+      "meaning": "Preserves existing indices, rejects conflicts, and requires a funding index for refunds"
     },
     {
       "name": "BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "refunded・cancelled・minted以外だけindex対象"
+      "meaning": "Only phases other than refunded, cancelled, and minted are indexed"
     },
     {
       "name": "BridgeSpec.ClaimContracts.NotificationQuotaIsolation",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "global・caller・ingestion上限未満、cooldownはhash一致かつ期限未満"
+      "meaning": "Below global, caller, and ingestion limits; cooldown requires matching hashes and time before expiry"
     },
     {
       "name": "BridgeSpec.ClaimContracts.OperationalConfigSeal",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "未sealかつ候補有効の場合だけsealし、asset操作はsealedの場合だけ許可"
+      "meaning": "Seals only when not already sealed and the candidate is valid; allows asset operations only when sealed"
     },
     {
       "name": "BridgeSpec.ClaimContracts.PaidCallCycleReserve",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "課金後もreserveを残す"
+      "meaning": "Preserves the reserve after charging"
     },
     {
       "name": "BridgeSpec.ClaimContracts.PaymentIdentity",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "payoutの純額・宛先はrecordに一致し、別IDのrecordは不変"
+      "meaning": "The payout net amount and recipient match the record; records with other IDs remain unchanged"
     },
     {
       "name": "BridgeSpec.ClaimContracts.PendingQueue",
       "role": "specification",
       "specification": "docs/bridge-flow.md",
-      "meaning": "blocked retryを保持し、書込失敗時はsessionを保持してdurable結果なし"
+      "meaning": "Preserves blocked retries; on write failure, retains the session with no durable result"
     },
     {
       "name": "BridgeSpec.ClaimContracts.RefundEvidenceEnforcement",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "未処理・deposit/digest一致・strict expiryが必要"
+      "meaning": "Requires unprocessed status, matching deposit/digest, and strict expiry"
     },
     {
       "name": "BridgeSpec.ClaimContracts.RefundRequestAuthorization",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "authenticated=trueかつdepositProcessed=false"
+      "meaning": "Requires authenticated=true and depositProcessed=false"
     },
     {
       "name": "BridgeSpec.ClaimContracts.ReservationCommit",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "予約+候補の合計を保存し、解放は正確に0、二重解放を拒否"
+      "meaning": "Preserves the reservation-plus-candidate total, releases to exactly zero, and rejects double release"
     },
     {
       "name": "BridgeSpec.ClaimContracts.ReservationLifecycle",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "予約を正確に0へし、二重解放を拒否"
+      "meaning": "Sets the reservation to exactly zero and rejects double release"
     },
     {
       "name": "BridgeSpec.ClaimContracts.RuntimeAttestationReuse",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "再利用domainは現在のinstall domainと一致"
+      "meaning": "The reuse domain matches the current install domain"
     },
     {
       "name": "BridgeSpec.ClaimContracts.ServiceFeeMaximum",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "fee変更は固定範囲内、署名fee計上は一度だけ"
+      "meaning": "Fee changes stay within fixed bounds; signing fees are accounted for once"
     },
     {
       "name": "BridgeSpec.ClaimContracts.SettlementBacking",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "backingを保存し、escrow・feeReserve・未決済債務へ規定差分を適用"
+      "meaning": "Preserves backing and applies prescribed deltas to escrow, feeReserve, and outstanding liabilities"
     },
     {
       "name": "BridgeSpec.ClaimContracts.SigningCycleReserve",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "請求後もreserveを残す"
+      "meaning": "Preserves the reserve after billing"
     },
     {
       "name": "BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
-      "meaning": "minimumは非0でobservedはminimum以上"
+      "meaning": "The minimum is nonzero and observed is at least the minimum"
     },
     {
       "name": "BridgeSpec.ClaimContracts.WithdrawalFinalityQuorum",
       "role": "specification",
       "specification": "docs/bridge-flow.md",
-      "meaning": "二者が高さをattestし、identity版は高さとhashの二者一致"
+      "meaning": "Two providers attest the height; the identity variant requires agreement on both height and hash"
     },
     {
       "name": "BridgeSpec.ClaimContracts.WithdrawalFinalization",
       "role": "specification",
       "specification": "docs/bridge-flow.md",
-      "meaning": "notifyには成功かつfinalized以下かつcanonicalが必要、finalized不在ならretry"
+      "meaning": "Notify requires success, a block at or below finalized, and canonicality; missing finalized yields retry"
+    },
+    {
+      "name": "BridgeSpec.ClaimContracts.governanceAffordabilityDecision",
+      "role": "specification",
+      "specification": "docs/canister-state-machine.md",
+      "meaning": "Returns the smaller observed balance and the inclusive affordability comparison"
     },
     {
       "name": "BridgeSpec.GlobalHistory.AccountingInvariant",
       "role": "model-support",
       "specification": "verification/README.md",
-      "meaning": "ID一意性・集計一致・backing・予約のrecord種別だけを拘束する"
+      "meaning": "Constrains only ID uniqueness, aggregate agreement, backing, and the record types holding reservations"
     },
     {
       "name": "BridgeSpec.GlobalHistory.Backed",
@@ -1118,97 +1129,97 @@
       "name": "BridgeSpec.GlobalHistory.eventDelta",
       "role": "model-support",
       "specification": "verification/README.md",
-      "meaning": "会計イベントの選択。callback phaseは実Ledger送金を認証しない"
+      "meaning": "Selection of accounting events. Callback phases do not authenticate actual Ledger transfers"
     },
     {
       "name": "BridgeSpec.Liveness.AdmissibleUntilOccurs",
       "role": "model-support",
       "specification": "verification/conditional-liveness.md",
-      "meaning": "対象終端イベントが選択まで常時受理可能であるという仮定"
+      "meaning": "Assumes the target terminal event remains admissible until selected"
     },
     {
       "name": "BridgeSpec.Liveness.CommonOperationalAssumptions",
       "role": "model-support",
       "specification": "verification/conditional-liveness.md",
-      "meaning": "readyAt以降の継続的な可用性とweak fairnessをまとめた仮定"
+      "meaning": "Combines continuous availability from readyAt onward with weak fairness"
     },
     {
       "name": "BridgeSpec.Liveness.DepositTerminalProgressLemmas",
       "role": "model-support",
       "specification": "verification/conditional-liveness.md",
-      "meaning": "mintの条件付き含意とrefundの条件付き含意の論理積。共通実行の二者択一ではない"
+      "meaning": "Conjunction of conditional mint and refund implications, not an either/or guarantee for one shared execution"
     },
     {
       "name": "BridgeSpec.Liveness.ExpiredDepositEventuallyRefunded",
       "role": "model-support",
       "specification": "verification/conditional-liveness.md",
-      "meaning": "対象depositがrefundedへ到達"
+      "meaning": "The target deposit reaches refunded"
     },
     {
       "name": "BridgeSpec.Liveness.FundedDepositEventuallyMinted",
       "role": "model-support",
       "specification": "verification/conditional-liveness.md",
-      "meaning": "対象depositがmintedへ到達"
+      "meaning": "The target deposit reaches minted"
     },
     {
       "name": "BridgeSpec.Liveness.FundingFailureEventuallyCancelled",
       "role": "model-support",
       "specification": "verification/conditional-liveness.md",
-      "meaning": "対象depositがcancelledへ到達"
+      "meaning": "The target deposit reaches cancelled"
     },
     {
       "name": "BridgeSpec.Liveness.WeakFair",
       "role": "model-support",
       "specification": "verification/conditional-liveness.md",
-      "meaning": "継続的に有効な具体イベントが将来選択されるという仮定"
+      "meaning": "Assumes a continuously enabled concrete event is eventually selected"
     },
     {
       "name": "BridgeSpec.Liveness.WithdrawalEventuallyPaid",
       "role": "model-support",
       "specification": "verification/conditional-liveness.md",
-      "meaning": "対象withdrawalがpaidへ到達"
+      "meaning": "The target withdrawal reaches paid"
     },
     {
       "name": "BridgeSpec.MintAuthorization.Authorization.valid",
       "role": "specification",
       "specification": "verification/README.md",
-      "meaning": "認可のdomain・epoch・金額・IC起点期限の一致。digestの暗号計算は対象外"
+      "meaning": "Matching authorization domain, epoch, amount, and IC-origin deadline. Cryptographic digest computation is excluded"
     },
     {
       "name": "BridgeSpec.MintAuthorization.ExpiryEvidence.valid",
       "role": "specification",
       "specification": "verification/README.md",
-      "meaning": "decode済み未処理証拠とstrict expiryの照合"
+      "meaning": "Matches decoded unprocessed evidence and strict expiry"
     },
     {
       "name": "BridgeSpec.MintAuthorization.MintEvidence.valid",
       "role": "specification",
       "specification": "verification/README.md",
-      "meaning": "decode済みmint証拠のfield照合。非0hashの真正性は外部前提"
+      "meaning": "Matches decoded mint evidence fields. Authenticity of nonzero hashes is an external premise"
     },
     {
       "name": "BridgeSpec.MintAuthorization.installSignature",
       "role": "specification",
       "specification": "verification/README.md",
-      "meaning": "署名時の残り300秒、有限幅、fee一回性を検査する抽象遷移"
+      "meaning": "Abstract transition checking 300 seconds remaining at signing, finite-width bounds, and fee accounting once"
     },
     {
       "name": "BridgeSpec.Protocol.Safe",
       "role": "model-support",
       "specification": "verification/README.md",
-      "meaning": "統合単一recordモデルの会計・quote・lease条件。全runtime安全性ではない"
+      "meaning": "Accounting, quote, and lease conditions of the integrated single-record model, not overall runtime safety"
     },
     {
       "name": "BridgeSpec.Protocol.filterSafeStoredState",
       "role": "model-support",
       "specification": "verification/README.md",
-      "meaning": "Safeを条件として受理する抽象フィルタ。本番decodeやmigrationではない"
+      "meaning": "Abstract filter accepting states under the Safe condition, not production decoding or migration"
     },
     {
       "name": "BridgeSpec.signatureTimeAllowed",
       "role": "specification",
       "specification": "verification/README.md",
-      "meaning": "u64期限・加算overflow拒否・最低残存300秒のpredicate"
+      "meaning": "Predicate for a u64 deadline, rejection of addition overflow, and at least 300 seconds remaining"
     }
   ],
   "roots": {
@@ -1507,7 +1518,7 @@
       "type": "Prop"
     },
     {
-      "definition": "∀ (observedWei requiredWei : Nat), LT.lt.{0} observedWei requiredWei → Not (LE.le.{0} requiredWei observedWei)",
+      "definition": "∀ (finalized safe required : Nat),\n  And\n    (Eq.{1} (Prod.fst.{0, 0} (BridgeSpec.ClaimContracts.governanceAffordabilityDecision finalized safe required))\n      (Min.min.{0} finalized safe))\n    (Iff\n      (Eq.{1} (Prod.snd.{0, 0} (BridgeSpec.ClaimContracts.governanceAffordabilityDecision finalized safe required))\n        Bool.true)\n      (And (LE.le.{0} required finalized) (LE.le.{0} required safe)))",
       "name": "BridgeSpec.ClaimContracts.GovernanceTransactionAffordability",
       "type": "Prop"
     },
@@ -1710,6 +1721,11 @@
       "definition": null,
       "name": "BridgeSpec.ClaimContracts.funding_reconciliation_freshness_witness",
       "type": "BridgeSpec.ClaimContracts.FundingReconciliationFreshness"
+    },
+    {
+      "definition": "fun finalized safe required =>\n  have observed := Min.min.{0} finalized safe;\n  Prod.mk.{0, 0} observed (Decidable.decide (LE.le.{0} required observed))",
+      "name": "BridgeSpec.ClaimContracts.governanceAffordabilityDecision",
+      "type": "Nat → Nat → Nat → Prod.{0, 0} Nat Bool"
     },
     {
       "definition": null,

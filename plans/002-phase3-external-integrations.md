@@ -1,7 +1,7 @@
-# Plan 002: Phase 3 外部連携とローカル E2E
+# Plan 002: Phase 3 external integrations and local E2E
 
-> **履歴資料**：この本文はPlan 002完了時点のschema v2と実装境界を記録している。timer、queue、client request IDは明示操作、bounded external call、owner sequenceへ置換済みである。
-> 現行仕様はリポジトリ直下の`README.md`と`docs/`を参照する。
+> **Historical record:** this document records schema v2 and implementation boundaries at Plan 002 completion. Timers, queues, and client request IDs have been replaced by explicit operations, bounded external calls, and owner sequences.
+> See the repository-root `README.md` and `docs/` for current specifications.
 
 ## Status
 
@@ -12,21 +12,21 @@
 
 ## Implemented boundary
 
-- 公開`request_deposit`はcallerとclient request IDからDeposit IDを決定し、Safe Base fee/limit確認後、同一identityのICRC-2 pullを実行する。
-- ICRCの成功と`Duplicate`は同じ成功証拠として扱い、call rejection・decode不能はReconciliation Holdへ移す。dedup期間後はLedgerと動的archiveの全rangeを照合し、完全被覆できない限りabsentにしない。
-- Base監視は`WithdrawalCreated`を発見にだけ使用し、Safe headの`getWithdrawal`を受付根拠にする。3 provider中2の一致を必須とする。
-- EVM操作は単一stable nonce queue、固定contract、固定selectorのEIP-1559 envelopeとして保存し、threshold ECDSA署名後のraw transactionを再送用に保持する。
-- timerはWithdrawal発見、Hold照合、ICP Release、mint/acknowledgement/refund送信、Safe-confirmed receiptとcontract state確認をstable recordから再開する。
-- 本番未デプロイのためlegacy migrationは持たず、schema v2以外をfail closedで拒否する。現行schemaの未完了record、nonce、cursor、会計はupgrade後も保持する。
+- Public `request_deposit` derives the Deposit ID from caller and client request ID, checks Safe Base fees/limits, and performs an ICRC-2 pull with the same identity.
+- Treat ICRC success and `Duplicate` as equivalent success evidence; call rejection or decode failure enters Reconciliation Hold. After deduplication expires, reconcile the full Ledger/dynamic-archive range and never conclude absence without complete coverage.
+- Base monitoring uses `WithdrawalCreated` only for discovery; Safe-head `getWithdrawal` authorizes admission. Require agreement from two of three providers.
+- Persist EVM operations as EIP-1559 envelopes with a single stable nonce queue, fixed contract, and fixed selector; retain threshold-ECDSA-signed raw transactions for resubmission.
+- Timers resume Withdrawal discovery, Hold reconciliation, ICP Release, mint/acknowledgement/refund submission, and Safe-confirmed receipt/contract-state checks from stable records.
+- Before production deployment, provide no legacy migrations and reject all schemas except v2 fail closed. Preserve current-schema unfinished records, nonces, cursors, and accounting across upgrades.
 
 ## Deferred to Plan 003
 
-- Settlement Reserveの実コスト、task優先queue、fee bump、Runtime Administrator、手動Governance resolution、運用監査ログ。
-- mainnetのBase address、ECDSA key、gas上限と監視値の確定。
+- Actual Settlement Reserve costs, task-priority queues, fee bumps, Runtime Administrator, manual Governance resolution, and operational audit logs.
+- Finalize mainnet Base addresses, ECDSA keys, gas caps, and monitoring values.
 
 ## Verification
 
-- Rust format、clippy、workspace test、Wasm build、Candid drift、ICP buildをCI gateで検査する。
-- Base ABIは変更せず、selector/topic snapshotと既存Foundry/SMT/Verus gateを維持する。
-- PicJSでmock Ledger、mock EVM RPC、management threshold ECDSAを同一PocketIC topologyへ導入し、Deposit、Withdrawal release/acknowledgement、Base Refund、Reconciliation Holdのupgrade保持、stuck receiptを検証した。
-- E2Eは空きportを自動割当し、同一operationの再broadcastが同一raw transactionになることを検証する。`scripts/ci-local.sh checks`でmock/bridge Wasm buildとE2Eを必須gate化した。
+- CI gates check Rust formatting, clippy, workspace tests, Wasm builds, Candid drift, and ICP builds.
+- Preserve Base ABI, selector/topic snapshots, and existing Foundry/SMT/Verus gates.
+- PicJS installs mock Ledger, mock EVM RPC, and management threshold ECDSA in one PocketIC topology, verifying Deposits, Withdrawal release/acknowledgement, Base Refunds, upgrade preservation of Reconciliation Holds, and stuck receipts.
+- E2E automatically assigns free ports and verifies that rebroadcasting an operation uses identical raw transactions. `scripts/ci-local.sh checks` requires mock/Bridge Wasm builds and E2E.

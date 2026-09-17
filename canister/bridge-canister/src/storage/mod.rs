@@ -5111,41 +5111,6 @@ impl StableStore {
         Ok(())
     }
 
-    pub fn set_settlement_stop_reason_fenced(
-        &mut self,
-        job: &SettlementJob,
-        stop_reason: Option<String>,
-    ) -> Result<bool, StorageError> {
-        let generation = self.handle.query(|connection| {
-            connection.query_optional_scalar::<Vec<u8>>(
-                "SELECT lease_generation FROM settlement_jobs
-                 WHERE settlement_kind = ?1 AND settlement_id = ?2",
-                params![job.kind.sql(), job.settlement_id.to_sql_bytes()],
-            )
-        })?;
-        if generation.as_deref() != Some(job.lease_generation.to_sql_bytes().as_slice()) {
-            return Ok(false);
-        }
-        match job.kind {
-            SettlementJobKind::Deposit => {
-                let mut record = self
-                    .deposit(job.settlement_id)?
-                    .ok_or(StorageError::RecordNotFound)?;
-                record.last_settlement_stop_reason = stop_reason;
-                self.put_deposit(&record)?;
-            }
-            SettlementJobKind::Withdrawal => {
-                let mut record = self
-                    .withdrawal(job.settlement_id)?
-                    .ok_or(StorageError::RecordNotFound)?;
-                record.last_settlement_stop_reason = stop_reason;
-                self.put_withdrawal(&record)?;
-            }
-            SettlementJobKind::FeePayout => {}
-        }
-        Ok(true)
-    }
-
     pub fn settlement_scheduler_health(&self) -> Result<SettlementSchedulerHealth, StorageError> {
         decode(&self.settlement_scheduler_health.get()?)
     }
@@ -5268,31 +5233,6 @@ impl StableStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn finish_base_snapshot_refresh_with_rpc_audit(
-        &mut self,
-        owner: u64,
-        observed_at_ns: u64,
-        snapshot: BaseMintSnapshot,
-        bridge_signer: [u8; 20],
-        mint_authorization_epoch: u64,
-        deposits_paused: bool,
-        caller: Principal,
-        audit_kinds: Vec<AuditEventKind>,
-    ) -> Result<(), StorageError> {
-        self.finish_base_snapshot_refresh_with_rpc_audit_and_observation(
-            owner,
-            observed_at_ns,
-            snapshot,
-            bridge_signer,
-            mint_authorization_epoch,
-            deposits_paused,
-            None,
-            None,
-            caller,
-            audit_kinds,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn finish_base_snapshot_refresh_with_rpc_audit_and_observation(
         &mut self,
@@ -5561,17 +5501,6 @@ impl StableStore {
             .governance_operator_public_key
             .unwrap_or(public_key);
         admission.governance_operator_public_key = Some(selected.clone());
-        self.set_deposit_admission(&admission)?;
-        Ok(selected)
-    }
-
-    pub fn set_governance_operator_address_if_absent(
-        &mut self,
-        address: [u8; 20],
-    ) -> Result<[u8; 20], StorageError> {
-        let mut admission = self.deposit_admission()?;
-        let selected = admission.governance_operator_address.unwrap_or(address);
-        admission.governance_operator_address = Some(selected);
         self.set_deposit_admission(&admission)?;
         Ok(selected)
     }
@@ -6353,15 +6282,6 @@ impl StableStore {
         )))
     }
 
-    pub fn set_config_once(&mut self, value: &BridgeInitArgs) -> Result<(), StorageError> {
-        let next = ImmutableBridgeConfig::from_init(value);
-        match decode::<Option<ImmutableBridgeConfig>>(&self.config.get()?)? {
-            None => self.config.set(encode(&Some(next))?),
-            Some(previous) if previous == next => Ok(()),
-            Some(_) => Err(StorageError::Core(CoreError::ConflictingReplay)),
-        }
-    }
-
     #[cfg(feature = "test-deployment")]
     pub fn apply_staging_rpc_replacement(
         &mut self,
@@ -6639,45 +6559,6 @@ impl StableStore {
         Ok(())
     }
 
-    pub fn pause_deposits_with_rpc_audit(
-        &mut self,
-        caller: Principal,
-        timestamp_ns: u64,
-        audit_kinds: Vec<AuditEventKind>,
-    ) -> Result<(), StorageError> {
-        let mut admin = self.admin_state()?;
-        admin.deposits_paused = true;
-        let previous_admin = self.admin_state.get()?;
-        let admin_blob = encode(&Some(admin))?;
-        let mut counters = self.counters()?;
-        let previous_counters = encode(&counters)?;
-        let audit = self.prepare_audit_batch(&mut counters, caller, timestamp_ns, audit_kinds)?;
-        let counters_blob = encode(&counters)?;
-        self.handle.update(|connection| {
-            let persisted_admin = connection.query_scalar::<Vec<u8>>(
-                "SELECT admin_state FROM singleton_state WHERE id = 1",
-                params![],
-            )?;
-            let persisted_counters = connection.query_scalar::<Vec<u8>>(
-                "SELECT counters FROM singleton_state WHERE id = 1",
-                params![],
-            )?;
-            if persisted_admin != previous_admin.to_sql_bytes()
-                || persisted_counters != previous_counters.to_sql_bytes()
-            {
-                return Err(DbError::Constraint("stale nonce-conflict pause".into()));
-            }
-            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
-            commit_audit_batch(connection, &audit)?;
-            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
-            connection.execute(
-                "UPDATE singleton_state SET admin_state = ?1, counters = ?2, audit_retention = ?3 WHERE id = 1",
-                params![admin_blob.to_sql_bytes(), counters_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
-            )?;
-            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
-        })?;
-        Ok(())
-    }
     pub fn append_audit_event(
         &mut self,
         caller: Principal,
@@ -6735,7 +6616,7 @@ impl StableStore {
         for kind in kinds {
             let sequence = counters.next_audit_sequence;
             counters.next_audit_sequence =
-                bridge_core::audit_next(sequence).ok_or(StorageError::CounterOverflow)?;
+                ::bridge_core::kernel::audit_next(sequence).ok_or(StorageError::CounterOverflow)?;
             events.push((
                 sequence,
                 encode(&AuditEvent {
@@ -6790,75 +6671,6 @@ impl StableStore {
         })
     }
 
-    /// Persists one audit record for a verified EVM RPC transcript.
-    ///
-    /// Notification retries call this even when the business record already exists. The internal
-    /// request digest is the idempotency key, so a prior post-commit audit failure can be repaired
-    /// without creating duplicate evidence.
-    pub fn append_evm_rpc_observation_once(
-        &mut self,
-        caller: Principal,
-        kind: AuditEventKind,
-    ) -> Result<bool, StorageError> {
-        self.append_evm_rpc_observation_once_at(caller, kind, ic_cdk::api::time())
-    }
-
-    fn append_evm_rpc_observation_once_at(
-        &mut self,
-        caller: Principal,
-        kind: AuditEventKind,
-        timestamp_ns: u64,
-    ) -> Result<bool, StorageError> {
-        let AuditEventKind::EvmRpcObservation {
-            evm_rpc_canister_id,
-            call_method,
-            request_digest,
-            quorum_response_digest,
-            finalized_block_hash,
-            transaction_hash,
-            ..
-        } = &kind
-        else {
-            return Err(StorageError::DecodeFailed);
-        };
-        if call_method.is_empty()
-            || request_digest.len() != 32
-            || quorum_response_digest.len() != 32
-            || finalized_block_hash.len() != 32
-            || transaction_hash
-                .as_ref()
-                .is_some_and(|transaction_hash| transaction_hash.len() != 32)
-        {
-            return Err(StorageError::DecodeFailed);
-        }
-        let recent_events = self.handle.query(|connection| {
-            connection.query_all(
-                "SELECT value FROM audit_events ORDER BY key DESC LIMIT 64",
-                params![],
-                |row| row.get::<Vec<u8>>(0),
-            )
-        })?;
-        for event_blob in recent_events {
-            let event: AuditEvent = decode(&StableBlob::new(event_blob)?)?;
-            if let AuditEventKind::EvmRpcObservation {
-                evm_rpc_canister_id: previous_canister,
-                call_method: previous_method,
-                request_digest: previous_request,
-                ..
-            } = event.kind
-            {
-                if previous_canister == *evm_rpc_canister_id
-                    && previous_method == *call_method
-                    && previous_request == *request_digest
-                {
-                    return Ok(false);
-                }
-            }
-        }
-        self.append_audit_event_at(caller, kind, timestamp_ns)?;
-        Ok(true)
-    }
-
     fn append_audit_event_at(
         &mut self,
         caller: Principal,
@@ -6868,7 +6680,7 @@ impl StableStore {
         let mut counters = self.counters()?;
         let sequence = counters.next_audit_sequence;
         counters.next_audit_sequence =
-            bridge_core::audit_next(sequence).ok_or(StorageError::CounterOverflow)?;
+            ::bridge_core::kernel::audit_next(sequence).ok_or(StorageError::CounterOverflow)?;
         let event = AuditEvent {
             sequence,
             timestamp_ns,
@@ -7381,16 +7193,6 @@ impl StableStore {
             .map_err(|_| SettlementAdmissionError::Storage)?
             .ok_or(SettlementAdmissionError::Storage)?;
         Self::manual_claim_outcome(outcome)
-    }
-
-    pub fn put_deposit_and_audit(
-        &mut self,
-        value: &DepositRecord,
-        caller: Principal,
-        kind: AuditEventKind,
-    ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, Some((caller, kind)), None, None, None)
-            .map(|_| ())
     }
 
     pub fn put_deposit_funding_callback(
@@ -12340,54 +12142,6 @@ mod tests {
         ));
         assert!(audit_retention_warning(AUDIT_RETENTION_WARNING_THRESHOLD));
         assert!(audit_retention_warning(MAX_AUDIT_EVENTS));
-    }
-
-    #[test]
-    #[serial]
-    fn evm_rpc_audit_observation_is_validated_and_idempotent() {
-        let memory = VectorMemory::default();
-        let mut store = StableStore::init(memory.clone()).expect("initialize");
-        let caller = Principal::self_authenticating([71; 32]);
-        let kind = AuditEventKind::EvmRpcObservation {
-            evm_rpc_canister_id: Principal::self_authenticating([72; 32]),
-            call_method: "request".into(),
-            request_digest: vec![73; 32],
-            quorum_response_digest: vec![74; 32],
-            finalized_block_number: 75,
-            finalized_block_hash: vec![76; 32],
-            transaction_hash: Some(vec![77; 32]),
-        };
-        assert!(store
-            .append_evm_rpc_observation_once_at(caller, kind.clone(), 1_000)
-            .expect("append evidence"));
-        assert!(!store
-            .append_evm_rpc_observation_once_at(caller, kind, 1_001)
-            .expect("deduplicate evidence"));
-        assert_eq!(store.audit_events.len(), 1);
-        assert_eq!(store.counters().expect("counters").next_audit_sequence, 1);
-
-        let malformed = AuditEventKind::EvmRpcObservation {
-            evm_rpc_canister_id: Principal::self_authenticating([72; 32]),
-            call_method: "request".into(),
-            request_digest: vec![73; 31],
-            quorum_response_digest: vec![74; 32],
-            finalized_block_number: 75,
-            finalized_block_hash: vec![76; 32],
-            transaction_hash: None,
-        };
-        assert_eq!(
-            store.append_evm_rpc_observation_once_at(caller, malformed, 1_002),
-            Err(StorageError::DecodeFailed)
-        );
-        assert_eq!(store.audit_events.len(), 1);
-        drop(store);
-        let reopened = StableStore::reopen(memory).expect("reopen audit evidence");
-        assert_eq!(reopened.audit_events.len(), 1);
-        let page = reopened.audit_events(0, 10).expect("read audit evidence");
-        assert!(matches!(
-            page.events.first().map(|event| &event.kind),
-            Some(AuditEventKind::EvmRpcObservation { .. })
-        ));
     }
 
     #[test]

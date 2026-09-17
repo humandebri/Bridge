@@ -2,23 +2,23 @@
 status: superseded by ADR-0009
 ---
 
-# SNS GovernanceをBase adminの権限主体にする
+# Make SNS Governance the Base admin authority
 
-Base contractのlimit変更、role rotation、unpauseを承認するGovernance AuthorityはSNS Governanceとする。標準SNS Governance canisterへEVM実装を追加せず、採択済みcustom proposalをEVM transactionへ変換するだけのGovernance Executorを置く。
+SNS Governance is the Governance Authority approving Base contract limit changes, role rotation, and unpause. Do not add EVM implementation to the standard SNS Governance canister; use a Governance Executor solely to translate adopted custom proposals into EVM transactions.
 
 ## Considered Options
 
-- operational Bridge canisterがadmin transactionも署名する案は、Bridge侵害時にBase側の安全制限も失うため不採用とする。
-- SNS Governance canisterが直接EVM transactionを構築・署名する案は、標準SNS Governanceの責務と実装範囲を変更するため不採用とする。
-- SNS Governanceを唯一の承認主体とし、専用Executorを技術的adapterとして使用する案を採用する。
+- Reject having the operational Bridge canister also sign admin transactions because Bridge compromise would then remove Base safety constraints.
+- Reject direct EVM transaction construction and signing by SNS Governance because it changes the responsibilities and implementation scope of the standard SNS Governance canister.
+- Adopt SNS Governance as the sole approval authority, with a dedicated Executor as a technical adapter.
 
 ## Consequences
 
-- Governance Executorのvalidate methodとexecute methodをSNS custom proposalとして登録する。
-- execute methodはcallerが設定済みSNS Governance principalと一致する場合だけ処理する。匿名callerとoperational Bridge canisterを拒否する。
-- Governance ExecutorはSNS Rootの管理下へ置く。
-- Base contractの`DEFAULT_ADMIN_ROLE`はGovernance Executor専用のthreshold ECDSA addressが保持する。
-- Governance Executorが送信できるtarget、chain ID、contract address、function selectorを固定allowlistへ限定し、任意calldata転送を許可しない。
-- operational Bridge canisterとGovernance Executorはcanister principalが異なるため、相互のthreshold ECDSA addressとして署名できない。
-- Verusでcaller認可、allowlist、proposal payload検証、admin transaction生成の対応関係を証明する。
-- SNS Governanceは権限主体、Governance Executorは実行adapterであり、独立したadmin組織やmultisigを導入しない。
+- Register the Governance Executor's validate and execute methods as an SNS custom proposal.
+- The execute method processes only calls from the configured SNS Governance principal. Reject anonymous callers and the operational Bridge canister.
+- Place the Governance Executor under SNS Root control.
+- A threshold ECDSA address dedicated to the Governance Executor holds the Base contract's `DEFAULT_ADMIN_ROLE`.
+- Restrict the Governance Executor's targets, chain IDs, contract addresses, and function selectors to a fixed allowlist; prohibit arbitrary calldata forwarding.
+- The operational Bridge canister and Governance Executor have different canister principals and cannot sign as each other's threshold ECDSA addresses.
+- Use Verus to prove the correspondence among caller authorization, the allowlist, proposal payload validation, and admin transaction construction.
+- SNS Governance is the authority and the Governance Executor is an execution adapter; do not introduce an independent admin organization or multisig.

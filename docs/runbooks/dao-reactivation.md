@@ -1,65 +1,65 @@
-# 個人controller保持下でのDAO再開実証
+# Demonstrate DAO reactivation while retaining the individual controller
 
-この手順は本番公開後の再開経路を検証する。初回activationとcontroller移譲を自動実行しない。個人はコード更新と現在の緊急停止を保持し、通常管理操作を個人に追加しない。
+This procedure verifies post-launch reactivation. It does not automatically perform initial activation or controller handover. The individual retains code-upgrade and current emergency-pause authority without gaining ordinary administration permissions.
 
-承認済みのproduction baselineは[production checkpoint](../../deployments/checkpoints/README.md)に固定したschema 36、module SHA-256 `bf0477947b06a06d31aa32b52992a1b775fca0c9b4c98bf3129037d47abedd64`である。これは旧terminal `6192841b...`から`d48d4737...`と`bf047794...`への署名済みupgrade receiptを検証してrotationしたcheckpointであり、source revision `16cd903af92878ffe13294cf1dc577550ba1340c`の保存Wasmと再現buildがlive moduleへ一致する。
+The approved production baseline is schema 36, module SHA-256 `bf0477947b06a06d31aa32b52992a1b775fca0c9b4c98bf3129037d47abedd64`, fixed in the [production checkpoint](../../deployments/checkpoints/README.md). This checkpoint was rotated after verifying signed upgrade receipts from historical terminal `6192841b...` through `d48d4737...` to `bf047794...`; saved Wasm and reproducible builds from source revision `16cd903af92878ffe13294cf1dc577550ba1340c` match the live module.
 
-## 開始時点
+## Starting state
 
-2026-09-16の再確認ではBridge `lb5i5-ziaaa-aaaar-qcgwq-cai` はschema 36、module SHA-256 `bf0477947b06a06d31aa32b52992a1b775fca0c9b4c98bf3129037d47abedd64`、controllerはproduction identity `lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe`一件だった。Governanceは`74ncn-fqaaa-aaaaq-aaasa-cai`、pause principalはproduction identityで、BridgeはSNS Rootの`dapps`に未登録である。開始時点の[baseline manifest](../evidence/dao-baseline-20260914/manifest.json)はrotation前の読み取り記録として保持する。
+Reverification on 2026-09-16 found Bridge `lb5i5-ziaaa-aaaar-qcgwq-cai` at schema 36, module SHA-256 `bf0477947b06a06d31aa32b52992a1b775fca0c9b4c98bf3129037d47abedd64`, with only production identity `lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe` as controller. Governance is `74ncn-fqaaa-aaaaq-aaasa-cai`, pause principal is the production identity, and the Bridge is not registered in SNS Root `dapps`. Retain the initial [baseline manifest](../evidence/dao-baseline-20260914/manifest.json) as a pre-rotation read-only observation.
 
-controller移譲を開始する直前にもlive stateを再取得し、active checkpointの`bf047794...`またはその後に承認したcurrent-source suffixへ完全一致させる。不一致を生観測だけで置換しない。現行`bf047794...`は`storage_integrity_check`を提供するが、handover completionが要求する`get_release_storage_integrity`を提供しないため、このrunbookの`prepare`より前に同methodを含むcurrent-source v36 upgradeを別途検証・承認・実行し、そのreceiptをactive checkpoint evidenceのsuffixへ追加する。
+Retrieve live state again immediately before controller handover, requiring an exact match with active checkpoint `bf047794...` or a subsequently approved current-source suffix. Do not replace a mismatched baseline with raw observations alone. Current `bf047794...` exposes `storage_integrity_check` but not `get_release_storage_integrity`, required for handover completion. Before this runbook's `prepare`, separately validate, approve, and execute a current-source v36 upgrade containing that method and append its receipt to the active checkpoint evidence suffix.
 
-## 準備
+## Preparation
 
-1. 現在のclean sourceで対象proofとテストを完了し、承認対象のWasm・source revision・公開Candidを固定する。本番upgradeは別途承認後に実行する。
-2. Governanceの`list_nervous_system_functions`をqueryし、`icp --json`の`response_bytes`を含む応答を保存する。Rootの`list_sns_canisters (record {})`、Bridgeのmanagement status、runtime、lifecycle、activation、運用設定も保存する。
-3. `tools/sns-proposal/prepare.mjs REGISTRY_JSON BRIDGE PREVIOUS_OPERATION OUTPUT_JSON`を固定Nodeで実行する。PREVIOUS_OPERATIONは`get_activation_status`の直前の確定operation IDである。出力は送信しない。active／reserved IDを避けて登録proposalを生成し、既存登録はtarget・validatorの完全一致を要求する。
-4. 2操作それぞれのfunction ID、target、validator、method、topic、payload、提出neuron・signerとproposal全文をレビューする。登録proposalが必要ならその提出を別途承認し、executedとlive registryを確認する。登録だけではBridgeは再開しない。
+1. Complete applicable proofs and tests on current clean source; fix the Wasm, source revision, and public Candid under review. Execute production upgrades only after separate approval.
+2. Query Governance `list_nervous_system_functions`, saving the `icp --json` response including `response_bytes`. Also save Root `list_sns_canisters (record {})`, Bridge management status, runtime, lifecycle, activation, and operational configuration.
+3. Run `tools/sns-proposal/prepare.mjs REGISTRY_JSON BRIDGE PREVIOUS_OPERATION OUTPUT_JSON` with pinned Node. PREVIOUS_OPERATION is the latest confirmed operation ID from `get_activation_status`. Do not submit output. Generate registration proposals avoiding active/reserved IDs; existing registrations must exactly match target and validator.
+4. Review function IDs, targets, validators, methods, topics, payloads, submitting neuron/signer, and full proposal text for both operations. If registration proposals are needed, obtain separate submission approval and verify executed status and live registry. Registration alone does not reactivate the Bridge.
 
-`prepare.mjs`が出す2操作のpayloadは、同じ取得時点のoperation IDを使用する。scheduleの確定後は新しいIDで再生成する。先に作ったexecute payloadを送らない。
+Both operation payloads from `prepare.mjs` use the operation ID from the same observation. Regenerate with the new ID after schedule confirmation; do not submit the previously prepared execute payload.
 
-専用APIは`validate_sns_schedule_activation`／`sns_schedule_activation`と`validate_sns_execute_activation`／`sns_execute_activation`。引数はいずれも`record { previous_governance_operation_id : nat64 }`。validatorは`Result<text,text>`を返す読み取り専用updateで、実行入口は失敗をIC rejectとして返す。SNSのexecutedは署名準備の完了までを意味し、Baseの完了ではない。
+Dedicated APIs are `validate_sns_schedule_activation`/`sns_schedule_activation` and `validate_sns_execute_activation`/`sns_execute_activation`, each taking `record { previous_governance_operation_id : nat64 }`. Validators are read-only updates returning `Result<text,text>`; execution entry points return failures as IC rejects. SNS executed status means signature preparation completed, not Base execution.
 
-## 本番実証（各操作の別途承認後）
+## Production demonstration (after separate approval for each action)
 
-- 停止日時と少額テスト額を実行用のproposal・作業記録へ明示する。現在のemergency pause principalで停止し、Base両flowとIC Depositの停止を確認する。
-- 最新registryと確定operationでschedule proposalを準備・提出する。既存の`production-activation-proposal.sh`には末尾にPREVIOUS_OPERATIONとレビュー済みproposal準備JSONのpathを渡す。送信前に最新registryから再生成し、function ID・validator・payload・proposal本文の一致を検証する。checkpointのある送信は再送せず、`OUTPUT.response.json`に保存したCLI応答とproposal履歴を読み戻す。応答のデコードに失敗してもjournalを削除しない。
-- signed transactionをrelayし、指定confirmation relayerによる通知とCanisterのFinalized検証を完了する。revertなら停止し、確定待ちのタイムアウト扱いにしない。
-- 24時間後にlive状態・registryを再取得し、確定したschedule operation IDに束縛したexecute proposalを別途準備・承認・提出する。relayとFinalized検証まで完了し、Base両flowとIC Depositの再開、少額入出金、データ・準備金・auditの継続を確認する。
-- SNS submissionはschema 4、activation receiptはschema 5。旧SNS形式を変換して通さない。初回controller receiptは別型のまま保存する。
-- 手数料・受取先変更はこの本番実証には含めない。
+- Specify pause time and small test amounts in execution proposals/work records. Pause using the current emergency principal and verify both Base flows and IC Deposits are stopped.
+- Prepare and submit schedule proposals from the latest registry and confirmed operation. Append PREVIOUS_OPERATION and the reviewed proposal-preparation JSON path to existing `production-activation-proposal.sh`. Regenerate from the latest registry before submission and verify function ID, validator, payload, and proposal text match. Never resubmit a checkpointed submission; reread the CLI response saved in `OUTPUT.response.json` and proposal history. Do not delete journals even if response decoding fails.
+- Relay the signed transaction, complete notification through the designated confirmation relayer, and finish Canister Finalized verification. Stop on revert; do not classify it as a confirmation timeout.
+- After 24 hours, retrieve live state/registry again and separately prepare, approve, and submit an execute proposal bound to the confirmed schedule operation ID. Complete relay and Finalized verification, checking resumed Base flows/IC Deposits, small deposits/withdrawals, and continuity of data, reserves, and audits.
+- SNS submissions use schema 4 and activation receipts schema 5. Do not convert old SNS formats to pass. Retain initial controller receipts as a distinct type.
+- Fee and recipient changes are outside this production demonstration.
 
-再開receiptを生成する`bridge-profile verify-activation`と`verify-schedule-receipt-live`には、`BRIDGE_CHECKPOINT_EVIDENCE`で承認済みの現在のv36 terminalを指定する。初回Gate Bを履歴として検証し、現在のmoduleだけをcheckpointから導出する。Gate B単独controller条件は変わらない。
+For reactivation receipt commands `bridge-profile verify-activation` and `verify-schedule-receipt-live`, specify the approved current v36 terminal through `BRIDGE_CHECKPOINT_EVIDENCE`. Verify initial Gate B as history and derive only the current module from the checkpoint. Gate B sole-controller requirements remain unchanged.
 
-## 最終移譲
+## Final handover
 
-実証結果を確認して運用者が別途承認するまでは、Root追加・管理対象登録・個人controller削除を実施しない。承認後も一度にRoot単独へ置換しない。handover driverの`prepare`でRootだけを追加し、controller集合が正確にproduction identityとRootの二者であることを確認してschema 5のpreparation receiptを保存する。結果が不明なら`recover`で再取得し、管理操作は再送しない。
+Do not add Root, register the dapp, or remove the individual controller before operators review the demonstration and separately approve handover. Even after approval, do not replace controllers with Root alone in one step. Handover-driver `prepare` only adds Root, verifies exactly the production identity and Root as joint controllers, and saves a schema 5 preparation receipt. On unknown outcome, retrieve state with `recover`; do not resubmit administration calls.
 
-共同controllerを確認した後、`production-handover-registration-proposal.sh`でレビュー済みの標準`RegisterDappCanisters` proposalを一度だけ提出する。提出失敗または実行失敗では個人controllerを保持し、自動再送・自動削除を行わない。proposalのexecutedを確認した後、handover driverの`complete`でGovernanceのproposal、Rootの`dapps`、Root単独controller、module・runtime・storageの継続を検証し、schema 5のcompletion receiptを別ファイルへ保存する。Root単独だが未登録、登録済みだが個人controllerが残る、第三controllerがある状態はすべてインシデントとして停止する。
+After verifying joint control, submit the reviewed standard `RegisterDappCanisters` proposal exactly once through `production-handover-registration-proposal.sh`. Submission/execution failure retains the individual controller without automatic resubmission or removal. After verifying proposal executed status, driver `complete` checks the Governance proposal, Root `dapps`, Root-only control, and module/runtime/storage continuity, saving a schema 5 completion receipt separately. Stop as an incident if Root-only but unregistered, registered but still individually controlled, or any third controller exists.
 
-登録提出scriptにもseal／schedule／execute receiptを環境変数で渡す。scriptは提出前に既存のtyped handover validatorとproof gateを再実行し、review済みpayloadがBridge一件だけの固定actionと完全一致する場合だけjournalを予約して送信する。
+Pass seal/schedule/execute receipts through environment variables to the registration submission script too. Before submission it reruns the existing typed handover validator and proof gate, reserving the journal and submitting only if reviewed payload exactly matches the fixed single-Bridge action.
 
-testflightを中止する場合は、controller集合が正確にproduction identityとRootの二者で、登録proposalが未実行であることを再確認し、別途承認した操作でRootを削除する。完了後はUpgradeSnsControlledCanisterで同一非圧縮Wasm、mode=3（upgrade）、空Candid引数を指定し、proposal成功と保存状態・runtime・入出金・UI検証を確認する。
+To abort testflight, recheck exactly two controllers—production identity and Root—and that registration has not executed, then remove Root through a separately approved action. After completion, use UpgradeSnsControlledCanister with the same uncompressed Wasm, mode=3 (upgrade), and empty Candid arguments; verify proposal success, preserved state, runtime, deposits/withdrawals, and UI.
 
-移譲用提出物は次で生成する（送信は行わない）。ROOT_RESPONSE_JSONはRootの`list_sns_canisters (record {})`の最新の`--json`応答、EXPECTED_SHA256は検証済みの現在の非圧縮module hashを指定する。
+Generate handover submissions as follows without sending them. ROOT_RESPONSE_JSON is Root's latest `--json` response to `list_sns_canisters (record {})`; EXPECTED_SHA256 is the verified current uncompressed module hash.
 
 ```sh
 node tools/sns-proposal/handover.mjs ROOT_RESPONSE_JSON BRIDGE WASM EXPECTED_SHA256 OUTPUT_JSON
 ```
 
-出力には登録済み判定、登録proposal、同一Wasmの標準upgrade proposal、1MBごとのchunkファイルと各SHA-256を含む。移管開始時にBridgeが既にRootへ登録済みなら状態不整合として停止し、再登録を省略して続行しない。BridgeのWasmはingress上限を超えるため、別途承認した移譲準備で個人controllerがBridge自身のchunk storeへuploadし、返却された各hashと`stored_chunks`を読み戻す。uploadはRoot追加前に完了させる。proposalはその順序付きhash一覧と元の非圧縮Wasm hashを固定する。圧縮によってmodule hashを変えない。chunked upgradeもSNSの標準経路を使用する。[公式SNS管理手順](https://docs.internetcomputer.org/guides/governance/managing/)
+Output includes registration status, registration proposal, standard same-Wasm upgrade proposal, one-megabyte chunks, and each SHA-256. If the Bridge is already registered with Root when handover begins, stop on inconsistent state; do not skip registration and continue. Since Bridge Wasm exceeds ingress limits, separately approved handover preparation lets the individual controller upload to the Bridge's own chunk store, then reread returned hashes and `stored_chunks`. Finish uploads before adding Root. The proposal fixes ordered chunk hashes and original uncompressed Wasm hash. Do not change module hash by compression. Chunked upgrades also use the standard SNS path. [Official SNS management procedure](https://docs.internetcomputer.org/guides/governance/managing/)
 
-緊急停止principalは保持する。移譲後の障害を個人identityで直接修復できるとは扱わない。
+Retain the emergency pause principal. Do not assume the individual identity can directly repair post-handover failures.
 
-## ローカル検証
+## Local validation
 
-`scripts/prepare-sns-test-runtime.sh`は公式リリース`release-2026-09-10_03-28--all-in-one-node`のハッシュ固定アーカイブからGovernance／Rootを展開する。`BRIDGE_SNS_TEST_RUNTIME`で配置先を指定できる。rootはtestflight=falseで起動する。
+`scripts/prepare-sns-test-runtime.sh` extracts Governance/Root from the hash-pinned official `release-2026-09-10_03-28--all-in-one-node` archive. Set `BRIDGE_SNS_TEST_RUNTIME` to choose the destination. Start Root with testflight=false.
 
-`integration/phase3.spec.ts`の`real SNS reactivation and production registration`は実Governanceによる登録・採択・実行、Bridgeの再開、個人controller維持、Root登録による個人controller削除、同一Wasm upgradeを検証する。Base RPCとLedgerは既存mockを使用するため、本番の24時間待機や実資産の確認を代替しない。
+`real SNS reactivation and production registration` in `integration/phase3.spec.ts` verifies real Governance registration/adoption/execution, Bridge reactivation, retention of the individual controller, its removal through Root registration, and same-Wasm upgrade. Base RPC and Ledger remain mocked, so this does not replace the production 24-hour wait or real-asset checks.
 
-ローカルの早期executeは署名準備まで成功し得る。24時間の強制はBaseのTimelockが担うため、SNSのexecutedだけで再開と判断しない。実SNSテストはmockのrevertを通知して停止が継続することを確認し、Timelockそのものの時間制約は既存のSolidityテストで検証する。
+Local early execute may succeed through signature preparation. Base Timelock enforces 24 hours, so SNS executed status does not imply reactivation. Real SNS tests notify mocked reverts and verify continued pause; existing Solidity tests verify Timelock timing itself.
 
-checkpointを指定した移譲driverは、初回Gate B・seal・controller activationの履歴をcheckpoint rootsと照合したうえで、現在のclean sourceがterminalのsourceと一致すること、完全proof、2回の再ビルドによる同一module hashを要求する。現在の個人単独controllerと、移譲後のRoot単独controllerは別々に検証する。
+With a checkpoint, the handover driver matches historical initial Gate B/seal/controller activation to checkpoint roots, then requires current clean source to match terminal source, complete proofs, and identical module hashes from two rebuilds. Verify current individual-only control separately from post-handover Root-only control.
 
-Rootはupgrade要求への応答後に実際の更新を実行するため、proposalのexecutedと同一module hashだけでは更新完了としない。`get_release_upgrade_observation`から、採択・移譲以降にSNS Rootが成功させた`post_upgrade`の完了時刻とcallerを確認する。この記録はheapのみで保持し、stable schemaは変更しない。失敗したupgradeは完了記録を更新しない。同時に別のupgradeを実行しないことを運用上の前提とし、検証中に別proposalによる更新があれば証跡を取り直す。ローカル実SNSテストでは、Rootが応答した後にpost_upgradeがtrapするケースと、その後の正常な同一Wasm更新を区別する。
+Root performs the actual upgrade after responding to the request, so proposal executed status and unchanged module hash alone do not prove completion. Use `get_release_upgrade_observation` to verify caller and completion time of a successful SNS Root `post_upgrade` after adoption/handover. This record is heap-only and changes no stable schema; failed upgrades do not update it. Assume operationally that no other upgrade runs concurrently; if another proposal upgrades during validation, reacquire evidence. Local real SNS tests distinguish a post_upgrade trap after Root response from a subsequent successful same-Wasm upgrade.

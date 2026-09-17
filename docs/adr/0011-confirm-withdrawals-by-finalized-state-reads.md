@@ -2,8 +2,8 @@
 status: accepted
 ---
 
-# Withdrawalをブラウザ通知と同期一回検証で取り込む
+# Ingest Withdrawals through browser notification and a single synchronous verification
 
-ブラウザはFinalizedな`WithdrawalCommitted` eventを発見し、deployment単位で永続化した通知専用Identityから`notify_withdrawal`へtransaction hashを送る。Canisterはreceiptをexact 2-of-3で一致させ、3 providerのFinalized高さから2番目に大きい値をcheckpointとして選ぶ。その高さのblock hashをexact 2-of-3で再取得し、receipt blockのcanonical probeを行ったうえで、event、`getWithdrawal`、Bridge snapshotをcheckpoint hashへ束縛し、固定quoteとIC Accountの完全一致を検証してからLedger送金を開始する。
+The browser discovers a Finalized `WithdrawalCommitted` event and sends its transaction hash to `notify_withdrawal` using a notification-only Identity persisted per deployment. The Canister requires an exact 2-of-3 receipt match and selects the second-highest Finalized height among three providers as the checkpoint. It retrieves the hash at that height by exact 2-of-3 agreement, performs a canonical probe of the receipt block, and binds the event, `getWithdrawal`, and Bridge snapshot to the checkpoint hash. Only after verifying the fixed quote and exact IC Account match does it begin the Ledger transfer.
 
-定期的な全block discoveryは行わない。ブラウザの15秒Finalized監視は維持するが、通知の自動実行は初回、通信切断または`Busy`の短期再試行1回、`TransactionNotConfirmed`後にheadが進んだ場合の追加1回に限定する。その後は保存済みtransaction hashと失敗理由をProgressまたはHistoryへ復元し、`Retry IC notification`から明示再実行する。通知は任意の非anonymous Principalが実行でき、callerは送金先やamountを変更できない。成功providerが2未満、選択checkpointのcanonical hashが2-of-3で収束しない、receiptまたはstateが不一致の場合は停止し、Safeへfallbackしない。
+Do not perform periodic discovery across all blocks. Retain browser Finalized monitoring every 15 seconds, but limit automatic notifications to the initial attempt, one short retry after disconnection or `Busy`, and one additional attempt when the head advances after `TransactionNotConfirmed`. After that, restore the saved transaction hash and failure reason in Progress or History and require explicit `Retry IC notification`. Any non-anonymous Principal may notify; the caller cannot change the recipient or amount. Stop if fewer than two providers succeed, the selected checkpoint's canonical hash fails to converge by 2-of-3, or receipt/state observations disagree. Do not fall back to Safe.

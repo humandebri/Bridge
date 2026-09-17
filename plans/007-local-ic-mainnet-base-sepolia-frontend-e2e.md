@@ -1,25 +1,25 @@
 # Plan 007: Local → IC Mainnet × Base Sepolia Frontend E2E
 
-## 状態
+## Status
 
 - **Local implementation**: DONE
-- **Local promotion evidence**: clean commit作成後の再実行待ち
-- **IC mainnet / Base Sepolia / Cloudflare Worker**: 明示承認待ち（未実行）
-- **Staging evidence tooling**: DONE（ordered manifest、offline verifier、RPC fault injector）
-- **Production / SNS**: 対象外
-- **Production activation dependency**: なし。wallet matrixと追加5 RPC scenarioは非blocking検証として継続する。
+- **Local promotion evidence**: awaiting rerun after creating a clean commit.
+- **IC mainnet / Base Sepolia / Cloudflare Worker**: awaiting explicit approval; not executed.
+- **Staging evidence tooling**: DONE (ordered manifest, offline verifier, RPC fault injector)
+- **Production / SNS**: out of scope.
+- **Production activation dependency**: none. Continue the wallet matrix and five additional RPC scenarios as nonblocking validation.
 
-本計画はproduction資産、production Canister、KINIC Ledger、Base Mainnet、SNS controllerを変更しない。外部実行前に、同一commitから生成した`local-e2e.json`を必須とする。
+This plan does not change production assets, production Canister, KINIC Ledger, Base Mainnet, or SNS controllers. Require `local-e2e.json` generated from the same commit before external execution.
 
-## 固定構成
+## Fixed configuration
 
-Plan 007のローカルE2EはPocketIC上にBridge、Ledger、Indexを動的作成する。Bridgeは`test-deployment` featureでbuildし、LedgerとIndexには`ledger-suite-icrc-2026-03-09`のchecksum固定Wasmを直接installする。ローカルCanister IDは実行ごとに生成し、`icp.yaml`のenvironmentやmainnet mappingへ保存しない。
+Plan 007 local E2E dynamically creates Bridge, Ledger, and Index on PocketIC. Build Bridge with `test-deployment`; directly install checksum-pinned Wasm from `ledger-suite-icrc-2026-03-09` for Ledger and Index. Generate local Canister IDs per run; do not save them in `icp.yaml` environments or mainnet mappings.
 
-IC mainnet上の`sepolia-staging`は、既存`bridge-sepolia` Canister、deployment instance、Base contracts、signer、共有`testicrc` Ledger/Indexをactive stackとして維持する。2026-08-27/28に完了したdestructive reinstallとfresh-stack構築は一度限りの監査履歴へhash固定し、再実行、resume、別stack作成の入力にしない。配置済みstable schema v35／record wire v30は、確定activation証跡を追加するreview済みv36 Wasmへのsame-instance `upgrade`で一度だけ移行し、その後はv36を維持する。
+IC mainnet `sepolia-staging` preserves the existing `bridge-sepolia` Canister, deployment instance, Base contracts, signer, and shared `testicrc` Ledger/Index as the active stack. Hash-fix the destructive reinstall and fresh-stack creation completed on 2026-08-27/28 as one-time audit history; never use it to rerun, resume, or create another stack. Migrate deployed stable schema v35/record wire v30 exactly once through a same-instance `upgrade` to reviewed v36 Wasm adding confirmed activation evidence, then retain v36.
 
-test frontendはIC Asset Canisterへ配置しない。完成した`frontend-profile.json`を埋め込んで静的assetをbuildし、Wranglerのtest専用コマンドでCloudflare Worker `kinic-bridge-ui-test`へ公開する。Workerは静的assetだけを配信し、server-side state、database、KV、secretを持たない。
+Do not deploy the test frontend to an IC Asset Canister. Build static assets embedding completed `frontend-profile.json` and publish to Cloudflare Worker `kinic-bridge-ui-test` with the test-only Wrangler command. The Worker serves only static assets, with no server-side state, database, KV, or secrets.
 
-staging Bridgeは公式EVM RPC Canister `7hfb6-caaaa-aaaar-qadga-cai`を使用する。frontend profileは`testOnly: true`、`environmentMode: short-delay-test-only`、chain ID `84532`、activation delay 300秒、test専用Canister ID、contract address、runtime hashを必須とする。UIは常時TEST・5分Timelock bannerを表示し、Base Mainnet、production Canister ID、非公式EVM RPC IDとの混在を拒否する。
+The staging Bridge uses official EVM RPC Canister `7hfb6-caaaa-aaaar-qadga-cai`. The frontend profile requires `testOnly: true`, `environmentMode: short-delay-test-only`, chain ID `84532`, a 300-second activation delay, test-only Canister IDs, contract addresses, and runtime hashes. Always display TEST and five-minute Timelock banners; reject mixtures with Base Mainnet, production Canister IDs, or unofficial EVM RPC IDs.
 
 ## Local promotion gate
 
@@ -27,38 +27,38 @@ staging Bridgeは公式EVM RPC Canister `7hfb6-caaaa-aaaar-qadga-cai`を使用�
 scripts/plan007-local-gate.sh /secure/work/local-e2e.json
 ```
 
-gateはRust、Solidity、Verus、Candid/ABI、UI、ICP buildと、PocketIC・実ICRC Ledger/Index・Anvil・test frontendを接続したPlaywright E2Eを実行する。E2Eは次を実証する。
+The gate runs Rust, Solidity, Verus, Candid/ABI, UI, and ICP builds plus Playwright E2E connecting PocketIC, real ICRC Ledger/Index, Anvil, and the test frontend. E2E demonstrates:
 
-- pause install後にCanister由来Mint SignerとGovernance Operatorを導出する。
-- deployer roleを残さずTimelock、Bridge、bSNSを配置する。
-- Canisterの引数なし`schedule_activation()`、早期execute revert、staging profileの300秒経過、`execute_activation()`を確認する。default production profileでは別途24時間制約を検証する。
-- Deposit、EIP-712 AuthorizationによるBase mint、期限後のFinalized照合、Withdrawal、Ledger release、reload、duplicate、二重タブleaseを確認する。
-- 同一Wasm upgradeで未完了state、nonce queue、pause、rate limitを保持する。
-- raw EVM transactionのhash、RPC返却hash、採掘receiptを一致させる。
+- Derive Canister Mint Signer and Governance Operator after paused installation.
+- Deploy Timelock, Bridge, and bSNS without retaining deployer roles.
+- Verify argument-free Canister `schedule_activation()`, early-execute revert, passage of the staging profile's 300 seconds, and `execute_activation()`. Separately verify the default production profile's 24-hour constraint.
+- Verify Deposit, EIP-712 Authorization Base mint, post-expiry Finalized reconciliation, Withdrawal, Ledger release, reload, duplicates, and dual-tab leases.
+- Preserve unfinished state, nonce queues, pause, and rate limits through a same-Wasm upgrade.
+- Match raw EVM transaction hash, RPC-returned hash, and mined receipt.
 
-一件でも失敗した場合、またはworking treeがdirtyな場合はlocal promotion evidenceを発行しない。成功時もschema v8 evidenceはrepository外の明示パスへだけ発行し、checked-in v7 `local-e2e.json`を更新しない。証跡はsource commit、Bridge Wasm、contract runtime、Candid、ABI、固定Ledger/Index Wasmのhashを記録する。
+Do not issue local promotion evidence if any check fails or the working tree is dirty. Even on success, write schema v8 evidence only to an explicit repository-external path; do not update checked-in v7 `local-e2e.json`. Evidence records hashes for source commit, Bridge Wasm, contract runtime, Candid, ABI, and pinned Ledger/Index Wasm.
 
-外部stageは[`sepolia-staging-e2e.md`](../docs/runbooks/sepolia-staging-e2e.md)に従い、`staging-e2e-driver.sh`で順序と証跡を固定する。driverは検証と記録だけを行い、Canister upgrade、frontend publish、Base transactionを実行しない。最終schema v8 manifestはlocal evidence、frontend profile、live artifact、wallet matrix、refund/RPC rehearsal、same-instance upgrade、reactivation receipt、監視receiptを同じsource commitへ束縛する。
+External stages follow [`sepolia-staging-e2e.md`](../docs/runbooks/sepolia-staging-e2e.md), with order and evidence fixed by `staging-e2e-driver.sh`. The driver only validates and records; it does not upgrade Canisters, publish frontends, or execute Base transactions. The final schema v8 manifest binds local evidence, frontend profile, live artifacts, wallet matrix, refund/RPC rehearsal, same-instance upgrade, reactivation receipts, and monitoring receipts to one source commit.
 
-## 承認後の外部stage
+## External stages after approval
 
-外部stageは次の順序を変更しない。
+Preserve this external-stage order:
 
-1. `bootstrap_attestation`: 一度限りのreinstall/fresh-stack履歴をhash固定し、再開不能であることを確認する。
-2. `preflight`: repository外のschema v8 local evidence、clean source、active Canister/instance、共有Ledger/Index metadata、unpaused状態、storage、固定RPC bindingを再検証する。
-3. `current_schema_upgrade`: 別途承認済みtoolingで同じCanisterへcurrent-schema `upgrade`だけを適用し、identityと全state countが不変なreceiptを保存する。
-4. `post_upgrade_binding`: module/Candid、schema/wire、deployment instance、minimum Withdrawal ID、contract/runtime bindingをlive再取得する。
-5. `frontend_publish`: 別途承認後、同じprofile hashの静的assetを`kinic-bridge-ui-test`へ公開してreceiptを保存する。
-6. `smoke_e2e`: unpausedな資産flowでreview済みDeposit/Withdrawalを実行する。
-7. `wallet_e2e`: OISY、Plug、MetaMask、Rabby、WalletConnectの成功・失敗経路とreload/account/chain変更を記録する。
-8. `refund_rehearsal`: finalized deadline境界とexact未処理証拠によるrefundを記録する。
-9. `rpc_rehearsal`: 独立schemaの全10 scenarioをraw artifact付きで`EXTENDED_COMPLETE`まで検証する。
-10. `live_acceptance`: 別operationの300秒reactivation schedule/execute receiptと監視receiptを検証し、全pending/liabilityが0かつ資産flowがunpausedの`SHORT_DELAY_LIVE`で終了する。
+1. `bootstrap_attestation`: hash-fix one-time reinstall/fresh-stack history and verify it cannot be resumed.
+2. `preflight`: revalidate repository-external schema v8 local evidence, clean source, active Canister/instance, shared Ledger/Index metadata, unpaused state, storage, and fixed RPC binding.
+3. `current_schema_upgrade`: use separately approved tooling to apply only a current-schema `upgrade` to the same Canister; save a receipt showing unchanged identity and all state counts.
+4. `post_upgrade_binding`: retrieve live module/Candid, schema/wire, deployment instance, minimum Withdrawal ID, and contract/runtime binding again.
+5. `frontend_publish`: after separate approval, publish static assets with the same profile hash to `kinic-bridge-ui-test` and save the receipt.
+6. `smoke_e2e`: execute reviewed Deposits/Withdrawals with asset flows unpaused.
+7. `wallet_e2e`: record success/failure paths and reload/account/chain changes for OISY, Plug, MetaMask, Rabby, and WalletConnect.
+8. `refund_rehearsal`: record refunds at the finalized deadline boundary with exact unprocessed evidence.
+9. `rpc_rehearsal`: validate all 10 scenarios under their independent schema, with raw artifacts, through `EXTENDED_COMPLETE`.
+10. `live_acceptance`: verify a separate 300-second reactivation schedule/execute operation and monitoring receipts; finish at `SHORT_DELAY_LIVE` with all pending/liability counts zero and asset flows unpaused.
 
-新規作成または再利用するBridge Canister IDは`.icp/data/mappings/sepolia-staging.ids.json`だけへ保存する。既存`testicrc`は作成対象のmappingへ追加しない。`production.ids.json`は変更しない。ICP操作はICP CLIだけを使用し、`dfx`を使用しない。
+Save new or reused Bridge Canister IDs only in `.icp/data/mappings/sepolia-staging.ids.json`. Do not add existing `testicrc` to mappings for creation targets or modify `production.ids.json`. Use only ICP CLI for ICP operations, never `dfx`.
 
-各外部stageは、Canister作成・cycles投入、Base Sepolia transaction、Cloudflare Worker公開の直前にそれぞれ明示承認を得る。Gate A/B、鍵ceremony、SNS handoverは作成しない。
+Obtain explicit approval immediately before each external Canister creation/cycles funding, Base Sepolia transaction, and Cloudflare Worker publication. Create no Gate A/B, key ceremony, or SNS handover.
 
-## 完了条件
+## Completion criteria
 
-Plan 007の完了は、schema v8の固定10 stage、全raw receipt、wallet/refund/RPC rehearsal、same-instance current-schema upgrade、reactivation、監視postconditionを同じsource commitへ固定し、全pending/liabilityが0かつ資産flowがunpausedの`SHORT_DELAY_LIVE`へ到達した時点とする。v7履歴は遡及的に合格扱いしない。これはproduction activationのblockerではない。10回・7日計測とSNS proposal upgradeはPlan 005/006に残す。x402はBridgeの完了条件に含めない。
+Plan 007 completes when its fixed 10 schema v8 stages, all raw receipts, wallet/refund/RPC rehearsals, same-instance current-schema upgrade, reactivation, and monitoring postconditions bind to one source commit and reach `SHORT_DELAY_LIVE` with zero pending/liability counts and unpaused asset flows. Do not retroactively mark v7 history passing. This is not a production activation blocker. The 10-run/seven-day measurements and SNS proposal upgrades remain in Plans 005/006. x402 is not a Bridge completion condition.

@@ -2,26 +2,26 @@
 status: superseded
 ---
 
-# Deposit受付とLedger pullをstable executorで分離する
+# Separate Deposit admission and Ledger pull with a stable executor
 
-このADRは、無資金intentによるadmission DoSを解消する現行のfunding-attempt方式により置き換えられた。
+This ADR was superseded by the current funding-attempt approach, which removes admission DoS through unfunded intents.
 
-preflight通過はquoteやmint reserveの確約ではない。Canisterは既存schemaへ`FundingPending` record、stable executor job、固定transfer identity、sequence、quotaを単一transactionで保存して即時に返す。Ledger pullはjob leaseを取得したexecutorだけが行う。pull成功またはDuplicateを確定した場合だけ`EscrowedUnquoted`へ昇格し、fresh Finalized Base snapshot、最新counter、reserve tokenに対するpause、Service Fee、Per-Deposit Limit、Mint Throughput Limit、reserveを再検証する。
+Passing preflight does not guarantee a quote or mint reserve. The Canister saves a `FundingPending` record, stable executor job, fixed transfer identity, sequence, and quota in one transaction using the existing schema, then returns immediately. Only an executor holding the job lease performs the Ledger pull. Only confirmed success or Duplicate promotes the record to `EscrowedUnquoted`, after which pause, Service Fee, Per-Deposit Limit, Mint Throughput Limit, and reserves are revalidated against a fresh Finalized Base snapshot, current counters, and reserve token.
 
-確定的なLedger失敗は既存`Cancelled`へ進める。結果不明またはcallback消失は同じtransactionで`FundingReconciliationHold`とtransfer identityを保存する。成功証拠またはtip・watermark・連続segmentを含む完全な不存在certificateなしに再送、取消し、補償へ進まない。
+Definitive Ledger failures transition to existing `Cancelled`. An unknown result or lost callback saves `FundingReconciliationHold` and the transfer identity in the same transaction. Do not resubmit, cancel, or compensate without success evidence or a complete absence certificate covering tip, watermark, and contiguous segments.
 
-quoteとmint予約はpull確定後だけ単一storage transactionで確定する。RPC障害、provider不一致、Bridge signer不一致、stale observationは返金理由にせず、`EscrowedUnquoted`で停止して再観測する。
+Finalize the quote and mint reservation in a single storage transaction only after pull confirmation. RPC failures, provider disagreement, Bridge Signer mismatch, and stale observations do not justify refunds; stop in `EscrowedUnquoted` and observe again.
 
 ## Considered Options
 
-- update call内でLedger pullまで行う案は、callback消失時に正式recordとtransfer identityの原子的な正本を失うため不採用とする。
-- 正式recordと分離したfunding attempt tableはschema変更と公開履歴の意味論変更を伴うため不採用とする。
-- 時間経過だけで曖昧なpullを再送する案は二重pullを生じ得るため不採用とする。
+- Reject performing the Ledger pull within the update call because a lost callback would lose the atomic source of truth for the formal record and transfer identity.
+- Reject a funding-attempt table separate from formal records because it changes the schema and public history semantics.
+- Reject resubmitting an ambiguous pull based solely on elapsed time because it could cause a double pull.
 
 ## Consequences
 
-- `FundingPending`は正式Depositのcounter、history、sequence、jobへ含めるが、quote、nonce、mint reserveを持たない。
-- 公開`DepositError`、schema v22、wire v18、`FundingPending`の履歴意味論を維持する。
-- lease callbackはjob ID、generation、transfer identityのCASを満たす場合だけ状態を更新する。
-- timer、manual、confirmationのどの経路もHold証拠要件とlease claimを迂回しない。
-- preflight後の競合や状態変化で最終admissionが失敗した場合は既存refund経路へ進み、ユーザーはpullとrefundの両方のLedger feeを負担し得る。
+- Include `FundingPending` in formal Deposit counters, history, sequences, and jobs, but give it no quote, nonce, or mint reserve.
+- Preserve public `DepositError`, schema v22, wire v18, and `FundingPending` history semantics.
+- Lease callbacks update state only if the job ID, generation, and transfer identity satisfy CAS.
+- Timer, manual, and confirmation paths cannot bypass Hold evidence requirements or lease claims.
+- If races or state changes after preflight cause final admission to fail, use the existing refund path; users may pay Ledger fees for both pull and refund.

@@ -1,10 +1,10 @@
-# Base Interface仕様
+# Base interface specification
 
-Phase 1Eで凍結するBase側のconcrete ABIとinterfaceを記録する。Solidity宣言は`contracts/src/interfaces/`と`contracts/src/`を正本とし、concrete ABI snapshotとselector fixtureで差分を検出する。
+This document records the concrete Base ABI and interfaces frozen in Phase 1E. Solidity declarations in `contracts/src/interfaces/` and `contracts/src/` are authoritative; concrete ABI snapshots and selector fixtures detect drift.
 
 ## Deployment
 
-`Bridge`は次のconstructorを持ち、内部で`BSNS`を生成する。
+`Bridge` has the following constructor and creates `BSNS` internally.
 
 ```solidity
 constructor(
@@ -15,18 +15,19 @@ constructor(
     uint256 initialPerDepositLimit,
     uint256 initialMintWindowLimit,
     uint64 initialMintWindowDuration,
+    uint256 minServiceFee,
     uint256 maxServiceFee,
     uint256 initialServiceFee
 )
 ```
 
-`Bridge`が生成する`BSNS`のERC-20 metadataは、`name = "KINIC"`、`symbol = "KINIC"`、`decimals = 8`にcontract内で固定する。constructorからはmetadataを受け取らず、異なるmetadataでdeployできない。`bKINIC`のような`b` prefixは付けない。`bSNS`はBridgeable SNS Tokenを表す内部の総称であり、token metadataには使用しない。
+The contract fixes ERC-20 metadata for the `BSNS` created by `Bridge` to `name = "KINIC"`, `symbol = "KINIC"`, and `decimals = 8`. The constructor accepts no metadata and cannot deploy different metadata. Do not add a `b` prefix such as `bKINIC`. `bSNS` is an internal generic term for Bridgeable SNS Token and is not used in token metadata.
 
-3個の権限addressはzero addressを禁止し、相互に異なる必要がある。limitとwindow durationはzeroを禁止し、`initialServiceFee <= maxServiceFee`を要求する。固定decimalsはKINIC Ledger `73mez-iiaaa-aaaaq-aaasq-cai`のdecimalsと同じ8である。`initialApprovedTimelockRuntimeCodeHash`は、deploy時およびTimelock rotation時に検証するOpenZeppelin Timelock runtime code hashである。
+The three authority addresses must be nonzero and distinct. Limits and window duration must be nonzero, and `0 < minServiceFee <= initialServiceFee <= maxServiceFee` is required. Fixed decimals are 8, matching KINIC Ledger `73mez-iiaaa-aaaaq-aaasq-cai`. `initialApprovedTimelockRuntimeCodeHash` is the OpenZeppelin Timelock runtime code hash checked at deployment; the Timelock address is immutable.
 
-## EIP-3009署名送金
+## EIP-3009 authorized transfers
 
-bSNSは標準ERC-20に加えて、次のEIP-3009 interfaceを提供する。
+In addition to standard ERC-20, bSNS provides the following EIP-3009 interface.
 
 ```solidity
 function version() external pure returns (string memory); // "1"
@@ -59,27 +60,27 @@ event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce);
 event AuthorizationCanceled(address indexed authorizer, bytes32 indexed nonce);
 ```
 
-`validAfter`と`validBefore`はUnix timeであり、`block.timestamp > validAfter && block.timestamp < validBefore`の間だけ使用できる。使用済みと取消済みのnonceはauthorizerごとの単一namespaceで管理し、どちらのauthorization送金関数からも再利用できない。`receiveWithAuthorization`はcallerと`to`の一致を要求する。EIP-712 domainはtoken name、固定version `"1"`、実行chain ID、bSNS contract addressへ束縛し、EIP-5267 `eip712Domain()`から取得できる。
+`validAfter` and `validBefore` are Unix times; an authorization is usable only while `block.timestamp > validAfter && block.timestamp < validBefore`. Used and cancelled nonces share one namespace per authorizer and cannot be reused by either authorized transfer function. `receiveWithAuthorization` requires caller equality with `to`. The EIP-712 domain binds the token name, fixed version `"1"`, execution chain ID, and bSNS contract address and is exposed through EIP-5267 `eip712Domain()`.
 
 ## Roles
 
-| Role | 即時操作 | 禁止操作 |
+| Role | Direct operations | Prohibited operations |
 |---|---|---|
-| Bridge Signer | EIP-712 Mint Authorizationへの署名 | Base transaction送信、pause、limit・fee変更、role rotation、Withdrawal操作 |
-| Runtime Administrator | Deposit/Withdrawal pause、上限内Service Fee変更 | unpause、limit変更、role rotation、mint |
-| Base Admin Timelock | unpause、3権限addressのrotation | limit変更、直接mint、Withdrawal操作 |
+| Bridge Signer | Sign EIP-712 Mint Authorizations | Submit Base transactions, pause, change limits/fees, rotate roles, operate Withdrawals |
+| Runtime Administrator | Pause Deposits/Withdrawals, change Service Fee within the cap | Unpause, change limits, rotate roles, mint |
+| Base Admin Timelock | Unpause, rotate Bridge Signer and Runtime Administrator | Change limits, mint directly, operate Withdrawals |
 
-任意のrole memberを追加できるgenericなgrant APIは公開しない。Bridge SignerとRuntime Administratorは常に単一addressとする。
-rotationでもzero addressと3権限addressの重複を拒否し、初期deploy後の権限分離を維持する。
+Expose no generic grant API for adding arbitrary role members. Bridge Signer and Runtime Administrator each remain a single address.
+Rotation also rejects zero addresses and overlap among the three authority addresses, preserving separation after initial deployment.
 
-Base Admin TimelockにはOpenZeppelin 5.6.1の`TimelockController`を使用する。
-Bridgeより先にdeployし、minimum delayを24時間、Canister由来Governance Operatorをproposer/executor、別derivationのIndependent Cancellerをcanceller、追加adminをzero addressとして初期化する。人間のEVM管理walletにはroleを付与しない。
-Timelock自身が唯一のadminである。構築後のTimelock role集合は凍結し、`grantRole`、`revokeRole`、`renounceRole`を自己callを含めて拒否する。role変更が必要な場合は、新しい承認済みrole集合で同一runtimeのTimelockを配置し、BridgeのTimelock rotationを行う。
-Bridgeはrotation候補のcode、24時間以上のdelay、Timelock自身のadmin保持を検証する。role分離はdeployment profileとdeploy preflightで確認する。
+Use OpenZeppelin 5.6.1 `TimelockController` for the Base Admin Timelock.
+Deploy it before the Bridge with a 24-hour minimum delay, the Canister-derived Governance Operator as proposer/executor, the separately derived Independent Canceller as canceller, and the zero address as additional admin. Grant no roles to human EVM administration wallets.
+The Timelock itself is the sole admin. Generic `grantRole`, `revokeRole`, and `renounceRole` calls remain forbidden, including self-calls. Only a delayed Timelock self-call to `rotateOperationalMembers` atomically replaces the proposer/executor pair and independent canceller, preserving nonzero, distinct operational identities. The Bridge's Timelock address is immutable; there is no Timelock contract replacement API.
+At construction, the Bridge verifies the Timelock runtime code, delay of at least 24 hours, and self-held admin role. Check role separation in the deployment profile and deployment preflight.
 
 ## Deposit mint
 
-Canisterは次のEIP-712 payloadへthreshold ECDSA署名する。domainは`name = "KINIC Bridge"`、`version = "1"`、実行chain ID、Bridge contract addressへ束縛する。
+The Canister threshold-ECDSA-signs the following EIP-712 payload. The domain binds `name = "KINIC Bridge"`, `version = "1"`, the execution chain ID, and Bridge contract address.
 
 ```solidity
 struct MintAuthorization {
@@ -98,45 +99,45 @@ function mintDepositWithAuthorization(
 ) external;
 ```
 
-callerは制限しない。callerはgasだけを支払い、mint先は署名済み`recipient`から変更できない。Contractは`block.timestamp <= deadline`、`authorizationEpoch == mintAuthorizationEpoch`、EIP-712署名の復元addressが現在の`bridgeSigner`であることを検証する。OpenZeppelin `ECDSA.tryRecover`を使うため、不正長、不正`v`、high-s署名を拒否する。
+The caller is unrestricted and pays only gas; it cannot change the signed `recipient`. The contract verifies `block.timestamp <= deadline`, `authorizationEpoch == mintAuthorizationEpoch`, and that EIP-712 signature recovery yields the current `bridgeSigner`. OpenZeppelin `ECDSA.tryRecover` rejects invalid length, invalid `v`, and high-s signatures.
 
-`chargedServiceFee <= maxServiceFee`かつ`chargedServiceFee <= MAX_SERVICE_FEE`を検証し、実mint量`grossAmount - chargedServiceFee`へPer-Deposit LimitとMint Throughput Limitを適用する。受付後のglobal `serviceFee`変更は既存Authorizationのmint量とevent値へ影響しない。成功時は`DepositMinted`へEIP-712 digestをindexed fieldとして記録する。
+Verify `chargedServiceFee <= maxServiceFee` and `chargedServiceFee <= MAX_SERVICE_FEE`, applying the Per-Deposit Limit and Mint Throughput Limit to the actual mint amount `grossAmount - chargedServiceFee`. Changes to global `serviceFee` after admission do not affect existing Authorization mint amounts or event values. On success, record the EIP-712 digest as an indexed field in `DepositMinted`.
 
-各Depositは1件ずつmintする。zero recipient、不正amount、fee保護違反、Per-Deposit Limit違反、共有Mint Throughput Limit違反をrevertする。成功後の`depositId`は再利用できず、複数回のmintは同じfixed windowのthroughputへ累積する。
+Mint each Deposit individually. Revert for a zero recipient, invalid amount, fee-protection violation, Per-Deposit Limit violation, or shared Mint Throughput Limit violation. A successful `depositId` cannot be reused; multiple mints accumulate against the same fixed-window throughput.
 
-fixed windowはBridge deploy時刻から開始する。`block.timestamp >= mintWindowStartedAt + mintWindowDuration`となった後、最初に成功したmintの時刻を次windowの起点にし、消費量をresetする。失敗したmintは起点も消費量も変更しない。window境界直前と直後には最大2 window分をmintできるため、上限値は`docs/parameters.md`の2倍係数を前提に導出する。
+The fixed window begins at Bridge deployment time. Once `block.timestamp >= mintWindowStartedAt + mintWindowDuration`, the first successful mint starts the next window and resets consumption. Failed mints change neither the start nor consumption. Up to two windows' capacity can be minted immediately across a boundary, so derive limits using the factor of two in `docs/parameters.md`.
 
-`mintAuthorizationEpoch`は1から始まる。Deposit mintがactiveからpausedへ変わるとき、pausedからactiveへ戻るとき、またはBridge Signerが実際に別addressへrotationするときに1増加し、遷移前に作られた未期限Authorizationを一括失効する。repeated pause、repeated unpause、同じsignerへのrotationでは増加しない。
+`mintAuthorizationEpoch` starts at 1. Increment it when Deposit minting changes from active to paused, from paused to active, or when the Bridge Signer actually rotates to a different address, invalidating all unexpired Authorizations created before the transition. Repeated pause, repeated unpause, and rotation to the same signer do not increment it.
 
 ## Withdrawal
 
-Withdrawal IDは1から始まるcontract内`uint256`連番とし、0を`None`用に予約する。未存在IDの`getWithdrawal`は`status = None`のdefault structを返す。ICRC-1 Accountはraw principalの`bytes owner`と`bytes32 subaccount`で保持し、zero subaccountをdefault subaccountとする。ownerは1〜29 bytesだけを許可し、空のmanagement principalとanonymous principal `hex"04"`を拒否する。
+Withdrawal IDs are contract-local `uint256` sequence numbers starting at 1; reserve 0 for `None`. `getWithdrawal` for a nonexistent ID returns a default struct with `status = None`. Store ICRC-1 Accounts as raw principal `bytes owner` and `bytes32 subaccount`; a zero subaccount means the default subaccount. Allow only 1–29 owner bytes, rejecting the empty management principal and anonymous principal `hex"04"`.
 
-`createWithdrawal(amount, maxServiceFee, owner, subaccount)`は、burn前に現在の`serviceFee <= maxServiceFee`と`amount > serviceFee`を検証する。callerは事前にBridgeへ要求額ちょうどをapproveする。実行時は`transferFrom`、Bridge残高のburn、次の固定quoteを持つ`Committed` record作成を同一transactionで行い、`WithdrawalCommitted`を発行する。途中失敗はすべてrevertする。
+Before burn, `createWithdrawal(amount, maxServiceFee, owner, subaccount)` verifies current `serviceFee <= maxServiceFee` and `amount > serviceFee`. The caller first approves exactly the requested amount to the Bridge. Execution performs `transferFrom`, burns the Bridge balance, creates a `Committed` record with the following fixed quote, and emits `WithdrawalCommitted` in one transaction. Any intermediate failure reverts everything.
 
 ```text
-chargedServiceFee = 実行時のserviceFee
+chargedServiceFee = serviceFee at execution
 chargedServiceFee <= maxServiceFee
 amountOut = amount - chargedServiceFee
 ```
 
-Withdrawal stateは`None | Committed`だけであり、CommittedはBase上の不可逆な終端状態である。
-`acknowledgeRelease`、`cancelRelease`、`refundWithdrawal`、Withdrawal専用remint、Ledger block情報はABIに存在しない。
-burn後のICP側債務はCanisterが元のWithdrawal IDとIC Accountを維持して再試行、照合する。
-この制約はBridge Signerに付与された通常のDeposit mint権限を取り消すものではなく、侵害されたSignerによる別の未処理Deposit IDのmintはmint throughput limitとpauseによって被害速度を制限する。
+Withdrawal states are only `None | Committed`; Committed is irreversible and terminal on Base.
+The ABI contains no `acknowledgeRelease`, `cancelRelease`, `refundWithdrawal`, Withdrawal-specific re-mint, or Ledger block data.
+The Canister retries and reconciles the post-burn ICP liability while preserving the original Withdrawal ID and IC Account.
+This constraint does not revoke the Bridge Signer's normal Deposit mint authority. Mint throughput limits and pause constrain the damage rate if a compromised Signer mints another unprocessed Deposit ID.
 
-## Pauseと固定limit
+## Pause and fixed limits
 
-Deposit mintとWithdrawal作成は独立してpauseする。pauseは既にCommittedとなったCanister債務の送金・照合を止めない。
+Pause Deposit minting and Withdrawal creation independently. Pause does not stop transfer or reconciliation of Canister liabilities already Committed.
 
-Per-Deposit Limit、Mint Throughput Limit、window durationはconstructorで固定する。deploy後に変更するfunction、selector、管理経路は持たない。
+Fix the Per-Deposit Limit, Mint Throughput Limit, and window duration in the constructor. There are no functions, selectors, or administration paths to change them after deployment.
 
-Runtime Administratorは`serviceFee`をzeroからimmutableな`MAX_SERVICE_FEE`まで変更できる。
-pause、unpause、Service Fee、role rotationは同じ状態または値への再実行を成功扱いにし、storageとeventを変更しない。
-role rotation成立後は旧addressの権限を即時失効する。
+The Runtime Administrator may change `serviceFee` within immutable `MIN_SERVICE_FEE <= serviceFee <= MAX_SERVICE_FEE`.
+Repeating pause, unpause, Service Fee changes, or role rotation with the same state/value succeeds without changing storage or events.
+Successful role rotation immediately revokes the old address's authority.
 
-## Phase境界
+## Phase boundaries
 
-Phase 1DではService Fee変更、pause、固定limit、role rotationと24時間Timelock統合までを実装し、Phase 1Eではconcrete ABI、stateful invariant、SMT証明義務、LCOV coverage閾値を閉じる。
-Baseにはfee reserveとFee Recipientを持たせない。
-Phase 1E完了時点でconcrete Bridge・BSNS ABIをsnapshotとfixtureにより凍結する。現段階のcontractは本番資産を受け付けない。
+Phase 1D implements Service Fee changes, pause, fixed limits, role rotation, and 24-hour Timelock integration. Phase 1E closes the concrete ABI, stateful invariants, SMT proof obligations, and LCOV coverage thresholds.
+Base has no fee reserve or Fee Recipient.
+At Phase 1E completion, freeze the concrete Bridge and BSNS ABIs with snapshots and fixtures. Contracts at this stage must not accept production assets.

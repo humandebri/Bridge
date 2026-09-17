@@ -195,6 +195,18 @@ macro_rules! automatic_retry_allowed_body {
     };
 }
 
+// The same selected balance and comparison drive the production rejection.
+macro_rules! governance_affordability_body {
+    ($finalized:expr, $safe:expr, $required:expr) => {{
+        let observed = if $finalized <= $safe {
+            $finalized
+        } else {
+            $safe
+        };
+        (observed, observed >= $required)
+    }};
+}
+
 macro_rules! transaction_liability_body {
     ($gas_limit:expr, $max_fee_per_gas:expr, $l1_fee:expr, $value:expr, $max:expr, $zero:expr) => {{
         if $value > $max - $l1_fee {
@@ -1229,6 +1241,15 @@ pub const fn settlement_failure_count(
     } else {
         current
     }
+}
+
+#[cfg(not(verus_keep_ghost))]
+pub const fn governance_affordability_decision(
+    finalized_wei: u128,
+    safe_wei: u128,
+    required_wei: u128,
+) -> (u128, bool) {
+    governance_affordability_body!(finalized_wei, safe_wei, required_wei)
 }
 
 #[cfg(not(verus_keep_ghost))]
@@ -2667,6 +2688,14 @@ verus! {
         failure_limit: int,
     ) -> bool {
         automatic_retry_allowed_body!(automatic_lane, consecutive_failures, failure_limit)
+    }
+
+    pub open spec fn governance_affordability_decision_spec(
+        finalized_wei: int,
+        safe_wei: int,
+        required_wei: int,
+    ) -> (int, bool) {
+        governance_affordability_body!(finalized_wei, safe_wei, required_wei)
     }
 
     pub open spec fn transaction_liability_wei_spec(

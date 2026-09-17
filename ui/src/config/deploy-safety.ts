@@ -20,9 +20,6 @@ export interface UiDeploymentMode {
   timelockAddress?: string | null
 }
 
-export const BASE_MAINNET_CHAIN_ID = 8453
-export const BASE_SEPOLIA_CHAIN_ID = 84532
-export const OFFICIAL_EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
 export const MINIMUM_PRODUCTION_TIMELOCK_DELAY_SECONDS = 24 * 60 * 60
 
 export function assertProductionUiProfile(

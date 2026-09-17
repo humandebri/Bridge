@@ -2,33 +2,33 @@
 status: accepted
 ---
 
-# 確定したBridge要求へ固定SNS-token feeを課す
+# Charge a fixed SNS-token fee at Bridge request finalization
 
-各DepositとWithdrawalへ、送金額に比例しない固定Service FeeをSNSトークンで課す。Depositのfeeは署名済みMint Authorizationを永続化した時点、WithdrawalのfeeはBase上でWithdrawalが成立した時点で確定する。Bridge原価は主に要求処理件数へ依存するため割合feeを採用しない。現在のService Feeは変更可能とするが、デプロイ時にraw unitで固定したimmutableな`MAX_SERVICE_FEE`を超えられない。
+Charge a fixed Service Fee in SNS tokens for each Deposit and Withdrawal, independent of the transfer amount. A Deposit's fee is finalized when the signed Mint Authorization is persisted; a Withdrawal's fee is finalized when the Withdrawal is established on Base. Bridge costs primarily depend on request counts, so percentage fees are not used. The current Service Fee may change but cannot exceed the immutable `MAX_SERVICE_FEE` fixed in raw units at deployment.
 
-この改訂は、旧版の「Deposit feeはBase mint成功時だけ確定する」という記述を置き換える。wallet送信型Mint Authorizationでは、Canisterが署名を発行した時点で署名・RPC・保存処理を完了し、利用者が期限内にmintを送信できる能力を提供しているためである。
+This revision replaces the earlier statement that a Deposit fee is finalized only after successful Base minting. With wallet-submitted Mint Authorizations, issuance means the Canister has completed signing, RPC, and persistence work and has given the user the ability to submit a mint before expiry.
 
 ## Considered Options
 
-- 割合feeは大口移動の負担が過大になり、全量移動を許容する目的と衝突するため不採用とする。
-- 固定feeと割合feeの併用はfee上限、端数、最小額の規則を増やすため不採用とする。
-- 上記の確定境界へ到達した要求ごとの固定feeを採用する。
+- Reject percentage fees because they impose excessive costs on large transfers and conflict with allowing full-supply transfers.
+- Reject combining fixed and percentage fees because it adds rules for fee caps, rounding, and minimum amounts.
+- Adopt a fixed fee for each request reaching the finalization boundary above.
 
 ## Consequences
 
-- DepositのBase mint量は、ICPでロックした量からService Feeを引いた量とする。
-- WithdrawalのICP受取量は、Baseでburnした量からService Feeだけを引いた固定`amountOut`とし、Ledger FeeはBridgeが負担する。
-- Depositは`max_service_fee`、Withdrawalは`maxServiceFee`により、処理中のfee変更から利用者を保護する。Withdrawalの`amountOut`は実行時に`amount - chargedServiceFee`として固定される。
-- Service Feeの変更範囲は`0 <= service_fee <= MAX_SERVICE_FEE`とし、`MAX_SERVICE_FEE`自体は変更不能にする。
-- 上限を超えるfee変更はBase contractとBridge canisterの双方で拒否する。
-- Deposit Service Feeは署名済みMint Authorizationの保存と同じSQLite transactionで一度だけfee reserveへ確定する。署名前の失敗では確定しない。
-- 発行済みAuthorizationが未送信、revert、期限切れ、または期限後に未処理証拠を伴って返金された場合も、確定済みDeposit Service Feeは返却しない。
-- Withdrawal Service Feeは従来どおりBase Withdrawalの成立時に確定し、ICP Releaseの再試行では二重計上しない。
-- fee reserveはBridge Exposureの裏付けと分離して会計する。
-- 管理者はFee Recipientを変更できる。変更はeventと監査ログへ記録する。
-- Fee Recipient変更時、未送金の確定済みfee reserve全体を新recipientへ帰属させる。
-- recipient別fee bucketや旧recipient向け残高を保持しない。
-- fee送金は確定済みfee reserveだけを対象とし、Bridge Exposureの裏付け資産を送金できない。
-- Fee Recipientの変更権限とService Feeの変更権限は、mint、Withdrawal再mint、任意送金の権限を含まない。
-- SNS-token feeはBase gas用ETHへ自動変換しない。運用者がETHを補充する手順を別途持つ。
-- Verus、Lean、Solidity SMTCheckerとtransaction testで、Service Feeの上限制約、Authorization署名前のDeposit fee確定禁止、確定境界ごとの二重計上防止、recipient変更時のreserve保存、fee reserveを超える送金の禁止を検証する。
+- The Base mint amount for a Deposit equals the amount locked on ICP minus the Service Fee.
+- The ICP payout for a Withdrawal is the fixed `amountOut`, equal to the amount burned on Base minus only the Service Fee. The Bridge pays the Ledger Fee.
+- Deposit `max_service_fee` and Withdrawal `maxServiceFee` protect users from fee changes during processing. Withdrawal `amountOut` is fixed at execution as `amount - chargedServiceFee`.
+- Service Fee changes must satisfy `MIN_SERVICE_FEE <= service_fee <= MAX_SERVICE_FEE`; `MAX_SERVICE_FEE` itself is immutable.
+- Both the Base contract and Bridge canister reject fee changes above the cap.
+- A Deposit Service Fee is credited to the fee reserve exactly once, in the same SQLite transaction that saves the signed Mint Authorization. It is not finalized before signing.
+- A finalized Deposit Service Fee is not returned even if the issued Authorization is never submitted, reverts, expires, or is refunded after expiry with evidence that it was unprocessed.
+- A Withdrawal Service Fee remains finalized when the Base Withdrawal is established; ICP Release retries must not count it again.
+- Account for the fee reserve separately from Bridge Exposure backing.
+- Administrators may change the Fee Recipient. Record the change in events and audit logs.
+- A Fee Recipient change assigns the entire unpaid finalized fee reserve to the new recipient.
+- Do not retain per-recipient fee buckets or balances for former recipients.
+- Fee payouts may use only the finalized fee reserve and cannot spend assets backing Bridge Exposure.
+- Authority to change the Fee Recipient or Service Fee does not include authority to mint, re-mint Withdrawals, or make arbitrary transfers.
+- Do not automatically convert SNS-token fees into ETH for Base gas. Maintain a separate procedure for operators to replenish ETH.
+- Use Verus, Lean, Solidity SMTChecker, and transaction tests to verify Service Fee caps, prohibition of Deposit fee finalization before Authorization signing, no double accounting at each finalization boundary, reserve preservation on recipient changes, and prohibition of payouts exceeding the fee reserve.

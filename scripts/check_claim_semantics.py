@@ -165,25 +165,25 @@ def build_snapshot(root: Path = ROOT) -> dict:
 def render_markdown(snapshot: dict) -> str:
     declarations = {row["name"]: row for row in snapshot["declarations"]}
     output = ["# Claim statements and specification correspondence", "",
-              "Leanが解釈した命題型・主要定義。証明本体は出力しない。仕様との意味的一致や独立カーネル検査の証拠ではない。", "",
+              "Proposition types and major definitions interpreted by Lean. Proof bodies are omitted. This is not evidence of semantic agreement with the specification or independent kernel checking.", "",
               f"Toolchain: `{snapshot['toolchain']}`", ""]
     for row in snapshot["semantics"]:
         root = snapshot["roots"][row["id"]]
         output += [f"## {row['kind']}: {row['id']}", "",
-                   f"仕様: `{row['specification']}`", "",
-                   f"前提: {row['premises']}", "", f"結論: {row['conclusion']}", "",
-                   f"未証明境界: {row['boundary']}", "",
-                   f"証拠・外部仮定: `{row['evidence']}` / `{row['external']}`", "",
-                   f"レビュー理由: {row['review_note']}", "", "```lean",
+                   f"Specification: `{row['specification']}`", "",
+                   f"Premises: {row['premises']}", "", f"Conclusion: {row['conclusion']}", "",
+                   f"Unproved boundary: {row['boundary']}", "",
+                   f"Evidence and external assumptions: `{row['evidence']}` / `{row['external']}`", "",
+                   f"Review rationale: {row['review_note']}", "", "```lean",
                    root["witness"] + " : " + declarations[root["witness"]]["type"], "```", "",
-                   "主要定義: " + ", ".join(f"`{name}`" for name in row["definitions"].split(";")), ""]
+                   "Major definitions: " + ", ".join(f"`{name}`" for name in row["definitions"].split(";")), ""]
     output += ["## Shared definitions", ""]
     for row in snapshot["definitions"]:
         declaration = declarations[row["name"]]
         output += [f"### {row['name']}", "", f"{row['role']}: {row['meaning']}", "",
-                   f"仕様: `{row['specification']}`", "", "```lean",
+                   f"Specification: `{row['specification']}`", "", "```lean",
                    row["name"] + " : " + declaration["type"],
-                   declaration["definition"] or "-- 構造・帰納型の型。フィールド等の変更もソースdigestで通知する。",
+                   declaration["definition"] or "-- Structure or inductive type. Source digests also report field and other changes.",
                    "```", ""]
     output += ["## Source inventory (conservative change detection)", "",
                "| Source | Lines | Declarations | SHA-256 |", "|---|---:|---:|---|"]

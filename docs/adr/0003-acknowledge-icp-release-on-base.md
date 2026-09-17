@@ -2,8 +2,8 @@
 status: superseded
 ---
 
-# ICP ReleaseのBase acknowledgement
+# Acknowledge ICP Release on Base
 
-ADR 0018により廃止した。Base burnを不可逆な`Committed`状態とし、以後のICP送金をCanisterの債務として扱うため、`acknowledgeRelease`、`cancelRelease`、`refundWithdrawal`はABIから削除する。
+Superseded by ADR 0018. Base burn becomes an irreversible `Committed` state, and subsequent ICP transfers become Canister liabilities. Remove `acknowledgeRelease`, `cancelRelease`, and `refundWithdrawal` from the ABI.
 
-結果としてWithdrawalごとの2回目のEVM transaction、threshold ECDSA署名、gas、Finalized確認は不要になる。代わりにburn後のBase refundは提供せず、Canisterは固定されたWithdrawal ID・IC Account・amountOutでLedger送金を再試行・照合する。
+This removes the second EVM transaction, threshold ECDSA signature, gas cost, and Finalized confirmation for each Withdrawal. In exchange, no Base refund is available after burn; the Canister retries and reconciles Ledger transfers using the fixed Withdrawal ID, IC Account, and amountOut.

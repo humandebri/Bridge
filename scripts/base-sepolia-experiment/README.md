@@ -63,10 +63,10 @@ asset flows with the externally bound identities. Do not run this driver's
 both deployments and adds a conservative five-million-gas call budget. No
 broadcast is permitted when the resulting cost exceeds `0.02 ETH`.
 
-Bridgeは両asset flowをpauseした状態で配置される。driver自身のkeyをroleへ設定する通常の
-contract-only experimentでは、`schedule`とmanifestに記録されたdelay後の`resume`が
-Timelock経由で両方を有効化し、`flow`完了時に再度pauseする。external-control-plane
-stagingではこの手順を流用せず、Plan 007の証跡state machineに従う。
+The Bridge is deployed with both asset flows paused. In the normal contract-only experiment,
+the driver's own key holds roles; `schedule` followed by `resume` after the manifest-recorded delay
+enables both flows through Timelock, and completion of `flow` pauses them again. For external-control-plane
+staging, follow Plan 007's evidence state machine instead of reusing this procedure.
 
 Every successful transaction must reach the RPC's `safe` block within 30
 minutes. A timeout changes the manifest to `PENDING_CONFIRMATION` and stops without

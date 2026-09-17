@@ -1,35 +1,35 @@
-# 実装計画
+# Implementation plans
 
-この索引はBase contractのPhase 1E完了時点から始まった実装計画と現在の進捗を記録する。
-Plan 001〜004は完了済みの履歴資料であり、現行仕様はリポジトリ直下の`README.md`と`docs/`を正本とする。
+This index records implementation plans beginning after Base contract Phase 1E completion and their current progress.
+Plans 001–004 are completed historical records. The repository-root `README.md` and `docs/` are authoritative for current specifications.
 
-## 実行順序
+## Execution order
 
-| Plan | 内容 | 優先度 | 規模 | 依存 | 状態 |
+| Plan | Scope | Priority | Size | Dependencies | Status |
 |---|---|---:|---:|---|---|
-| [001](001-phase2-deterministic-state-machine.md) | Phase 2時点の決定的状態機械、stable schema、read-only Candid境界 | P1 | L | — | DONE |
-| [002](002-phase3-external-integrations.md) | ICRC ledger / EVM RPC / threshold ECDSAの外部連携とReconciliation Hold | P1 | L | 001 | DONE |
-| [003](003-settlement-reserve-runtime-admin.md) | Settlement Reserve、Runtime Administrator、運用監査ログ | P1 | L | 001, 002 | DONE |
-| [004](004-plan003-asset-safety-verus.md) | Verusでcanister coreとcross-system境界の証明を追加 | P1 | L | 001, 002, 003 | DONE |
-| [005](005-production-parameters-key-operations.md) | 対象SNS・数値パラメータ・鍵管理・testnet運用の確定 | P1 | M | 001〜004 | IN PROGRESS |
-| [006](006-sns-handover-upgrade-production-preflight.md) | SNS handover、upgrade互換性、production preflight | P0 | L | 001〜005 | IN PROGRESS |
-| [007](007-local-ic-mainnet-base-sepolia-frontend-e2e.md) | LocalからIC mainnet test Canister・Base Sepolia・test frontendへのE2E | P0 | L | 001〜004 | LOCAL DONE / EXTERNAL PENDING |
-| [008](008-proof-strength-production-equivalence.md) | 形式検証の証拠強度向上（Verus executable、SMT義務、vector網羅性） | P1 | M | 001〜004 | IN PROGRESS |
-| [009](009-multiple-assets-evm-deployments.md) | 既存Base版KINICを維持した複数資産とEVMチェーンへの拡張 | P1 | L | 006, 008 | PLANNED |
+| [001](001-phase2-deterministic-state-machine.md) | Phase 2 deterministic state machine, stable schema, and read-only Candid boundary | P1 | L | — | DONE |
+| [002](002-phase3-external-integrations.md) | ICRC Ledger / EVM RPC / threshold ECDSA integrations and Reconciliation Hold | P1 | L | 001 | DONE |
+| [003](003-settlement-reserve-runtime-admin.md) | Settlement Reserve, Runtime Administrator, and operational audit logs | P1 | L | 001, 002 | DONE |
+| [004](004-plan003-asset-safety-verus.md) | Verus proofs for canister core and cross-system boundaries | P1 | L | 001, 002, 003 | DONE |
+| [005](005-production-parameters-key-operations.md) | Finalize target SNS, numeric parameters, key management, and testnet operations | P1 | M | 001–004 | IN PROGRESS |
+| [006](006-sns-handover-upgrade-production-preflight.md) | SNS handover, upgrade compatibility, and production preflight | P0 | L | 001–005 | IN PROGRESS |
+| [007](007-local-ic-mainnet-base-sepolia-frontend-e2e.md) | E2E from local to IC mainnet test Canister, Base Sepolia, and test frontend | P0 | L | 001–004 | LOCAL DONE / EXTERNAL PENDING |
+| [008](008-proof-strength-production-equivalence.md) | Stronger formal evidence: Verus executable proofs, SMT obligations, vector coverage | P1 | M | 001–004 | COMPLETE |
+| [009](009-multiple-assets-evm-deployments.md) | Multiple assets and EVM chains while preserving existing KINIC on Base | P1 | L | 006, 008 | PLANNED |
 
-## 依存関係
+## Dependencies
 
-- 001で状態・ID・冪等性・stable schemaを固定しない限り、外部呼び出しを実装しない。
-- 002は001のpure coreを呼び出すadapterとして作り、ICRC/EVMの失敗をcoreの状態遷移へ変換する。
-- 003はSettlementの実コストと未完了状態を観測できる002の後に実装する。ただし権限モデルと監査ログの設計は001と並行してレビューできる。
-- 004はproductionと共有するcoreが存在してから、各proof obligationを追加する。
-- 005のTBD解消は、初期値を本番へ入れる前に必要であり、006のpreflightをブロックする。
-- 007はproduction/SNSから独立した非blocking staging検証である。local gateのclean commit証跡なしに外部stageへ進めないが、詳細wallet matrixと追加障害シナリオの未完了はproduction activationを妨げない。
+- Do not implement external calls before 001 fixes states, IDs, idempotency, and stable schema.
+- Build 002 as adapters calling 001's pure core, translating ICRC/EVM failures into core transitions.
+- Implement 003 after 002 exposes actual Settlement costs and unfinished states. Authority and audit-log design may be reviewed alongside 001.
+- Add 004 proof obligations only after production-shared core exists.
+- Resolve 005 TBDs before installing initial production values; unresolved values block 006 preflight.
+- 007 is nonblocking staging validation independent of production/SNS. External stages require clean-commit local-gate evidence, but unfinished detailed wallet matrices and additional failure scenarios do not block production activation.
 
-## 今回の推奨着手点
+## Recommended next step
 
-Plan 007のlocal gateをclean commitから再実行してpromotion evidenceを発行し、明示承認後にIC mainnet test CanisterとBase Sepoliaの外部stageへ進む。並行してPlan 005の外部計測を完了する。
+Rerun Plan 007's local gate from a clean commit to issue promotion evidence, then proceed to IC mainnet test Canister/Base Sepolia external stages after explicit approval. Complete Plan 005 external measurements in parallel.
 
-## 残作業の完了条件
+## Remaining completion criteria
 
-production開始には、Base contractの検証成功だけでは足りない。少なくとも、001〜006の初回activation範囲、初期運用値、対象SNS、認証済みGate A／Gate B、鍵と監視の運用runbookが必要である。Sepoliaでの主要5 scenarioとpause/cancel経路演習はunpause後のGate Cへ分離し、初回activationまたはcontroller handoverを認可しない。SNS Root単独controllerへのhandoverとSNS proposal upgradeは初回activationとは独立し、実施時期は運用者が別途承認する。Plan 007の追加wallet互換性と追加5 scenarioはnonblockingで継続する。
+Passing Base contract validation alone is insufficient for production launch. At minimum, require initial-activation scope from Plans 001–006, initial operating values, target SNS, authenticated Gate A/Gate B, and key/monitoring runbooks. Sepolia's five core scenarios and pause/cancel drills belong to Gate C after unpause and do not authorize initial activation or controller handover. SNS Root-only handover and SNS proposal upgrades are independent of initial activation and occur at a separately approved time. Plan 007 additional wallet compatibility and five additional scenarios remain nonblocking.

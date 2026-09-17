@@ -1,32 +1,32 @@
-# Deposit・Timelock監査対応
+# Deposit and Timelock audit response
 
-## 変更と証拠の範囲
+## Change and evidence scope
 
-Canisterの署名対象に返金可能額と宛先条件を追加する。未署名の既存要求は返金へ進めるが、署名保存済みの要求には新ポリシーを遡及しない。GlobalHistoryは予約解放済みと返金済みを区別し、予約解放から返金完了までの受理履歴を追加する。
+Add refundability and recipient conditions to Canister signing eligibility. Existing unsigned requests may proceed to refund, but do not apply the new policy retroactively to requests with saved signatures. GlobalHistory distinguishes released reservations from completed refunds and adds accepted history from reservation release through refund completion.
 
-Timelockのコンストラクタ修正は次回配置用であり、稼働中のコントラクトには適用していない。新しいbytecodeを既存本番の承認済みruntime hashや配置証拠に置き換えない。Canister/UIの変更とSolidityの変更はリリース判断を分ける。本番v35と未配置v36の区別およびUIのv35限定認可は維持する。
+Timelock constructor changes are for future deployments and have not been applied to live contracts. Do not replace approved runtime hashes or deployment evidence for existing production with new bytecode. Make separate release decisions for Canister/UI changes and Solidity changes. Preserve the distinction between production v35 and undeployed v36 and the UI's v35-only authorization recorded at this review.
 
-## 本番の既存Deposit
+## Existing production Deposits
 
-2026-09-08 JST、`lb5i5-ziaaa-aaaar-qcgwq-cai` の `get_bridge_status` を匿名queryで確認した。schemaは35、Deposit総数0、retained deposit index entries 0、pending ledger operations 0、reconciliation holds 0、reserved mint operations 0だった。観測時点で分類対象の既存Depositは0件。公開一覧はownerごとのAPIであり、今回の0件判定は全体集計に基づく。これは認証済みstate certificateによる会計証明ではなく、公開queryの観測記録である。アップグレード前には再確認する。
+On 2026-09-08 JST, an anonymous `get_bridge_status` query to `lb5i5-ziaaa-aaaar-qcgwq-cai` reported schema 35, total Deposits 0, retained deposit index entries 0, pending ledger operations 0, reconciliation holds 0, and reserved mint operations 0. There were no existing Deposits to classify at observation time. Public lists are owner-specific; this zero determination uses aggregate counts. This is a public-query observation, not an accounting proof from a certified state certificate. Recheck before upgrade.
 
-本番Timelock `0x27fb581da2e58cd7fd9d22ddb0ee121dd55cbbb3` はBase確定ブロック51015510で初期・現行proposerとexecutorが同じ `0xf6dcc3fcde91c6ef3c5d73c94c48c58c7ff2cf84`。配置ブロック50698194から全イベントを分割取得して権限集合を復元し、交代イベント0件、余分なexecutorなしを確認した。この不具合を理由とした本番差し替えは不要。
+At Finalized Base block 51015510, production Timelock `0x27fb581da2e58cd7fd9d22ddb0ee121dd55cbbb3` had the same initial/current proposer and executor, `0xf6dcc3fcde91c6ef3c5d73c94c48c58c7ff2cf84`. Paginated retrieval of all events since deployment block 50698194 reconstructed the role set, confirming no rotation events or extra executors. This defect does not require replacing production.
 
-## FeePayout調査
+## FeePayout investigation
 
-KINIC Ledger `73mez-iiaaa-aaaaq-aaasq-cai` の公開 `git_commit_id` は `cf41372e3d4dc1accfe2c09a7969f8bddc729dc1`。`icrc1_metadata` のfeeは100000。以下のDFINITY公式ソースを同revisionで確認した。メタデータからソースを特定したもので、Ledger Wasmの再現ビルド一致までは確認していない。
+KINIC Ledger `73mez-iiaaa-aaaaq-aaasq-cai` reports public `git_commit_id` `cf41372e3d4dc1accfe2c09a7969f8bddc729dc1` and fee 100000 in `icrc1_metadata`. The following official DFINITY sources were inspected at that revision. Source was identified from metadata; reproducible equality with the Ledger Wasm was not verified.
 
-- [送金入口](https://github.com/dfinity/ic/blob/cf41372e3d4dc1accfe2c09a7969f8bddc729dc1/rs/ledger_suite/icrc1/ledger/src/main.rs#L540)：送金状態の更新は最初のarchive awaitより前に同期的に完了する。通常送金のBadFee判定はL645付近で、dedup判定より前に実行される。
-- [台帳トランザクション](https://github.com/dfinity/ic/blob/cf41372e3d4dc1accfe2c09a7969f8bddc729dc1/rs/ledger_suite/common/ledger_canister_core/src/ledger.rs#L214)：期限と未来時刻を検査した後、同一transaction hashならDuplicateを返し、その後に残高を更新する。通常のInsufficientFundsはdedup後である。
+- [Transfer entry point](https://github.com/dfinity/ic/blob/cf41372e3d4dc1accfe2c09a7969f8bddc729dc1/rs/ledger_suite/icrc1/ledger/src/main.rs#L540): transfer-state updates complete synchronously before the first archive await. Normal-transfer BadFee checks occur around L645, before deduplication.
+- [Ledger transaction](https://github.com/dfinity/ic/blob/cf41372e3d4dc1accfe2c09a7969f8bddc729dc1/rs/ledger_suite/common/ledger_canister_core/src/ledger.rs#L214): after expiry/future-time checks, an identical transaction hash returns Duplicate before balances update. Normal InsufficientFunds occurs after deduplication.
 
-初回がcommit済みでarchive応答待ちの場合、固定fee・同一identity・dedup期間内なら再試行はDuplicateとなる。残高不足によりその成功が隠れる経路は、この通常送金実装では確認できない。dedup期限切れはTooOldとなり、BridgeはAmbiguousに分類して不存在照合を要求する。
+If the initial call committed and is awaiting an archive response, a retry with fixed fee and identical identity within the deduplication period returns Duplicate. This normal-transfer implementation shows no path where insufficient balance hides that success. Deduplication expiry returns TooOld, which the Bridge classifies Ambiguous and requires absence reconciliation.
 
-一方、初回成功後にLedgerのfeeが変更された場合、再試行はdedup前のBadFeeになり得る。BridgeのFeePayoutはReconciliationHoldからDefinitiveFailureで予約を解放するため、この条件では先行成功の会計反映を失う可能性がある。これは固定Ledger feeという外部仮定に依存する具体的境界であり、単なる「確定エラーなら先行要求も不成立」という一般則は成立しない。
+However, if the Ledger fee changes after initial success, a retry can return BadFee before deduplication. Bridge FeePayout releases its reservation on DefinitiveFailure from ReconciliationHold, potentially losing accounting of the earlier success under this condition. This is a concrete boundary depending on the fixed-Ledger-fee external assumption; the general rule that a definitive error proves earlier requests also failed is invalid.
 
-初回がまだ実行されていない場合の配送順序や、後続の残高変化を伴う複数要求まで、Ledgerの同期関数の読解だけで一般保証しない。今回は会計処理を変更していない。FeePayoutの堅牢化を行うなら、不確定状態からは成功/Duplicateまたは完全な不存在証拠でのみ解放する別変更として扱う。
+Reading synchronous Ledger functions alone does not establish a general guarantee for delivery order when the first call has not executed or for multiple requests with later balance changes. This review changes no accounting behavior. FeePayout hardening would be a separate change allowing release from uncertain state only on success/Duplicate or complete absence evidence.
 
-## 検証の読み方
+## Interpreting validation
 
-共有kernelの局所証明、production adapterの回帰テスト、Leanの抽象履歴は別々の証拠である。GlobalHistoryは期限を直接モデル化しないため、具体的な予約解放・返金履歴だけで一般的な期限付きlivenessを主張しない。従来の外部仮定と実行可能性前提を維持する。
+Local shared-kernel proofs, production-adapter regression tests, and Lean abstract histories are distinct evidence. GlobalHistory does not directly model deadlines, so concrete reservation-release/refund histories do not establish general bounded liveness. Preserve existing external assumptions and feasibility premises.
 
-Lean負例2件はRecordのフラグ分離に追従した。偽命題は維持し、trusted fixture hashだけを新しい内容へ更新する。Proofを実行する前のhash更新を、負例の成功確認とは扱わない。
+Two Lean negative fixtures were updated for Record flag separation. Preserve their false propositions and update only trusted fixture hashes to the new contents. Updating hashes before running proofs is not evidence that negative fixtures passed.

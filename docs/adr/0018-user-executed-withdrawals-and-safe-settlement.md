@@ -2,16 +2,16 @@
 status: accepted
 ---
 
-# Withdrawalを不可逆なCommitted burnとして扱う
+# Treat Withdrawals as irreversible Committed burns
 
-ユーザーは`createWithdrawal(amount, maxServiceFee, owner, subaccount)`を送信する。Contractはburn前に実行時Service Feeが上限以下かつ`amount > serviceFee`であることを検証し、`transferFrom`、burn、固定`amountOut = amount - chargedServiceFee`を持つ`Committed`化を原子的に行う。
+The user submits `createWithdrawal(amount, maxServiceFee, owner, subaccount)`. Before burning, the contract verifies that the execution-time Service Fee is within the user's cap and `amount > serviceFee`, then atomically performs `transferFrom`, burn, and transition to `Committed` with fixed `amountOut = amount - chargedServiceFee`.
 
-`Committed`はBase上の終端状態であり、Base refund、release acknowledgement、cancelは提供しない。Canisterはcanonical Finalized receipt、event、state、snapshotを同一block hashで検証し、固定額、固定IC Account、transfer identityを債務として保存する。Ledger送金と照合は任意の非anonymous Principalによる`continue_withdrawal`ごとに最大1 external stepだけ進み、timerでは再試行しない。Ledger FeeはBridge負担とし、100,000 rawで不変であることを外部仮定とする。固定Ledger Feeがcharged Service Feeを超えた場合はreleaseを作らず、Observed record、固定fee guard、監査eventを保存する。運用者はBase withdrawalをpauseして設定を確認し、`continue_withdrawal`の再検証に成功した場合だけ同じrecordを再開する。runtime settlementは`icrc1_fee()`を照会しない。WithdrawalとDeposit refundの`BadFee`ではamount、fee、transfer identityを変更しない。
+`Committed` is terminal on Base: there is no Base refund, release acknowledgement, or cancellation. The Canister verifies the canonical Finalized receipt, event, state, and snapshot at the same block hash, storing a fixed amount, IC Account, and transfer identity as a liability. Each `continue_withdrawal` by any non-anonymous Principal advances Ledger transfer or reconciliation by at most one external step; timers do not retry it. The Bridge pays the Ledger Fee, with its immutability at 100,000 raw units an external assumption. If that fixed Ledger Fee exceeds the charged Service Fee, do not create a release; save the Observed record, fixed-fee guard, and audit event. Operators pause Base Withdrawals and check configuration; the same record resumes only after successful revalidation through `continue_withdrawal`. Runtime settlement does not query `icrc1_fee()`. `BadFee` for Withdrawals or Deposit refunds must not change the amount, fee, or transfer identity.
 
-## 結果
+## Consequences
 
-- 正常WithdrawalのBase transaction、Finalized確認、ユーザー意思確認は1回だけとなる。
-- Withdrawalごとのthreshold ECDSA署名、2回目のgas、nonce、confirmation job、EVM recoveryを削除する。
-- Ledger障害時は同じWithdrawal ID・IC Account・transfer identityを使う再試行と履歴照合で解消する。管理者による送金先変更や任意送金は認めない。
-- Withdrawal reviewはamount、fee、IC recipientを表示し、fee、残高、wallet、chainを署名前に再検証する。deployment単位の初回利用時にはunaudited bridgeに関する一般risk acknowledgementを要求し、最終的な`createWithdrawal`はwallet署名で承認する。withdrawal固有のburn・Base refund不在の警告またはcheckboxは要求しない。この簡略化は、Base refund、release acknowledgement、cancelを追加するものではなく、不可逆な`Committed`設計を変更しない製品判断として受容する。
-- Finalized headとcanonical hashが2-of-3で収束しない場合は停止し、Safeや固定confirmation数へfallbackしない。
+- A normal Withdrawal requires only one Base transaction, Finalized confirmation, and user confirmation.
+- Remove per-Withdrawal threshold ECDSA signing, a second gas payment, nonce, confirmation job, and EVM recovery.
+- Resolve Ledger failures by retrying and reconciling history with the same Withdrawal ID, IC Account, and transfer identity. Administrators cannot change recipients or make arbitrary payouts.
+- Withdrawal review displays the amount, fee, and IC recipient and revalidates the fee, balance, wallet, and chain before signing. First use per deployment requires a general risk acknowledgement for an unaudited bridge; the final `createWithdrawal` is approved by wallet signature. No Withdrawal-specific burn/no-Base-refund warning or checkbox is required. Accept this simplification as a product decision: it adds no Base refund, release acknowledgement, or cancellation and does not change the irreversible `Committed` design.
+- Stop if the Finalized head and canonical hash fail to converge by 2-of-3; do not fall back to Safe or a fixed confirmation count.

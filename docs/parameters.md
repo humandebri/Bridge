@@ -1,92 +1,96 @@
-# パラメータ導出
+# Parameter derivation
 
-Bridge の安全パラメータの導出式と初期値を記録する。
-すべて raw unit で定義し、token decimals の表示変換を判断に使わない（ADR 0001）。
-Mint limitとwindow長はdeploy時に固定し、どの権限にも変更を許可しない。
+This document records derivation formulas and initial values for Bridge safety parameters.
+Define all values in raw units; do not use token-decimal display conversions for decisions (ADR 0001).
+Fix mint limits and window duration at deployment; no authority may change them.
 
 ## Mint Throughput Limit
 
-fixed window（ADR 0012）で実装するため、window 境界をまたぐ短時間に最大で上限の 2 倍がmintされうる。
+Fixed windows (ADR 0012) permit up to twice the limit to be minted in a short interval spanning a window boundary.
 
 ```
-window あたりの上限 = 許容最大被害額 ÷ 2
-許容最大被害額 = 監視が pause を発動するまでの想定時間内に失ってよい額
+Limit per window = maximum acceptable damage ÷ 2
+Maximum acceptable damage = acceptable loss during the expected time until monitoring triggers pause
 ```
 
-- window 長の初期値: 1 時間
-- production初期上限値: `15000000000000` raw（150,000 KINIC）。承認済みdeployment profileへ同じ値を明示し、deploy後は変更しない。
+- Initial window duration: one hour.
+- Initial production limit: `15000000000000` raw (150,000 KINIC). Specify the identical value in the approved deployment profile and never change it after deployment.
 
-監視はwindow長とは別に、異常を5分以内に検知し、15分以内に担当者が確認し、60分以内にBaseとICの双方をpauseする。
-監視体制がこれを満たせないなら、window を延ばすのではなく上限値を下げる。
+Independently of window duration, monitoring must detect anomalies within five minutes, obtain operator acknowledgement within 15 minutes, and pause both Base and IC within 60 minutes.
+If monitoring cannot meet these targets, reduce the limit rather than extending the window.
 
 ## Per-Deposit Limit
 
 ```
-Per-Deposit Limit = 承認済みdeployment profileの固定値
+Per-Deposit Limit = fixed value in the approved deployment profile
 ```
 
-- production初期値: `15000000000000` raw（150,000 KINIC、2026年7月17日時点の総供給量の約2.5%）。
-- Mint Throughput Limit初期値も`15000000000000` rawとし、1件で1時間window全量を消費できる。
-- 固定window境界をまたぐ短時間最大量は2 window分の300,000 KINIC（総供給量の約5%）となる。
+- Initial production value: `15000000000000` raw (150,000 KINIC, approximately 2.5% of total supply as of July 17, 2026).
+- The initial Mint Throughput Limit is also `15000000000000` raw, so one Deposit can consume the entire one-hour window.
+- The short-interval maximum across a fixed-window boundary is two windows: 300,000 KINIC (approximately 5% of total supply).
 
-Mint Throughput Limit が総量を抑えるため、この値は単発の入力ミスと単一要求の異常検知を目的とする。
+Because the Mint Throughput Limit bounds aggregate volume, this value targets individual input errors and anomaly detection for a single request.
 
 ## MAX_SERVICE_FEE
 
-immutable であり、デプロイ後にいかなる権限でも変更できない（ADR 0004）。
-将来の価格変動に耐えるよう保守的に高く置き、運用値の `service_fee` はその下から始める。
+Immutable; no authority can change it after deployment (ADR 0004).
+Set it conservatively high to accommodate future price changes, starting the operating `service_fee` below it.
 
 ```
 MAX_SERVICE_FEE = 10 KINIC
-service_fee初期値 = 0.5 KINIC
+Initial service_fee = 0.5 KINIC
 ```
 
 - KINIC ledger fee: `100000` raw
-- Base Sepolia staging TICRC1 ledger fee: `10000` raw（`test-deployment` buildのみ）
-- `MAX_SERVICE_FEE`: `1000000000` raw（10 KINIC、ledger feeの10000倍）
-- `service_fee`運用初期値: `50000000` raw（0.5 KINIC、ledger feeの500倍）
+- Base Sepolia staging TICRC1 ledger fee: `10000` raw (`test-deployment` builds only).
+- `MAX_SERVICE_FEE`: `1000000000` raw (10 KINIC; 10000 times the ledger fee).
+- Initial operating `service_fee`: `50000000` raw (0.5 KINIC; 500 times the ledger fee).
 
 ## Base control-plane transaction affordability
 
-- 送信対象actionが選択したGovernance Operator、Runtime Administrator、またはIndependent CancellerのETH残高を使う。別の固定floorは設けず、FinalizedとSafeの保守的なlive残高がcandidate transaction liabilityを満たさない、または観測できない場合は署名・送信しない。
-- governance fee上限: exact schedule／execute calldataのgas estimateと10件以上の異なるFinalized fee blockから導出する。gas limitは最大estimateの130%を1,000単位で切り上げ、max feeはbase fee p99×20、priority feeはp95×4、L1 ceilingはp99×10とする。quote validityは90秒、13,000／60,000／15,000 bps multiplierを維持する。
+- Use the ETH balance of the Governance Operator, Runtime Administrator, or Independent Canceller selected by the action. There is no separate fixed floor. Do not sign or submit if conservative live Finalized/Safe balances cannot be observed or do not cover the candidate transaction liability.
+- Governance fee caps: derive from gas estimates for exact schedule/execute calldata and at least 10 distinct Finalized fee blocks. Set gas limit to 130% of the maximum estimate, rounded up to the next 1,000; max fee to base fee p99×20, priority fee to p95×4, and L1 ceiling to p99×10. Retain 90-second quote validity and the 13,000/60,000/15,000 bps multipliers.
 
 ## Settlement cycles reserve
 
-新規処理が既存の非終端operationの完了用cyclesを侵食しないよう、基礎floorに非終端liabilityごとの保守的上限を加えて検査する（ADR 0005）。
+Check the base floor plus a conservative ceiling for each nonterminal liability so new work cannot consume cycles needed to complete existing operations (ADR 0005).
 
-- settlement cycle ceiling: `5000000000` cyclesに固定する。この値は外部callへ付与するcycles額の上限ではなく、非終端liability 1件を完了させるための予約額兼、外部call前に残す1処理分のmarginである。有料callは`既存liabilityの予約必要額 + 実際のcall付与額 + このmargin`を満たす場合だけ発行する。
-- cycles floor: pause状態の`idle_cycles_burned_per_day`から次式で設定する。
+- Settlement cycle ceiling: fixed at `5000000000` cycles. This is not a cap on cycles attached to an external call; it is both the reservation to complete one nonterminal liability and a one-operation margin retained before external calls. Issue paid calls only when the balance covers `required reserve for existing liabilities + actual cycles attached to the call + this margin`.
+- Cycles floor: derive from paused `idle_cycles_burned_per_day` using the formula below.
 
-production installとGate Aではschema 2 template固定のBootstrap運用値を使う。この値は運用上限ではなく、`Bootstrap` lifecycleとshared kernel gateの組でasset update、scheduler、Base governance transactionをfail closedにするための非運用値である。Baseをpause配置した後に`initial-operational-parameters.json`を作成し、Gate B profileでgovernance fee 8項目、cycles floor、settlement cycle ceilingだけを導出値へ置換して一度だけsealする。
+Production install and Gate A use the Bootstrap operating values fixed in the schema 2 template. These are non-operational sentinels, not operating caps; together, the `Bootstrap` lifecycle and shared kernel gate fail closed for asset updates, the scheduler, and Base governance transactions. After deploying Base paused, create `initial-operational-parameters.json`; replace only the eight Governance fee fields, cycles floor, and settlement cycle ceiling in the Gate B profile with derived values, then seal exactly once.
 - `cycles floor = (idle cycles burn/day + 5,000,000,000) × 30 × 2`
 - `settlement cycle ceiling = 5,000,000,000`
-- N: 30日
+- N: 30 days.
 
-unpause後は7日以上のBase feeとgovernance gas／settlement cycles各10件以上をGate Cで観測する。この観測結果と`fee-cycles-measurements.json`はseal済み値を自動更新せず、controller handoverの認可入力にも使わない。変更が必要なら別upgradeとレビューを行う。
+After unpause, Gate C observes at least seven days of Base fees and at least 10 Governance gas and settlement cycles samples each. These observations and `fee-cycles-measurements.json` neither automatically update sealed values nor authorize controller handover. Changes require a separate upgrade and review.
 
-未確定値をzeroや任意の仮値でmainnet plan/profileへ入れてはならない。install時だけはprotocol定義済みの固定Bootstrap sentinelを使用する。production Canister install planは`schema_version: 2`、install receiptは`schema_version: 3`、release profileは`schema_version: 5`、Gate A manifestは`schema_version: 3`、Gate B manifestは`schema_version: 4`、Gate A receiptは`schema_version: 2`、post-Gate-A policy transitionは`schema_version: 3`だけを受理する。初回controller activation receiptはschema 1、DAO再開のSNS proposal型Activation Receiptはschema 5（submissionはschema 4）、SNS controller handoverのpreparation／completion receiptはschema 5（登録submissionはschema 1）として別型のまま保持し、旧versionや未知versionをmigrationせずfail closedにする。`validate-bundle --offline --gate-b`のpre-seal結果はsealだけを認可し、seal後の`verify-live schedule`だけがschedule prepareを認可する。fee cap超過またはcycles不足ではtransactionを生成・送信しない。
+Never insert zero or arbitrary placeholders for unresolved mainnet plan/profile values. Only installation uses the protocol-defined fixed Bootstrap sentinel. Accept only production Canister install plan `schema_version: 2`, install receipt `schema_version: 3`, release profile `schema_version: 5`, Gate A manifest `schema_version: 3`, Gate B manifest `schema_version: 4`, Gate A receipt `schema_version: 2`, and post-Gate-A policy transition `schema_version: 3`. Keep distinct types for the initial controller activation receipt (schema 1), SNS-proposal Activation Receipt for DAO reactivation (schema 5; submission schema 4), and SNS controller handover preparation/completion receipts (schema 5; registration submission schema 1). Old or unknown versions fail closed without migration. Pre-seal `validate-bundle --offline --gate-b` authorizes only sealing; only post-seal `verify-live schedule` authorizes schedule preparation. Do not create or submit transactions when fee caps are exceeded or cycles are insufficient.
 
-## timelock 遅延（Base Admin）
+## Timelock delay (Base Admin)
 
-- 初期値: 24 時間（ADR 0016）
-- 短縮は timelock 自身を経由する。
+- Initial value: 24 hours (ADR 0016).
+- Any reduction goes through the Timelock itself.
 
-## 外部仮定の監査リスト
+## External assumption audit checklist
 
-以下は Bridge 内部で保証できず、値の妥当性を運用監査で維持する（ADR 0005、0011）。
+The Bridge cannot guarantee the following internally; operational audits maintain their validity (ADRs 0005 and 0011).
 
-- gas 価格の上限評価
-- Base governance transactionはCanisterが署名し、外部relayerが送信・Finalized待機・確定通知を行う。自動再送・自動replacementは行わない。運用者が明示要求した場合だけ同一nonce・payloadで最大3回、直前generationから12.5%以上fee bumpし、設定済みceilingを超えないtransactionをCanisterが再署名する。各署名前に`gas_limit × max_fee_per_gas + l1_fee_per_transaction_ceiling_wei + value`をchecked計算し、Safe/Finalized残高の小さい方が不足する場合は状態を変更せず拒否する。
-- EVM RPC 費用と management canister call 費用の上限評価
-- Settlementの一時障害retryはGovernance timerと共有せず、`settlement_retry_interval_seconds`（初期値60秒）を基準に指数backoffし、最大15分とする。Depositとfee payoutの自動laneは初回を含む連続3回の一時失敗で停止し、production設定では0分、1分、3分に実行して開始から約3分で明示continuation待ちになる。進捗または明示的な延期は連続失敗回数を0へ戻し、`Busy`は回数を変えない。
-- 公式EVM RPC Canisterと設定されたquorumがcanonical Finalized chainを正しく返すこと
-- 監視が5分以内検知、15分以内担当確認、60分以内のBase/IC双方pauseを実証できること
+- Upper-bound estimates for gas prices.
+- The Canister signs Base governance transactions; the external relayer submits, waits for Finalized status, and notifies confirmation. No automatic resubmission or replacement occurs. Only on an explicit operator request may the Canister re-sign the same nonce/payload up to three times, increasing fees at least 12.5% over the preceding generation without exceeding configured ceilings. Before each signature, checked-compute `gas_limit × max_fee_per_gas + l1_fee_per_transaction_ceiling_wei + value`; if the smaller Safe/Finalized balance is insufficient, reject without changing state.
+- Upper-bound estimates for EVM RPC and management canister call costs.
+- Settlement retries for transient failures do not share the Governance timer. Use exponential backoff from `settlement_retry_interval_seconds` (initially 60 seconds), capped at 15 minutes. Automatic Deposit and fee payout lanes stop after three consecutive transient failures including the first attempt. Production runs at minutes 0, 1, and 3, waiting for explicit continuation after about three minutes. Progress or explicit deferral resets consecutive failures to zero; `Busy` leaves the count unchanged.
+- The official EVM RPC Canister and configured quorum correctly return the canonical Finalized chain.
+- Monitoring can demonstrate detection within five minutes, operator acknowledgement within 15 minutes, and pause of both Base and IC within 60 minutes.
 
-EVM RPC Canister配下providerの運営主体、基盤、可用性は監査対象外であり、production承認条件には含めない。
+The operators, infrastructure, and availability of providers behind the EVM RPC Canister are outside the audit scope and are not production approval conditions.
 
-## 見直し手順
+## Review procedure
 
-1. Mint limitとwindow長は既存contract上で変更しない。
-2. 異なる値が必要な場合は、新contractのdeployを別計画として安全審査する。
-3. Service Feeを変更する場合は両方向をpauseし、Ledger feeとの関係を含むreview済みprofileを更新してproduction preflightを再実行する。Ledger feeとService Feeを稼働中に独立変更しない。
+1. Do not change mint limits or window duration on an existing contract.
+2. If different values are needed, safety-review deployment of a new contract as a separate plan.
+3. To change the Service Fee, pause both directions, update the reviewed profile including its relationship to the Ledger fee, and rerun production preflight. Do not independently change Ledger fees and Service Fees during operation.
+
+## Immutable service fee floor
+
+`MIN_SERVICE_FEE` is nonzero and immutable. Construction and updates require `MIN_SERVICE_FEE <= serviceFee <= MAX_SERVICE_FEE`. The approved production minimum is 100_000 raw, matching the fixed Ledger fee; verify the approved deployment profile when preparing artifacts.
