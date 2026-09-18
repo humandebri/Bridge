@@ -8031,14 +8031,14 @@ fn production_upgrade_agent(
     Ok((agent, sender))
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 #[derive(CandidType, Deserialize)]
 struct ReleaseUpgradeObservationView {
     completed_at_ns: u64,
     upgrader: Principal,
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 fn validate_sns_upgrade_completion(
     observation: &ReleaseUpgradeObservationView,
     decided_at: u64,
