@@ -1,8 +1,8 @@
 import { IDL } from '@icp-sdk/core/candid';
 import { Principal } from '@icp-sdk/core/principal';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 export const payloadType = IDL.Record({ previous_governance_operation_id: IDL.Nat64 });
 const genericType = IDL.Record({
@@ -67,7 +67,10 @@ export function prepare(registry, bridgeText, previousText) {
     };
   });
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+export function isMainModule(argvPath, moduleUrl = import.meta.url) {
+  return argvPath !== undefined && realpathSync(argvPath) === realpathSync(fileURLToPath(moduleUrl));
+}
+if (isMainModule(process.argv[1])) {
   if (process.argv[2] === 'decode-response') {
     if (process.argv.length !== 4) throw new Error('Usage: prepare.mjs decode-response RESPONSE_JSON');
     console.log(decodeProposalResponse(JSON.parse(readFileSync(process.argv[3]))));
