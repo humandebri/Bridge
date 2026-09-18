@@ -28,6 +28,7 @@ const KINIC_LEDGER: &str = "73mez-iiaaa-aaaaq-aaasq-cai";
 const KINIC_INDEX: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
 const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
+const PRODUCTION_BRIDGE_CANISTER: &str = "lb5i5-ziaaa-aaaar-qcgwq-cai";
 const PRODUCTION_PAUSE_PRINCIPAL: &str =
     "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe";
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
@@ -7875,32 +7876,69 @@ fn execute_production_canister_upgrade(
     std::io::stdout()
         .flush()
         .map_err(|error| error.to_string())?;
-    let response = send_production_upgrade_signed_update(
+    let response = match send_production_upgrade_signed_update(
         &agent,
         canister,
         &submission.request_id,
         &submission.signed_update_hex,
-    )?;
+    ) {
+        Ok(response) => response,
+        Err(send_error) => {
+            let after = production_upgrade_current_state_snapshot(&agent, canister).map_err(
+                |observe_error| {
+                    format!(
+                        "upgrade outcome is unresolved; do not retry for 6 minutes, then rerun check against certified state: send={send_error}; observation={observe_error}"
+                    )
+                },
+            )?;
+            match classify_production_upgrade_observation(
+                &before,
+                &after,
+                expected_current_module_sha256,
+                &submission.wasm_sha256,
+            )? {
+                ProductionUpgradeObservedOutcome::CandidatePreserved => {
+                    verify_production_current_state(
+                        profile_path,
+                        expected_principal_text,
+                        &submission.wasm_sha256,
+                        "sole",
+                    )?;
+                    println!(
+                        "production_upgrade=ambiguous-response-verified request_id={}",
+                        submission.request_id
+                    );
+                    return Ok(());
+                }
+                ProductionUpgradeObservedOutcome::CurrentUnresolved => return Err(format!(
+                    "upgrade outcome is unresolved; do not retry for 6 minutes, then rerun check against certified state: {send_error}"
+                )),
+            }
+        }
+    };
     println!("response_hex={}", hex(&response));
     println!("sender_principal={sender}");
     println!("wasm_sha256={}", submission.wasm_sha256);
-    let installed_module = async_runtime()?.block_on(async {
-        agent
-            .read_state_canister_module_hash(canister)
-            .await
-            .map_err(|error| error.to_string())
-    })?;
-    if !hex(&installed_module).eq_ignore_ascii_case(&submission.wasm_sha256) {
+    let after = production_upgrade_current_state_snapshot(&agent, canister)?;
+    if classify_production_upgrade_observation(
+        &before,
+        &after,
+        expected_current_module_sha256,
+        &submission.wasm_sha256,
+    )? != ProductionUpgradeObservedOutcome::CandidatePreserved
+    {
         return Err("certified production module does not match the submitted Wasm".into());
     }
-    let after = production_upgrade_current_state_snapshot(&agent, canister)?;
-    if before != after {
-        return Err("authenticated production state was not preserved across upgrade".into());
-    }
+    verify_production_current_state(
+        profile_path,
+        expected_principal_text,
+        &submission.wasm_sha256,
+        "sole",
+    )?;
     Ok(())
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct ProductionUpgradeCurrentStateSnapshot {
     lifecycle: Vec<u8>,
     activation_attestation: Vec<u8>,
@@ -7913,6 +7951,72 @@ struct ProductionUpgradeCurrentStateSnapshot {
     control_plane_addresses: Vec<u8>,
     storage_integrity: Vec<u8>,
     controllers: BTreeSet<Principal>,
+    module_hash: Vec<u8>,
+}
+
+impl ProductionUpgradeCurrentStateSnapshot {
+    fn preserved_across_upgrade(&self, after: &Self) -> bool {
+        let mut expected = self.clone();
+        expected.module_hash = after.module_hash.clone();
+        expected == *after
+    }
+
+    fn preserved_across_root_addition(&self, after: &Self) -> bool {
+        let mut expected = self.clone();
+        expected.controllers = after.controllers.clone();
+        expected == *after
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ProductionUpgradeObservedOutcome {
+    CandidatePreserved,
+    CurrentUnresolved,
+}
+
+fn classify_production_upgrade_observation(
+    before: &ProductionUpgradeCurrentStateSnapshot,
+    after: &ProductionUpgradeCurrentStateSnapshot,
+    expected_current_module_sha256: &str,
+    candidate_module_sha256: &str,
+) -> Result<ProductionUpgradeObservedOutcome, String> {
+    let observed = hex(&after.module_hash);
+    if observed.eq_ignore_ascii_case(candidate_module_sha256) {
+        if !before.preserved_across_upgrade(after) {
+            return Err("authenticated production state was not preserved across upgrade".into());
+        }
+        return Ok(ProductionUpgradeObservedOutcome::CandidatePreserved);
+    }
+    if observed.eq_ignore_ascii_case(expected_current_module_sha256) {
+        return Ok(ProductionUpgradeObservedOutcome::CurrentUnresolved);
+    }
+    Err("certified production module changed to an unexpected hash".into())
+}
+
+fn validate_production_root_addition_observation(
+    before: &ProductionUpgradeCurrentStateSnapshot,
+    after: &ProductionUpgradeCurrentStateSnapshot,
+    expected_controller: Principal,
+    root: Principal,
+    expected_module_sha256: &str,
+) -> Result<(), String> {
+    if before.controllers != BTreeSet::from([expected_controller]) {
+        return Err("production identity was not the sole controller before Root addition".into());
+    }
+    if after.controllers != BTreeSet::from([expected_controller, root]) {
+        return Err(
+            "certified controller set is not exactly production identity plus SNS Root".into(),
+        );
+    }
+    if !hex(&before.module_hash).eq_ignore_ascii_case(expected_module_sha256)
+        || !hex(&after.module_hash).eq_ignore_ascii_case(expected_module_sha256)
+    {
+        return Err("certified production module changed during Root addition".into());
+    }
+    if !before.preserved_across_root_addition(after) {
+        return Err("authenticated production state changed during Root addition".into());
+    }
+    Ok(())
 }
 
 fn production_upgrade_current_state_snapshot(
@@ -7931,6 +8035,7 @@ fn production_upgrade_current_state_snapshot(
         control_plane_addresses,
         storage_integrity,
         controllers,
+        module_hash,
     ) = async_runtime()?.block_on(async {
         let query = |method: &'static str, argument: Vec<u8>| async move {
             agent
@@ -7958,11 +8063,15 @@ fn production_upgrade_current_state_snapshot(
             .map_err(|error| error.to_string())?,
         )
         .await?;
-        let operational_config = query("get_operational_config", empty.clone()).await?;
+        let operational_config = query("get_release_operational_config", empty.clone()).await?;
         let control_plane_addresses = query("get_control_plane_addresses", empty.clone()).await?;
         let storage_integrity = query("get_release_storage_integrity", empty).await?;
         let controllers = agent
             .read_state_canister_controllers(canister)
+            .await
+            .map_err(|error| error.to_string())?;
+        let module_hash = agent
+            .read_state_canister_module_hash(canister)
             .await
             .map_err(|error| error.to_string())?;
         Ok::<_, String>((
@@ -7977,6 +8086,7 @@ fn production_upgrade_current_state_snapshot(
             control_plane_addresses,
             storage_integrity,
             controllers,
+            module_hash,
         ))
     })?;
     let bridge_status =
@@ -7993,7 +8103,111 @@ fn production_upgrade_current_state_snapshot(
         control_plane_addresses,
         storage_integrity,
         controllers: controllers.into_iter().collect(),
+        module_hash,
     })
+}
+
+fn execute_production_root_addition(
+    profile_path: &Path,
+    expected_controller_text: &str,
+    expected_module_sha256: &str,
+    identity: &str,
+) -> Result<(), String> {
+    if identity != "production" || !valid_sha256(expected_module_sha256) {
+        return Err(
+            "production Root addition requires the fixed identity and module SHA-256".into(),
+        );
+    }
+    let profile: Profile = read_json(profile_path)?;
+    if profile.bridge_canister_id != PRODUCTION_BRIDGE_CANISTER
+        || profile.root_canister_id != KINIC_ROOT
+        || profile.pause_principal != expected_controller_text
+        || profile.ic_host != "https://icp-api.io"
+    {
+        return Err("production Root addition profile differs from the fixed domain".into());
+    }
+    let canister =
+        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    let expected_controller =
+        Principal::from_text(expected_controller_text).map_err(|error| error.to_string())?;
+    let root =
+        Principal::from_text(&profile.root_canister_id).map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&profile.ic_host, false)?;
+
+    verify_production_current_state(
+        profile_path,
+        expected_controller_text,
+        expected_module_sha256,
+        "sole",
+    )?;
+    let before = production_upgrade_current_state_snapshot(&agent, canister)?;
+    if before.controllers != BTreeSet::from([expected_controller])
+        || !hex(&before.module_hash).eq_ignore_ascii_case(expected_module_sha256)
+    {
+        return Err(
+            "certified production controller set or module changed before Root addition".into(),
+        );
+    }
+
+    let output = Command::new("icp")
+        .args([
+            "canister",
+            "settings",
+            "update",
+            profile.bridge_canister_id.as_str(),
+            "-n",
+            "ic",
+            "--add-controller",
+            profile.root_canister_id.as_str(),
+            "--force",
+            "--identity",
+            identity,
+            "--debug",
+        ])
+        .output()
+        .map_err(|error| format!("failed to submit production Root addition: {error}"))?;
+    std::io::stdout()
+        .write_all(&output.stdout)
+        .map_err(|error| error.to_string())?;
+    std::io::stderr()
+        .write_all(&output.stderr)
+        .map_err(|error| error.to_string())?;
+
+    let postcondition = (|| -> Result<(), String> {
+        let after = production_upgrade_current_state_snapshot(&agent, canister)?;
+        validate_production_root_addition_observation(
+            &before,
+            &after,
+            expected_controller,
+            root,
+            expected_module_sha256,
+        )?;
+        verify_production_current_state(
+            profile_path,
+            expected_controller_text,
+            expected_module_sha256,
+            "joint",
+        )
+    })();
+
+    match (output.status.success(), postcondition) {
+        (_, Ok(())) => {
+            if !output.status.success() {
+                eprintln!("controller update returned an ambiguous response; exact joint state was verified");
+            }
+            println!(
+                "production_handover=co-controller-ready module_sha256={}",
+                expected_module_sha256.to_ascii_lowercase()
+            );
+            Ok(())
+        }
+        (false, Err(error)) => Err(format!(
+            "controller update outcome is unresolved; do not retry for 6 minutes, then rerun authenticated validation: {error}"
+        )),
+        (true, Err(error)) => Err(format!(
+            "controller update returned success but the exact joint-control postcondition is absent: {error}"
+        )),
+    }
 }
 
 fn production_upgrade_request_has_time(ingress_expiry: u64) -> Result<(), String> {
@@ -8405,6 +8619,14 @@ fn run() -> Result<(), String> {
                 &args[8],
             )?;
         }
+        Some("execute-production-root-addition") if args.len() == 6 => {
+            execute_production_root_addition(
+                Path::new(&args[2]),
+                &args[3],
+                &args[4],
+                &args[5],
+            )?;
+        }
         Some("validate-operational-epoch-snapshot") if args.len() == 6 => {
             let evidence = OperationalEpochEvidence::from_response(&args[2])?;
             let runtime = decode_candid_hex::<RuntimeBindingView>(&args[3])?;
@@ -8421,7 +8643,7 @@ fn run() -> Result<(), String> {
                 println!("epoch={} operational_config_sha256={}", epoch, operational_epoch_digest(response.trim(), ledger_fee, epoch)?);
             }
         }
-        _ => return Err("usage: bridge-profile <command> <arguments>; production upgrade commands: verify-production-current-state, execute-production-canister-upgrade".into()),
+        _ => return Err("usage: bridge-profile <command> <arguments>; production commands: verify-production-current-state, execute-production-canister-upgrade, execute-production-root-addition".into()),
     }
     Ok(())
 }
@@ -10257,5 +10479,115 @@ mod tests {
             false
         )
         .is_err());
+
+        let snapshot = ProductionUpgradeCurrentStateSnapshot {
+            lifecycle: vec![1],
+            activation_attestation: vec![2],
+            activation_status: vec![3],
+            runtime_binding: vec![4],
+            bridge_status: ok_status.clone(),
+            pending_governance: vec![5],
+            withdrawal_index_probe: vec![6],
+            operational_config: vec![7],
+            control_plane_addresses: vec![8],
+            storage_integrity: vec![9],
+            controllers: expected_controllers.clone(),
+            module_hash: module.clone(),
+        };
+        let mut upgraded = snapshot.clone();
+        upgraded.module_hash = vec![0x66; 32];
+        assert!(snapshot.preserved_across_upgrade(&upgraded));
+        assert!(!snapshot.preserved_across_root_addition(&upgraded));
+        assert_eq!(
+            classify_production_upgrade_observation(
+                &snapshot,
+                &upgraded,
+                &module_sha256,
+                &hex(&upgraded.module_hash),
+            )
+            .unwrap(),
+            ProductionUpgradeObservedOutcome::CandidatePreserved
+        );
+        assert_eq!(
+            classify_production_upgrade_observation(
+                &snapshot,
+                &snapshot,
+                &module_sha256,
+                &hex(&upgraded.module_hash),
+            )
+            .unwrap(),
+            ProductionUpgradeObservedOutcome::CurrentUnresolved
+        );
+        let mut unexpected_module = snapshot.clone();
+        unexpected_module.module_hash = vec![0x77; 32];
+        assert!(classify_production_upgrade_observation(
+            &snapshot,
+            &unexpected_module,
+            &module_sha256,
+            &hex(&upgraded.module_hash),
+        )
+        .is_err());
+
+        let mut joint = snapshot.clone();
+        let root = Principal::from_text(KINIC_ROOT).unwrap();
+        joint.controllers.insert(root);
+        assert!(snapshot.preserved_across_root_addition(&joint));
+        assert!(!snapshot.preserved_across_upgrade(&joint));
+        assert!(validate_production_root_addition_observation(
+            &snapshot,
+            &joint,
+            controller,
+            root,
+            &module_sha256,
+        )
+        .is_ok());
+        let mut third_controller = joint.clone();
+        third_controller.controllers.insert(Principal::anonymous());
+        assert!(validate_production_root_addition_observation(
+            &snapshot,
+            &third_controller,
+            controller,
+            root,
+            &module_sha256,
+        )
+        .is_err());
+
+        type SnapshotDrift = Box<dyn Fn(&mut ProductionUpgradeCurrentStateSnapshot)>;
+        let drifts: Vec<SnapshotDrift> = vec![
+            Box::new(|value| value.lifecycle.push(0)),
+            Box::new(|value| value.activation_attestation.push(0)),
+            Box::new(|value| value.activation_status.push(0)),
+            Box::new(|value| value.runtime_binding.push(0)),
+            Box::new(|value| value.bridge_status.mint_authorization_epoch += 1),
+            Box::new(|value| value.pending_governance.push(0)),
+            Box::new(|value| value.withdrawal_index_probe.push(0)),
+            Box::new(|value| value.operational_config.push(0)),
+            Box::new(|value| value.control_plane_addresses.push(0)),
+            Box::new(|value| value.storage_integrity.push(0)),
+        ];
+        for drift in drifts {
+            let mut after_upgrade = upgraded.clone();
+            drift(&mut after_upgrade);
+            assert!(!snapshot.preserved_across_upgrade(&after_upgrade));
+            assert!(classify_production_upgrade_observation(
+                &snapshot,
+                &after_upgrade,
+                &module_sha256,
+                &hex(&upgraded.module_hash),
+            )
+            .is_err());
+
+            let mut after_handover = joint.clone();
+            drift(&mut after_handover);
+            assert!(!snapshot.preserved_across_root_addition(&after_handover));
+            assert!(validate_production_root_addition_observation(
+                &snapshot,
+                &after_handover,
+                controller,
+                root,
+                &module_sha256,
+            )
+            .is_err());
+        }
     }
 }

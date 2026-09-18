@@ -25,10 +25,10 @@ Production SNS Root registration removes controllers other than Root. Do not app
 ## Consequences
 
 - The production identity being a controller does not itself prohibit production asset admission after initial activation. Admission depends on Gate B, Confirmed execute, pause state, and operating limits.
-- Do not use the seven-day, 10-per-type production measurements after unpause or `fee-cycles-measurements.json` as handover authorization inputs. Bind handover to initial operating values, seal/schedule/execute receipts, live RuntimeBinding, and the current profile Wasm, with separate explicit approval.
+- Do not use the seven-day, 10-per-type production measurements, historical upgrade records, or initial activation receipts as handover authorization inputs. Bind handover to certified current state, complete current proofs, and the twice-reproduced current-source Wasm, with separate explicit approval.
 - Immediately before adding Root, require the production identity as sole controller and an exact certified match of module/runtime/storage/lifecycle state. After adding Root, require exactly the production identity and SNS Root and demonstrate DAO reactivation in that state. Submit the registration proposal only after separate full-handover approval. Completion requires proposal execution, unique Root registration, and SNS Root as the only controller, retaining no developer identity, fallback identity, or NNS Root.
-- Do not equate the initial install hash with the live module. Verify the chain from the post-Gate-A policy transition and normal upgrade receipts to the current profile Wasm.
-- Save the module, RuntimeBinding, storage integrity, activation/pause state, and record/audit counts before and after controller changes as raw evidence and verify continuity. Do not require clearing live state.
+- Do not equate the initial install hash or any historical receipt with the live module. Verify the certified current module directly.
+- Compare the module, RuntimeBinding, operational configuration, storage integrity, activation/pause state, history indexes, balances, epochs, and record/audit counts in memory before and after adding Root. Permit only the expected controller-set change and write no operation evidence file.
 - After handover, attach the Wasm hash, source revision, Verus results, test results, and stable schema compatibility to each SNS upgrade proposal.
 - Persist Rust state directly in stable structures; avoid serializing all state in `pre_upgrade`.
 - Verify that unfinished Deposits, Withdrawals, EVM transactions, and Reconciliation Holds can resume across upgrades.

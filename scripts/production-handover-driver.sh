@@ -72,22 +72,5 @@ MODULE_SHA256="$(shasum -a 256 "$WASM_ONE" | awk '{print tolower($1)}')"
 }
 require_source_identity
 export BRIDGE_PRODUCTION_INSTALLER_IDENTITY=production
-"$PROFILE_BIN" verify-production-current-state "$PROFILE" "$CONTROLLER" "$MODULE_SHA256" sole
-require_source_identity
-
-set +e
-OUTPUT="$(icp canister settings update bridge-canister -e production \
-  --add-controller "$SNS_ROOT" --force --identity production --debug 2>&1)"
-STATUS=$?
-set -e
-printf '%s\n' "$OUTPUT"
-if "$PROFILE_BIN" verify-production-current-state "$PROFILE" "$CONTROLLER" "$MODULE_SHA256" joint; then
-  printf 'production_handover=co-controller-ready module_sha256=%s\n' "$MODULE_SHA256"
-  exit 0
-fi
-if [[ "$STATUS" -ne 0 ]]; then
-  echo "controller update outcome is unresolved; do not retry for 6 minutes, then rerun authenticated validation" >&2
-else
-  echo "controller update returned success but the exact joint-control postcondition is absent" >&2
-fi
-exit 1
+"$PROFILE_BIN" execute-production-root-addition \
+  "$PROFILE" "$CONTROLLER" "$MODULE_SHA256" production

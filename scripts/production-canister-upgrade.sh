@@ -156,12 +156,6 @@ printf 'production_upgrade_check=pass current_module_sha256=%s candidate_module_
 require_source_identity
 if ! "$PROFILE_BIN" execute-production-canister-upgrade \
   "$HOST" "$CANISTER" "$CONTROLLER" "$CONTROLLER_PEM" "$WASM" "$PROFILE" "$EXPECTED_CURRENT_WASM"; then
-  if "$PROFILE_BIN" verify-production-current-state "$PROFILE" "$CONTROLLER" "$CANDIDATE_WASM" sole; then
-    echo "production upgrade reached the requested postcondition after an ambiguous response" >&2
-    exit 0
-  fi
-  echo "upgrade outcome is unresolved; do not retry for 6 minutes, then rerun check against certified state" >&2
   exit 1
 fi
-"$PROFILE_BIN" verify-production-current-state "$PROFILE" "$CONTROLLER" "$CANDIDATE_WASM" sole
 printf 'production_upgrade=complete module_sha256=%s\n' "$CANDIDATE_WASM"

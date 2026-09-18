@@ -17,8 +17,9 @@ grep -q 'production_require_clean_source' "$VALIDATION"
 grep -q 'production_run_proof_gate' "$VALIDATION"
 grep -q 'rebuild-release-artifacts.sh' "$VALIDATION"
 
-# Handover now owns its current-state validation directly.
-grep -q 'verify-production-current-state' "$ROOT/scripts/production-handover-driver.sh"
+# Handover now delegates the state transition and in-memory continuity check
+# to the fixed current-state verifier binary.
+grep -q 'execute-production-root-addition' "$ROOT/scripts/production-handover-driver.sh"
 grep -q 'CARGO_NET_OFFLINE=true' "$ROOT/scripts/production-handover-driver.sh"
 
 echo 'production driver policy contract: pass'
