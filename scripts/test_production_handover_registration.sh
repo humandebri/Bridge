@@ -9,7 +9,8 @@ cp "$ROOT/scripts/production-handover-registration-proposal.sh" "$T/source/scrip
 cat >"$T/source/scripts/production-validation.sh" <<'SH'
 production_freeze_bundle(){ cp -R "$1/." "$2/"; }
 production_freeze_receipt(){ cp "$1" "$2"; }
-production_validate_gate(){ printf 'validate %s\n' "$*" >>"$TRACE"; : >"$BRIDGE_HANDOVER_VALIDATOR_BIN"; [[ "${REGISTRATION_GATE_FAIL:-false}" != true ]]; }
+production_require_clean_source(){ :; }
+production_run_proof_gate(){ printf 'proof %s\n' "$*" >>"$TRACE"; [[ "${REGISTRATION_GATE_FAIL:-false}" != true ]]; }
 SH
 cat >"$T/bundle/profile.json" <<'JSON'
 {"bridge_canister_id":"2vxsx-fae","root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","bridge_canister_wasm_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
@@ -18,9 +19,6 @@ cat >"$T/bundle/release-manifest.json" <<'JSON'
 {"release_id":"release-1","source_revision":"revision-1","source_tree_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
 JSON
 MANIFEST_SHA="$(shasum -a 256 "$T/bundle/release-manifest.json" | awk '{print $1}')"
-cat >"$T/preparation.json" <<JSON
-{"schema_version":5,"stage":"co_controller_ready","source_revision":"revision-1","source_tree_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","gate_b_manifest_sha256":"$MANIFEST_SHA","bridge_canister_id":"2vxsx-fae","sns_root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","final_controllers":["aaaaa-aa","7jkta-eyaaa-aaaaq-aaarq-cai"]}
-JSON
 cat >"$T/reviewed.json" <<'JSON'
 {"schema_version":1,"governance_canister_id":"74ncn-fqaaa-aaaaq-aaasa-cai","root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","bridge_canister_id":"2vxsx-fae","wasm_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","already_registered":false,"registration_proposal":"record { action = opt variant { RegisterDappCanisters = record { canister_ids = vec { principal \"2vxsx-fae\" } } } }"}
 JSON
@@ -43,7 +41,24 @@ elif [[ "$*" == *manage_neuron* ]]; then
 else exit 1
 fi
 SH
-chmod +x "$T/bin/node" "$T/bin/icp" "$T/source/scripts/production-handover-registration-proposal.sh"
+cat >"$T/bin/cargo" <<'SH'
+#!/usr/bin/env bash
+mkdir -p "$CARGO_TARGET_DIR/release"
+cat >"$CARGO_TARGET_DIR/release/bridge-profile" <<'INNER'
+#!/usr/bin/env bash
+printf 'verify %s\n' "$*" >>"$TRACE"
+[[ "$1" == verify-production-current-state && "$5" == joint ]]
+INNER
+chmod +x "$CARGO_TARGET_DIR/release/bridge-profile"
+SH
+cat >"$T/bin/git" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *'rev-parse HEAD'* ]]; then printf 'revision-1\n'
+elif [[ "$*" == *'archive HEAD'* ]]; then printf 'tree\n'
+else exit 0
+fi
+SH
+chmod +x "$T/bin/node" "$T/bin/icp" "$T/bin/cargo" "$T/bin/git" "$T/source/scripts/production-handover-registration-proposal.sh"
 export PATH="$T/bin:$PATH"
 export TRACE="$T/trace"
 printf '{}\n' >"$T/seal.json"
@@ -55,14 +70,14 @@ export BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/execute.json"
 SUBMIT="$T/source/scripts/production-handover-registration-proposal.sh"
 
 "$SUBMIT" "$T/bundle" "$MANIFEST_SHA" "$T/submission.json" production \
-  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/preparation.json" "$T/reviewed.json"
-python3 - "$T/preparation.json" "$T/reviewed.json" "$T/submission.json" <<'PY'
+  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/reviewed.json"
+python3 - "$T/reviewed.json" "$T/submission.json" <<'PY'
 import hashlib,json,sys
-preparation,reviewed,submission=sys.argv[1:]
+reviewed,submission=sys.argv[1:]
 value=json.load(open(submission))
 assert value['schema_version']==1 and value['kind']=='sns-dapp-registration-submission'
 assert value['proposal_id']==42 and value['bridge_canister_id']=='2vxsx-fae'
-assert value['preparation_receipt_sha256']==hashlib.sha256(open(preparation,'rb').read()).hexdigest()
+assert value['current_module_sha256']=='a'*64
 assert value['reviewed_handover_sha256']==hashlib.sha256(open(reviewed,'rb').read()).hexdigest()
 assert value['proposal_command_argv'].count('<fixed-candid-payload>')==1
 PY
@@ -76,7 +91,7 @@ path=sys.argv[1]; value=json.load(open(path)); value['registration_proposal']='r
 PY
 before="$(rg -c manage_neuron "$TRACE")"
 if "$SUBMIT" "$T/bundle" "$MANIFEST_SHA" "$T/wrong-action.json" production \
-  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/preparation.json" "$T/reviewed.json" >/dev/null 2>&1; then
+  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/reviewed.json" >/dev/null 2>&1; then
   echo "registration submission accepted a non-registration action" >&2; exit 1
 fi
 [[ "$before" == "$(rg -c manage_neuron "$TRACE")" && ! -e "$T/wrong-action.json" ]]
@@ -84,25 +99,25 @@ mv "$T/reviewed.valid.json" "$T/reviewed.json"
 
 before="$(rg -c manage_neuron "$TRACE")"
 if REGISTRATION_GATE_FAIL=true "$SUBMIT" "$T/bundle" "$MANIFEST_SHA" "$T/gate-failed.json" production \
-  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/preparation.json" "$T/reviewed.json" >/dev/null 2>&1; then
-  echo "registration submission accepted an invalid preparation receipt" >&2; exit 1
+  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/reviewed.json" >/dev/null 2>&1; then
+  echo "registration submission accepted a failed current proof gate" >&2; exit 1
 fi
 [[ "$before" == "$(rg -c manage_neuron "$TRACE")" && ! -e "$T/gate-failed.json" ]]
 
 if "$SUBMIT" "$T/bundle" "$MANIFEST_SHA" "$T/submission.json" production \
-  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/preparation.json" "$T/reviewed.json" >/dev/null 2>&1; then
+  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/reviewed.json" >/dev/null 2>&1; then
   echo "registration submission overwrote an existing receipt" >&2; exit 1
 fi
 [[ "$(rg -c manage_neuron "$TRACE")" == 1 ]]
 
 if REGISTRATION_FAIL=true "$SUBMIT" "$T/bundle" "$MANIFEST_SHA" "$T/uncertain.json" production \
-  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/preparation.json" "$T/reviewed.json" >/dev/null 2>&1; then
+  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/reviewed.json" >/dev/null 2>&1; then
   echo "registration submission accepted an uncertain proposal result" >&2; exit 1
 fi
 [[ -e "$T/uncertain.json" && -s "$T/uncertain.json.response.json" ]]
 before="$(rg -c manage_neuron "$TRACE")"
 if "$SUBMIT" "$T/bundle" "$MANIFEST_SHA" "$T/uncertain.json" production \
-  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/preparation.json" "$T/reviewed.json" >/dev/null 2>&1; then
+  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/reviewed.json" >/dev/null 2>&1; then
   echo "registration submission retried an uncertain proposal" >&2; exit 1
 fi
 [[ "$before" == "$(rg -c manage_neuron "$TRACE")" ]]

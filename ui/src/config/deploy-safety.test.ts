@@ -16,7 +16,6 @@ describe("UI deployment safety", () => {
       ...hashes,
       canisterSchemaVersion: 36,
       canisterModuleSha256: "d".repeat(64),
-      postActivationUpgradeSha256: "e".repeat(64),
       uiRpcConfigSha256: "f".repeat(64),
     }
     expect(() => assertProductionUiProfile(production, manifest)).not.toThrow()
@@ -26,7 +25,6 @@ describe("UI deployment safety", () => {
     for (const drift of [
       { canisterSchemaVersion: 35 },
       { canisterModuleSha256: undefined },
-      { postActivationUpgradeSha256: undefined },
       { uiRpcConfigSha256: undefined },
     ]) {
       expect(() => assertProductionUiProfile({ ...production, ...drift }, manifest)).toThrow(

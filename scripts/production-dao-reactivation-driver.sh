@@ -8,8 +8,7 @@ source "$SOURCE_ROOT/scripts/production-validation.sh"
 
 : "${BRIDGE_GATE_B_MANIFEST_SHA256:?missing Gate B evidence hash}"
 : "${BRIDGE_RELEASE_BUNDLE:?missing release bundle}"
-: "${BRIDGE_CHECKPOINT_EVIDENCE:?missing approved production checkpoint}"
-: "${BRIDGE_HANDOVER_PREPARATION_RECEIPT:?missing co-controller preparation receipt}"
+: "${BRIDGE_CURRENT_MODULE_SHA256:?missing current production module SHA-256}"
 : "${BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT:?missing operational config seal receipt}"
 : "${BRIDGE_CONTROLLER_SCHEDULE_RECEIPT:?missing historical controller schedule receipt}"
 : "${BRIDGE_CONTROLLER_ACTIVATION_RECEIPT:?missing historical controller execute receipt}"
@@ -48,8 +47,6 @@ mkdir -m 700 "$TMP/bundle"
 production_freeze_bundle "$BRIDGE_RELEASE_BUNDLE" "$TMP/bundle"
 BRIDGE_RELEASE_BUNDLE="$TMP/bundle"
 for spec in \
-  "BRIDGE_CHECKPOINT_EVIDENCE:checkpoint.json:approved checkpoint" \
-  "BRIDGE_HANDOVER_PREPARATION_RECEIPT:preparation.json:co-controller preparation receipt" \
   "BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT:seal.json:operational config seal receipt" \
   "BRIDGE_CONTROLLER_SCHEDULE_RECEIPT:controller-schedule.json:historical controller schedule receipt" \
   "BRIDGE_CONTROLLER_ACTIVATION_RECEIPT:controller-execute.json:historical controller execute receipt" \
@@ -65,20 +62,19 @@ if [[ "$BRIDGE_DAO_ACTIVATION_PHASE" == execute ]]; then
   BRIDGE_DAO_PRIOR_SCHEDULE_RECEIPT="$TMP/prior-schedule.json"
 fi
 
-production_validate_gate handover-recover "$BRIDGE_RELEASE_BUNDLE" "$BRIDGE_GATE_B_MANIFEST_SHA256" \
-  "$BRIDGE_HANDOVER_PREPARATION_RECEIPT" "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" \
-  "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT"
-
-read -r BRIDGE_CANISTER_ID BRIDGE_SNS_ROOT_CANISTER_ID IC_HOST < <(python3 -c '
+read -r BRIDGE_CANISTER_ID BRIDGE_SNS_ROOT_CANISTER_ID IC_HOST BRIDGE_PRODUCTION_CONTROLLER_PRINCIPAL < <(python3 -c '
 import json,sys
 p=json.load(open(sys.argv[1],encoding="utf-8"))
-print(p["bridge_canister_id"],p["root_canister_id"],p["ic_host"])
+print(p["bridge_canister_id"],p["root_canister_id"],p["ic_host"],p["pause_principal"])
 ' "$BRIDGE_RELEASE_BUNDLE/profile.json")
-export BRIDGE_CANISTER_ID BRIDGE_SNS_ROOT_CANISTER_ID IC_HOST
+export BRIDGE_CANISTER_ID BRIDGE_SNS_ROOT_CANISTER_ID IC_HOST BRIDGE_PRODUCTION_CONTROLLER_PRINCIPAL
+export BRIDGE_PRODUCTION_INSTALLER_IDENTITY=production BRIDGE_DAO_JOINT_CONTROL=1
 AUTHORIZATION="${BRIDGE_DAO_ACTIVATION_ARTIFACT}.sns-authorization.json"
 BINDING="${BRIDGE_DAO_ACTIVATION_ARTIFACT}.sns-binding.json"
 CLI=(node --no-warnings --experimental-strip-types "$SOURCE_ROOT/tools/governance-relayer/cli.ts")
 PROFILE=(cargo run --locked --quiet --release --manifest-path "$SOURCE_ROOT/Cargo.toml" -p bridge-profile --)
+"${PROFILE[@]}" verify-production-current-state "$BRIDGE_RELEASE_BUNDLE/profile.json" \
+  "$BRIDGE_PRODUCTION_CONTROLLER_PRINCIPAL" "$BRIDGE_CURRENT_MODULE_SHA256" joint
 
 freeze_relay_inputs() {
   production_freeze_receipt "$BRIDGE_DAO_ACTIVATION_ARTIFACT" "$TMP/artifact.json" "SNS activation artifact"
@@ -95,7 +91,6 @@ case "$BRIDGE_DAO_ACTIVATION_STEP" in
     "${CLI[@]}" recover-sns-activation \
       --phase "$BRIDGE_DAO_ACTIVATION_PHASE" \
       --submission-file "$BRIDGE_DAO_ACTIVATION_SUBMISSION" \
-      --preparation-file "$BRIDGE_HANDOVER_PREPARATION_RECEIPT" \
       --artifact-file "$BRIDGE_DAO_ACTIVATION_ARTIFACT" \
       --authorization-file "$AUTHORIZATION" --binding-file "$BINDING"
     ;;

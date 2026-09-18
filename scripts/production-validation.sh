@@ -62,11 +62,8 @@ production_run_proof_gate() {
     echo "proof gate source does not match the release manifest" >&2
     return 1
   }
-  # Execution consent and production checkpoint inputs belong to the driver,
-  # not nested validation fixtures. The proof suite constructs its own
-  # checkpoint fixtures and must not inherit a live handover checkpoint.
-  env -u BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE \
-    -u BRIDGE_CHECKPOINT_EVIDENCE "$proof_script" proofs || {
+  # Execution consent belongs to the driver, not nested validation fixtures.
+  env -u BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE "$proof_script" proofs || {
     echo "release proof gate failed" >&2
     return 1
   }
@@ -196,16 +193,8 @@ try:
   path_parts(name,True)
   if name in files or not isinstance(expected,str) or not re.fullmatch(r'[0-9a-fA-F]{64}',expected): raise SystemExit(f'invalid duplicate release artifact: {name}')
   if name in {'bridge-canister.wasm','bridge-runtime.bin','bsns-creation.bin','bsns-runtime.bin'}: limit=256*1024*1024
-  # The chain bounds decoded receipt bytes to 256 MiB, but stores those bytes as
-  # hex. Allow that encoded envelope plus bounded per-entry JSON metadata.
-  elif name == 'production-canister-upgrade-receipt.json': limit=513*1024*1024
   else: limit=16*1024*1024
   value=read_regular(name,limit,True)
-  if name == 'production-canister-upgrade-receipt.json':
-   try: upgrade_evidence=json.loads(value)
-   except Exception as error: raise SystemExit(f'invalid production upgrade evidence JSON: {error}')
-   if upgrade_evidence.get('kind')=='production-controller-bootstrap-upgrade' and len(value)>128*1024*1024:
-    raise SystemExit('raw production upgrade receipt is too large')
   if hashlib.sha256(value).hexdigest().lower()!=expected.lower(): raise SystemExit(f'release artifact hash mismatch while freezing: {name}')
   files[name]=value
  rpc=json.loads(files.get('rpc-e2e.json',b'{}'))
@@ -278,115 +267,12 @@ finally: os.close(out)
 PY
 }
 
-production_validate_gate_b_source_chain() {
-  local source_root="$1" bundle="$2"
-  local gate_a_revision gate_a_tree upgrade_revision upgrade_tree current_revision current_tree
-  local actual_gate_a_tree actual_upgrade_tree actual_current_tree
-  local chain_source_lines first_upgrade_revision previous_upgrade_revision entry_revision entry_tree actual_entry_tree
-  [[ -f "$bundle/post-gate-a-policy-transition.json" \
-    && ! -L "$bundle/post-gate-a-policy-transition.json" ]] || {
-    echo "Gate B policy transition is missing or unsafe" >&2
-    return 1
-  }
-  chain_source_lines="$(python3 - "$bundle/production-canister-upgrade-receipt.json" <<'PY'
-import hashlib,json,sys
-raw=open(sys.argv[1],'rb').read(); value=json.loads(raw)
-if value.get('kind')=='production-controller-bootstrap-upgrade':
- receipts=[value]
-else:
- if set(value)!={'schema_version','kind','entries'} or value.get('schema_version')!=1 or value.get('kind')!='production-controller-bootstrap-upgrade-chain':
-  raise SystemExit('invalid production upgrade chain envelope')
- entries=value.get('entries')
- if not isinstance(entries,list) or not 1<=len(entries)<=16: raise SystemExit('invalid production upgrade chain length')
- receipts=[]; previous=None; total=0
- for index,entry in enumerate(entries):
-  if set(entry)!={'sequence','previous_receipt_sha256','receipt_sha256','receipt_json_hex'} or entry.get('sequence')!=index or entry.get('previous_receipt_sha256')!=previous:
-   raise SystemExit('invalid production upgrade chain linkage')
-  receipt_raw=bytes.fromhex(entry.get('receipt_json_hex','')); total+=len(receipt_raw)
-  if len(receipt_raw)>128*1024*1024: raise SystemExit('production upgrade receipt is too large')
-  if total>256*1024*1024: raise SystemExit('production upgrade chain is too large')
-  digest=hashlib.sha256(receipt_raw).hexdigest()
-  if entry.get('receipt_sha256','').lower()!=digest: raise SystemExit('invalid production upgrade receipt hash')
-  receipts.append(json.loads(receipt_raw)); previous=digest
-for receipt in receipts:
- print(receipt.get('source_revision',''),receipt.get('source_tree_sha256',''))
-PY
-)" || {
-    echo "Gate B upgrade chain source evidence is invalid" >&2
-    return 1
-  }
-  previous_upgrade_revision=""
-  while read -r entry_revision entry_tree; do
-    [[ "$entry_revision" =~ ^[0-9a-f]{40}$ && "$entry_tree" =~ ^[0-9a-fA-F]{64}$ ]] || {
-      echo "Gate B upgrade chain source metadata is malformed" >&2; return 1;
-    }
-    git -C "$source_root" cat-file -e "${entry_revision}^{commit}" 2>/dev/null || {
-      echo "Gate B upgrade chain source commit is unavailable" >&2; return 1;
-    }
-    if [[ -n "$previous_upgrade_revision" ]]; then
-      git -C "$source_root" merge-base --is-ancestor "$previous_upgrade_revision" "$entry_revision" || {
-        echo "Gate B upgrade chain source ancestry is invalid" >&2; return 1;
-      }
-    else
-      first_upgrade_revision="$entry_revision"
-    fi
-    actual_entry_tree="$(git -C "$source_root" --attr-source="$entry_revision" archive --format=tar "$entry_revision" | shasum -a 256 | awk '{print tolower($1)}')"
-    [[ "$actual_entry_tree" == "$(printf '%s' "$entry_tree" | tr '[:upper:]' '[:lower:]')" ]] || {
-      echo "Gate B upgrade chain source tree hash mismatch" >&2; return 1;
-    }
-    previous_upgrade_revision="$entry_revision"
-  done <<<"$chain_source_lines"
-  read -r gate_a_revision gate_a_tree upgrade_revision upgrade_tree current_revision current_tree < <(
-    python3 -c '
-import json,sys
-t=json.load(open(sys.argv[1],encoding="utf-8"))
-print(t.get("from_source_revision",""),t.get("from_source_tree_sha256",""),t.get("upgrade_source_revision",""),t.get("upgrade_source_tree_sha256",""),t.get("to_source_revision",""),t.get("to_source_tree_sha256",""))
-' "$bundle/post-gate-a-policy-transition.json"
-  )
-  [[ "$gate_a_revision" =~ ^[0-9a-f]{40}$ \
-    && "$upgrade_revision" =~ ^[0-9a-f]{40}$ \
-    && "$current_revision" =~ ^[0-9a-f]{40}$ \
-    && "$gate_a_tree" =~ ^[0-9a-fA-F]{64}$ \
-    && "$upgrade_tree" =~ ^[0-9a-fA-F]{64}$ \
-    && "$current_tree" =~ ^[0-9a-fA-F]{64}$ ]] || {
-    echo "Gate B source chain metadata is malformed" >&2
-    return 1
-  }
-  [[ "$first_upgrade_revision" == "$upgrade_revision" || "$previous_upgrade_revision" == "$upgrade_revision" ]] || {
-    echo "Gate B policy transition does not name an upgrade-chain source" >&2
-    return 1
-  }
-  git -C "$source_root" cat-file -e "${gate_a_revision}^{commit}" 2>/dev/null \
-    && git -C "$source_root" cat-file -e "${upgrade_revision}^{commit}" 2>/dev/null \
-    && git -C "$source_root" cat-file -e "${current_revision}^{commit}" 2>/dev/null \
-    && git -C "$source_root" merge-base --is-ancestor "$gate_a_revision" "$upgrade_revision" \
-    && git -C "$source_root" merge-base --is-ancestor "$gate_a_revision" "$first_upgrade_revision" \
-    && [[ "$previous_upgrade_revision" == "$upgrade_revision" ]] \
-    && git -C "$source_root" merge-base --is-ancestor "$upgrade_revision" "$current_revision" || {
-      echo "Gate B source chain is not Gate A to upgrade to current" >&2
-      return 1
-    }
-  actual_gate_a_tree="$(git -C "$source_root" --attr-source="$gate_a_revision" archive --format=tar "$gate_a_revision" | shasum -a 256 | awk '{print tolower($1)}')"
-  actual_upgrade_tree="$(git -C "$source_root" --attr-source="$upgrade_revision" archive --format=tar "$upgrade_revision" | shasum -a 256 | awk '{print tolower($1)}')"
-  actual_current_tree="$(git -C "$source_root" --attr-source="$current_revision" archive --format=tar "$current_revision" | shasum -a 256 | awk '{print tolower($1)}')"
-  [[ "$actual_gate_a_tree" == "$(printf '%s' "$gate_a_tree" | tr '[:upper:]' '[:lower:]')" \
-    && "$actual_upgrade_tree" == "$(printf '%s' "$upgrade_tree" | tr '[:upper:]' '[:lower:]')" \
-    && "$actual_current_tree" == "$(printf '%s' "$current_tree" | tr '[:upper:]' '[:lower:]')" ]] || {
-    echo "Gate B source chain tree hash mismatch" >&2
-    return 1
-  }
-}
-
 production_validate_gate() {
   local mode="$1" bundle="$2" expected_hash="$3" canister_install_receipt="${4:-}"
   local completed_gate_a_receipt="${5:-}"
   local deployment_binding="${6:-}"
   local final_profile="${7:-}"
   local fee_cycles_measurements="${8:-}"
-  local handover_seal_receipt="${5:-}"
-  local handover_schedule_receipt="${6:-}"
-  local handover_execute_receipt="${7:-}"
-  local handover_checkpoint="${4:-}"
   local source_root target profile_bin output actual_hash revision tree manifest_revision manifest_tree
   local expected_relayer resolved_relayer bridge_canister refresh_output final_output
   source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -395,145 +281,27 @@ production_validate_gate() {
   revision="$(git -C "$source_root" rev-parse HEAD)"
   tree="$(git -C "$source_root" archive HEAD | shasum -a 256 | awk '{print $1}')"
   read -r manifest_revision manifest_tree < <(python3 -c 'import json,sys;m=json.load(open(sys.argv[1]));print(m.get("source_revision",""),m.get("source_tree_sha256",""))' "$bundle/release-manifest.json")
-  local checkpoint_handover=0 checkpoint_module checkpoint_revision checkpoint_metadata checkpoint_fields
-  if [[ ( "$mode" == handover || "$mode" == handover-recover ) && -n "${BRIDGE_CHECKPOINT_EVIDENCE:-}" ]]; then
-    checkpoint_handover=1
-  else
   [[ "$revision" == "$manifest_revision" && "$tree" == "$(printf '%s' "$manifest_tree" | tr '[:upper:]' '[:lower:]')" ]] || { echo "release bundle is not bound to the fixed clean source" >&2; return 1; }
-  fi
   [[ "$expected_hash" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "invalid expected Gate manifest hash" >&2; return 1; }
   target="$(mktemp -d "${TMPDIR:-/tmp}/bridge-driver-validator.XXXXXX")"
   CARGO_TARGET_DIR="$target" cargo build --locked --quiet --release --manifest-path "$source_root/Cargo.toml" -p bridge-profile || { rm -rf "$target"; return 1; }
   profile_bin="$target/release/bridge-profile"
-  if [[ "$checkpoint_handover" -eq 1 ]]; then
-    checkpoint_metadata="$("$profile_bin" validate-production-checkpoint-evidence "$BRIDGE_CHECKPOINT_EVIDENCE")" || { rm -rf "$target"; return 1; }
-    checkpoint_fields="$(python3 -I -S - "$checkpoint_metadata" <<'PY_META'
-import json,sys
-value=json.loads(sys.argv[1]); source=value.get('source',{})
-if value.get('runtime',{}).get('schema_version')!=36:
- raise SystemExit('handover requires a v36 checkpoint terminal')
-module=value.get('module_sha256',''); revision=source.get('revision',''); tree=source.get('tree_sha256','')
-if any(len(item)!=length or any(ch not in '0123456789abcdef' for ch in item) for item,length in ((module,64),(revision,40),(tree,64))):
- raise SystemExit('handover checkpoint source or module identity is malformed')
-print(module,revision)
-PY_META
-)" || { rm -rf "$target"; return 1; }
-    read -r checkpoint_module checkpoint_revision <<<"$checkpoint_fields"
-    git -C "$source_root" merge-base --is-ancestor "$checkpoint_revision" "$revision" || {
-      rm -rf "$target"
-      echo "handover checkpoint source is not an ancestor of the current source" >&2
-      return 1
-    }
-  fi
   if [[ "$mode" == gate-a ]]; then output="$("$profile_bin" validate-bundle --offline "$bundle")" || { rm -rf "$target"; return 1; }
   elif [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live ]]; then output="$("$profile_bin" validate-bundle --offline --gate-b "$bundle")" || { rm -rf "$target"; return 1; }
-  elif [[ "$mode" == handover || "$mode" == handover-recover ]]; then
-    [[ "$mode" == handover-recover || -z "$canister_install_receipt" ]] || {
-      rm -rf "$target"
-      echo "handover mode does not accept an install receipt" >&2
-      return 1
-    }
-    for receipt in "$handover_seal_receipt" "$handover_schedule_receipt" "$handover_execute_receipt"; do
-      [[ -f "$receipt" && ! -L "$receipt" ]] || {
-        rm -rf "$target"
-        echo "controller handover requires seal, schedule, and execute receipts" >&2
-        return 1
-      }
-    done
-    if [[ "$mode" == handover-recover ]]; then
-      [[ -f "$handover_checkpoint" && ! -L "$handover_checkpoint" ]] || {
-        rm -rf "$target"; echo "handover recovery requires a regular checkpoint" >&2; return 1;
-      }
-      output="$("$profile_bin" validate-controller-handover-recovery \
-        "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
-        "$handover_execute_receipt" "$handover_checkpoint")" || {
-          rm -rf "$target"; echo "controller handover recovery checkpoint is invalid" >&2; return 1;
-        }
-      [[ "$output" =~ ^controller_handover_recovery=pass[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || {
-        rm -rf "$target"
-        echo "controller handover recovery result is malformed" >&2
-        return 1
-      }
-    else
-      output="$("$profile_bin" validate-production-handover-candidate \
-        "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
-        "$handover_execute_receipt")" || {
-        rm -rf "$target"
-        echo "controller handover activation lineage is invalid" >&2
-        return 1
-      }
-      [[ "$output" =~ ^production_handover_candidate=pass[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || {
-        rm -rf "$target"
-        echo "controller handover candidate result is malformed" >&2
-        return 1
-      }
-    fi
-    [[ -n "${BASH_REMATCH[1]:-}" ]] || {
-      rm -rf "$target"
-      echo "controller handover validation omitted the manifest hash" >&2
-      return 1
-    }
-    actual_hash="${BASH_REMATCH[1]}"
   else rm -rf "$target"; echo "invalid production gate mode" >&2; return 1
   fi
   if [[ "$mode" == gate-a ]]; then
     [[ "$output" =~ ^gate_a=pass[[:space:]]authorizing=true[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver Gate A result is not authorizing" >&2; return 1; }
     actual_hash="${BASH_REMATCH[1]}"
-  elif [[ "$mode" != handover && "$mode" != handover-recover ]]; then
+  else
     [[ "$output" =~ ^gate_b=pre_seal-pass[[:space:]]authorizing=seal[[:space:]]manifest_sha256=([0-9a-fA-F]{64})$ ]] || { rm -rf "$target"; echo "driver pre-seal Gate B result is malformed" >&2; return 1; }
     actual_hash="${BASH_REMATCH[1]}"
   fi
   [[ -n "$actual_hash" && "$(printf '%s' "$actual_hash" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$expected_hash" | tr '[:upper:]' '[:lower:]')" ]] || { rm -rf "$target"; echo "driver Gate manifest hash mismatch" >&2; return 1; }
-  if [[ "$checkpoint_handover" -eq 1 ]]; then
-    production_run_proof_gate "$source_root" "$revision" "$tree" || { rm -rf "$target"; return 1; }
-    for build_index in 1 2; do
-      CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$target/repro-$build_index"         icp build bridge-canister -e production --project-root-override "$source_root" >/dev/null || { rm -rf "$target"; return 1; }
-      [[ "$(shasum -a 256 "$target/repro-$build_index/wasm32-unknown-unknown/release/bridge_canister.wasm" | awk '{print $1}')" == "$checkpoint_module" ]] || {
-        rm -rf "$target"; echo "handover module is not reproducible from current source" >&2; return 1;
-      }
-    done
-    production_require_clean_source "$source_root" || { rm -rf "$target"; return 1; }
-    [[ "$(git -C "$source_root" rev-parse HEAD)" == "$revision" && "$(git -C "$source_root" archive HEAD | shasum -a 256 | awk '{print $1}')" == "$tree" ]] || {
-      rm -rf "$target"; echo "handover source changed during validation" >&2; return 1;
-    }
-  else
-  if [[ "$mode" == gate-b-pre-seal || "$mode" == gate-b-live || "$mode" == handover || "$mode" == handover-recover ]]; then
-    production_validate_gate_b_source_chain "$source_root" "$bundle" || { rm -rf "$target"; return 1; }
-  fi
   production_run_proof_gate "$source_root" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
   "$source_root/scripts/rebuild-release-artifacts.sh" \
     "$bundle" "$manifest_revision" "$manifest_tree" || { rm -rf "$target"; return 1; }
-  fi
   if [[ "$mode" == gate-b-pre-seal ]]; then
-    rm -rf "$target"
-    return 0
-  fi
-  if [[ "$mode" == handover || "$mode" == handover-recover ]]; then
-    if [[ "$mode" == handover-recover ]]; then
-      if [[ -n "${BRIDGE_HANDOVER_VALIDATOR_BIN:-}" ]]; then
-        [[ ! -e "$BRIDGE_HANDOVER_VALIDATOR_BIN" && ! -L "$BRIDGE_HANDOVER_VALIDATOR_BIN" ]] || {
-          rm -rf "$target"; echo "handover validator output already exists or is a symlink" >&2; return 1;
-        }
-        cp "$profile_bin" "$BRIDGE_HANDOVER_VALIDATOR_BIN" || { rm -rf "$target"; return 1; }
-        chmod 500 "$BRIDGE_HANDOVER_VALIDATOR_BIN" || { rm -rf "$target"; return 1; }
-      fi
-      rm -rf "$target"
-      return 0
-    fi
-    "$profile_bin" verify-production-canister-handover \
-      "$bundle" "$handover_seal_receipt" "$handover_schedule_receipt" \
-      "$handover_execute_receipt" >/dev/null || {
-      rm -rf "$target"
-      echo "production Canister is not active, integral, and bound to the activation lineage" >&2
-      return 1
-    }
-    if [[ -n "${BRIDGE_HANDOVER_VALIDATOR_BIN:-}" ]]; then
-      [[ ! -e "$BRIDGE_HANDOVER_VALIDATOR_BIN" && ! -L "$BRIDGE_HANDOVER_VALIDATOR_BIN" ]] || {
-        rm -rf "$target"; echo "handover validator output already exists or is a symlink" >&2; return 1;
-      }
-      cp "$profile_bin" "$BRIDGE_HANDOVER_VALIDATOR_BIN" || { rm -rf "$target"; return 1; }
-      chmod 500 "$BRIDGE_HANDOVER_VALIDATOR_BIN" || { rm -rf "$target"; return 1; }
-    fi
     rm -rf "$target"
     return 0
   fi

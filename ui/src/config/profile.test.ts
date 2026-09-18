@@ -39,7 +39,6 @@ describe("reviewed deployment profile", () => {
       profileCanonicalSha256: "c".repeat(64),
       canisterSchemaVersion: 36,
       canisterModuleSha256: "d".repeat(64),
-      postActivationUpgradeSha256: "e".repeat(64),
       uiRpcConfigSha256: "f".repeat(64),
     })
     expect(parsed).not.toHaveProperty("gateBManifestSha256")
@@ -76,12 +75,10 @@ describe("reviewed deployment profile", () => {
       profileCanonicalSha256: "c".repeat(64),
       canisterSchemaVersion: 36,
       canisterModuleSha256: "d".repeat(64),
-      postActivationUpgradeSha256: "e".repeat(64),
       uiRpcConfigSha256: "f".repeat(64),
     })
     expect(release.profileFileSha256).toBe("b".repeat(64))
     expect(release.canisterSchemaVersion).toBe(36)
-    expect(deploymentProfileSchema.parse(release)).not.toHaveProperty("postActivationUpgradeSha256")
     expect(() => releaseProfileSchema.parse({ ...release, canisterSchemaVersion: 35 })).toThrow()
     expect(() => releaseProfileSchema.parse({ ...release, profileFileSha256: undefined })).toThrow()
   })
