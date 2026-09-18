@@ -4562,7 +4562,7 @@ fn verify_production_current_state(
         &status,
         &pending,
         history_ready,
-        root_state.dapps.iter().any(|canister| *canister == bridge),
+        root_state.dapps.contains(&bridge),
         storage_ok,
     )?;
     profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
@@ -4707,7 +4707,7 @@ fn production_current_ui_runtime_profile_value(
     if profile.canister_schema_version != CURRENT_STABLE_SCHEMA_VERSION {
         return Err("production UI profile must use current schema v36".into());
     }
-    let rpc: ProductionUiRpcConfig = serde_json::from_slice(&rpc_bytes)
+    let rpc: ProductionUiRpcConfig = serde_json::from_slice(rpc_bytes)
         .map_err(|_| "invalid reviewed production UI RPC configuration")?;
     let key = rpc
         .base_rpc_url
@@ -4740,7 +4740,7 @@ fn production_current_ui_runtime_profile_value(
     );
     fields.insert(
         "uiRpcConfigSha256".into(),
-        serde_json::json!(hex(&Sha256::digest(&rpc_bytes))),
+        serde_json::json!(hex(&Sha256::digest(rpc_bytes))),
     );
     Ok(ui)
 }
@@ -5402,6 +5402,7 @@ fn validate_historical_evidence_window(
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))]
 enum SealReceiptLiveContext {
     PrePrepare,
     PendingResume,
@@ -5795,6 +5796,7 @@ fn validate_controller_activation_timeline(
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))]
 enum ActivationReceiptFreshness {
     Current,
     Historical,
@@ -8029,12 +8031,14 @@ fn production_upgrade_agent(
     Ok((agent, sender))
 }
 
+#[cfg(test)]
 #[derive(CandidType, Deserialize)]
 struct ReleaseUpgradeObservationView {
     completed_at_ns: u64,
     upgrader: Principal,
 }
 
+#[cfg(test)]
 fn validate_sns_upgrade_completion(
     observation: &ReleaseUpgradeObservationView,
     decided_at: u64,
