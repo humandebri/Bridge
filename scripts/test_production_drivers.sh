@@ -11,6 +11,7 @@ cat >"$T/source/scripts/ci-local.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "${1:-}" == proofs ]]
+[[ -z "${BRIDGE_CHECKPOINT_EVIDENCE+x}" ]]
 printf 'proofs %s\n' "$*" >>"$TRACE"
 if [[ "${PROOF_GATE_FAIL:-false}" == true ]]; then exit 42; fi
 if [[ "${PROOF_GATE_MUTATE_SOURCE:-false}" == true ]]; then
@@ -258,6 +259,8 @@ FREEZE_RPC_SHA="$(shasum -a 256 "$FREEZE_SOURCE/rpc-e2e.json" | awk '{print $1}'
 printf '{"artifacts":[{"path":"rpc-e2e.json","sha256":"%s"}]}\n' "$FREEZE_RPC_SHA" >"$FREEZE_SOURCE/release-manifest.json"
 # shellcheck source=production-validation.sh
 source "$DRIVER_ROOT/scripts/production-validation.sh"
+BRIDGE_CHECKPOINT_EVIDENCE="$T/live-checkpoint.json" \
+  production_run_proof_gate "$DRIVER_ROOT" "$SOURCE_REVISION" "$SOURCE_TREE"
 production_freeze_bundle "$FREEZE_SOURCE" "$FREEZE_TARGET"
 cmp -s "$FREEZE_SOURCE/artifacts/preflight-base.json" "$FREEZE_TARGET/artifacts/preflight-base.json"
 chmod u+w "$FREEZE_TARGET" "$FREEZE_TARGET/artifacts"

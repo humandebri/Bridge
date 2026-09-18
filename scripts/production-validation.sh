@@ -62,8 +62,11 @@ production_run_proof_gate() {
     echo "proof gate source does not match the release manifest" >&2
     return 1
   }
-  # Execution consent belongs to the driver, not nested validation fixtures.
-  env -u BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE "$proof_script" proofs || {
+  # Execution consent and production checkpoint inputs belong to the driver,
+  # not nested validation fixtures. The proof suite constructs its own
+  # checkpoint fixtures and must not inherit a live handover checkpoint.
+  env -u BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE \
+    -u BRIDGE_CHECKPOINT_EVIDENCE "$proof_script" proofs || {
     echo "release proof gate failed" >&2
     return 1
   }
