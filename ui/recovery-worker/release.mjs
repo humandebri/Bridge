@@ -20,6 +20,8 @@ const required = (name) => {
 const profileFile = required("BRIDGE_UI_RUNTIME_PROFILE_FILE")
 const rawProfile = readFileSync(profileFile, "utf8")
 const profile = releaseProfileSchema.parse(JSON.parse(rawProfile))
+if (!/^[0-9a-f]{64}$/i.test(profile.canisterModuleSha256 ?? ""))
+  throw new Error("Production recovery profile lacks the current module SHA-256")
 const depositId = required("BRIDGE_RECOVERY_SMOKE_DEPOSIT_ID")
 const expectedHash = required("BRIDGE_RECOVERY_SMOKE_TRANSACTION_HASH").toLowerCase()
 if (![depositId, expectedHash].every((value) => /^0x[0-9a-f]{64}$/i.test(value)))
@@ -52,15 +54,17 @@ if (command !== "smoke") {
       "-p",
       "bridge-profile",
       "--",
-      "verify-production-checkpoint-ui-live",
-      required("BRIDGE_CHECKPOINT_EVIDENCE"),
+      "verify-production-current-ui-live",
+      required("BRIDGE_RELEASE_BUNDLE"),
+      profile.canisterModuleSha256,
       required("BRIDGE_UI_RPC_CONFIG"),
       profileFile,
+      required("BRIDGE_UI_CONTROLLER_MODE"),
     ],
     { cwd: root, encoding: "utf8" },
   )
   const manifest =
-    /^production_ui=live-pass schema=36 activation=execute manifest_sha256=([0-9a-f]{64})$/m.exec(
+    /^production_ui=current-live-pass schema=36 module_sha256=[0-9a-f]{64} manifest_sha256=([0-9a-f]{64})$/m.exec(
       output,
     )?.[1]
   assertProductionUiProfile(profile, manifest)

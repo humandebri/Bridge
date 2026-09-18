@@ -360,38 +360,29 @@ test("binds an SNS activation artifact to its proposal and exact co-controller r
     payload_hex: "00",
     payload_sha256: "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
   }
-  const preparation = {
-    schema_version: 5,
-    stage: "co_controller_ready",
-    gate_b_manifest_sha256: gate,
-    bridge_canister_id: bridge,
-    sns_root_canister_id: root,
-    executing_principal: installer,
-    final_controllers: [root, installer],
-  }
   const artifact = {
     operation_id: 2n,
     kind: { ScheduleActivation: {} },
     signed_at_ns: 100_000_000_000n,
   } as never
   const authorization = snsActivationAuthorization(
-    "schedule", submission, preparation, artifact, gate, bridge, root,
-    "22".repeat(32), "33".repeat(32),
+    "schedule", submission, artifact, gate, bridge, root,
+    "22".repeat(32), "33".repeat(32), installer,
   )
   assert.equal(authorization.kind, "sns-activation-proposal-authorization")
   assert.deepEqual(authorization.certified_controller_set, [installer, root].sort())
   assert.equal(authorization.proposal_id, 41)
   assert.throws(() => snsActivationAuthorization(
-    "schedule", submission, { ...preparation, final_controllers: [root] }, artifact,
-    gate, bridge, root, "22".repeat(32), "33".repeat(32),
-  ), /exact evidenced co-controller/)
+    "schedule", submission, artifact, gate, bridge, root,
+    "22".repeat(32), "invalid", installer,
+  ), /current-state binding/)
   assert.throws(() => snsActivationAuthorization(
-    "schedule", submission, { ...preparation, final_controllers: [root, installer, "2ibo7-dia"] }, artifact,
-    gate, bridge, root, "22".repeat(32), "33".repeat(32),
-  ), /exact evidenced co-controller/)
+    "schedule", submission, artifact, gate, bridge, root,
+    "22".repeat(32), "33".repeat(32), root,
+  ), /current-state binding/)
   assert.throws(() => snsActivationAuthorization(
-    "schedule", submission, preparation, { ...artifact, operation_id: 3n },
-    gate, bridge, root, "22".repeat(32), "33".repeat(32),
+    "schedule", submission, { ...artifact, operation_id: 3n },
+    gate, bridge, root, "22".repeat(32), "33".repeat(32), installer,
   ), /not derived from the SNS proposal/)
 })
 

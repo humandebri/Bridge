@@ -76,14 +76,11 @@ Query response authentication means signature verification via `call_with_verifi
 
 The production Bridge Canister runs stable schema v36. Published evidence for corrected v36 and the UI uses the local layout below.
 Normal current-release Gate B remains v36-only.
-Upgrades and UI publication use an approved checkpoint with source-pinned SHA-256 plus additional receipts.
-`BRIDGE_CHECKPOINT_EVIDENCE` contains the checkpoint and ordered additional history; normal publication does not reread old Gate B or activation receipts.
-`verify-production-checkpoint-ui-live` verifies a v36 terminal, RuntimeBinding from signature-verified queries and module hash from certified `read_state`, Activated and unpaused state, complete indexes, and fresh attestation.
-Bind publication runtime profiles to the complete evidence and reviewed `BRIDGE_UI_RPC_CONFIG`.
-Use `BRIDGE_PRODUCTION_INSTALLER_IDENTITY` for controller-only queries, matching the approved sole controller.
+Upgrades and UI publication use certified current state plus a Wasm reproduced twice from clean current source.
+`verify-production-current-ui-live` verifies the v36 RuntimeBinding from signature-verified queries, module/controllers from certified `read_state`, Activated and unpaused state, complete indexes, fresh attestation, reviewed `BRIDGE_UI_RPC_CONFIG`, and explicit `sole` or `joint` controller mode.
+Use `BRIDGE_PRODUCTION_INSTALLER_IDENTITY` for controller-only queries, matching the production controller.
 Generate a new UI asset receipt from the clean source being published and WalletConnect project ID.
-Retain formal history for audit; do not automatically approve checkpoint creation or rotation.
-Do not publish the new UI until actual upgrade receipts and refreshed live publication authorization are available.
+Do not publish the new UI until the current module and refreshed live publication authorization are available.
 See the [operations runbook](../docs/runbooks/operations.md) for procedures and stop points.
 
 Never record credentials, seeds, private keys, hardware-wallet backups, or credential-bearing RPC URLs in profiles or evidence.
@@ -92,23 +89,21 @@ Never record credentials, seeds, private keys, hardware-wallet backups, or crede
 
 | Location | Contents | Git |
 | --- | --- | --- |
-| `deployments/checkpoints/` | Checkpoints with hashes approved in source | Tracked |
-| `artifacts/production/80d9ebb/` | Published Wasm, UI file ledger/assets, preflight, and complete gate evidence | Untracked |
-| `artifacts/production/80d9ebb/execution/` | Successful upgrade receipts, signed sidecars, additional evidence, UI publication records | Untracked |
+| `artifacts/production/80d9ebb/` | Historical published Wasm, UI file ledger/assets, and gate evidence | Untracked |
+| `artifacts/production/80d9ebb/execution/` | Historical operation records and UI publication records; not current authorization inputs | Untracked |
 | `artifacts/production/80d9ebb/private/` | Reviewed RPC configuration that may contain secrets | Untracked; directory 700 / file 600 |
-| `artifacts/audit/checkpoint-migration-20260910/` | Historical formal evidence, original audit manifest, path/hash relocation manifest | Untracked; back up separately |
+| `artifacts/audit/` | Historical formal evidence and audit manifests | Untracked; back up separately |
 
-Use only the following existing-history file for normal additional upgrades/UI validation; do not use the audit directory as input.
+Use the reviewed release bundle, current runtime profile, and reviewed RPC configuration for UI validation.
 
 ```sh
-BRIDGE_CHECKPOINT_EVIDENCE="$PWD/artifacts/production/80d9ebb/execution/checkpoint-evidence-after-upgrade.json"
+BRIDGE_RELEASE_BUNDLE="/absolute/path/to/reviewed-release-bundle"
 BRIDGE_UI_RUNTIME_PROFILE_FILE="$PWD/artifacts/production/80d9ebb/execution/ui-runtime-after-upgrade.json"
 BRIDGE_UI_RPC_CONFIG="$PWD/artifacts/production/80d9ebb/private/ui-rpc-config.json"
+BRIDGE_UI_CONTROLLER_MODE=sole
 ```
 
-This references the published release. Generate new Wasm, preflight, and UI receipts in a separate directory for the next release. Never rewrite historical receipt source revisions or paths to current values. A new commit must satisfy clean source/tree binding anew; do not pass old preflight directly to execute.
-
-Preserve signed receipts and original audit manifests byte-for-byte. Map old paths to new paths/backup locations through `relocation-manifest.json`. The external backup made for this relocation is on the same KINGSTON volume; protection against media failure requires another backup on separate media. Never delete the sole formal receipt.
+Generate the new Wasm from the same clean source being validated. Production upgrade and handover drivers do not create preflight, request, recovery, or completion receipts. Historical records may be archived for audit but are never accepted as current authorization.
 
 Root `.gitignore` excludes `artifacts/production/` and `artifacts/audit/` from Git and current proof fingerprint traversal. Do not expand exclusions to weaken validation contracts. Verify tracked checkpoints against source-approved hashes. After relocation, check unchanged fingerprints, ignore behavior, and a clean tree after commit.
 

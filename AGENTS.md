@@ -2,9 +2,9 @@
 
 ## Production compatibility policy
 
-- The production Bridge Canister is deployed at stable schema v36 (live-confirmed 2026-09-16), with module SHA-256 `bf0477947b06a06d31aa32b52992a1b775fca0c9b4c98bf3129037d47abedd64`. The active checkpoint is the reviewed rotation with SHA-256 `ddde10ae0f73d3af735eee84d0d2619bc2c565bf4501a36f842983f7bed4498b`, rooted in the immutable v35 Gate B and the two verified v36 suffix upgrades. Treat `6192841b...` and `d48d4737...` as historical terminals only; do not use them as the current production baseline.
-- Normal current-release Gate B validation must accept only v36. Historical verification may accept exactly the deployed v35 or current v36 only when every profile, Gate A receipt, upgrade-chain terminal, Wasm binding, and live RuntimeBinding converges on the same version.
-- Production UI authorization requires a verified v36 terminal rooted in the immutable v35 Gate B. Until checkpoint approval and driver cutover, use the exact historical upgrade chain; afterward use the source-approved checkpoint plus verified suffix. The UI gate must reject a live v35 terminal. v34, v37, disconnected or mixed-version evidence, aliases, shims, and runtime fallbacks must fail closed.
+- The production Bridge Canister runs stable schema v36. Operational authorization is based on certified current IC state, not a historical upgrade chain: certified module hash and controllers, signature-verified queries, Activated/unpaused state, RuntimeBinding, operational configuration, storage integrity, and complete history indexes must agree in one observation.
+- A production upgrade must bind the certified current module immediately before submission and install only a Wasm reproduced twice from the clean current HEAD after the complete proof gate. A module or state change between review and submission fails closed.
+- Production UI authorization requires the same certified v36 current state and the reviewed UI RPC configuration. v35, v37, disconnected or mixed-version observations, aliases, shims, and runtime fallbacks must fail closed.
 - For formats and APIs that have not been deployed, replace obsolete shapes directly and update all callers, tests, fixtures, and documentation in the same change. Do not add compatibility shims or fallbacks unless the user explicitly requests them.
 - Bind the production UI runtime profile to the verified upgrade terminal and reviewed UI RPC configuration. Require completed history indexes and live v36 evidence before publishing.
 

@@ -319,7 +319,6 @@ raise SystemExit(0 if actual==expected else 1)
   [[ -f "$RECEIPT" ]] || { echo "Gate B requires the matching Gate A receipt" >&2; exit 1; }
   [[ -f "$BUNDLE/gate-a-receipt.json" ]] || { echo "Gate B bundle is missing its Gate A receipt artifact" >&2; exit 1; }
   [[ -f "$BUNDLE/gate-a-profile.json" ]] || { echo "Gate B bundle is missing its immutable Gate A profile artifact" >&2; exit 1; }
-  [[ -f "$BUNDLE/production-canister-upgrade-receipt.json" ]] || { echo "Gate B bundle is missing its production upgrade receipt artifact" >&2; exit 1; }
   cmp -s "$RECEIPT" "$BUNDLE/gate-a-receipt.json" || {
     echo "external Gate A receipt differs from the Gate B receipt artifact" >&2
     exit 1
@@ -329,14 +328,9 @@ raise SystemExit(0 if actual==expected else 1)
     echo "Gate B manifest is not descended from the Gate A receipt" >&2
     exit 1
   }
-  [[ -f "$BUNDLE/post-gate-a-policy-transition.json" ]] || {
-    echo "Gate B bundle is missing its policy transition artifact" >&2
-    exit 1
-  }
   read -r GATE_A_SOURCE_REVISION GATE_A_SOURCE_TREE_SHA256 < <(
     python3 -c 'import json,sys;r=json.load(open(sys.argv[1],encoding="utf-8"));print(r.get("source_revision",""),r.get("source_tree_sha256",""))' "$RECEIPT"
   )
-  production_validate_gate_b_source_chain "$SOURCE_ROOT" "$BUNDLE"
   read -r GATE_A_CANISTER_WASM_SHA256 GATE_A_BRIDGE_RUNTIME_SHA256 < <(
     python3 -c '
 import json,sys

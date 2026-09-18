@@ -1,7 +1,5 @@
 #![recursion_limit = "256"]
 
-mod production_checkpoint;
-
 use candid::{CandidType, Decode, Encode, Principal, Reserved};
 use ic_agent::{
     agent::CallResponse,
@@ -48,7 +46,7 @@ const GATE_A_ARTIFACTS: [&str; 6] = [
     "bsns-runtime.bin",
     "bsns-runtime-layout.json",
 ];
-const GATE_B_ARTIFACTS: [&str; 13] = [
+const GATE_B_ARTIFACTS: [&str; 11] = [
     "profile.json",
     "initial-operational-parameters.json",
     "provider-independence.json",
@@ -60,8 +58,6 @@ const GATE_B_ARTIFACTS: [&str; 13] = [
     "bsns-runtime-layout.json",
     "gate-a-receipt.json",
     "gate-a-profile.json",
-    "production-canister-upgrade-receipt.json",
-    "post-gate-a-policy-transition.json",
 ];
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -374,116 +370,6 @@ struct InitialDerivedParameters {
     settlement_cycle_ceiling: u128,
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct PostGateAPolicyTransition {
-    schema_version: u8,
-    reason: String,
-    observed_at_unix: u64,
-    gate_a_manifest_sha256: String,
-    gate_a_receipt_sha256: String,
-    from_source_revision: String,
-    from_source_tree_sha256: String,
-    upgrade_source_revision: String,
-    upgrade_source_tree_sha256: String,
-    to_source_revision: String,
-    to_source_tree_sha256: String,
-    bridge_canister_id: String,
-    bridge_contract: String,
-    bsns_contract: String,
-    timelock_contract: String,
-    from_bridge_canister_wasm_sha256: String,
-    to_bridge_canister_wasm_sha256: String,
-    production_canister_upgrade_receipt_sha256: String,
-    bridge_runtime_bytecode_sha256: String,
-    bsns_runtime_bytecode_sha256: String,
-    bsns_runtime_template_sha256: String,
-    bridge_deployment_transaction_hash: String,
-    timelock_deployment_transaction_hash: String,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProductionCanisterUpgradeReceipt {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    checkpoint_evidence_sha256: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    before_operational_config: Option<OperationalEpochEvidence>,
-    schema_version: u8,
-    kind: String,
-    source_revision: String,
-    source_tree_sha256: String,
-    bridge_canister_id: String,
-    install_mode: String,
-    executing_principal: String,
-    executed_at_unix: u64,
-    verified_at_unix: u64,
-    recovered: bool,
-    recovered_at_unix: Option<u64>,
-    before_controllers: Vec<String>,
-    after_controllers: Vec<String>,
-    before_module_sha256: String,
-    after_module_sha256: String,
-    wasm_sha256: String,
-    before_schema_version: u16,
-    after_schema_version: u16,
-    before_lifecycle: String,
-    after_lifecycle: String,
-    before_deposits_paused: bool,
-    after_deposits_paused: bool,
-    before_storage_validation_complete: bool,
-    after_storage_validation_complete: bool,
-    before_management_status_json_hex: String,
-    before_management_status_json_sha256: String,
-    after_management_status_json_hex: String,
-    after_management_status_json_sha256: String,
-    before_bridge_status_response_hex: String,
-    before_bridge_status_response_sha256: String,
-    after_bridge_status_response_hex: String,
-    after_bridge_status_response_sha256: String,
-    before_lifecycle_response_hex: String,
-    before_lifecycle_response_sha256: String,
-    after_lifecycle_response_hex: String,
-    after_lifecycle_response_sha256: String,
-    before_runtime_binding_response_hex: String,
-    before_runtime_binding_response_sha256: String,
-    after_runtime_binding_response_hex: String,
-    after_runtime_binding_response_sha256: String,
-    before_storage_integrity_response_hex: String,
-    before_storage_integrity_response_sha256: String,
-    after_storage_integrity_response_hex: String,
-    after_storage_integrity_response_sha256: String,
-    before_public_state_sha256: String,
-    after_public_state_sha256: String,
-    command_argv: Vec<String>,
-    chunk_upload_evidence_json_hex: String,
-    chunk_upload_evidence_json_sha256: String,
-    submission_json_hex: String,
-    submission_json_sha256: String,
-    request_id: String,
-    response_stdout_hex: String,
-    response_stdout_sha256: String,
-    response_stderr_hex: String,
-    response_stderr_sha256: String,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProductionCanisterUpgradeChain {
-    schema_version: u8,
-    kind: String,
-    entries: Vec<ProductionCanisterUpgradeChainEntry>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProductionCanisterUpgradeChainEntry {
-    sequence: u8,
-    previous_receipt_sha256: Option<String>,
-    receipt_sha256: String,
-    receipt_json_hex: String,
-}
-
 #[derive(CandidType, Deserialize)]
 enum ManagementInstallMode {
     #[serde(rename = "upgrade")]
@@ -545,48 +431,7 @@ struct ProductionUpgradeSignedUpdate {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ProductionUpgradeChunkResponse {
-    schema_version: u8,
-    index: u32,
-    request_id: String,
-    response_hex: String,
-    response_sha256: String,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProductionUpgradeStoredChunksResponse {
-    schema_version: u8,
-    request_id: String,
-    response_hex: String,
-    response_sha256: String,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProductionUpgradeUploadEvidence {
-    schema_version: u8,
-    stored_chunks_request_id: String,
-    stored_chunks_response_hex: String,
-    stored_chunks_response_sha256: String,
-    chunks: Vec<ProductionUpgradeChunkResponse>,
-}
-
-#[derive(Serialize)]
-struct ProductionUpgradeSendError {
-    schema_version: u8,
-    request_kind: String,
-    request_id: String,
-    observed_at_ns: u64,
-    error: String,
-    error_sha256: String,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 struct ProductionUpgradeSubmission {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    checkpoint_evidence_sha256: Option<String>,
     schema_version: u8,
     install_method: String,
     ic_host: String,
@@ -675,24 +520,6 @@ struct GateAReceipt {
     timelock_deployment_block_number: u64,
     timelock_deployment_block_hash: String,
     canister_install: ProductionCanisterInstallReceipt,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProductionDeploymentBinding {
-    deployer_address: String,
-    starting_nonce: u64,
-    timelock: ProductionContractDeploymentBinding,
-    bridge: ProductionContractDeploymentBinding,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProductionContractDeploymentBinding {
-    transaction_hash: String,
-    address: String,
-    block_number: u64,
-    block_hash: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -957,132 +784,6 @@ struct RpcConsensusStrategyBinding {
     kind: String,
     total: u8,
     min: u8,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-#[allow(dead_code)]
-struct ControllerHandover {
-    schema_version: u8,
-    stage: String,
-    observed_at_unix: u64,
-    source_revision: String,
-    source_tree_sha256: String,
-    gate_b_manifest_sha256: String,
-    operational_config_seal_receipt_sha256: String,
-    controller_schedule_receipt_sha256: String,
-    controller_execute_receipt_sha256: String,
-    bridge_canister_id: String,
-    sns_root_canister_id: String,
-    executing_principal: String,
-    command_argv: Vec<String>,
-    request_id: String,
-    response_exit_code: i32,
-    response_stdout_hex: String,
-    response_stderr_hex: String,
-    response_sha256: String,
-    before_controllers: Vec<String>,
-    before_module_sha256: String,
-    pre_send_controllers: Vec<String>,
-    pre_send_module_sha256: String,
-    final_controllers: Vec<String>,
-    after_module_sha256: String,
-    before_management_status_response_json_hex: String,
-    before_management_status_response_sha256: String,
-    before_root_registration_response_json_hex: String,
-    before_root_registration_response_sha256: String,
-    pre_send_management_status_response_json_hex: String,
-    pre_send_management_status_response_sha256: String,
-    pre_send_bridge_status_response_json_hex: String,
-    pre_send_bridge_status_response_sha256: String,
-    pre_send_lifecycle_response_json_hex: String,
-    pre_send_lifecycle_response_sha256: String,
-    pre_send_runtime_binding_response_json_hex: String,
-    pre_send_runtime_binding_response_sha256: String,
-    pre_send_storage_integrity_response_json_hex: String,
-    pre_send_storage_integrity_response_sha256: String,
-    pre_send_activation_status_response_json_hex: String,
-    pre_send_activation_status_response_sha256: String,
-    pre_send_activation_attestation_response_json_hex: String,
-    pre_send_activation_attestation_response_sha256: String,
-    after_management_status_response_json_hex: String,
-    after_management_status_response_sha256: String,
-    before_bridge_status_response_json_hex: String,
-    before_bridge_status_response_sha256: String,
-    after_bridge_status_response_json_hex: String,
-    after_bridge_status_response_sha256: String,
-    before_lifecycle_response_json_hex: String,
-    before_lifecycle_response_sha256: String,
-    after_lifecycle_response_json_hex: String,
-    after_lifecycle_response_sha256: String,
-    before_runtime_binding_response_json_hex: String,
-    before_runtime_binding_response_sha256: String,
-    after_runtime_binding_response_json_hex: String,
-    after_runtime_binding_response_sha256: String,
-    before_storage_integrity_response_json_hex: String,
-    before_storage_integrity_response_sha256: String,
-    after_storage_integrity_response_json_hex: String,
-    after_storage_integrity_response_sha256: String,
-    before_activation_status_response_json_hex: String,
-    before_activation_status_response_sha256: String,
-    after_activation_status_response_json_hex: String,
-    after_activation_status_response_sha256: String,
-    before_activation_attestation_response_json_hex: String,
-    before_activation_attestation_response_sha256: String,
-    after_activation_attestation_response_json_hex: String,
-    after_activation_attestation_response_sha256: String,
-    cycles_balance: u128,
-    freezing_threshold_seconds: u64,
-    idle_cycles_burned_per_day: u128,
-    required_freezing_cycles: u128,
-    pre_send_cycles_balance: u128,
-    pre_send_required_freezing_cycles: u128,
-    #[serde(default)]
-    pre_send_checkpoint_json_hex: String,
-    #[serde(default)]
-    pre_send_checkpoint_sha256: String,
-    #[serde(default)]
-    recovery_source_checkpoint_json_hex: String,
-    #[serde(default)]
-    recovery_source_checkpoint_sha256: String,
-    #[serde(default)]
-    recovered_without_request_id: bool,
-    registration_proposal_id: u64,
-    preparation_receipt_json_hex: String,
-    preparation_receipt_sha256: String,
-    registration_submission_json_hex: String,
-    registration_submission_sha256: String,
-    registration_governance_response_json_hex: String,
-    registration_governance_response_sha256: String,
-    registration_root_response_json_hex: String,
-    registration_root_response_sha256: String,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct HandoverRegistrationSubmission {
-    schema_version: u8,
-    kind: String,
-    release_id: String,
-    source_revision: String,
-    source_tree_sha256: String,
-    gate_b_manifest_sha256: String,
-    governance_canister_id: String,
-    sns_root_canister_id: String,
-    bridge_canister_id: String,
-    proposer_principal: String,
-    neuron_subaccount: String,
-    proposal_id: u64,
-    submitted_at_unix: u64,
-    proposal_sha256: String,
-    preparation_receipt_sha256: String,
-    reviewed_handover_sha256: String,
-    root_query_response_hex: String,
-    root_query_response_sha256: String,
-    proposal_response_hex: String,
-    proposal_response_sha256: String,
-    root_command_argv: Vec<String>,
-    proposal_command_argv: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -3364,280 +3065,6 @@ fn validate_production_canister_receipt_files(
     )))
 }
 
-fn validate_production_upgrade_gate_a_binding(
-    profile: &Profile,
-    profile_source: &[u8],
-    receipt: &GateAReceipt,
-) -> Result<(), String> {
-    validate_profile_with_schema_policy(profile, true, ProfileSchemaPolicy::Historical)?;
-    validate_production_canister_receipt(profile, &receipt.canister_install)?;
-    let expected_post_deploy_profile_sha256 =
-        post_deploy_profile_sha256(profile_source, receipt.bridge_deployment_block_number)?;
-    if receipt.schema_version != 2
-        || profile.deployment_block != 0
-        || !receipt
-            .gate_a_profile_sha256
-            .eq_ignore_ascii_case(&hex(&canonical_sha256(profile)?))
-        || !receipt
-            .post_deploy_profile_sha256
-            .eq_ignore_ascii_case(&expected_post_deploy_profile_sha256)
-        || !receipt
-            .bridge_canister_wasm_sha256
-            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
-    {
-        return Err("Gate A profile and receipt are not an immutable install binding".into());
-    }
-    Ok(())
-}
-
-fn validate_production_upgrade_gate_a_binding_files(
-    profile_path: &Path,
-    receipt_path: &Path,
-) -> Result<String, String> {
-    let profile_source = fs::read(profile_path).map_err(|error| error.to_string())?;
-    let profile: Profile =
-        serde_json::from_slice(&profile_source).map_err(|error| error.to_string())?;
-    let receipt: GateAReceipt = read_json(receipt_path)?;
-    validate_production_upgrade_gate_a_binding(&profile, &profile_source, &receipt)?;
-    Ok(hex(&Sha256::digest(
-        fs::read(receipt_path).map_err(|error| error.to_string())?,
-    )))
-}
-
-fn validate_completed_gate_a_receipt(
-    bundle: &ValidatedBundle,
-    receipt: &GateAReceipt,
-    install_receipt: &ProductionCanisterInstallReceipt,
-    deployment_binding: &ProductionDeploymentBinding,
-) -> Result<(), String> {
-    validate_production_canister_receipt(&bundle.profile, install_receipt)?;
-    validate_production_canister_receipt(&bundle.profile, &receipt.canister_install)?;
-    let embedded_install_sha256 = canonical_sha256(&receipt.canister_install)?;
-    let external_install_sha256 = canonical_sha256(install_receipt)?;
-    let gate_a_profile_sha256 = hex(&canonical_sha256(&bundle.profile)?);
-    let profile_source = fs::read(bundle.root.join("profile.json")).map_err(|e| e.to_string())?;
-    let post_deploy_profile_sha256 =
-        post_deploy_profile_sha256(&profile_source, receipt.bridge_deployment_block_number)?;
-    if bundle.manifest.test_only
-        || receipt.schema_version != 2
-        || !receipt
-            .gate_a_manifest_sha256
-            .eq_ignore_ascii_case(&bundle.manifest_sha256)
-        || receipt.release_id != bundle.manifest.release_id
-        || receipt.source_revision != bundle.manifest.source_revision
-        || !receipt
-            .source_tree_sha256
-            .eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
-        || !receipt
-            .gate_a_profile_sha256
-            .eq_ignore_ascii_case(&gate_a_profile_sha256)
-        || !receipt
-            .post_deploy_profile_sha256
-            .eq_ignore_ascii_case(&post_deploy_profile_sha256)
-        || !receipt
-            .bridge_canister_wasm_sha256
-            .eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
-        || !receipt
-            .bridge_runtime_bytecode_sha256
-            .eq_ignore_ascii_case(&bundle.profile.bridge_runtime_bytecode_sha256)
-        || !valid_hash32(&receipt.bridge_deployment_transaction_hash)
-        || !valid_hash32(&receipt.bridge_deployment_block_hash)
-        || !valid_hash32(&receipt.timelock_deployment_transaction_hash)
-        || !valid_hash32(&receipt.timelock_deployment_block_hash)
-        || receipt.bridge_deployment_block_number == 0
-        || receipt.timelock_deployment_block_number == 0
-        || receipt.timelock_deployment_block_number > receipt.bridge_deployment_block_number
-        || !deployment_binding
-            .deployer_address
-            .eq_ignore_ascii_case(&bundle.profile.initial_base_deployment.deployer_address)
-        || deployment_binding.starting_nonce
-            != bundle.profile.initial_base_deployment.starting_nonce
-        || !deployment_binding
-            .timelock
-            .address
-            .eq_ignore_ascii_case(&bundle.profile.timelock.address)
-        || !deployment_binding
-            .bridge
-            .address
-            .eq_ignore_ascii_case(&bundle.profile.bridge_contract)
-        || !deployment_binding
-            .timelock
-            .transaction_hash
-            .eq_ignore_ascii_case(&receipt.timelock_deployment_transaction_hash)
-        || deployment_binding.timelock.block_number != receipt.timelock_deployment_block_number
-        || !deployment_binding
-            .timelock
-            .block_hash
-            .eq_ignore_ascii_case(&receipt.timelock_deployment_block_hash)
-        || !deployment_binding
-            .bridge
-            .transaction_hash
-            .eq_ignore_ascii_case(&receipt.bridge_deployment_transaction_hash)
-        || deployment_binding.bridge.block_number != receipt.bridge_deployment_block_number
-        || !deployment_binding
-            .bridge
-            .block_hash
-            .eq_ignore_ascii_case(&receipt.bridge_deployment_block_hash)
-        || embedded_install_sha256 != external_install_sha256
-    {
-        return Err(
-            "completed Gate A receipt is not strictly bound to the deployment and Canister install"
-                .into(),
-        );
-    }
-    Ok(())
-}
-
-fn validate_production_handover_receipt_files(
-    bundle_path: &Path,
-    gate_a_receipt_path: &Path,
-    install_receipt_path: &Path,
-    deployment_binding_path: &Path,
-) -> Result<String, String> {
-    let bundle = validate_bundle(bundle_path, false)?;
-    let gate_a_receipt: GateAReceipt = read_json(gate_a_receipt_path)?;
-    let install_receipt: ProductionCanisterInstallReceipt = read_json(install_receipt_path)?;
-    let deployment_binding: ProductionDeploymentBinding = read_json(deployment_binding_path)?;
-    if fs::read(deployment_binding_path).map_err(|error| error.to_string())?
-        != canonical_bytes(&deployment_binding)?
-    {
-        return Err("deployment binding is not the canonical driver output".into());
-    }
-    validate_completed_gate_a_receipt(
-        &bundle,
-        &gate_a_receipt,
-        &install_receipt,
-        &deployment_binding,
-    )?;
-    Ok(hex(&Sha256::digest(
-        fs::read(gate_a_receipt_path).map_err(|error| error.to_string())?,
-    )))
-}
-
-fn optional_handover_checkpoint() -> Result<Option<production_checkpoint::VerifiedEvidence>, String>
-{
-    match env::var("BRIDGE_CHECKPOINT_EVIDENCE") {
-        Ok(path) => production_checkpoint::read_evidence(Path::new(&path)).map(Some),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(_) => Err("invalid handover checkpoint path".into()),
-    }
-}
-
-fn validate_production_handover_candidate_files(
-    bundle_path: &Path,
-    seal_receipt_path: &Path,
-    schedule_receipt_path: &Path,
-    execute_receipt_path: &Path,
-) -> Result<(ValidatedBundle, GateAReceipt, ControllerActivationReceipt), String> {
-    validate_production_handover_evidence_files(
-        bundle_path,
-        seal_receipt_path,
-        schedule_receipt_path,
-        execute_receipt_path,
-        SealReceiptLiveContext::HandoverPreTransfer,
-    )
-}
-
-fn validate_production_handover_evidence_files(
-    bundle_path: &Path,
-    seal_receipt_path: &Path,
-    schedule_receipt_path: &Path,
-    execute_receipt_path: &Path,
-    live_context: SealReceiptLiveContext,
-) -> Result<(ValidatedBundle, GateAReceipt, ControllerActivationReceipt), String> {
-    let mut bundle = validate_historical_gate_b_bundle(bundle_path)?;
-    let checkpoint = if matches!(
-        live_context,
-        SealReceiptLiveContext::HandoverPreTransfer | SealReceiptLiveContext::HandoverPostTransfer
-    ) {
-        optional_handover_checkpoint()?
-    } else {
-        None
-    };
-    let live_context = if checkpoint.is_some() {
-        SealReceiptLiveContext::HistoricalCheckpoint
-    } else {
-        live_context
-    };
-    if bundle.manifest.schema_version != 4 {
-        return Err("controller handover requires the current Gate B bundle".into());
-    }
-    let seal_receipt_sha256 =
-        validate_operational_config_seal_receipt(&bundle, seal_receipt_path, live_context)?;
-    let schedule_receipt: ControllerActivationReceipt = read_json(schedule_receipt_path)?;
-    validate_controller_schedule_receipt(
-        &bundle,
-        &schedule_receipt,
-        &seal_receipt_sha256,
-        ActivationReceiptFreshness::Historical,
-    )?;
-    let execute_receipt: ControllerActivationReceipt = read_json(execute_receipt_path)?;
-    validate_controller_execute_receipt(
-        &bundle,
-        &execute_receipt,
-        &seal_receipt_sha256,
-        schedule_receipt_path,
-        ActivationReceiptFreshness::Historical,
-    )?;
-    let gate_a_receipt: GateAReceipt = read_json(&bundle.root.join("gate-a-receipt.json"))?;
-    if let Some(checkpoint) = checkpoint {
-        let roots = &checkpoint.checkpoint.roots;
-        if roots.gate_b_sha256 != bundle.manifest_sha256
-            || canonical_bytes(&roots.gate_b_profile)? != canonical_bytes(&bundle.profile)?
-            || checkpoint.checkpoint.controller != gate_b_controller(&bundle)?.to_text()
-            || roots.seal_sha256 != seal_receipt_sha256
-            || roots.schedule_sha256
-                != hex(&Sha256::digest(
-                    fs::read(schedule_receipt_path).map_err(|e| e.to_string())?,
-                ))
-            || roots.execute_sha256
-                != hex(&Sha256::digest(
-                    fs::read(execute_receipt_path).map_err(|e| e.to_string())?,
-                ))
-            || checkpoint.terminal.runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
-            || checkpoint.terminal.lifecycle != ProductionLifecycleView::Activated
-        {
-            return Err(
-                "handover checkpoint is disconnected from the initial activation evidence".into(),
-            );
-        }
-        bundle.profile.bridge_canister_wasm_sha256 = checkpoint.module_sha256;
-        bundle.profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
-    }
-    Ok((bundle, gate_a_receipt, execute_receipt))
-}
-
-fn validate_controller_handover_completion_files(
-    bundle_path: &Path,
-    seal_receipt_path: &Path,
-    schedule_receipt_path: &Path,
-    execute_receipt_path: &Path,
-    handover_path: &Path,
-) -> Result<(), String> {
-    let (bundle, gate_a_receipt, _) = validate_production_handover_evidence_files(
-        bundle_path,
-        seal_receipt_path,
-        schedule_receipt_path,
-        execute_receipt_path,
-        SealReceiptLiveContext::HandoverPostTransfer,
-    )?;
-    let handover: ControllerHandover = read_json(handover_path)?;
-    validate_controller_handover_lineage(
-        &handover,
-        &bundle,
-        seal_receipt_path,
-        schedule_receipt_path,
-        execute_receipt_path,
-    )?;
-    validate_controller_handover_completion(
-        &handover,
-        &bundle.profile,
-        &gate_a_receipt.canister_install.installer_principal,
-        bundle.manifest.created_at_unix,
-        now_unix()?,
-    )
-}
-
 fn decode_candid_hex<T: CandidType + for<'de> Deserialize<'de>>(value: &str) -> Result<T, String> {
     let bytes = decode_hex(value.trim())?;
     Decode!(&bytes, T).map_err(|error| error.to_string())
@@ -4186,22 +3613,6 @@ fn validate_activation_time(at: u64, manifest_created: u64, now: u64) -> Result<
     Ok(())
 }
 
-fn validate_handover_completion_time(
-    observed_at: u64,
-    manifest_created: u64,
-    now: u64,
-) -> Result<(), String> {
-    if observed_at < manifest_created
-        || observed_at > now
-        || now - observed_at > MAX_EVIDENCE_AGE_SECS
-    {
-        return Err(
-            "handover completion timestamp predates Gate B, is future-dated, or is too old".into(),
-        );
-    }
-    Ok(())
-}
-
 fn validate_activation_attestation_time(
     observed_at_ns: u64,
     manifest_created: u64,
@@ -4216,974 +3627,6 @@ fn validate_activation_attestation_time(
         || now - observed > MAX_ACTIVATION_ATTESTATION_AGE_SECS
     {
         return Err("activation attestation predates Gate B, is future-dated, or is stale".into());
-    }
-    Ok(())
-}
-
-fn handover_json_evidence(raw_hex: &str, expected_sha256: &str) -> Result<Value, String> {
-    let raw = decode_hex(raw_hex)?;
-    if !valid_sha256(expected_sha256)
-        || !hex(&Sha256::digest(&raw)).eq_ignore_ascii_case(expected_sha256)
-    {
-        return Err("controller handover snapshot digest mismatch".into());
-    }
-    serde_json::from_slice(&raw).map_err(|error| error.to_string())
-}
-
-fn single_json_key<'a>(value: &'a Value, key: &str) -> Result<&'a Value, String> {
-    let mut found = Vec::new();
-    collect_json_key(value, key, &mut found);
-    if found.len() != 1 {
-        return Err(format!(
-            "controller handover snapshot must contain one {key}"
-        ));
-    }
-    Ok(found[0])
-}
-
-fn json_u128(value: &Value, key: &str) -> Result<u128, String> {
-    let value = single_json_key(value, key)?;
-    value
-        .as_u64()
-        .map(u128::from)
-        .or_else(|| {
-            value
-                .as_str()
-                .and_then(|value| value.replace('_', "").parse().ok())
-        })
-        .ok_or_else(|| format!("controller handover {key} is not an integer"))
-}
-
-fn handover_json_text(value: &Value, key: &str) -> Result<String, String> {
-    single_json_key(value, key)?
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| format!("controller handover {key} is not text"))
-}
-
-fn handover_json_blob(value: &Value, key: &str) -> Result<Vec<u8>, String> {
-    let value = single_json_key(value, key)?;
-    if let Some(text) = value.as_str() {
-        return decode_hex(text);
-    }
-    value
-        .as_array()
-        .ok_or_else(|| format!("controller handover {key} is not a blob"))?
-        .iter()
-        .map(|byte| {
-            byte.as_u64()
-                .and_then(|byte| u8::try_from(byte).ok())
-                .ok_or_else(|| format!("controller handover {key} has an invalid byte"))
-        })
-        .collect()
-}
-
-fn handover_runtime_binding(value: &Value) -> Result<(LiveRuntimeBinding, Vec<u8>), String> {
-    let principal = |key| -> Result<String, String> {
-        Principal::from_text(handover_json_text(value, key)?)
-            .map(|principal| principal.to_text())
-            .map_err(|error| error.to_string())
-    };
-    let blob_hex = |key| handover_json_blob(value, key).map(|bytes| hex(&bytes));
-    Ok((
-        LiveRuntimeBinding {
-            base_chain_id: u64::try_from(json_u128(value, "base_chain_id")?)
-                .map_err(|_| "controller handover base_chain_id exceeds nat64")?,
-            bridge_contract: format!("0x{}", blob_hex("bridge_contract")?),
-            timelock_contract: format!("0x{}", blob_hex("timelock_contract")?),
-            deployment_instance_id: format!("0x{}", blob_hex("deployment_instance_id")?),
-            minimum_withdrawal_id: format!("0x{}", blob_hex("minimum_withdrawal_id")?),
-            ledger_canister_id: principal("ledger_canister_id")?,
-            index_canister_id: principal("index_canister_id")?,
-            schema_version: u16::try_from(json_u128(value, "schema_version")?)
-                .map_err(|_| "controller handover schema_version exceeds nat16")?,
-            expected_bridge_signer: format!("0x{}", blob_hex("expected_bridge_signer")?),
-            evm_rpc_canister_id: principal("evm_rpc_canister_id")?,
-            rpc_provider_urls_sha256: blob_hex("rpc_provider_urls_sha256")?,
-            operational_config_sha256: blob_hex("operational_config_sha256")?,
-        },
-        handover_json_blob(value, "expected_bridge_runtime_sha256")?,
-    ))
-}
-
-fn handover_request_ids(response: &str) -> Result<BTreeSet<String>, String> {
-    let response = response.to_ascii_lowercase();
-    let mut ids = BTreeSet::new();
-    for label in ["request_id", "request-id", "request id"] {
-        let mut rest = response.as_str();
-        while let Some(index) = rest.find(label) {
-            let tail = rest[index + label.len()..]
-                .trim_start_matches([' ', '\t', '\r', '\n', '=', ':', '"', '\'']);
-            let tail = tail.strip_prefix("0x").unwrap_or(tail);
-            let candidate = tail.get(..64).ok_or("handover request ID is truncated")?;
-            if !candidate.bytes().all(|byte| byte.is_ascii_hexdigit())
-                || tail.as_bytes().get(64).is_some_and(u8::is_ascii_hexdigit)
-            {
-                return Err("handover request ID is malformed".into());
-            }
-            ids.insert(candidate.to_owned());
-            rest = &tail[64..];
-        }
-    }
-    Ok(ids)
-}
-
-fn validate_controller_handover_lineage(
-    handover: &ControllerHandover,
-    bundle: &ValidatedBundle,
-    seal_receipt_path: &Path,
-    schedule_receipt_path: &Path,
-    execute_receipt_path: &Path,
-) -> Result<(), String> {
-    let file_sha256 = |path: &Path| -> Result<String, String> {
-        Ok(hex(&Sha256::digest(
-            fs::read(path).map_err(|error| error.to_string())?,
-        )))
-    };
-    if !controller_handover_lineage_fields_match(
-        handover,
-        &bundle.manifest.source_revision,
-        &bundle.manifest.source_tree_sha256,
-        &bundle.manifest_sha256,
-        &file_sha256(seal_receipt_path)?,
-        &file_sha256(schedule_receipt_path)?,
-        &file_sha256(execute_receipt_path)?,
-    ) {
-        return Err("controller handover completion lineage is invalid".into());
-    }
-    Ok(())
-}
-
-fn validate_controller_handover_recovery_files(
-    bundle_path: &Path,
-    seal_receipt_path: &Path,
-    schedule_receipt_path: &Path,
-    execute_receipt_path: &Path,
-    checkpoint_path: &Path,
-) -> Result<String, String> {
-    let (bundle, gate_a_receipt, _) = validate_production_handover_evidence_files(
-        bundle_path,
-        seal_receipt_path,
-        schedule_receipt_path,
-        execute_receipt_path,
-        SealReceiptLiveContext::HandoverPostTransfer,
-    )?;
-    let checkpoint: Value = read_json(checkpoint_path)?;
-    let object = checkpoint
-        .as_object()
-        .ok_or("controller handover recovery checkpoint is not an object")?;
-    let text = |key: &str| {
-        object
-            .get(key)
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("controller handover recovery checkpoint lacks {key}"))
-    };
-    let strings = |key: &str| {
-        object
-            .get(key)
-            .and_then(Value::as_array)
-            .ok_or_else(|| format!("controller handover recovery checkpoint lacks {key}"))?
-            .iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| format!("controller handover recovery {key} is malformed"))
-            })
-            .collect::<Result<Vec<_>, _>>()
-    };
-    let digest = |path: &Path| -> Result<String, String> {
-        Ok(hex(&Sha256::digest(
-            fs::read(path).map_err(|error| error.to_string())?,
-        )))
-    };
-    let installer = &gate_a_receipt.canister_install.installer_principal;
-    let stage = text("stage")?;
-    if object.get("schema_version").and_then(Value::as_u64) != Some(5)
-        || ![
-            "pre_send_checkpoint",
-            "controller_update_uncertain",
-            "controller_update_submitted",
-            "co_controller_ready",
-        ]
-        .contains(&stage)
-        || text("source_revision")? != bundle.manifest.source_revision
-        || !text("source_tree_sha256")?.eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
-        || !text("gate_b_manifest_sha256")?.eq_ignore_ascii_case(&bundle.manifest_sha256)
-        || !text("operational_config_seal_receipt_sha256")?
-            .eq_ignore_ascii_case(&digest(seal_receipt_path)?)
-        || !text("controller_schedule_receipt_sha256")?
-            .eq_ignore_ascii_case(&digest(schedule_receipt_path)?)
-        || !text("controller_execute_receipt_sha256")?
-            .eq_ignore_ascii_case(&digest(execute_receipt_path)?)
-        || text("bridge_canister_id")? != bundle.profile.bridge_canister_id
-        || text("sns_root_canister_id")? != KINIC_ROOT
-        || text("executing_principal")? != installer
-        || strings("pre_send_controllers")? != [installer.clone()]
-        || !text("pre_send_module_sha256")?
-            .eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
-    {
-        return Err("controller handover recovery checkpoint lineage is invalid".into());
-    }
-    for prefix in [
-        "before_root_registration",
-        "pre_send_management_status",
-        "pre_send_bridge_status",
-        "pre_send_lifecycle",
-        "pre_send_runtime_binding",
-        "pre_send_storage_integrity",
-        "pre_send_activation_status",
-        "pre_send_activation_attestation",
-    ] {
-        let raw = text(&format!("{prefix}_response_json_hex"))?;
-        let digest = text(&format!("{prefix}_response_sha256"))?;
-        handover_json_evidence(raw, digest)?;
-    }
-    let mut response = decode_hex(text("response_stdout_hex")?)?;
-    response.extend_from_slice(&decode_hex(text("response_stderr_hex")?)?);
-    if !valid_sha256(text("response_sha256")?)
-        || !hex(&Sha256::digest(&response)).eq_ignore_ascii_case(text("response_sha256")?)
-    {
-        return Err("controller handover recovery response digest is invalid".into());
-    }
-    let request_id = text("request_id")?.trim_start_matches("0x");
-    if ["controller_update_submitted", "co_controller_ready"].contains(&stage)
-        && (!valid_sha256(request_id)
-            || handover_request_ids(&String::from_utf8_lossy(&response))?
-                != BTreeSet::from([request_id.to_ascii_lowercase()]))
-    {
-        return Err("controller handover submitted checkpoint request ID is invalid".into());
-    }
-    let command = strings("command_argv")?;
-    if command
-        != [
-            "icp",
-            "canister",
-            "settings",
-            "update",
-            "bridge-canister",
-            "-e",
-            "production",
-            "--add-controller",
-            KINIC_ROOT,
-            "--force",
-            "--identity",
-            "production",
-            "--debug",
-        ]
-    {
-        return Err(
-            "controller handover recovery command is not the fixed co-controller addition".into(),
-        );
-    }
-    if stage == "co_controller_ready" {
-        let expected = BTreeSet::from([installer.clone(), KINIC_ROOT.to_string()]);
-        let final_controllers = strings("final_controllers")?;
-        if final_controllers.len() != 2
-            || final_controllers.into_iter().collect::<BTreeSet<_>>() != expected
-            || !text("after_module_sha256")?
-                .eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
-        {
-            return Err(
-                "controller handover preparation does not preserve exact co-control".into(),
-            );
-        }
-        for prefix in [
-            "after_management_status",
-            "after_bridge_status",
-            "after_lifecycle",
-            "after_runtime_binding",
-            "after_storage_integrity",
-            "after_activation_status",
-            "after_activation_attestation",
-        ] {
-            handover_json_evidence(
-                text(&format!("{prefix}_response_json_hex"))?,
-                text(&format!("{prefix}_response_sha256"))?,
-            )?;
-        }
-    }
-    Ok(bundle.manifest_sha256)
-}
-
-fn controller_handover_lineage_fields_match(
-    handover: &ControllerHandover,
-    source_revision: &str,
-    source_tree_sha256: &str,
-    gate_b_manifest_sha256: &str,
-    seal_receipt_sha256: &str,
-    schedule_receipt_sha256: &str,
-    execute_receipt_sha256: &str,
-) -> bool {
-    handover.source_revision == source_revision
-        && handover
-            .source_tree_sha256
-            .eq_ignore_ascii_case(source_tree_sha256)
-        && handover
-            .gate_b_manifest_sha256
-            .eq_ignore_ascii_case(gate_b_manifest_sha256)
-        && handover
-            .operational_config_seal_receipt_sha256
-            .eq_ignore_ascii_case(seal_receipt_sha256)
-        && handover
-            .controller_schedule_receipt_sha256
-            .eq_ignore_ascii_case(schedule_receipt_sha256)
-        && handover
-            .controller_execute_receipt_sha256
-            .eq_ignore_ascii_case(execute_receipt_sha256)
-}
-
-fn controller_handover_checkpoint_matches(
-    handover: &ControllerHandover,
-    checkpoint: &Value,
-) -> bool {
-    let Some(checkpoint) = checkpoint.as_object() else {
-        return false;
-    };
-    let string_matches =
-        |key: &str, expected: &str| checkpoint.get(key).and_then(Value::as_str) == Some(expected);
-    let strings_match = |key: &str, expected: &[String]| {
-        checkpoint
-            .get(key)
-            .and_then(Value::as_array)
-            .is_some_and(|values| {
-                values
-                    .iter()
-                    .map(Value::as_str)
-                    .eq(expected.iter().map(|value| Some(value.as_str())))
-            })
-    };
-    checkpoint.get("schema_version").and_then(Value::as_u64) == Some(5)
-        && string_matches("stage", "pre_send_checkpoint")
-        && string_matches("source_revision", &handover.source_revision)
-        && string_matches("source_tree_sha256", &handover.source_tree_sha256)
-        && string_matches("gate_b_manifest_sha256", &handover.gate_b_manifest_sha256)
-        && string_matches(
-            "operational_config_seal_receipt_sha256",
-            &handover.operational_config_seal_receipt_sha256,
-        )
-        && string_matches(
-            "controller_schedule_receipt_sha256",
-            &handover.controller_schedule_receipt_sha256,
-        )
-        && string_matches(
-            "controller_execute_receipt_sha256",
-            &handover.controller_execute_receipt_sha256,
-        )
-        && string_matches("bridge_canister_id", &handover.bridge_canister_id)
-        && string_matches("sns_root_canister_id", &handover.sns_root_canister_id)
-        && string_matches("executing_principal", &handover.executing_principal)
-        && strings_match("command_argv", &handover.command_argv)
-        && strings_match("pre_send_controllers", &handover.pre_send_controllers)
-        && string_matches("pre_send_module_sha256", &handover.pre_send_module_sha256)
-        && string_matches(
-            "pre_send_management_status_response_sha256",
-            &handover.pre_send_management_status_response_sha256,
-        )
-        && string_matches(
-            "pre_send_bridge_status_response_sha256",
-            &handover.pre_send_bridge_status_response_sha256,
-        )
-        && string_matches(
-            "pre_send_lifecycle_response_sha256",
-            &handover.pre_send_lifecycle_response_sha256,
-        )
-        && string_matches(
-            "pre_send_runtime_binding_response_sha256",
-            &handover.pre_send_runtime_binding_response_sha256,
-        )
-        && string_matches(
-            "pre_send_storage_integrity_response_sha256",
-            &handover.pre_send_storage_integrity_response_sha256,
-        )
-        && string_matches(
-            "pre_send_activation_status_response_sha256",
-            &handover.pre_send_activation_status_response_sha256,
-        )
-        && string_matches(
-            "pre_send_activation_attestation_response_sha256",
-            &handover.pre_send_activation_attestation_response_sha256,
-        )
-        && string_matches(
-            "before_root_registration_response_sha256",
-            &handover.before_root_registration_response_sha256,
-        )
-}
-
-fn controller_handover_recovery_source_matches(
-    handover: &ControllerHandover,
-    source: &Value,
-) -> bool {
-    let Some(source) = source.as_object() else {
-        return false;
-    };
-    let Some(stage) = source.get("stage").and_then(Value::as_str) else {
-        return false;
-    };
-    if ![
-        "pre_send_checkpoint",
-        "controller_update_uncertain",
-        "controller_update_submitted",
-    ]
-    .contains(&stage)
-        || source.get("schema_version").and_then(Value::as_u64) != Some(5)
-    {
-        return false;
-    }
-    let Ok(completion) = serde_json::to_value(handover) else {
-        return false;
-    };
-    let Some(completion) = completion.as_object() else {
-        return false;
-    };
-    if source.iter().any(|(key, value)| {
-        !matches!(key.as_str(), "stage" | "observed_at_unix") && completion.get(key) != Some(value)
-    }) {
-        return false;
-    }
-    if stage == "pre_send_checkpoint" {
-        return serde_json::from_slice::<Value>(
-            &decode_hex(&handover.pre_send_checkpoint_json_hex).unwrap_or_default(),
-        )
-        .ok()
-            == Some(Value::Object(source.clone()));
-    }
-    source
-        .get("pre_send_checkpoint_json_hex")
-        .and_then(Value::as_str)
-        == Some(handover.pre_send_checkpoint_json_hex.as_str())
-        && source
-            .get("pre_send_checkpoint_sha256")
-            .and_then(Value::as_str)
-            == Some(handover.pre_send_checkpoint_sha256.as_str())
-}
-
-fn validate_controller_handover_continuity(
-    handover: &ControllerHandover,
-    profile: &Profile,
-    installer: &str,
-) -> Result<(), String> {
-    let before_management = handover_json_evidence(
-        &handover.before_management_status_response_json_hex,
-        &handover.before_management_status_response_sha256,
-    )?;
-    let pre_send_management = handover_json_evidence(
-        &handover.pre_send_management_status_response_json_hex,
-        &handover.pre_send_management_status_response_sha256,
-    )?;
-    let after_management = handover_json_evidence(
-        &handover.after_management_status_response_json_hex,
-        &handover.after_management_status_response_sha256,
-    )?;
-    let management = |value: &Value| -> Result<(Vec<String>, String), String> {
-        let mut controllers = Vec::new();
-        collect_json_key(value, "controllers", &mut controllers);
-        let controllers = controllers
-            .first()
-            .and_then(|value| value.as_array())
-            .ok_or("controller handover management controllers are malformed")?
-            .iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| "controller handover controller is malformed".to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut modules = Vec::new();
-        collect_json_key(value, "module_hash", &mut modules);
-        if modules.is_empty() {
-            collect_json_key(value, "module", &mut modules);
-        }
-        let module = modules
-            .first()
-            .and_then(|value| management_module_sha256(value))
-            .ok_or("controller handover management module is malformed")?;
-        Ok((controllers, module))
-    };
-    let (before_controllers, before_module) = management(&before_management)?;
-    let (pre_send_controllers, pre_send_module) = management(&pre_send_management)?;
-    let (after_controllers, after_module) = management(&after_management)?;
-    if before_controllers != [installer]
-        || pre_send_controllers != [installer]
-        || after_controllers != [KINIC_ROOT]
-        || handover.executing_principal != installer
-        || handover.before_controllers != before_controllers
-        || handover.pre_send_controllers != pre_send_controllers
-        || handover.final_controllers != after_controllers
-        || !before_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
-        || pre_send_module != before_module
-        || after_module != before_module
-        || !handover
-            .before_module_sha256
-            .eq_ignore_ascii_case(&before_module)
-        || !handover
-            .pre_send_module_sha256
-            .eq_ignore_ascii_case(&pre_send_module)
-        || !handover
-            .after_module_sha256
-            .eq_ignore_ascii_case(&after_module)
-    {
-        return Err("controller handover management continuity is invalid".into());
-    }
-
-    let before_bridge = handover_json_evidence(
-        &handover.before_bridge_status_response_json_hex,
-        &handover.before_bridge_status_response_sha256,
-    )?;
-    let pre_send_bridge = handover_json_evidence(
-        &handover.pre_send_bridge_status_response_json_hex,
-        &handover.pre_send_bridge_status_response_sha256,
-    )?;
-    let after_bridge = handover_json_evidence(
-        &handover.after_bridge_status_response_json_hex,
-        &handover.after_bridge_status_response_sha256,
-    )?;
-    let before_lifecycle = handover_json_evidence(
-        &handover.before_lifecycle_response_json_hex,
-        &handover.before_lifecycle_response_sha256,
-    )?;
-    let pre_send_lifecycle = handover_json_evidence(
-        &handover.pre_send_lifecycle_response_json_hex,
-        &handover.pre_send_lifecycle_response_sha256,
-    )?;
-    let after_lifecycle = handover_json_evidence(
-        &handover.after_lifecycle_response_json_hex,
-        &handover.after_lifecycle_response_sha256,
-    )?;
-    let before_runtime = handover_json_evidence(
-        &handover.before_runtime_binding_response_json_hex,
-        &handover.before_runtime_binding_response_sha256,
-    )?;
-    let pre_send_runtime = handover_json_evidence(
-        &handover.pre_send_runtime_binding_response_json_hex,
-        &handover.pre_send_runtime_binding_response_sha256,
-    )?;
-    let after_runtime = handover_json_evidence(
-        &handover.after_runtime_binding_response_json_hex,
-        &handover.after_runtime_binding_response_sha256,
-    )?;
-    let before_integrity = handover_json_evidence(
-        &handover.before_storage_integrity_response_json_hex,
-        &handover.before_storage_integrity_response_sha256,
-    )?;
-    let pre_send_integrity = handover_json_evidence(
-        &handover.pre_send_storage_integrity_response_json_hex,
-        &handover.pre_send_storage_integrity_response_sha256,
-    )?;
-    let after_integrity = handover_json_evidence(
-        &handover.after_storage_integrity_response_json_hex,
-        &handover.after_storage_integrity_response_sha256,
-    )?;
-    let before_activation = handover_json_evidence(
-        &handover.before_activation_status_response_json_hex,
-        &handover.before_activation_status_response_sha256,
-    )?;
-    let pre_send_activation = handover_json_evidence(
-        &handover.pre_send_activation_status_response_json_hex,
-        &handover.pre_send_activation_status_response_sha256,
-    )?;
-    let after_activation = handover_json_evidence(
-        &handover.after_activation_status_response_json_hex,
-        &handover.after_activation_status_response_sha256,
-    )?;
-    let before_attestation = handover_json_evidence(
-        &handover.before_activation_attestation_response_json_hex,
-        &handover.before_activation_attestation_response_sha256,
-    )?;
-    let pre_send_attestation = handover_json_evidence(
-        &handover.pre_send_activation_attestation_response_json_hex,
-        &handover.pre_send_activation_attestation_response_sha256,
-    )?;
-    let after_attestation = handover_json_evidence(
-        &handover.after_activation_attestation_response_json_hex,
-        &handover.after_activation_attestation_response_sha256,
-    )?;
-    let expected_operational_config_sha256 = expected_operational_config_sha256(
-        profile,
-        u64::try_from(json_u128(&before_bridge, "mint_authorization_ttl_seconds")?)
-            .map_err(|_| "controller handover mint authorization TTL exceeds nat64")?,
-        u64::try_from(json_u128(&before_bridge, "mint_authorization_epoch")?)
-            .map_err(|_| "controller handover mint authorization epoch exceeds nat64")?,
-    )?;
-    let rpc_provider_urls_sha256 = hex(&canonical_sha256(&Vec::<String>::new())?);
-    let expected_bridge_runtime_sha256 = decode_hex(&profile.bridge_runtime_bytecode_sha256)?;
-    for runtime in [&before_runtime, &pre_send_runtime, &after_runtime] {
-        let (runtime, bridge_runtime_sha256) = handover_runtime_binding(runtime)?;
-        validate_live_runtime_binding(
-            &runtime,
-            profile,
-            &rpc_provider_urls_sha256,
-            &expected_operational_config_sha256,
-        )?;
-        if bridge_runtime_sha256 != expected_bridge_runtime_sha256 {
-            return Err("controller handover runtime code binding differs from the profile".into());
-        }
-    }
-    if before_runtime != pre_send_runtime
-        || before_runtime != after_runtime
-        || before_lifecycle != pre_send_lifecycle
-        || before_lifecycle != after_lifecycle
-        || before_activation != pre_send_activation
-        || before_activation != after_activation
-        || before_attestation != pre_send_attestation
-        || before_lifecycle.get("decoded") != Some(&serde_json::json!({"Ok":"Activated"}))
-        || single_json_key(&before_integrity, "Ok")? != &Value::String("ok".into())
-        || single_json_key(&pre_send_integrity, "Ok")? != &Value::String("ok".into())
-        || single_json_key(&after_integrity, "Ok")? != &Value::String("ok".into())
-        || single_json_key(&before_bridge, "deposits_paused")? != &Value::Bool(false)
-        || single_json_key(&pre_send_bridge, "deposits_paused")? != &Value::Bool(false)
-        || single_json_key(&after_bridge, "deposits_paused")? != &Value::Bool(false)
-        || single_json_key(&before_activation, "deposits_paused")? != &Value::Bool(false)
-        || single_json_key(&pre_send_activation, "deposits_paused")? != &Value::Bool(false)
-        || single_json_key(&after_activation, "deposits_paused")? != &Value::Bool(false)
-        || single_json_key(&before_attestation, "deposits_paused")? != &Value::Bool(false)
-        || single_json_key(&before_attestation, "withdrawals_paused")? != &Value::Bool(false)
-        || single_json_key(&pre_send_attestation, "deposits_paused")? != &Value::Bool(false)
-        || single_json_key(&pre_send_attestation, "withdrawals_paused")? != &Value::Bool(false)
-        || single_json_key(&after_attestation, "deposits_paused")? != &Value::Bool(false)
-        || single_json_key(&after_attestation, "withdrawals_paused")? != &Value::Bool(false)
-        || single_json_key(&before_bridge, "sufficient")? != &Value::Bool(true)
-        || single_json_key(&pre_send_bridge, "sufficient")? != &Value::Bool(true)
-        || single_json_key(&after_bridge, "sufficient")? != &Value::Bool(true)
-        || json_u128(&before_bridge, "mint_authorization_ttl_seconds")?
-            != json_u128(&pre_send_bridge, "mint_authorization_ttl_seconds")?
-        || json_u128(&before_bridge, "mint_authorization_ttl_seconds")?
-            != json_u128(&after_bridge, "mint_authorization_ttl_seconds")?
-        || json_u128(&before_bridge, "mint_authorization_epoch")?
-            != json_u128(&pre_send_bridge, "mint_authorization_epoch")?
-        || json_u128(&before_bridge, "mint_authorization_epoch")?
-            != json_u128(&after_bridge, "mint_authorization_epoch")?
-        || json_u128(&after_bridge, "deposits")? < json_u128(&before_bridge, "deposits")?
-        || json_u128(&pre_send_bridge, "deposits")? < json_u128(&before_bridge, "deposits")?
-        || json_u128(&after_bridge, "withdrawals")? < json_u128(&before_bridge, "withdrawals")?
-        || json_u128(&pre_send_bridge, "withdrawals")? < json_u128(&before_bridge, "withdrawals")?
-        || json_u128(&after_bridge, "retained_audit_events")?
-            .checked_add(json_u128(&after_bridge, "pruned_audit_events")?)
-            .ok_or("controller handover audit sequence overflow")?
-            < json_u128(&before_bridge, "retained_audit_events")?
-                .checked_add(json_u128(&before_bridge, "pruned_audit_events")?)
-                .ok_or("controller handover audit sequence overflow")?
-    {
-        return Err("controller handover operational continuity is invalid".into());
-    }
-    Ok(())
-}
-
-fn validate_controller_handover_completion(
-    handover: &ControllerHandover,
-    profile: &Profile,
-    installer: &str,
-    manifest_created_at_unix: u64,
-    now: u64,
-) -> Result<(), String> {
-    validate_handover_completion_time(handover.observed_at_unix, manifest_created_at_unix, now)?;
-    validate_controller_handover_continuity(handover, profile, installer)?;
-    let required_prefix = ["icp", "canister", "settings", "update", "bridge-canister"];
-    let add_controller_positions = handover
-        .command_argv
-        .iter()
-        .enumerate()
-        .filter_map(|(index, value)| (value == "--add-controller").then_some(index))
-        .collect::<Vec<_>>();
-    let remove_all_count = handover
-        .command_argv
-        .iter()
-        .filter(|value| value.as_str() == "--remove-all-controllers")
-        .count();
-    let environment_is_production = handover
-        .command_argv
-        .windows(2)
-        .any(|pair| pair == ["-e", "production"] || pair == ["--environment", "production"]);
-    let identity_is_explicit = handover
-        .command_argv
-        .windows(2)
-        .any(|pair| (pair[0] == "--identity") && !pair[1].is_empty() && !pair[1].starts_with('-'));
-    let expected_freezing_cycles = handover
-        .idle_cycles_burned_per_day
-        .checked_mul(u128::from(handover.freezing_threshold_seconds))
-        .and_then(|value| value.checked_add(86_399))
-        .map(|value| value / 86_400)
-        .ok_or("freezing cycles requirement overflow")?;
-    let response_stdout = decode_hex(&handover.response_stdout_hex)?;
-    let response_stderr = decode_hex(&handover.response_stderr_hex)?;
-    let mut response_transcript = response_stdout;
-    response_transcript.extend_from_slice(&response_stderr);
-    let response_digest = hex(&Sha256::digest(&response_transcript));
-    let response_text = String::from_utf8_lossy(&response_transcript).to_ascii_lowercase();
-    let request_id_text = handover
-        .request_id
-        .trim_start_matches("0x")
-        .to_ascii_lowercase();
-    let response_request_ids = handover_request_ids(&response_text)?;
-    let checkpoint = decode_hex(&handover.pre_send_checkpoint_json_hex)?;
-    let recovery_source = decode_hex(&handover.recovery_source_checkpoint_json_hex)?;
-    let checkpoint_is_valid = valid_sha256(&handover.pre_send_checkpoint_sha256)
-        && hex(&Sha256::digest(&checkpoint))
-            .eq_ignore_ascii_case(&handover.pre_send_checkpoint_sha256)
-        && serde_json::from_slice::<Value>(&checkpoint)
-            .ok()
-            .is_some_and(|value| controller_handover_checkpoint_matches(handover, &value));
-    let recovery_source_is_valid = valid_sha256(&handover.recovery_source_checkpoint_sha256)
-        && hex(&Sha256::digest(&recovery_source))
-            .eq_ignore_ascii_case(&handover.recovery_source_checkpoint_sha256)
-        && serde_json::from_slice::<Value>(&recovery_source)
-            .ok()
-            .is_some_and(|value| controller_handover_recovery_source_matches(handover, &value));
-    let request_binding_is_valid = if handover.request_id.is_empty() {
-        handover.recovered_without_request_id && response_request_ids.is_empty()
-    } else {
-        (valid_sha256(&handover.request_id) || valid_hash32(&handover.request_id))
-            && response_request_ids == BTreeSet::from([request_id_text])
-    };
-    let preparation = decode_hex(&handover.preparation_receipt_json_hex)?;
-    let preparation_digest = hex(&Sha256::digest(&preparation));
-    let preparation_value: Value =
-        serde_json::from_slice(&preparation).map_err(|error| error.to_string())?;
-    let preparation_object = preparation_value
-        .as_object()
-        .ok_or("controller handover preparation is not an object")?;
-    let preparation_controllers = preparation_object
-        .get("final_controllers")
-        .and_then(Value::as_array)
-        .ok_or("controller handover preparation lacks final controllers")?
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::to_owned)
-                .ok_or("invalid preparation controller")
-        })
-        .collect::<Result<BTreeSet<_>, _>>()?;
-    let preparation_observed_at = preparation_object
-        .get("observed_at_unix")
-        .and_then(Value::as_u64)
-        .ok_or("controller handover preparation lacks observation time")?;
-    let preparation_after_management = handover_json_evidence(
-        preparation_object
-            .get("after_management_status_response_json_hex")
-            .and_then(Value::as_str)
-            .ok_or("controller handover preparation lacks management evidence")?,
-        preparation_object
-            .get("after_management_status_response_sha256")
-            .and_then(Value::as_str)
-            .ok_or("controller handover preparation lacks management digest")?,
-    )?;
-    let mut preparation_controller_values = Vec::new();
-    collect_json_key(
-        &preparation_after_management,
-        "controllers",
-        &mut preparation_controller_values,
-    );
-    let preparation_management_controllers = preparation_controller_values
-        .first()
-        .and_then(|value| value.as_array())
-        .ok_or("controller handover preparation management controllers are malformed")?
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::to_owned)
-                .ok_or("invalid preparation controller")
-        })
-        .collect::<Result<BTreeSet<_>, _>>()?;
-    let mut preparation_module_values = Vec::new();
-    collect_json_key(
-        &preparation_after_management,
-        "module_hash",
-        &mut preparation_module_values,
-    );
-    let preparation_module = preparation_module_values
-        .first()
-        .and_then(|value| management_module_sha256(value))
-        .ok_or("controller handover preparation module is malformed")?;
-    let preparation_root_envelope = handover_json_evidence(
-        preparation_object
-            .get("before_root_registration_response_json_hex")
-            .and_then(Value::as_str)
-            .ok_or("controller handover preparation lacks pre-registration Root evidence")?,
-        preparation_object
-            .get("before_root_registration_response_sha256")
-            .and_then(Value::as_str)
-            .ok_or("controller handover preparation lacks pre-registration Root digest")?,
-    )?;
-    let preparation_root_bytes = decode_hex(
-        preparation_root_envelope
-            .get("response_bytes")
-            .and_then(Value::as_str)
-            .ok_or("controller handover preparation Root evidence lacks raw Candid")?,
-    )?;
-    let preparation_root =
-        Decode!(&preparation_root_bytes, SnsCanistersView).map_err(|error| error.to_string())?;
-    let submission_bytes = decode_hex(&handover.registration_submission_json_hex)?;
-    let submission: HandoverRegistrationSubmission =
-        serde_json::from_slice(&submission_bytes).map_err(|error| error.to_string())?;
-    let submission_root_envelope: Value =
-        serde_json::from_slice(&decode_hex(&submission.root_query_response_hex)?)
-            .map_err(|error| error.to_string())?;
-    let submission_root_bytes = decode_hex(
-        submission_root_envelope
-            .get("response_bytes")
-            .and_then(Value::as_str)
-            .ok_or("registration submission Root query lacks raw Candid")?,
-    )?;
-    let submission_root =
-        Decode!(&submission_root_bytes, SnsCanistersView).map_err(|error| error.to_string())?;
-    let governance_envelope = handover_json_evidence(
-        &handover.registration_governance_response_json_hex,
-        &handover.registration_governance_response_sha256,
-    )?;
-    let governance_bytes = decode_hex(
-        governance_envelope
-            .get("response_bytes")
-            .and_then(Value::as_str)
-            .ok_or("registration Governance evidence lacks raw Candid")?,
-    )?;
-    let governance_response =
-        Decode!(&governance_bytes, GetProposalResponse).map_err(|error| error.to_string())?;
-    let Some(GetProposalResult::Proposal(registration_proposal)) = governance_response.result
-    else {
-        return Err("SNS registration proposal is unavailable".into());
-    };
-    let root_envelope = handover_json_evidence(
-        &handover.registration_root_response_json_hex,
-        &handover.registration_root_response_sha256,
-    )?;
-    let root_bytes = decode_hex(
-        root_envelope
-            .get("response_bytes")
-            .and_then(Value::as_str)
-            .ok_or("registration Root evidence lacks raw Candid")?,
-    )?;
-    let root = Decode!(&root_bytes, SnsCanistersView).map_err(|error| error.to_string())?;
-    let bridge =
-        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
-    let registration_action_matches = matches!(
-        registration_proposal.proposal.as_ref().and_then(|proposal| proposal.action.as_ref()),
-        Some(SnsProposalAction::RegisterDappCanisters(action))
-            if action.canister_ids == [bridge]
-    );
-    let preparation_is_valid = preparation_object
-        .get("schema_version")
-        .and_then(Value::as_u64)
-        == Some(5)
-        && preparation_object.get("stage").and_then(Value::as_str) == Some("co_controller_ready")
-        && preparation_object
-            .get("source_revision")
-            .and_then(Value::as_str)
-            == Some(handover.source_revision.as_str())
-        && preparation_object
-            .get("source_tree_sha256")
-            .and_then(Value::as_str)
-            == Some(handover.source_tree_sha256.as_str())
-        && preparation_object
-            .get("gate_b_manifest_sha256")
-            .and_then(Value::as_str)
-            == Some(handover.gate_b_manifest_sha256.as_str())
-        && preparation_object.get("command_argv")
-            == serde_json::to_value(&handover.command_argv).ok().as_ref()
-        && preparation_controllers
-            == BTreeSet::from([installer.to_string(), KINIC_ROOT.to_string()])
-        && preparation_management_controllers == preparation_controllers
-        && preparation_root
-            .dapps
-            .iter()
-            .all(|canister| *canister != bridge)
-        && preparation_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256);
-    let submission_response = decode_hex(&submission.proposal_response_hex)?;
-    let submission_is_valid = submission.schema_version == 1
-        && submission.kind == "sns-dapp-registration-submission"
-        && !submission.release_id.is_empty()
-        && submission.source_revision == handover.source_revision
-        && submission.source_tree_sha256 == handover.source_tree_sha256
-        && submission.gate_b_manifest_sha256 == handover.gate_b_manifest_sha256
-        && submission.governance_canister_id == KINIC_GOVERNANCE
-        && submission.sns_root_canister_id == KINIC_ROOT
-        && submission.bridge_canister_id == profile.bridge_canister_id
-        && submission.proposer_principal == *installer
-        && valid_sha256(&submission.neuron_subaccount)
-        && submission.proposal_id == handover.registration_proposal_id
-        && submission.proposal_id > 0
-        && submission.submitted_at_unix >= preparation_observed_at
-        && valid_sha256(&submission.proposal_sha256)
-        && submission.preparation_receipt_sha256 == preparation_digest
-        && valid_sha256(&submission.reviewed_handover_sha256)
-        && hex(&Sha256::digest(&submission_root_bytes)).len() == 64
-        && submission_root
-            .dapps
-            .iter()
-            .all(|canister| *canister != bridge)
-        && hex(&Sha256::digest(&decode_hex(
-            &submission.root_query_response_hex,
-        )?)) == submission.root_query_response_sha256
-        && hex(&Sha256::digest(&submission_response)) == submission.proposal_response_sha256
-        && submission
-            .root_command_argv
-            .iter()
-            .any(|value| value == "list_sns_canisters")
-        && submission
-            .proposal_command_argv
-            .iter()
-            .any(|value| value == "manage_neuron");
-    let proposal_is_valid = registration_proposal.id.as_ref().map(|id| id.id)
-        == Some(handover.registration_proposal_id)
-        && registration_proposal.decided_timestamp_seconds != 0
-        && registration_proposal.executed_timestamp_seconds >= submission.submitted_at_unix
-        && registration_proposal.executed_timestamp_seconds >= preparation_observed_at
-        && registration_proposal.executed_timestamp_seconds <= handover.observed_at_unix
-        && registration_proposal.failed_timestamp_seconds == 0
-        && registration_proposal.failure_reason.is_none()
-        && registration_action_matches;
-    let registration_is_complete = root
-        .dapps
-        .iter()
-        .filter(|canister| **canister == bridge)
-        .count()
-        == 1;
-    if handover.schema_version != 5
-        || !checkpoint_is_valid
-        || !recovery_source_is_valid
-        || !preparation_is_valid
-        || !submission_is_valid
-        || !proposal_is_valid
-        || !registration_is_complete
-        || !preparation_digest.eq_ignore_ascii_case(&handover.preparation_receipt_sha256)
-        || !hex(&Sha256::digest(&submission_bytes))
-            .eq_ignore_ascii_case(&handover.registration_submission_sha256)
-        || handover.stage != "complete"
-        || handover.bridge_canister_id != profile.bridge_canister_id
-        || handover.sns_root_canister_id != KINIC_ROOT
-        || !principal(&handover.executing_principal)
-        || handover.command_argv.len() < required_prefix.len()
-        || handover.command_argv[..required_prefix.len()] != required_prefix
-        || remove_all_count != 0
-        || add_controller_positions.len() != 1
-        || handover
-            .command_argv
-            .get(add_controller_positions[0] + 1)
-            .is_none_or(|value| value != KINIC_ROOT)
-        || !environment_is_production
-        || !identity_is_explicit
-        || !handover.command_argv.iter().any(|value| value == "--force")
-        || handover
-            .command_argv
-            .iter()
-            .any(|value| value == "--network" || value == "-n")
-        || !request_binding_is_valid
-        || !response_digest.eq_ignore_ascii_case(&handover.response_sha256)
-        || !valid_sha256(&handover.response_sha256)
-        || handover.final_controllers != [KINIC_ROOT.to_string()]
-        || handover.freezing_threshold_seconds == 0
-        || handover.idle_cycles_burned_per_day == 0
-        || handover.required_freezing_cycles != expected_freezing_cycles
-        || handover.cycles_balance < profile.parameters.cycles_floor
-        || handover.cycles_balance < handover.required_freezing_cycles
-        || handover.pre_send_cycles_balance < profile.parameters.cycles_floor
-        || handover.pre_send_cycles_balance < handover.pre_send_required_freezing_cycles
-    {
-        return Err(format!(
-            "controller handover evidence is not a staged SNS registration transfer: checkpoint={checkpoint_is_valid} recovery={recovery_source_is_valid} preparation={preparation_is_valid} submission={submission_is_valid} proposal={proposal_is_valid} registration={registration_is_complete} request={request_binding_is_valid}"
-        ));
     }
     Ok(())
 }
@@ -5227,103 +3670,6 @@ fn validate_ui_assets_receipt(root: &Path, manifest: &ReleaseManifest) -> Result
         return Err("UI artifact receipt aggregate digest is invalid".into());
     }
     Ok(())
-}
-
-fn production_upgrade_public_state_sha256(
-    status: &BridgeStatusLiveView,
-    values: &[&str],
-) -> Result<String, String> {
-    let mut digest = Sha256::new();
-    digest.update(b"KINIC_PRODUCTION_UPGRADE_PUBLIC_STATE_V1\0");
-    digest.update([u8::from(status.deposits_paused)]);
-    digest.update(status.mint_authorization_ttl_seconds.to_be_bytes());
-    digest.update(status.mint_authorization_epoch.to_be_bytes());
-    digest.update(status.counts.deposits.to_be_bytes());
-    digest.update(status.counts.withdrawals.to_be_bytes());
-    digest.update(status.counts.reconciliation_holds.to_be_bytes());
-    digest.update(status.counts.pending_ledger_operations.to_be_bytes());
-    digest.update(status.counts.reserved_deposit_mint_amount.to_be_bytes());
-    digest.update(status.counts.reserved_deposit_mint_operations.to_be_bytes());
-    digest.update(status.counts.retained_audit_events.to_be_bytes());
-    digest.update(status.counts.pruned_audit_events.to_be_bytes());
-    digest.update(status.counts.retained_deposit_index_entries.to_be_bytes());
-    for value in values {
-        let raw = decode_hex(value)?;
-        digest.update((raw.len() as u64).to_be_bytes());
-        digest.update(raw);
-    }
-    Ok(hex(&digest.finalize()))
-}
-
-#[cfg(test)]
-fn production_upgrade_query_state(
-    status_hex: &str,
-    lifecycle_hex: &str,
-    runtime_hex: &str,
-    integrity_hex: &str,
-) -> Result<(BridgeStatusLiveView, RuntimeBindingView, String), String> {
-    let (status, lifecycle, runtime, digest) =
-        production_upgrade_query_state_any(status_hex, lifecycle_hex, runtime_hex, integrity_hex)?;
-    if lifecycle != ProductionLifecycleView::Bootstrap {
-        return Err("production upgrade requires Bootstrap lifecycle".into());
-    }
-    Ok((status, runtime, digest))
-}
-
-fn production_upgrade_query_state_any(
-    status_hex: &str,
-    lifecycle_hex: &str,
-    runtime_hex: &str,
-    integrity_hex: &str,
-) -> Result<
-    (
-        BridgeStatusLiveView,
-        ProductionLifecycleView,
-        RuntimeBindingView,
-        String,
-    ),
-    String,
-> {
-    let status = decode_candid_hex::<BridgeStatusLiveView>(status_hex)?;
-    if !status.reserve.sufficient {
-        return Err("production upgrade requires a sufficient cycles reserve".into());
-    }
-    let lifecycle = match decode_candid_hex::<ProductionLifecycleResultView>(lifecycle_hex)? {
-        ProductionLifecycleResultView::Ok(value) => value,
-        ProductionLifecycleResultView::Err(_) => {
-            return Err("production upgrade lifecycle response is not ok".into())
-        }
-    };
-    let runtime = decode_candid_hex::<RuntimeBindingView>(runtime_hex)?;
-    match decode_candid_hex::<StorageIntegrityResultView>(integrity_hex)? {
-        StorageIntegrityResultView::Ok(value) if value == "ok" => {}
-        _ => return Err("production upgrade storage integrity response is not ok".into()),
-    }
-    let public_state_sha256 = production_upgrade_public_state_sha256(
-        &status,
-        &[lifecycle_hex, runtime_hex, integrity_hex],
-    )?;
-    Ok((status, lifecycle, runtime, public_state_sha256))
-}
-
-fn production_lifecycle_name(value: ProductionLifecycleView) -> &'static str {
-    match value {
-        ProductionLifecycleView::Bootstrap => "Bootstrap",
-        ProductionLifecycleView::OperationalConfigSealed => "OperationalConfigSealed",
-        ProductionLifecycleView::Activated => "Activated",
-    }
-}
-
-fn production_lifecycle_pause_valid(
-    lifecycle: ProductionLifecycleView,
-    deposits_paused: bool,
-) -> bool {
-    match lifecycle {
-        ProductionLifecycleView::Bootstrap | ProductionLifecycleView::OperationalConfigSealed => {
-            deposits_paused
-        }
-        ProductionLifecycleView::Activated => true,
-    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -5372,58 +3718,6 @@ fn validate_operational_epoch_snapshot(
     Ok(())
 }
 
-fn validate_upgrade_operational_evidence(
-    receipt: &ProductionCanisterUpgradeReceipt,
-    status: &BridgeStatusLiveView,
-    runtime: &LiveRuntimeBinding,
-    ledger_fee: u128,
-) -> Result<(), String> {
-    match &receipt.before_operational_config {
-        Some(evidence) => {
-            validate_operational_epoch_snapshot(evidence, status, runtime, ledger_fee)
-        }
-        None if receipt.after_schema_version == CURRENT_STABLE_SCHEMA_VERSION => {
-            Err("v36 upgrade receipt requires the operational epoch preimage".into())
-        }
-        None => Ok(()),
-    }
-}
-
-fn production_upgrade_predecessor_with_epoch_evidence(
-    terminal: &ProductionUpgradeTerminal,
-    status: &BridgeStatusLiveView,
-    lifecycle: ProductionLifecycleView,
-    live_runtime: &LiveRuntimeBinding,
-    evidence: Option<&OperationalEpochEvidence>,
-    ledger_fee: u128,
-) -> Result<bool, String> {
-    if let Some(evidence) = evidence {
-        validate_operational_epoch_snapshot(evidence, status, live_runtime, ledger_fee)?;
-    }
-    if production_upgrade_live_predecessor_matches(terminal, status, lifecycle, live_runtime) {
-        return Ok(true);
-    }
-    let Some(evidence) = evidence else {
-        return Ok(false);
-    };
-    let (old_epoch, old_ttl) = terminal.observed_epoch;
-    let mut advanced = terminal.runtime.clone();
-    advanced.operational_config_sha256 = live_runtime.operational_config_sha256.clone();
-    Ok(terminal.lifecycle == ProductionLifecycleView::Activated
-        && lifecycle == ProductionLifecycleView::Activated
-        && !terminal.deposits_paused
-        && !status.deposits_paused
-        && old_epoch > 0
-        && old_epoch < status.mint_authorization_epoch
-        && old_ttl == status.mint_authorization_ttl_seconds
-        && advanced == *live_runtime
-        && operational_epoch_digest(&evidence.response_hex, ledger_fee, old_epoch)?
-            == terminal
-                .runtime
-                .operational_config_sha256
-                .to_ascii_lowercase())
-}
-
 fn operational_epoch_digest(
     response_hex: &str,
     ledger_fee: u128,
@@ -5446,1616 +3740,13 @@ fn operational_config_digest(
 ) -> Result<String, String> {
     let encoded = Encode!(&OperationalConfigBindingView {
         ledger_fee,
-        operational_config
+        operational_config,
     })
     .map_err(|error| error.to_string())?;
     let mut digest = Sha256::new();
     digest.update(OPERATIONAL_CONFIG_BINDING_DOMAIN);
     digest.update(encoded);
     Ok(hex(&digest.finalize()))
-}
-
-// The only supported TTL migration is the reviewed same-instance v36 600 -> 900 upgrade.
-// Reconstruct the new digest from authenticated old settings, never from a supplied digest.
-fn production_upgrade_ttl_migration_matches(
-    before: &BridgeStatusLiveView,
-    after: &BridgeStatusLiveView,
-    before_runtime: &LiveRuntimeBinding,
-    after_runtime: &LiveRuntimeBinding,
-    evidence: Option<&OperationalEpochEvidence>,
-    ledger_fee: u128,
-) -> Result<bool, String> {
-    if before_runtime.schema_version != 36
-        || after_runtime.schema_version != 36
-        || before.mint_authorization_ttl_seconds != 600
-        || after.mint_authorization_ttl_seconds != 900
-    {
-        return Ok(false);
-    }
-    let Some(evidence) = evidence else {
-        return Ok(false);
-    };
-    validate_operational_epoch_snapshot(evidence, before, before_runtime, ledger_fee)?;
-    let mut expected_status = before.clone();
-    expected_status.mint_authorization_ttl_seconds = 900;
-    if !production_upgrade_status_preserved(&expected_status, after) {
-        return Ok(false);
-    }
-    let config = match decode_candid_hex::<OperationalConfigResultView>(&evidence.response_hex)? {
-        OperationalConfigResultView::Ok(value) => *value,
-        OperationalConfigResultView::Err(_) => {
-            return Err("operational config preimage is unavailable".into())
-        }
-    };
-    let mut operational_config: OperationalConfigView = config.into();
-    operational_config.mint_authorization_ttl_seconds = 900;
-    let mut expected_runtime = before_runtime.clone();
-    expected_runtime.operational_config_sha256 =
-        operational_config_digest(operational_config, ledger_fee)?;
-    Ok(expected_runtime == *after_runtime)
-}
-
-fn production_upgrade_live_predecessor_matches(
-    terminal: &ProductionUpgradeTerminal,
-    status: &BridgeStatusLiveView,
-    lifecycle: ProductionLifecycleView,
-    live_runtime: &LiveRuntimeBinding,
-) -> bool {
-    let exact_runtime = &terminal.runtime == live_runtime;
-    let mut sealed_runtime = terminal.runtime.clone();
-    sealed_runtime.operational_config_sha256 = live_runtime.operational_config_sha256.clone();
-    let operational_config_progress = terminal.lifecycle == ProductionLifecycleView::Bootstrap
-        && matches!(
-            lifecycle,
-            ProductionLifecycleView::OperationalConfigSealed | ProductionLifecycleView::Activated
-        )
-        && &sealed_runtime == live_runtime;
-    let lifecycle_progress = matches!(
-        (terminal.lifecycle, lifecycle),
-        (ProductionLifecycleView::Bootstrap, _)
-            | (
-                ProductionLifecycleView::OperationalConfigSealed,
-                ProductionLifecycleView::OperationalConfigSealed
-                    | ProductionLifecycleView::Activated
-            )
-            | (
-                ProductionLifecycleView::Activated,
-                ProductionLifecycleView::Activated
-            )
-    );
-    let terminal_pause_valid =
-        production_lifecycle_pause_valid(terminal.lifecycle, terminal.deposits_paused);
-    (exact_runtime || operational_config_progress)
-        && lifecycle_progress
-        && terminal_pause_valid
-        && production_lifecycle_pause_valid(lifecycle, status.deposits_paused)
-}
-
-fn production_upgrade_status_preserved(
-    before: &BridgeStatusLiveView,
-    after: &BridgeStatusLiveView,
-) -> bool {
-    before.reserve.sufficient
-        && after.reserve.sufficient
-        && before.deposits_paused == after.deposits_paused
-        && before.mint_authorization_ttl_seconds == after.mint_authorization_ttl_seconds
-        && before.mint_authorization_epoch == after.mint_authorization_epoch
-        && before.counts.deposits == after.counts.deposits
-        && before.counts.withdrawals == after.counts.withdrawals
-        && before.counts.reconciliation_holds == after.counts.reconciliation_holds
-        && before.counts.pending_ledger_operations == after.counts.pending_ledger_operations
-        && before.counts.reserved_deposit_mint_amount == after.counts.reserved_deposit_mint_amount
-        && before.counts.reserved_deposit_mint_operations
-            == after.counts.reserved_deposit_mint_operations
-        && before.counts.retained_audit_events == after.counts.retained_audit_events
-        && before.counts.pruned_audit_events == after.counts.pruned_audit_events
-        && before.counts.retained_deposit_index_entries
-            == after.counts.retained_deposit_index_entries
-}
-
-fn production_upgrade_schema_transition(
-    expected_before: u16,
-    before: u16,
-    after: u16,
-) -> Option<u16> {
-    if before != expected_before {
-        return None;
-    }
-    match (before, after) {
-        (PREVIOUS_STABLE_SCHEMA_VERSION, PREVIOUS_STABLE_SCHEMA_VERSION)
-        | (PREVIOUS_STABLE_SCHEMA_VERSION, CURRENT_STABLE_SCHEMA_VERSION)
-        | (CURRENT_STABLE_SCHEMA_VERSION, CURRENT_STABLE_SCHEMA_VERSION) => Some(after),
-        _ => None,
-    }
-}
-
-// Gate A predates operational sealing. Only the operational digest may advance
-// before an activated same-instance schema migration; the migration itself keeps it exact.
-fn production_upgrade_schema_predecessor_bound(
-    gate_a_profile: &Profile,
-    gate_a_runtime: &LiveRuntimeBinding,
-    status: &BridgeStatusLiveView,
-    lifecycle: ProductionLifecycleView,
-    runtime: &RuntimeBindingView,
-) -> Result<bool, String> {
-    if runtime.expected_bridge_runtime_sha256
-        != decode_hex(&gate_a_profile.bridge_runtime_bytecode_sha256)?
-    {
-        return Ok(false);
-    }
-    let observed = live_runtime_binding_from_view(runtime);
-    if *gate_a_runtime == observed
-        || production_upgrade_post_pause_runtime_matches(
-            gate_a_profile,
-            gate_a_runtime,
-            status,
-            runtime,
-        )?
-    {
-        return Ok(true);
-    }
-    let terminal = ProductionUpgradeTerminal {
-        observed_epoch: (
-            status.mint_authorization_epoch,
-            status.mint_authorization_ttl_seconds,
-        ),
-        runtime: gate_a_runtime.clone(),
-        lifecycle: ProductionLifecycleView::Bootstrap,
-        deposits_paused: true,
-    };
-    Ok(production_upgrade_live_predecessor_matches(
-        &terminal, status, lifecycle, &observed,
-    ))
-}
-
-fn production_upgrade_schema_migration_matches(
-    before_status: &BridgeStatusLiveView,
-    after_status: &BridgeStatusLiveView,
-    before_runtime: &RuntimeBindingView,
-    after_runtime: &RuntimeBindingView,
-) -> bool {
-    if before_runtime.schema_version != PREVIOUS_STABLE_SCHEMA_VERSION
-        || after_runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
-        || before_runtime.expected_bridge_runtime_sha256
-            != after_runtime.expected_bridge_runtime_sha256
-        || !production_upgrade_status_preserved(before_status, after_status)
-    {
-        return false;
-    }
-    let mut expected_after = live_runtime_binding_from_view(before_runtime);
-    expected_after.schema_version = CURRENT_STABLE_SCHEMA_VERSION;
-    live_runtime_binding_from_view(after_runtime) == expected_after
-}
-
-fn production_upgrade_status_matches_pause_migration(
-    before: &BridgeStatusLiveView,
-    after: &BridgeStatusLiveView,
-) -> bool {
-    let Some(expected_audit_events) = before.counts.retained_audit_events.checked_add(1) else {
-        return false;
-    };
-    let mut expected = before.clone();
-    expected.counts.retained_audit_events = expected_audit_events;
-    expected == *after
-}
-
-fn production_upgrade_pause_migration_matches(
-    gate_a_profile: &Profile,
-    gate_a_runtime: &LiveRuntimeBinding,
-    before_status: &BridgeStatusLiveView,
-    after_status: &BridgeStatusLiveView,
-    before_runtime: &RuntimeBindingView,
-    after_runtime: &RuntimeBindingView,
-) -> Result<bool, String> {
-    production_upgrade_pause_migration_matches_schema(
-        gate_a_profile,
-        gate_a_runtime,
-        before_status,
-        after_status,
-        before_runtime,
-        after_runtime,
-        gate_a_runtime.schema_version,
-    )
-}
-
-fn production_upgrade_pause_and_schema_migration_matches(
-    gate_a_profile: &Profile,
-    gate_a_runtime: &LiveRuntimeBinding,
-    before_status: &BridgeStatusLiveView,
-    after_status: &BridgeStatusLiveView,
-    before_runtime: &RuntimeBindingView,
-    after_runtime: &RuntimeBindingView,
-) -> Result<bool, String> {
-    if before_runtime.schema_version != PREVIOUS_STABLE_SCHEMA_VERSION
-        || after_runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
-    {
-        return Ok(false);
-    }
-    production_upgrade_pause_migration_matches_schema(
-        gate_a_profile,
-        gate_a_runtime,
-        before_status,
-        after_status,
-        before_runtime,
-        after_runtime,
-        CURRENT_STABLE_SCHEMA_VERSION,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn production_upgrade_pause_migration_matches_schema(
-    gate_a_profile: &Profile,
-    gate_a_runtime: &LiveRuntimeBinding,
-    before_status: &BridgeStatusLiveView,
-    after_status: &BridgeStatusLiveView,
-    before_runtime: &RuntimeBindingView,
-    after_runtime: &RuntimeBindingView,
-    expected_after_schema: u16,
-) -> Result<bool, String> {
-    if gate_a_profile.pause_principal != KINIC_ROOT
-        || live_runtime_binding_from_view(before_runtime) != *gate_a_runtime
-    {
-        return Ok(false);
-    }
-    let mut migrated_profile = gate_a_profile.clone();
-    migrated_profile.pause_principal = PRODUCTION_PAUSE_PRINCIPAL.into();
-    let mut expected_after_runtime = gate_a_runtime.clone();
-    expected_after_runtime.schema_version = expected_after_schema;
-    expected_after_runtime.operational_config_sha256 = hex(&expected_operational_config_sha256(
-        &migrated_profile,
-        after_status.mint_authorization_ttl_seconds,
-        after_status.mint_authorization_epoch,
-    )?);
-    Ok(
-        live_runtime_binding_from_view(after_runtime) == expected_after_runtime
-            && production_upgrade_status_matches_pause_migration(before_status, after_status),
-    )
-}
-
-fn production_upgrade_post_pause_runtime_matches(
-    gate_a_profile: &Profile,
-    gate_a_runtime: &LiveRuntimeBinding,
-    status: &BridgeStatusLiveView,
-    runtime: &RuntimeBindingView,
-) -> Result<bool, String> {
-    if gate_a_profile.pause_principal != KINIC_ROOT {
-        return Ok(false);
-    }
-    let mut migrated_profile = gate_a_profile.clone();
-    migrated_profile.pause_principal = PRODUCTION_PAUSE_PRINCIPAL.into();
-    let mut expected = gate_a_runtime.clone();
-    expected.operational_config_sha256 = hex(&expected_operational_config_sha256(
-        &migrated_profile,
-        status.mint_authorization_ttl_seconds,
-        status.mint_authorization_epoch,
-    )?);
-    Ok(live_runtime_binding_from_view(runtime) == expected)
-}
-
-fn collect_json_key<'a>(value: &'a Value, key: &str, output: &mut Vec<&'a Value>) {
-    match value {
-        Value::Object(values) => {
-            for (name, child) in values {
-                if name == key {
-                    output.push(child);
-                }
-                collect_json_key(child, key, output);
-            }
-        }
-        Value::Array(values) => {
-            for child in values {
-                collect_json_key(child, key, output);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn management_module_sha256(value: &Value) -> Option<String> {
-    match value {
-        Value::String(value) => {
-            let value = value.strip_prefix("0x").unwrap_or(value);
-            valid_sha256(value).then(|| value.to_ascii_lowercase())
-        }
-        Value::Array(values)
-            if values.len() == 32
-                && values
-                    .iter()
-                    .all(|value| value.as_u64().is_some_and(|value| value <= 255)) =>
-        {
-            Some(hex(&values
-                .iter()
-                .map(|value| value.as_u64().unwrap() as u8)
-                .collect::<Vec<_>>()))
-        }
-        Value::Object(values) if values.len() == 1 => {
-            management_module_sha256(values.values().next().unwrap())
-        }
-        _ => None,
-    }
-}
-
-fn production_upgrade_management_state(raw_hex: &str) -> Result<(Vec<String>, String), String> {
-    let raw = decode_hex(raw_hex)?;
-    let value: Value = serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
-    let mut controllers = Vec::new();
-    let mut modules = Vec::new();
-    collect_json_key(&value, "controllers", &mut controllers);
-    collect_json_key(&value, "module_hash", &mut modules);
-    if controllers.len() != 1 || modules.len() != 1 {
-        return Err("production upgrade management status is ambiguous".into());
-    }
-    let mut controllers = controllers[0]
-        .as_array()
-        .ok_or("production upgrade controllers are malformed")?
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .filter(|value| principal(value))
-                .map(str::to_string)
-                .ok_or_else(|| "production upgrade controller is malformed".to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    controllers.sort();
-    controllers.dedup();
-    if controllers.is_empty() {
-        return Err("production upgrade controller set is empty".into());
-    }
-    let module = management_module_sha256(modules[0])
-        .ok_or("production upgrade module hash is malformed")?;
-    Ok((controllers, module))
-}
-
-const MAX_PRODUCTION_UPGRADE_RECEIPT_BYTES: usize = 128 * 1024 * 1024;
-const MAX_PRODUCTION_UPGRADE_CHAIN_BYTES: usize = 256 * 1024 * 1024;
-
-fn validate_production_upgrade_receipt_size(size: usize) -> Result<(), String> {
-    if size > MAX_PRODUCTION_UPGRADE_RECEIPT_BYTES {
-        return Err("production upgrade receipt is too large".into());
-    }
-    Ok(())
-}
-
-fn production_upgrade_chain_receipts(
-    bytes: &[u8],
-) -> Result<Vec<(ProductionCanisterUpgradeReceipt, Vec<u8>)>, String> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    if value.get("kind").and_then(Value::as_str) == Some("production-controller-bootstrap-upgrade")
-    {
-        validate_production_upgrade_receipt_size(bytes.len())?;
-        let receipt = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-        return Ok(vec![(receipt, bytes.to_vec())]);
-    }
-    let chain: ProductionCanisterUpgradeChain =
-        serde_json::from_value(value).map_err(|error| error.to_string())?;
-    if chain.schema_version != 1
-        || chain.kind != "production-controller-bootstrap-upgrade-chain"
-        || chain.entries.is_empty()
-        || chain.entries.len() > 16
-    {
-        return Err("production upgrade chain envelope is invalid".into());
-    }
-    let mut previous = None;
-    let mut total = 0usize;
-    let mut receipts = Vec::with_capacity(chain.entries.len());
-    for (index, entry) in chain.entries.into_iter().enumerate() {
-        let raw = decode_hex(&entry.receipt_json_hex)?;
-        validate_production_upgrade_receipt_size(raw.len())?;
-        total = total
-            .checked_add(raw.len())
-            .filter(|total| *total <= MAX_PRODUCTION_UPGRADE_CHAIN_BYTES)
-            .ok_or("production upgrade chain is too large")?;
-        let digest = hex(&Sha256::digest(&raw));
-        if usize::from(entry.sequence) != index
-            || entry.previous_receipt_sha256 != previous
-            || !entry.receipt_sha256.eq_ignore_ascii_case(&digest)
-        {
-            return Err("production upgrade chain linkage is invalid".into());
-        }
-        let receipt = serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
-        previous = Some(digest);
-        receipts.push((receipt, raw));
-    }
-    Ok(receipts)
-}
-
-fn production_upgrade_wasm(receipt: &ProductionCanisterUpgradeReceipt) -> Result<Vec<u8>, String> {
-    let submission: ProductionUpgradeSubmission =
-        serde_json::from_slice(&decode_hex(&receipt.submission_json_hex)?)
-            .map_err(|error| error.to_string())?;
-    let mut wasm = Vec::new();
-    for (index, chunk) in submission.chunks.iter().enumerate() {
-        if usize::try_from(chunk.index).ok() != Some(index) {
-            return Err("production upgrade chunk sequence is invalid".into());
-        }
-        let argument = Decode!(
-            &decode_hex(&chunk.argument_hex)?,
-            ManagementUploadChunkArgument
-        )
-        .map_err(|error| error.to_string())?;
-        wasm.extend_from_slice(&argument.chunk);
-        if wasm.len() > 128 * 1024 * 1024 {
-            return Err("production upgrade Wasm chain entry is too large".into());
-        }
-    }
-    if wasm.is_empty() {
-        return Err("production upgrade chain entry has no Wasm".into());
-    }
-    Ok(wasm)
-}
-
-#[derive(Clone)]
-struct ProductionUpgradeTerminal {
-    observed_epoch: (u64, u64),
-    runtime: LiveRuntimeBinding,
-    lifecycle: ProductionLifecycleView,
-    deposits_paused: bool,
-}
-
-struct ProductionUpgradeContinuation {
-    prefix_len: usize,
-    before_module_sha256: String,
-    terminal: ProductionUpgradeTerminal,
-    schema_version: u16,
-    minimum_executed_at_unix: u64,
-}
-
-struct ProductionUpgradeStart {
-    installer: String,
-    module_sha256: String,
-    terminal: ProductionUpgradeTerminal,
-    minimum_executed_at_unix: u64,
-    install_request_ids: BTreeSet<String>,
-    signed_install_updates: BTreeSet<String>,
-}
-
-fn validate_production_upgrade_history_bytes(
-    gate_a_profile: &Profile,
-    gate_a_receipt: &GateAReceipt,
-    bytes: &[u8],
-    expected_terminal_module: &str,
-    expected_terminal_schema: u16,
-) -> Result<ProductionUpgradeTerminal, String> {
-    validate_production_upgrade_history_bytes_with_continuation(
-        gate_a_profile,
-        gate_a_receipt,
-        bytes,
-        expected_terminal_module,
-        expected_terminal_schema,
-        None,
-    )
-}
-
-fn validate_production_upgrade_history_bytes_with_continuation(
-    gate_a_profile: &Profile,
-    gate_a_receipt: &GateAReceipt,
-    bytes: &[u8],
-    expected_terminal_module: &str,
-    expected_terminal_schema: u16,
-    continuation: Option<&ProductionUpgradeContinuation>,
-) -> Result<ProductionUpgradeTerminal, String> {
-    if !valid_sha256(expected_terminal_module)
-        || !matches!(
-            expected_terminal_schema,
-            PREVIOUS_STABLE_SCHEMA_VERSION | CURRENT_STABLE_SCHEMA_VERSION
-        )
-    {
-        return Err("production upgrade history terminal is malformed".into());
-    }
-    let upgrades = production_upgrade_chain_receipts(bytes)?;
-    if continuation.is_some_and(|value| value.prefix_len >= upgrades.len()) {
-        return Err("production upgrade continuation has no appended receipt".into());
-    }
-    validate_production_upgrade_receipts(
-        gate_a_profile,
-        gate_a_receipt,
-        upgrades.into_iter().map(|(receipt, _)| Ok(receipt)),
-        expected_terminal_module,
-        expected_terminal_schema,
-        continuation,
-    )
-}
-
-// Migration supplies one bounded receipt at a time. Keep the state machine and
-// replay sets in this shared loop so splitting the input cannot reset validation.
-fn validate_production_upgrade_receipts(
-    gate_a_profile: &Profile,
-    gate_a_receipt: &GateAReceipt,
-    upgrades: impl IntoIterator<Item = Result<ProductionCanisterUpgradeReceipt, String>>,
-    expected_terminal_module: &str,
-    expected_terminal_schema: u16,
-    continuation: Option<&ProductionUpgradeContinuation>,
-) -> Result<ProductionUpgradeTerminal, String> {
-    let start = ProductionUpgradeStart {
-        installer: gate_a_receipt.canister_install.installer_principal.clone(),
-        module_sha256: gate_a_profile.bridge_canister_wasm_sha256.clone(),
-        terminal: ProductionUpgradeTerminal {
-            runtime: gate_a_receipt.canister_install.runtime_binding.clone(),
-            lifecycle: ProductionLifecycleView::Bootstrap,
-            deposits_paused: true,
-            observed_epoch: (
-                gate_a_receipt.canister_install.mint_authorization_epoch,
-                gate_a_receipt
-                    .canister_install
-                    .mint_authorization_ttl_seconds,
-            ),
-        },
-        minimum_executed_at_unix: 0,
-        install_request_ids: BTreeSet::new(),
-        signed_install_updates: BTreeSet::new(),
-    };
-    validate_production_upgrade_receipts_from_start(
-        gate_a_profile,
-        &start,
-        upgrades,
-        expected_terminal_module,
-        expected_terminal_schema,
-        continuation,
-    )
-}
-
-fn validate_production_upgrade_receipts_from_start(
-    gate_a_profile: &Profile,
-    start: &ProductionUpgradeStart,
-    upgrades: impl IntoIterator<Item = Result<ProductionCanisterUpgradeReceipt, String>>,
-    expected_terminal_module: &str,
-    expected_terminal_schema: u16,
-    continuation: Option<&ProductionUpgradeContinuation>,
-) -> Result<ProductionUpgradeTerminal, String> {
-    if !valid_sha256(expected_terminal_module)
-        || !matches!(
-            expected_terminal_schema,
-            PREVIOUS_STABLE_SCHEMA_VERSION | CURRENT_STABLE_SCHEMA_VERSION
-        )
-    {
-        return Err("production upgrade history terminal is malformed".into());
-    }
-    let installer = &start.installer;
-    let expected_controllers = vec![installer.clone()];
-    let canister = Principal::from_text(&gate_a_profile.bridge_canister_id)
-        .map_err(|error| error.to_string())?;
-    let sender = Principal::from_text(installer).map_err(|error| error.to_string())?;
-    let mut expected_before_module = start.module_sha256.clone();
-    let mut expected_runtime = start.terminal.runtime.clone();
-    let mut expected_schema = expected_runtime.schema_version;
-    let mut terminal_lifecycle = start.terminal.lifecycle;
-    let mut terminal_deposits_paused = start.terminal.deposits_paused;
-    let mut terminal_epoch = start.terminal.observed_epoch;
-    let migration_required = gate_a_profile.pause_principal == KINIC_ROOT;
-    let mut pause_migration_seen = false;
-    let mut install_request_ids = start.install_request_ids.clone();
-    let mut signed_install_updates = start.signed_install_updates.clone();
-    let mut minimum_executed_at_unix = start.minimum_executed_at_unix;
-
-    let mut receipt_count = 0;
-    for (index, entry) in upgrades.into_iter().enumerate() {
-        let entry = entry?;
-        if entry.executed_at_unix < minimum_executed_at_unix {
-            return Err("production upgrade history is not chronological".into());
-        }
-        minimum_executed_at_unix = entry.verified_at_unix;
-        receipt_count += 1;
-        if let Some(value) = continuation.filter(|value| value.prefix_len == index) {
-            if index > 0
-                && (expected_before_module != value.before_module_sha256
-                    || expected_schema != value.schema_version)
-            {
-                return Err(
-                    "production upgrade prefix does not reach the activation boundary".into(),
-                );
-            }
-            expected_before_module = value.before_module_sha256.clone();
-            expected_runtime = value.terminal.runtime.clone();
-            expected_schema = value.schema_version;
-            terminal_lifecycle = value.terminal.lifecycle;
-            terminal_deposits_paused = value.terminal.deposits_paused;
-            terminal_epoch = value.terminal.observed_epoch;
-            pause_migration_seen = true;
-        }
-        if continuation.is_some_and(|value| {
-            index >= value.prefix_len
-                && (entry.executed_at_unix < value.minimum_executed_at_unix
-                    || entry.verified_at_unix < value.minimum_executed_at_unix)
-        }) {
-            return Err("post-activation upgrade predates the execute receipt".into());
-        }
-        let (before_controllers, before_module) =
-            production_upgrade_management_state(&entry.before_management_status_json_hex)?;
-        let (after_controllers, after_module) =
-            production_upgrade_management_state(&entry.after_management_status_json_hex)?;
-        let (before_status, before_lifecycle, before_runtime, before_public_state) =
-            production_upgrade_query_state_any(
-                &entry.before_bridge_status_response_hex,
-                &entry.before_lifecycle_response_hex,
-                &entry.before_runtime_binding_response_hex,
-                &entry.before_storage_integrity_response_hex,
-            )?;
-        let (after_status, after_lifecycle, after_runtime, after_public_state) =
-            production_upgrade_query_state_any(
-                &entry.after_bridge_status_response_hex,
-                &entry.after_lifecycle_response_hex,
-                &entry.after_runtime_binding_response_hex,
-                &entry.after_storage_integrity_response_hex,
-            )?;
-        let wasm = production_upgrade_wasm(&entry)?;
-        let submission_bytes = decode_hex(&entry.submission_json_hex)?;
-        let submission = validate_production_upgrade_submission_bytes(
-            &gate_a_profile.ic_host,
-            canister,
-            sender,
-            &wasm,
-            &submission_bytes,
-        )?;
-        if !install_request_ids.insert(submission.request_id.to_ascii_lowercase())
-            || !signed_install_updates.insert(submission.signed_update_sha256.to_ascii_lowercase())
-        {
-            return Err("production upgrade history repeats an install request".into());
-        }
-        validate_production_upgrade_upload_evidence(
-            &submission,
-            &decode_hex(&entry.chunk_upload_evidence_json_hex)?,
-        )?;
-        let wasm_sha256 = hex(&Sha256::digest(&wasm));
-        let before_binding = live_runtime_binding_from_view(&before_runtime);
-        let after_binding = live_runtime_binding_from_view(&after_runtime);
-        let previous_terminal = ProductionUpgradeTerminal {
-            observed_epoch: terminal_epoch,
-            runtime: expected_runtime.clone(),
-            lifecycle: terminal_lifecycle,
-            deposits_paused: terminal_deposits_paused,
-        };
-        validate_upgrade_operational_evidence(
-            &entry,
-            &before_status,
-            &before_binding,
-            gate_a_profile.parameters.ledger_fee,
-        )?;
-        if !production_upgrade_predecessor_with_epoch_evidence(
-            &previous_terminal,
-            &before_status,
-            before_lifecycle,
-            &before_binding,
-            entry.before_operational_config.as_ref(),
-            gate_a_profile.parameters.ledger_fee,
-        )? {
-            return Err(
-                "production upgrade history has an invalid between-upgrade transition".into(),
-            );
-        }
-        expected_runtime = before_binding.clone();
-        let ttl_migration = production_upgrade_ttl_migration_matches(
-            &before_status,
-            &after_status,
-            &before_binding,
-            &after_binding,
-            entry.before_operational_config.as_ref(),
-            gate_a_profile.parameters.ledger_fee,
-        )?;
-        let unchanged = before_binding == expected_runtime
-            && after_binding == expected_runtime
-            && production_upgrade_status_preserved(&before_status, &after_status)
-            && entry.before_runtime_binding_response_hex
-                == entry.after_runtime_binding_response_hex
-            && before_public_state.eq_ignore_ascii_case(&after_public_state);
-        let pause_migration = migration_required
-            && !pause_migration_seen
-            && before_lifecycle == ProductionLifecycleView::Bootstrap
-            && after_lifecycle == ProductionLifecycleView::Bootstrap
-            && before_status.deposits_paused
-            && after_status.deposits_paused
-            && before_binding == expected_runtime
-            && expected_runtime == start.terminal.runtime
-            && production_upgrade_pause_migration_matches(
-                gate_a_profile,
-                &start.terminal.runtime,
-                &before_status,
-                &after_status,
-                &before_runtime,
-                &after_runtime,
-            )?;
-        let schema_migration = before_binding == expected_runtime
-            && production_upgrade_schema_migration_matches(
-                &before_status,
-                &after_status,
-                &before_runtime,
-                &after_runtime,
-            );
-        let combined_migration = migration_required
-            && !pause_migration_seen
-            && before_lifecycle == ProductionLifecycleView::Bootstrap
-            && after_lifecycle == ProductionLifecycleView::Bootstrap
-            && before_status.deposits_paused
-            && after_status.deposits_paused
-            && before_binding == expected_runtime
-            && production_upgrade_pause_and_schema_migration_matches(
-                gate_a_profile,
-                &start.terminal.runtime,
-                &before_status,
-                &after_status,
-                &before_runtime,
-                &after_runtime,
-            )?;
-        let next_schema = production_upgrade_schema_transition(
-            expected_schema,
-            entry.before_schema_version,
-            entry.after_schema_version,
-        )
-        .ok_or("production upgrade history schema transition is invalid")?;
-        let evidence_hashes_match = [
-            (
-                &entry.before_management_status_json_hex,
-                &entry.before_management_status_json_sha256,
-            ),
-            (
-                &entry.after_management_status_json_hex,
-                &entry.after_management_status_json_sha256,
-            ),
-            (
-                &entry.before_bridge_status_response_hex,
-                &entry.before_bridge_status_response_sha256,
-            ),
-            (
-                &entry.after_bridge_status_response_hex,
-                &entry.after_bridge_status_response_sha256,
-            ),
-            (
-                &entry.before_lifecycle_response_hex,
-                &entry.before_lifecycle_response_sha256,
-            ),
-            (
-                &entry.after_lifecycle_response_hex,
-                &entry.after_lifecycle_response_sha256,
-            ),
-            (
-                &entry.before_runtime_binding_response_hex,
-                &entry.before_runtime_binding_response_sha256,
-            ),
-            (
-                &entry.after_runtime_binding_response_hex,
-                &entry.after_runtime_binding_response_sha256,
-            ),
-            (
-                &entry.before_storage_integrity_response_hex,
-                &entry.before_storage_integrity_response_sha256,
-            ),
-            (
-                &entry.after_storage_integrity_response_hex,
-                &entry.after_storage_integrity_response_sha256,
-            ),
-            (
-                &entry.chunk_upload_evidence_json_hex,
-                &entry.chunk_upload_evidence_json_sha256,
-            ),
-            (&entry.submission_json_hex, &entry.submission_json_sha256),
-            (&entry.response_stdout_hex, &entry.response_stdout_sha256),
-            (&entry.response_stderr_hex, &entry.response_stderr_sha256),
-        ]
-        .into_iter()
-        .all(|(raw, digest)| hex_sha256_matches(raw, digest));
-        let expected_command = [
-            "bridge-profile".to_string(),
-            "submit-production-canister-upgrade".to_string(),
-            gate_a_profile.ic_host.clone(),
-            gate_a_profile.bridge_canister_id.clone(),
-            installer.clone(),
-            "<production-controller-pem>".to_string(),
-            "<verified-release-artifact>".to_string(),
-            "<durable-submission-artifact>".to_string(),
-            "<durable-chunk-upload-evidence>".to_string(),
-            "<durable-response-artifact>".to_string(),
-        ];
-        if entry.install_mode != "upgrade" {
-            return Err("production upgrade management metadata is incomplete".into());
-        }
-        if entry.schema_version != 1
-            || entry.kind != "production-controller-bootstrap-upgrade"
-            || entry.bridge_canister_id != gate_a_profile.bridge_canister_id
-            || entry.executing_principal != *installer
-            || entry.source_revision.len() != 40
-            || !entry
-                .source_revision
-                .bytes()
-                .all(|value| value.is_ascii_hexdigit())
-            || !valid_sha256(&entry.source_tree_sha256)
-            || entry.executed_at_unix > entry.verified_at_unix
-            || entry.recovered != entry.recovered_at_unix.is_some()
-            || entry.recovered_at_unix.is_some_and(|value| {
-                value < entry.executed_at_unix || value > entry.verified_at_unix
-            })
-            || before_controllers != expected_controllers
-            || after_controllers != expected_controllers
-            || entry.before_controllers != before_controllers
-            || entry.after_controllers != after_controllers
-            || !before_module.eq_ignore_ascii_case(&expected_before_module)
-            || !entry
-                .before_module_sha256
-                .eq_ignore_ascii_case(&before_module)
-            || !entry
-                .after_module_sha256
-                .eq_ignore_ascii_case(&after_module)
-            || !after_module.eq_ignore_ascii_case(&wasm_sha256)
-            || !entry.wasm_sha256.eq_ignore_ascii_case(&wasm_sha256)
-            || before_runtime.schema_version != entry.before_schema_version
-            || after_runtime.schema_version != entry.after_schema_version
-            || entry.before_lifecycle != production_lifecycle_name(before_lifecycle)
-            || entry.after_lifecycle != production_lifecycle_name(after_lifecycle)
-            || before_lifecycle != after_lifecycle
-            || !production_lifecycle_pause_valid(before_lifecycle, before_status.deposits_paused)
-            || !production_lifecycle_pause_valid(after_lifecycle, after_status.deposits_paused)
-            || entry.before_deposits_paused != before_status.deposits_paused
-            || entry.after_deposits_paused != after_status.deposits_paused
-            || before_status.deposits_paused != after_status.deposits_paused
-            || !entry.before_storage_validation_complete
-            || !entry.after_storage_validation_complete
-            || (!unchanged
-                && !ttl_migration
-                && !pause_migration
-                && !schema_migration
-                && !combined_migration)
-            || entry.before_lifecycle_response_hex != entry.after_lifecycle_response_hex
-            || entry.before_storage_integrity_response_hex
-                != entry.after_storage_integrity_response_hex
-            || !entry
-                .before_public_state_sha256
-                .eq_ignore_ascii_case(&before_public_state)
-            || !entry
-                .after_public_state_sha256
-                .eq_ignore_ascii_case(&after_public_state)
-            || !evidence_hashes_match
-            || entry.command_argv != expected_command
-            || submission.request_id != entry.request_id
-            || !production_upgrade_ingress_window_valid(
-                entry.executed_at_unix,
-                submission.ingress_expiry,
-            )
-        {
-            return Err("production upgrade history entry is incomplete".into());
-        }
-        pause_migration_seen |= pause_migration || combined_migration;
-        expected_before_module = after_module;
-        expected_runtime = after_binding;
-        expected_schema = next_schema;
-        terminal_lifecycle = after_lifecycle;
-        terminal_deposits_paused = after_status.deposits_paused;
-        terminal_epoch = (
-            after_status.mint_authorization_epoch,
-            after_status.mint_authorization_ttl_seconds,
-        );
-    }
-    if receipt_count == 0
-        || continuation.is_some_and(|value| value.prefix_len >= receipt_count)
-        || !expected_before_module.eq_ignore_ascii_case(expected_terminal_module)
-        || expected_schema != expected_terminal_schema
-        || (migration_required
-            && !pause_migration_seen
-            && expected_runtime != start.terminal.runtime)
-    {
-        return Err("production upgrade history does not reach the live predecessor".into());
-    }
-    Ok(ProductionUpgradeTerminal {
-        observed_epoch: terminal_epoch,
-        runtime: expected_runtime,
-        lifecycle: terminal_lifecycle,
-        deposits_paused: terminal_deposits_paused,
-    })
-}
-
-fn append_production_upgrade_receipt(
-    prior: Option<&Path>,
-    receipt_path: &Path,
-    output: &Path,
-) -> Result<(), String> {
-    let receipt = fs::read(receipt_path).map_err(|error| error.to_string())?;
-    validate_production_upgrade_receipt_size(receipt.len())?;
-    let _: ProductionCanisterUpgradeReceipt =
-        serde_json::from_slice(&receipt).map_err(|error| error.to_string())?;
-    let mut raw_receipts = if let Some(prior) = prior {
-        production_upgrade_chain_receipts(&fs::read(prior).map_err(|error| error.to_string())?)?
-            .into_iter()
-            .map(|(_, raw)| raw)
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    raw_receipts.push(receipt);
-    if raw_receipts.len() > 16
-        || raw_receipts
-            .iter()
-            .try_fold(0usize, |total, raw| {
-                total
-                    .checked_add(raw.len())
-                    .filter(|total| *total <= MAX_PRODUCTION_UPGRADE_CHAIN_BYTES)
-            })
-            .is_none()
-    {
-        return Err("production upgrade chain is too large".into());
-    }
-    let mut previous = None;
-    let entries = raw_receipts
-        .into_iter()
-        .enumerate()
-        .map(|(index, raw)| {
-            let digest = hex(&Sha256::digest(&raw));
-            let entry = ProductionCanisterUpgradeChainEntry {
-                sequence: u8::try_from(index).expect("bounded chain"),
-                previous_receipt_sha256: previous.clone(),
-                receipt_sha256: digest.clone(),
-                receipt_json_hex: hex(&raw),
-            };
-            previous = Some(digest);
-            entry
-        })
-        .collect();
-    write_json_new(
-        output,
-        &ProductionCanisterUpgradeChain {
-            schema_version: 1,
-            kind: "production-controller-bootstrap-upgrade-chain".into(),
-            entries,
-        },
-    )
-}
-
-fn validate_post_gate_a_policy_transition(
-    root: &Path,
-    manifest: &ReleaseManifest,
-    profile: &Profile,
-    gate_a_profile: &Profile,
-    receipt: &GateAReceipt,
-    expected_terminal_schema: u16,
-    now: u64,
-) -> Result<(), String> {
-    let transition: PostGateAPolicyTransition =
-        read_json(&root.join("post-gate-a-policy-transition.json"))?;
-    let upgrade_path = root.join("production-canister-upgrade-receipt.json");
-    let upgrade_bytes = fs::read(&upgrade_path).map_err(|e| e.to_string())?;
-    let upgrades = production_upgrade_chain_receipts(&upgrade_bytes)?;
-    validate_production_upgrade_history_bytes(
-        gate_a_profile,
-        receipt,
-        &upgrade_bytes,
-        &profile.bridge_canister_wasm_sha256,
-        expected_terminal_schema,
-    )?;
-    let upgrade = &upgrades
-        .last()
-        .ok_or("production upgrade chain is empty")?
-        .0;
-    validate_evidence_time(transition.observed_at_unix, manifest.created_at_unix, now)?;
-    validate_evidence_time(upgrade.executed_at_unix, manifest.created_at_unix, now)?;
-    validate_evidence_time(upgrade.verified_at_unix, manifest.created_at_unix, now)?;
-    let receipt_bytes = fs::read(root.join("gate-a-receipt.json")).map_err(|e| e.to_string())?;
-    let installer = &receipt.canister_install.installer_principal;
-    let expected_controllers = vec![installer.clone()];
-    let canister =
-        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
-    let sender = Principal::from_text(installer).map_err(|error| error.to_string())?;
-    let mut expected_before_module = gate_a_profile.bridge_canister_wasm_sha256.clone();
-    let migration_required = gate_a_profile.pause_principal == KINIC_ROOT
-        && profile.pause_principal == PRODUCTION_PAUSE_PRINCIPAL;
-    let mut migration_seen = false;
-    let mut expected_runtime = receipt.canister_install.runtime_binding.clone();
-    let mut expected_schema_version = receipt.canister_install.runtime_binding.schema_version;
-    let mut terminal_lifecycle = ProductionLifecycleView::Bootstrap;
-    let mut terminal_deposits_paused = true;
-    let mut terminal_epoch = (
-        receipt.canister_install.mint_authorization_epoch,
-        receipt.canister_install.mint_authorization_ttl_seconds,
-    );
-    for (entry, _) in &upgrades {
-        validate_evidence_time(entry.executed_at_unix, manifest.created_at_unix, now)?;
-        validate_evidence_time(entry.verified_at_unix, manifest.created_at_unix, now)?;
-        let (entry_before_controllers, entry_before_module) =
-            production_upgrade_management_state(&entry.before_management_status_json_hex)?;
-        let (entry_after_controllers, entry_after_module) =
-            production_upgrade_management_state(&entry.after_management_status_json_hex)?;
-        let (
-            entry_before_status,
-            entry_before_lifecycle,
-            entry_before_runtime,
-            entry_before_public_state,
-        ) = production_upgrade_query_state_any(
-            &entry.before_bridge_status_response_hex,
-            &entry.before_lifecycle_response_hex,
-            &entry.before_runtime_binding_response_hex,
-            &entry.before_storage_integrity_response_hex,
-        )?;
-        let (
-            entry_after_status,
-            entry_after_lifecycle,
-            entry_after_runtime,
-            entry_after_public_state,
-        ) = production_upgrade_query_state_any(
-            &entry.after_bridge_status_response_hex,
-            &entry.after_lifecycle_response_hex,
-            &entry.after_runtime_binding_response_hex,
-            &entry.after_storage_integrity_response_hex,
-        )?;
-        let wasm = production_upgrade_wasm(entry)?;
-        let submission_bytes = decode_hex(&entry.submission_json_hex)?;
-        let submission = validate_production_upgrade_submission_bytes(
-            &gate_a_profile.ic_host,
-            canister,
-            sender,
-            &wasm,
-            &submission_bytes,
-        )?;
-        validate_production_upgrade_upload_evidence(
-            &submission,
-            &decode_hex(&entry.chunk_upload_evidence_json_hex)?,
-        )?;
-        let wasm_sha256 = hex(&Sha256::digest(&wasm));
-        let entry_before_binding = live_runtime_binding_from_view(&entry_before_runtime);
-        let entry_after_binding = live_runtime_binding_from_view(&entry_after_runtime);
-        let previous_terminal = ProductionUpgradeTerminal {
-            observed_epoch: terminal_epoch,
-            runtime: expected_runtime.clone(),
-            lifecycle: terminal_lifecycle,
-            deposits_paused: terminal_deposits_paused,
-        };
-        validate_upgrade_operational_evidence(
-            entry,
-            &entry_before_status,
-            &entry_before_binding,
-            gate_a_profile.parameters.ledger_fee,
-        )?;
-        if !production_upgrade_predecessor_with_epoch_evidence(
-            &previous_terminal,
-            &entry_before_status,
-            entry_before_lifecycle,
-            &entry_before_binding,
-            entry.before_operational_config.as_ref(),
-            gate_a_profile.parameters.ledger_fee,
-        )? {
-            return Err(
-                "production upgrade chain has an invalid between-upgrade transition".into(),
-            );
-        }
-        expected_runtime = entry_before_binding.clone();
-        let ttl_migration = production_upgrade_ttl_migration_matches(
-            &entry_before_status,
-            &entry_after_status,
-            &entry_before_binding,
-            &entry_after_binding,
-            entry.before_operational_config.as_ref(),
-            gate_a_profile.parameters.ledger_fee,
-        )?;
-        let unchanged_runtime = entry_before_binding == expected_runtime
-            && entry_after_binding == expected_runtime
-            && production_upgrade_status_preserved(&entry_before_status, &entry_after_status)
-            && entry.before_runtime_binding_response_hex
-                == entry.after_runtime_binding_response_hex
-            && entry_before_public_state.eq_ignore_ascii_case(&entry_after_public_state);
-        let pause_migration = migration_required
-            && !migration_seen
-            && entry_before_lifecycle == ProductionLifecycleView::Bootstrap
-            && entry_after_lifecycle == ProductionLifecycleView::Bootstrap
-            && entry_before_status.deposits_paused
-            && entry_after_status.deposits_paused
-            && entry_before_binding == expected_runtime
-            && expected_runtime == receipt.canister_install.runtime_binding
-            && production_upgrade_pause_migration_matches(
-                gate_a_profile,
-                &receipt.canister_install.runtime_binding,
-                &entry_before_status,
-                &entry_after_status,
-                &entry_before_runtime,
-                &entry_after_runtime,
-            )?;
-        let schema_migration = entry_before_binding == expected_runtime
-            && production_upgrade_schema_migration_matches(
-                &entry_before_status,
-                &entry_after_status,
-                &entry_before_runtime,
-                &entry_after_runtime,
-            );
-        let combined_migration = migration_required
-            && !migration_seen
-            && entry_before_lifecycle == ProductionLifecycleView::Bootstrap
-            && entry_after_lifecycle == ProductionLifecycleView::Bootstrap
-            && entry_before_status.deposits_paused
-            && entry_after_status.deposits_paused
-            && entry_before_binding == expected_runtime
-            && production_upgrade_pause_and_schema_migration_matches(
-                gate_a_profile,
-                &receipt.canister_install.runtime_binding,
-                &entry_before_status,
-                &entry_after_status,
-                &entry_before_runtime,
-                &entry_after_runtime,
-            )?;
-        let Some(next_schema_version) = production_upgrade_schema_transition(
-            expected_schema_version,
-            entry.before_schema_version,
-            entry.after_schema_version,
-        ) else {
-            return Err("production upgrade chain schema transition is invalid".into());
-        };
-        if entry.install_mode != "upgrade" {
-            return Err("production upgrade management metadata is incomplete".into());
-        }
-        if entry.schema_version != 1
-            || entry.kind != "production-controller-bootstrap-upgrade"
-            || entry.bridge_canister_id != profile.bridge_canister_id
-            || entry.executing_principal != *installer
-            || entry.executed_at_unix > entry.verified_at_unix
-            || entry.verified_at_unix > transition.observed_at_unix
-            || entry.recovered != entry.recovered_at_unix.is_some()
-            || entry.recovered_at_unix.is_some_and(|value| {
-                value < entry.executed_at_unix || value > entry.verified_at_unix
-            })
-            || entry_before_controllers != expected_controllers
-            || entry_after_controllers != expected_controllers
-            || !entry_before_module.eq_ignore_ascii_case(&expected_before_module)
-            || !entry
-                .before_module_sha256
-                .eq_ignore_ascii_case(&entry_before_module)
-            || !entry
-                .after_module_sha256
-                .eq_ignore_ascii_case(&entry_after_module)
-            || !entry_after_module.eq_ignore_ascii_case(&wasm_sha256)
-            || !entry.wasm_sha256.eq_ignore_ascii_case(&wasm_sha256)
-            || entry_before_runtime.schema_version != entry.before_schema_version
-            || entry_after_runtime.schema_version != entry.after_schema_version
-            || entry.before_lifecycle != production_lifecycle_name(entry_before_lifecycle)
-            || entry.after_lifecycle != production_lifecycle_name(entry_after_lifecycle)
-            || entry_before_lifecycle != entry_after_lifecycle
-            || !production_lifecycle_pause_valid(
-                entry_before_lifecycle,
-                entry_before_status.deposits_paused,
-            )
-            || !production_lifecycle_pause_valid(
-                entry_after_lifecycle,
-                entry_after_status.deposits_paused,
-            )
-            || entry.before_deposits_paused != entry_before_status.deposits_paused
-            || entry.after_deposits_paused != entry_after_status.deposits_paused
-            || entry_before_status.deposits_paused != entry_after_status.deposits_paused
-            || !entry.before_storage_validation_complete
-            || !entry.after_storage_validation_complete
-            || (!unchanged_runtime
-                && !ttl_migration
-                && !pause_migration
-                && !schema_migration
-                && !combined_migration)
-            || entry.before_lifecycle_response_hex != entry.after_lifecycle_response_hex
-            || entry.before_storage_integrity_response_hex
-                != entry.after_storage_integrity_response_hex
-            || !entry
-                .before_public_state_sha256
-                .eq_ignore_ascii_case(&entry_before_public_state)
-            || !entry
-                .after_public_state_sha256
-                .eq_ignore_ascii_case(&entry_after_public_state)
-            || !hex_sha256_matches(&entry.submission_json_hex, &entry.submission_json_sha256)
-            || !hex_sha256_matches(
-                &entry.chunk_upload_evidence_json_hex,
-                &entry.chunk_upload_evidence_json_sha256,
-            )
-            || submission.request_id != entry.request_id
-            || !production_upgrade_ingress_window_valid(
-                entry.executed_at_unix,
-                submission.ingress_expiry,
-            )
-        {
-            return Err("production upgrade chain entry is incomplete".into());
-        }
-        migration_seen |= pause_migration || combined_migration;
-        expected_runtime = entry_after_binding;
-        expected_schema_version = next_schema_version;
-        expected_before_module = entry_after_module;
-        terminal_lifecycle = entry_after_lifecycle;
-        terminal_deposits_paused = entry_after_status.deposits_paused;
-        terminal_epoch = (
-            entry_after_status.mint_authorization_epoch,
-            entry_after_status.mint_authorization_ttl_seconds,
-        );
-    }
-    if migration_seen != migration_required
-        || expected_schema_version != expected_terminal_schema
-        || !expected_before_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
-    {
-        return Err("production upgrade chain does not reach the current profile".into());
-    }
-    let (before_controllers, before_module) =
-        production_upgrade_management_state(&upgrade.before_management_status_json_hex)?;
-    let (after_controllers, after_module) =
-        production_upgrade_management_state(&upgrade.after_management_status_json_hex)?;
-    let (before_status, before_lifecycle, before_runtime, before_public_state_sha256) =
-        production_upgrade_query_state_any(
-            &upgrade.before_bridge_status_response_hex,
-            &upgrade.before_lifecycle_response_hex,
-            &upgrade.before_runtime_binding_response_hex,
-            &upgrade.before_storage_integrity_response_hex,
-        )?;
-    let (after_status, after_lifecycle, after_runtime, after_public_state_sha256) =
-        production_upgrade_query_state_any(
-            &upgrade.after_bridge_status_response_hex,
-            &upgrade.after_lifecycle_response_hex,
-            &upgrade.after_runtime_binding_response_hex,
-            &upgrade.after_storage_integrity_response_hex,
-        )?;
-    let last_before_binding = live_runtime_binding_from_view(&before_runtime);
-    let last_after_binding = live_runtime_binding_from_view(&after_runtime);
-    let last_unchanged_transition = last_before_binding == expected_runtime
-        && last_after_binding == expected_runtime
-        && production_upgrade_status_preserved(&before_status, &after_status)
-        && upgrade.before_runtime_binding_response_hex
-            == upgrade.after_runtime_binding_response_hex
-        && before_public_state_sha256.eq_ignore_ascii_case(&after_public_state_sha256);
-    let last_pause_migration_transition = migration_required
-        && before_lifecycle == ProductionLifecycleView::Bootstrap
-        && after_lifecycle == ProductionLifecycleView::Bootstrap
-        && before_status.deposits_paused
-        && after_status.deposits_paused
-        && last_before_binding == receipt.canister_install.runtime_binding
-        && last_after_binding == expected_runtime
-        && production_upgrade_pause_migration_matches(
-            gate_a_profile,
-            &receipt.canister_install.runtime_binding,
-            &before_status,
-            &after_status,
-            &before_runtime,
-            &after_runtime,
-        )?;
-    let last_ttl_migration_transition = last_after_binding == expected_runtime
-        && production_upgrade_ttl_migration_matches(
-            &before_status,
-            &after_status,
-            &last_before_binding,
-            &last_after_binding,
-            upgrade.before_operational_config.as_ref(),
-            gate_a_profile.parameters.ledger_fee,
-        )?;
-    let last_runtime_transition_valid = last_unchanged_transition
-        || last_ttl_migration_transition
-        || last_pause_migration_transition
-        || (before_lifecycle == ProductionLifecycleView::Bootstrap
-            && after_lifecycle == ProductionLifecycleView::Bootstrap
-            && before_status.deposits_paused
-            && after_status.deposits_paused
-            && production_upgrade_pause_and_schema_migration_matches(
-                gate_a_profile,
-                &receipt.canister_install.runtime_binding,
-                &before_status,
-                &after_status,
-                &before_runtime,
-                &after_runtime,
-            )?)
-        || production_upgrade_schema_migration_matches(
-            &before_status,
-            &after_status,
-            &before_runtime,
-            &after_runtime,
-        );
-    let submission_bytes = decode_hex(&upgrade.submission_json_hex)?;
-    let current_wasm =
-        fs::read(root.join("bridge-canister.wasm")).map_err(|error| error.to_string())?;
-    let validated_submission = validate_production_upgrade_submission_bytes(
-        &gate_a_profile.ic_host,
-        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?,
-        Principal::from_text(installer).map_err(|error| error.to_string())?,
-        &current_wasm,
-        &submission_bytes,
-    )?;
-    let upload_evidence_bytes = decode_hex(&upgrade.chunk_upload_evidence_json_hex)?;
-    validate_production_upgrade_upload_evidence(&validated_submission, &upload_evidence_bytes)?;
-    let expected_last_before_module = upgrades
-        .iter()
-        .rev()
-        .nth(1)
-        .map(|(receipt, _)| receipt.after_module_sha256.as_str())
-        .unwrap_or(&gate_a_profile.bridge_canister_wasm_sha256);
-    if !before_module.eq_ignore_ascii_case(expected_last_before_module)
-        || !after_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
-        || !hex(&Sha256::digest(&current_wasm))
-            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
-    {
-        return Err("post-Gate-A Wasm upgrade chain does not reach the current profile".into());
-    }
-    if transition.schema_version != 3
-        || transition.reason != "activate-before-production-measurements"
-        || !transition
-            .gate_a_manifest_sha256
-            .eq_ignore_ascii_case(&receipt.gate_a_manifest_sha256)
-        || !transition
-            .gate_a_receipt_sha256
-            .eq_ignore_ascii_case(&hex(&Sha256::digest(&receipt_bytes)))
-        || transition.from_source_revision != receipt.source_revision
-        || !transition
-            .from_source_tree_sha256
-            .eq_ignore_ascii_case(&receipt.source_tree_sha256)
-        || transition.upgrade_source_revision != upgrade.source_revision
-        || !transition
-            .upgrade_source_tree_sha256
-            .eq_ignore_ascii_case(&upgrade.source_tree_sha256)
-        || transition.to_source_revision != manifest.source_revision
-        || !transition
-            .to_source_tree_sha256
-            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
-        || transition.bridge_canister_id != profile.bridge_canister_id
-        || !transition
-            .bridge_contract
-            .eq_ignore_ascii_case(&profile.bridge_contract)
-        || !transition
-            .bsns_contract
-            .eq_ignore_ascii_case(&profile.bsns_contract)
-        || !transition
-            .timelock_contract
-            .eq_ignore_ascii_case(&profile.timelock.address)
-        || !transition
-            .production_canister_upgrade_receipt_sha256
-            .eq_ignore_ascii_case(&hex(&Sha256::digest(&upgrade_bytes)))
-        || !transition
-            .bridge_runtime_bytecode_sha256
-            .eq_ignore_ascii_case(&receipt.bridge_runtime_bytecode_sha256)
-        || !transition
-            .bridge_runtime_bytecode_sha256
-            .eq_ignore_ascii_case(&profile.bridge_runtime_bytecode_sha256)
-        || !transition
-            .bsns_runtime_bytecode_sha256
-            .eq_ignore_ascii_case(&profile.bsns_runtime_bytecode_sha256)
-        || !transition
-            .bsns_runtime_template_sha256
-            .eq_ignore_ascii_case(&profile.bsns_runtime_template_sha256)
-        || !transition
-            .bridge_deployment_transaction_hash
-            .eq_ignore_ascii_case(&receipt.bridge_deployment_transaction_hash)
-        || !transition
-            .timelock_deployment_transaction_hash
-            .eq_ignore_ascii_case(&receipt.timelock_deployment_transaction_hash)
-    {
-        return Err("post-Gate-A policy transition identity binding is incomplete".into());
-    }
-    if upgrade.schema_version != 1
-        || upgrade.kind != "production-controller-bootstrap-upgrade"
-        || upgrade.bridge_canister_id != profile.bridge_canister_id
-        || upgrade.install_mode != "upgrade"
-        || upgrade.executing_principal != *installer
-        || upgrade.executed_at_unix > upgrade.verified_at_unix
-        || upgrade.recovered != upgrade.recovered_at_unix.is_some()
-        || upgrade.recovered_at_unix.is_some_and(|value| {
-            value < upgrade.executed_at_unix || value > upgrade.verified_at_unix
-        })
-        || upgrade.verified_at_unix > transition.observed_at_unix
-        || upgrade.before_controllers != before_controllers
-        || upgrade.after_controllers != after_controllers
-        || before_controllers != expected_controllers
-        || after_controllers != expected_controllers
-        || !upgrade
-            .before_module_sha256
-            .eq_ignore_ascii_case(&before_module)
-        || !upgrade
-            .after_module_sha256
-            .eq_ignore_ascii_case(&after_module)
-    {
-        return Err("production upgrade management metadata is incomplete".into());
-    }
-    if production_upgrade_schema_transition(
-        upgrade.before_schema_version,
-        upgrade.before_schema_version,
-        upgrade.after_schema_version,
-    )
-    .is_none()
-        || upgrade.after_schema_version != expected_terminal_schema
-        || before_runtime.schema_version != upgrade.before_schema_version
-        || after_runtime.schema_version != upgrade.after_schema_version
-        || !last_runtime_transition_valid
-    {
-        return Err("production upgrade schema or RuntimeBinding continuity is incomplete".into());
-    }
-    if upgrade.before_lifecycle != production_lifecycle_name(before_lifecycle)
-        || upgrade.after_lifecycle != production_lifecycle_name(after_lifecycle)
-        || before_lifecycle != after_lifecycle
-        || !production_lifecycle_pause_valid(before_lifecycle, before_status.deposits_paused)
-        || !production_lifecycle_pause_valid(after_lifecycle, after_status.deposits_paused)
-        || upgrade.before_deposits_paused != before_status.deposits_paused
-        || upgrade.after_deposits_paused != after_status.deposits_paused
-        || before_status.deposits_paused != after_status.deposits_paused
-        || !upgrade.before_storage_validation_complete
-        || !upgrade.after_storage_validation_complete
-    {
-        return Err("production upgrade lifecycle or pause continuity is incomplete".into());
-    }
-    if transition.schema_version != 3
-        || transition.reason != "activate-before-production-measurements"
-        || !transition
-            .gate_a_manifest_sha256
-            .eq_ignore_ascii_case(&receipt.gate_a_manifest_sha256)
-        || !transition
-            .gate_a_receipt_sha256
-            .eq_ignore_ascii_case(&hex(&Sha256::digest(receipt_bytes)))
-        || transition.from_source_revision != receipt.source_revision
-        || !transition
-            .from_source_tree_sha256
-            .eq_ignore_ascii_case(&receipt.source_tree_sha256)
-        || transition.upgrade_source_revision != upgrade.source_revision
-        || !transition
-            .upgrade_source_tree_sha256
-            .eq_ignore_ascii_case(&upgrade.source_tree_sha256)
-        || transition.to_source_revision != manifest.source_revision
-        || !transition
-            .to_source_tree_sha256
-            .eq_ignore_ascii_case(&manifest.source_tree_sha256)
-        || transition.bridge_canister_id != profile.bridge_canister_id
-        || !transition
-            .bridge_contract
-            .eq_ignore_ascii_case(&profile.bridge_contract)
-        || !transition
-            .bsns_contract
-            .eq_ignore_ascii_case(&profile.bsns_contract)
-        || !transition
-            .timelock_contract
-            .eq_ignore_ascii_case(&profile.timelock.address)
-        || !transition
-            .from_bridge_canister_wasm_sha256
-            .eq_ignore_ascii_case(&receipt.bridge_canister_wasm_sha256)
-        || !transition
-            .from_bridge_canister_wasm_sha256
-            .eq_ignore_ascii_case(&gate_a_profile.bridge_canister_wasm_sha256)
-        || !transition
-            .to_bridge_canister_wasm_sha256
-            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
-        || !transition
-            .production_canister_upgrade_receipt_sha256
-            .eq_ignore_ascii_case(&hex(&Sha256::digest(&upgrade_bytes)))
-        || !transition
-            .bridge_runtime_bytecode_sha256
-            .eq_ignore_ascii_case(&receipt.bridge_runtime_bytecode_sha256)
-        || !transition
-            .bridge_runtime_bytecode_sha256
-            .eq_ignore_ascii_case(&profile.bridge_runtime_bytecode_sha256)
-        || !transition
-            .bsns_runtime_bytecode_sha256
-            .eq_ignore_ascii_case(&profile.bsns_runtime_bytecode_sha256)
-        || !transition
-            .bsns_runtime_template_sha256
-            .eq_ignore_ascii_case(&profile.bsns_runtime_template_sha256)
-        || !transition
-            .bridge_deployment_transaction_hash
-            .eq_ignore_ascii_case(&receipt.bridge_deployment_transaction_hash)
-        || !transition
-            .timelock_deployment_transaction_hash
-            .eq_ignore_ascii_case(&receipt.timelock_deployment_transaction_hash)
-        || upgrade.schema_version != 1
-        || upgrade.kind != "production-controller-bootstrap-upgrade"
-        || upgrade.bridge_canister_id != profile.bridge_canister_id
-        || upgrade.install_mode != "upgrade"
-        || upgrade.executing_principal != *installer
-        || upgrade.executed_at_unix > upgrade.verified_at_unix
-        || upgrade.recovered != upgrade.recovered_at_unix.is_some()
-        || upgrade.recovered_at_unix.is_some_and(|value| {
-            value < upgrade.executed_at_unix || value > upgrade.verified_at_unix
-        })
-        || upgrade.verified_at_unix > transition.observed_at_unix
-        || upgrade.before_controllers != before_controllers
-        || upgrade.after_controllers != after_controllers
-        || before_controllers != expected_controllers
-        || after_controllers != expected_controllers
-        || !upgrade
-            .before_module_sha256
-            .eq_ignore_ascii_case(&before_module)
-        || !before_module.eq_ignore_ascii_case(expected_last_before_module)
-        || !upgrade
-            .after_module_sha256
-            .eq_ignore_ascii_case(&after_module)
-        || !after_module.eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
-        || !upgrade
-            .wasm_sha256
-            .eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
-        || production_upgrade_schema_transition(
-            upgrade.before_schema_version,
-            upgrade.before_schema_version,
-            upgrade.after_schema_version,
-        )
-        .is_none()
-        || upgrade.after_schema_version != expected_terminal_schema
-        || before_runtime.schema_version != upgrade.before_schema_version
-        || after_runtime.schema_version != upgrade.after_schema_version
-        || !last_runtime_transition_valid
-        || upgrade.before_lifecycle != production_lifecycle_name(before_lifecycle)
-        || upgrade.after_lifecycle != production_lifecycle_name(after_lifecycle)
-        || before_lifecycle != after_lifecycle
-        || !production_lifecycle_pause_valid(before_lifecycle, before_status.deposits_paused)
-        || !production_lifecycle_pause_valid(after_lifecycle, after_status.deposits_paused)
-        || upgrade.before_deposits_paused != before_status.deposits_paused
-        || upgrade.after_deposits_paused != after_status.deposits_paused
-        || before_status.deposits_paused != after_status.deposits_paused
-        || !upgrade.before_storage_validation_complete
-        || !upgrade.after_storage_validation_complete
-        || !hex_sha256_matches(
-            &upgrade.before_management_status_json_hex,
-            &upgrade.before_management_status_json_sha256,
-        )
-        || !hex_sha256_matches(
-            &upgrade.after_management_status_json_hex,
-            &upgrade.after_management_status_json_sha256,
-        )
-        || !hex_sha256_matches(
-            &upgrade.before_bridge_status_response_hex,
-            &upgrade.before_bridge_status_response_sha256,
-        )
-        || !hex_sha256_matches(
-            &upgrade.after_bridge_status_response_hex,
-            &upgrade.after_bridge_status_response_sha256,
-        )
-        || !hex_sha256_matches(
-            &upgrade.before_lifecycle_response_hex,
-            &upgrade.before_lifecycle_response_sha256,
-        )
-        || !hex_sha256_matches(
-            &upgrade.after_lifecycle_response_hex,
-            &upgrade.after_lifecycle_response_sha256,
-        )
-        || !hex_sha256_matches(
-            &upgrade.before_runtime_binding_response_hex,
-            &upgrade.before_runtime_binding_response_sha256,
-        )
-        || !hex_sha256_matches(
-            &upgrade.after_runtime_binding_response_hex,
-            &upgrade.after_runtime_binding_response_sha256,
-        )
-        || !hex_sha256_matches(
-            &upgrade.before_storage_integrity_response_hex,
-            &upgrade.before_storage_integrity_response_sha256,
-        )
-        || !hex_sha256_matches(
-            &upgrade.after_storage_integrity_response_hex,
-            &upgrade.after_storage_integrity_response_sha256,
-        )
-        || upgrade.before_lifecycle_response_hex != upgrade.after_lifecycle_response_hex
-        || upgrade.before_storage_integrity_response_hex
-            != upgrade.after_storage_integrity_response_hex
-        || !upgrade
-            .before_public_state_sha256
-            .eq_ignore_ascii_case(&before_public_state_sha256)
-        || !upgrade
-            .after_public_state_sha256
-            .eq_ignore_ascii_case(&after_public_state_sha256)
-        || upgrade.command_argv
-            != [
-                "bridge-profile",
-                "submit-production-canister-upgrade",
-                gate_a_profile.ic_host.as_str(),
-                profile.bridge_canister_id.as_str(),
-                installer.as_str(),
-                "<production-controller-pem>",
-                "<verified-release-artifact>",
-                "<durable-submission-artifact>",
-                "<durable-chunk-upload-evidence>",
-                "<durable-response-artifact>",
-            ]
-            .map(str::to_string)
-        || !valid_sha256(&upgrade.response_stdout_sha256)
-        || !hex_sha256_matches(
-            &upgrade.response_stdout_hex,
-            &upgrade.response_stdout_sha256,
-        )
-        || !hex_sha256_matches(
-            &upgrade.response_stderr_hex,
-            &upgrade.response_stderr_sha256,
-        )
-        || !hex_sha256_matches(
-            &upgrade.submission_json_hex,
-            &upgrade.submission_json_sha256,
-        )
-        || !hex_sha256_matches(
-            &upgrade.chunk_upload_evidence_json_hex,
-            &upgrade.chunk_upload_evidence_json_sha256,
-        )
-        || !valid_sha256(&upgrade.request_id)
-        || validated_submission.request_id != upgrade.request_id
-        || !production_upgrade_ingress_window_valid(
-            upgrade.executed_at_unix,
-            validated_submission.ingress_expiry,
-        )
-    {
-        return Err(
-            "post-Gate-A policy transition or production upgrade evidence is incomplete".into(),
-        );
-    }
-    Ok(())
 }
 
 fn validate_bundle(root: &Path, gate_b: bool) -> Result<ValidatedBundle, String> {
@@ -7265,15 +3956,6 @@ fn validate_bundle_with_freshness_at(
         validate_production_canister_receipt(
             &expected_post_deploy_profile,
             &receipt.canister_install,
-        )?;
-        validate_post_gate_a_policy_transition(
-            root,
-            &manifest,
-            &profile,
-            &gate_a_profile,
-            &receipt,
-            profile.canister_schema_version,
-            now,
         )?;
     }
     if profile.test_assets_only != manifest.test_only {
@@ -7707,247 +4389,6 @@ fn verify_production_canister_predeploy(
     Ok(())
 }
 
-struct ProductionHandoverCanisterObservation<'a> {
-    lifecycle: &'a ProductionLifecycleView,
-    attestation: Option<&'a ActivationAttestationView>,
-    activation_status: &'a ActivationStatusView,
-    runtime: &'a RuntimeBindingView,
-    status: &'a BridgeStatusLiveView,
-    storage_integrity: &'a StorageIntegrityResultView,
-    controllers: &'a [Principal],
-    module_hash: &'a [u8],
-}
-
-struct ProductionHandoverActivationBinding<'a> {
-    governance_operation_id: u64,
-    finalized_block_number: u64,
-    timelock_operation_id: &'a str,
-    transaction_hash: &'a str,
-    confirmed_generation: u8,
-    confirmed_signed_at_ns: &'a str,
-    expected_module_sha256: &'a str,
-}
-
-#[derive(Clone, Copy)]
-enum ActivationAttestationFreshness {
-    Required,
-    AllowStaleForUnchangedUiAssets,
-}
-
-struct ProductionHandoverValidationContext {
-    minimum_deployment_block: u64,
-    manifest_created_at_unix: u64,
-    now: u64,
-    attestation_freshness: ActivationAttestationFreshness,
-}
-
-#[cfg(test)]
-fn validate_production_handover_canister_state(
-    profile: &Profile,
-    installer: Principal,
-    gate_a_receipt: &GateAReceipt,
-    activation: &ProductionHandoverActivationBinding<'_>,
-    observation: &ProductionHandoverCanisterObservation<'_>,
-    manifest_created_at_unix: u64,
-    now: u64,
-) -> Result<(), String> {
-    validate_production_handover_observation(
-        profile,
-        installer,
-        activation,
-        observation,
-        &ProductionHandoverValidationContext {
-            minimum_deployment_block: gate_a_receipt
-                .bridge_deployment_block_number
-                .max(gate_a_receipt.timelock_deployment_block_number),
-            manifest_created_at_unix,
-            now,
-            attestation_freshness: ActivationAttestationFreshness::Required,
-        },
-    )
-}
-
-fn validate_production_handover_observation(
-    profile: &Profile,
-    installer: Principal,
-    activation: &ProductionHandoverActivationBinding<'_>,
-    observation: &ProductionHandoverCanisterObservation<'_>,
-    context: &ProductionHandoverValidationContext,
-) -> Result<(), String> {
-    if !matches!(observation.lifecycle, ProductionLifecycleView::Activated) {
-        return Err("production Canister must be Activated before handover".into());
-    }
-    if observation.controllers != [installer]
-        || !hex(observation.module_hash).eq_ignore_ascii_case(activation.expected_module_sha256)
-    {
-        return Err(
-            "production Canister module or sole controller differs from authorized evidence".into(),
-        );
-    }
-    let operational_config_sha256 = expected_operational_config_sha256(
-        profile,
-        observation.status.mint_authorization_ttl_seconds,
-        observation.status.mint_authorization_epoch,
-    )?;
-    validate_live_runtime_binding(
-        &live_runtime_binding_from_view(observation.runtime),
-        profile,
-        &hex(&canonical_sha256(&Vec::<String>::new())?),
-        &operational_config_sha256,
-    )?;
-    if observation.runtime.expected_bridge_runtime_sha256
-        != decode_hex(&profile.bridge_runtime_bytecode_sha256)?
-    {
-        return Err("production Canister runtime code binding differs from the profile".into());
-    }
-    if observation.status.deposits_paused || !observation.status.reserve.sufficient {
-        return Err("production Canister must be active and reserved for handover".into());
-    }
-    if !matches!(
-        observation.storage_integrity,
-        StorageIntegrityResultView::Ok(value) if value == "ok"
-    ) {
-        return Err("production Canister storage integrity is not ok for handover".into());
-    }
-    let last = observation
-        .activation_status
-        .last_confirmed_activation
-        .as_ref()
-        .ok_or("active handover has no confirmed execute activation")?;
-    let confirmed_signed_at_ns = u64::try_from(parse_decimal_u128(
-        activation.confirmed_signed_at_ns,
-        "confirmed signed timestamp",
-    )?)
-    .map_err(|_| "confirmed signed timestamp exceeds nat64")?;
-    if observation.activation_status.deposits_paused
-        || observation
-            .activation_status
-            .pending_timelock_operation
-            .is_some()
-        || last.phase != "execute"
-        || last.governance_operation_id != activation.governance_operation_id
-        || last.receipt_block_number != activation.finalized_block_number
-        || last.generation != activation.confirmed_generation
-        || last.signed_at_ns != confirmed_signed_at_ns
-        || !format!("0x{}", hex(&last.timelock_operation_id))
-            .eq_ignore_ascii_case(activation.timelock_operation_id)
-        || !format!("0x{}", hex(&last.transaction_hash))
-            .eq_ignore_ascii_case(activation.transaction_hash)
-    {
-        return Err("live activation state differs from the execute receipt".into());
-    }
-    let attestation = observation
-        .attestation
-        .ok_or("authenticated activation attestation is unavailable for active handover")?;
-    validate_activation_attestation_with_pause_and_freshness(
-        profile,
-        attestation,
-        context.manifest_created_at_unix,
-        context.minimum_deployment_block,
-        context.now,
-        Some(false),
-        context.attestation_freshness,
-    )
-}
-
-fn validate_production_ui_upgrade_extension(
-    bundle: &ValidatedBundle,
-    gate_a_receipt: &GateAReceipt,
-    execute_receipt: &ControllerActivationReceipt,
-    upgrade_evidence_path: &Path,
-) -> Result<(String, ProductionUpgradeTerminal, Vec<u8>), String> {
-    let extension_bytes = fs::read(upgrade_evidence_path).map_err(|error| error.to_string())?;
-    let extension = production_upgrade_chain_receipts(&extension_bytes)?;
-    let continuation = production_ui_upgrade_continuation(
-        bundle,
-        gate_a_receipt,
-        execute_receipt,
-        &extension[0].0,
-    )?;
-    let terminal_module_sha256 = extension
-        .last()
-        .ok_or("empty post-activation upgrade chain")?
-        .0
-        .after_module_sha256
-        .clone();
-    let terminal = validate_production_upgrade_history_bytes_with_continuation(
-        &read_json(&bundle.root.join("gate-a-profile.json"))?,
-        gate_a_receipt,
-        &extension_bytes,
-        &terminal_module_sha256,
-        CURRENT_STABLE_SCHEMA_VERSION,
-        Some(&continuation),
-    )?;
-    if terminal.lifecycle != ProductionLifecycleView::Activated || terminal.deposits_paused {
-        return Err("post-activation upgrade does not preserve active traffic".into());
-    }
-    Ok((terminal_module_sha256, terminal, extension_bytes))
-}
-
-fn production_ui_upgrade_continuation(
-    bundle: &ValidatedBundle,
-    gate_a_receipt: &GateAReceipt,
-    execute_receipt: &ControllerActivationReceipt,
-    first: &ProductionCanisterUpgradeReceipt,
-) -> Result<ProductionUpgradeContinuation, String> {
-    if bundle.profile.canister_schema_version != PREVIOUS_STABLE_SCHEMA_VERSION {
-        return Err("post-activation UI requires the immutable deployed v35 Gate B lineage".into());
-    }
-
-    let installer = gate_a_receipt.canister_install.installer_principal.as_str();
-    let (before_controllers, before_module) =
-        production_upgrade_management_state(&first.before_management_status_json_hex)?;
-    let (before_status, before_lifecycle, before_runtime, _) = production_upgrade_query_state_any(
-        &first.before_bridge_status_response_hex,
-        &first.before_lifecycle_response_hex,
-        &first.before_runtime_binding_response_hex,
-        &first.before_storage_integrity_response_hex,
-    )?;
-    if before_controllers != [installer]
-        || !before_module.eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
-        || before_lifecycle != ProductionLifecycleView::Activated
-        || before_status.deposits_paused
-        || first.before_schema_version != PREVIOUS_STABLE_SCHEMA_VERSION
-        || first.before_lifecycle != "Activated"
-        || first.before_deposits_paused
-    {
-        return Err("post-activation upgrade does not start at the activated Gate B state".into());
-    }
-    let before_binding = live_runtime_binding_from_view(&before_runtime);
-    let operational_config_sha256 = expected_operational_config_sha256(
-        &bundle.profile,
-        before_status.mint_authorization_ttl_seconds,
-        before_status.mint_authorization_epoch,
-    )?;
-    validate_live_runtime_binding(
-        &before_binding,
-        &bundle.profile,
-        &hex(&canonical_sha256(&Vec::<String>::new())?),
-        &operational_config_sha256,
-    )?;
-    if before_runtime.expected_bridge_runtime_sha256
-        != decode_hex(&bundle.profile.bridge_runtime_bytecode_sha256)?
-    {
-        return Err("post-activation upgrade runtime code differs from Gate B".into());
-    }
-
-    Ok(ProductionUpgradeContinuation {
-        prefix_len: 0,
-        before_module_sha256: bundle.profile.bridge_canister_wasm_sha256.clone(),
-        terminal: ProductionUpgradeTerminal {
-            observed_epoch: (
-                before_status.mint_authorization_epoch,
-                before_status.mint_authorization_ttl_seconds,
-            ),
-            runtime: before_binding,
-            lifecycle: ProductionLifecycleView::Activated,
-            deposits_paused: false,
-        },
-        schema_version: PREVIOUS_STABLE_SCHEMA_VERSION,
-        minimum_executed_at_unix: execute_receipt.verified_at_unix,
-    })
-}
-
 #[derive(CandidType, Deserialize)]
 struct ProductionUiHistoryProbe {
     requester: Vec<u8>,
@@ -7961,103 +4402,6 @@ enum ProductionUiHistoryResult {
     Err(Reserved),
 }
 
-fn verify_production_canister_handover_state(
-    bundle_path: &Path,
-    seal_receipt_path: &Path,
-    schedule_receipt_path: &Path,
-    execute_receipt_path: &Path,
-    production_ui_runtime_profile: Option<(&Path, &Path)>,
-    production_ui_upgrade_evidence: Option<&Path>,
-) -> Result<ValidatedBundle, String> {
-    let checkpoint_without_dao_reactivation = env::var_os("BRIDGE_CHECKPOINT_EVIDENCE").is_some()
-        && env::var_os("BRIDGE_DAO_SCHEDULE_RECEIPT").is_none()
-        && env::var_os("BRIDGE_DAO_EXECUTE_RECEIPT").is_none();
-    let live_context = if production_ui_upgrade_evidence.is_some() {
-        SealReceiptLiveContext::ProductionUiPostUpgrade
-    } else {
-        SealReceiptLiveContext::HandoverPreTransfer
-    };
-    let (bundle, gate_a_receipt, execute_receipt) = validate_production_handover_evidence_files(
-        bundle_path,
-        seal_receipt_path,
-        schedule_receipt_path,
-        execute_receipt_path,
-        live_context,
-    )?;
-    let upgrade_terminal = production_ui_upgrade_evidence
-        .map(|path| {
-            validate_production_ui_upgrade_extension(
-                &bundle,
-                &gate_a_receipt,
-                &execute_receipt,
-                path,
-            )
-        })
-        .transpose()?;
-    let upgrade_terminal = match (upgrade_terminal, optional_handover_checkpoint()?) {
-        (Some(_), Some(_)) => {
-            return Err("choose one explicit handover upgrade evidence format".into())
-        }
-        (None, Some(checkpoint)) => {
-            Some((checkpoint.module_sha256, checkpoint.terminal, Vec::new()))
-        }
-        (terminal, None) => terminal,
-    };
-    if let Some((runtime_profile_path, rpc_config_path)) = production_ui_runtime_profile {
-        let (module, terminal, upgrade_bytes) = upgrade_terminal
-            .as_ref()
-            .ok_or("production UI requires upgrade evidence")?;
-        validate_production_ui_runtime_profile(
-            &bundle.profile,
-            &bundle.root.join("profile.json"),
-            &bundle.manifest_sha256,
-            upgrade_bytes,
-            module,
-            terminal,
-            rpc_config_path,
-            runtime_profile_path,
-        )?;
-    }
-    let authorized_module_sha256 = upgrade_terminal
-        .as_ref()
-        .map(|(module, _, _)| module.clone())
-        .unwrap_or_else(|| bundle.profile.bridge_canister_wasm_sha256.clone());
-    let activation = ProductionHandoverActivationBinding {
-        governance_operation_id: execute_receipt
-            .governance_operation_id
-            .parse()
-            .map_err(|_| "invalid execute governance operation ID")?,
-        finalized_block_number: execute_receipt
-            .finalized_block_number
-            .parse()
-            .map_err(|_| "invalid execute Finalized block")?,
-        timelock_operation_id: &execute_receipt.timelock_operation_id,
-        transaction_hash: &execute_receipt.transaction_hash,
-        confirmed_generation: execute_receipt.confirmed_generation,
-        confirmed_signed_at_ns: &execute_receipt.confirmed_signed_at_ns,
-        expected_module_sha256: &authorized_module_sha256,
-    };
-    verify_production_live_state(
-        &bundle.profile,
-        gate_b_controller(&bundle)?,
-        &activation,
-        upgrade_terminal.as_ref().map(|(_, terminal, _)| terminal),
-        &ProductionLiveStateContext {
-            gate_b_sha256: &bundle.manifest_sha256,
-            manifest_created_at_unix: bundle.manifest.created_at_unix,
-            minimum_deployment_block: gate_a_receipt
-                .bridge_deployment_block_number
-                .max(gate_a_receipt.timelock_deployment_block_number),
-            attestation_freshness: if checkpoint_without_dao_reactivation {
-                ActivationAttestationFreshness::AllowStaleForUnchangedUiAssets
-            } else {
-                ActivationAttestationFreshness::Required
-            },
-        },
-    )?;
-    Ok(bundle)
-}
-
 #[derive(CandidType, Deserialize, Serialize)]
 struct SnsCanistersView {
     dapps: Vec<Principal>,
@@ -8065,358 +4409,26 @@ struct SnsCanistersView {
 #[derive(CandidType)]
 struct SnsRootQuery {}
 
-fn validate_same_wasm_sns_upgrade(
-    profile: &Profile,
-    proposal_id: u64,
-    minimum_time: u64,
-    proposal: ProposalDataView,
+fn verify_production_current_state(
+    profile_path: &Path,
+    expected_controller_text: &str,
+    expected_module_sha256: &str,
+    controller_mode: &str,
 ) -> Result<(), String> {
-    if proposal.id.as_ref().map(|id| id.id) != Some(proposal_id)
-        || proposal_id == 0
-        || proposal.decided_timestamp_seconds == 0
-        || proposal.executed_timestamp_seconds < minimum_time
-        || proposal.executed_timestamp_seconds == 0
-        || proposal.executed_timestamp_seconds > now_unix()?
-        || proposal.failed_timestamp_seconds != 0
-        || proposal.failure_reason.is_some()
-    {
-        return Err("SNS upgrade proposal has not executed after handover".into());
+    if !valid_sha256(expected_module_sha256) {
+        return Err("expected production module SHA-256 is invalid".into());
     }
-    let Some(SnsProposalAction::UpgradeSnsControlledCanister(action)) =
-        proposal.proposal.and_then(|p| p.action)
-    else {
-        return Err("SNS upgrade proposal action differs".into());
-    };
-    if action.canister_id.map(|id| id.to_text()).as_deref()
-        != Some(profile.bridge_canister_id.as_str())
-        || action.mode != Some(3)
-        || action.canister_upgrade_options.is_some()
-        || action.canister_upgrade_arg.as_deref() != Some(&[68, 73, 68, 76, 0, 0])
-        || match action.chunked_canister_wasm.as_ref() {
-            Some(chunks) => {
-                !action.new_canister_wasm.is_empty()
-                    || hex(&chunks.wasm_module_hash) != profile.bridge_canister_wasm_sha256
-                    || chunks.store_canister_id.map(|id| id.to_text()).as_deref()
-                        != Some(profile.bridge_canister_id.as_str())
-                    || chunks.chunk_hashes_list.is_empty()
-                    || chunks.chunk_hashes_list.len() > 100
-                    || chunks.chunk_hashes_list.iter().any(|hash| hash.len() != 32)
-            }
-            None => {
-                hex(&Sha256::digest(&action.new_canister_wasm))
-                    != profile.bridge_canister_wasm_sha256
-            }
-        }
-    {
-        return Err("SNS upgrade must use the exact reviewed uncompressed Wasm, upgrade mode, and empty Candid arguments".into());
-    }
-    Ok(())
-}
-
-#[derive(CandidType, Deserialize)]
-struct ReleaseUpgradeObservationView {
-    completed_at_ns: u64,
-    upgrader: Principal,
-}
-
-fn validate_sns_upgrade_completion(
-    observation: &ReleaseUpgradeObservationView,
-    decided_at: u64,
-    handover_at: u64,
-    now: u64,
-) -> Result<(), String> {
-    if !bridge_core::kernel::sns_upgrade_completion_allowed(
-        observation.upgrader.to_text() == KINIC_ROOT,
-        observation.completed_at_ns / 1_000_000_000,
-        decided_at,
-        handover_at,
-        now,
-    ) {
-        return Err("SNS Root acknowledged the proposal, but no matching successful post_upgrade is observed".into());
-    }
-    Ok(())
-}
-
-fn verify_same_wasm_sns_upgrade(
-    profile: &Profile,
-    proposal_id: u64,
-    minimum_time: u64,
-) -> Result<(), String> {
-    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|e| e.to_string())?;
-    let root = Principal::from_text(KINIC_ROOT).map_err(|e| e.to_string())?;
-    let bridge = Principal::from_text(&profile.bridge_canister_id).map_err(|e| e.to_string())?;
-    let agent = mainnet_agent(&profile.ic_host, false)?;
-    let (proposal_bytes, dapps_bytes, upgrade_bytes) = async_runtime()?.block_on(async {
-        let proposal = agent
-            .query(&governance, "get_proposal")
-            .with_arg(
-                Encode!(&GetProposalRequest {
-                    proposal_id: Some(ProposalId { id: proposal_id })
-                })
-                .map_err(|e| e.to_string())?,
-            )
-            .call_with_verification()
-            .await
-            .map_err(|e| e.to_string())?;
-        let dapps = agent
-            .query(&root, "list_sns_canisters")
-            .with_arg(Encode!(&SnsRootQuery {}).map_err(|e| e.to_string())?)
-            .call_with_verification()
-            .await
-            .map_err(|e| e.to_string())?;
-        let upgrade = agent
-            .query(&bridge, "get_release_upgrade_observation")
-            .with_arg(Encode!().map_err(|e| e.to_string())?)
-            .call_with_verification()
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok::<_, String>((proposal, dapps, upgrade))
-    })?;
-    let dapps = Decode!(&dapps_bytes, SnsCanistersView).map_err(|e| e.to_string())?;
-    if dapps.dapps.iter().filter(|id| **id == bridge).count() != 1 {
-        return Err("Bridge is not registered in SNS Root".into());
-    }
-    let response = Decode!(&proposal_bytes, GetProposalResponse).map_err(|e| e.to_string())?;
-    let Some(GetProposalResult::Proposal(proposal)) = response.result else {
-        return Err("SNS upgrade proposal unavailable".into());
-    };
-    let decided_at = proposal.decided_timestamp_seconds;
-    validate_same_wasm_sns_upgrade(profile, proposal_id, minimum_time, *proposal)?;
-    let observation = Decode!(&upgrade_bytes, Option<ReleaseUpgradeObservationView>)
-        .map_err(|e| e.to_string())?
-        .ok_or("SNS upgrade has not completed post_upgrade")?;
-    validate_sns_upgrade_completion(&observation, decided_at, minimum_time, now_unix()?)
-}
-
-fn verified_dao_reactivation(
-    profile: &Profile,
-    gate_b_sha256: &str,
-    original_activation: &ProductionHandoverActivationBinding<'_>,
-    schedule_path: &Path,
-    execute_path: &Path,
-) -> Result<ActivationConfirmationStatusView, String> {
-    let schedule_bytes = fs::read(schedule_path).map_err(|error| error.to_string())?;
-    let execute_bytes = fs::read(execute_path).map_err(|error| error.to_string())?;
-    let schedule: ActivationReceipt =
-        serde_json::from_slice(&schedule_bytes).map_err(|error| error.to_string())?;
-    let execute: ActivationReceipt =
-        serde_json::from_slice(&execute_bytes).map_err(|error| error.to_string())?;
+    let mut profile: Profile = read_json(profile_path)?;
     let bridge =
         Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
-    let mut confirmed = Vec::new();
-    for (phase, receipt) in [("schedule", &schedule), ("execute", &execute)] {
-        let payload = sns_activation_payload(receipt.previous_governance_operation_id)?;
-        let method = format!("sns_{phase}_activation");
-        let validator = format!("validate_{method}");
-        let now = now_unix()?;
-        if receipt.gate_b_manifest_sha256 != gate_b_sha256
-            || receipt.proposal_id == 0
-            || receipt.function_id == 0
-            || receipt.verified_at_unix < receipt.executed_at_unix
-            || receipt.verified_at_unix > now
-            || now.saturating_sub(receipt.verified_at_unix) > MAX_EVIDENCE_AGE_SECS
-            || !activation_raw_digest_matches(
-                &receipt.governance_query_response_hex,
-                &receipt.governance_query_response_sha256,
-            )?
-            || !activation_raw_digest_matches(
-                &receipt.function_registry_response_hex,
-                &receipt.function_registry_response_sha256,
-            )?
-            || receipt.schema_version != 5
-            || receipt.phase != phase
-            || receipt.target_method_name != method
-            || receipt.validator_canister_id != profile.bridge_canister_id
-            || receipt.validator_method_name != validator
-            || receipt.payload_sha256 != hex(&Sha256::digest(&payload))
-            || !activation_raw_digest_matches(
-                &receipt.activation_status_response_hex,
-                &receipt.activation_status_response_sha256,
-            )?
-        {
-            return Err("DAO reactivation receipt binding differs".into());
-        }
-        let snapshot = fetch_live_activation_snapshot(
-            &profile.ic_host,
-            bridge,
-            receipt.proposal_id,
-            &payload,
-        )?;
-        let response = Decode!(&snapshot.proposal_raw, GetProposalResponse)
-            .map_err(|error| error.to_string())?;
-        let Some(GetProposalResult::Proposal(proposal)) = response.result else {
-            return Err("DAO reactivation proposal is unavailable".into());
-        };
-        if proposal.id.as_ref().map(|id| id.id) != Some(receipt.proposal_id)
-            || proposal.executed_timestamp_seconds == 0
-            || proposal.executed_timestamp_seconds != receipt.executed_at_unix
-            || proposal.decided_timestamp_seconds == 0
-            || proposal.failed_timestamp_seconds != 0
-            || proposal.failure_reason.is_some()
-            || proposal.executed_timestamp_seconds > now_unix()?
-        {
-            return Err("DAO reactivation proposal did not execute successfully".into());
-        }
-        let Some(SnsProposalAction::ExecuteGenericNervousSystemFunction(action)) =
-            proposal.proposal.and_then(|p| p.action)
-        else {
-            return Err("DAO reactivation proposal action differs".into());
-        };
-        if action.function_id != receipt.function_id || action.payload != payload {
-            return Err("DAO reactivation proposal payload differs".into());
-        }
-        let registry = Decode!(
-            &snapshot.registry_raw,
-            ListNervousSystemFunctionsResponseView
-        )
-        .map_err(|error| error.to_string())?;
-        if registry.functions.iter().filter(|f| f.id == receipt.function_id && matches!(f.function_type.as_ref(),
-            Some(FunctionTypeView::GenericNervousSystemFunction(g)) if g.target_canister_id == Some(bridge)
-                && g.validator_canister_id == Some(bridge) && g.target_method_name.as_deref() == Some(method.as_str())
-                && g.validator_method_name.as_deref() == Some(validator.as_str()))).count() != 1 {
-            return Err("DAO reactivation registry differs".into());
-        }
-        let bytes = decode_hex(&receipt.activation_status_response_hex)?;
-        let ActivationStatusResultView::Ok(status) =
-            Decode!(&bytes, ActivationStatusResultView).map_err(|e| e.to_string())?
-        else {
-            return Err("DAO reactivation receipt has no activation state".into());
-        };
-        let last = status
-            .last_confirmed_activation
-            .ok_or("DAO reactivation confirmation missing")?;
-        if last.phase != phase
-            || last.governance_operation_id.to_string() != receipt.governance_operation_id
-            || last.governance_operation_id <= receipt.previous_governance_operation_id
-            || last.receipt_block_number == 0
-            || last.transaction_hash.len() != 32
-            || format!("0x{}", hex(&last.timelock_operation_id)) != receipt.operation_id
-        {
-            return Err("DAO reactivation confirmation differs".into());
-        }
-        if last.signed_at_ns / 1_000_000_000 > receipt.executed_at_unix
-            || last.receipt_block_number <= original_activation.finalized_block_number
-        {
-            return Err("DAO confirmation predates its proposal or initial activation".into());
-        }
-        if phase == "schedule" {
-            let instance: [u8; 32] = decode_hex(&profile.deployment_instance_id)?
-                .try_into()
-                .map_err(|_| "invalid instance")?;
-            let salt = initial_activation_salt(instance, last.governance_operation_id);
-            let operation =
-                initial_activation_operation_id(decode_address(&profile.bridge_contract)?, salt);
-            let pending = status
-                .pending_timelock_operation
-                .as_ref()
-                .ok_or("schedule receipt has no pending operation")?;
-            if !status.deposits_paused
-                || pending.operation_id != operation
-                || pending.salt != salt
-                || receipt.operation_salt != format!("0x{}", hex(&salt))
-                || last.timelock_operation_id != operation
-                || receipt.previous_governance_operation_id
-                    < original_activation.governance_operation_id
-            {
-                return Err(
-                    "DAO schedule differs from the deployment namespace or predecessor".into(),
-                );
-            }
-        }
-        if phase == "execute" {
-            let ActivationStatusResultView::Ok(live) =
-                Decode!(&snapshot.activation_raw, ActivationStatusResultView)
-                    .map_err(|e| e.to_string())?
-            else {
-                return Err("live DAO reactivation status is unavailable".into());
-            };
-            let live_last = live
-                .last_confirmed_activation
-                .ok_or("live DAO activation confirmation missing")?;
-            if live.deposits_paused
-                || live.pending_timelock_operation.is_some()
-                || Encode!(&live_last).map_err(|e| e.to_string())?
-                    != Encode!(&last).map_err(|e| e.to_string())?
-            {
-                return Err("live DAO reactivation does not match the execute receipt".into());
-            }
-        }
-        confirmed.push(last);
-    }
-    if execute.prior_schedule_receipt_sha256.as_deref()
-        != Some(hex(&Sha256::digest(&schedule_bytes)).as_str())
-        || execute.previous_governance_operation_id != confirmed[0].governance_operation_id
-        || schedule.prior_schedule_receipt_sha256.is_some()
-        || execute.operation_id != schedule.operation_id
-        || execute.operation_salt != schedule.operation_salt
-        || execute.proposal_id <= schedule.proposal_id
-        || execute.executed_at_unix < schedule.executed_at_unix
-        || confirmed[1].receipt_block_number <= confirmed[0].receipt_block_number
-        || confirmed[1].signed_at_ns <= confirmed[0].signed_at_ns
-        || execute.source_revision != schedule.source_revision
-        || execute.source_tree_sha256 != schedule.source_tree_sha256
-        || execute.release_id != schedule.release_id
-        || execute.gate_b_manifest_sha256 != schedule.gate_b_manifest_sha256
-    {
-        return Err("DAO reactivation schedule/execute lineage differs".into());
-    }
-    if fs::read(schedule_path).map_err(|e| e.to_string())? != schedule_bytes
-        || fs::read(execute_path).map_err(|e| e.to_string())? != execute_bytes
-    {
-        return Err("DAO reactivation receipts changed during verification".into());
-    }
-    Ok(confirmed.remove(1))
-}
-
-struct ProductionLiveStateContext<'a> {
-    gate_b_sha256: &'a str,
-    manifest_created_at_unix: u64,
-    minimum_deployment_block: u64,
-    attestation_freshness: ActivationAttestationFreshness,
-}
-
-fn verify_production_live_state(
-    profile: &Profile,
-    installer: Principal,
-    activation: &ProductionHandoverActivationBinding<'_>,
-    upgrade_terminal: Option<&ProductionUpgradeTerminal>,
-    context: &ProductionLiveStateContext<'_>,
-) -> Result<(), String> {
-    let dao_receipts = match (
-        env::var("BRIDGE_DAO_SCHEDULE_RECEIPT"),
-        env::var("BRIDGE_DAO_EXECUTE_RECEIPT"),
-    ) {
-        (Ok(schedule), Ok(execute)) => Some(verified_dao_reactivation(
-            profile,
-            context.gate_b_sha256,
-            activation,
-            Path::new(&schedule),
-            Path::new(&execute),
-        )?),
-        (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent)) => None,
-        _ => return Err("DAO reactivation requires both schedule and execute receipts".into()),
+    let expected_controller =
+        Principal::from_text(expected_controller_text).map_err(|error| error.to_string())?;
+    let root = Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?;
+    let expected_controllers = match controller_mode {
+        "sole" => BTreeSet::from([expected_controller]),
+        "joint" => BTreeSet::from([expected_controller, root]),
+        _ => return Err("controller mode must be sole or joint".into()),
     };
-    let dao_operation = dao_receipts
-        .as_ref()
-        .map(|v| format!("0x{}", hex(&v.timelock_operation_id)));
-    let dao_transaction = dao_receipts
-        .as_ref()
-        .map(|v| format!("0x{}", hex(&v.transaction_hash)));
-    let dao_signed_at = dao_receipts.as_ref().map(|v| v.signed_at_ns.to_string());
-    let dao_binding = dao_receipts
-        .as_ref()
-        .map(|last| ProductionHandoverActivationBinding {
-            governance_operation_id: last.governance_operation_id,
-            finalized_block_number: last.receipt_block_number,
-            timelock_operation_id: dao_operation.as_ref().unwrap(),
-            transaction_hash: dao_transaction.as_ref().unwrap(),
-            confirmed_generation: last.generation,
-            confirmed_signed_at_ns: dao_signed_at.as_ref().unwrap(),
-            expected_module_sha256: activation.expected_module_sha256,
-        });
-    let activation = dao_binding.as_ref().unwrap_or(activation);
-    let bridge =
-        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
     let agent = mainnet_agent(&profile.ic_host, false)?;
     let (
         lifecycle_raw,
@@ -8424,6 +4436,9 @@ fn verify_production_live_state(
         activation_status_raw,
         runtime_raw,
         status_raw,
+        pending_raw,
+        history_raw,
+        root_raw,
         controllers,
         module_hash,
     ) = async_runtime()?.block_on(async {
@@ -8436,25 +4451,51 @@ fn verify_production_live_state(
             .map_err(|error| error.to_string())?;
         let attestation = agent
             .query(&bridge, "get_activation_attestation")
-            .with_arg(empty)
+            .with_arg(empty.clone())
             .call_with_verification()
             .await
             .map_err(|error| error.to_string())?;
         let activation_status = agent
             .query(&bridge, "get_activation_status")
-            .with_arg(Encode!().map_err(|error| error.to_string())?)
+            .with_arg(empty.clone())
             .call_with_verification()
             .await
             .map_err(|error| error.to_string())?;
         let runtime = agent
             .query(&bridge, "get_runtime_binding")
-            .with_arg(Encode!().map_err(|error| error.to_string())?)
+            .with_arg(empty.clone())
             .call_with_verification()
             .await
             .map_err(|error| error.to_string())?;
         let status = agent
             .query(&bridge, "get_bridge_status")
-            .with_arg(Encode!().map_err(|error| error.to_string())?)
+            .with_arg(empty.clone())
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let pending = agent
+            .query(&bridge, "get_pending_base_governance_transaction")
+            .with_arg(empty)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let history = agent
+            .query(&bridge, "list_withdrawals")
+            .with_arg(
+                Encode!(&ProductionUiHistoryProbe {
+                    requester: vec![0; 20],
+                    before_cursor: None,
+                    limit: 1,
+                })
+                .map_err(|error| error.to_string())?,
+            )
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())?;
+        let root_canister = Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?;
+        let root = agent
+            .query(&root_canister, "list_sns_canisters")
+            .with_arg(Encode!(&SnsRootQuery {}).map_err(|error| error.to_string())?)
             .call_with_verification()
             .await
             .map_err(|error| error.to_string())?;
@@ -8472,122 +4513,157 @@ fn verify_production_live_state(
             activation_status,
             runtime,
             status,
+            pending,
+            history,
+            root,
             controllers,
             module_hash,
         ))
     })?;
-    let lifecycle = match Decode!(&lifecycle_raw, ProductionLifecycleResultView)
-        .map_err(|error| error.to_string())?
-    {
-        ProductionLifecycleResultView::Ok(value) => value,
-        ProductionLifecycleResultView::Err(_) => {
-            return Err("authenticated production lifecycle is unavailable".into())
-        }
+    let ProductionLifecycleResultView::Ok(lifecycle) =
+        Decode!(&lifecycle_raw, ProductionLifecycleResultView)
+            .map_err(|error| error.to_string())?
+    else {
+        return Err("authenticated production lifecycle is unavailable".into());
     };
-    let attestation = match Decode!(&attestation_raw, ActivationAttestationResultView)
-        .map_err(|error| error.to_string())?
-    {
-        ActivationAttestationResultView::Ok(value) => Some(value),
-        ActivationAttestationResultView::Err(_) => None,
+    let ActivationAttestationResultView::Ok(attestation) =
+        Decode!(&attestation_raw, ActivationAttestationResultView)
+            .map_err(|error| error.to_string())?
+    else {
+        return Err("authenticated activation attestation is unavailable".into());
     };
-    let activation_status = match Decode!(&activation_status_raw, ActivationStatusResultView)
-        .map_err(|error| error.to_string())?
-    {
-        ActivationStatusResultView::Ok(value) => value,
-        ActivationStatusResultView::Err(_) => {
-            return Err("authenticated activation status is unavailable".into())
-        }
+    let ActivationStatusResultView::Ok(activation_status) =
+        Decode!(&activation_status_raw, ActivationStatusResultView)
+            .map_err(|error| error.to_string())?
+    else {
+        return Err("authenticated activation status is unavailable".into());
     };
     let runtime = Decode!(&runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
     let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
-    let storage_integrity = production_installer_storage_integrity(bridge, installer)?;
-    let observation = ProductionHandoverCanisterObservation {
-        lifecycle: &lifecycle,
-        attestation: attestation.as_deref(),
-        activation_status: &activation_status,
-        runtime: &runtime,
-        status: &status,
-        storage_integrity: &storage_integrity,
-        controllers: &controllers,
-        module_hash: &module_hash,
-    };
-    let mut live_profile = profile.clone();
-    if let Some(terminal) = upgrade_terminal {
-        let operational_response =
-            production_installer_query(bridge, installer, "get_operational_config")?;
-        let operational_evidence = OperationalEpochEvidence::from_response(
-            std::str::from_utf8(&operational_response)
-                .map_err(|_| "invalid operational config output")?
-                .trim(),
-        )?;
-        if !production_upgrade_predecessor_with_epoch_evidence(
-            terminal,
-            &status,
-            lifecycle,
-            &live_runtime_binding_from_view(&runtime),
-            Some(&operational_evidence),
-            profile.parameters.ledger_fee,
-        )? {
-            return Err(
-                "live production UI runtime differs from the verified upgrade terminal".into(),
-            );
-        }
-        live_profile.canister_schema_version = terminal.runtime.schema_version;
-        let response = async_runtime()?.block_on(async {
-            agent
-                .query(&bridge, "list_withdrawals")
-                .with_arg(
-                    Encode!(&ProductionUiHistoryProbe {
-                        requester: vec![0; 20],
-                        before_cursor: None,
-                        limit: 1,
-                    })
-                    .map_err(|error| error.to_string())?,
-                )
-                .call_with_verification()
-                .await
-                .map_err(|error| error.to_string())
-        })?;
-        if !matches!(
-            Decode!(&response, ProductionUiHistoryResult).map_err(|error| error.to_string())?,
-            ProductionUiHistoryResult::Ok(_)
-        ) {
-            return Err("production UI withdrawal history index is not ready".into());
-        }
-    }
-    validate_production_handover_observation(
-        &live_profile,
-        installer,
-        activation,
-        &observation,
-        &ProductionHandoverValidationContext {
-            minimum_deployment_block: context.minimum_deployment_block,
-            manifest_created_at_unix: context.manifest_created_at_unix,
-            now: now_unix()?,
-            attestation_freshness: context.attestation_freshness,
-        },
+    let pending = Decode!(&pending_raw, PendingGovernanceTransactionsView)
+        .map_err(|error| error.to_string())?;
+    let root_state = Decode!(&root_raw, SnsCanistersView).map_err(|error| error.to_string())?;
+    let history_ready = matches!(
+        Decode!(&history_raw, ProductionUiHistoryResult).map_err(|error| error.to_string())?,
+        ProductionUiHistoryResult::Ok(_)
+    );
+    let storage_ok = matches!(
+        production_installer_storage_integrity(bridge, expected_controller)?,
+        StorageIntegrityResultView::Ok(ref value) if value == "ok"
+    );
+    validate_production_current_state_core(
+        &controllers,
+        &expected_controllers,
+        &module_hash,
+        expected_module_sha256,
+        lifecycle,
+        &activation_status,
+        &runtime,
+        &status,
+        &pending,
+        history_ready,
+        root_state.dapps.iter().any(|canister| *canister == bridge),
+        storage_ok,
     )?;
+    profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
+    profile.bridge_canister_wasm_sha256 = expected_module_sha256.to_ascii_lowercase();
+    let rpc_url_hash = hex(&canonical_sha256(
+        &profile
+            .rpc_providers
+            .iter()
+            .map(|provider| provider.url.clone())
+            .collect::<Vec<_>>(),
+    )?);
+    let operational_config_sha256 = expected_operational_config_sha256(
+        &profile,
+        status.mint_authorization_ttl_seconds,
+        status.mint_authorization_epoch,
+    )?;
+    validate_live_runtime_binding(
+        &live_runtime_binding_from_view(&runtime),
+        &profile,
+        &rpc_url_hash,
+        &operational_config_sha256,
+    )?;
+    if runtime.expected_bridge_runtime_sha256
+        != decode_hex(&profile.bridge_runtime_bytecode_sha256)?
+    {
+        return Err("production runtime code binding differs from policy".into());
+    }
+    validate_activation_attestation_with_pause(
+        &profile,
+        &attestation,
+        0,
+        1,
+        now_unix()?,
+        Some(false),
+    )?;
+    let operational_response =
+        production_installer_query(bridge, expected_controller, "get_operational_config")?;
+    let operational_evidence = OperationalEpochEvidence::from_response(
+        std::str::from_utf8(&operational_response)
+            .map_err(|_| "invalid operational config output")?
+            .trim(),
+    )?;
+    validate_operational_epoch_snapshot(
+        &operational_evidence,
+        &status,
+        &live_runtime_binding_from_view(&runtime),
+        profile.parameters.ledger_fee,
+    )?;
+    println!(
+        "production_current_state=verified canister={} module_sha256={} controllers={}",
+        profile.bridge_canister_id,
+        expected_module_sha256.to_ascii_lowercase(),
+        controller_mode
+    );
     Ok(())
 }
 
-fn verify_production_canister_handover(
-    bundle_path: &Path,
-    seal_receipt_path: &Path,
-    schedule_receipt_path: &Path,
-    execute_receipt_path: &Path,
+#[allow(clippy::too_many_arguments)]
+fn validate_production_current_state_core(
+    controllers: &[Principal],
+    expected_controllers: &BTreeSet<Principal>,
+    module_hash: &[u8],
+    expected_module_sha256: &str,
+    lifecycle: ProductionLifecycleView,
+    activation_status: &ActivationStatusView,
+    runtime: &RuntimeBindingView,
+    status: &BridgeStatusLiveView,
+    pending: &PendingGovernanceTransactionsView,
+    history_ready: bool,
+    registered_with_root: bool,
+    storage_ok: bool,
 ) -> Result<(), String> {
-    let bundle = verify_production_canister_handover_state(
-        bundle_path,
-        seal_receipt_path,
-        schedule_receipt_path,
-        execute_receipt_path,
-        None,
-        None,
-    )?;
-    println!(
-        "production_canister_handover=verified canister={}",
-        bundle.profile.bridge_canister_id
-    );
+    let observed_controllers = controllers.iter().copied().collect::<BTreeSet<_>>();
+    if observed_controllers.len() != controllers.len()
+        || &observed_controllers != expected_controllers
+        || !hex(module_hash).eq_ignore_ascii_case(expected_module_sha256)
+    {
+        return Err("certified production controller set or module hash differs".into());
+    }
+    if lifecycle != ProductionLifecycleView::Activated {
+        return Err("production Canister is not Activated".into());
+    }
+    if activation_status.deposits_paused
+        || activation_status.pending_timelock_operation.is_some()
+        || !matches!(
+            activation_status.last_confirmed_activation.as_ref(),
+            Some(last) if last.phase == "execute"
+        )
+    {
+        return Err("production activation is not in a completed active state".into());
+    }
+    if runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || status.deposits_paused
+        || !status.reserve.sufficient
+        || !matches!(pending, PendingGovernanceTransactionsView::Ok(values) if values.is_empty())
+        || !history_ready
+        || registered_with_root
+        || !storage_ok
+    {
+        return Err("authenticated production state is not ready".into());
+    }
     Ok(())
 }
 
@@ -8598,48 +4674,41 @@ struct ProductionUiRpcConfig {
     base_rpc_url: String,
 }
 
-fn production_ui_runtime_profile(
-    profile: &Profile,
-    profile_bytes: &[u8],
-    manifest_sha256: &str,
-    upgrade_bytes: &[u8],
-    terminal_module_sha256: &str,
-    terminal: &ProductionUpgradeTerminal,
-    rpc_config_bytes: &[u8],
-) -> Result<Value, String> {
-    production_ui_runtime_profile_from_digest(
-        profile,
-        profile_bytes,
-        manifest_sha256,
-        &hex(&Sha256::digest(upgrade_bytes)),
-        terminal_module_sha256,
-        terminal,
-        rpc_config_bytes,
-    )
+fn production_current_ui_runtime_profile(
+    bundle_path: &Path,
+    module_sha256: &str,
+    rpc_config_path: &Path,
+) -> Result<(ValidatedBundle, Value), String> {
+    if !valid_sha256(module_sha256) {
+        return Err("production UI module SHA-256 is invalid".into());
+    }
+    let mut bundle = validate_historical_gate_b_bundle(bundle_path)?;
+    bundle.profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
+    bundle.profile.bridge_canister_wasm_sha256 = module_sha256.to_ascii_lowercase();
+    let profile_bytes = canonical_bytes(&bundle.profile)?;
+    let rpc_bytes = fs::read(rpc_config_path).map_err(|error| error.to_string())?;
+    let ui = production_current_ui_runtime_profile_value(
+        &bundle.profile,
+        &profile_bytes,
+        &bundle.manifest_sha256,
+        module_sha256,
+        &rpc_bytes,
+    )?;
+    Ok((bundle, ui))
 }
 
-fn production_ui_runtime_profile_from_digest(
+fn production_current_ui_runtime_profile_value(
     profile: &Profile,
     profile_bytes: &[u8],
     manifest_sha256: &str,
-    upgrade_sha256: &str,
-    terminal_module_sha256: &str,
-    terminal: &ProductionUpgradeTerminal,
-    rpc_config_bytes: &[u8],
+    module_sha256: &str,
+    rpc_bytes: &[u8],
 ) -> Result<Value, String> {
-    if profile.canister_schema_version != PREVIOUS_STABLE_SCHEMA_VERSION
-        || terminal.runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
-        || terminal.lifecycle != ProductionLifecycleView::Activated
-        || terminal.deposits_paused
-        || !valid_sha256(terminal_module_sha256)
-        || !valid_sha256(upgrade_sha256)
-    {
-        return Err("production UI requires the verified activated v36 upgrade terminal".into());
+    if profile.canister_schema_version != CURRENT_STABLE_SCHEMA_VERSION {
+        return Err("production UI profile must use current schema v36".into());
     }
-    let rpc: ProductionUiRpcConfig = serde_json::from_slice(rpc_config_bytes)
+    let rpc: ProductionUiRpcConfig = serde_json::from_slice(&rpc_bytes)
         .map_err(|_| "invalid reviewed production UI RPC configuration")?;
-    // This release uses the separately Origin-restricted Base mainnet Alchemy app.
-    // Do not surface the key or accept a generic endpoint override at deploy time.
     let key = rpc
         .base_rpc_url
         .strip_prefix("https://base-mainnet.g.alchemy.com/v2/")
@@ -8663,80 +4732,27 @@ fn production_ui_runtime_profile_from_digest(
     );
     fields.insert(
         "canisterSchemaVersion".into(),
-        serde_json::json!(terminal.runtime.schema_version),
+        serde_json::json!(CURRENT_STABLE_SCHEMA_VERSION),
     );
     fields.insert(
         "canisterModuleSha256".into(),
-        serde_json::json!(terminal_module_sha256),
-    );
-    fields.insert(
-        "postActivationUpgradeSha256".into(),
-        serde_json::json!(upgrade_sha256),
+        serde_json::json!(module_sha256.to_ascii_lowercase()),
     );
     fields.insert(
         "uiRpcConfigSha256".into(),
-        serde_json::json!(hex(&Sha256::digest(rpc_config_bytes))),
+        serde_json::json!(hex(&Sha256::digest(&rpc_bytes))),
     );
     Ok(ui)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn validate_production_ui_runtime_profile(
-    profile: &Profile,
-    gate_b_profile_path: &Path,
-    manifest_sha256: &str,
-    upgrade_bytes: &[u8],
-    terminal_module_sha256: &str,
-    terminal: &ProductionUpgradeTerminal,
-    rpc_config_path: &Path,
-    runtime_profile_path: &Path,
-) -> Result<(), String> {
-    let expected = canonical_bytes(&production_ui_runtime_profile(
-        profile,
-        &fs::read(gate_b_profile_path).map_err(|error| error.to_string())?,
-        manifest_sha256,
-        upgrade_bytes,
-        terminal_module_sha256,
-        terminal,
-        &fs::read(rpc_config_path).map_err(|error| error.to_string())?,
-    )?)?;
-    if fs::read(runtime_profile_path).map_err(|error| error.to_string())? != expected {
-        return Err("supplied UI runtime profile differs from the verified v36 upgrade and reviewed RPC rendering".into());
-    }
-    Ok(())
-}
-
-fn render_production_ui_runtime(
+fn render_production_current_ui_runtime(
     bundle_path: &Path,
-    seal_receipt_path: &Path,
-    schedule_receipt_path: &Path,
-    execute_receipt_path: &Path,
-    upgrade_evidence_path: &Path,
+    module_sha256: &str,
     rpc_config_path: &Path,
     output_path: &Path,
 ) -> Result<(), String> {
-    let (bundle, gate_a, execute) = validate_production_handover_evidence_files(
-        bundle_path,
-        seal_receipt_path,
-        schedule_receipt_path,
-        execute_receipt_path,
-        SealReceiptLiveContext::ProductionUiPostUpgrade,
-    )?;
-    let (module, terminal, upgrade_bytes) = validate_production_ui_upgrade_extension(
-        &bundle,
-        &gate_a,
-        &execute,
-        upgrade_evidence_path,
-    )?;
-    let rendered = production_ui_runtime_profile(
-        &bundle.profile,
-        &fs::read(bundle.root.join("profile.json")).map_err(|error| error.to_string())?,
-        &bundle.manifest_sha256,
-        &upgrade_bytes,
-        &module,
-        &terminal,
-        &fs::read(rpc_config_path).map_err(|error| error.to_string())?,
-    )?;
+    let (_, rendered) =
+        production_current_ui_runtime_profile(bundle_path, module_sha256, rpc_config_path)?;
     OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -8749,25 +4765,29 @@ fn render_production_ui_runtime(
     Ok(())
 }
 
-fn verify_production_ui_live(
+fn verify_production_current_ui_live(
     bundle_path: &Path,
-    seal_receipt_path: &Path,
-    schedule_receipt_path: &Path,
-    execute_receipt_path: &Path,
-    upgrade_evidence_path: &Path,
-    runtime_profile_path: &Path,
+    module_sha256: &str,
     rpc_config_path: &Path,
+    runtime_profile_path: &Path,
+    controller_mode: &str,
 ) -> Result<(), String> {
-    let bundle = verify_production_canister_handover_state(
-        bundle_path,
-        seal_receipt_path,
-        schedule_receipt_path,
-        execute_receipt_path,
-        Some((runtime_profile_path, rpc_config_path)),
-        Some(upgrade_evidence_path),
+    let (bundle, rendered) =
+        production_current_ui_runtime_profile(bundle_path, module_sha256, rpc_config_path)?;
+    if fs::read(runtime_profile_path).map_err(|error| error.to_string())?
+        != canonical_bytes(&rendered)?
+    {
+        return Err("supplied UI runtime profile differs from current production state".into());
+    }
+    verify_production_current_state(
+        &bundle.root.join("profile.json"),
+        &gate_b_controller(&bundle)?.to_text(),
+        module_sha256,
+        controller_mode,
     )?;
     println!(
-        "production_ui=live-pass schema=36 activation=execute manifest_sha256={}",
+        "production_ui=current-live-pass schema=36 module_sha256={} manifest_sha256={}",
+        module_sha256.to_ascii_lowercase(),
         bundle.manifest_sha256
     );
     Ok(())
@@ -8945,42 +4965,11 @@ fn validate_activation_attestation_with_pause(
     now: u64,
     expected_paused: Option<bool>,
 ) -> Result<(), String> {
-    validate_activation_attestation_with_pause_and_freshness(
-        profile,
-        attestation,
+    validate_activation_attestation_time(
+        attestation.observed_at_ns,
         manifest_created_at_unix,
-        minimum_finalized_block,
         now,
-        expected_paused,
-        ActivationAttestationFreshness::Required,
-    )
-}
-
-fn validate_activation_attestation_with_pause_and_freshness(
-    profile: &Profile,
-    attestation: &ActivationAttestationView,
-    manifest_created_at_unix: u64,
-    minimum_finalized_block: u64,
-    now: u64,
-    expected_paused: Option<bool>,
-    freshness: ActivationAttestationFreshness,
-) -> Result<(), String> {
-    match freshness {
-        ActivationAttestationFreshness::Required => validate_activation_attestation_time(
-            attestation.observed_at_ns,
-            manifest_created_at_unix,
-            now,
-        )?,
-        ActivationAttestationFreshness::AllowStaleForUnchangedUiAssets => {
-            if attestation.observed_at_ns == 0 {
-                return Err("activation attestation timestamp is missing".into());
-            }
-            let observed = attestation.observed_at_ns / 1_000_000_000;
-            if observed < manifest_created_at_unix || observed > now {
-                return Err("activation attestation predates Gate B or is future-dated".into());
-            }
-        }
-    }
+    )?;
     let expected_signer = decode_address(&profile.expected_bridge_signer)?;
     let expected_runtime = decode_hex(&profile.bridge_runtime_bytecode_sha256)?;
     let expected_timelock = decode_address(&profile.timelock.address)?;
@@ -9079,31 +5068,14 @@ fn validate_dao_activation_management_snapshot(
     controllers: &[Principal],
     module_hash: &[u8],
 ) -> Result<(), String> {
-    let preparation = match env::var("BRIDGE_HANDOVER_PREPARATION_RECEIPT") {
-        Ok(value) => value,
-        Err(env::VarError::NotPresent) => {
-            return validate_gate_b_management_snapshot(bundle, controllers, module_hash)
-        }
-        Err(_) => return Err("invalid handover preparation receipt path".into()),
-    };
-    let required_path = |name: &str| -> Result<String, String> {
-        env::var(name).map_err(|_| format!("joint-controller DAO activation requires {name}"))
-    };
-    let seal = required_path("BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT")?;
-    let schedule = required_path("BRIDGE_CONTROLLER_SCHEDULE_RECEIPT")?;
-    let execute = required_path("BRIDGE_CONTROLLER_ACTIVATION_RECEIPT")?;
-    validate_controller_handover_recovery_files(
-        &bundle.root,
-        Path::new(&seal),
-        Path::new(&schedule),
-        Path::new(&execute),
-        Path::new(&preparation),
-    )?;
+    if env::var("BRIDGE_DAO_JOINT_CONTROL").as_deref() != Ok("1") {
+        return validate_gate_b_management_snapshot(bundle, controllers, module_hash);
+    }
     let installer = gate_b_controller(bundle)?;
     if !dao_activation_controller_set_matches(installer, controllers)?
         || !hex(module_hash).eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
     {
-        return Err("DAO activation requires the exact evidenced production identity and SNS Root controller set".into());
+        return Err("DAO activation requires the exact certified production identity and SNS Root controller set".into());
     }
     Ok(())
 }
@@ -9161,20 +5133,6 @@ fn live_management_snapshot(bundle: &ValidatedBundle) -> Result<(Vec<Principal>,
         Ok::<_, String>((controllers, module_hash))
     })?;
     Ok((controllers, module_hash))
-}
-
-fn validate_post_handover_management_snapshot(
-    profile: &Profile,
-    controllers: &[Principal],
-    module_hash: &[u8],
-) -> Result<(), String> {
-    let root = Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?;
-    if controllers != [root]
-        || !hex(module_hash).eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
-    {
-        return Err("completed handover requires KINIC SNS Root as sole controller".into());
-    }
-    Ok(())
 }
 
 fn verify_live(bundle: &ValidatedBundle, expected_deposits_paused: bool) -> Result<(), String> {
@@ -9450,24 +5408,18 @@ enum SealReceiptLiveContext {
     ConfirmationInput,
     ScheduleFinalization,
     ExecuteFinalization,
-    HandoverPreTransfer,
-    HandoverPostTransfer,
-    ProductionUiPostUpgrade,
-    HistoricalCheckpoint,
+    HistoricalEvidence,
 }
 
 fn live_activation_pause_requirement(context: SealReceiptLiveContext) -> Option<bool> {
     match context {
         SealReceiptLiveContext::PrePrepare
         | SealReceiptLiveContext::ConfirmationInput
-        | SealReceiptLiveContext::HistoricalCheckpoint => None,
+        | SealReceiptLiveContext::HistoricalEvidence => None,
         SealReceiptLiveContext::PendingResume | SealReceiptLiveContext::ScheduleFinalization => {
             Some(true)
         }
-        SealReceiptLiveContext::ExecuteFinalization
-        | SealReceiptLiveContext::HandoverPreTransfer
-        | SealReceiptLiveContext::HandoverPostTransfer
-        | SealReceiptLiveContext::ProductionUiPostUpgrade => Some(false),
+        SealReceiptLiveContext::ExecuteFinalization => Some(false),
     }
 }
 
@@ -9485,13 +5437,7 @@ fn validate_operational_config_seal_receipt(
     }
     let reservation: OperationalConfigSealReservation =
         serde_json::from_slice(&reservation_bytes).map_err(|error| error.to_string())?;
-    if matches!(
-        live_context,
-        SealReceiptLiveContext::HandoverPreTransfer
-            | SealReceiptLiveContext::HandoverPostTransfer
-            | SealReceiptLiveContext::ProductionUiPostUpgrade
-            | SealReceiptLiveContext::HistoricalCheckpoint
-    ) {
+    if matches!(live_context, SealReceiptLiveContext::HistoricalEvidence) {
         validate_historical_evidence_window(
             bundle.manifest.created_at_unix,
             bundle.manifest.expires_at_unix,
@@ -9502,13 +5448,7 @@ fn validate_operational_config_seal_receipt(
         .map_err(|error| error.to_string())?;
     let parameters: InitialOperationalParameters =
         serde_json::from_slice(&parameters_bytes).map_err(|error| error.to_string())?;
-    if matches!(
-        live_context,
-        SealReceiptLiveContext::HandoverPreTransfer
-            | SealReceiptLiveContext::HandoverPostTransfer
-            | SealReceiptLiveContext::ProductionUiPostUpgrade
-            | SealReceiptLiveContext::HistoricalCheckpoint
-    ) {
+    if matches!(live_context, SealReceiptLiveContext::HistoricalEvidence) {
         validate_initial_operational_parameter_lineage(
             &parameters,
             &bundle.profile,
@@ -9653,7 +5593,7 @@ fn validate_operational_config_seal_receipt(
     }
     // Candidate generation validates historical observations at receipt time.
     // It grants no live authorization; production/UI paths still query current state.
-    if matches!(live_context, SealReceiptLiveContext::HistoricalCheckpoint) {
+    if matches!(live_context, SealReceiptLiveContext::HistoricalEvidence) {
         return Ok(hex(&Sha256::digest(&bytes)));
     }
     if matches!(live_context, SealReceiptLiveContext::PrePrepare) {
@@ -9727,10 +5667,7 @@ fn validate_operational_config_seal_receipt(
                     )
                 ) && live_status.deposits_paused
             }
-            SealReceiptLiveContext::ExecuteFinalization
-            | SealReceiptLiveContext::HandoverPreTransfer
-            | SealReceiptLiveContext::HandoverPostTransfer
-            | SealReceiptLiveContext::ProductionUiPostUpgrade => {
+            SealReceiptLiveContext::ExecuteFinalization => {
                 matches!(
                     live_lifecycle,
                     ProductionLifecycleResultView::Ok(ProductionLifecycleView::Activated)
@@ -9738,7 +5675,7 @@ fn validate_operational_config_seal_receipt(
             }
             SealReceiptLiveContext::PrePrepare
             | SealReceiptLiveContext::ConfirmationInput
-            | SealReceiptLiveContext::HistoricalCheckpoint => {
+            | SealReceiptLiveContext::HistoricalEvidence => {
                 unreachable!()
             }
         };
@@ -9749,25 +5686,8 @@ fn validate_operational_config_seal_receipt(
             return Err("live activation phase is inconsistent with the seal receipt".into());
         }
     }
-    let (controllers, module_hash) = if matches!(
-        live_context,
-        SealReceiptLiveContext::HandoverPostTransfer
-            | SealReceiptLiveContext::ProductionUiPostUpgrade
-    ) {
-        live_management_snapshot(bundle)?
-    } else {
-        gate_b_management_snapshot(bundle)?
-    };
-    if matches!(live_context, SealReceiptLiveContext::HandoverPostTransfer) {
-        validate_post_handover_management_snapshot(&bundle.profile, &controllers, &module_hash)?;
-    } else if matches!(
-        live_context,
-        SealReceiptLiveContext::ProductionUiPostUpgrade
-    ) {
-        if controllers != [gate_b_controller(bundle)?] {
-            return Err("production UI requires the Gate B installer as sole controller".into());
-        }
-    } else if controllers
+    let (controllers, module_hash) = gate_b_management_snapshot(bundle)?;
+    if controllers
         .iter()
         .map(Principal::to_text)
         .collect::<Vec<_>>()
@@ -10868,139 +6788,6 @@ fn validate_controller_schedule_receipt(
     Ok((governance_operation_id, finalized_block))
 }
 
-fn validate_controller_execute_receipt(
-    bundle: &ValidatedBundle,
-    receipt: &ControllerActivationReceipt,
-    expected_seal_receipt_sha256: &str,
-    schedule_receipt_path: &Path,
-    freshness: ActivationReceiptFreshness,
-) -> Result<(u64, u64), String> {
-    let installer = gate_b_controller(bundle)?;
-    let schedule_bytes = fs::read(schedule_receipt_path).map_err(|error| error.to_string())?;
-    let schedule_receipt_sha256 = hex(&Sha256::digest(&schedule_bytes));
-    let schedule: ControllerActivationReceipt =
-        serde_json::from_slice(&schedule_bytes).map_err(|error| error.to_string())?;
-    let (schedule_governance_operation_id, _) = validate_controller_schedule_receipt(
-        bundle,
-        &schedule,
-        expected_seal_receipt_sha256,
-        freshness,
-    )?;
-    let authorization_bytes = decode_hex(&receipt.authorization_receipt_hex)?;
-    let authorization: ControllerActivationAuthorizationReceipt =
-        serde_json::from_slice(&authorization_bytes).map_err(|error| error.to_string())?;
-    let prepare_receipt_bytes = decode_hex(&receipt.prepare_receipt_hex)?;
-    let prepare_receipt: ControllerActivationPrepareReceipt =
-        serde_json::from_slice(&prepare_receipt_bytes).map_err(|error| error.to_string())?;
-    let governance_operation_id = receipt
-        .governance_operation_id
-        .parse::<u64>()
-        .map_err(|_| "invalid execute governance operation ID")?;
-    let finalized_block = receipt
-        .finalized_block_number
-        .parse::<u64>()
-        .map_err(|_| "invalid execute Finalized block")?;
-    let now = now_unix()?;
-    if receipt.schema_version != 1
-        || receipt.phase != "execute"
-        || receipt.release_id != bundle.manifest.release_id
-        || receipt.source_revision != bundle.manifest.source_revision
-        || !receipt
-            .source_tree_sha256
-            .eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
-        || !receipt
-            .bridge_canister_wasm_sha256
-            .eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
-        || !receipt
-            .gate_b_manifest_sha256
-            .eq_ignore_ascii_case(&bundle.manifest_sha256)
-        || receipt.controller_principal != installer.to_text()
-        || receipt.certified_controller_set != [installer.to_text()]
-        || receipt.deposits_paused
-        || receipt.prior_schedule_receipt_sha256.as_deref()
-            != Some(schedule_receipt_sha256.as_str())
-        || governance_operation_id <= schedule_governance_operation_id
-        || finalized_block == 0
-        || !receipt
-            .timelock_operation_id
-            .eq_ignore_ascii_case(&schedule.timelock_operation_id)
-        || !receipt
-            .operation_salt
-            .eq_ignore_ascii_case(&schedule.operation_salt)
-        || !valid_hash32(&receipt.transaction_hash)
-        || !valid_sha256(&receipt.artifact_sha256)
-        || !valid_sha256(&receipt.authorization_receipt_sha256)
-        || !hex(&Sha256::digest(&authorization_bytes))
-            .eq_ignore_ascii_case(&receipt.authorization_receipt_sha256)
-        || validate_controller_activation_authorization(
-            "execute",
-            bundle,
-            &bundle.manifest_sha256,
-            expected_seal_receipt_sha256,
-            &authorization,
-            freshness,
-        )
-        .is_err()
-        || !valid_sha256(&receipt.prepare_receipt_sha256)
-        || !hex(&Sha256::digest(&prepare_receipt_bytes))
-            .eq_ignore_ascii_case(&receipt.prepare_receipt_sha256)
-        || !controller_activation_prepare_fields_match(
-            &prepare_receipt,
-            "execute",
-            &bundle.manifest_sha256,
-            &receipt.artifact_sha256,
-            &receipt.authorization_receipt_sha256,
-        )
-        || validate_controller_activation_receipt_timeline(
-            freshness,
-            (
-                bundle.manifest.created_at_unix,
-                bundle.manifest.expires_at_unix,
-            ),
-            authorization.authorized_at_unix,
-            prepare_receipt.bound_at_unix,
-            receipt.confirmed_at_unix,
-            receipt.verified_at_unix,
-            now,
-        )
-        .is_err()
-        || !activation_raw_digest_matches(
-            &receipt.activation_status_response_hex,
-            &receipt.activation_status_response_sha256,
-        )?
-    {
-        return Err("controller execute receipt is not bound to this Gate B release".into());
-    }
-    let raw = decode_hex(&receipt.activation_status_response_hex)?;
-    let ActivationStatusResultView::Ok(status) =
-        Decode!(&raw, ActivationStatusResultView).map_err(|error| error.to_string())?
-    else {
-        return Err("controller execute receipt contains an error response".into());
-    };
-    let last = status
-        .last_confirmed_activation
-        .as_ref()
-        .ok_or("controller execute receipt has no confirmation")?;
-    if status.deposits_paused
-        || status.pending_timelock_operation.is_some()
-        || last.phase != "execute"
-        || last.governance_operation_id != governance_operation_id
-        || last.receipt_block_number != finalized_block
-        || !controller_activation_confirmation_fields_match(
-            receipt.confirmed_generation,
-            &receipt.confirmed_signed_at_ns,
-            last,
-        )
-        || !format!("0x{}", hex(&last.timelock_operation_id))
-            .eq_ignore_ascii_case(&receipt.timelock_operation_id)
-        || !format!("0x{}", hex(&last.transaction_hash))
-            .eq_ignore_ascii_case(&receipt.transaction_hash)
-    {
-        return Err("controller execute receipt response disagrees with its fields".into());
-    }
-    Ok((governance_operation_id, finalized_block))
-}
-
 fn gate_b_initial_activation_binding(
     bundle: &ValidatedBundle,
     freshness: ActivationReceiptFreshness,
@@ -11125,21 +6912,12 @@ struct SnsActivationProposal {
 
 fn dao_activation_bundle(root: &Path) -> Result<ValidatedBundle, String> {
     let mut bundle = validate_historical_gate_b_bundle(root)?;
-    let evidence_path = env::var("BRIDGE_CHECKPOINT_EVIDENCE").map_err(|_| {
-        "DAO activation verification requires the current approved checkpoint evidence"
-    })?;
-    let evidence = production_checkpoint::read_evidence(Path::new(&evidence_path))?;
-    if bundle.manifest.test_only
-        || evidence.checkpoint.roots.gate_b_sha256 != bundle.manifest_sha256
-        || canonical_bytes(&evidence.checkpoint.roots.gate_b_profile)?
-            != canonical_bytes(&bundle.profile)?
-        || evidence.checkpoint.controller != gate_b_controller(&bundle)?.to_text()
-        || evidence.terminal.runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
-        || evidence.terminal.lifecycle != ProductionLifecycleView::Activated
-    {
-        return Err("DAO activation checkpoint is disconnected from its historical Gate B".into());
+    let module = env::var("BRIDGE_CURRENT_MODULE_SHA256")
+        .map_err(|_| "DAO activation verification requires BRIDGE_CURRENT_MODULE_SHA256")?;
+    if bundle.manifest.test_only || !valid_sha256(&module) {
+        return Err("DAO activation current module binding is invalid".into());
     }
-    bundle.profile.bridge_canister_wasm_sha256 = evidence.module_sha256;
+    bundle.profile.bridge_canister_wasm_sha256 = module.to_ascii_lowercase();
     bundle.profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
     Ok(bundle)
 }
@@ -11691,17 +7469,6 @@ fn production_upgrade_identity(pem_path: &Path) -> Result<Box<dyn Identity>, Str
     Err("production controller PEM is not a supported secp256k1 or Ed25519 identity".into())
 }
 
-fn validate_production_upgrade_submission(
-    host: &str,
-    canister: Principal,
-    sender: Principal,
-    wasm: &[u8],
-    submission_path: &Path,
-) -> Result<ProductionUpgradeSubmission, String> {
-    let bytes = fs::read(submission_path).map_err(|error| error.to_string())?;
-    validate_production_upgrade_submission_bytes(host, canister, sender, wasm, &bytes)
-}
-
 fn verify_production_upgrade_signature(
     public_key_der: &[u8],
     signature: &[u8],
@@ -11732,17 +7499,6 @@ fn verify_production_upgrade_signature(
             .map_err(|error| error.to_string());
     }
     Err("production upgrade signed envelope uses an unsupported public key algorithm".into())
-}
-
-fn production_upgrade_ingress_window_valid(executed_at_unix: u64, ingress_expiry: u64) -> bool {
-    executed_at_unix
-        .checked_mul(1_000_000_000)
-        .and_then(|executed_at_ns| {
-            executed_at_ns
-                .checked_add(5 * 60 * 1_000_000_000)
-                .map(|latest| ingress_expiry > executed_at_ns && ingress_expiry <= latest)
-        })
-        .unwrap_or(false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -11913,54 +7669,6 @@ fn validate_production_upgrade_submission_bytes(
     Ok(submission)
 }
 
-fn validate_production_upgrade_upload_evidence(
-    submission: &ProductionUpgradeSubmission,
-    evidence_bytes: &[u8],
-) -> Result<ProductionUpgradeUploadEvidence, String> {
-    let evidence: ProductionUpgradeUploadEvidence =
-        serde_json::from_slice(evidence_bytes).map_err(|error| error.to_string())?;
-    if evidence.schema_version != 1
-        || evidence.stored_chunks_request_id != submission.stored_chunks.request_id
-        || !hex_sha256_matches(
-            &evidence.stored_chunks_response_hex,
-            &evidence.stored_chunks_response_sha256,
-        )
-        || evidence.chunks.len() != submission.chunks.len()
-    {
-        return Err("production upgrade upload evidence metadata is invalid".into());
-    }
-    let stored_response = decode_hex(&evidence.stored_chunks_response_hex)?;
-    let stored =
-        Decode!(&stored_response, Vec<ManagementChunkHash>).map_err(|error| error.to_string())?;
-    let expected = submission
-        .chunks
-        .iter()
-        .map(|chunk| chunk.sha256.to_ascii_lowercase())
-        .collect::<BTreeSet<_>>();
-    if stored
-        .iter()
-        .any(|chunk| !expected.contains(&hex(&chunk.hash)))
-    {
-        return Err("production upgrade chunk store contains an unexpected chunk".into());
-    }
-    for (index, (recorded, chunk)) in evidence.chunks.iter().zip(&submission.chunks).enumerate() {
-        if recorded.schema_version != 1
-            || recorded.index != u32::try_from(index).map_err(|error| error.to_string())?
-            || recorded.request_id != chunk.request_id
-            || !hex_sha256_matches(&recorded.response_hex, &recorded.response_sha256)
-        {
-            return Err("production upgrade chunk response metadata is invalid".into());
-        }
-        let response = decode_hex(&recorded.response_hex)?;
-        let observed =
-            Decode!(&response, ManagementChunkHash).map_err(|error| error.to_string())?;
-        if !hex(&observed.hash).eq_ignore_ascii_case(&chunk.sha256) {
-            return Err("production upgrade chunk response hash is invalid".into());
-        }
-    }
-    Ok(evidence)
-}
-
 fn send_production_upgrade_signed_update(
     agent: &Agent,
     effective_canister_id: Principal,
@@ -11989,136 +7697,301 @@ fn send_production_upgrade_signed_update(
     })
 }
 
-fn prepare_production_canister_upgrade(
+fn build_production_upgrade_submission(
+    agent: &Agent,
     host: &str,
-    canister_text: &str,
-    expected_principal_text: &str,
-    pem_path: &Path,
-    wasm_path: &Path,
-    submission_path: &Path,
-    checkpoint_evidence_path: &Path,
-) -> Result<(), String> {
-    let checkpoint = production_checkpoint::read_evidence(checkpoint_evidence_path)?;
-    if checkpoint.checkpoint.network != host
-        || checkpoint.checkpoint.canister != canister_text
-        || checkpoint.checkpoint.controller != expected_principal_text
-    {
-        return Err("upgrade signing identity differs from approved checkpoint evidence".into());
+    canister: Principal,
+    sender: Principal,
+    wasm: &[u8],
+) -> Result<ProductionUpgradeSubmission, String> {
+    if wasm.is_empty() {
+        return Err("production upgrade Wasm must not be empty".into());
     }
-    let canister = Principal::from_text(canister_text).map_err(|error| error.to_string())?;
-    let expected_principal =
-        Principal::from_text(expected_principal_text).map_err(|error| error.to_string())?;
-    let identity = production_upgrade_identity(pem_path)?;
-    let sender = identity.sender().map_err(|error| error.to_string())?;
-    if sender != expected_principal {
-        return Err(
-            "production controller PEM principal does not match the expected installer".into(),
-        );
-    }
-    let wasm = fs::read(wasm_path).map_err(|error| error.to_string())?;
-    let wasm_sha256 = hex(&Sha256::digest(&wasm));
-    let agent = Agent::builder()
-        .with_url(host)
-        .with_boxed_identity(identity)
-        .with_verify_query_signatures(true)
-        .build()
-        .map_err(|error| error.to_string())?;
     let management = Principal::management_canister();
-    if submission_path.exists() {
-        return Err("production upgrade submission artifact already exists".into());
-    }
-    let submission = {
-        let stored_chunks_argument = Encode!(&ManagementStoredChunksArgument {
-            canister_id: canister,
-        })
+    let stored_chunks_argument = Encode!(&ManagementStoredChunksArgument {
+        canister_id: canister,
+    })
+    .map_err(|error| error.to_string())?;
+    let stored_chunks_signed = agent
+        .update(&management, "stored_chunks")
+        .with_effective_canister_id(canister)
+        .with_arg(stored_chunks_argument.clone())
+        .sign()
         .map_err(|error| error.to_string())?;
-        let stored_chunks_signed = agent
-            .update(&management, "stored_chunks")
-            .with_effective_canister_id(canister)
-            .with_arg(stored_chunks_argument.clone())
-            .sign()
-            .map_err(|error| error.to_string())?;
-        let stored_chunks = ProductionUpgradeSignedUpdate {
-            argument_hex: hex(&stored_chunks_argument),
-            argument_sha256: hex(&Sha256::digest(&stored_chunks_argument)),
-            ingress_expiry: stored_chunks_signed.ingress_expiry,
-            request_id: hex(stored_chunks_signed.request_id.as_slice()),
-            signed_update_hex: hex(&stored_chunks_signed.signed_update),
-            signed_update_sha256: hex(&Sha256::digest(&stored_chunks_signed.signed_update)),
-        };
-        let mut chunks = Vec::new();
-        let mut chunk_hashes_list = Vec::new();
-        for (index, chunk) in wasm.chunks(PRODUCTION_UPGRADE_CHUNK_SIZE).enumerate() {
-            let chunk_sha256 = Sha256::digest(chunk).to_vec();
-            let argument = Encode!(&ManagementUploadChunkArgument {
-                canister_id: canister,
-                chunk: chunk.to_vec(),
-            })
-            .map_err(|error| error.to_string())?;
-            let signed = agent
-                .update(&management, "upload_chunk")
-                .with_effective_canister_id(canister)
-                .with_arg(argument.clone())
-                .sign()
-                .map_err(|error| error.to_string())?;
-            chunks.push(ProductionUpgradeChunkSubmission {
-                index: u32::try_from(index).map_err(|error| error.to_string())?,
-                offset: u64::try_from(
-                    index
-                        .checked_mul(PRODUCTION_UPGRADE_CHUNK_SIZE)
-                        .ok_or("production upgrade chunk offset overflow")?,
-                )
-                .map_err(|error| error.to_string())?,
-                size_bytes: u64::try_from(chunk.len()).map_err(|error| error.to_string())?,
-                sha256: hex(&chunk_sha256),
-                argument_hex: hex(&argument),
-                argument_sha256: hex(&Sha256::digest(&argument)),
-                ingress_expiry: signed.ingress_expiry,
-                request_id: hex(signed.request_id.as_slice()),
-                signed_update_hex: hex(&signed.signed_update),
-                signed_update_sha256: hex(&Sha256::digest(&signed.signed_update)),
-            });
-            chunk_hashes_list.push(ManagementChunkHash { hash: chunk_sha256 });
-        }
-        let argument = Encode!(&ManagementInstallChunkedCodeArgument {
-            mode: ManagementInstallMode::Upgrade,
-            target_canister: canister,
-            store_canister: None,
-            chunk_hashes_list,
-            wasm_module_hash: Sha256::digest(&wasm).to_vec(),
-            arg: Vec::new(),
-            sender_canister_version: None,
+    let stored_chunks = ProductionUpgradeSignedUpdate {
+        argument_hex: hex(&stored_chunks_argument),
+        argument_sha256: hex(&Sha256::digest(&stored_chunks_argument)),
+        ingress_expiry: stored_chunks_signed.ingress_expiry,
+        request_id: hex(stored_chunks_signed.request_id.as_slice()),
+        signed_update_hex: hex(&stored_chunks_signed.signed_update),
+        signed_update_sha256: hex(&Sha256::digest(&stored_chunks_signed.signed_update)),
+    };
+    let mut chunks = Vec::new();
+    let mut chunk_hashes_list = Vec::new();
+    for (index, chunk) in wasm.chunks(PRODUCTION_UPGRADE_CHUNK_SIZE).enumerate() {
+        let chunk_sha256 = Sha256::digest(chunk).to_vec();
+        let argument = Encode!(&ManagementUploadChunkArgument {
+            canister_id: canister,
+            chunk: chunk.to_vec(),
         })
         .map_err(|error| error.to_string())?;
         let signed = agent
-            .update(&management, "install_chunked_code")
+            .update(&management, "upload_chunk")
             .with_effective_canister_id(canister)
             .with_arg(argument.clone())
             .sign()
             .map_err(|error| error.to_string())?;
-        let submission = ProductionUpgradeSubmission {
-            checkpoint_evidence_sha256: Some(checkpoint.evidence_sha256.clone()),
-            schema_version: 2,
-            install_method: "install_chunked_code".into(),
-            ic_host: host.to_string(),
-            effective_canister_id: canister_text.to_string(),
-            sender_principal: sender.to_text(),
-            wasm_sha256: wasm_sha256.clone(),
-            chunk_size_bytes: PRODUCTION_UPGRADE_CHUNK_SIZE as u64,
-            stored_chunks,
-            chunks,
+        chunks.push(ProductionUpgradeChunkSubmission {
+            index: u32::try_from(index).map_err(|error| error.to_string())?,
+            offset: u64::try_from(
+                index
+                    .checked_mul(PRODUCTION_UPGRADE_CHUNK_SIZE)
+                    .ok_or("production upgrade chunk offset overflow")?,
+            )
+            .map_err(|error| error.to_string())?,
+            size_bytes: u64::try_from(chunk.len()).map_err(|error| error.to_string())?,
+            sha256: hex(&chunk_sha256),
             argument_hex: hex(&argument),
             argument_sha256: hex(&Sha256::digest(&argument)),
             ingress_expiry: signed.ingress_expiry,
             request_id: hex(signed.request_id.as_slice()),
             signed_update_hex: hex(&signed.signed_update),
             signed_update_sha256: hex(&Sha256::digest(&signed.signed_update)),
-        };
-        submission
-    };
-    write_json_new(submission_path, &submission)?;
+        });
+        chunk_hashes_list.push(ManagementChunkHash { hash: chunk_sha256 });
+    }
+    let argument = Encode!(&ManagementInstallChunkedCodeArgument {
+        mode: ManagementInstallMode::Upgrade,
+        target_canister: canister,
+        store_canister: None,
+        chunk_hashes_list,
+        wasm_module_hash: Sha256::digest(wasm).to_vec(),
+        arg: Vec::new(),
+        sender_canister_version: None,
+    })
+    .map_err(|error| error.to_string())?;
+    let signed = agent
+        .update(&management, "install_chunked_code")
+        .with_effective_canister_id(canister)
+        .with_arg(argument.clone())
+        .sign()
+        .map_err(|error| error.to_string())?;
+    Ok(ProductionUpgradeSubmission {
+        schema_version: 2,
+        install_method: "install_chunked_code".into(),
+        ic_host: host.to_string(),
+        effective_canister_id: canister.to_text(),
+        sender_principal: sender.to_text(),
+        wasm_sha256: hex(&Sha256::digest(wasm)),
+        chunk_size_bytes: PRODUCTION_UPGRADE_CHUNK_SIZE as u64,
+        stored_chunks,
+        chunks,
+        argument_hex: hex(&argument),
+        argument_sha256: hex(&Sha256::digest(&argument)),
+        ingress_expiry: signed.ingress_expiry,
+        request_id: hex(signed.request_id.as_slice()),
+        signed_update_hex: hex(&signed.signed_update),
+        signed_update_sha256: hex(&Sha256::digest(&signed.signed_update)),
+    })
+}
+
+fn execute_production_canister_upgrade(
+    host: &str,
+    canister_text: &str,
+    expected_principal_text: &str,
+    pem_path: &Path,
+    wasm_path: &Path,
+    profile_path: &Path,
+    expected_current_module_sha256: &str,
+) -> Result<(), String> {
+    let canister = Principal::from_text(canister_text).map_err(|error| error.to_string())?;
+    let expected_principal =
+        Principal::from_text(expected_principal_text).map_err(|error| error.to_string())?;
+    let wasm = fs::read(wasm_path).map_err(|error| error.to_string())?;
+    let (agent, sender) = production_upgrade_agent(host, expected_principal, pem_path)?;
+    verify_production_current_state(
+        profile_path,
+        expected_principal_text,
+        expected_current_module_sha256,
+        "sole",
+    )?;
+    let before = production_upgrade_current_state_snapshot(&agent, canister)?;
+    let submission = build_production_upgrade_submission(&agent, host, canister, sender, &wasm)?;
+    let submission_bytes = serde_json::to_vec(&submission).map_err(|error| error.to_string())?;
+    validate_production_upgrade_submission_bytes(host, canister, sender, &wasm, &submission_bytes)?;
+
+    production_upgrade_request_has_time(submission.stored_chunks.ingress_expiry)?;
+    let stored_raw = send_production_upgrade_signed_update(
+        &agent,
+        canister,
+        &submission.stored_chunks.request_id,
+        &submission.stored_chunks.signed_update_hex,
+    )?;
+    let stored =
+        Decode!(&stored_raw, Vec<ManagementChunkHash>).map_err(|error| error.to_string())?;
+    let expected = submission
+        .chunks
+        .iter()
+        .map(|chunk| chunk.sha256.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    if stored
+        .iter()
+        .any(|chunk| !expected.contains(&hex(&chunk.hash)))
+    {
+        return Err("production chunk store contains an unexpected chunk".into());
+    }
+    for chunk in &submission.chunks {
+        production_upgrade_request_has_time(chunk.ingress_expiry)?;
+        let raw = send_production_upgrade_signed_update(
+            &agent,
+            canister,
+            &chunk.request_id,
+            &chunk.signed_update_hex,
+        )?;
+        let observed = Decode!(&raw, ManagementChunkHash).map_err(|error| error.to_string())?;
+        if !hex(&observed.hash).eq_ignore_ascii_case(&chunk.sha256) {
+            return Err("production chunk response hash differs".into());
+        }
+    }
+    let pre_send_module = async_runtime()?.block_on(async {
+        agent
+            .read_state_canister_module_hash(canister)
+            .await
+            .map_err(|error| error.to_string())
+    })?;
+    if !hex(&pre_send_module).eq_ignore_ascii_case(expected_current_module_sha256) {
+        return Err("certified production module changed immediately before upgrade send".into());
+    }
+    let pre_send = production_upgrade_current_state_snapshot(&agent, canister)?;
+    if before != pre_send {
+        return Err(
+            "authenticated production state changed immediately before upgrade send".into(),
+        );
+    }
+    production_upgrade_request_has_time(submission.ingress_expiry)?;
     println!("request_id={}", submission.request_id);
+    std::io::stdout()
+        .flush()
+        .map_err(|error| error.to_string())?;
+    let response = send_production_upgrade_signed_update(
+        &agent,
+        canister,
+        &submission.request_id,
+        &submission.signed_update_hex,
+    )?;
+    println!("response_hex={}", hex(&response));
+    println!("sender_principal={sender}");
+    println!("wasm_sha256={}", submission.wasm_sha256);
+    let installed_module = async_runtime()?.block_on(async {
+        agent
+            .read_state_canister_module_hash(canister)
+            .await
+            .map_err(|error| error.to_string())
+    })?;
+    if !hex(&installed_module).eq_ignore_ascii_case(&submission.wasm_sha256) {
+        return Err("certified production module does not match the submitted Wasm".into());
+    }
+    let after = production_upgrade_current_state_snapshot(&agent, canister)?;
+    if before != after {
+        return Err("authenticated production state was not preserved across upgrade".into());
+    }
     Ok(())
+}
+
+#[derive(PartialEq, Eq)]
+struct ProductionUpgradeCurrentStateSnapshot {
+    lifecycle: Vec<u8>,
+    activation_attestation: Vec<u8>,
+    activation_status: Vec<u8>,
+    runtime_binding: Vec<u8>,
+    bridge_status: BridgeStatusLiveView,
+    pending_governance: Vec<u8>,
+    withdrawal_index_probe: Vec<u8>,
+    operational_config: Vec<u8>,
+    control_plane_addresses: Vec<u8>,
+    storage_integrity: Vec<u8>,
+    controllers: BTreeSet<Principal>,
+}
+
+fn production_upgrade_current_state_snapshot(
+    agent: &Agent,
+    canister: Principal,
+) -> Result<ProductionUpgradeCurrentStateSnapshot, String> {
+    let (
+        lifecycle,
+        activation_attestation,
+        activation_status,
+        runtime_binding,
+        status_raw,
+        pending_governance,
+        withdrawal_index_probe,
+        operational_config,
+        control_plane_addresses,
+        storage_integrity,
+        controllers,
+    ) = async_runtime()?.block_on(async {
+        let query = |method: &'static str, argument: Vec<u8>| async move {
+            agent
+                .query(&canister, method)
+                .with_arg(argument)
+                .call_with_verification()
+                .await
+                .map_err(|error| error.to_string())
+        };
+        let empty = Encode!().map_err(|error| error.to_string())?;
+        let lifecycle = query("get_production_lifecycle", empty.clone()).await?;
+        let activation_attestation = query("get_activation_attestation", empty.clone()).await?;
+        let activation_status = query("get_activation_status", empty.clone()).await?;
+        let runtime_binding = query("get_runtime_binding", empty.clone()).await?;
+        let status = query("get_bridge_status", empty.clone()).await?;
+        let pending_governance =
+            query("get_pending_base_governance_transaction", empty.clone()).await?;
+        let withdrawal_index_probe = query(
+            "list_withdrawals",
+            Encode!(&ProductionUiHistoryProbe {
+                requester: vec![0; 20],
+                before_cursor: None,
+                limit: 1,
+            })
+            .map_err(|error| error.to_string())?,
+        )
+        .await?;
+        let operational_config = query("get_operational_config", empty.clone()).await?;
+        let control_plane_addresses = query("get_control_plane_addresses", empty.clone()).await?;
+        let storage_integrity = query("get_release_storage_integrity", empty).await?;
+        let controllers = agent
+            .read_state_canister_controllers(canister)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((
+            lifecycle,
+            activation_attestation,
+            activation_status,
+            runtime_binding,
+            status,
+            pending_governance,
+            withdrawal_index_probe,
+            operational_config,
+            control_plane_addresses,
+            storage_integrity,
+            controllers,
+        ))
+    })?;
+    let bridge_status =
+        Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
+    Ok(ProductionUpgradeCurrentStateSnapshot {
+        lifecycle,
+        activation_attestation,
+        activation_status,
+        runtime_binding,
+        bridge_status,
+        pending_governance,
+        withdrawal_index_probe,
+        operational_config,
+        control_plane_addresses,
+        storage_integrity,
+        controllers: controllers.into_iter().collect(),
+    })
 }
 
 fn production_upgrade_request_has_time(ingress_expiry: u64) -> Result<(), String> {
@@ -12133,33 +8006,6 @@ fn production_upgrade_request_has_time(ingress_expiry: u64) -> Result<(), String
         );
     }
     Ok(())
-}
-
-fn record_production_upgrade_send_error(
-    evidence_dir: &Path,
-    request_kind: &str,
-    request_id: &str,
-    error: &str,
-) -> Result<(), String> {
-    let observed_at_ns = u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|value| value.to_string())?
-            .as_nanos(),
-    )
-    .map_err(|value| value.to_string())?;
-    let value = ProductionUpgradeSendError {
-        schema_version: 1,
-        request_kind: request_kind.into(),
-        request_id: request_id.into(),
-        observed_at_ns,
-        error: error.into(),
-        error_sha256: hex(&Sha256::digest(error.as_bytes())),
-    };
-    write_json_new(
-        &evidence_dir.join(format!("error-{request_kind}-{observed_at_ns}.json")),
-        &value,
-    )
 }
 
 fn production_upgrade_agent(
@@ -12183,277 +8029,57 @@ fn production_upgrade_agent(
     Ok((agent, sender))
 }
 
-fn validate_stored_chunks_response(
-    submission: &ProductionUpgradeSubmission,
-    response: &ProductionUpgradeStoredChunksResponse,
-) -> Result<(), String> {
-    if response.schema_version != 1
-        || response.request_id != submission.stored_chunks.request_id
-        || !hex_sha256_matches(&response.response_hex, &response.response_sha256)
-    {
-        return Err("production upgrade stored-chunks response metadata is invalid".into());
-    }
-    let raw = decode_hex(&response.response_hex)?;
-    let stored = Decode!(&raw, Vec<ManagementChunkHash>).map_err(|error| error.to_string())?;
-    let expected = submission
-        .chunks
-        .iter()
-        .map(|chunk| chunk.sha256.to_ascii_lowercase())
-        .collect::<BTreeSet<_>>();
-    if stored
-        .iter()
-        .any(|chunk| !expected.contains(&hex(&chunk.hash)))
-    {
-        return Err("production upgrade chunk store contains an unexpected chunk".into());
-    }
-    Ok(())
+#[derive(CandidType, Deserialize)]
+struct ReleaseUpgradeObservationView {
+    completed_at_ns: u64,
+    upgrader: Principal,
 }
 
-fn validate_chunk_response(
-    chunk: &ProductionUpgradeChunkSubmission,
-    response: &ProductionUpgradeChunkResponse,
+fn validate_sns_upgrade_completion(
+    observation: &ReleaseUpgradeObservationView,
+    decided_at: u64,
+    handover_at: u64,
+    now: u64,
 ) -> Result<(), String> {
-    if response.schema_version != 1
-        || response.index != chunk.index
-        || response.request_id != chunk.request_id
-        || !hex_sha256_matches(&response.response_hex, &response.response_sha256)
-    {
-        return Err("production upgrade chunk response metadata is invalid".into());
+    if !bridge_core::kernel::sns_upgrade_completion_allowed(
+        observation.upgrader.to_text() == KINIC_ROOT,
+        observation.completed_at_ns / 1_000_000_000,
+        decided_at,
+        handover_at,
+        now,
+    ) {
+        return Err("SNS Root acknowledged the proposal, but no matching successful post_upgrade is observed".into());
     }
-    let raw = decode_hex(&response.response_hex)?;
-    let observed = Decode!(&raw, ManagementChunkHash).map_err(|error| error.to_string())?;
-    if !hex(&observed.hash).eq_ignore_ascii_case(&chunk.sha256) {
-        return Err("production upgrade chunk response hash is invalid".into());
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn upload_production_canister_upgrade_chunks(
-    host: &str,
-    canister_text: &str,
-    expected_principal_text: &str,
-    pem_path: &Path,
-    wasm_path: &Path,
-    submission_path: &Path,
-    evidence_dir: &Path,
-) -> Result<(), String> {
-    let canister = Principal::from_text(canister_text).map_err(|error| error.to_string())?;
-    let expected_principal =
-        Principal::from_text(expected_principal_text).map_err(|error| error.to_string())?;
-    let wasm = fs::read(wasm_path).map_err(|error| error.to_string())?;
-    let (agent, sender) = production_upgrade_agent(host, expected_principal, pem_path)?;
-    let submission =
-        validate_production_upgrade_submission(host, canister, sender, &wasm, submission_path)?;
-    if evidence_dir.exists() {
-        let metadata = fs::symlink_metadata(evidence_dir).map_err(|error| error.to_string())?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err("production upgrade upload evidence path is unsafe".into());
-        }
-    } else {
-        fs::create_dir(evidence_dir).map_err(|error| error.to_string())?;
-    }
-    let complete_path = evidence_dir.join("complete.json");
-    if complete_path.exists() {
-        let bytes = fs::read(&complete_path).map_err(|error| error.to_string())?;
-        validate_production_upgrade_upload_evidence(&submission, &bytes)?;
-        println!("chunk_upload_evidence={}", complete_path.display());
-        return Ok(());
-    }
-    let stored_path = evidence_dir.join("stored-chunks.json");
-    let stored_response = if stored_path.exists() {
-        read_json::<ProductionUpgradeStoredChunksResponse>(&stored_path)?
-    } else {
-        production_upgrade_request_has_time(submission.stored_chunks.ingress_expiry)?;
-        let raw = match send_production_upgrade_signed_update(
-            &agent,
-            canister,
-            &submission.stored_chunks.request_id,
-            &submission.stored_chunks.signed_update_hex,
-        ) {
-            Ok(raw) => raw,
-            Err(error) => {
-                record_production_upgrade_send_error(
-                    evidence_dir,
-                    "stored-chunks",
-                    &submission.stored_chunks.request_id,
-                    &error,
-                )?;
-                return Err(error);
-            }
-        };
-        let response = ProductionUpgradeStoredChunksResponse {
-            schema_version: 1,
-            request_id: submission.stored_chunks.request_id.clone(),
-            response_hex: hex(&raw),
-            response_sha256: hex(&Sha256::digest(&raw)),
-        };
-        validate_stored_chunks_response(&submission, &response)?;
-        write_json_new(&stored_path, &response)?;
-        response
-    };
-    validate_stored_chunks_response(&submission, &stored_response)?;
-    let mut responses = Vec::with_capacity(submission.chunks.len());
-    for chunk in &submission.chunks {
-        let response_path = evidence_dir.join(format!("chunk-{:04}.json", chunk.index));
-        let response = if response_path.exists() {
-            read_json::<ProductionUpgradeChunkResponse>(&response_path)?
-        } else {
-            production_upgrade_request_has_time(chunk.ingress_expiry)?;
-            let raw = match send_production_upgrade_signed_update(
-                &agent,
-                canister,
-                &chunk.request_id,
-                &chunk.signed_update_hex,
-            ) {
-                Ok(raw) => raw,
-                Err(error) => {
-                    record_production_upgrade_send_error(
-                        evidence_dir,
-                        &format!("chunk-{:04}", chunk.index),
-                        &chunk.request_id,
-                        &error,
-                    )?;
-                    return Err(error);
-                }
-            };
-            let response = ProductionUpgradeChunkResponse {
-                schema_version: 1,
-                index: chunk.index,
-                request_id: chunk.request_id.clone(),
-                response_hex: hex(&raw),
-                response_sha256: hex(&Sha256::digest(&raw)),
-            };
-            validate_chunk_response(chunk, &response)?;
-            write_json_new(&response_path, &response)?;
-            response
-        };
-        validate_chunk_response(chunk, &response)?;
-        responses.push(response);
-    }
-    let complete = ProductionUpgradeUploadEvidence {
-        schema_version: 1,
-        stored_chunks_request_id: stored_response.request_id,
-        stored_chunks_response_hex: stored_response.response_hex,
-        stored_chunks_response_sha256: stored_response.response_sha256,
-        chunks: responses,
-    };
-    let complete_bytes = serde_json::to_vec(&complete).map_err(|error| error.to_string())?;
-    validate_production_upgrade_upload_evidence(&submission, &complete_bytes)?;
-    write_json_new(&complete_path, &complete)?;
-    println!("chunk_upload_evidence={}", complete_path.display());
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn submit_production_canister_upgrade(
-    host: &str,
-    canister_text: &str,
-    expected_principal_text: &str,
-    pem_path: &Path,
-    wasm_path: &Path,
-    submission_path: &Path,
-    upload_evidence_path: &Path,
-    response_path: &Path,
-) -> Result<(), String> {
-    let canister = Principal::from_text(canister_text).map_err(|error| error.to_string())?;
-    let expected_principal =
-        Principal::from_text(expected_principal_text).map_err(|error| error.to_string())?;
-    let wasm = fs::read(wasm_path).map_err(|error| error.to_string())?;
-    let wasm_sha256 = hex(&Sha256::digest(&wasm));
-    let (agent, sender) = production_upgrade_agent(host, expected_principal, pem_path)?;
-    let submission =
-        validate_production_upgrade_submission(host, canister, sender, &wasm, submission_path)?;
-    let upload_evidence = fs::read(upload_evidence_path).map_err(|error| error.to_string())?;
-    validate_production_upgrade_upload_evidence(&submission, &upload_evidence)?;
-    production_upgrade_request_has_time(submission.ingress_expiry)?;
-    let request_id = submission.request_id.clone();
-    let mut durable_response = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o400)
-        .open(response_path)
-        .map_err(|error| format!("{}: {error}", response_path.display()))?;
-    writeln!(durable_response, "request_id={request_id}").map_err(|error| error.to_string())?;
-    durable_response
-        .sync_all()
-        .map_err(|error| error.to_string())?;
-    fs::File::open(response_path.parent().unwrap_or_else(|| Path::new(".")))
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| error.to_string())?;
-    println!("request_id={request_id}");
-    std::io::stdout()
-        .flush()
-        .map_err(|error| error.to_string())?;
-    let response = send_production_upgrade_signed_update(
-        &agent,
-        canister,
-        &request_id,
-        &submission.signed_update_hex,
-    )?;
-    writeln!(durable_response, "response_hex={}", hex(&response))
-        .map_err(|error| error.to_string())?;
-    writeln!(durable_response, "sender_principal={sender}").map_err(|error| error.to_string())?;
-    writeln!(durable_response, "wasm_sha256={wasm_sha256}").map_err(|error| error.to_string())?;
-    durable_response
-        .sync_all()
-        .map_err(|error| error.to_string())?;
-    println!("response_hex={}", hex(&response));
-    println!("sender_principal={sender}");
-    println!("wasm_sha256={wasm_sha256}");
     Ok(())
 }
 
 fn run() -> Result<(), String> {
     let args = env::args().collect::<Vec<_>>();
     match args.get(1).map(String::as_str) {
-        Some("validate-production-checkpoint-candidate") if args.len() == 3 => {
-            let (_, digest) = production_checkpoint::read_candidate(Path::new(&args[2]))?;
-            println!("unapproved_checkpoint_sha256={digest}");
+        Some("verify-production-current-state") if args.len() == 6 => {
+            verify_production_current_state(
+                Path::new(&args[2]),
+                &args[3],
+                &args[4],
+                &args[5],
+            )?;
         }
-        Some("render-production-checkpoint-ui-runtime") if args.len() == 5 => {
-            production_checkpoint::render_ui(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
+        Some("render-production-current-ui-runtime") if args.len() == 6 => {
+            render_production_current_ui_runtime(
+                Path::new(&args[2]),
+                &args[3],
+                Path::new(&args[4]),
+                Path::new(&args[5]),
+            )?;
         }
-        Some("verify-production-checkpoint-ui-sns-live") if args.len() == 7 => {
-            production_checkpoint::verify_ui_after_handover(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]), Path::new(&args[5]), args[6].parse().map_err(|_| "invalid SNS upgrade proposal ID")?)?;
-        }
-        Some("verify-production-checkpoint-ui-live") if args.len() == 5 => {
-            production_checkpoint::verify_ui(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
-        }
-        Some("verify-production-checkpoint-ui-assets-only-live") if args.len() == 5 => {
-            production_checkpoint::verify_ui_assets_only(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
-        }
-        Some("generate-production-checkpoint-candidate") if args.len() == 5 => {
-            production_checkpoint::generate_candidate(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
-        }
-        Some("rotate-production-checkpoint-candidate") if args.len() == 5 => {
-            production_checkpoint::rotate_candidate(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]))?;
-        }
-        Some("validate-production-checkpoint") if args.len() == 3 => {
-            let (_, digest) = production_checkpoint::read_approved(Path::new(&args[2]))?;
-            println!("approved_checkpoint_sha256={digest}");
-        }
-        Some("validate-production-checkpoint-evidence") if args.len() == 3 => {
-            let verified = production_checkpoint::read_evidence(Path::new(&args[2]))?;
-            println!("{}", serde_json::json!({
-                "evidence_sha256": verified.evidence_sha256,
-                "canister": verified.checkpoint.canister,
-                "controller": verified.checkpoint.controller,
-                "network": verified.checkpoint.network,
-                "ledger_fee": verified.checkpoint.roots.gate_b_profile.parameters.ledger_fee.to_string(),
-                "module_sha256": verified.module_sha256,
-                "runtime": verified.terminal.runtime,
-                "source": verified.source,
-            }));
-        }
-        Some("validate-production-checkpoint-predecessor") if args.len() == 9 => {
-            production_checkpoint::predecessor(Path::new(&args[2]), &args[3], &args[4..])?;
-        }
-        Some("verify-production-checkpoint-state-preserved") if args.len() == 12 => {
-            production_checkpoint::preserved(Path::new(&args[2]), &args[3..])?;
-        }
-        Some("make-production-checkpoint-evidence") if args.len() >= 4 => {
-            production_checkpoint::make_evidence(Path::new(&args[2]), &args[4..], Path::new(&args[3]))?;
+        Some("verify-production-current-ui-live") if args.len() == 7 => {
+            verify_production_current_ui_live(
+                Path::new(&args[2]),
+                &args[3],
+                Path::new(&args[4]),
+                Path::new(&args[5]),
+                &args[6],
+            )?;
         }
         Some("derive") if args.len() == 3 => {
             let evidence: Evidence = read_json(Path::new(&args[2]))?;
@@ -12508,170 +8134,8 @@ fn run() -> Result<(), String> {
                 )?
             );
         }
-        Some("validate-production-upgrade-gate-a-binding") if args.len() == 4 => {
-            println!(
-                "{}",
-                validate_production_upgrade_gate_a_binding_files(
-                    Path::new(&args[2]),
-                    Path::new(&args[3]),
-                )?
-            );
-        }
-        Some("validate-production-upgrade-history") if args.len() == 7 => {
-            let gate_a_profile: Profile = read_json(Path::new(&args[2]))?;
-            let gate_a_receipt: GateAReceipt = read_json(Path::new(&args[3]))?;
-            let expected_schema = args[6]
-                .parse::<u16>()
-                .map_err(|_| "production upgrade history schema is malformed")?;
-            let terminal = validate_production_upgrade_history_bytes(
-                &gate_a_profile,
-                &gate_a_receipt,
-                &fs::read(&args[4]).map_err(|error| error.to_string())?,
-                &args[5],
-                expected_schema,
-            )?;
-            println!("{}", hex(&canonical_sha256(&terminal.runtime)?));
-        }
-        Some("validate-production-upgrade-live-predecessor") if args.len() == 12 => {
-            let gate_a_profile: Profile = read_json(Path::new(&args[2]))?;
-            let gate_a_receipt: GateAReceipt = read_json(Path::new(&args[3]))?;
-            let expected_schema = args[6]
-                .parse::<u16>()
-                .map_err(|_| "production upgrade predecessor schema is malformed")?;
-            let terminal = if args[4] == "-" {
-                if !args[5].eq_ignore_ascii_case(&gate_a_profile.bridge_canister_wasm_sha256)
-                    || expected_schema != gate_a_receipt.canister_install.runtime_binding.schema_version
-                {
-                    return Err("production upgrade predecessor does not match Gate A".into());
-                }
-                ProductionUpgradeTerminal {
-                    observed_epoch: (gate_a_receipt.canister_install.mint_authorization_epoch, gate_a_receipt.canister_install.mint_authorization_ttl_seconds),
-                    runtime: gate_a_receipt.canister_install.runtime_binding.clone(),
-                    lifecycle: ProductionLifecycleView::Bootstrap,
-                    deposits_paused: true,
-                }
-            } else {
-                validate_production_upgrade_history_bytes(
-                    &gate_a_profile,
-                    &gate_a_receipt,
-                    &fs::read(&args[4]).map_err(|error| error.to_string())?,
-                    &args[5],
-                    expected_schema,
-                )?
-            };
-            let (status, lifecycle, runtime, _) = production_upgrade_query_state_any(
-                &args[7], &args[8], &args[9], &args[10],
-            )?;
-            let live_runtime = live_runtime_binding_from_view(&runtime);
-            let evidence = OperationalEpochEvidence::from_response(&args[11])?;
-            if !production_upgrade_predecessor_with_epoch_evidence(
-                &terminal,
-                &status,
-                lifecycle,
-                &live_runtime,
-                Some(&evidence), gate_a_profile.parameters.ledger_fee,
-            )? {
-                return Err("live predecessor differs from the typed upgrade history".into());
-            }
-            println!("{}", hex(&canonical_sha256(&terminal.runtime)?));
-        }
-        Some("production-upgrade-history-sources") if args.len() == 3 => {
-            for (receipt, _) in production_upgrade_chain_receipts(
-                &fs::read(&args[2]).map_err(|error| error.to_string())?,
-            )? {
-                println!("{}\t{}", receipt.source_revision, receipt.source_tree_sha256);
-            }
-        }
-        Some("validate-production-handover-receipt") if args.len() == 6 => {
-            println!(
-                "{}",
-                validate_production_handover_receipt_files(
-                    Path::new(&args[2]),
-                    Path::new(&args[3]),
-                    Path::new(&args[4]),
-                    Path::new(&args[5]),
-                )?
-            );
-        }
-        Some("append-production-upgrade-receipt") if args.len() == 5 => {
-            let prior = (args[2] != "-").then(|| Path::new(&args[2]));
-            append_production_upgrade_receipt(prior, Path::new(&args[3]), Path::new(&args[4]))?;
-        }
         Some("verify-production-canister-predeploy") if args.len() == 4 => {
             verify_production_canister_predeploy(Path::new(&args[2]), Path::new(&args[3]))?;
-        }
-        Some("validate-production-handover-candidate") if args.len() == 6 => {
-            let (bundle, _, _) = validate_production_handover_candidate_files(
-                Path::new(&args[2]),
-                Path::new(&args[3]),
-                Path::new(&args[4]),
-                Path::new(&args[5]),
-            )?;
-            println!(
-                "production_handover_candidate=pass manifest_sha256={}",
-                bundle.manifest_sha256
-            );
-        }
-        Some("validate-controller-handover-completion") if args.len() == 7 => {
-            validate_controller_handover_completion_files(
-                Path::new(&args[2]),
-                Path::new(&args[3]),
-                Path::new(&args[4]),
-                Path::new(&args[5]),
-                Path::new(&args[6]),
-            )?;
-        }
-        Some("validate-controller-handover-preparation") if args.len() == 7 => {
-            let path = Path::new(&args[6]);
-            let manifest_sha256 = validate_controller_handover_recovery_files(
-                Path::new(&args[2]),
-                Path::new(&args[3]),
-                Path::new(&args[4]),
-                Path::new(&args[5]),
-                path,
-            )?;
-            let preparation: Value = read_json(path)?;
-            if preparation.get("stage").and_then(Value::as_str) != Some("co_controller_ready") {
-                return Err("controller handover preparation is incomplete".into());
-            }
-            println!("controller_handover_preparation=pass manifest_sha256={manifest_sha256}");
-        }
-        Some("validate-controller-handover-recovery") if args.len() == 7 => {
-            let manifest_sha256 = validate_controller_handover_recovery_files(
-                Path::new(&args[2]),
-                Path::new(&args[3]),
-                Path::new(&args[4]),
-                Path::new(&args[5]),
-                Path::new(&args[6]),
-            )?;
-            println!(
-                "controller_handover_recovery=pass manifest_sha256={manifest_sha256}"
-            );
-        }
-        Some("verify-production-canister-handover") if args.len() == 6 => {
-            verify_production_canister_handover(
-                Path::new(&args[2]),
-                Path::new(&args[3]),
-                Path::new(&args[4]),
-                Path::new(&args[5]),
-            )?;
-        }
-        Some("audit-verify-production-ui-live") if args.len() == 9 => {
-            verify_production_ui_live(
-                Path::new(&args[2]),
-                Path::new(&args[3]),
-                Path::new(&args[4]),
-                Path::new(&args[5]),
-                Path::new(&args[6]),
-                Path::new(&args[7]),
-                Path::new(&args[8]),
-            )?;
-        }
-        Some("audit-render-production-ui-runtime") if args.len() == 9 => {
-            render_production_ui_runtime(
-                Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]),
-                Path::new(&args[5]), Path::new(&args[6]), Path::new(&args[7]), Path::new(&args[8]),
-            )?;
         }
         Some("storage-validation-complete") if args.len() == 3 => {
             println!("{}", storage_validation_complete(&args[2])?);
@@ -12926,66 +8390,15 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[3]
             );
         }
-        Some("prepare-production-canister-upgrade") if args.len() == 9 => {
-            prepare_production_canister_upgrade(
+        Some("execute-production-canister-upgrade") if args.len() == 9 => {
+            execute_production_canister_upgrade(
                 &args[2],
                 &args[3],
                 &args[4],
                 Path::new(&args[5]),
                 Path::new(&args[6]),
                 Path::new(&args[7]),
-                Path::new(&args[8]),
-            )?;
-        }
-        Some("upload-production-canister-upgrade-chunks") if args.len() == 9 => {
-            upload_production_canister_upgrade_chunks(
-                &args[2],
-                &args[3],
-                &args[4],
-                Path::new(&args[5]),
-                Path::new(&args[6]),
-                Path::new(&args[7]),
-                Path::new(&args[8]),
-            )?;
-        }
-        Some("validate-production-upgrade-submission") if args.len() == 7 => {
-            let canister = Principal::from_text(&args[3]).map_err(|error| error.to_string())?;
-            let sender = Principal::from_text(&args[4]).map_err(|error| error.to_string())?;
-            let wasm = fs::read(&args[5]).map_err(|error| error.to_string())?;
-            let submission = validate_production_upgrade_submission(
-                &args[2],
-                canister,
-                sender,
-                &wasm,
-                Path::new(&args[6]),
-            )?;
-            println!("{}", submission.request_id);
-        }
-        Some("validate-production-checkpoint-submission") if args.len() == 8 => {
-            let checkpoint = production_checkpoint::read_evidence(Path::new(&args[7]))?;
-            if checkpoint.checkpoint.network != args[2] || checkpoint.checkpoint.canister != args[3]
-                || checkpoint.checkpoint.controller != args[4]
-            { return Err("submission identity differs from checkpoint evidence".into()); }
-            let submission = validate_production_upgrade_submission(
-                &args[2], Principal::from_text(&args[3]).map_err(|error| error.to_string())?,
-                Principal::from_text(&args[4]).map_err(|error| error.to_string())?,
-                &fs::read(&args[5]).map_err(|error| error.to_string())?, Path::new(&args[6]),
-            )?;
-            if submission.checkpoint_evidence_sha256.as_ref() != Some(&checkpoint.evidence_sha256) {
-                return Err("signed submission does not bind frozen checkpoint evidence".into());
-            }
-            println!("{}", submission.request_id);
-        }
-        Some("submit-production-canister-upgrade") if args.len() == 10 => {
-            submit_production_canister_upgrade(
-                &args[2],
-                &args[3],
-                &args[4],
-                Path::new(&args[5]),
-                Path::new(&args[6]),
-                Path::new(&args[7]),
-                Path::new(&args[8]),
-                Path::new(&args[9]),
+                &args[8],
             )?;
         }
         Some("validate-operational-epoch-snapshot") if args.len() == 6 => {
@@ -13004,126 +8417,7 @@ fn run() -> Result<(), String> {
                 println!("epoch={} operational_config_sha256={}", epoch, operational_epoch_digest(response.trim(), ledger_fee, epoch)?);
             }
         }
-        Some("production-upgrade-public-state-sha256") if args.len() == 6 => {
-            let (_, _, _, digest) = production_upgrade_query_state_any(
-                &args[2], &args[3], &args[4], &args[5],
-            )?;
-            println!("{digest}");
-        }
-        Some("production-upgrade-snapshot-metadata") if args.len() == 6 => {
-            let (status, lifecycle, runtime, _) = production_upgrade_query_state_any(
-                &args[2], &args[3], &args[4], &args[5],
-            )?;
-            println!(
-                "{}\t{}\t{}",
-                production_lifecycle_name(lifecycle),
-                status.deposits_paused,
-                runtime.schema_version
-            );
-        }
-        Some("verify-production-upgrade-state-preserved") if matches!(args.len(), 12 | 13) => {
-            let (before, before_lifecycle, before_runtime, before_digest) = production_upgrade_query_state_any(
-                &args[2], &args[3], &args[4], &args[5],
-            )?;
-            let (after, after_lifecycle, after_runtime, after_digest) = production_upgrade_query_state_any(
-                &args[6], &args[7], &args[8], &args[9],
-            )?;
-            let gate_a_profile_source =
-                fs::read(&args[10]).map_err(|error| error.to_string())?;
-            let gate_a_profile: Profile = serde_json::from_slice(&gate_a_profile_source)
-                .map_err(|error| error.to_string())?;
-            let gate_a_receipt: GateAReceipt = read_json(Path::new(&args[11]))?;
-            validate_production_upgrade_gate_a_binding(
-                &gate_a_profile,
-                &gate_a_profile_source,
-                &gate_a_receipt,
-            )?;
-            let operational = args.get(12).map(|raw| OperationalEpochEvidence::from_response(raw)).transpose()?;
-            let ttl_migration = args[3] == args[7] && args[5] == args[9]
-                && production_upgrade_ttl_migration_matches(
-                    &before, &after,
-                    &live_runtime_binding_from_view(&before_runtime),
-                    &live_runtime_binding_from_view(&after_runtime),
-                    operational.as_ref(), gate_a_profile.parameters.ledger_fee,
-                )?;
-            let unchanged = production_upgrade_status_preserved(&before, &after)
-                && args[3] == args[7]
-                && args[4] == args[8]
-                && args[5] == args[9]
-                && before_digest.eq_ignore_ascii_case(&after_digest);
-            let pause_migration = gate_a_receipt.canister_install.runtime_binding
-                == live_runtime_binding_from_view(&before_runtime)
-                && before_lifecycle == ProductionLifecycleView::Bootstrap
-                && after_lifecycle == ProductionLifecycleView::Bootstrap
-                && before.deposits_paused
-                && after.deposits_paused
-                && production_upgrade_pause_migration_matches(
-                    &gate_a_profile,
-                    &gate_a_receipt.canister_install.runtime_binding,
-                    &before,
-                    &after,
-                    &before_runtime,
-                    &after_runtime,
-                )?
-                && args[3] == args[7]
-                && args[5] == args[9];
-            let schema_before_is_bound = production_upgrade_schema_predecessor_bound(
-                &gate_a_profile,
-                &gate_a_receipt.canister_install.runtime_binding,
-                &before,
-                before_lifecycle,
-                &before_runtime,
-            )?;
-            let schema_migration = schema_before_is_bound
-                && production_upgrade_schema_migration_matches(
-                    &before,
-                    &after,
-                    &before_runtime,
-                    &after_runtime,
-                )
-                && args[3] == args[7]
-                && args[5] == args[9];
-            let combined_migration = gate_a_receipt.canister_install.runtime_binding
-                == live_runtime_binding_from_view(&before_runtime)
-                && before_lifecycle == ProductionLifecycleView::Bootstrap
-                && after_lifecycle == ProductionLifecycleView::Bootstrap
-                && before.deposits_paused
-                && after.deposits_paused
-                && production_upgrade_pause_and_schema_migration_matches(
-                    &gate_a_profile,
-                    &gate_a_receipt.canister_install.runtime_binding,
-                    &before,
-                    &after,
-                    &before_runtime,
-                    &after_runtime,
-                )?
-                && args[3] == args[7]
-                && args[5] == args[9];
-            if before_lifecycle != after_lifecycle
-                || before.deposits_paused != after.deposits_paused
-                || !production_lifecycle_pause_valid(
-                    before_lifecycle,
-                    before.deposits_paused,
-                )
-                || !production_lifecycle_pause_valid(after_lifecycle, after.deposits_paused)
-                || (!unchanged && !ttl_migration && !pause_migration && !schema_migration && !combined_migration)
-            {
-                return Err("production public state was not preserved across upgrade".into());
-            }
-            println!("{after_digest}");
-        }
-        Some("verify-production-upgrade-submission") if args.len() == 8 => {
-            let canister = Principal::from_text(&args[3]).map_err(|error| error.to_string())?;
-            let sender = Principal::from_text(&args[4]).map_err(|error| error.to_string())?;
-            let wasm = fs::read(&args[5]).map_err(|error| error.to_string())?;
-            let submission = validate_production_upgrade_submission(
-                &args[2], canister, sender, &wasm, Path::new(&args[6]),
-            )?;
-            let evidence = fs::read(&args[7]).map_err(|error| error.to_string())?;
-            validate_production_upgrade_upload_evidence(&submission, &evidence)?;
-            println!("{}", submission.request_id);
-        }
-        _ => return Err("usage: bridge-profile <command> <arguments>; production upgrade commands: validate-production-upgrade-gate-a-binding, prepare-production-canister-upgrade, validate-production-upgrade-submission, upload-production-canister-upgrade-chunks, submit-production-canister-upgrade, verify-production-upgrade-submission, append-production-upgrade-receipt".into()),
+        _ => return Err("usage: bridge-profile <command> <arguments>; production upgrade commands: verify-production-current-state, execute-production-canister-upgrade".into()),
     }
     Ok(())
 }
@@ -13160,69 +8454,65 @@ mod tests {
     }
 
     #[test]
-    fn sns_same_wasm_upgrade_rejects_wrong_target_mode_module_and_execution() {
-        let mut profile = valid_profile();
-        let wasm = vec![0, 97, 115, 109, 1, 0, 0, 0];
-        profile.bridge_canister_wasm_sha256 = hex(&Sha256::digest(&wasm));
-        let now = now_unix().unwrap();
-        let make = || ProposalDataView {
-            id: Some(ProposalId { id: 42 }),
-            failure_reason: None,
-            failed_timestamp_seconds: 0,
-            decided_timestamp_seconds: now - 2,
-            executed_timestamp_seconds: now - 1,
-            proposal: Some(ProposalView {
-                summary: String::new(),
-                action: Some(SnsProposalAction::UpgradeSnsControlledCanister(
-                    UpgradeSnsControlledCanisterView {
-                        mode: Some(3),
-                        canister_id: Some(
-                            Principal::from_text(&profile.bridge_canister_id).unwrap(),
-                        ),
-                        new_canister_wasm: wasm.clone(),
-                        canister_upgrade_arg: Some(vec![68, 73, 68, 76, 0, 0]),
-                        canister_upgrade_options: None,
-                        chunked_canister_wasm: None,
-                    },
-                )),
-            }),
-        };
-        assert!(validate_same_wasm_sns_upgrade(&profile, 42, now - 3, make()).is_ok());
-        for drift in 0..8 {
-            let mut proposal = make();
-            let Some(SnsProposalAction::UpgradeSnsControlledCanister(action)) =
-                proposal.proposal.as_mut().unwrap().action.as_mut()
-            else {
-                unreachable!()
-            };
-            match drift {
-                0 => action.mode = Some(2),
-                1 => action.canister_id = Some(Principal::anonymous()),
-                2 => action.new_canister_wasm.push(1),
-                3 => action.canister_upgrade_arg = Some(vec![]),
-                4 => proposal.failed_timestamp_seconds = now - 1,
-                5 => proposal.executed_timestamp_seconds = 0,
-                6 => proposal.id = Some(ProposalId { id: 43 }),
-                _ => proposal.executed_timestamp_seconds = now + 1,
-            }
-            assert!(
-                validate_same_wasm_sns_upgrade(&profile, 42, now - 3, proposal).is_err(),
-                "drift {drift}"
-            );
-        }
-        let mut proposal = make();
-        let Some(SnsProposalAction::UpgradeSnsControlledCanister(action)) =
-            proposal.proposal.as_mut().unwrap().action.as_mut()
-        else {
-            unreachable!()
-        };
-        action.new_canister_wasm.clear();
-        action.chunked_canister_wasm = Some(ChunkedSnsWasmView {
-            wasm_module_hash: Sha256::digest(&wasm).to_vec(),
-            store_canister_id: action.canister_id,
-            chunk_hashes_list: vec![Sha256::digest(&wasm).to_vec()],
-        });
-        assert!(validate_same_wasm_sns_upgrade(&profile, 42, now - 3, proposal).is_ok());
+    fn production_upgrade_submission_rejects_target_sender_wasm_and_signature_drift() {
+        let identity = BasicIdentity::from_raw_key(&[0x42; 32]);
+        let sender = identity.sender().unwrap();
+        let canister = Principal::self_authenticating([0x24; 32]);
+        let host = "https://icp-api.io";
+        let wasm = b"\0asm\x01\0\0\0candidate";
+        let agent = Agent::builder()
+            .with_url(host)
+            .with_identity(identity)
+            .build()
+            .unwrap();
+        let submission =
+            build_production_upgrade_submission(&agent, host, canister, sender, wasm).unwrap();
+        let bytes = serde_json::to_vec(&submission).unwrap();
+        assert!(
+            validate_production_upgrade_submission_bytes(host, canister, sender, wasm, &bytes,)
+                .is_ok()
+        );
+
+        let wrong_canister = Principal::self_authenticating([0x25; 32]);
+        assert!(validate_production_upgrade_submission_bytes(
+            host,
+            wrong_canister,
+            sender,
+            wasm,
+            &bytes,
+        )
+        .is_err());
+        assert!(validate_production_upgrade_submission_bytes(
+            host,
+            canister,
+            Principal::anonymous(),
+            wasm,
+            &bytes,
+        )
+        .is_err());
+        assert!(validate_production_upgrade_submission_bytes(
+            host,
+            canister,
+            sender,
+            b"\0asm\x01\0\0\0other",
+            &bytes,
+        )
+        .is_err());
+
+        let mut forged: Value = serde_json::from_slice(&bytes).unwrap();
+        let mut signed = decode_hex(forged["signed_update_hex"].as_str().unwrap()).unwrap();
+        let last = signed.last_mut().unwrap();
+        *last ^= 1;
+        forged["signed_update_hex"] = Value::String(hex(&signed));
+        forged["signed_update_sha256"] = Value::String(hex(&Sha256::digest(&signed)));
+        assert!(validate_production_upgrade_submission_bytes(
+            host,
+            canister,
+            sender,
+            wasm,
+            &serde_json::to_vec(&forged).unwrap(),
+        )
+        .is_err());
     }
 
     fn trim_leading_zeroes(value: &[u8]) -> &[u8] {
@@ -13474,12 +8764,8 @@ mod tests {
     #[test]
     fn historical_seal_evidence_must_stay_within_the_original_gate_b_window() {
         assert_eq!(
-            live_activation_pause_requirement(SealReceiptLiveContext::HistoricalCheckpoint),
+            live_activation_pause_requirement(SealReceiptLiveContext::HistoricalEvidence),
             None
-        );
-        assert_eq!(
-            live_activation_pause_requirement(SealReceiptLiveContext::ProductionUiPostUpgrade),
-            Some(false)
         );
         let created = 1_000_000;
         let expires = created + 100;
@@ -13754,332 +9040,64 @@ mod tests {
     }
 
     #[test]
-    fn production_ui_runtime_profile_binds_v36_terminal_chain_and_reviewed_rpc() {
+    fn production_ui_runtime_profile_binds_v36_current_module_and_reviewed_rpc() {
         let root = env::temp_dir().join(format!("bridge-ui-runtime-{}", process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let mut profile = valid_profile();
-        profile.canister_schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
+        profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
         let profile_bytes = canonical_bytes(&profile).unwrap();
-        let gate_b_profile = root.join("profile.json");
-        let runtime_profile = root.join("ui-runtime-profile.json");
-        let upgrade_path = root.join("upgrade.json");
-        let rpc_path = root.join("rpc.json");
         let manifest = "a".repeat(64);
         let module = "b".repeat(64);
-        let upgrade = b"verified post-activation chain";
         let rpc = br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/test-key"}"#;
-        let mut terminal = ProductionUpgradeTerminal {
-            observed_epoch: (1, 900),
-            runtime: live_runtime_binding(&profile),
-            lifecycle: ProductionLifecycleView::Activated,
-            deposits_paused: false,
-        };
-        terminal.runtime.schema_version = CURRENT_STABLE_SCHEMA_VERSION;
         let expected = canonical_bytes(
-            &production_ui_runtime_profile(
+            &production_current_ui_runtime_profile_value(
                 &profile,
                 &profile_bytes,
                 &manifest,
-                upgrade,
                 &module,
-                &terminal,
                 rpc,
             )
             .unwrap(),
         )
         .unwrap();
-        fs::write(&gate_b_profile, &profile_bytes).unwrap();
-        fs::write(&upgrade_path, upgrade).unwrap();
-        fs::write(&rpc_path, rpc).unwrap();
-        fs::write(&runtime_profile, &expected).unwrap();
-        let validate = || {
-            validate_production_ui_runtime_profile(
-                &profile,
-                &gate_b_profile,
-                &manifest,
-                &fs::read(&upgrade_path).unwrap(),
-                &module,
-                &terminal,
-                &rpc_path,
-                &runtime_profile,
-            )
-        };
-        assert!(validate().is_ok());
         let parsed: Value = serde_json::from_slice(&expected).unwrap();
         assert_eq!(parsed["canisterSchemaVersion"], 36);
         assert_eq!(parsed["canisterModuleSha256"], module);
+        assert!(parsed.get("postActivationUpgradeSha256").is_none());
         assert_eq!(
             parsed["profileFileSha256"],
             hex(&Sha256::digest(&profile_bytes))
         );
-        assert_eq!(
-            parsed["postActivationUpgradeSha256"],
-            hex(&Sha256::digest(upgrade))
-        );
         assert_eq!(parsed["uiRpcConfigSha256"], hex(&Sha256::digest(rpc)));
-        fs::write(&upgrade_path, b"different chain").unwrap();
-        assert!(validate().is_err());
-        fs::write(&upgrade_path, upgrade).unwrap();
-        fs::write(&rpc_path, br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/changed-key"}"#).unwrap();
-        assert!(validate().is_err());
-        fs::write(&rpc_path, rpc).unwrap();
-        let mut drifted = expected.clone();
-        drifted.push(b' ');
-        fs::write(&runtime_profile, drifted).unwrap();
-        assert!(validate().is_err());
         for schema in [34, 35, 37] {
-            terminal.runtime.schema_version = schema;
-            assert!(production_ui_runtime_profile(
+            profile.canister_schema_version = schema;
+            assert!(production_current_ui_runtime_profile_value(
                 &profile,
                 &profile_bytes,
                 &manifest,
-                upgrade,
                 &module,
-                &terminal,
                 rpc
             )
             .is_err());
         }
-        terminal.runtime.schema_version = 36;
+        profile.canister_schema_version = 36;
         for invalid_rpc in [
             br#"{"schema_version":1,"base_rpc_url":"https://mainnet.base.org"}"#.as_slice(),
             br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/key?secret=1"}"#.as_slice(),
             br#"{"schema_version":2,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/key"}"#.as_slice(),
             br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/key","override":true}"#.as_slice(),
         ] {
-            assert!(production_ui_runtime_profile(&profile, &profile_bytes, &manifest, upgrade, &module, &terminal, invalid_rpc).is_err());
-        }
-        terminal.deposits_paused = true;
-        assert!(production_ui_runtime_profile(
-            &profile,
-            &profile_bytes,
-            &manifest,
-            upgrade,
-            &module,
-            &terminal,
-            rpc
-        )
-        .is_err());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    fn operational_epoch_fixture(
-        profile: &Profile,
-        ttl: u64,
-        epoch: u64,
-    ) -> OperationalEpochEvidence {
-        let binding = operational_config_binding(profile, ttl, epoch).unwrap();
-        let encoded = Encode!(&binding.operational_config).unwrap();
-        let config = Decode!(&encoded, OperationalConfigCallView).unwrap();
-        let response = Encode!(&OperationalConfigResultView::Ok(Box::new(config))).unwrap();
-        OperationalEpochEvidence::from_response(&hex(&response)).unwrap()
-    }
-
-    #[test]
-    fn production_upgrade_epoch_progress_requires_one_exact_operational_preimage() {
-        let mut profile = valid_profile();
-        profile.canister_schema_version = 35;
-        let mut status = matching_handover_status();
-        status.mint_authorization_epoch = 2;
-        status.mint_authorization_ttl_seconds = 600;
-        let live = live_runtime_binding_from_view(&matching_handover_runtime(&profile, &status));
-        let mut terminal = ProductionUpgradeTerminal {
-            observed_epoch: (1, 600),
-            runtime: live.clone(),
-            lifecycle: ProductionLifecycleView::Activated,
-            deposits_paused: false,
-        };
-        terminal.runtime.operational_config_sha256 =
-            hex(&expected_operational_config_sha256(&profile, 600, 1).unwrap());
-        let proof = operational_epoch_fixture(&profile, 600, 2);
-        let check = |terminal: &ProductionUpgradeTerminal,
-                     status: &BridgeStatusLiveView,
-                     live: &LiveRuntimeBinding,
-                     proof: Option<&OperationalEpochEvidence>| {
-            production_upgrade_predecessor_with_epoch_evidence(
-                terminal,
-                status,
-                ProductionLifecycleView::Activated,
-                live,
-                proof,
-                profile.parameters.ledger_fee,
+            assert!(production_current_ui_runtime_profile_value(
+                &profile,
+                &profile_bytes,
+                &manifest,
+                &module,
+                invalid_rpc
             )
-        };
-        assert!(check(&terminal, &status, &live, Some(&proof)).unwrap());
-        assert!(!check(&terminal, &status, &live, None).unwrap());
-        let mut bad = proof.clone();
-        bad.response_sha256 = "a".repeat(64);
-        assert!(check(&terminal, &status, &live, Some(&bad)).is_err());
-        let mut changed = profile.clone();
-        changed.rate_limits.notification_global += 1;
-        let wrong_config = operational_epoch_fixture(&changed, 600, 2);
-        assert!(check(&terminal, &status, &live, Some(&wrong_config)).is_err());
-        let mut wrong_live = live.clone();
-        wrong_live.operational_config_sha256 = "b".repeat(64);
-        assert!(check(&terminal, &status, &wrong_live, Some(&proof)).is_err());
-        wrong_live = live.clone();
-        wrong_live.deployment_instance_id = "c".repeat(64);
-        assert!(!check(&terminal, &status, &wrong_live, Some(&proof)).unwrap());
-        let mut wrong_status = status.clone();
-        wrong_status.mint_authorization_epoch = 3;
-        assert!(check(&terminal, &wrong_status, &live, Some(&proof)).is_err());
-        terminal.observed_epoch = (3, 600);
-        assert!(!check(&terminal, &status, &live, Some(&proof)).unwrap());
-        terminal.observed_epoch = (1, 601);
-        assert!(!check(&terminal, &status, &live, Some(&proof)).unwrap());
-        terminal.observed_epoch = (1, 600);
-        terminal.runtime.operational_config_sha256 = "d".repeat(64);
-        assert!(!check(&terminal, &status, &live, Some(&proof)).unwrap());
-        terminal.runtime.operational_config_sha256 =
-            hex(&expected_operational_config_sha256(&profile, 600, 1).unwrap());
-        // Equality of new config and live is insufficient: it must also explain the old digest.
-        let changed_live =
-            live_runtime_binding_from_view(&matching_handover_runtime(&changed, &status));
-        assert!(!check(&terminal, &status, &changed_live, Some(&wrong_config)).unwrap());
-    }
-
-    #[test]
-    fn production_upgrade_ttl_migration_requires_exact_v36_preimage() {
-        let mut profile = valid_profile();
-        profile.canister_schema_version = 36;
-        let mut before = matching_handover_status();
-        before.mint_authorization_ttl_seconds = 600;
-        let mut after = before.clone();
-        after.mint_authorization_ttl_seconds = 900;
-        let old = live_runtime_binding_from_view(&matching_handover_runtime(&profile, &before));
-        let new = live_runtime_binding_from_view(&matching_handover_runtime(&profile, &after));
-        let proof = operational_epoch_fixture(&profile, 600, before.mint_authorization_epoch);
-        let check = |a: &BridgeStatusLiveView,
-                     b: &BridgeStatusLiveView,
-                     x: &LiveRuntimeBinding,
-                     y: &LiveRuntimeBinding,
-                     p: Option<&OperationalEpochEvidence>| {
-            production_upgrade_ttl_migration_matches(a, b, x, y, p, profile.parameters.ledger_fee)
-        };
-        assert!(check(&before, &after, &old, &new, Some(&proof)).unwrap());
-        assert!(!production_upgrade_status_preserved(&before, &after));
-        assert!(production_upgrade_status_preserved(&after, &after));
-        assert!(!check(&before, &after, &old, &new, None).unwrap());
-        assert!(!check(&after, &before, &new, &old, Some(&proof)).unwrap());
-        for ttl in [0, 599, 601, 899, 901, u64::MAX] {
-            let mut changed = after.clone();
-            changed.mint_authorization_ttl_seconds = ttl;
-            assert!(!check(&before, &changed, &old, &new, Some(&proof)).unwrap());
+            .is_err());
         }
-        for field in 0..12 {
-            let mut changed = after.clone();
-            match field {
-                0 => changed.mint_authorization_epoch += 1,
-                1 => changed.deposits_paused = !changed.deposits_paused,
-                2 => changed.reserve.sufficient = false,
-                3 => changed.counts.deposits += 1,
-                4 => changed.counts.withdrawals += 1,
-                5 => changed.counts.reconciliation_holds += 1,
-                6 => changed.counts.pending_ledger_operations += 1,
-                7 => changed.counts.reserved_deposit_mint_amount += 1,
-                8 => changed.counts.reserved_deposit_mint_operations += 1,
-                9 => changed.counts.retained_audit_events += 1,
-                10 => changed.counts.pruned_audit_events += 1,
-                _ => changed.counts.retained_deposit_index_entries += 1,
-            }
-            assert!(!check(&before, &changed, &old, &new, Some(&proof)).unwrap());
-        }
-        for version in [34, 35, 37] {
-            let mut changed = old.clone();
-            changed.schema_version = version;
-            assert!(!check(&before, &after, &changed, &new, Some(&proof)).unwrap());
-            let mut changed = new.clone();
-            changed.schema_version = version;
-            assert!(!check(&before, &after, &old, &changed, Some(&proof)).unwrap());
-        }
-        let mut changed = new.clone();
-        changed.deployment_instance_id = "ab".repeat(32);
-        assert!(!check(&before, &after, &old, &changed, Some(&proof)).unwrap());
-        changed = new.clone();
-        changed.operational_config_sha256 = "ab".repeat(32);
-        assert!(!check(&before, &after, &old, &changed, Some(&proof)).unwrap());
-        let mut changed_profile = profile.clone();
-        changed_profile.rate_limits.notification_global += 1;
-        let changed =
-            live_runtime_binding_from_view(&matching_handover_runtime(&changed_profile, &after));
-        assert!(!check(&before, &after, &old, &changed, Some(&proof)).unwrap());
-        let wrong =
-            operational_epoch_fixture(&changed_profile, 600, before.mint_authorization_epoch);
-        assert!(check(&before, &after, &old, &new, Some(&wrong)).is_err());
-        let mut wrong = proof.clone();
-        wrong.response_sha256 = "ab".repeat(32);
-        assert!(check(&before, &after, &old, &new, Some(&wrong)).is_err());
-    }
-
-    #[test]
-    fn production_upgrade_activated_schema_migration_preserves_sealed_binding() {
-        let mut profile = valid_profile();
-        profile.canister_schema_version = 35;
-        let status = matching_handover_status();
-        let gate_a_runtime = live_runtime_binding(&profile);
-        let mut before = matching_handover_runtime(&profile, &status);
-        before.operational_config_sha256 = vec![9; 32];
-        let mut after = before.clone();
-        after.schema_version = 36;
-        assert!(production_upgrade_schema_predecessor_bound(
-            &profile,
-            &gate_a_runtime,
-            &status,
-            ProductionLifecycleView::Activated,
-            &before
-        )
-        .unwrap());
-        assert!(production_upgrade_schema_migration_matches(
-            &status, &status, &before, &after
-        ));
-        assert!(!production_upgrade_schema_predecessor_bound(
-            &profile,
-            &gate_a_runtime,
-            &status,
-            ProductionLifecycleView::Bootstrap,
-            &before
-        )
-        .unwrap());
-        let mut drifted = before.clone();
-        drifted.deployment_instance_id = vec![8; 32];
-        assert!(!production_upgrade_schema_predecessor_bound(
-            &profile,
-            &gate_a_runtime,
-            &status,
-            ProductionLifecycleView::Activated,
-            &drifted
-        )
-        .unwrap());
-        drifted = before.clone();
-        drifted.schema_version = 36;
-        assert!(!production_upgrade_schema_predecessor_bound(
-            &profile,
-            &gate_a_runtime,
-            &status,
-            ProductionLifecycleView::Activated,
-            &drifted
-        )
-        .unwrap());
-        after.expected_bridge_runtime_sha256 = vec![8; 32];
-        assert!(!production_upgrade_schema_migration_matches(
-            &status, &status, &before, &after
-        ));
-        after.expected_bridge_runtime_sha256 = before.expected_bridge_runtime_sha256.clone();
-        after.operational_config_sha256 = vec![8; 32];
-        assert!(!production_upgrade_schema_migration_matches(
-            &status, &status, &before, &after
-        ));
-        after = before.clone();
-        after.schema_version = 36;
-        let mut changed_status = status.clone();
-        changed_status.counts.deposits += 1;
-        assert!(!production_upgrade_schema_migration_matches(
-            &status,
-            &changed_status,
-            &before,
-            &after
-        ));
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn live_runtime_binding(profile: &Profile) -> LiveRuntimeBinding {
@@ -14343,48 +9361,6 @@ mod tests {
         .is_err());
     }
 
-    fn matching_activation_attestation(
-        profile: &Profile,
-        observed_at_unix: u64,
-        finalized_block_number: u64,
-    ) -> ActivationAttestationView {
-        let operator = decode_address(&profile.governance_operator).unwrap();
-        let runtime_administrator = decode_address(&profile.runtime_administrator).unwrap();
-        let independent_canceller = decode_address(&profile.independent_canceller).unwrap();
-        let timelock = decode_address(&profile.timelock.address).unwrap();
-        ActivationAttestationView {
-            chain_id: profile.chain_id,
-            finalized_block_number,
-            finalized_block_hash: vec![0xaa; 32],
-            observed_at_ns: observed_at_unix * 1_000_000_000,
-            bridge_signer: decode_address(&profile.expected_bridge_signer)
-                .unwrap()
-                .to_vec(),
-            bridge_runtime_sha256: decode_hex(&profile.bridge_runtime_bytecode_sha256).unwrap(),
-            deposits_paused: true,
-            withdrawals_paused: true,
-            bridge_timelock: timelock.to_vec(),
-            runtime_administrator: runtime_administrator.to_vec(),
-            timelock_admin: timelock.to_vec(),
-            timelock_proposer: operator.to_vec(),
-            timelock_canceller: independent_canceller.to_vec(),
-            timelock_executor: operator.to_vec(),
-            timelock_runtime_code_hash: decode_hex(&profile.timelock.runtime_code_hash).unwrap(),
-            bridge_approved_timelock_runtime_code_hash: decode_hex(
-                &profile.timelock.runtime_code_hash,
-            )
-            .unwrap(),
-            timelock_minimum_delay_seconds: profile.timelock.minimum_delay_seconds,
-            bsns_address: decode_address(&profile.bsns_contract).unwrap().to_vec(),
-            bsns_runtime_sha256: decode_hex(&profile.bsns_runtime_bytecode_sha256).unwrap(),
-            bsns_name: "KINIC".into(),
-            bsns_symbol: "KINIC".into(),
-            bsns_decimals: profile.decimals,
-            bsns_bridge: decode_address(&profile.bridge_contract).unwrap().to_vec(),
-            base_service_fee: profile.parameters.service_fee,
-        }
-    }
-
     fn matching_handover_status() -> BridgeStatusLiveView {
         BridgeStatusLiveView {
             reserve: ReserveStatusView { sufficient: true },
@@ -14402,261 +9378,6 @@ mod tests {
                 pruned_audit_events: 5,
                 retained_deposit_index_entries: 2,
             },
-        }
-    }
-
-    #[test]
-    fn production_upgrade_query_state_rejects_insufficient_cycles_reserve() {
-        let profile = valid_profile();
-        let mut status = matching_handover_status();
-        status.reserve.sufficient = false;
-        let runtime = matching_handover_runtime(&profile, &status);
-        let error = production_upgrade_query_state(
-            &hex(&Encode!(&status).unwrap()),
-            &hex(&Encode!(&ProductionLifecycleResultView::Ok(
-                ProductionLifecycleView::Bootstrap
-            ))
-            .unwrap()),
-            &hex(&Encode!(&runtime).unwrap()),
-            &hex(&Encode!(&StorageIntegrityResultView::Ok("ok".into())).unwrap()),
-        )
-        .err()
-        .expect("insufficient reserve must fail closed");
-        assert!(error.contains("sufficient cycles reserve"));
-    }
-
-    #[test]
-    fn production_upgrade_live_predecessor_allows_only_activation_progress() {
-        let profile = valid_profile();
-        let mut status = matching_handover_status();
-        status.deposits_paused = true;
-        let mut live_runtime =
-            live_runtime_binding_from_view(&matching_handover_runtime(&profile, &status));
-        let terminal = ProductionUpgradeTerminal {
-            observed_epoch: (1, 900),
-            runtime: live_runtime.clone(),
-            lifecycle: ProductionLifecycleView::Bootstrap,
-            deposits_paused: true,
-        };
-        live_runtime.operational_config_sha256 = "9".repeat(64);
-        assert!(production_upgrade_live_predecessor_matches(
-            &terminal,
-            &status,
-            ProductionLifecycleView::OperationalConfigSealed,
-            &live_runtime,
-        ));
-
-        let mut unpaused = status.clone();
-        unpaused.deposits_paused = false;
-        assert!(!production_upgrade_live_predecessor_matches(
-            &terminal,
-            &unpaused,
-            ProductionLifecycleView::OperationalConfigSealed,
-            &live_runtime,
-        ));
-        assert!(!production_upgrade_live_predecessor_matches(
-            &terminal,
-            &status,
-            ProductionLifecycleView::Bootstrap,
-            &live_runtime,
-        ));
-
-        let mut drifted = live_runtime.clone();
-        drifted.schema_version += 1;
-        assert!(!production_upgrade_live_predecessor_matches(
-            &terminal,
-            &status,
-            ProductionLifecycleView::OperationalConfigSealed,
-            &drifted,
-        ));
-
-        for lifecycle in [
-            ProductionLifecycleView::OperationalConfigSealed,
-            ProductionLifecycleView::Activated,
-        ] {
-            let sealed_terminal = ProductionUpgradeTerminal {
-                observed_epoch: (1, 900),
-                runtime: terminal.runtime.clone(),
-                lifecycle,
-                deposits_paused: lifecycle != ProductionLifecycleView::Activated,
-            };
-            assert!(!production_upgrade_live_predecessor_matches(
-                &sealed_terminal,
-                &status,
-                lifecycle,
-                &live_runtime,
-            ));
-        }
-
-        let sealed_terminal = ProductionUpgradeTerminal {
-            observed_epoch: (1, 900),
-            runtime: live_runtime.clone(),
-            lifecycle: ProductionLifecycleView::OperationalConfigSealed,
-            deposits_paused: true,
-        };
-        assert!(production_upgrade_live_predecessor_matches(
-            &sealed_terminal,
-            &status,
-            ProductionLifecycleView::OperationalConfigSealed,
-            &live_runtime,
-        ));
-        assert!(production_upgrade_live_predecessor_matches(
-            &sealed_terminal,
-            &unpaused,
-            ProductionLifecycleView::Activated,
-            &live_runtime,
-        ));
-        assert!(!production_upgrade_live_predecessor_matches(
-            &sealed_terminal,
-            &status,
-            ProductionLifecycleView::Bootstrap,
-            &live_runtime,
-        ));
-    }
-
-    #[test]
-    fn production_upgrade_pause_migration_accepts_only_the_exact_runtime_and_audit_delta() {
-        let mut gate_a_profile = valid_profile();
-        gate_a_profile.pause_principal = KINIC_ROOT.into();
-        let mut before_status = matching_handover_status();
-        before_status.deposits_paused = true;
-        let before_runtime = matching_handover_runtime(&gate_a_profile, &before_status);
-        let gate_a_runtime = live_runtime_binding_from_view(&before_runtime);
-
-        let mut migrated_profile = gate_a_profile.clone();
-        migrated_profile.pause_principal = PRODUCTION_PAUSE_PRINCIPAL.into();
-        let mut after_status = before_status.clone();
-        after_status.counts.retained_audit_events += 1;
-        let after_runtime = matching_handover_runtime(&migrated_profile, &after_status);
-        assert!(production_upgrade_pause_migration_matches(
-            &gate_a_profile,
-            &gate_a_runtime,
-            &before_status,
-            &after_status,
-            &before_runtime,
-            &after_runtime,
-        )
-        .unwrap());
-
-        let mut runtime_drift = after_runtime.clone();
-        runtime_drift.schema_version += 1;
-        assert!(!production_upgrade_pause_migration_matches(
-            &gate_a_profile,
-            &gate_a_runtime,
-            &before_status,
-            &after_status,
-            &before_runtime,
-            &runtime_drift,
-        )
-        .unwrap());
-
-        let mut status_drift = after_status.clone();
-        status_drift.counts.pending_ledger_operations += 1;
-        assert!(!production_upgrade_pause_migration_matches(
-            &gate_a_profile,
-            &gate_a_runtime,
-            &before_status,
-            &status_drift,
-            &before_runtime,
-            &after_runtime,
-        )
-        .unwrap());
-
-        let mut previous_runtime = before_runtime.clone();
-        previous_runtime.schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
-        let previous_gate_a_runtime = live_runtime_binding_from_view(&previous_runtime);
-        let mut combined_after_runtime = after_runtime.clone();
-        combined_after_runtime.schema_version = CURRENT_STABLE_SCHEMA_VERSION;
-        assert!(production_upgrade_pause_and_schema_migration_matches(
-            &gate_a_profile,
-            &previous_gate_a_runtime,
-            &before_status,
-            &after_status,
-            &previous_runtime,
-            &combined_after_runtime,
-        )
-        .unwrap());
-        combined_after_runtime.schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
-        assert!(!production_upgrade_pause_and_schema_migration_matches(
-            &gate_a_profile,
-            &previous_gate_a_runtime,
-            &before_status,
-            &after_status,
-            &previous_runtime,
-            &combined_after_runtime,
-        )
-        .unwrap());
-
-        let mut post_pause_schema35 = after_runtime.clone();
-        post_pause_schema35.schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
-        assert!(production_upgrade_post_pause_runtime_matches(
-            &gate_a_profile,
-            &previous_gate_a_runtime,
-            &after_status,
-            &post_pause_schema35,
-        )
-        .unwrap());
-        let mut post_pause_schema36 = post_pause_schema35.clone();
-        post_pause_schema36.schema_version = CURRENT_STABLE_SCHEMA_VERSION;
-        assert!(production_upgrade_schema_migration_matches(
-            &after_status,
-            &after_status,
-            &post_pause_schema35,
-            &post_pause_schema36,
-        ));
-    }
-
-    fn matching_handover_runtime(
-        profile: &Profile,
-        status: &BridgeStatusLiveView,
-    ) -> RuntimeBindingView {
-        RuntimeBindingView {
-            base_chain_id: profile.chain_id,
-            bridge_contract: decode_address(&profile.bridge_contract).unwrap().to_vec(),
-            expected_bridge_runtime_sha256: decode_hex(&profile.bridge_runtime_bytecode_sha256)
-                .unwrap(),
-            timelock_contract: decode_address(&profile.timelock.address).unwrap().to_vec(),
-            deployment_instance_id: decode_hex(&profile.deployment_instance_id).unwrap(),
-            minimum_withdrawal_id: decode_hex(&profile.minimum_withdrawal_id).unwrap(),
-            ledger_canister_id: Principal::from_text(&profile.ledger_canister_id).unwrap(),
-            index_canister_id: Principal::from_text(&profile.index_canister_id).unwrap(),
-            schema_version: profile.canister_schema_version,
-            expected_bridge_signer: decode_address(&profile.expected_bridge_signer)
-                .unwrap()
-                .to_vec(),
-            evm_rpc_canister_id: Principal::from_text(&profile.evm_rpc_canister_id).unwrap(),
-            rpc_provider_urls_sha256: canonical_sha256(&Vec::<String>::new()).unwrap().to_vec(),
-            operational_config_sha256: expected_operational_config_sha256(
-                profile,
-                status.mint_authorization_ttl_seconds,
-                status.mint_authorization_epoch,
-            )
-            .unwrap()
-            .to_vec(),
-        }
-    }
-
-    fn handover_gate_a_receipt(
-        profile: &Profile,
-        install_receipt: ProductionCanisterInstallReceipt,
-    ) -> GateAReceipt {
-        GateAReceipt {
-            schema_version: 2,
-            gate_a_manifest_sha256: "a".repeat(64),
-            release_id: "release".into(),
-            source_revision: "b".repeat(40),
-            source_tree_sha256: "c".repeat(64),
-            gate_a_profile_sha256: "d".repeat(64),
-            post_deploy_profile_sha256: "e".repeat(64),
-            bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
-            bridge_runtime_bytecode_sha256: profile.bridge_runtime_bytecode_sha256.clone(),
-            bridge_deployment_transaction_hash: format!("0x{}", "11".repeat(32)),
-            bridge_deployment_block_number: 101,
-            bridge_deployment_block_hash: format!("0x{}", "22".repeat(32)),
-            timelock_deployment_transaction_hash: format!("0x{}", "33".repeat(32)),
-            timelock_deployment_block_number: 100,
-            timelock_deployment_block_hash: format!("0x{}", "44".repeat(32)),
-            canister_install: install_receipt,
         }
     }
 
@@ -14681,352 +9402,6 @@ mod tests {
             decode_production_storage_integrity(hex(&unauthorized).as_bytes()).unwrap(),
             StorageIntegrityResultView::Err(_)
         ));
-    }
-
-    #[test]
-    fn production_handover_requires_active_integral_state_and_fresh_attestation() {
-        let profile = valid_profile();
-        assert!(profile.rpc_providers.is_empty());
-        let install_receipt = production_canister_receipt(&profile);
-        let mut gate_a_receipt = handover_gate_a_receipt(&profile, install_receipt.clone());
-        gate_a_receipt.bridge_canister_wasm_sha256 = "6".repeat(64);
-        gate_a_receipt.canister_install.module_sha256 = "6".repeat(64);
-        let installer = Principal::from_text(&install_receipt.installer_principal).unwrap();
-        let controllers = [installer];
-        let module_hash = decode_hex(&profile.bridge_canister_wasm_sha256).unwrap();
-        let created = 1_000_000;
-        let now = created + 600;
-        let mut attestation = matching_activation_attestation(&profile, now, 101);
-        attestation.deposits_paused = false;
-        attestation.withdrawals_paused = false;
-        let status = matching_handover_status();
-        let runtime = matching_handover_runtime(&profile, &status);
-        let storage_integrity = StorageIntegrityResultView::Ok("ok".into());
-        let activation_status = ActivationStatusView {
-            deposits_paused: false,
-            pending_timelock_operation: None,
-            last_confirmed_activation: Some(ActivationConfirmationStatusView {
-                phase: "execute".into(),
-                governance_operation_id: 8,
-                timelock_operation_id: vec![0x51; 32],
-                transaction_hash: vec![0x52; 32],
-                receipt_block_number: 102,
-                generation: 0,
-                signed_at_ns: 123,
-            }),
-        };
-        let timelock_operation_id = format!("0x{}", "51".repeat(32));
-        let transaction_hash = format!("0x{}", "52".repeat(32));
-        let activation = ProductionHandoverActivationBinding {
-            governance_operation_id: 8,
-            finalized_block_number: 102,
-            timelock_operation_id: &timelock_operation_id,
-            transaction_hash: &transaction_hash,
-            confirmed_generation: 0,
-            confirmed_signed_at_ns: "123",
-            expected_module_sha256: &profile.bridge_canister_wasm_sha256,
-        };
-        let validate = |lifecycle: &ProductionLifecycleView,
-                        attestation: Option<&ActivationAttestationView>,
-                        controllers: &[Principal],
-                        module_hash: &[u8]| {
-            let observation = ProductionHandoverCanisterObservation {
-                lifecycle,
-                attestation,
-                activation_status: &activation_status,
-                runtime: &runtime,
-                status: &status,
-                storage_integrity: &storage_integrity,
-                controllers,
-                module_hash,
-            };
-            validate_production_handover_canister_state(
-                &profile,
-                installer,
-                &gate_a_receipt,
-                &activation,
-                &observation,
-                created,
-                now,
-            )
-        };
-        assert!(validate(
-            &ProductionLifecycleView::Activated,
-            Some(&attestation),
-            &controllers,
-            &module_hash,
-        )
-        .is_ok());
-        let confirmed = activation_status
-            .last_confirmed_activation
-            .as_ref()
-            .unwrap();
-        assert!(controller_activation_confirmation_fields_match(
-            0, "123", confirmed,
-        ));
-        for (generation, signed_at_ns) in [
-            (1, "123"),
-            (0, "124"),
-            (0, "0123"),
-            (0, "+123"),
-            (0, "18446744073709551616"),
-        ] {
-            assert!(!controller_activation_confirmation_fields_match(
-                generation,
-                signed_at_ns,
-                confirmed,
-            ));
-        }
-        for (generation, signed_at_ns) in [
-            (1, "123"),
-            (0, "124"),
-            (0, "0123"),
-            (0, "+123"),
-            (0, "18446744073709551616"),
-        ] {
-            let drifted_activation = ProductionHandoverActivationBinding {
-                governance_operation_id: 8,
-                finalized_block_number: 102,
-                timelock_operation_id: &timelock_operation_id,
-                transaction_hash: &transaction_hash,
-                confirmed_generation: generation,
-                confirmed_signed_at_ns: signed_at_ns,
-                expected_module_sha256: &profile.bridge_canister_wasm_sha256,
-            };
-            let observation = ProductionHandoverCanisterObservation {
-                lifecycle: &ProductionLifecycleView::Activated,
-                attestation: Some(&attestation),
-                activation_status: &activation_status,
-                runtime: &runtime,
-                status: &status,
-                storage_integrity: &storage_integrity,
-                controllers: &controllers,
-                module_hash: &module_hash,
-            };
-            assert!(validate_production_handover_canister_state(
-                &profile,
-                installer,
-                &gate_a_receipt,
-                &drifted_activation,
-                &observation,
-                created,
-                now,
-            )
-            .is_err());
-        }
-        assert!(validate(
-            &ProductionLifecycleView::Bootstrap,
-            Some(&attestation),
-            &controllers,
-            &module_hash,
-        )
-        .is_err());
-        assert!(validate(
-            &ProductionLifecycleView::OperationalConfigSealed,
-            Some(&attestation),
-            &controllers,
-            &module_hash,
-        )
-        .is_err());
-        assert!(validate(
-            &ProductionLifecycleView::Activated,
-            None,
-            &controllers,
-            &module_hash,
-        )
-        .is_err());
-
-        let mut stale = matching_activation_attestation(
-            &profile,
-            now - MAX_ACTIVATION_ATTESTATION_AGE_SECS - 1,
-            101,
-        );
-        stale.deposits_paused = false;
-        stale.withdrawals_paused = false;
-        assert!(validate(
-            &ProductionLifecycleView::Activated,
-            Some(&stale),
-            &controllers,
-            &module_hash,
-        )
-        .is_err());
-        let validate_assets_only_attestation = |candidate: &ActivationAttestationView| {
-            let observation = ProductionHandoverCanisterObservation {
-                lifecycle: &ProductionLifecycleView::Activated,
-                attestation: Some(candidate),
-                activation_status: &activation_status,
-                runtime: &runtime,
-                status: &status,
-                storage_integrity: &storage_integrity,
-                controllers: &controllers,
-                module_hash: &module_hash,
-            };
-            validate_production_handover_observation(
-                &profile,
-                installer,
-                &activation,
-                &observation,
-                &ProductionHandoverValidationContext {
-                    minimum_deployment_block: gate_a_receipt
-                        .bridge_deployment_block_number
-                        .max(gate_a_receipt.timelock_deployment_block_number),
-                    manifest_created_at_unix: created,
-                    now,
-                    attestation_freshness:
-                        ActivationAttestationFreshness::AllowStaleForUnchangedUiAssets,
-                },
-            )
-        };
-        let stale_assets_only = validate_assets_only_attestation(&stale);
-        assert!(stale_assets_only.is_ok(), "{stale_assets_only:?}");
-        stale.observed_at_ns = now * 1_000_000_000;
-        stale.finalized_block_number = 100;
-        assert!(validate_assets_only_attestation(&stale).is_err());
-        assert!(validate(
-            &ProductionLifecycleView::Activated,
-            Some(&stale),
-            &controllers,
-            &module_hash,
-        )
-        .is_err());
-        stale.finalized_block_number = 101;
-        stale.observed_at_ns = (created - 1) * 1_000_000_000;
-        assert!(validate_assets_only_attestation(&stale).is_err());
-        stale.observed_at_ns = (now + 1) * 1_000_000_000;
-        assert!(validate_assets_only_attestation(&stale).is_err());
-        stale.observed_at_ns = 0;
-        assert!(validate_assets_only_attestation(&stale).is_err());
-
-        let mut profile_drift = attestation;
-        profile_drift.chain_id = 84532;
-        assert!(validate(
-            &ProductionLifecycleView::Activated,
-            Some(&profile_drift),
-            &controllers,
-            &module_hash,
-        )
-        .is_err());
-        let initial_install_module =
-            decode_hex(&gate_a_receipt.bridge_canister_wasm_sha256).unwrap();
-        assert!(validate(
-            &ProductionLifecycleView::Activated,
-            Some(&matching_activation_attestation(&profile, now, 101)),
-            &controllers,
-            &initial_install_module,
-        )
-        .is_err());
-        let mut base_deposit_paused = matching_activation_attestation(&profile, now, 101);
-        base_deposit_paused.deposits_paused = true;
-        assert!(validate(
-            &ProductionLifecycleView::Activated,
-            Some(&base_deposit_paused),
-            &controllers,
-            &module_hash,
-        )
-        .is_err());
-        let mut base_withdrawal_paused = matching_activation_attestation(&profile, now, 101);
-        base_withdrawal_paused.withdrawals_paused = true;
-        assert!(validate(
-            &ProductionLifecycleView::Activated,
-            Some(&base_withdrawal_paused),
-            &controllers,
-            &module_hash,
-        )
-        .is_err());
-        let extra_controllers = [controllers[0], Principal::anonymous()];
-        assert!(validate(
-            &ProductionLifecycleView::Activated,
-            Some(&matching_activation_attestation(&profile, now, 101)),
-            &extra_controllers,
-            &module_hash,
-        )
-        .is_err());
-        let mut drifted_module = module_hash.clone();
-        drifted_module[0] ^= 1;
-        assert!(validate(
-            &ProductionLifecycleView::Activated,
-            Some(&matching_activation_attestation(&profile, now, 101)),
-            &controllers,
-            &drifted_module,
-        )
-        .is_err());
-
-        let active_lifecycle = ProductionLifecycleView::Activated;
-        let validate_runtime =
-            |candidate_profile: &Profile,
-             candidate_runtime: &RuntimeBindingView,
-             candidate_status: &BridgeStatusLiveView| {
-                let candidate_attestation =
-                    matching_activation_attestation(candidate_profile, now, 101);
-                let observation = ProductionHandoverCanisterObservation {
-                    lifecycle: &active_lifecycle,
-                    attestation: Some(&candidate_attestation),
-                    activation_status: &activation_status,
-                    runtime: candidate_runtime,
-                    status: candidate_status,
-                    storage_integrity: &storage_integrity,
-                    controllers: &controllers,
-                    module_hash: &module_hash,
-                };
-                validate_production_handover_canister_state(
-                    candidate_profile,
-                    installer,
-                    &gate_a_receipt,
-                    &activation,
-                    &observation,
-                    created,
-                    now,
-                )
-            };
-        let mut fee_drift_profile = profile.clone();
-        fee_drift_profile.parameters.gas_limit_ceiling += 1;
-        assert!(validate_runtime(&fee_drift_profile, &runtime, &status).is_err());
-        let mut cycles_drift_profile = profile.clone();
-        cycles_drift_profile.parameters.cycles_floor += 1;
-        assert!(validate_runtime(&cycles_drift_profile, &runtime, &status).is_err());
-        let mut settlement_cycles_drift_profile = profile.clone();
-        settlement_cycles_drift_profile
-            .parameters
-            .settlement_cycle_ceiling += 1;
-        assert!(validate_runtime(&settlement_cycles_drift_profile, &runtime, &status).is_err());
-
-        let mut runtime_drift = matching_handover_runtime(&profile, &status);
-        runtime_drift.rpc_provider_urls_sha256[0] ^= 1;
-        assert!(validate_runtime(&profile, &runtime_drift, &status).is_err());
-        let mut schema_drift = matching_handover_runtime(&profile, &status);
-        schema_drift.schema_version -= 1;
-        assert!(validate_runtime(&profile, &schema_drift, &status).is_err());
-        let mut runtime_code_drift = matching_handover_runtime(&profile, &status);
-        runtime_code_drift.expected_bridge_runtime_sha256[0] ^= 1;
-        assert!(validate_runtime(&profile, &runtime_code_drift, &status).is_err());
-        let mut insufficient_reserve = matching_handover_status();
-        insufficient_reserve.reserve.sufficient = false;
-        assert!(validate_runtime(&profile, &runtime, &insufficient_reserve).is_err());
-        let mut paused = matching_handover_status();
-        paused.deposits_paused = true;
-        assert!(validate_runtime(&profile, &runtime, &paused).is_err());
-
-        let failed_integrity = StorageIntegrityResultView::Err(Reserved);
-        let observation = ProductionHandoverCanisterObservation {
-            lifecycle: &active_lifecycle,
-            attestation: Some(&matching_activation_attestation(&profile, now, 101)),
-            activation_status: &activation_status,
-            runtime: &runtime,
-            status: &status,
-            storage_integrity: &failed_integrity,
-            controllers: &controllers,
-            module_hash: &module_hash,
-        };
-        assert!(validate_production_handover_canister_state(
-            &profile,
-            installer,
-            &gate_a_receipt,
-            &activation,
-            &observation,
-            created,
-            now,
-        )
-        .is_err());
     }
 
     #[test]
@@ -15659,2416 +10034,224 @@ mod tests {
     }
 
     #[test]
-    fn production_upgrade_schema_chain_allows_only_the_deployed_migration() {
-        assert_eq!(production_upgrade_schema_transition(35, 35, 35), Some(35));
-        assert_eq!(production_upgrade_schema_transition(35, 35, 36), Some(36));
-        assert_eq!(production_upgrade_schema_transition(36, 36, 36), Some(36));
-        assert_eq!(production_upgrade_schema_transition(35, 36, 36), None);
-        assert_eq!(production_upgrade_schema_transition(36, 36, 35), None);
-        assert_eq!(production_upgrade_schema_transition(35, 35, 37), None);
-        assert_eq!(production_upgrade_schema_transition(34, 34, 35), None);
+    fn gate_b_bundle_excludes_historical_upgrade_artifacts() {
+        assert_eq!(GATE_B_ARTIFACTS.len(), 11);
+        assert!(!GATE_B_ARTIFACTS.contains(&"production-canister-upgrade-receipt.json"));
+        assert!(!GATE_B_ARTIFACTS.contains(&"post-gate-a-policy-transition.json"));
+        assert!(GATE_B_ARTIFACTS.contains(&"gate-a-receipt.json"));
+        assert!(GATE_B_ARTIFACTS.contains(&"gate-a-profile.json"));
     }
 
     #[test]
-    fn bundle_gate_validates_hashes_and_slo() {
-        let root = env::temp_dir().join(format!(
-            "bridge-profile-{}-{}",
-            process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let now = now_unix().unwrap();
-        let mut profile = valid_profile();
-        profile.pause_principal = KINIC_ROOT.into();
-        profile.timelock.proposer = profile.governance_operator.clone();
-        profile.timelock.executor = profile.governance_operator.clone();
-        profile.timelock.canceller = profile.independent_canceller.clone();
-        profile.bridge_canister_wasm_sha256 = hex(&Sha256::digest(b"wasm"));
-        profile.bridge_runtime_bytecode_sha256 = hex(&Sha256::digest(b"runtime"));
-        profile.deployment_block = 0;
-        let installer = test_principal(31);
-        let json_bytes = |value: Value| serde_json::to_vec(&value).unwrap();
-        let before_root_candid = Encode!(&SnsCanistersView { dapps: vec![] }).unwrap();
-        let before_root = json_bytes(serde_json::json!({
-            "response_bytes": hex(&before_root_candid),
-            "decoded": {"dapps": []},
-        }));
-        let before_management = json_bytes(serde_json::json!({
-            "controllers": [installer],
-            "module_hash": profile.bridge_canister_wasm_sha256.clone(),
-        }));
-        let after_management = json_bytes(serde_json::json!({
-            "controllers": [KINIC_ROOT],
-            "module_hash": profile.bridge_canister_wasm_sha256.clone(),
-        }));
-        let bridge_status = json_bytes(serde_json::json!({
-            "reserve": {"sufficient": true},
-            "deposits_paused": false,
-            "mint_authorization_ttl_seconds": 900,
-            "mint_authorization_epoch": 7,
-            "counts": {"deposits": 2,"withdrawals": 3,"retained_audit_events": 8,"pruned_audit_events": 5}
-        }));
-        let lifecycle = json_bytes(serde_json::json!({"decoded":{"Ok":"Activated"}}));
-        let operational_config_sha256 = hex(&expected_operational_config_sha256(&profile, 900, 7)
-            .expect("derive operational config binding"));
-        let runtime = json_bytes(serde_json::json!({
-            "base_chain_id": profile.chain_id,
-            "bridge_contract": profile.bridge_contract,
-            "expected_bridge_runtime_sha256": profile.bridge_runtime_bytecode_sha256,
-            "timelock_contract": profile.timelock.address,
-            "deployment_instance_id": profile.deployment_instance_id,
-            "minimum_withdrawal_id": profile.minimum_withdrawal_id,
-            "ledger_canister_id": profile.ledger_canister_id,
-            "index_canister_id": profile.index_canister_id,
-            "schema_version": profile.canister_schema_version,
-            "expected_bridge_signer": profile.expected_bridge_signer,
-            "evm_rpc_canister_id": profile.evm_rpc_canister_id,
-            "rpc_provider_urls_sha256": hex(&canonical_sha256(&Vec::<String>::new()).unwrap()),
-            "operational_config_sha256": operational_config_sha256,
-        }));
-        let integrity = json_bytes(serde_json::json!({"Ok":"ok"}));
-        let activation_status = json_bytes(serde_json::json!({
-            "Ok":{"deposits_paused":false,"pending_timelock_operation":[],"last_confirmed_activation":[{"phase":"execute"}]}
-        }));
-        let attestation = json_bytes(serde_json::json!({
-            "Ok":{"deposits_paused":false,"withdrawals_paused":false}
-        }));
-        let mut handover = ControllerHandover {
-            schema_version: 5,
-            stage: "complete".into(),
-            observed_at_unix: now - 95,
-            source_revision: "1".repeat(40),
-            source_tree_sha256: "1".repeat(64),
-            gate_b_manifest_sha256: "2".repeat(64),
-            operational_config_seal_receipt_sha256: "3".repeat(64),
-            controller_schedule_receipt_sha256: "4".repeat(64),
-            controller_execute_receipt_sha256: "5".repeat(64),
-            bridge_canister_id: profile.bridge_canister_id.clone(),
-            sns_root_canister_id: profile.root_canister_id.clone(),
-            executing_principal: installer.clone(),
-            command_argv: vec![
-                "icp",
-                "canister",
-                "settings",
-                "update",
-                "bridge-canister",
-                "-e",
-                "production",
-                "--add-controller",
-                KINIC_ROOT,
-                "--force",
-                "--identity",
-                "production",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-            request_id: "3".repeat(64),
-            response_exit_code: 0,
-            response_stdout_hex: String::new(),
-            response_stderr_hex: hex(format!("request_id={}\n", "3".repeat(64)).as_bytes()),
-            response_sha256: hex(&Sha256::digest(
-                format!("request_id={}\n", "3".repeat(64)).as_bytes(),
-            )),
-            before_controllers: vec![installer.clone()],
-            before_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
-            pre_send_controllers: vec![installer.clone()],
-            pre_send_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
-            final_controllers: vec![profile.root_canister_id.clone()],
-            after_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
-            before_management_status_response_json_hex: hex(&before_management),
-            before_management_status_response_sha256: hex(&Sha256::digest(&before_management)),
-            before_root_registration_response_json_hex: hex(&before_root),
-            before_root_registration_response_sha256: hex(&Sha256::digest(&before_root)),
-            pre_send_management_status_response_json_hex: hex(&before_management),
-            pre_send_management_status_response_sha256: hex(&Sha256::digest(&before_management)),
-            pre_send_bridge_status_response_json_hex: hex(&bridge_status),
-            pre_send_bridge_status_response_sha256: hex(&Sha256::digest(&bridge_status)),
-            pre_send_lifecycle_response_json_hex: hex(&lifecycle),
-            pre_send_lifecycle_response_sha256: hex(&Sha256::digest(&lifecycle)),
-            pre_send_runtime_binding_response_json_hex: hex(&runtime),
-            pre_send_runtime_binding_response_sha256: hex(&Sha256::digest(&runtime)),
-            pre_send_storage_integrity_response_json_hex: hex(&integrity),
-            pre_send_storage_integrity_response_sha256: hex(&Sha256::digest(&integrity)),
-            pre_send_activation_status_response_json_hex: hex(&activation_status),
-            pre_send_activation_status_response_sha256: hex(&Sha256::digest(&activation_status)),
-            pre_send_activation_attestation_response_json_hex: hex(&attestation),
-            pre_send_activation_attestation_response_sha256: hex(&Sha256::digest(&attestation)),
-            after_management_status_response_json_hex: hex(&after_management),
-            after_management_status_response_sha256: hex(&Sha256::digest(&after_management)),
-            before_bridge_status_response_json_hex: hex(&bridge_status),
-            before_bridge_status_response_sha256: hex(&Sha256::digest(&bridge_status)),
-            after_bridge_status_response_json_hex: hex(&bridge_status),
-            after_bridge_status_response_sha256: hex(&Sha256::digest(&bridge_status)),
-            before_lifecycle_response_json_hex: hex(&lifecycle),
-            before_lifecycle_response_sha256: hex(&Sha256::digest(&lifecycle)),
-            after_lifecycle_response_json_hex: hex(&lifecycle),
-            after_lifecycle_response_sha256: hex(&Sha256::digest(&lifecycle)),
-            before_runtime_binding_response_json_hex: hex(&runtime),
-            before_runtime_binding_response_sha256: hex(&Sha256::digest(&runtime)),
-            after_runtime_binding_response_json_hex: hex(&runtime),
-            after_runtime_binding_response_sha256: hex(&Sha256::digest(&runtime)),
-            before_storage_integrity_response_json_hex: hex(&integrity),
-            before_storage_integrity_response_sha256: hex(&Sha256::digest(&integrity)),
-            after_storage_integrity_response_json_hex: hex(&integrity),
-            after_storage_integrity_response_sha256: hex(&Sha256::digest(&integrity)),
-            before_activation_status_response_json_hex: hex(&activation_status),
-            before_activation_status_response_sha256: hex(&Sha256::digest(&activation_status)),
-            after_activation_status_response_json_hex: hex(&activation_status),
-            after_activation_status_response_sha256: hex(&Sha256::digest(&activation_status)),
-            before_activation_attestation_response_json_hex: hex(&attestation),
-            before_activation_attestation_response_sha256: hex(&Sha256::digest(&attestation)),
-            after_activation_attestation_response_json_hex: hex(&attestation),
-            after_activation_attestation_response_sha256: hex(&Sha256::digest(&attestation)),
-            cycles_balance: 10_000_000,
-            freezing_threshold_seconds: 86_400,
-            idle_cycles_burned_per_day: 1_000,
-            required_freezing_cycles: 1_000,
-            pre_send_cycles_balance: 10_000_000,
-            pre_send_required_freezing_cycles: 1_000,
-            pre_send_checkpoint_json_hex: String::new(),
-            pre_send_checkpoint_sha256: String::new(),
-            recovery_source_checkpoint_json_hex: String::new(),
-            recovery_source_checkpoint_sha256: String::new(),
-            recovered_without_request_id: false,
-            registration_proposal_id: 0,
-            preparation_receipt_json_hex: String::new(),
-            preparation_receipt_sha256: String::new(),
-            registration_submission_json_hex: String::new(),
-            registration_submission_sha256: String::new(),
-            registration_governance_response_json_hex: String::new(),
-            registration_governance_response_sha256: String::new(),
-            registration_root_response_json_hex: String::new(),
-            registration_root_response_sha256: String::new(),
+    fn current_state_gate_rejects_each_operational_drift() {
+        let controller = Principal::from_text(test_principal(70)).unwrap();
+        let expected_controllers = BTreeSet::from([controller]);
+        let module = vec![0x55; 32];
+        let module_sha256 = hex(&module);
+        let activation = |paused| ActivationStatusView {
+            deposits_paused: paused,
+            pending_timelock_operation: None,
+            last_confirmed_activation: Some(ActivationConfirmationStatusView {
+                phase: "execute".into(),
+                governance_operation_id: 2,
+                timelock_operation_id: vec![1; 32],
+                transaction_hash: vec![2; 32],
+                receipt_block_number: 3,
+                generation: 1,
+                signed_at_ns: 4,
+            }),
         };
-        let bind_checkpoints = |handover: &mut ControllerHandover, source_stage: &str| {
-            let mut checkpoint = serde_json::to_value(&*handover).unwrap();
-            let object = checkpoint.as_object_mut().unwrap();
-            object.insert("stage".into(), Value::from("pre_send_checkpoint"));
-            object.insert("request_id".into(), Value::from(""));
-            object.insert("response_exit_code".into(), Value::from(0));
-            object.insert("response_stdout_hex".into(), Value::from(""));
-            object.insert("response_stderr_hex".into(), Value::from(""));
-            object.insert(
-                "response_sha256".into(),
-                Value::from(hex(&Sha256::digest([]))),
-            );
-            object.retain(|key, _| {
-                !key.starts_with("after_")
-                    && !key.starts_with("registration_")
-                    && !key.starts_with("preparation_")
-                    && !matches!(
-                        key.as_str(),
-                        "final_controllers"
-                            | "recovery_source_checkpoint_json_hex"
-                            | "recovery_source_checkpoint_sha256"
-                            | "recovered_without_request_id"
-                    )
-            });
-            let checkpoint = serde_json::to_vec(&checkpoint).unwrap();
-            handover.pre_send_checkpoint_json_hex = hex(&checkpoint);
-            handover.pre_send_checkpoint_sha256 = hex(&Sha256::digest(&checkpoint));
-            let mut source = if source_stage == "pre_send_checkpoint" {
-                serde_json::from_slice::<Value>(&checkpoint).unwrap()
-            } else {
-                serde_json::to_value(&*handover).unwrap()
-            };
-            let object = source.as_object_mut().unwrap();
-            object.insert("stage".into(), Value::from(source_stage));
-            object.retain(|key, _| {
-                !key.starts_with("after_")
-                    && !key.starts_with("registration_")
-                    && !key.starts_with("preparation_")
-                    && !matches!(
-                        key.as_str(),
-                        "final_controllers"
-                            | "recovery_source_checkpoint_json_hex"
-                            | "recovery_source_checkpoint_sha256"
-                            | "recovered_without_request_id"
-                    )
-            });
-            let source = serde_json::to_vec(&source).unwrap();
-            handover.recovery_source_checkpoint_json_hex = hex(&source);
-            handover.recovery_source_checkpoint_sha256 = hex(&Sha256::digest(&source));
+        let runtime = |schema_version| RuntimeBindingView {
+            base_chain_id: 8453,
+            bridge_contract: vec![0; 20],
+            expected_bridge_runtime_sha256: vec![0; 32],
+            timelock_contract: vec![0; 20],
+            deployment_instance_id: vec![0; 32],
+            minimum_withdrawal_id: vec![0; 32],
+            ledger_canister_id: Principal::anonymous(),
+            index_canister_id: Principal::anonymous(),
+            schema_version,
+            expected_bridge_signer: vec![0; 20],
+            evm_rpc_canister_id: Principal::anonymous(),
+            rpc_provider_urls_sha256: vec![0; 32],
+            operational_config_sha256: vec![0; 32],
         };
-        bind_checkpoints(&mut handover, "controller_update_submitted");
-        let co_management = json_bytes(serde_json::json!({
-            "controllers": [installer.clone(), KINIC_ROOT],
-            "module_hash": profile.bridge_canister_wasm_sha256.clone(),
-        }));
-        let mut preparation = serde_json::to_value(&handover).unwrap();
-        preparation["stage"] = Value::from("co_controller_ready");
-        preparation["observed_at_unix"] = Value::from(now - 98);
-        preparation["final_controllers"] = serde_json::json!([installer.clone(), KINIC_ROOT]);
-        preparation["after_management_status_response_json_hex"] = Value::from(hex(&co_management));
-        preparation["after_management_status_response_sha256"] =
-            Value::from(hex(&Sha256::digest(&co_management)));
-        let preparation = serde_json::to_vec(&preparation).unwrap();
-        handover.preparation_receipt_json_hex = hex(&preparation);
-        handover.preparation_receipt_sha256 = hex(&Sha256::digest(&preparation));
-        let submission_root_candid = Encode!(&SnsCanistersView { dapps: vec![] }).unwrap();
-        let submission_root_envelope = json_bytes(serde_json::json!({
-            "response_bytes": hex(&submission_root_candid),
-        }));
-        let proposal_response = b"proposal-response".to_vec();
-        let submission = HandoverRegistrationSubmission {
-            schema_version: 1,
-            kind: "sns-dapp-registration-submission".into(),
-            release_id: "release-1".into(),
-            source_revision: handover.source_revision.clone(),
-            source_tree_sha256: handover.source_tree_sha256.clone(),
-            gate_b_manifest_sha256: handover.gate_b_manifest_sha256.clone(),
-            governance_canister_id: KINIC_GOVERNANCE.into(),
-            sns_root_canister_id: KINIC_ROOT.into(),
-            bridge_canister_id: profile.bridge_canister_id.clone(),
-            proposer_principal: installer.clone(),
-            neuron_subaccount: "6".repeat(64),
-            proposal_id: 42,
-            submitted_at_unix: now - 97,
-            proposal_sha256: "7".repeat(64),
-            preparation_receipt_sha256: handover.preparation_receipt_sha256.clone(),
-            reviewed_handover_sha256: "8".repeat(64),
-            root_query_response_hex: hex(&submission_root_envelope),
-            root_query_response_sha256: hex(&Sha256::digest(&submission_root_envelope)),
-            proposal_response_hex: hex(&proposal_response),
-            proposal_response_sha256: hex(&Sha256::digest(&proposal_response)),
-            root_command_argv: vec!["list_sns_canisters".into()],
-            proposal_command_argv: vec!["manage_neuron".into()],
+        let status = |paused| {
+            let mut value = matching_handover_status();
+            value.deposits_paused = paused;
+            value
         };
-        let submission = serde_json::to_vec(&submission).unwrap();
-        handover.registration_submission_json_hex = hex(&submission);
-        handover.registration_submission_sha256 = hex(&Sha256::digest(&submission));
-        handover.registration_proposal_id = 42;
-        let governance_candid = Encode!(&GetProposalResponse {
-            result: Some(GetProposalResult::Proposal(Box::new(ProposalDataView {
-                id: Some(ProposalId { id: 42 }),
-                failure_reason: None,
-                failed_timestamp_seconds: 0,
-                decided_timestamp_seconds: now - 96,
-                proposal: Some(ProposalView {
-                    action: Some(SnsProposalAction::RegisterDappCanisters(
-                        RegisterDappCanistersView {
-                            canister_ids: vec![
-                                Principal::from_text(&profile.bridge_canister_id).unwrap()
-                            ],
-                        },
-                    )),
-                    summary: "register Bridge".into(),
-                }),
-                executed_timestamp_seconds: now - 96,
-            }))),
-        })
-        .unwrap();
-        let governance_envelope = json_bytes(serde_json::json!({
-            "response_bytes": hex(&governance_candid),
-        }));
-        handover.registration_governance_response_json_hex = hex(&governance_envelope);
-        handover.registration_governance_response_sha256 =
-            hex(&Sha256::digest(&governance_envelope));
-        let root_candid = Encode!(&SnsCanistersView {
-            dapps: vec![Principal::from_text(&profile.bridge_canister_id).unwrap()],
-        })
-        .unwrap();
-        let root_envelope = json_bytes(serde_json::json!({
-            "response_bytes": hex(&root_candid),
-        }));
-        handover.registration_root_response_json_hex = hex(&root_envelope);
-        handover.registration_root_response_sha256 = hex(&Sha256::digest(&root_envelope));
-        assert!(validate_controller_handover_continuity(&handover, &profile, &installer).is_ok());
-        let handover_result = validate_controller_handover_completion(
-            &handover,
-            &profile,
-            &installer,
-            now - 100,
-            now,
-        );
-        assert!(handover_result.is_ok(), "{handover_result:?}");
-        let set_registration_proposal =
-            |value: &mut ControllerHandover,
-             proposal_id: u64,
-             executed: u64,
-             failed: bool,
-             target: Principal| {
-                let candid = Encode!(&GetProposalResponse {
-                    result: Some(GetProposalResult::Proposal(Box::new(ProposalDataView {
-                        id: Some(ProposalId { id: proposal_id }),
-                        failure_reason: failed.then(|| GovernanceErrorView {
-                            error_message: "failed".into(),
-                            error_type: 1,
-                        }),
-                        failed_timestamp_seconds: if failed { now - 96 } else { 0 },
-                        decided_timestamp_seconds: now - 96,
-                        proposal: Some(ProposalView {
-                            action: Some(SnsProposalAction::RegisterDappCanisters(
-                                RegisterDappCanistersView {
-                                    canister_ids: vec![target]
-                                },
-                            )),
-                            summary: "register Bridge".into(),
-                        }),
-                        executed_timestamp_seconds: executed,
-                    }))),
-                })
-                .unwrap();
-                let envelope = json_bytes(serde_json::json!({"response_bytes":hex(&candid)}));
-                value.registration_governance_response_json_hex = hex(&envelope);
-                value.registration_governance_response_sha256 = hex(&Sha256::digest(&envelope));
-            };
-        let mut unexecuted_registration = handover.clone();
-        set_registration_proposal(
-            &mut unexecuted_registration,
-            42,
-            0,
-            false,
-            Principal::from_text(&profile.bridge_canister_id).unwrap(),
-        );
-        assert!(validate_controller_handover_completion(
-            &unexecuted_registration,
-            &profile,
-            &installer,
-            now - 100,
-            now,
-        )
-        .is_err());
-        let mut failed_registration = handover.clone();
-        set_registration_proposal(
-            &mut failed_registration,
-            42,
-            now - 96,
+        let validate = |controllers: &[Principal],
+                        module_hash: &[u8],
+                        lifecycle,
+                        activation: &ActivationStatusView,
+                        runtime: &RuntimeBindingView,
+                        status: &BridgeStatusLiveView,
+                        pending: &PendingGovernanceTransactionsView,
+                        history_ready,
+                        registered,
+                        storage_ok| {
+            validate_production_current_state_core(
+                controllers,
+                &expected_controllers,
+                module_hash,
+                &module_sha256,
+                lifecycle,
+                activation,
+                runtime,
+                status,
+                pending,
+                history_ready,
+                registered,
+                storage_ok,
+            )
+        };
+        let ok_activation = activation(false);
+        let ok_runtime = runtime(36);
+        let ok_status = status(false);
+        let ok_pending = PendingGovernanceTransactionsView::Ok(Vec::new());
+        assert!(validate(
+            &[controller],
+            &module,
+            ProductionLifecycleView::Activated,
+            &ok_activation,
+            &ok_runtime,
+            &ok_status,
+            &ok_pending,
             true,
-            Principal::from_text(&profile.bridge_canister_id).unwrap(),
-        );
-        assert!(validate_controller_handover_completion(
-            &failed_registration,
-            &profile,
-            &installer,
-            now - 100,
-            now,
-        )
-        .is_err());
-        let mut wrong_registration_target = handover.clone();
-        set_registration_proposal(
-            &mut wrong_registration_target,
-            42,
-            now - 96,
             false,
-            Principal::anonymous(),
-        );
-        assert!(validate_controller_handover_completion(
-            &wrong_registration_target,
-            &profile,
-            &installer,
-            now - 100,
-            now,
-        )
-        .is_err());
-        let mut missing_root_registration = handover.clone();
-        let no_dapps = Encode!(&SnsCanistersView { dapps: vec![] }).unwrap();
-        let no_dapps_envelope = json_bytes(serde_json::json!({"response_bytes":hex(&no_dapps)}));
-        missing_root_registration.registration_root_response_json_hex = hex(&no_dapps_envelope);
-        missing_root_registration.registration_root_response_sha256 =
-            hex(&Sha256::digest(&no_dapps_envelope));
-        assert!(validate_controller_handover_completion(
-            &missing_root_registration,
-            &profile,
-            &installer,
-            now - 100,
-            now,
-        )
-        .is_err());
-        let mut proposal_id_drift = handover.clone();
-        proposal_id_drift.registration_proposal_id = 43;
-        assert!(validate_controller_handover_completion(
-            &proposal_id_drift,
-            &profile,
-            &installer,
-            now - 100,
-            now,
-        )
-        .is_err());
-        let mut recovered_without_request = handover.clone();
-        recovered_without_request.request_id.clear();
-        recovered_without_request.response_stdout_hex.clear();
-        recovered_without_request.response_stderr_hex.clear();
-        recovered_without_request.response_sha256 = hex(&Sha256::digest([]));
-        recovered_without_request.response_exit_code = 1;
-        recovered_without_request.recovered_without_request_id = true;
-        bind_checkpoints(
-            &mut recovered_without_request,
-            "controller_update_uncertain",
-        );
-        assert!(validate_controller_handover_completion(
-            &recovered_without_request,
-            &profile,
-            &installer,
-            now - 100,
-            now,
+            true,
         )
         .is_ok());
-        let mut checkpoint_drift = handover.clone();
-        checkpoint_drift.pre_send_checkpoint_json_hex = hex(b"{}");
-        checkpoint_drift.pre_send_checkpoint_sha256 = hex(&Sha256::digest(b"{}"));
-        assert!(validate_controller_handover_completion(
-            &checkpoint_drift,
-            &profile,
-            &installer,
-            now - 100,
-            now,
+        assert!(validate(
+            &[controller, Principal::anonymous()],
+            &module,
+            ProductionLifecycleView::Activated,
+            &ok_activation,
+            &ok_runtime,
+            &ok_status,
+            &ok_pending,
+            true,
+            false,
+            true
         )
         .is_err());
-        let mut recovery_source_drift = handover.clone();
-        let mut source = serde_json::from_slice::<Value>(
-            &decode_hex(&recovery_source_drift.recovery_source_checkpoint_json_hex).unwrap(),
-        )
-        .unwrap();
-        source["before_module_sha256"] = Value::from("9".repeat(64));
-        let source = serde_json::to_vec(&source).unwrap();
-        recovery_source_drift.recovery_source_checkpoint_json_hex = hex(&source);
-        recovery_source_drift.recovery_source_checkpoint_sha256 = hex(&Sha256::digest(&source));
-        assert!(validate_controller_handover_completion(
-            &recovery_source_drift,
-            &profile,
-            &installer,
-            now - 100,
-            now,
-        )
-        .is_err());
-        let mut pre_manifest = handover.clone();
-        pre_manifest.observed_at_unix = now - 101;
-        assert!(validate_controller_handover_completion(
-            &pre_manifest,
-            &profile,
-            &installer,
-            now - 100,
-            now,
-        )
-        .is_err());
-        let mut future = handover.clone();
-        future.observed_at_unix = now + 1;
-        assert!(validate_controller_handover_completion(
-            &future,
-            &profile,
-            &installer,
-            now - 100,
-            now,
-        )
-        .is_err());
-        let mut stale = handover.clone();
-        stale.observed_at_unix = now - MAX_EVIDENCE_AGE_SECS - 1;
-        assert!(validate_controller_handover_completion(
-            &stale,
-            &profile,
-            &installer,
-            stale.observed_at_unix - 1,
-            now,
-        )
-        .is_err());
-        let lineage_matches = |value: &ControllerHandover| {
-            controller_handover_lineage_fields_match(
-                value,
-                &"1".repeat(40),
-                &"1".repeat(64),
-                &"2".repeat(64),
-                &"3".repeat(64),
-                &"4".repeat(64),
-                &"5".repeat(64),
-            )
-        };
-        assert!(lineage_matches(&handover));
-        for mutate in [
-            |value: &mut ControllerHandover| value.source_revision = "9".repeat(40),
-            |value: &mut ControllerHandover| value.source_tree_sha256 = "9".repeat(64),
-            |value: &mut ControllerHandover| value.gate_b_manifest_sha256 = "9".repeat(64),
-            |value: &mut ControllerHandover| {
-                value.operational_config_seal_receipt_sha256 = "9".repeat(64)
-            },
-            |value: &mut ControllerHandover| {
-                value.controller_schedule_receipt_sha256 = "9".repeat(64)
-            },
-            |value: &mut ControllerHandover| {
-                value.controller_execute_receipt_sha256 = "9".repeat(64)
-            },
-        ] {
-            let mut drift = handover.clone();
-            mutate(&mut drift);
-            assert!(!lineage_matches(&drift));
-        }
-        let mut runtime_drift = handover.clone();
-        let after_runtime = json_bytes(serde_json::json!({
-            "schema_version": profile.canister_schema_version,
-            "operational_config_sha256": "8".repeat(64)
-        }));
-        runtime_drift.after_runtime_binding_response_json_hex = hex(&after_runtime);
-        runtime_drift.after_runtime_binding_response_sha256 = hex(&Sha256::digest(&after_runtime));
-        assert!(
-            validate_controller_handover_continuity(&runtime_drift, &profile, &installer).is_err()
-        );
-        let mut wrong_runtime = handover.clone();
-        let wrong_runtime_bytes = json_bytes(serde_json::json!({
-            "base_chain_id": profile.chain_id,
-            "bridge_contract": profile.bridge_contract,
-            "expected_bridge_runtime_sha256": profile.bridge_runtime_bytecode_sha256,
-            "timelock_contract": profile.timelock.address,
-            "deployment_instance_id": profile.deployment_instance_id,
-            "minimum_withdrawal_id": profile.minimum_withdrawal_id,
-            "ledger_canister_id": profile.ledger_canister_id,
-            "index_canister_id": profile.index_canister_id,
-            "schema_version": profile.canister_schema_version,
-            "expected_bridge_signer": profile.expected_bridge_signer,
-            "evm_rpc_canister_id": profile.evm_rpc_canister_id,
-            "rpc_provider_urls_sha256": hex(&canonical_sha256(&Vec::<String>::new()).unwrap()),
-            "operational_config_sha256": "8".repeat(64),
-        }));
-        wrong_runtime.before_runtime_binding_response_json_hex = hex(&wrong_runtime_bytes);
-        wrong_runtime.before_runtime_binding_response_sha256 =
-            hex(&Sha256::digest(&wrong_runtime_bytes));
-        wrong_runtime.after_runtime_binding_response_json_hex = hex(&wrong_runtime_bytes);
-        wrong_runtime.after_runtime_binding_response_sha256 =
-            hex(&Sha256::digest(&wrong_runtime_bytes));
-        assert!(
-            validate_controller_handover_continuity(&wrong_runtime, &profile, &installer).is_err()
-        );
-        let mut wrong_lifecycle = handover.clone();
-        let not_activated = json_bytes(serde_json::json!({"Err":"not activated"}));
-        wrong_lifecycle.before_lifecycle_response_json_hex = hex(&not_activated);
-        wrong_lifecycle.before_lifecycle_response_sha256 = hex(&Sha256::digest(&not_activated));
-        wrong_lifecycle.after_lifecycle_response_json_hex = hex(&not_activated);
-        wrong_lifecycle.after_lifecycle_response_sha256 = hex(&Sha256::digest(&not_activated));
-        assert!(
-            validate_controller_handover_continuity(&wrong_lifecycle, &profile, &installer)
-                .is_err()
-        );
-        let mut base_pause_drift = handover.clone();
-        let paused_attestation = json_bytes(serde_json::json!({
-            "Ok":{"deposits_paused":false,"withdrawals_paused":true}
-        }));
-        base_pause_drift.after_activation_attestation_response_json_hex = hex(&paused_attestation);
-        base_pause_drift.after_activation_attestation_response_sha256 =
-            hex(&Sha256::digest(&paused_attestation));
-        assert!(
-            validate_controller_handover_continuity(&base_pause_drift, &profile, &installer)
-                .is_err()
-        );
-        let mut controller_race = handover.clone();
-        controller_race
-            .pre_send_controllers
-            .push(test_principal(32));
-        assert!(
-            validate_controller_handover_continuity(&controller_race, &profile, &installer)
-                .is_err()
-        );
-        let mut personal_controller_retained = handover.clone();
-        personal_controller_retained.final_controllers =
-            vec![installer.clone(), KINIC_ROOT.to_string()];
-        personal_controller_retained.after_management_status_response_json_hex =
-            hex(&co_management);
-        personal_controller_retained.after_management_status_response_sha256 =
-            hex(&Sha256::digest(&co_management));
-        assert!(validate_controller_handover_completion(
-            &personal_controller_retained,
-            &profile,
-            &installer,
-            now - 100,
-            now,
-        )
-        .is_err());
-        let provider_independence = provider_independence_receipt(
-            &profile,
-            now - 30,
-            "release-1",
-            &"a".repeat(40),
-            &"2".repeat(64),
-            &hex(&Sha256::digest(serde_json::to_vec(&profile).unwrap())),
-        )
-        .unwrap();
-        let ui_files = vec![UiAssetDigest {
-            path: "assets/index.js".into(),
-            sha256: hex(&Sha256::digest(b"ui")),
-        }];
-        let ui_assets = UiAssetsReceipt {
-            schema_version: 2,
-            source_revision: "a".repeat(40),
-            source_tree_sha256: "2".repeat(64),
-            walletconnect_project_id: "3".repeat(32),
-            artifact_set_sha256: hex(&Sha256::digest(serde_json::to_vec(&ui_files).unwrap())),
-            files: ui_files,
-        };
-        let measurement_start = now - 7 * 24 * 60 * 60 - 10;
-        let mut measurements = measurement_evidence(measurement_start);
-        measurements.ledger_fee = profile.parameters.ledger_fee;
-        measurements.governance_gas_samples = measurement_samples(1, measurement_start);
-        measurements.fee_samples = fee_samples(1, 1, 1, measurement_start);
-        measurements.settlement_cycle_samples = measurement_samples(1, measurement_start);
-        measurements.baseline_cycles_sample.value = 1;
-        measurements.expected_daily_settlements = 1;
-        let initial_observed_at = now - 6_000;
-        let governance_operation_id = 0;
-        let deployment_instance_id: [u8; 32] = decode_hex(&profile.deployment_instance_id)
-            .unwrap()
-            .try_into()
-            .unwrap();
-        let activation_bridge = decode_address(&profile.bridge_contract).unwrap();
-        let operation_salt =
-            initial_activation_salt(deployment_instance_id, governance_operation_id);
-        let mut initial_parameters = InitialOperationalParameters {
-            schema_version: 1,
-            environment: "mainnet-candidate".into(),
-            chain_id: 8_453,
-            bridge_canister_id: profile.bridge_canister_id.clone(),
-            bridge_contract: profile.bridge_contract.clone(),
-            timelock_contract: profile.timelock.address.clone(),
-            governance_sender: profile.governance_operator.clone(),
-            deployment_instance_id: profile.deployment_instance_id.clone(),
-            governance_operation_id,
-            operation_salt: format!("0x{}", hex(&operation_salt)),
-            timelock_delay_seconds: profile.timelock.minimum_delay_seconds,
-            profile_sha256: String::new(),
-            gas_estimates: vec![
-                InitialGasEstimate {
-                    action: "schedule_activation".into(),
-                    sender: profile.governance_operator.clone(),
-                    target: profile.timelock.address.clone(),
-                    value_wei: 0,
-                    calldata_hex: initial_activation_calldata(
-                        "schedule_activation",
-                        activation_bridge,
-                        operation_salt,
-                        profile.timelock.minimum_delay_seconds,
-                    )
-                    .unwrap(),
-                    gas: 100_000,
-                    block_number: 10,
-                    block_hash: format!("0x{}", "31".repeat(32)),
-                    observed_at_unix: initial_observed_at,
-                    source_ref: "schedule-estimate".into(),
-                },
-                InitialGasEstimate {
-                    action: "execute_activation".into(),
-                    sender: profile.governance_operator.clone(),
-                    target: profile.timelock.address.clone(),
-                    value_wei: 0,
-                    calldata_hex: initial_activation_calldata(
-                        "execute_activation",
-                        activation_bridge,
-                        operation_salt,
-                        profile.timelock.minimum_delay_seconds,
-                    )
-                    .unwrap(),
-                    gas: 120_000,
-                    block_number: 10,
-                    block_hash: format!("0x{}", "31".repeat(32)),
-                    observed_at_unix: initial_observed_at,
-                    source_ref: "execute-estimate".into(),
-                },
-            ],
-            fee_samples: (0..10)
-                .map(|index| InitialFeeSample {
-                    base_fee_per_gas: 100,
-                    priority_fee_per_gas: 10,
-                    l1_fee_upper_bound_wei: 1_000,
-                    block_number: 100 + index,
-                    block_hash: format!("0x{:064x}", index + 1),
-                    observed_at_unix: initial_observed_at + index,
-                    source_ref: format!("initial-fee-{index}"),
-                })
-                .collect(),
-            idle_cycles_burned_per_day: 1_000,
-            idle_cycles_observed_at_unix: initial_observed_at,
-            idle_cycles_source_ref: "icp-canister-status".into(),
-            expected_daily_settlements: 1,
-            settlement_cycle_ceiling: 5_000_000_000,
-            derived: InitialDerivedParameters {
-                gas_limit_ceiling: 0,
-                max_fee_per_gas_ceiling: 0,
-                max_priority_fee_per_gas_ceiling: 0,
-                l1_fee_per_transaction_ceiling_wei: 0,
-                quote_validity_seconds: 0,
-                gas_limit_multiplier_bps: 0,
-                base_fee_multiplier_bps: 0,
-                l1_fee_multiplier_bps: 0,
-                cycles_floor: 0,
-                settlement_cycle_ceiling: 0,
-            },
-        };
-        initial_parameters.derived =
-            derive_initial_operational_parameters(&initial_parameters).unwrap();
-        let mut candid_payload: InitialOperationalParameters =
-            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
-        candid_payload.gas_estimates[0].calldata_hex = "4449444c0000".into();
-        assert!(derive_initial_operational_parameters(&candid_payload).is_err());
-        let mut wrong_sender: InitialOperationalParameters =
-            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
-        wrong_sender.gas_estimates[0].sender = format!("0x{}", "99".repeat(20));
-        assert!(derive_initial_operational_parameters(&wrong_sender).is_err());
-        let mut wrong_target: InitialOperationalParameters =
-            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
-        wrong_target.gas_estimates[0].target = profile.bridge_contract.clone();
-        assert!(derive_initial_operational_parameters(&wrong_target).is_err());
-        let mut wrong_salt: InitialOperationalParameters =
-            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
-        wrong_salt.operation_salt = format!("0x{}", "88".repeat(32));
-        assert!(derive_initial_operational_parameters(&wrong_salt).is_err());
-        let mut wrong_operation_id: InitialOperationalParameters =
-            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
-        wrong_operation_id.governance_operation_id = 8;
-        wrong_operation_id.operation_salt = format!(
-            "0x{}",
-            hex(&initial_activation_salt(deployment_instance_id, 8))
-        );
-        assert!(derive_initial_operational_parameters(&wrong_operation_id).is_err());
-        let mut maximum_operation_id: InitialOperationalParameters =
-            serde_json::from_value(serde_json::to_value(&initial_parameters).unwrap()).unwrap();
-        maximum_operation_id.governance_operation_id = u64::MAX;
-        let maximum_salt = initial_activation_salt(deployment_instance_id, u64::MAX);
-        maximum_operation_id.operation_salt = format!("0x{}", hex(&maximum_salt));
-        for estimate in &mut maximum_operation_id.gas_estimates {
-            estimate.calldata_hex = initial_activation_calldata(
-                &estimate.action,
-                activation_bridge,
-                maximum_salt,
-                profile.timelock.minimum_delay_seconds,
-            )
-            .unwrap();
-        }
-        assert!(derive_initial_operational_parameters(&maximum_operation_id).is_err());
-        profile.parameters.gas_limit_ceiling = initial_parameters.derived.gas_limit_ceiling;
-        profile.parameters.max_fee_per_gas_ceiling =
-            initial_parameters.derived.max_fee_per_gas_ceiling;
-        profile.parameters.max_priority_fee_per_gas_ceiling =
-            initial_parameters.derived.max_priority_fee_per_gas_ceiling;
-        profile.parameters.l1_fee_per_transaction_ceiling_wei = initial_parameters
-            .derived
-            .l1_fee_per_transaction_ceiling_wei;
-        profile.parameters.quote_validity_seconds =
-            initial_parameters.derived.quote_validity_seconds;
-        profile.parameters.gas_limit_multiplier_bps =
-            initial_parameters.derived.gas_limit_multiplier_bps;
-        profile.parameters.base_fee_multiplier_bps =
-            initial_parameters.derived.base_fee_multiplier_bps;
-        profile.parameters.l1_fee_multiplier_bps = initial_parameters.derived.l1_fee_multiplier_bps;
-        profile.parameters.cycles_floor = initial_parameters.derived.cycles_floor;
-        profile.parameters.settlement_cycle_ceiling =
-            initial_parameters.derived.settlement_cycle_ceiling;
-        profile.bsns_runtime_template_sha256 = hex(&Sha256::digest(b"bsns-runtime"));
-        let final_operational_parameters = profile.parameters.clone();
-        set_production_bootstrap_operational_config(&mut profile);
-        let mut docs = vec![
-            ("profile.json", serde_json::to_vec(&profile).unwrap()),
-            (
-                "controller-handover.json",
-                serde_json::to_vec(&handover).unwrap(),
-            ),
-            (
-                "fee-cycles-measurements.json",
-                serde_json::to_vec(&measurements).unwrap(),
-            ),
-            (
-                "provider-independence.json",
-                serde_json::to_vec(&provider_independence).unwrap(),
-            ),
-            (
-                "ui-assets.json",
-                serde_json::to_vec(&ui_assets).unwrap(),
-            ),
-            ("bridge-canister.wasm", b"wasm".to_vec()),
-            ("bridge-runtime.bin", b"runtime".to_vec()),
-            ("bsns-creation.bin", b"bsns-creation".to_vec()),
-            ("bsns-runtime.bin", b"bsns-runtime".to_vec()),
-            (
-                "bsns-runtime-layout.json",
-                br#"{"byte_length":12,"immutable_ranges":[{"length":1,"start":0}],"schema_version":1}"#.to_vec(),
-            ),
-        ];
-        docs[0].1 = serde_json::to_vec(&profile).unwrap();
-        let mut artifacts = Vec::new();
-        for (name, bytes) in docs {
-            fs::write(root.join(name), &bytes).unwrap();
-            artifacts.push(ArtifactDigest {
-                path: name.into(),
-                sha256: hex(&Sha256::digest(bytes)),
-            });
-        }
-        let manifest_created = now_unix().unwrap();
-        let gate_a_artifacts = artifacts
-            .iter()
-            .filter(|artifact| GATE_A_ARTIFACTS.contains(&artifact.path.as_str()))
-            .map(|artifact| ArtifactDigest {
-                path: artifact.path.clone(),
-                sha256: artifact.sha256.clone(),
-            })
-            .collect();
-        let gate_a_manifest = ReleaseManifest {
-            schema_version: 3,
-            release_id: "release-1".into(),
-            test_only: false,
-            source_revision: "a".repeat(40),
-            source_tree_sha256: "2".repeat(64),
-            created_at_unix: manifest_created,
-            expires_at_unix: manifest_created + MAX_EVIDENCE_AGE_SECS,
-            parent_gate_a_manifest_sha256: None,
-            artifacts: gate_a_artifacts,
-        };
-        fs::write(
-            root.join("release-manifest.json"),
-            serde_json::to_vec(&gate_a_manifest).unwrap(),
-        )
-        .unwrap();
-        let planned_profile = fs::read(root.join("profile.json")).unwrap();
-        let mut premature_profile = profile.clone();
-        premature_profile.deployment_block = 1;
-        let premature_bytes = serde_json::to_vec(&premature_profile).unwrap();
-        fs::write(root.join("profile.json"), &premature_bytes).unwrap();
-        let mut premature_manifest = serde_json::to_value(&gate_a_manifest).unwrap();
-        let profile_artifact = premature_manifest["artifacts"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .find(|artifact| artifact["path"] == "profile.json")
-            .unwrap();
-        profile_artifact["sha256"] = Value::String(hex(&Sha256::digest(&premature_bytes)));
-        fs::write(
-            root.join("release-manifest.json"),
-            serde_json::to_vec(&premature_manifest).unwrap(),
-        )
-        .unwrap();
-        let premature_error = match validate_bundle(&root, false) {
-            Ok(_) => panic!("Gate A accepted a predeclared deployment block"),
-            Err(error) => error,
-        };
-        assert!(premature_error.contains("leave deployment_block unbound"));
-        fs::write(root.join("profile.json"), &planned_profile).unwrap();
-        fs::write(
-            root.join("release-manifest.json"),
-            serde_json::to_vec(&gate_a_manifest).unwrap(),
-        )
-        .unwrap();
-        fs::write(
-            root.join("proof-attestation.json"),
-            br#"{"lean_result":"passed"}"#,
-        )
-        .unwrap();
-        let obsolete_error = match validate_bundle(&root, false) {
-            Ok(_) => panic!("Gate A accepted an obsolete self-asserted proof attestation"),
-            Err(error) => error,
-        };
-        assert!(obsolete_error.contains("obsolete self-asserted proof attestation"));
-        fs::remove_file(root.join("proof-attestation.json")).unwrap();
-        let gate_a = validate_bundle(&root, false).unwrap();
-        let gate_a_profile_sha256 = hex(&canonical_sha256(&profile).unwrap());
-        let bridge_deployment_transaction_hash = format!("0x{}", "aa".repeat(32));
-        let bridge_deployment_block_number = 1;
-        let bridge_deployment_block_hash = format!("0x{}", "cc".repeat(32));
-        let timelock_deployment_transaction_hash = format!("0x{}", "bb".repeat(32));
-        let timelock_deployment_block_number = 1;
-        let timelock_deployment_block_hash = format!("0x{}", "dd".repeat(32));
-        profile.deployment_block = bridge_deployment_block_number;
-        let gate_a_post_deploy_profile = profile.clone();
-        let post_deploy_profile = canonical_bytes(&profile).unwrap();
-        fs::write(root.join("profile.json"), &post_deploy_profile).unwrap();
-        let post_deploy_profile_sha256 = hex(&Sha256::digest(&post_deploy_profile));
-        artifacts
-            .iter_mut()
-            .find(|a| a.path == "profile.json")
-            .unwrap()
-            .sha256 = post_deploy_profile_sha256.clone();
-        let mut canister_plan = production_canister_plan(&profile);
-        canister_plan.source_tree_sha256 = "2".repeat(64);
-        let canister_plan_sha256 = hex(&canonical_sha256(&canister_plan).unwrap());
-        let canister_init_candid_sha256 = hex(&Sha256::digest(
-            validate_production_canister_plan(&canister_plan).unwrap(),
-        ));
-        let mut canister_runtime_binding = live_runtime_binding(&profile);
-        canister_runtime_binding.operational_config_sha256 =
-            hex(&expected_bootstrap_operational_config_sha256(
-                &canister_plan.init,
-                &profile.governance_operator,
-                900,
-                7,
-            )
-            .unwrap());
-        let upgrade_identity =
-            Secp256k1Identity::from_private_key(k256::SecretKey::from_slice(&[7u8; 32]).unwrap());
-        let upgrade_sender = upgrade_identity.sender().unwrap();
-        let receipt = GateAReceipt {
-            schema_version: 2,
-            gate_a_manifest_sha256: gate_a.manifest_sha256.clone(),
-            release_id: "release-1".into(),
-            source_revision: "a".repeat(40),
-            source_tree_sha256: "2".repeat(64),
-            gate_a_profile_sha256,
-            post_deploy_profile_sha256,
-            bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
-            bridge_runtime_bytecode_sha256: profile.bridge_runtime_bytecode_sha256.clone(),
-            bridge_deployment_transaction_hash,
-            bridge_deployment_block_number,
-            bridge_deployment_block_hash,
-            timelock_deployment_transaction_hash,
-            timelock_deployment_block_number,
-            timelock_deployment_block_hash,
-            canister_install: ProductionCanisterInstallReceipt {
-                schema_version: PRODUCTION_CANISTER_INSTALL_RECEIPT_SCHEMA_VERSION,
-                plan_sha256: canister_plan_sha256,
-                plan: canister_plan,
-                source_revision: "a".repeat(40),
-                source_tree_sha256: "2".repeat(64),
-                canister_id: profile.bridge_canister_id.clone(),
-                installer_principal: upgrade_sender.to_text(),
-                module_sha256: profile.bridge_canister_wasm_sha256.clone(),
-                init_candid_sha256: canister_init_candid_sha256,
-                runtime_binding: canister_runtime_binding,
-                governance_operator: profile.governance_operator.clone(),
-                runtime_administrator: profile.runtime_administrator.clone(),
-                independent_canceller: profile.independent_canceller.clone(),
-                mint_authorization_ttl_seconds: 900,
-                mint_authorization_epoch: 7,
-                storage_validation_complete: true,
-                storage_checksum_complete: true,
-                deposits_paused: true,
-                state_is_empty: true,
-                cycles_reserve_sufficient: true,
-            },
-        };
-        let deployment_binding = ProductionDeploymentBinding {
-            deployer_address: profile.initial_base_deployment.deployer_address.clone(),
-            starting_nonce: profile.initial_base_deployment.starting_nonce,
-            timelock: ProductionContractDeploymentBinding {
-                transaction_hash: receipt.timelock_deployment_transaction_hash.clone(),
-                address: profile.timelock.address.clone(),
-                block_number: receipt.timelock_deployment_block_number,
-                block_hash: receipt.timelock_deployment_block_hash.clone(),
-            },
-            bridge: ProductionContractDeploymentBinding {
-                transaction_hash: receipt.bridge_deployment_transaction_hash.clone(),
-                address: profile.bridge_contract.clone(),
-                block_number: receipt.bridge_deployment_block_number,
-                block_hash: receipt.bridge_deployment_block_hash.clone(),
-            },
-        };
-        assert!(validate_completed_gate_a_receipt(
-            &gate_a,
-            &receipt,
-            &receipt.canister_install,
-            &deployment_binding,
-        )
-        .is_ok());
-        let mut predeploy_receipt = receipt.clone();
-        predeploy_receipt.bridge_deployment_block_number = 0;
-        assert!(validate_completed_gate_a_receipt(
-            &gate_a,
-            &predeploy_receipt,
-            &receipt.canister_install,
-            &deployment_binding,
-        )
-        .is_err());
-        let mut drifted_install_receipt = receipt.canister_install.clone();
-        drifted_install_receipt.installer_principal = test_principal(30);
-        assert!(validate_completed_gate_a_receipt(
-            &gate_a,
-            &receipt,
-            &drifted_install_receipt,
-            &deployment_binding,
-        )
-        .is_err());
-        let mut forged_binding = ProductionDeploymentBinding {
-            deployer_address: deployment_binding.deployer_address.clone(),
-            starting_nonce: deployment_binding.starting_nonce,
-            timelock: ProductionContractDeploymentBinding {
-                transaction_hash: deployment_binding.timelock.transaction_hash.clone(),
-                address: deployment_binding.timelock.address.clone(),
-                block_number: deployment_binding.timelock.block_number,
-                block_hash: deployment_binding.timelock.block_hash.clone(),
-            },
-            bridge: ProductionContractDeploymentBinding {
-                transaction_hash: deployment_binding.bridge.transaction_hash.clone(),
-                address: deployment_binding.bridge.address.clone(),
-                block_number: deployment_binding.bridge.block_number,
-                block_hash: deployment_binding.bridge.block_hash.clone(),
-            },
-        };
-        forged_binding.bridge.transaction_hash = format!("0x{}", "ee".repeat(32));
-        assert!(validate_completed_gate_a_receipt(
-            &gate_a,
-            &receipt,
-            &receipt.canister_install,
-            &forged_binding,
-        )
-        .is_err());
-        let gate_a_profile: Profile = serde_json::from_slice(&planned_profile).unwrap();
-        assert!(validate_production_upgrade_gate_a_binding(
-            &gate_a_profile,
-            &planned_profile,
-            &receipt,
-        )
-        .is_ok());
-        for schema in [34, 35, 36, 37] {
-            let mut historical_profile = gate_a_profile.clone();
-            historical_profile.canister_schema_version = schema;
-            let source = serde_json::to_vec(&historical_profile).unwrap();
-            let mut historical_receipt = receipt.clone();
-            historical_receipt
-                .canister_install
-                .runtime_binding
-                .schema_version = schema;
-            historical_receipt.gate_a_profile_sha256 =
-                hex(&canonical_sha256(&historical_profile).unwrap());
-            historical_receipt.post_deploy_profile_sha256 = super::post_deploy_profile_sha256(
-                &source,
-                historical_receipt.bridge_deployment_block_number,
-            )
-            .unwrap();
-            assert_eq!(
-                validate_production_upgrade_gate_a_binding(
-                    &historical_profile,
-                    &source,
-                    &historical_receipt,
-                )
-                .is_ok(),
-                matches!(schema, 35 | 36),
-            );
-            historical_receipt
-                .canister_install
-                .runtime_binding
-                .schema_version = schema + 1;
-            assert!(validate_production_upgrade_gate_a_binding(
-                &historical_profile,
-                &source,
-                &historical_receipt,
-            )
-            .is_err());
-        }
-        let mut independently_installed_receipt = receipt.clone();
-        independently_installed_receipt
-            .canister_install
-            .source_revision = "b".repeat(40);
-        independently_installed_receipt
-            .canister_install
-            .source_tree_sha256 = "3".repeat(64);
-        independently_installed_receipt
-            .canister_install
-            .plan
-            .source_revision = "b".repeat(40);
-        independently_installed_receipt
-            .canister_install
-            .plan
-            .source_tree_sha256 = "3".repeat(64);
-        independently_installed_receipt.canister_install.plan_sha256 =
-            hex(&canonical_sha256(&independently_installed_receipt.canister_install.plan).unwrap());
-        assert!(validate_production_upgrade_gate_a_binding(
-            &gate_a_profile,
-            &planned_profile,
-            &independently_installed_receipt,
-        )
-        .is_ok());
-        assert!(validate_completed_gate_a_receipt(
-            &gate_a,
-            &independently_installed_receipt,
-            &independently_installed_receipt.canister_install,
-            &deployment_binding,
-        )
-        .is_ok());
-        let mut forged_gate_a_receipt = receipt.clone();
-        forged_gate_a_receipt
-            .canister_install
-            .runtime_binding
-            .operational_config_sha256 = "9".repeat(64);
-        assert!(validate_production_upgrade_gate_a_binding(
-            &gate_a_profile,
-            &planned_profile,
-            &forged_gate_a_receipt,
-        )
-        .is_err());
-        profile.pause_principal = PRODUCTION_PAUSE_PRINCIPAL.into();
-        let mut upgraded_wasm = vec![0x61; PRODUCTION_UPGRADE_CHUNK_SIZE + 1];
-        upgraded_wasm[..4].copy_from_slice(b"\0asm");
-        profile.bridge_canister_wasm_sha256 = hex(&Sha256::digest(&upgraded_wasm));
-        fs::write(root.join("bridge-canister.wasm"), &upgraded_wasm).unwrap();
-        artifacts
-            .iter_mut()
-            .find(|artifact| artifact.path == "bridge-canister.wasm")
-            .unwrap()
-            .sha256 = profile.bridge_canister_wasm_sha256.clone();
-        profile.parameters = final_operational_parameters;
-        let final_profile_bytes = serde_json::to_vec(&profile).unwrap();
-        fs::write(root.join("profile.json"), &final_profile_bytes).unwrap();
-        artifacts
-            .iter_mut()
-            .find(|artifact| artifact.path == "profile.json")
-            .unwrap()
-            .sha256 = hex(&Sha256::digest(&final_profile_bytes));
-        let provider_independence = provider_independence_receipt(
-            &profile,
-            now - 30,
-            "release-1",
-            &"a".repeat(40),
-            &"2".repeat(64),
-            &hex(&Sha256::digest(&final_profile_bytes)),
-        )
-        .unwrap();
-        let provider_independence_bytes = serde_json::to_vec(&provider_independence).unwrap();
-        fs::write(
-            root.join("provider-independence.json"),
-            &provider_independence_bytes,
-        )
-        .unwrap();
-        artifacts
-            .iter_mut()
-            .find(|artifact| artifact.path == "provider-independence.json")
-            .unwrap()
-            .sha256 = hex(&Sha256::digest(&provider_independence_bytes));
-        let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
-        fs::write(root.join("gate-a-receipt.json"), &receipt_bytes).unwrap();
-        let gate_a_profile_bytes = canonical_bytes(&gate_a_profile).unwrap();
-        fs::write(root.join("gate-a-profile.json"), &gate_a_profile_bytes).unwrap();
-        initial_parameters.profile_sha256 = hex(&canonical_sha256(&profile).unwrap());
-        let initial_parameters_bytes = serde_json::to_vec(&initial_parameters).unwrap();
-        fs::write(
-            root.join("initial-operational-parameters.json"),
-            &initial_parameters_bytes,
-        )
-        .unwrap();
-        let production_upgrade = ProductionCanisterUpgradeReceipt {
-            checkpoint_evidence_sha256: None,
-            before_operational_config: None,
-            // These raw responses are produced by the tracked production upgrade
-            // driver; the fixture uses the same Candid and management-status shapes.
-            schema_version: 1,
-            kind: "production-controller-bootstrap-upgrade".into(),
-            source_revision: "a".repeat(40),
-            source_tree_sha256: "2".repeat(64),
-            bridge_canister_id: profile.bridge_canister_id.clone(),
-            install_mode: "upgrade".into(),
-            executing_principal: receipt.canister_install.installer_principal.clone(),
-            executed_at_unix: manifest_created,
-            verified_at_unix: manifest_created,
-            recovered: false,
-            recovered_at_unix: None,
-            before_controllers: vec![receipt.canister_install.installer_principal.clone()],
-            after_controllers: vec![receipt.canister_install.installer_principal.clone()],
-            before_module_sha256: gate_a_profile.bridge_canister_wasm_sha256.clone(),
-            after_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
-            wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
-            before_schema_version: CURRENT_STABLE_SCHEMA_VERSION,
-            after_schema_version: CURRENT_STABLE_SCHEMA_VERSION,
-            before_lifecycle: "Bootstrap".into(),
-            after_lifecycle: "Bootstrap".into(),
-            before_deposits_paused: true,
-            after_deposits_paused: true,
-            before_storage_validation_complete: true,
-            after_storage_validation_complete: true,
-            before_management_status_json_hex: String::new(),
-            before_management_status_json_sha256: String::new(),
-            after_management_status_json_hex: String::new(),
-            after_management_status_json_sha256: String::new(),
-            before_bridge_status_response_hex: String::new(),
-            before_bridge_status_response_sha256: String::new(),
-            after_bridge_status_response_hex: String::new(),
-            after_bridge_status_response_sha256: String::new(),
-            before_lifecycle_response_hex: String::new(),
-            before_lifecycle_response_sha256: String::new(),
-            after_lifecycle_response_hex: String::new(),
-            after_lifecycle_response_sha256: String::new(),
-            before_runtime_binding_response_hex: String::new(),
-            before_runtime_binding_response_sha256: String::new(),
-            after_runtime_binding_response_hex: String::new(),
-            after_runtime_binding_response_sha256: String::new(),
-            before_storage_integrity_response_hex: String::new(),
-            before_storage_integrity_response_sha256: String::new(),
-            after_storage_integrity_response_hex: String::new(),
-            after_storage_integrity_response_sha256: String::new(),
-            before_public_state_sha256: String::new(),
-            after_public_state_sha256: String::new(),
-            command_argv: [
-                "bridge-profile",
-                "submit-production-canister-upgrade",
-                gate_a_profile.ic_host.as_str(),
-                profile.bridge_canister_id.as_str(),
-                receipt.canister_install.installer_principal.as_str(),
-                "<production-controller-pem>",
-                "<verified-release-artifact>",
-                "<durable-submission-artifact>",
-                "<durable-chunk-upload-evidence>",
-                "<durable-response-artifact>",
-            ]
-            .map(str::to_string)
-            .to_vec(),
-            chunk_upload_evidence_json_hex: String::new(),
-            chunk_upload_evidence_json_sha256: String::new(),
-            submission_json_hex: String::new(),
-            submission_json_sha256: String::new(),
-            request_id: String::new(),
-            response_stdout_hex: String::new(),
-            response_stdout_sha256: String::new(),
-            response_stderr_hex: String::new(),
-            response_stderr_sha256: hex(&Sha256::digest([])),
-        };
-        let mut upgrade_status = matching_handover_status();
-        upgrade_status.deposits_paused = true;
-        let status_raw = Encode!(&upgrade_status).unwrap();
-        let lifecycle_raw = Encode!(&ProductionLifecycleResultView::Ok(
-            ProductionLifecycleView::Bootstrap
-        ))
-        .unwrap();
-        let runtime_raw = Encode!(&matching_handover_runtime(
-            &gate_a_profile,
-            &matching_handover_status(),
-        ))
-        .unwrap();
-        let integrity_raw = Encode!(&StorageIntegrityResultView::Ok("ok".into())).unwrap();
-        let before_management_json = serde_json::to_vec(&serde_json::json!({
-            "status": {
-                "settings": {"controllers": [receipt.canister_install.installer_principal.clone()]},
-                "module_hash": gate_a_profile.bridge_canister_wasm_sha256.clone(),
-            }
-        }))
-        .unwrap();
-        let after_management_json = serde_json::to_vec(&serde_json::json!({
-            "status": {
-                "settings": {"controllers": [receipt.canister_install.installer_principal.clone()]},
-                "module_hash": profile.bridge_canister_wasm_sha256.clone(),
-            }
-        }))
-        .unwrap();
-        let mut production_upgrade = production_upgrade;
-        production_upgrade.before_management_status_json_hex = hex(&before_management_json);
-        production_upgrade.before_management_status_json_sha256 =
-            hex(&Sha256::digest(&before_management_json));
-        production_upgrade.after_management_status_json_hex = hex(&after_management_json);
-        production_upgrade.after_management_status_json_sha256 =
-            hex(&Sha256::digest(&after_management_json));
-        for (before, before_digest, after, after_digest, raw) in [
-            (
-                &mut production_upgrade.before_bridge_status_response_hex,
-                &mut production_upgrade.before_bridge_status_response_sha256,
-                &mut production_upgrade.after_bridge_status_response_hex,
-                &mut production_upgrade.after_bridge_status_response_sha256,
-                &status_raw,
-            ),
-            (
-                &mut production_upgrade.before_lifecycle_response_hex,
-                &mut production_upgrade.before_lifecycle_response_sha256,
-                &mut production_upgrade.after_lifecycle_response_hex,
-                &mut production_upgrade.after_lifecycle_response_sha256,
-                &lifecycle_raw,
-            ),
-            (
-                &mut production_upgrade.before_runtime_binding_response_hex,
-                &mut production_upgrade.before_runtime_binding_response_sha256,
-                &mut production_upgrade.after_runtime_binding_response_hex,
-                &mut production_upgrade.after_runtime_binding_response_sha256,
-                &runtime_raw,
-            ),
-            (
-                &mut production_upgrade.before_storage_integrity_response_hex,
-                &mut production_upgrade.before_storage_integrity_response_sha256,
-                &mut production_upgrade.after_storage_integrity_response_hex,
-                &mut production_upgrade.after_storage_integrity_response_sha256,
-                &integrity_raw,
-            ),
-        ] {
-            *before = hex(raw);
-            *before_digest = hex(&Sha256::digest(raw));
-            *after = hex(raw);
-            *after_digest = hex(&Sha256::digest(raw));
-        }
-        let mut migrated_upgrade_status = upgrade_status.clone();
-        migrated_upgrade_status.counts.retained_audit_events += 1;
-        let migrated_status_raw = Encode!(&migrated_upgrade_status).unwrap();
-        production_upgrade.after_bridge_status_response_hex = hex(&migrated_status_raw);
-        production_upgrade.after_bridge_status_response_sha256 =
-            hex(&Sha256::digest(&migrated_status_raw));
-        let mut migrated_gate_a_profile = gate_a_profile.clone();
-        migrated_gate_a_profile.pause_principal = PRODUCTION_PAUSE_PRINCIPAL.into();
-        let migrated_runtime_raw = Encode!(&matching_handover_runtime(
-            &migrated_gate_a_profile,
-            &migrated_upgrade_status,
-        ))
-        .unwrap();
-        production_upgrade.after_runtime_binding_response_hex = hex(&migrated_runtime_raw);
-        production_upgrade.after_runtime_binding_response_sha256 =
-            hex(&Sha256::digest(&migrated_runtime_raw));
-        production_upgrade.before_operational_config = Some(operational_epoch_fixture(
-            &gate_a_profile,
-            upgrade_status.mint_authorization_ttl_seconds,
-            upgrade_status.mint_authorization_epoch,
-        ));
-        let before_runtime_view = decode_candid_hex::<RuntimeBindingView>(
-            &production_upgrade.before_runtime_binding_response_hex,
-        )
-        .unwrap();
-        let evidence = production_upgrade.before_operational_config.take();
-        let saved_after_schema = production_upgrade.after_schema_version;
-        production_upgrade.after_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
-        assert!(validate_upgrade_operational_evidence(
-            &production_upgrade,
-            &upgrade_status,
-            &live_runtime_binding_from_view(&before_runtime_view),
-            gate_a_profile.parameters.ledger_fee
-        )
-        .is_err());
-        production_upgrade.after_schema_version = PREVIOUS_STABLE_SCHEMA_VERSION;
-        assert!(validate_upgrade_operational_evidence(
-            &production_upgrade,
-            &upgrade_status,
-            &live_runtime_binding_from_view(&before_runtime_view),
-            gate_a_profile.parameters.ledger_fee
-        )
-        .is_ok());
-        production_upgrade.after_schema_version = saved_after_schema;
-        production_upgrade.before_operational_config = evidence;
-        let after_runtime_view = decode_candid_hex::<RuntimeBindingView>(
-            &production_upgrade.after_runtime_binding_response_hex,
-        )
-        .unwrap();
-        assert!(
-            live_runtime_binding_from_view(&before_runtime_view)
-                == receipt.canister_install.runtime_binding
-        );
-        assert!(production_upgrade_pause_migration_matches(
-            &gate_a_profile,
-            &receipt.canister_install.runtime_binding,
-            &upgrade_status,
-            &migrated_upgrade_status,
-            &before_runtime_view,
-            &after_runtime_view,
-        )
-        .unwrap());
-        production_upgrade.before_public_state_sha256 = production_upgrade_public_state_sha256(
-            &upgrade_status,
-            &[
-                &production_upgrade.before_lifecycle_response_hex,
-                &production_upgrade.before_runtime_binding_response_hex,
-                &production_upgrade.before_storage_integrity_response_hex,
-            ],
-        )
-        .unwrap();
-        production_upgrade.after_public_state_sha256 = production_upgrade_public_state_sha256(
-            &migrated_upgrade_status,
-            &[
-                &production_upgrade.after_lifecycle_response_hex,
-                &production_upgrade.after_runtime_binding_response_hex,
-                &production_upgrade.after_storage_integrity_response_hex,
-            ],
-        )
-        .unwrap();
-        let canister = Principal::from_text(&profile.bridge_canister_id).unwrap();
-        let wasm = fs::read(root.join("bridge-canister.wasm")).unwrap();
-        let signing_agent = Agent::builder()
-            .with_url(&profile.ic_host)
-            .with_identity(upgrade_identity)
-            .build()
-            .unwrap();
-        let stored_chunks_argument = Encode!(&ManagementStoredChunksArgument {
-            canister_id: canister,
-        })
-        .unwrap();
-        let stored_chunks_signed = signing_agent
-            .update(&Principal::management_canister(), "stored_chunks")
-            .with_effective_canister_id(canister)
-            .with_arg(stored_chunks_argument.clone())
-            .sign()
-            .unwrap();
-        let stored_chunks = ProductionUpgradeSignedUpdate {
-            argument_hex: hex(&stored_chunks_argument),
-            argument_sha256: hex(&Sha256::digest(&stored_chunks_argument)),
-            ingress_expiry: stored_chunks_signed.ingress_expiry,
-            request_id: hex(stored_chunks_signed.request_id.as_slice()),
-            signed_update_hex: hex(&stored_chunks_signed.signed_update),
-            signed_update_sha256: hex(&Sha256::digest(&stored_chunks_signed.signed_update)),
-        };
-        let mut chunks = Vec::new();
-        let mut chunk_hashes_list = Vec::new();
-        for (index, chunk) in wasm.chunks(PRODUCTION_UPGRADE_CHUNK_SIZE).enumerate() {
-            let chunk_sha256 = Sha256::digest(chunk).to_vec();
-            let chunk_argument = Encode!(&ManagementUploadChunkArgument {
-                canister_id: canister,
-                chunk: chunk.to_vec(),
-            })
-            .unwrap();
-            let chunk_signed = signing_agent
-                .update(&Principal::management_canister(), "upload_chunk")
-                .with_effective_canister_id(canister)
-                .with_arg(chunk_argument.clone())
-                .sign()
-                .unwrap();
-            chunks.push(ProductionUpgradeChunkSubmission {
-                index: index as u32,
-                offset: (index * PRODUCTION_UPGRADE_CHUNK_SIZE) as u64,
-                size_bytes: chunk.len() as u64,
-                sha256: hex(&chunk_sha256),
-                argument_hex: hex(&chunk_argument),
-                argument_sha256: hex(&Sha256::digest(&chunk_argument)),
-                ingress_expiry: chunk_signed.ingress_expiry,
-                request_id: hex(chunk_signed.request_id.as_slice()),
-                signed_update_hex: hex(&chunk_signed.signed_update),
-                signed_update_sha256: hex(&Sha256::digest(&chunk_signed.signed_update)),
-            });
-            chunk_hashes_list.push(ManagementChunkHash { hash: chunk_sha256 });
-        }
-        let argument = Encode!(&ManagementInstallChunkedCodeArgument {
-            mode: ManagementInstallMode::Upgrade,
-            target_canister: canister,
-            store_canister: None,
-            chunk_hashes_list,
-            wasm_module_hash: Sha256::digest(&wasm).to_vec(),
-            arg: Vec::new(),
-            sender_canister_version: None,
-        })
-        .unwrap();
-        let signed = signing_agent
-            .update(&Principal::management_canister(), "install_chunked_code")
-            .with_effective_canister_id(canister)
-            .with_arg(argument.clone())
-            .sign()
-            .unwrap();
-        let submission = ProductionUpgradeSubmission {
-            checkpoint_evidence_sha256: None,
-            schema_version: 2,
-            install_method: "install_chunked_code".into(),
-            ic_host: profile.ic_host.clone(),
-            effective_canister_id: profile.bridge_canister_id.clone(),
-            sender_principal: upgrade_sender.to_text(),
-            wasm_sha256: hex(&Sha256::digest(&wasm)),
-            chunk_size_bytes: PRODUCTION_UPGRADE_CHUNK_SIZE as u64,
-            stored_chunks,
-            chunks,
-            argument_hex: hex(&argument),
-            argument_sha256: hex(&Sha256::digest(&argument)),
-            ingress_expiry: signed.ingress_expiry,
-            request_id: hex(signed.request_id.as_slice()),
-            signed_update_hex: hex(&signed.signed_update),
-            signed_update_sha256: hex(&Sha256::digest(&signed.signed_update)),
-        };
-        let submission_bytes = serde_json::to_vec(&submission).unwrap();
-        assert_eq!(submission.chunks.len(), 2);
-        assert_eq!(
-            submission.chunks[0].size_bytes,
-            PRODUCTION_UPGRADE_CHUNK_SIZE as u64
-        );
-        assert_eq!(submission.chunks[1].size_bytes, 1);
-        let mut forged_submission: Value = serde_json::from_slice(&submission_bytes).unwrap();
-        forged_submission["request_id"] = Value::String("9".repeat(64));
-        assert!(validate_production_upgrade_submission_bytes(
-            &profile.ic_host,
-            canister,
-            upgrade_sender,
-            &wasm,
-            &serde_json::to_vec(&forged_submission).unwrap(),
-        )
-        .is_err());
-        let mut forged_install_argument: Value = serde_json::from_slice(&submission_bytes).unwrap();
-        let mut altered_argument =
-            decode_hex(forged_install_argument["argument_hex"].as_str().unwrap()).unwrap();
-        *altered_argument.last_mut().unwrap() ^= 1;
-        forged_install_argument["argument_hex"] = Value::String(hex(&altered_argument));
-        forged_install_argument["argument_sha256"] =
-            Value::String(hex(&Sha256::digest(&altered_argument)));
-        assert!(validate_production_upgrade_submission_bytes(
-            &profile.ic_host,
-            canister,
-            upgrade_sender,
-            &wasm,
-            &serde_json::to_vec(&forged_install_argument).unwrap(),
-        )
-        .is_err());
-        let mut forged_chunk_submission: Value = serde_json::from_slice(&submission_bytes).unwrap();
-        forged_chunk_submission["chunks"][0]["sha256"] = Value::String("9".repeat(64));
-        assert!(validate_production_upgrade_submission_bytes(
-            &profile.ic_host,
-            canister,
-            upgrade_sender,
-            &wasm,
-            &serde_json::to_vec(&forged_chunk_submission).unwrap(),
-        )
-        .is_err());
-        let mut invalid_signature_envelope: Envelope<'_> =
-            serde_cbor::from_slice(&signed.signed_update).unwrap();
-        invalid_signature_envelope.sender_sig.as_mut().unwrap()[0] ^= 1;
-        let invalid_signed_update = serde_cbor::to_vec(&invalid_signature_envelope).unwrap();
-        let mut invalid_signature_submission: Value =
-            serde_json::from_slice(&submission_bytes).unwrap();
-        invalid_signature_submission["signed_update_hex"] =
-            Value::String(hex(&invalid_signed_update));
-        invalid_signature_submission["signed_update_sha256"] =
-            Value::String(hex(&Sha256::digest(&invalid_signed_update)));
-        assert!(validate_production_upgrade_submission_bytes(
-            &profile.ic_host,
-            canister,
-            upgrade_sender,
-            &wasm,
-            &serde_json::to_vec(&invalid_signature_submission).unwrap(),
-        )
-        .is_err());
-        let stored_response = Encode!(&Vec::<ManagementChunkHash>::new()).unwrap();
-        let chunk_responses = submission
-            .chunks
-            .iter()
-            .map(|chunk| {
-                let response = Encode!(&ManagementChunkHash {
-                    hash: decode_hex(&chunk.sha256).unwrap(),
-                })
-                .unwrap();
-                ProductionUpgradeChunkResponse {
-                    schema_version: 1,
-                    index: chunk.index,
-                    request_id: chunk.request_id.clone(),
-                    response_hex: hex(&response),
-                    response_sha256: hex(&Sha256::digest(&response)),
-                }
-            })
-            .collect::<Vec<_>>();
-        let upload_evidence = ProductionUpgradeUploadEvidence {
-            schema_version: 1,
-            stored_chunks_request_id: submission.stored_chunks.request_id.clone(),
-            stored_chunks_response_hex: hex(&stored_response),
-            stored_chunks_response_sha256: hex(&Sha256::digest(&stored_response)),
-            chunks: chunk_responses,
-        };
-        let upload_evidence_bytes = serde_json::to_vec(&upload_evidence).unwrap();
-        assert!(
-            validate_production_upgrade_upload_evidence(&submission, &upload_evidence_bytes)
-                .is_ok()
-        );
-        let unexpected_stored_response = Encode!(&vec![ManagementChunkHash {
-            hash: vec![0x99; 32],
-        }])
-        .unwrap();
-        let mut unexpected_store: Value = serde_json::from_slice(&upload_evidence_bytes).unwrap();
-        unexpected_store["stored_chunks_response_hex"] =
-            Value::String(hex(&unexpected_stored_response));
-        unexpected_store["stored_chunks_response_sha256"] =
-            Value::String(hex(&Sha256::digest(&unexpected_stored_response)));
-        assert!(validate_production_upgrade_upload_evidence(
-            &submission,
-            &serde_json::to_vec(&unexpected_store).unwrap()
-        )
-        .is_err());
-        let mut forged_upload_response: Value =
-            serde_json::from_slice(&upload_evidence_bytes).unwrap();
-        let forged_response = Encode!(&ManagementChunkHash {
-            hash: vec![0x42; 32],
-        })
-        .unwrap();
-        forged_upload_response["chunks"][0]["response_hex"] = Value::String(hex(&forged_response));
-        forged_upload_response["chunks"][0]["response_sha256"] =
-            Value::String(hex(&Sha256::digest(&forged_response)));
-        assert!(validate_production_upgrade_upload_evidence(
-            &submission,
-            &serde_json::to_vec(&forged_upload_response).unwrap()
-        )
-        .is_err());
-        let now_ns = u64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        )
-        .unwrap();
-        assert!(production_upgrade_request_has_time(now_ns + 16 * 1_000_000_000).is_ok());
-        assert!(production_upgrade_request_has_time(now_ns + 14 * 1_000_000_000).is_err());
-        let executed_at = production_upgrade.executed_at_unix;
-        let executed_at_ns = executed_at * 1_000_000_000;
-        assert!(!production_upgrade_ingress_window_valid(
-            executed_at,
-            executed_at_ns
-        ));
-        assert!(production_upgrade_ingress_window_valid(
-            executed_at,
-            executed_at_ns + 1
-        ));
-        assert!(production_upgrade_ingress_window_valid(
-            executed_at,
-            executed_at_ns + 5 * 60 * 1_000_000_000
-        ));
-        assert!(!production_upgrade_ingress_window_valid(
-            executed_at,
-            executed_at_ns + 5 * 60 * 1_000_000_000 + 1
-        ));
-        assert!(!production_upgrade_ingress_window_valid(u64::MAX, u64::MAX));
-        production_upgrade.submission_json_hex = hex(&submission_bytes);
-        production_upgrade.submission_json_sha256 = hex(&Sha256::digest(&submission_bytes));
-        production_upgrade.chunk_upload_evidence_json_hex = hex(&upload_evidence_bytes);
-        production_upgrade.chunk_upload_evidence_json_sha256 =
-            hex(&Sha256::digest(&upload_evidence_bytes));
-        production_upgrade.request_id = submission.request_id.clone();
-        let response_stdout = format!(
-            "request_id={}\nresponse_hex=\nsender_principal={}\nwasm_sha256={}\n",
-            submission.request_id, submission.sender_principal, submission.wasm_sha256
-        );
-        production_upgrade.response_stdout_hex = hex(response_stdout.as_bytes());
-        production_upgrade.response_stdout_sha256 =
-            hex(&Sha256::digest(response_stdout.as_bytes()));
-        let production_upgrade_bytes = serde_json::to_vec(&production_upgrade).unwrap();
-        assert!(validate_production_upgrade_history_bytes(
-            &gate_a_profile,
-            &receipt,
-            &production_upgrade_bytes,
-            &profile.bridge_canister_wasm_sha256,
-            CURRENT_STABLE_SCHEMA_VERSION,
-        )
-        .is_ok());
-        let mut forged_history: ProductionCanisterUpgradeReceipt =
-            serde_json::from_slice(&production_upgrade_bytes).unwrap();
-        let forged_controller = Principal::self_authenticating([0x91; 32]).to_text();
-        let forged_management = serde_json::to_vec(&serde_json::json!({
-            "status": {
-                "settings": {"controllers": [forged_controller.clone()]},
-                "module_hash": profile.bridge_canister_wasm_sha256.clone(),
-            }
-        }))
-        .unwrap();
-        forged_history.after_controllers = vec![forged_controller];
-        forged_history.after_management_status_json_hex = hex(&forged_management);
-        forged_history.after_management_status_json_sha256 =
-            hex(&Sha256::digest(&forged_management));
-        assert!(validate_production_upgrade_history_bytes(
-            &gate_a_profile,
-            &receipt,
-            &serde_json::to_vec(&forged_history).unwrap(),
-            &profile.bridge_canister_wasm_sha256,
-            CURRENT_STABLE_SCHEMA_VERSION,
-        )
-        .is_err());
-        fs::write(
-            root.join("production-canister-upgrade-receipt.json"),
-            &production_upgrade_bytes,
-        )
-        .unwrap();
-        let transition = PostGateAPolicyTransition {
-            schema_version: 3,
-            reason: "activate-before-production-measurements".into(),
-            observed_at_unix: manifest_created,
-            gate_a_manifest_sha256: receipt.gate_a_manifest_sha256.clone(),
-            gate_a_receipt_sha256: hex(&Sha256::digest(&receipt_bytes)),
-            from_source_revision: receipt.source_revision.clone(),
-            from_source_tree_sha256: receipt.source_tree_sha256.clone(),
-            upgrade_source_revision: "a".repeat(40),
-            upgrade_source_tree_sha256: "2".repeat(64),
-            to_source_revision: "a".repeat(40),
-            to_source_tree_sha256: "2".repeat(64),
-            bridge_canister_id: profile.bridge_canister_id.clone(),
-            bridge_contract: profile.bridge_contract.clone(),
-            bsns_contract: profile.bsns_contract.clone(),
-            timelock_contract: profile.timelock.address.clone(),
-            from_bridge_canister_wasm_sha256: gate_a_profile.bridge_canister_wasm_sha256.clone(),
-            to_bridge_canister_wasm_sha256: profile.bridge_canister_wasm_sha256.clone(),
-            production_canister_upgrade_receipt_sha256: hex(&Sha256::digest(
-                &production_upgrade_bytes,
-            )),
-            bridge_runtime_bytecode_sha256: profile.bridge_runtime_bytecode_sha256.clone(),
-            bsns_runtime_bytecode_sha256: profile.bsns_runtime_bytecode_sha256.clone(),
-            bsns_runtime_template_sha256: profile.bsns_runtime_template_sha256.clone(),
-            bridge_deployment_transaction_hash: receipt.bridge_deployment_transaction_hash.clone(),
-            timelock_deployment_transaction_hash: receipt
-                .timelock_deployment_transaction_hash
-                .clone(),
-        };
-        let transition_bytes = serde_json::to_vec(&transition).unwrap();
-        fs::write(
-            root.join("post-gate-a-policy-transition.json"),
-            &transition_bytes,
-        )
-        .unwrap();
-        artifacts.push(ArtifactDigest {
-            path: "gate-a-receipt.json".into(),
-            sha256: hex(&Sha256::digest(receipt_bytes)),
-        });
-        artifacts.push(ArtifactDigest {
-            path: "gate-a-profile.json".into(),
-            sha256: hex(&Sha256::digest(gate_a_profile_bytes)),
-        });
-        artifacts.push(ArtifactDigest {
-            path: "production-canister-upgrade-receipt.json".into(),
-            sha256: hex(&Sha256::digest(&production_upgrade_bytes)),
-        });
-        artifacts.push(ArtifactDigest {
-            path: "initial-operational-parameters.json".into(),
-            sha256: hex(&Sha256::digest(&initial_parameters_bytes)),
-        });
-        artifacts.push(ArtifactDigest {
-            path: "post-gate-a-policy-transition.json".into(),
-            sha256: hex(&Sha256::digest(&transition_bytes)),
-        });
-        artifacts.retain(|artifact| GATE_B_ARTIFACTS.contains(&artifact.path.as_str()));
-        let manifest = ReleaseManifest {
-            schema_version: 4,
-            release_id: "release-1".into(),
-            test_only: false,
-            source_revision: "a".repeat(40),
-            source_tree_sha256: "2".repeat(64),
-            created_at_unix: manifest_created,
-            expires_at_unix: manifest_created + MAX_EVIDENCE_AGE_SECS,
-            parent_gate_a_manifest_sha256: Some(gate_a.manifest_sha256),
-            artifacts,
-        };
-        fs::write(
-            root.join("release-manifest.json"),
-            serde_json::to_vec(&manifest).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            receipt.gate_a_profile_sha256,
-            hex(&canonical_sha256(&gate_a_profile).unwrap())
-        );
-        let mut expected_post_deploy_profile = gate_a_profile.clone();
-        expected_post_deploy_profile.deployment_block = profile.deployment_block;
-        assert_eq!(
-            serde_json::to_value(&gate_a_post_deploy_profile).unwrap(),
-            serde_json::to_value(&expected_post_deploy_profile).unwrap()
-        );
-        assert_eq!(
-            receipt.post_deploy_profile_sha256,
-            hex(&Sha256::digest(
-                canonical_bytes(&expected_post_deploy_profile).unwrap()
-            ))
-        );
-        let bundle = validate_bundle(&root, true).unwrap();
-        let baseline_manifest_bytes = fs::read(root.join("release-manifest.json")).unwrap();
-        let mut sealed_upgrade: ProductionCanisterUpgradeReceipt =
-            serde_json::from_slice(&production_upgrade_bytes).unwrap();
-        sealed_upgrade.before_module_sha256 = profile.bridge_canister_wasm_sha256.clone();
-        sealed_upgrade.before_management_status_json_hex =
-            production_upgrade.after_management_status_json_hex.clone();
-        sealed_upgrade.before_management_status_json_sha256 = production_upgrade
-            .after_management_status_json_sha256
-            .clone();
-        sealed_upgrade.after_management_status_json_hex =
-            production_upgrade.after_management_status_json_hex.clone();
-        sealed_upgrade.after_management_status_json_sha256 = production_upgrade
-            .after_management_status_json_sha256
-            .clone();
-        sealed_upgrade.before_bridge_status_response_hex = hex(&migrated_status_raw);
-        sealed_upgrade.before_bridge_status_response_sha256 =
-            hex(&Sha256::digest(&migrated_status_raw));
-        sealed_upgrade.after_bridge_status_response_hex = hex(&migrated_status_raw);
-        sealed_upgrade.after_bridge_status_response_sha256 =
-            hex(&Sha256::digest(&migrated_status_raw));
-        let sealed_lifecycle_raw = Encode!(&ProductionLifecycleResultView::Ok(
-            ProductionLifecycleView::OperationalConfigSealed,
-        ))
-        .unwrap();
-        sealed_upgrade.before_lifecycle = "OperationalConfigSealed".into();
-        sealed_upgrade.after_lifecycle = "OperationalConfigSealed".into();
-        sealed_upgrade.before_lifecycle_response_hex = hex(&sealed_lifecycle_raw);
-        sealed_upgrade.before_lifecycle_response_sha256 =
-            hex(&Sha256::digest(&sealed_lifecycle_raw));
-        sealed_upgrade.after_lifecycle_response_hex = hex(&sealed_lifecycle_raw);
-        sealed_upgrade.after_lifecycle_response_sha256 =
-            hex(&Sha256::digest(&sealed_lifecycle_raw));
-        let mut sealed_runtime_view = after_runtime_view.clone();
-        let mut sealed_profile = migrated_gate_a_profile.clone();
-        sealed_profile.rate_limits.notification_global += 1;
-        sealed_upgrade.before_operational_config = Some(operational_epoch_fixture(
-            &sealed_profile,
-            migrated_upgrade_status.mint_authorization_ttl_seconds,
-            migrated_upgrade_status.mint_authorization_epoch,
-        ));
-        sealed_runtime_view.operational_config_sha256 = expected_operational_config_sha256(
-            &sealed_profile,
-            migrated_upgrade_status.mint_authorization_ttl_seconds,
-            migrated_upgrade_status.mint_authorization_epoch,
-        )
-        .unwrap()
-        .to_vec();
-        let sealed_runtime_raw = Encode!(&sealed_runtime_view).unwrap();
-        sealed_upgrade.before_runtime_binding_response_hex = hex(&sealed_runtime_raw);
-        sealed_upgrade.before_runtime_binding_response_sha256 =
-            hex(&Sha256::digest(&sealed_runtime_raw));
-        sealed_upgrade.after_runtime_binding_response_hex = hex(&sealed_runtime_raw);
-        sealed_upgrade.after_runtime_binding_response_sha256 =
-            hex(&Sha256::digest(&sealed_runtime_raw));
-        sealed_upgrade.before_public_state_sha256 = production_upgrade_public_state_sha256(
-            &migrated_upgrade_status,
-            &[
-                &sealed_upgrade.before_lifecycle_response_hex,
-                &sealed_upgrade.before_runtime_binding_response_hex,
-                &sealed_upgrade.before_storage_integrity_response_hex,
-            ],
-        )
-        .unwrap();
-        sealed_upgrade.after_public_state_sha256 =
-            sealed_upgrade.before_public_state_sha256.clone();
-        let sealed_signed = signing_agent
-            .update(&Principal::management_canister(), "install_chunked_code")
-            .with_effective_canister_id(canister)
-            .with_arg(argument.clone())
-            .expire_at(
-                UNIX_EPOCH + std::time::Duration::from_nanos(submission.ingress_expiry + 1_000_000),
-            )
-            .sign()
-            .unwrap();
-        let mut sealed_submission: ProductionUpgradeSubmission =
-            serde_json::from_slice(&submission_bytes).unwrap();
-        sealed_submission.ingress_expiry = sealed_signed.ingress_expiry;
-        sealed_submission.request_id = hex(sealed_signed.request_id.as_slice());
-        sealed_submission.signed_update_hex = hex(&sealed_signed.signed_update);
-        sealed_submission.signed_update_sha256 = hex(&Sha256::digest(&sealed_signed.signed_update));
-        let sealed_submission_bytes = serde_json::to_vec(&sealed_submission).unwrap();
-        sealed_upgrade.submission_json_hex = hex(&sealed_submission_bytes);
-        sealed_upgrade.submission_json_sha256 = hex(&Sha256::digest(&sealed_submission_bytes));
-        sealed_upgrade.request_id = sealed_submission.request_id.clone();
-        let sealed_response_stdout = format!(
-            "request_id={}\nresponse_hex=\nsender_principal={}\nwasm_sha256={}\n",
-            sealed_submission.request_id,
-            sealed_submission.sender_principal,
-            sealed_submission.wasm_sha256,
-        );
-        sealed_upgrade.response_stdout_hex = hex(sealed_response_stdout.as_bytes());
-        sealed_upgrade.response_stdout_sha256 =
-            hex(&Sha256::digest(sealed_response_stdout.as_bytes()));
-        let sealed_upgrade_bytes = serde_json::to_vec(&sealed_upgrade).unwrap();
-        let continuation = ProductionUpgradeContinuation {
-            prefix_len: 0,
-            before_module_sha256: profile.bridge_canister_wasm_sha256.clone(),
-            terminal: ProductionUpgradeTerminal {
-                observed_epoch: (1, 900),
-                runtime: live_runtime_binding_from_view(&sealed_runtime_view),
-                lifecycle: ProductionLifecycleView::OperationalConfigSealed,
-                deposits_paused: true,
-            },
-            schema_version: CURRENT_STABLE_SCHEMA_VERSION,
-            minimum_executed_at_unix: sealed_upgrade.executed_at_unix,
-        };
-        assert!(validate_production_upgrade_history_bytes_with_continuation(
-            &gate_a_profile,
-            &receipt,
-            &sealed_upgrade_bytes,
-            &profile.bridge_canister_wasm_sha256,
-            CURRENT_STABLE_SCHEMA_VERSION,
-            Some(&continuation),
-        )
-        .is_ok());
-        let late_continuation = ProductionUpgradeContinuation {
-            minimum_executed_at_unix: sealed_upgrade.executed_at_unix + 1,
-            ..continuation
-        };
-        assert!(validate_production_upgrade_history_bytes_with_continuation(
-            &gate_a_profile,
-            &receipt,
-            &sealed_upgrade_bytes,
-            &profile.bridge_canister_wasm_sha256,
-            CURRENT_STABLE_SCHEMA_VERSION,
-            Some(&late_continuation),
-        )
-        .is_err());
-        let first_receipt_sha256 = hex(&Sha256::digest(&production_upgrade_bytes));
-        let sealed_receipt_sha256 = hex(&Sha256::digest(&sealed_upgrade_bytes));
-        production_checkpoint::exercise_signed_suffix_fixture(&profile, &sealed_upgrade_bytes);
-        let streamed = validate_production_upgrade_receipts(
-            &gate_a_profile,
-            &receipt,
-            [&production_upgrade_bytes, &sealed_upgrade_bytes]
-                .into_iter()
-                .map(|bytes| serde_json::from_slice(bytes).map_err(|error| error.to_string())),
-            &profile.bridge_canister_wasm_sha256,
-            CURRENT_STABLE_SCHEMA_VERSION,
-            None,
-        )
-        .expect("streaming must preserve the existing history validation");
-        assert_eq!(
-            streamed.runtime.schema_version,
-            CURRENT_STABLE_SCHEMA_VERSION
-        );
-        assert!(validate_production_upgrade_receipts(
-            &gate_a_profile,
-            &receipt,
-            std::iter::empty(),
-            &profile.bridge_canister_wasm_sha256,
-            CURRENT_STABLE_SCHEMA_VERSION,
-            None,
-        )
-        .is_err());
-        let chain_bytes = serde_json::to_vec(&ProductionCanisterUpgradeChain {
-            schema_version: 1,
-            kind: "production-controller-bootstrap-upgrade-chain".into(),
-            entries: vec![
-                ProductionCanisterUpgradeChainEntry {
-                    sequence: 0,
-                    previous_receipt_sha256: None,
-                    receipt_sha256: first_receipt_sha256.clone(),
-                    receipt_json_hex: hex(&production_upgrade_bytes),
-                },
-                ProductionCanisterUpgradeChainEntry {
-                    sequence: 1,
-                    previous_receipt_sha256: Some(first_receipt_sha256.clone()),
-                    receipt_sha256: sealed_receipt_sha256.clone(),
-                    receipt_json_hex: hex(&sealed_upgrade_bytes),
-                },
-            ],
-        })
-        .unwrap();
-        fs::write(
-            root.join("production-canister-upgrade-receipt.json"),
-            &chain_bytes,
-        )
-        .unwrap();
-        let mut chain_transition: PostGateAPolicyTransition =
-            serde_json::from_slice(&transition_bytes).unwrap();
-        chain_transition.production_canister_upgrade_receipt_sha256 =
-            hex(&Sha256::digest(&chain_bytes));
-        let chain_transition_bytes = serde_json::to_vec(&chain_transition).unwrap();
-        fs::write(
-            root.join("post-gate-a-policy-transition.json"),
-            &chain_transition_bytes,
-        )
-        .unwrap();
-        let mut chain_manifest: ReleaseManifest =
-            serde_json::from_slice(&baseline_manifest_bytes).unwrap();
-        for artifact in &mut chain_manifest.artifacts {
-            if artifact.path == "production-canister-upgrade-receipt.json" {
-                artifact.sha256 = hex(&Sha256::digest(&chain_bytes));
-            } else if artifact.path == "post-gate-a-policy-transition.json" {
-                artifact.sha256 = hex(&Sha256::digest(&chain_transition_bytes));
-            }
-        }
-        fs::write(
-            root.join("release-manifest.json"),
-            serde_json::to_vec(&chain_manifest).unwrap(),
-        )
-        .unwrap();
-        assert!(validate_bundle(&root, true).is_ok());
-        let mut duplicate_request_upgrade: ProductionCanisterUpgradeReceipt =
-            serde_json::from_slice(&sealed_upgrade_bytes).unwrap();
-        duplicate_request_upgrade.submission_json_hex =
-            production_upgrade.submission_json_hex.clone();
-        duplicate_request_upgrade.submission_json_sha256 =
-            production_upgrade.submission_json_sha256.clone();
-        duplicate_request_upgrade.request_id = production_upgrade.request_id.clone();
-        duplicate_request_upgrade.response_stdout_hex =
-            production_upgrade.response_stdout_hex.clone();
-        duplicate_request_upgrade.response_stdout_sha256 =
-            production_upgrade.response_stdout_sha256.clone();
-        let duplicate_request_bytes = serde_json::to_vec(&duplicate_request_upgrade).unwrap();
-        let duplicate_request_chain = serde_json::to_vec(&ProductionCanisterUpgradeChain {
-            schema_version: 1,
-            kind: "production-controller-bootstrap-upgrade-chain".into(),
-            entries: vec![
-                ProductionCanisterUpgradeChainEntry {
-                    sequence: 0,
-                    previous_receipt_sha256: None,
-                    receipt_sha256: first_receipt_sha256.clone(),
-                    receipt_json_hex: hex(&production_upgrade_bytes),
-                },
-                ProductionCanisterUpgradeChainEntry {
-                    sequence: 1,
-                    previous_receipt_sha256: Some(first_receipt_sha256.clone()),
-                    receipt_sha256: hex(&Sha256::digest(&duplicate_request_bytes)),
-                    receipt_json_hex: hex(&duplicate_request_bytes),
-                },
-            ],
-        })
-        .unwrap();
-        let duplicate_error = validate_production_upgrade_history_bytes(
-            &gate_a_profile,
-            &receipt,
-            &duplicate_request_chain,
-            &profile.bridge_canister_wasm_sha256,
-            CURRENT_STABLE_SCHEMA_VERSION,
-        )
-        .err()
-        .expect("duplicate install request must fail closed");
-        assert!(duplicate_error.contains("repeats an install request"));
-        let streamed_duplicate_error = validate_production_upgrade_receipts(
-            &gate_a_profile,
-            &receipt,
-            [&production_upgrade_bytes, &duplicate_request_bytes]
-                .into_iter()
-                .map(|bytes| serde_json::from_slice(bytes).map_err(|error| error.to_string())),
-            &profile.bridge_canister_wasm_sha256,
-            CURRENT_STABLE_SCHEMA_VERSION,
-            None,
-        )
-        .err()
-        .expect("streaming must retain replay detection across receipt boundaries");
-        assert!(streamed_duplicate_error.contains("repeats an install request"));
-        let mut drifted_upgrade: ProductionCanisterUpgradeReceipt =
-            serde_json::from_slice(&sealed_upgrade_bytes).unwrap();
-        let mut drifted_runtime_view = sealed_runtime_view;
-        drifted_runtime_view.operational_config_sha256 = vec![0x92; 32];
-        let drifted_runtime_raw = Encode!(&drifted_runtime_view).unwrap();
-        drifted_upgrade.before_runtime_binding_response_hex = hex(&drifted_runtime_raw);
-        drifted_upgrade.before_runtime_binding_response_sha256 =
-            hex(&Sha256::digest(&drifted_runtime_raw));
-        drifted_upgrade.after_runtime_binding_response_hex = hex(&drifted_runtime_raw);
-        drifted_upgrade.after_runtime_binding_response_sha256 =
-            hex(&Sha256::digest(&drifted_runtime_raw));
-        drifted_upgrade.before_public_state_sha256 = production_upgrade_public_state_sha256(
-            &migrated_upgrade_status,
-            &[
-                &drifted_upgrade.before_lifecycle_response_hex,
-                &drifted_upgrade.before_runtime_binding_response_hex,
-                &drifted_upgrade.before_storage_integrity_response_hex,
-            ],
-        )
-        .unwrap();
-        drifted_upgrade.after_public_state_sha256 =
-            drifted_upgrade.before_public_state_sha256.clone();
-        let drifted_signed = signing_agent
-            .update(&Principal::management_canister(), "install_chunked_code")
-            .with_effective_canister_id(canister)
-            .with_arg(argument.clone())
-            .expire_at(
-                UNIX_EPOCH
-                    + std::time::Duration::from_nanos(sealed_submission.ingress_expiry + 1_000_000),
-            )
-            .sign()
-            .unwrap();
-        let mut drifted_submission: ProductionUpgradeSubmission =
-            serde_json::from_slice(&sealed_submission_bytes).unwrap();
-        drifted_submission.ingress_expiry = drifted_signed.ingress_expiry;
-        drifted_submission.request_id = hex(drifted_signed.request_id.as_slice());
-        drifted_submission.signed_update_hex = hex(&drifted_signed.signed_update);
-        drifted_submission.signed_update_sha256 =
-            hex(&Sha256::digest(&drifted_signed.signed_update));
-        assert_ne!(submission.request_id, sealed_submission.request_id);
-        assert_ne!(sealed_submission.request_id, drifted_submission.request_id);
-        assert_ne!(
-            submission.signed_update_sha256,
-            sealed_submission.signed_update_sha256,
-        );
-        assert_ne!(
-            sealed_submission.signed_update_sha256,
-            drifted_submission.signed_update_sha256,
-        );
-        let drifted_submission_bytes = serde_json::to_vec(&drifted_submission).unwrap();
-        drifted_upgrade.submission_json_hex = hex(&drifted_submission_bytes);
-        drifted_upgrade.submission_json_sha256 = hex(&Sha256::digest(&drifted_submission_bytes));
-        drifted_upgrade.request_id = drifted_submission.request_id.clone();
-        let drifted_response_stdout = format!(
-            "request_id={}\nresponse_hex=\nsender_principal={}\nwasm_sha256={}\n",
-            drifted_submission.request_id,
-            drifted_submission.sender_principal,
-            drifted_submission.wasm_sha256,
-        );
-        drifted_upgrade.response_stdout_hex = hex(drifted_response_stdout.as_bytes());
-        drifted_upgrade.response_stdout_sha256 =
-            hex(&Sha256::digest(drifted_response_stdout.as_bytes()));
-        let drifted_upgrade_bytes = serde_json::to_vec(&drifted_upgrade).unwrap();
-        let drifted_chain_bytes = serde_json::to_vec(&ProductionCanisterUpgradeChain {
-            schema_version: 1,
-            kind: "production-controller-bootstrap-upgrade-chain".into(),
-            entries: vec![
-                ProductionCanisterUpgradeChainEntry {
-                    sequence: 0,
-                    previous_receipt_sha256: None,
-                    receipt_sha256: first_receipt_sha256,
-                    receipt_json_hex: hex(&production_upgrade_bytes),
-                },
-                ProductionCanisterUpgradeChainEntry {
-                    sequence: 1,
-                    previous_receipt_sha256: Some(hex(&Sha256::digest(&production_upgrade_bytes))),
-                    receipt_sha256: sealed_receipt_sha256.clone(),
-                    receipt_json_hex: hex(&sealed_upgrade_bytes),
-                },
-                ProductionCanisterUpgradeChainEntry {
-                    sequence: 2,
-                    previous_receipt_sha256: Some(sealed_receipt_sha256),
-                    receipt_sha256: hex(&Sha256::digest(&drifted_upgrade_bytes)),
-                    receipt_json_hex: hex(&drifted_upgrade_bytes),
-                },
-            ],
-        })
-        .unwrap();
-        let drift_error = validate_production_upgrade_history_bytes(
-            &gate_a_profile,
-            &receipt,
-            &drifted_chain_bytes,
-            &profile.bridge_canister_wasm_sha256,
-            CURRENT_STABLE_SCHEMA_VERSION,
-        )
-        .err()
-        .expect("post-seal operational config drift must fail closed");
-        assert!(
-            drift_error.contains("operational epoch preimage differs from the observed snapshot")
-        );
-        let mut broken_chain: ProductionCanisterUpgradeChain =
-            serde_json::from_slice(&chain_bytes).unwrap();
-        broken_chain.entries[0].previous_receipt_sha256 = Some("9".repeat(64));
-        assert!(
-            production_upgrade_chain_receipts(&serde_json::to_vec(&broken_chain).unwrap()).is_err()
-        );
-        assert!(
-            validate_production_upgrade_receipt_size(MAX_PRODUCTION_UPGRADE_RECEIPT_BYTES).is_ok()
-        );
-        assert!(
-            validate_production_upgrade_receipt_size(MAX_PRODUCTION_UPGRADE_RECEIPT_BYTES + 1)
-                .is_err()
-        );
-        fs::write(
-            root.join("production-canister-upgrade-receipt.json"),
-            &production_upgrade_bytes,
-        )
-        .unwrap();
-        fs::write(
-            root.join("post-gate-a-policy-transition.json"),
-            &transition_bytes,
-        )
-        .unwrap();
-        fs::write(root.join("release-manifest.json"), &baseline_manifest_bytes).unwrap();
-        for field in [
-            "deposit_and_throughput_limits",
-            "mint_throughput_limit",
-            "mint_window_duration_seconds",
-        ] {
-            let mut drifted_profile: Profile =
-                serde_json::from_slice(&final_profile_bytes).unwrap();
-            match field {
-                "deposit_and_throughput_limits" => {
-                    drifted_profile.parameters.per_deposit_limit += 1;
-                    drifted_profile.parameters.mint_throughput_limit += 1;
-                }
-                "mint_throughput_limit" => drifted_profile.parameters.mint_throughput_limit += 1,
-                "mint_window_duration_seconds" => {
-                    drifted_profile.parameters.mint_window_duration_seconds += 1
-                }
-                _ => unreachable!(),
-            }
-            let drifted_profile_bytes = serde_json::to_vec(&drifted_profile).unwrap();
-            fs::write(root.join("profile.json"), &drifted_profile_bytes).unwrap();
-            let mut drifted_initial: InitialOperationalParameters =
-                serde_json::from_slice(&initial_parameters_bytes).unwrap();
-            drifted_initial.profile_sha256 = hex(&canonical_sha256(&drifted_profile).unwrap());
-            let drifted_initial_bytes = serde_json::to_vec(&drifted_initial).unwrap();
-            fs::write(
-                root.join("initial-operational-parameters.json"),
-                &drifted_initial_bytes,
-            )
-            .unwrap();
-            let mut drifted_manifest: ReleaseManifest =
-                serde_json::from_slice(&baseline_manifest_bytes).unwrap();
-            for artifact in &mut drifted_manifest.artifacts {
-                if artifact.path == "profile.json" {
-                    artifact.sha256 = hex(&Sha256::digest(&drifted_profile_bytes));
-                } else if artifact.path == "initial-operational-parameters.json" {
-                    artifact.sha256 = hex(&Sha256::digest(&drifted_initial_bytes));
-                }
-            }
-            fs::write(
-                root.join("release-manifest.json"),
-                serde_json::to_vec(&drifted_manifest).unwrap(),
-            )
-            .unwrap();
-            let error = match validate_bundle(&root, true) {
-                Ok(_) => panic!("Gate B accepted drift of fixed parameter {field}"),
-                Err(error) => error,
-            };
-            assert!(
-                error.contains("fields outside the reviewed operational config"),
-                "unexpected {field} drift error: {error}"
-            );
-        }
-        fs::write(root.join("profile.json"), &final_profile_bytes).unwrap();
-        fs::write(
-            root.join("initial-operational-parameters.json"),
-            &initial_parameters_bytes,
-        )
-        .unwrap();
-        fs::write(root.join("release-manifest.json"), &baseline_manifest_bytes).unwrap();
-        let mut drifted_transition: PostGateAPolicyTransition =
-            serde_json::from_slice(&transition_bytes).unwrap();
-        drifted_transition.upgrade_source_revision = "f".repeat(40);
-        let drifted_transition_bytes = serde_json::to_vec(&drifted_transition).unwrap();
-        fs::write(
-            root.join("post-gate-a-policy-transition.json"),
-            &drifted_transition_bytes,
-        )
-        .unwrap();
-        let mut drifted_manifest: ReleaseManifest =
-            serde_json::from_slice(&baseline_manifest_bytes).unwrap();
-        drifted_manifest
-            .artifacts
-            .iter_mut()
-            .find(|artifact| artifact.path == "post-gate-a-policy-transition.json")
-            .unwrap()
-            .sha256 = hex(&Sha256::digest(&drifted_transition_bytes));
-        fs::write(
-            root.join("release-manifest.json"),
-            serde_json::to_vec(&drifted_manifest).unwrap(),
-        )
-        .unwrap();
-        let transition_error = match validate_bundle(&root, true) {
-            Ok(_) => panic!("Gate B accepted an upgrade source outside its receipt"),
-            Err(error) => error,
-        };
-        assert!(
-            transition_error.contains("policy transition identity binding"),
-            "unexpected upgrade-source drift error: {transition_error}"
-        );
-        fs::write(
-            root.join("post-gate-a-policy-transition.json"),
-            &transition_bytes,
-        )
-        .unwrap();
-        fs::write(root.join("release-manifest.json"), &baseline_manifest_bytes).unwrap();
-        let after_gate_b_freshness = now + MAX_EVIDENCE_AGE_SECS + 1;
-        assert!(
-            validate_bundle_with_freshness_at(&root, true, true, after_gate_b_freshness,).is_err()
-        );
-        assert!(
-            validate_bundle_with_freshness_at(&root, true, false, after_gate_b_freshness,).is_ok()
-        );
-        let valid_manifest_bytes = fs::read(root.join("release-manifest.json")).unwrap();
-        let valid_production_upgrade_bytes =
-            fs::read(root.join("production-canister-upgrade-receipt.json")).unwrap();
-        let mut reinstall_upgrade: Value =
-            serde_json::from_slice(&valid_production_upgrade_bytes).unwrap();
-        reinstall_upgrade["install_mode"] = Value::String("reinstall".into());
-        let reinstall_upgrade_bytes = serde_json::to_vec(&reinstall_upgrade).unwrap();
-        fs::write(
-            root.join("production-canister-upgrade-receipt.json"),
-            &reinstall_upgrade_bytes,
-        )
-        .unwrap();
-        let mut rehashed_manifest: ReleaseManifest =
-            serde_json::from_slice(&valid_manifest_bytes).unwrap();
-        rehashed_manifest
-            .artifacts
-            .iter_mut()
-            .find(|artifact| artifact.path == "production-canister-upgrade-receipt.json")
-            .unwrap()
-            .sha256 = hex(&Sha256::digest(&reinstall_upgrade_bytes));
-        let mut reinstall_transition: PostGateAPolicyTransition =
-            serde_json::from_slice(&transition_bytes).unwrap();
-        reinstall_transition.production_canister_upgrade_receipt_sha256 =
-            hex(&Sha256::digest(&reinstall_upgrade_bytes));
-        let reinstall_transition_bytes = serde_json::to_vec(&reinstall_transition).unwrap();
-        fs::write(
-            root.join("post-gate-a-policy-transition.json"),
-            &reinstall_transition_bytes,
-        )
-        .unwrap();
-        rehashed_manifest
-            .artifacts
-            .iter_mut()
-            .find(|artifact| artifact.path == "post-gate-a-policy-transition.json")
-            .unwrap()
-            .sha256 = hex(&Sha256::digest(&reinstall_transition_bytes));
-        fs::write(
-            root.join("release-manifest.json"),
-            serde_json::to_vec(&rehashed_manifest).unwrap(),
-        )
-        .unwrap();
-        let reinstall_error = match validate_bundle(&root, true) {
-            Ok(_) => panic!("Gate B accepted reinstall evidence"),
-            Err(error) => error,
-        };
-        assert!(
-            reinstall_error.contains("production upgrade management metadata is incomplete"),
-            "{reinstall_error}"
-        );
-        fs::write(
-            root.join("production-canister-upgrade-receipt.json"),
-            valid_production_upgrade_bytes,
-        )
-        .unwrap();
-        fs::write(
-            root.join("post-gate-a-policy-transition.json"),
-            transition_bytes,
-        )
-        .unwrap();
-        fs::write(root.join("release-manifest.json"), valid_manifest_bytes).unwrap();
-        // Cryptographic live inputs are verified against the network by `verify-live`;
-        // this fixture exercises only deterministic bundle inputs.
-        let installer =
-            Principal::from_text(&receipt.canister_install.installer_principal).unwrap();
-        let module_hash = decode_hex(&bundle.profile.bridge_canister_wasm_sha256).unwrap();
-        assert!(validate_gate_b_management_snapshot(&bundle, &[installer], &module_hash).is_ok());
-        assert!(validate_gate_b_management_snapshot(
-            &bundle,
-            &[Principal::from_text(KINIC_ROOT).unwrap()],
-            &module_hash,
-        )
-        .is_err());
-        assert!(validate_gate_b_management_snapshot(&bundle, &[installer], &[0; 32]).is_err());
-        let root_controller = Principal::from_text(KINIC_ROOT).unwrap();
-        assert!(
-            dao_activation_controller_set_matches(installer, &[installer, root_controller],)
-                .unwrap()
-        );
-        assert!(!dao_activation_controller_set_matches(installer, &[root_controller]).unwrap());
-        assert!(!dao_activation_controller_set_matches(
-            installer,
-            &[installer, root_controller, Principal::anonymous()],
-        )
-        .unwrap());
-        assert!(validate_post_handover_management_snapshot(
-            &bundle.profile,
-            &[root_controller],
-            &module_hash,
-        )
-        .is_ok());
-        assert!(validate_post_handover_management_snapshot(
-            &bundle.profile,
-            &[installer],
-            &module_hash,
-        )
-        .is_err());
-        assert!(validate_post_handover_management_snapshot(
-            &bundle.profile,
-            &[root_controller],
+        assert!(validate(
+            &[controller],
             &[0; 32],
+            ProductionLifecycleView::Activated,
+            &ok_activation,
+            &ok_runtime,
+            &ok_status,
+            &ok_pending,
+            true,
+            false,
+            true
         )
         .is_err());
-
-        let valid_profile_bytes = fs::read(root.join("profile.json")).unwrap();
-        let valid_receipt_bytes = fs::read(root.join("gate-a-receipt.json")).unwrap();
-        let valid_manifest_bytes = fs::read(root.join("release-manifest.json")).unwrap();
-        profile.pause_principal = test_principal(30);
-        let drifted_profile_bytes = serde_json::to_vec(&profile).unwrap();
-        fs::write(root.join("profile.json"), &drifted_profile_bytes).unwrap();
-        let mut drifted_receipt = receipt;
-        drifted_receipt.post_deploy_profile_sha256 = hex(&Sha256::digest(&drifted_profile_bytes));
-        let drifted_receipt_bytes = serde_json::to_vec(&drifted_receipt).unwrap();
-        fs::write(root.join("gate-a-receipt.json"), &drifted_receipt_bytes).unwrap();
-        let mut drifted_manifest: ReleaseManifest =
-            serde_json::from_slice(&valid_manifest_bytes).unwrap();
-        for artifact in &mut drifted_manifest.artifacts {
-            if artifact.path == "profile.json" {
-                artifact.sha256 = hex(&Sha256::digest(&drifted_profile_bytes));
-            } else if artifact.path == "gate-a-receipt.json" {
-                artifact.sha256 = hex(&Sha256::digest(&drifted_receipt_bytes));
-            }
-        }
-        fs::write(
-            root.join("release-manifest.json"),
-            serde_json::to_vec(&drifted_manifest).unwrap(),
+        assert!(validate(
+            &[controller],
+            &module,
+            ProductionLifecycleView::Bootstrap,
+            &ok_activation,
+            &ok_runtime,
+            &ok_status,
+            &ok_pending,
+            true,
+            false,
+            true
         )
-        .unwrap();
-        let drift_error = match validate_bundle(&root, true) {
-            Ok(_) => panic!("Gate B accepted non-deployment profile drift"),
-            Err(error) => error,
-        };
-        assert!(
-            drift_error.contains("initial operational parameters do not exactly match"),
-            "unexpected error: {drift_error}"
-        );
-        fs::write(root.join("profile.json"), valid_profile_bytes).unwrap();
-        fs::write(root.join("gate-a-receipt.json"), valid_receipt_bytes).unwrap();
-        fs::write(root.join("release-manifest.json"), valid_manifest_bytes).unwrap();
-        let mut legacy_manifest: ReleaseManifest =
-            serde_json::from_slice(&baseline_manifest_bytes).unwrap();
-        assert_eq!(legacy_manifest.artifacts.len(), 13);
-        for legacy_path in ["rpc-e2e.json", "monitor-drill.json"] {
-            let legacy_bytes = b"obsolete artifact";
-            fs::write(root.join(legacy_path), legacy_bytes).unwrap();
-            legacy_manifest.artifacts.push(ArtifactDigest {
-                path: legacy_path.into(),
-                sha256: hex(&Sha256::digest(legacy_bytes)),
-            });
-        }
-        assert_eq!(legacy_manifest.artifacts.len(), 15);
-        fs::write(
-            root.join("release-manifest.json"),
-            serde_json::to_vec(&legacy_manifest).unwrap(),
+        .is_err());
+        assert!(validate(
+            &[controller],
+            &module,
+            ProductionLifecycleView::Activated,
+            &activation(true),
+            &ok_runtime,
+            &ok_status,
+            &ok_pending,
+            true,
+            false,
+            true
         )
-        .unwrap();
-        assert!(validate_bundle(&root, true)
-            .err()
-            .unwrap()
-            .contains("manifest must contain each required evidence artifact exactly once"));
-        fs::remove_dir_all(root).unwrap();
+        .is_err());
+        assert!(validate(
+            &[controller],
+            &module,
+            ProductionLifecycleView::Activated,
+            &ok_activation,
+            &runtime(35),
+            &ok_status,
+            &ok_pending,
+            true,
+            false,
+            true
+        )
+        .is_err());
+        assert!(validate(
+            &[controller],
+            &module,
+            ProductionLifecycleView::Activated,
+            &ok_activation,
+            &ok_runtime,
+            &status(true),
+            &ok_pending,
+            true,
+            false,
+            true
+        )
+        .is_err());
+        assert!(validate(
+            &[controller],
+            &module,
+            ProductionLifecycleView::Activated,
+            &ok_activation,
+            &ok_runtime,
+            &ok_status,
+            &PendingGovernanceTransactionsView::Err(Reserved),
+            true,
+            false,
+            true
+        )
+        .is_err());
+        assert!(validate(
+            &[controller],
+            &module,
+            ProductionLifecycleView::Activated,
+            &ok_activation,
+            &ok_runtime,
+            &ok_status,
+            &ok_pending,
+            false,
+            false,
+            true
+        )
+        .is_err());
+        assert!(validate(
+            &[controller],
+            &module,
+            ProductionLifecycleView::Activated,
+            &ok_activation,
+            &ok_runtime,
+            &ok_status,
+            &ok_pending,
+            true,
+            true,
+            true
+        )
+        .is_err());
+        assert!(validate(
+            &[controller],
+            &module,
+            ProductionLifecycleView::Activated,
+            &ok_activation,
+            &ok_runtime,
+            &ok_status,
+            &ok_pending,
+            true,
+            false,
+            false
+        )
+        .is_err());
     }
 }
