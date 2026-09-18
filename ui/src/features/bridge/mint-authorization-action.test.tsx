@@ -390,11 +390,9 @@ describe("MintAuthorizationAction pending retry", () => {
   it("keeps retry recovery out of the compact History action cell", async () => {
     render(<MintAuthorizationAction record={record} compact />, { wrapper: Wrapper })
 
-    expect(
-      await screen.findByText("Submitted on Base; refreshing transaction status."),
-    ).toBeInTheDocument()
+    expect(await screen.findByText("—")).toBeInTheDocument()
     expect(screen.queryByText("Review saved transaction")).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Copy mint diagnostics" })).toBeEnabled()
+    expect(screen.queryByRole("button", { name: "Copy mint diagnostics" })).not.toBeInTheDocument()
   })
 
   it("keeps the hash when Base revalidation fails", async () => {
@@ -467,7 +465,7 @@ describe("MintAuthorizationAction pending retry", () => {
       blockNumber: 101n,
       outcome: "success",
     })
-    expect(screen.getByText("Success")).toBeInTheDocument()
+    expect(screen.getByText("Mint included")).toBeInTheDocument()
     expect(screen.queryByText("Review saved transaction")).not.toBeInTheDocument()
 
     mocks.getTransactionReceipt.mockRejectedValue(new Error("RPC unavailable"))
@@ -479,7 +477,7 @@ describe("MintAuthorizationAction pending retry", () => {
       />,
     )
     await waitFor(() => expect(mocks.getTransactionReceipt).toHaveBeenCalledTimes(2))
-    expect(screen.getByText("Success")).toBeInTheDocument()
+    expect(screen.getByText("Mint included")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Mint on Base" })).not.toBeInTheDocument()
     expect(mocks.writeContractAsync).not.toHaveBeenCalled()
 
@@ -706,7 +704,7 @@ describe("MintAuthorizationAction pending retry", () => {
       expect.objectContaining({ transactionHash: pendingHash }),
     )
     expect(mocks.toastError).not.toHaveBeenCalled()
-    expect(await screen.findByText("Success")).toBeInTheDocument()
+    expect(await screen.findByText("Mint included")).toBeInTheDocument()
     expect(screen.queryByText("Confirm mint on IC")).not.toBeInTheDocument()
     expect(mocks.writeContractAsync).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -875,9 +873,7 @@ describe("MintAuthorizationAction pending retry", () => {
 
     expect(screen.getByText("Confirming mint")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Mint on Base" })).not.toBeInTheDocument()
-    expect(
-      await screen.findByText("Submitted on Base; refreshing transaction status."),
-    ).toBeVisible()
+    expect(await screen.findByText("—")).toBeVisible()
   })
 
   it("does not enable refund from a locally extrapolated timestamp", async () => {

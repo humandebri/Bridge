@@ -426,7 +426,7 @@ test("IC and EVM wallet controls are separate", async ({ page }, testInfo) => {
 
 test("history and status are separate low-density surfaces", async ({ page }, testInfo) => {
   await page.goto("/history")
-  await expect(page.getByRole("heading", { name: "Bridge history" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Your history" })).toBeVisible()
   await expect(page.getByText("Connect a wallet", { exact: true })).toBeVisible()
   await expectNoWcag21AaViolations(page)
   await capture(page, testInfo, "history")

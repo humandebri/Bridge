@@ -144,9 +144,9 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
 
   await postControl(request, "/test/settle", {})
   await waitForMintRecording(request)
-  await expect(page.getByRole("button", { name: "Close", exact: true })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Finish", exact: true })).toBeVisible()
   await expect(page.getByLabel("You send")).toHaveValue("")
-  await page.getByRole("button", { name: "Close", exact: true }).click()
+  await page.getByRole("button", { name: "Finish", exact: true }).click()
   await refreshBridgeData(page)
   await expect(page.getByLabel("You send")).toBeEnabled()
   await expect(page.getByRole("button", { name: "Reverse bridge direction" })).toBeEnabled()
@@ -181,8 +181,8 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
 
   await postControl(request, "/test/settle", {})
   await waitForMintRecording(request)
-  await expect(page.getByRole("button", { name: "Close", exact: true })).toBeVisible()
-  await page.getByRole("button", { name: "Close", exact: true }).click()
+  await expect(page.getByRole("button", { name: "Finish", exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Finish", exact: true }).click()
   await refreshBridgeData(page)
   await expect
     .poll(async () => BigInt((await controlState(request)).bsnsBalance))
@@ -335,7 +335,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await openHistory(page)
   await page
     .locator("header")
-    .filter({ has: page.getByRole("heading", { name: "Bridge history" }) })
+    .filter({ has: page.getByRole("heading", { name: "Your history" }) })
     .getByRole("button", { name: "Refresh", exact: true })
     .click()
   await expect(page.getByText("Transfer needs attention", { exact: true })).toBeVisible()

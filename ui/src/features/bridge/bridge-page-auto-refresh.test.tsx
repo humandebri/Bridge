@@ -1505,7 +1505,7 @@ describe("BridgePage automatic wallet refresh", () => {
         )
       )[0],
     ).toBeVisible()
-    fireEvent.click(screen.getByRole("button", { name: "Close" }))
+    fireEvent.click(screen.getByRole("button", { name: "Minted" in state ? "Finish" : "Close" }))
     await waitFor(() => expect(screen.getByRole("textbox", { name: "You send" })).toBeEnabled())
     expect(screen.getByRole("button", { name: "Reverse bridge direction" })).toBeEnabled()
     expect(screen.getByRole("button", { name: "Bridge to Base" })).toBeVisible()

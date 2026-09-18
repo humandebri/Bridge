@@ -189,6 +189,8 @@ describe("History refresh", () => {
           ?.items.find((row) => row.id === item(older).id)?.canister?.state,
       ).toEqual({ Paid: null }),
     )
+    expect(screen.getAllByText("Withdrawal complete").length).toBeGreaterThan(0)
+    expect(screen.queryByText("Base: Success")).not.toBeInTheDocument()
     expect(mocks.actor.get_withdrawals).toHaveBeenCalledWith([older.withdrawal_id])
     expect(client.getQueryData<WithdrawalHistoryData>(key)?.nextCursor).toEqual(cursor)
   })
@@ -396,4 +398,40 @@ it("history_automatic_refresh_preserves_slow_inflight_queries_across_visibility_
   })
   calls.forEach((mock, index) => expect(mock).toHaveBeenCalledTimes(initialCounts[index]! + 2))
   client.clear()
+})
+
+it("shows one completion label without a redundant IC recording confirmation", () => {
+  const item = depositItem({ AuthorizationExpired: null })
+  item.deposit.deposit_id = new Uint8Array(32).fill(74)
+  item.deposit.state = { Minted: null }
+  render(
+    <DepositActivityRow
+      item={item}
+      mintFinalization="minted"
+      mintRecording="recorded"
+      writesEnabled={false}
+      onRequestRefund={async () => {}}
+      onContinue={async () => {}}
+    />,
+  )
+  expect(screen.getByText("Mint complete")).toBeVisible()
+  expect(screen.queryByText("Recorded on IC")).not.toBeInTheDocument()
+})
+
+it("shows pending IC recording once and replaces it with an active retry notice", () => {
+  const item = depositItem({ AuthorizationExpired: null })
+  item.deposit.deposit_id = new Uint8Array(32).fill(75)
+  item.deposit.state = { AuthorizationAvailable: null }
+  const props = {
+    item,
+    mintFinalization: "minted" as const,
+    writesEnabled: false,
+    onRequestRefund: async () => {},
+    onContinue: async () => {},
+  }
+  const view = render(<DepositActivityRow {...props} mintRecording="pending" />)
+  expect(screen.getAllByText(/Waiting for IC recording/)).toHaveLength(1)
+  view.rerender(<DepositActivityRow {...props} mintRecording="retrying" />)
+  expect(screen.getByText("IC recording will retry automatically")).toBeVisible()
+  expect(screen.queryByText(/Waiting for IC recording/)).not.toBeInTheDocument()
 })

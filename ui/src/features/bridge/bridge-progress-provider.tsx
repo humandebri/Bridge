@@ -35,7 +35,7 @@ import {
   bridgeProgressLabel,
   bridgeProgressSteps,
   createBridgeProgress,
-  isDepositTransactionComplete,
+  isDepositInteractionComplete,
   readLatestBridgeProgress,
   removeLatestBridgeProgress,
   saveLatestBridgeProgress,
@@ -408,10 +408,13 @@ function ProgressDialog({
     progress.phase === "complete" ||
     progress.phase === "attention" ||
     Boolean(presentation?.terminal)
-  const depositTransactionComplete = isDepositTransactionComplete(progress)
-  const dismissible = canonicalTerminal || depositTransactionComplete
+  const depositInteractionComplete = isDepositInteractionComplete(progress)
+  const dismissible = canonicalTerminal || depositInteractionComplete
   const closeProgress =
-    presentation?.terminal || progress.phase === "complete" || progress.phase === "attention"
+    depositInteractionComplete ||
+    presentation?.terminal ||
+    progress.phase === "complete" ||
+    progress.phase === "attention"
       ? onDismiss
       : onMinimize
   const handleOutsidePointerDown = dismissible ? closeProgress : onMinimize
@@ -465,11 +468,15 @@ function ProgressDialog({
             </p>
           </div>
         )}
-        {progress.phase === "complete" && (
+        {(progress.phase === "complete" || depositInteractionComplete) && (
           <div className="mt-5 rounded-2xl border border-[#9ed8b3] bg-[#eaf8ef] p-4" role="status">
-            <p className="font-bold text-black">{bridgeProgressLabel(progress)}</p>
+            <p className="font-bold text-black">
+              {progress.phase === "complete" ? bridgeProgressLabel(progress) : "Mint included"}
+            </p>
             <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
-              {bridgeProgressDetail(progress)}
+              {progress.phase === "complete"
+                ? bridgeProgressDetail(progress)
+                : "No further action is needed. Final confirmation will continue in History."}
             </p>
           </div>
         )}
@@ -498,7 +505,7 @@ function ProgressDialog({
                 step.status === "current" || step.status === "attention" ? "step" : undefined
               }
               aria-label={
-                depositTransactionComplete && step.label === "Base mint transaction"
+                depositInteractionComplete && step.label === "Base mint transaction"
                   ? "Base mint transaction complete"
                   : undefined
               }
@@ -560,6 +567,7 @@ function ProgressDialog({
         </ol>
         <DialogFooter>
           {action &&
+            !depositInteractionComplete &&
             !presentation?.terminal &&
             presentation?.code !== "conflict" &&
             presentation?.code !== "processed" && (
@@ -580,7 +588,11 @@ function ProgressDialog({
               </a>
             </Button>
           )}
-          {dismissible && <Button onClick={closeProgress}>Close</Button>}
+          {dismissible && (
+            <Button onClick={closeProgress}>
+              {depositInteractionComplete ? "Finish" : "Close"}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

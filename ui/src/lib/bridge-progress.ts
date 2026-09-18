@@ -234,14 +234,14 @@ export function bridgeProgressLabel(record: BridgeProgressRecord): string {
     "authorization-generating": "Bridge is preparing the Base mint",
     "awaiting-base-mint": "Confirm the mint in your Base wallet",
     "base-mint-submitted": "Waiting for the Base transaction",
-    "base-mint-included": "Success",
-    "base-mint-finalizing": "Success",
+    "base-mint-included": "Mint included",
+    "base-mint-finalizing": "Waiting for Base finality",
     "awaiting-base-allowance": "Confirm token access in your Base wallet",
     "awaiting-base-approval-reflection": "Confirming token approval",
     "awaiting-base-withdrawal": "Confirm the withdrawal in your Base wallet",
     "base-withdrawal-submitted": "Waiting for the Base transaction",
-    "base-withdrawal-included": "Base: Success",
-    "base-withdrawal-finalizing": "Base: Success",
+    "base-withdrawal-included": "Withdrawal included",
+    "base-withdrawal-finalizing": "Waiting for Base finality",
     "awaiting-ic-notification": "Recording the finalized withdrawal on the Internet Computer",
     "ic-notification-recorded": "Withdrawal recorded on the Internet Computer",
     "ledger-payout": "Sending tokens to your IC wallet",
@@ -340,7 +340,7 @@ export function bridgeProgressSteps(record: BridgeProgressRecord): BridgeProgres
     ["Complete", ["complete"]],
   ] as const
   const steps = record.direction === "deposit" ? deposit : withdrawal
-  const depositTransactionComplete = isDepositTransactionComplete(record)
+  const depositInteractionComplete = isDepositInteractionComplete(record)
   const currentIndex =
     record.phase === "attention"
       ? Math.max(
@@ -361,7 +361,7 @@ export function bridgeProgressSteps(record: BridgeProgressRecord): BridgeProgres
       status:
         record.phase === "attention" && index === currentIndex
           ? "attention"
-          : record.phase === "complete" || depositTransactionComplete || approvalNotRequired
+          : record.phase === "complete" || depositInteractionComplete || approvalNotRequired
             ? "complete"
             : index < currentIndex
               ? "complete"
@@ -399,6 +399,18 @@ export function withdrawalFinalityProgress(record: BridgeProgressRecord):
     targetBlockNumber: target.toLocaleString("en-US"),
     remainingBlocks: (target > finalized ? target - finalized : 0n).toLocaleString("en-US"),
   }
+}
+
+/** Finishes user interaction only; inclusion is not a terminal settlement fact. */
+export function isDepositInteractionComplete(record: BridgeProgressRecord): boolean {
+  const issue = record.transfer ? record.transfer.issue : record.issue
+  if (record.direction !== "deposit" || issue) return false
+  if (isDepositTransactionComplete(record)) return true
+  return (
+    ["base-mint-included", "base-mint-finalizing"].includes(record.phase) &&
+    record.baseTransactionOutcome === "success" &&
+    Boolean(record.transactionHash && record.receiptBlockNumber)
+  )
 }
 
 /** Presentation completion requires a terminal result, not merely inclusion. */
