@@ -7896,7 +7896,12 @@ fn execute_production_canister_upgrade(
                 &after,
                 expected_current_module_sha256,
                 &submission.wasm_sha256,
-            )? {
+            )
+            .map_err(|observation_error| {
+                format!(
+                    "upgrade outcome is unresolved; do not retry for 6 minutes, then rerun check against certified state: send={send_error}; observation={observation_error}"
+                )
+            })? {
                 ProductionUpgradeObservedOutcome::CandidatePreserved => {
                     verify_production_current_state(
                         profile_path,
