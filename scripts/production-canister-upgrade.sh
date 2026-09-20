@@ -14,7 +14,10 @@ CONTROLLER_PEM=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --wasm) WASM="$2"; shift 2 ;;
-    --expected-current-wasm) EXPECTED_CURRENT_WASM="${2,,}"; shift 2 ;;
+    --expected-current-wasm)
+      EXPECTED_CURRENT_WASM="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+      shift 2
+      ;;
     --controller-pem) CONTROLLER_PEM="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
