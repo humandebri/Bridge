@@ -2,7 +2,7 @@
 # Plan 007 manifest driver. External mutations remain separate, explicitly approved operator steps.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 MANIFEST="${BRIDGE_STAGING_E2E_MANIFEST:-$ROOT/deployments/sepolia-staging/evidence/sepolia-e2e.json}"
 LOCAL_EVIDENCE="${BRIDGE_STAGING_LOCAL_EVIDENCE:-}"
 PROFILE="$ROOT/deployments/sepolia-staging/frontend-profile.json"

@@ -14,10 +14,10 @@ production_validate_gate() { printf 'gate %s\n' "$*" >>"$TRACE"; }
 SH
 printf '{}\n' >"$T/source/tools/governance-relayer/cli.ts"
 cat >"$T/bundle/profile.json" <<'JSON'
-{"bridge_canister_id":"lb5i5-ziaaa-aaaar-qcgwq-cai","root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","ic_host":"https://icp-api.io"}
+{"bridge_canister_id":"lb5i5-ziaaa-aaaar-qcgwq-cai","root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","ic_host":"https://icp-api.io","pause_principal":"lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe"}
 JSON
 printf '{}\n' >"$T/bundle/release-manifest.json"
-for name in checkpoint preparation seal controller-schedule controller-execute submission; do
+for name in seal controller-schedule controller-execute submission; do
   printf '{"name":"%s"}\n' "$name" >"$T/$name.json"
 done
 printf 'private\n' >"$T/relayer.pem"
@@ -59,8 +59,7 @@ export PATH="$T/bin:$PATH" TRACE="$T/trace"
 common=(
   BRIDGE_GATE_B_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})"
   BRIDGE_RELEASE_BUNDLE="$T/bundle"
-  BRIDGE_CHECKPOINT_EVIDENCE="$T/checkpoint.json"
-  BRIDGE_HANDOVER_PREPARATION_RECEIPT="$T/preparation.json"
+  BRIDGE_CURRENT_MODULE_SHA256="$(printf 'b%.0s' {1..64})"
   BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$T/seal.json"
   BRIDGE_CONTROLLER_SCHEDULE_RECEIPT="$T/controller-schedule.json"
   BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/controller-execute.json"
@@ -72,7 +71,8 @@ common=(
 env "${common[@]}" BRIDGE_DAO_ACTIVATION_STEP=recover \
   BRIDGE_DAO_ACTIVATION_CONFIRMATION=RELAY_SNS_SCHEDULE_ACTIVATION \
   "$T/source/scripts/production-dao-reactivation-driver.sh" >/dev/null
-rg -q 'recover-sns-activation.*--submission-file.*--preparation-file' "$TRACE"
+rg -q 'recover-sns-activation.*--submission-file' "$TRACE"
+! rg -q -- '--preparation-file' "$TRACE"
 [[ -f "$T/artifact.json.sns-authorization.json" && -f "$T/artifact.json.sns-binding.json" ]]
 
 env "${common[@]}" BRIDGE_DAO_ACTIVATION_STEP=relay \

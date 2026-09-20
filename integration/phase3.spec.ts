@@ -3623,6 +3623,70 @@ describe("Phase 3 PocketIC saga", () => {
   it("fee payout stalled scan stops and real progress restores automatic work",
     fee_payout_stalled_scan_stops_and_real_progress_restores_automatic_work);
 
+  async function preserves_representative_v36_current_state_across_a_same_wasm_upgrade() {
+    const { bridge, evm, runtimePrincipal } = await setup();
+    const deposit: any = await requestDefaultDeposit(bridge);
+    expect(deposit).toHaveProperty("Ok.deposit_id");
+    expect(await mintAuthorizedDeposit(bridge, evm, deposit.Ok.deposit_id)).toHaveProperty("Ok");
+
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const runtimeBefore: any = await (bridge.actor as any).get_runtime_binding();
+    const operationalBefore: any = await (bridge.actor as any).get_operational_config();
+    const activationBefore: any = await (bridge.actor as any).get_activation_status();
+    const statusBefore: any = await (bridge.actor as any).get_bridge_status();
+    const historyBefore: any = await (bridge.actor as any).list_deposit_ids({
+      owner: runtimePrincipal,
+      before_cursor: [],
+      limit: 20,
+    });
+    const controllersBefore = await pic!.getControllers(bridge.canisterId);
+    expect(runtimeBefore.schema_version).toBe(36);
+    expect(statusBefore.mint_authorization_epoch).toBeGreaterThan(0n);
+    expect(historyBefore.Ok.deposit_ids).toContainEqual(deposit.Ok.deposit_id);
+
+    bridge.actor.setPrincipal(Principal.anonymous());
+    expect(await (bridge.actor as any).get_operational_config()).toEqual({
+      Err: { Unauthorized: null },
+    });
+
+    await upgradeBridge(bridge);
+    bridge.actor.setPrincipal(runtimePrincipal);
+    const runtimeAfter: any = await (bridge.actor as any).get_runtime_binding();
+    const operationalAfter: any = await (bridge.actor as any).get_operational_config();
+    const activationAfter: any = await (bridge.actor as any).get_activation_status();
+    const statusAfter: any = await (bridge.actor as any).get_bridge_status();
+    const historyAfter: any = await (bridge.actor as any).list_deposit_ids({
+      owner: runtimePrincipal,
+      before_cursor: [],
+      limit: 20,
+    });
+    const controllersAfter = await pic!.getControllers(bridge.canisterId);
+    const withoutLiveCycles = (status: any) => ({
+      ...status,
+      reserve: { ...status.reserve, cycles_balance: 0n, cycles_surplus: 0n },
+    });
+
+    expect(runtimeAfter).toEqual(runtimeBefore);
+    expect(operationalAfter).toEqual(operationalBefore);
+    expect(activationAfter).toEqual(activationBefore);
+    expect(withoutLiveCycles(statusAfter)).toEqual(withoutLiveCycles(statusBefore));
+    expect(historyAfter).toEqual(historyBefore);
+    expect(controllersAfter.map((principal) => principal.toText()).sort()).toEqual(
+      controllersBefore.map((principal) => principal.toText()).sort(),
+    );
+    expect((await (bridge.actor as any).get_deposit(deposit.Ok.deposit_id))[0]).toBeDefined();
+
+    bridge.actor.setPrincipal(Principal.anonymous());
+    expect(await (bridge.actor as any).get_operational_config()).toEqual({
+      Err: { Unauthorized: null },
+    });
+  }
+
+  it(
+    "preserves representative v36 current state across a same-Wasm upgrade",
+    preserves_representative_v36_current_state_across_a_same_wasm_upgrade,
+  );
+
   it("keeps large SQLite status and upgrade work bounded and completes controller maintenance", async () => {
     const { bridge, runtimePrincipal } = await setup(false);
     const maintenanceIdl = ({ IDL }: { IDL: any }) => {

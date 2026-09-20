@@ -1,10 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { IDL } from '@icp-sdk/core/candid';
 import { Principal } from '@icp-sdk/core/principal';
-import { prepare, payloadType, decodeRegistry } from './prepare.mjs';
+import { prepare, payloadType, decodeRegistry, isMainModule } from './prepare.mjs';
 const bridge = 'lb5i5-ziaaa-aaaar-qcgwq-cai';
 const registry = () => ({ functions: [], reserved_ids: [1000n, 1002n] });
+test('main detection accepts filesystem aliases of the invoked script', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'bridge-sns-main-alias.'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const alias = join(directory, 'prepare-alias.mjs');
+  symlinkSync(fileURLToPath(new URL('./prepare.mjs', import.meta.url)), alias);
+  assert.equal(isMainModule(alias), true);
+  assert.equal(isMainModule(fileURLToPath(import.meta.url)), false);
+});
 test('registration avoids active and reserved IDs and binds typed payload', () => {
   const result = prepare(registry(), bridge, '42');
   assert.deepEqual(result.map(x => x.function_id), ['1001', '1003']);

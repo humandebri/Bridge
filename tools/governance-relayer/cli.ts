@@ -148,17 +148,16 @@ async function main(): Promise<void> {
       const pending = unwrap(await actor.get_pending_base_governance_transaction())
       const artifact = selectPendingActivationArtifact(pending, phase)
       const submissionBytes = await readFile(requiredOption(options, "submission-file"))
-      const preparationBytes = await readFile(requiredOption(options, "preparation-file"))
       const authorization = snsActivationAuthorization(
         phase,
         JSON.parse(submissionBytes.toString("utf8")),
-        JSON.parse(preparationBytes.toString("utf8")),
         artifact,
         requiredEnv("BRIDGE_GATE_B_MANIFEST_SHA256").toLowerCase(),
         requiredEnv("BRIDGE_CANISTER_ID"),
         requiredEnv("BRIDGE_SNS_ROOT_CANISTER_ID"),
         createHash("sha256").update(submissionBytes).digest("hex"),
-        createHash("sha256").update(preparationBytes).digest("hex"),
+        requiredEnv("BRIDGE_CURRENT_MODULE_SHA256").toLowerCase(),
+        requiredEnv("BRIDGE_PRODUCTION_CONTROLLER_PRINCIPAL"),
       )
       const artifactPath = requiredOption(options, "artifact-file")
       await writeOrMatchArtifact(artifact, artifactPath)
@@ -410,27 +409,23 @@ export function commandRequiresIdentity(command: string): boolean {
 export function snsActivationAuthorization(
   phase: "schedule" | "execute",
   submissionValue: unknown,
-  preparationValue: unknown,
   artifact: SignedBaseGovernanceTransaction,
   expectedGate: string,
   bridgeCanisterId: string,
   rootCanisterId: string,
   submissionSha256: string,
-  preparationSha256: string,
+  currentModuleSha256: string,
+  productionController: string,
 ): Record<string, unknown> {
-  if (!submissionValue || typeof submissionValue !== "object" || Array.isArray(submissionValue)
-    || !preparationValue || typeof preparationValue !== "object" || Array.isArray(preparationValue)) {
+  if (!submissionValue || typeof submissionValue !== "object" || Array.isArray(submissionValue)) {
     throw new Error("SNS activation evidence is malformed")
   }
   const submission = submissionValue as Record<string, unknown>
-  const preparation = preparationValue as Record<string, unknown>
   const submittedAt = submission.submitted_at_unix
   const previousOperationId = submission.previous_governance_operation_id
   const expectedMethod = `sns_${phase}_activation`
   const expectedValidator = `validate_${expectedMethod}`
   const payloadHex = submission.payload_hex
-  const executingPrincipal = preparation.executing_principal
-  const controllers = preparation.final_controllers
   if (submission.schema_version !== 4
     || submission.phase !== phase
     || submission.gate_b_manifest_sha256 !== expectedGate
@@ -457,26 +452,17 @@ export function snsActivationAuthorization(
       !== createHash("sha256").update(Buffer.from(payloadHex, "hex")).digest("hex")) {
     throw new Error("SNS activation submission differs from the reviewed release")
   }
-  if (preparation.schema_version !== 5
-    || preparation.stage !== "co_controller_ready"
-    || preparation.gate_b_manifest_sha256 !== expectedGate
-    || preparation.bridge_canister_id !== bridgeCanisterId
-    || preparation.sns_root_canister_id !== rootCanisterId
-    || typeof executingPrincipal !== "string"
-    || !Array.isArray(controllers)
-    || controllers.length !== 2
-    || new Set(controllers).size !== 2
-    || !controllers.includes(executingPrincipal)
-    || !controllers.includes(rootCanisterId)) {
-    throw new Error("SNS activation requires the exact evidenced co-controller state")
+  if (!/^[0-9a-f]{64}$/.test(currentModuleSha256)
+    || !/^[a-z0-9-]{5,80}$/.test(productionController)
+    || productionController === rootCanisterId) {
+    throw new Error("SNS activation current-state binding is malformed")
   }
   if (artifact.operation_id !== BigInt(previousOperationId) + 1n
     || activationPhase(artifact) !== phase
     || artifact.signed_at_ns < BigInt(submittedAt) * 1_000_000_000n) {
     throw new Error("Live activation artifact is not derived from the SNS proposal")
   }
-  if (!/^[0-9a-f]{64}$/.test(submissionSha256)
-    || !/^[0-9a-f]{64}$/.test(preparationSha256)) {
+  if (!/^[0-9a-f]{64}$/.test(submissionSha256)) {
     throw new Error("SNS activation evidence digest is malformed")
   }
   return {
@@ -486,13 +472,13 @@ export function snsActivationAuthorization(
     gate_b_manifest_sha256: expectedGate,
     bridge_canister_id: bridgeCanisterId,
     sns_root_canister_id: rootCanisterId,
-    certified_controller_set: [...controllers].sort(),
+    certified_controller_set: [productionController, rootCanisterId].sort(),
+    current_module_sha256: currentModuleSha256,
     proposal_id: submission.proposal_id,
     function_id: submission.function_id,
     governance_operation_id: artifact.operation_id.toString(),
     payload_sha256: submission.payload_sha256,
     submission_sha256: submissionSha256,
-    preparation_receipt_sha256: preparationSha256,
     authorized_at_unix: submittedAt,
   }
 }
@@ -1125,7 +1111,7 @@ const COMMAND_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   "seal-operational-config": ["help", "parameters-file", "receipt-file"],
   status: ["help", "operation-id"],
   "recover-activation": ["help", "phase", "artifact-file", "authorization-file"],
-  "recover-sns-activation": ["help", "phase", "submission-file", "preparation-file", "artifact-file", "authorization-file", "binding-file"],
+  "recover-sns-activation": ["help", "phase", "submission-file", "artifact-file", "authorization-file", "binding-file"],
   relay: ["help", "operation-id", "artifact-file", "authorization-file", "binding-file"],
   confirm: ["help", "operation-id", "transaction-hash", "hash", "artifact-file", "authorization-file", "binding-file", "receipt-file"],
   replace: ["help", "operation-id", "max-fee", "priority-fee", "artifact-file", "output-artifact-file"],
@@ -1254,7 +1240,7 @@ Commands:
   prepare --action pause-deposits|pause-withdrawals|cancel-timelock|set-service-fee [--value N]
   status [--operation-id N]
   recover-activation --phase schedule|execute --authorization-file FILE --artifact-file FILE
-  recover-sns-activation --phase schedule|execute --submission-file FILE --preparation-file FILE --authorization-file FILE --binding-file FILE --artifact-file FILE
+  recover-sns-activation --phase schedule|execute --submission-file FILE --authorization-file FILE --binding-file FILE --artifact-file FILE
   relay --artifact-file FILE [--authorization-file FILE --binding-file FILE] [--operation-id N]
   confirm --artifact-file FILE [--authorization-file FILE --binding-file FILE] --receipt-file NEW_FILE [--operation-id N] [--hash 0x...]
   run [--operation-id N]

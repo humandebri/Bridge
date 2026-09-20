@@ -39,7 +39,6 @@ The KINIC–Base Bridge maintains 1:1 backing between KINIC on ICP and its ERC-2
 ## Deployment and evidence
 
 - [Deployment artifacts](../deployments/README.md): artifact layout and production evidence requirements.
-- [Upgrade checkpoints](../deployments/checkpoints/README.md): reviewed checkpoint handling.
 - [Evidence v1](../deployments/evidence-v1/README.md): evidence format and retained records.
 - [Sepolia staging evidence](../deployments/sepolia-staging/evidence/README.md): staging evidence layout.
 - [KINIC mainnet observations](evidence/kinic-mainnet-2026-07-13.md): dated Ledger and Index observations.

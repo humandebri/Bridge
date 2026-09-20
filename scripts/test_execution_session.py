@@ -125,8 +125,10 @@ class ExecutionTests(unittest.TestCase):
         target = "tools/bridge-profile/src/main.rs"
         proof_command = self.session(execution.ROOT).plan("rust-profile", target)[1]
         all_command = self.session(execution.ROOT, "all").plan("rust-profile", target)[1]
-        for selector in ("production_upgrade_epoch_progress_requires_one_exact_operational_preimage",
-                         "production_upgrade_ttl_migration_requires_exact_v36_preimage"):
+        for selector in (
+            "current_state_gate_rejects_each_operational_drift",
+            "production_upgrade_submission_rejects_target_sender_wasm_and_signature_drift",
+        ):
             self.assertIn(selector, proof_command)
             self.assertNotIn(selector, all_command)
 

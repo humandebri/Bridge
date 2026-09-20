@@ -2,14 +2,13 @@
 # Submit the reviewed RegisterDappCanisters proposal only while recovery control remains available.
 set -euo pipefail
 
-BUNDLE="${1:?usage: production-handover-registration-proposal.sh BUNDLE MANIFEST_SHA256 OUTPUT IDENTITY NEURON_SUBACCOUNT PROPOSER_PRINCIPAL PREPARATION_RECEIPT REVIEWED_HANDOVER_JSON}"
+BUNDLE="${1:?usage: production-handover-registration-proposal.sh BUNDLE MANIFEST_SHA256 OUTPUT IDENTITY NEURON_SUBACCOUNT PROPOSER_PRINCIPAL REVIEWED_HANDOVER_JSON}"
 MANIFEST_SHA256="${2:?missing Gate B manifest hash}"
 OUTPUT="${3:?missing output path}"
 IDENTITY="${4:?missing ICP identity name}"
 NEURON_SUBACCOUNT="${5:?missing SNS neuron subaccount}"
 PROPOSER_PRINCIPAL="${6:?missing proposer principal}"
-PREPARATION="${7:?missing co-controller preparation receipt}"
-REVIEWED="${8:?missing reviewed handover JSON}"
+REVIEWED="${7:?missing reviewed handover JSON}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=production-validation.sh
 source "$ROOT/scripts/production-validation.sh"
@@ -21,7 +20,6 @@ source "$ROOT/scripts/production-validation.sh"
 [[ -d "$BUNDLE" && -f "$BUNDLE/release-manifest.json" && -f "$BUNDLE/profile.json" ]] || {
   echo "handover bundle is incomplete" >&2; exit 1;
 }
-[[ -f "$PREPARATION" && ! -L "$PREPARATION" ]] || { echo "preparation receipt is missing or unsafe" >&2; exit 1; }
 [[ -f "$REVIEWED" && ! -L "$REVIEWED" ]] || { echo "reviewed handover is missing or unsafe" >&2; exit 1; }
 [[ ! -e "$OUTPUT" && ! -L "$OUTPUT" ]] || { echo "registration submission output already exists" >&2; exit 1; }
 [[ ! -e "$OUTPUT.response.json" && ! -L "$OUTPUT.response.json" ]] || { echo "proposal response journal already exists" >&2; exit 1; }
@@ -31,42 +29,42 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/bridge-handover-registration.XXXXXX")"
 trap 'chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 mkdir -m 700 "$TMP/release-bundle"
 production_freeze_bundle "$BUNDLE" "$TMP/release-bundle"
-production_freeze_receipt "$PREPARATION" "$TMP/preparation.json" "handover preparation receipt"
 production_freeze_receipt "$REVIEWED" "$TMP/reviewed.json" "reviewed handover"
 production_freeze_receipt "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$TMP/seal.json" "seal receipt"
 production_freeze_receipt "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" "$TMP/schedule.json" "schedule receipt"
 production_freeze_receipt "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT" "$TMP/execute.json" "execute receipt"
 BUNDLE="$TMP/release-bundle"
-PREPARATION="$TMP/preparation.json"
 REVIEWED="$TMP/reviewed.json"
 BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$TMP/seal.json"
 BRIDGE_CONTROLLER_SCHEDULE_RECEIPT="$TMP/schedule.json"
 BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$TMP/execute.json"
 export BRIDGE_HANDOVER_VALIDATOR_BIN="$TMP/bridge-profile"
-production_validate_gate handover-recover "$BUNDLE" "$MANIFEST_SHA256" "$PREPARATION" \
-  "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" \
-  "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT"
+BRIDGE_CURRENT_MODULE_SHA256="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["wasm_sha256"])' "$REVIEWED")"
+export BRIDGE_CURRENT_MODULE_SHA256 BRIDGE_PRODUCTION_INSTALLER_IDENTITY=production
+CARGO_TARGET_DIR="$TMP/profile-target" cargo build --locked --quiet --release \
+  --manifest-path "$ROOT/Cargo.toml" -p bridge-profile
+BRIDGE_HANDOVER_VALIDATOR_BIN="$TMP/profile-target/release/bridge-profile"
+production_require_clean_source "$ROOT"
+REVISION="$(git -C "$ROOT" rev-parse HEAD)"
+TREE="$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')"
+production_run_proof_gate "$ROOT" "$REVISION" "$TREE"
+"$BRIDGE_HANDOVER_VALIDATOR_BIN" verify-production-current-state "$BUNDLE/profile.json" \
+  "$PROPOSER_PRINCIPAL" "$BRIDGE_CURRENT_MODULE_SHA256" joint
 
-python3 - "$BUNDLE" "$MANIFEST_SHA256" "$OUTPUT" "$IDENTITY" "$NEURON_SUBACCOUNT" "$PROPOSER_PRINCIPAL" "$PREPARATION" "$REVIEWED" "$ROOT" <<'PY'
+python3 - "$BUNDLE" "$MANIFEST_SHA256" "$OUTPUT" "$IDENTITY" "$NEURON_SUBACCOUNT" "$PROPOSER_PRINCIPAL" "$REVIEWED" "$ROOT" <<'PY'
 import hashlib,json,os,re,subprocess,sys,tempfile,time
 from pathlib import Path
 
-bundle,manifest_hash,output,identity,subaccount,proposer,preparation_path,reviewed_path,repo=sys.argv[1:]
-bundle=Path(bundle); output=Path(output); preparation_path=Path(preparation_path); reviewed_path=Path(reviewed_path); repo=Path(repo)
+bundle,manifest_hash,output,identity,subaccount,proposer,reviewed_path,repo=sys.argv[1:]
+bundle=Path(bundle); output=Path(output); reviewed_path=Path(reviewed_path); repo=Path(repo)
 governance='74ncn-fqaaa-aaaaq-aaasa-cai'; root='7jkta-eyaaa-aaaaq-aaarq-cai'
 manifest=json.loads((bundle/'release-manifest.json').read_text()); profile=json.loads((bundle/'profile.json').read_text())
-preparation_bytes=preparation_path.read_bytes(); preparation=json.loads(preparation_bytes)
 reviewed_bytes=reviewed_path.read_bytes(); reviewed=json.loads(reviewed_bytes)
 if not re.fullmatch(r'[0-9a-fA-F]{64}',manifest_hash): raise SystemExit('invalid Gate B manifest hash')
 if hashlib.sha256((bundle/'release-manifest.json').read_bytes()).hexdigest()!=manifest_hash.lower(): raise SystemExit('Gate B manifest bytes differ from approval')
 if not re.fullmatch(r'[A-Za-z0-9_.-]+',identity): raise SystemExit('invalid ICP identity name')
 if not re.fullmatch(r'[0-9a-fA-F]{64}',subaccount): raise SystemExit('neuron subaccount must be 32-byte hex')
 if not re.fullmatch(r'[a-z0-9-]{5,80}',proposer): raise SystemExit('invalid proposer principal')
-if preparation.get('schema_version')!=5 or preparation.get('stage')!='co_controller_ready': raise SystemExit('handover preparation is not complete')
-if preparation.get('source_revision')!=manifest.get('source_revision') or preparation.get('source_tree_sha256')!=manifest.get('source_tree_sha256'): raise SystemExit('handover preparation source differs')
-if preparation.get('gate_b_manifest_sha256','').lower()!=manifest_hash.lower(): raise SystemExit('handover preparation Gate B differs')
-if preparation.get('bridge_canister_id')!=profile.get('bridge_canister_id') or preparation.get('sns_root_canister_id')!=root: raise SystemExit('handover preparation target differs')
-if set(preparation.get('final_controllers',[]))!={proposer,root} or len(preparation.get('final_controllers',[]))!=2: raise SystemExit('handover preparation lacks exact co-controllers')
 if reviewed.get('schema_version')!=1 or reviewed.get('governance_canister_id')!=governance or reviewed.get('root_canister_id')!=root: raise SystemExit('reviewed handover governance domain differs')
 if reviewed.get('bridge_canister_id')!=profile.get('bridge_canister_id') or reviewed.get('wasm_sha256')!=profile.get('bridge_canister_wasm_sha256'): raise SystemExit('reviewed handover target differs')
 if reviewed.get('already_registered') is not False or not isinstance(reviewed.get('registration_proposal'),str): raise SystemExit('Bridge must be unregistered before proposal submission')
@@ -137,7 +135,7 @@ evidence={'schema_version':1,'kind':'sns-dapp-registration-submission','release_
  'gate_b_manifest_sha256':manifest_hash.lower(),'governance_canister_id':governance,'sns_root_canister_id':root,
  'bridge_canister_id':profile['bridge_canister_id'],'proposer_principal':proposer,'neuron_subaccount':subaccount.lower(),
  'proposal_id':proposal_id,'submitted_at_unix':submitted_at,'proposal_sha256':hashlib.sha256(proposal.encode()).hexdigest(),
- 'preparation_receipt_sha256':hashlib.sha256(preparation_bytes).hexdigest(),'reviewed_handover_sha256':hashlib.sha256(reviewed_bytes).hexdigest(),
+ 'current_module_sha256':reviewed['wasm_sha256'],'reviewed_handover_sha256':hashlib.sha256(reviewed_bytes).hexdigest(),
  'root_query_response_hex':root_result.stdout.encode().hex(),'root_query_response_sha256':hashlib.sha256(root_result.stdout.encode()).hexdigest(),
  'proposal_response_hex':result.stdout.encode().hex(),'proposal_response_sha256':hashlib.sha256(result.stdout.encode()).hexdigest(),
  'root_command_argv':root_call,'proposal_command_argv':[v if v!=argument else '<fixed-candid-payload>' for v in command]}

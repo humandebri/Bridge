@@ -130,7 +130,6 @@ export const releaseProfileSchema = deploymentProfileSchema.safeExtend({
   profileCanonicalSha256: releaseSha256,
   canisterSchemaVersion: z.literal(36).optional(),
   canisterModuleSha256: releaseSha256.optional(),
-  postActivationUpgradeSha256: releaseSha256.optional(),
   uiRpcConfigSha256: releaseSha256.optional(),
 })
 

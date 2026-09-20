@@ -15,20 +15,23 @@ function readOrdinaryFile(path) {
 
 try {
   const profileFile = process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE
-  const checkpointEvidence = process.env.BRIDGE_CHECKPOINT_EVIDENCE
+  const releaseBundle = process.env.BRIDGE_RELEASE_BUNDLE
   const uiRpcConfig = process.env.BRIDGE_UI_RPC_CONFIG
   const assetReceipt = process.env.BRIDGE_UI_ASSET_RECEIPT
   const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
+  const controllerMode = process.env.BRIDGE_UI_CONTROLLER_MODE
   if (
     !profileFile ||
-    !checkpointEvidence ||
+    !releaseBundle ||
     !uiRpcConfig ||
     !assetReceipt ||
-    !productionInstallerIdentity
-  )
+    !productionInstallerIdentity ||
+    !["sole", "joint"].includes(controllerMode ?? "")
+  ) {
     throw new Error(
-      "Production UI deploy requires the UI asset receipt, approved checkpoint evidence, reviewed UI RPC configuration, runtime profile, and production installer identity",
+      "Production UI deploy requires the release bundle, UI asset receipt, reviewed RPC configuration, runtime profile, production installer identity, and explicit controller mode",
     )
+  }
   if (!/^[0-9a-f]{32}$/i.test(process.env.VITE_WALLETCONNECT_PROJECT_ID?.trim() ?? "")) {
     throw new Error(
       "Production UI deploy requires a 32-character hexadecimal VITE_WALLETCONNECT_PROJECT_ID",
@@ -36,37 +39,38 @@ try {
   }
   const sourceRoot = resolve(import.meta.dirname, "../..")
   readOrdinaryFile(assetReceipt)
-  const cargoArgs = [
-    "run",
-    "--locked",
-    "--quiet",
-    "--manifest-path",
-    join(sourceRoot, "Cargo.toml"),
-    "-p",
-    "bridge-profile",
-    "--",
-  ]
-  const gateOutput = execFileSync(
-    "cargo",
-    [
-      ...cargoArgs,
-      "verify-production-checkpoint-ui-live",
-      checkpointEvidence,
-      uiRpcConfig,
-      profileFile,
-    ],
-    { cwd: sourceRoot, encoding: "utf8" },
-  )
-  const verifiedManifestSha256 =
-    /^production_ui=live-pass schema=36 activation=execute manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
-      gateOutput,
-    )?.[1]
-  if (!verifiedManifestSha256)
-    throw new Error("Fixed bridge-profile did not authorize the live production UI")
   const rawProfileBuffer = readOrdinaryFile(profileFile)
   const rawProfile = rawProfileBuffer.toString("utf8")
   const { releaseProfileSchema } = await import("../src/config/profile.ts")
   const releaseProfile = releaseProfileSchema.parse(JSON.parse(rawProfile))
+  const moduleSha256 = releaseProfile.canisterModuleSha256
+  if (!moduleSha256) throw new Error("Production UI profile lacks the current module SHA-256")
+  const gateOutput = execFileSync(
+    "cargo",
+    [
+      "run",
+      "--locked",
+      "--quiet",
+      "--manifest-path",
+      join(sourceRoot, "Cargo.toml"),
+      "-p",
+      "bridge-profile",
+      "--",
+      "verify-production-current-ui-live",
+      releaseBundle,
+      moduleSha256,
+      uiRpcConfig,
+      profileFile,
+      controllerMode ?? "",
+    ],
+    { cwd: sourceRoot, encoding: "utf8" },
+  )
+  const verifiedManifestSha256 =
+    /^production_ui=current-live-pass schema=36 module_sha256=[0-9a-f]{64} manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
+      gateOutput,
+    )?.[1]
+  if (!verifiedManifestSha256)
+    throw new Error("Fixed bridge-profile did not authorize the live production UI")
   if (process.env.VITE_DEPLOYMENT_PROFILE_JSON?.trim() !== rawProfile.trim()) {
     throw new Error("VITE_DEPLOYMENT_PROFILE_JSON must be the reviewed UI runtime profile verbatim")
   }

@@ -188,20 +188,25 @@ function installRuntimeProfile(targetRoot, publicRaw) {
   })
 }
 
-/** @param {string} profileFile @param {boolean} assetsOnly */
-function verifyProductionUiLive(profileFile, assetsOnly) {
-  const checkpointEvidence = process.env.BRIDGE_CHECKPOINT_EVIDENCE
+/** @param {string} profileFile */
+function verifyProductionUiLive(profileFile) {
+  const releaseBundle = process.env.BRIDGE_RELEASE_BUNDLE
   const uiRpcConfig = process.env.BRIDGE_UI_RPC_CONFIG
   const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
-  const handover = process.env.BRIDGE_SNS_HANDOVER_RECEIPT
-  const upgradeProposal = process.env.BRIDGE_SNS_UPGRADE_PROPOSAL_ID
-  if (Boolean(handover) !== Boolean(upgradeProposal)) {
-    throw new Error("SNS UI verification requires both handover receipt and upgrade proposal ID")
-  }
-  if (!checkpointEvidence || !uiRpcConfig || (!handover && !productionInstallerIdentity)) {
+  const controllerMode = process.env.BRIDGE_UI_CONTROLLER_MODE
+  if (
+    !releaseBundle ||
+    !uiRpcConfig ||
+    !productionInstallerIdentity ||
+    !["sole", "joint"].includes(controllerMode ?? "")
+  ) {
     throw new Error(
-      "Production UI deploy requires approved checkpoint evidence, reviewed UI RPC configuration, and production installer identity",
+      "Production UI deploy requires the release bundle, reviewed RPC configuration, production installer identity, and explicit controller mode",
     )
+  }
+  const profile = JSON.parse(readOrdinaryFile(profileFile).toString("utf8"))
+  if (!/^[0-9a-f]{64}$/i.test(profile.canisterModuleSha256 ?? "")) {
+    throw new Error("Production UI profile lacks the current module SHA-256")
   }
   const cargoArgs = [
     "run",
@@ -217,23 +222,19 @@ function verifyProductionUiLive(profileFile, assetsOnly) {
     "cargo",
     [
       ...cargoArgs,
-      handover
-        ? "verify-production-checkpoint-ui-sns-live"
-        : assetsOnly
-          ? "verify-production-checkpoint-ui-assets-only-live"
-          : "verify-production-checkpoint-ui-live",
-      checkpointEvidence,
+      "verify-production-current-ui-live",
+      releaseBundle,
+      profile.canisterModuleSha256,
       uiRpcConfig,
       profileFile,
-      ...(handover && upgradeProposal ? [handover, upgradeProposal] : []),
+      controllerMode,
     ],
     { cwd: sourceRoot, encoding: "utf8" },
   )
-  const assetsOnlyMarker = assetsOnly && !handover
-  const manifestSha256 = new RegExp(
-    `^production_ui=${assetsOnlyMarker ? "assets-only-live-pass" : "live-pass"} schema=36 activation=execute manifest_sha256=([0-9a-fA-F]{64})$`,
-    "m",
-  ).exec(gateOutput)?.[1]
+  const manifestSha256 =
+    /^production_ui=current-live-pass schema=36 module_sha256=[0-9a-f]{64} manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
+      gateOutput,
+    )?.[1]
   if (!manifestSha256) {
     throw new Error("Fixed bridge-profile did not authorize the live production UI")
   }
@@ -318,7 +319,7 @@ async function deployFrozenAssets(
     }
     chmodSync(frozen, 0o500)
     await requireUnchangedSourceIdentity(identity)
-    const manifestSha256 = verifyProductionUiLive(profileFile, assetsOnly)
+    const manifestSha256 = verifyProductionUiLive(profileFile)
     if (readOrdinaryFile(profileFile).toString("utf8") !== rawProfile) {
       throw new Error("Production UI runtime profile changed after assets were frozen")
     }

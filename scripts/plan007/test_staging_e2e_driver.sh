@@ -30,6 +30,13 @@ if env PATH="$FAKE_BIN:$PATH" STAGING_DRIVER_TRACE="$TRACE" BRIDGE_STAGING_LOCAL
 fi
 grep -F "checked-in v7 evidence is history-only" "$TASK_TMP_DIR/history.err" >/dev/null
 
+ln -s "$ROOT" "$TASK_TMP_DIR/repo-alias"
+if env PATH="$FAKE_BIN:$PATH" STAGING_DRIVER_TRACE="$TRACE" BRIDGE_STAGING_LOCAL_EVIDENCE="$ROOT/deployments/sepolia-staging/evidence/local-e2e.json" BRIDGE_STAGING_E2E_MANIFEST="$TASK_TMP_DIR/manifest.json" bash "$TASK_TMP_DIR/repo-alias/scripts/plan007/staging-e2e-driver.sh" init 2>"$TASK_TMP_DIR/repo-alias.err"; then
+  echo "init unexpectedly accepted checked-in v7 history through a repository alias" >&2
+  exit 1
+fi
+grep -F "checked-in v7 evidence is history-only" "$TASK_TMP_DIR/repo-alias.err" >/dev/null
+
 ln -s "$ROOT/deployments/sepolia-staging/evidence/local-e2e.json" "$TASK_TMP_DIR/repo-history-link.json"
 if env PATH="$FAKE_BIN:$PATH" STAGING_DRIVER_TRACE="$TRACE" BRIDGE_STAGING_LOCAL_EVIDENCE="$TASK_TMP_DIR/repo-history-link.json" BRIDGE_STAGING_E2E_MANIFEST="$TASK_TMP_DIR/manifest.json" bash "$ROOT/scripts/plan007/staging-e2e-driver.sh" init 2>"$TASK_TMP_DIR/symlink.err"; then
   echo "init unexpectedly accepted an external symlink to checked-in v7 history" >&2

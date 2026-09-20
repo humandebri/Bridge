@@ -35,7 +35,6 @@ function fixture(profileOverrides = {}) {
       profileCanonicalSha256: "2".repeat(64),
       canisterSchemaVersion: 36,
       canisterModuleSha256: "3".repeat(64),
-      postActivationUpgradeSha256: "4".repeat(64),
       uiRpcConfigSha256: "5".repeat(64),
       icHost: "https://icp-api.io",
       baseRpcUrl: "https://rpc.example",
@@ -73,9 +72,9 @@ function fixture(profileOverrides = {}) {
   writeFileSync(
     cargo,
     `#!/usr/bin/env node
-const a=process.argv.slice(2); const i=a.indexOf('verify-production-checkpoint-ui-live');
-if(process.cwd()!==process.env.EXPECTED_CARGO_CWD || i<0 || a[i+1]!==process.env.BRIDGE_CHECKPOINT_EVIDENCE || a[i+2]!==process.env.BRIDGE_UI_RPC_CONFIG || a[i+3]!==process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE || process.env.FAKE_VERIFY_FAIL) process.exit(1);
-console.log('production_ui=live-pass schema='+ (process.env.FAKE_VERIFY_SCHEMA ?? '36') +' activation=execute manifest_sha256=${gate}');
+const a=process.argv.slice(2); const i=a.indexOf('verify-production-current-ui-live');
+if(process.cwd()!==process.env.EXPECTED_CARGO_CWD || i<0 || a[i+1]!==process.env.BRIDGE_RELEASE_BUNDLE || a[i+2]!=='${"3".repeat(64)}' || a[i+3]!==process.env.BRIDGE_UI_RPC_CONFIG || a[i+4]!==process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE || a[i+5]!==process.env.BRIDGE_UI_CONTROLLER_MODE || process.env.FAKE_VERIFY_FAIL) process.exit(1);
+console.log('production_ui=current-live-pass schema='+ (process.env.FAKE_VERIFY_SCHEMA ?? '36') +' module_sha256=${"3".repeat(64)} manifest_sha256=${gate}');
 `,
   )
   chmodSync(cargo, 0o755)
@@ -103,9 +102,9 @@ function validEnv(f, overrides = {}) {
     BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT: f.paths.seal,
     BRIDGE_CONTROLLER_SCHEDULE_RECEIPT: f.paths.schedule,
     BRIDGE_CONTROLLER_EXECUTE_RECEIPT: f.paths.execute,
-    BRIDGE_CHECKPOINT_EVIDENCE: f.paths.upgrade,
     BRIDGE_UI_RPC_CONFIG: f.paths.rpc,
     BRIDGE_PRODUCTION_INSTALLER_IDENTITY: "production-installer",
+    BRIDGE_UI_CONTROLLER_MODE: "sole",
     VITE_DEPLOYMENT_PROFILE_JSON: f.profile,
     VITE_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
     ...overrides,
@@ -122,7 +121,7 @@ describe("production UI live binding", () => {
   it("rejects an arbitrary environment value without the required evidence", () => {
     const result = run({ BRIDGE_GATE_B_MANIFEST_SHA256: "f".repeat(64) })
     expect(result.status).not.toBe(0)
-    expect(result.stderr).toContain("requires the UI asset receipt")
+    expect(result.stderr).toContain("UI asset receipt")
   })
 
   it("rejects when the fixed bridge-profile verifier fails", () => {
@@ -146,7 +145,7 @@ describe("production UI live binding", () => {
   it("requires the standalone UI asset receipt", () => {
     const result = run(validEnv(fixture(), { BRIDGE_UI_ASSET_RECEIPT: "" }))
     expect(result.status).not.toBe(0)
-    expect(result.stderr).toContain("requires the UI asset receipt")
+    expect(result.stderr).toContain("UI asset receipt")
   })
 
   it("requires the production installer identity for the controller-only storage check", () => {
@@ -155,19 +154,18 @@ describe("production UI live binding", () => {
     expect(result.stderr).toContain("production installer identity")
   })
 
-  it("requires approved checkpoint evidence", () => {
-    const result = run(validEnv(fixture(), { BRIDGE_CHECKPOINT_EVIDENCE: "" }))
+  it("requires the reviewed release bundle", () => {
+    const result = run(validEnv(fixture(), { BRIDGE_RELEASE_BUNDLE: "" }))
     expect(result.status).not.toBe(0)
-    expect(result.stderr).toContain("approved checkpoint evidence")
+    expect(result.stderr).toContain("release bundle")
   })
 
-  it("does not request archived Gate B and activation files", () => {
+  it("does not request archived activation files", () => {
     const f = fixture()
     rmSync(f.bundle, { recursive: true, force: true })
     for (const path of [f.paths.seal, f.paths.schedule, f.paths.execute]) rmSync(path)
     const result = run(
       validEnv(f, {
-        BRIDGE_RELEASE_BUNDLE: "",
         BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT: "",
         BRIDGE_CONTROLLER_SCHEDULE_RECEIPT: "",
         BRIDGE_CONTROLLER_EXECUTE_RECEIPT: "",
