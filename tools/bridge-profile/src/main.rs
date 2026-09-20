@@ -4591,14 +4591,7 @@ fn verify_production_current_state(
     {
         return Err("production runtime code binding differs from policy".into());
     }
-    validate_activation_attestation_with_pause(
-        &profile,
-        &attestation,
-        0,
-        1,
-        now_unix()?,
-        Some(false),
-    )?;
+    validate_activation_attestation_content(&profile, &attestation, 1, Some(false))?;
     let operational_response =
         production_installer_query(bridge, expected_controller, "get_operational_config")?;
     let operational_evidence = OperationalEpochEvidence::from_response(
@@ -4971,6 +4964,20 @@ fn validate_activation_attestation_with_pause(
         manifest_created_at_unix,
         now,
     )?;
+    validate_activation_attestation_content(
+        profile,
+        attestation,
+        minimum_finalized_block,
+        expected_paused,
+    )
+}
+
+fn validate_activation_attestation_content(
+    profile: &Profile,
+    attestation: &ActivationAttestationView,
+    minimum_finalized_block: u64,
+    expected_paused: Option<bool>,
+) -> Result<(), String> {
     let expected_signer = decode_address(&profile.expected_bridge_signer)?;
     let expected_runtime = decode_hex(&profile.bridge_runtime_bytecode_sha256)?;
     let expected_timelock = decode_address(&profile.timelock.address)?;
@@ -9020,6 +9027,58 @@ mod tests {
         assert!(validate_activation_attestation_time(ns(now + 1), created, now).is_err());
         assert!(validate_activation_attestation_time(ns(created), created, now + 1).is_err());
         assert!(validate_activation_attestation_time(0, created, now).is_err());
+    }
+
+    #[test]
+    fn current_state_accepts_bound_activation_attestation_after_freshness_window() {
+        let profile = valid_profile();
+        let observed_at = 1_000_000;
+        let now = observed_at + MAX_ACTIVATION_ATTESTATION_AGE_SECS + 1;
+        let attestation = ActivationAttestationView {
+            chain_id: profile.chain_id,
+            finalized_block_number: 1,
+            finalized_block_hash: vec![1; 32],
+            observed_at_ns: observed_at * 1_000_000_000,
+            bridge_signer: decode_address(&profile.expected_bridge_signer)
+                .unwrap()
+                .to_vec(),
+            bridge_runtime_sha256: decode_hex(&profile.bridge_runtime_bytecode_sha256).unwrap(),
+            deposits_paused: false,
+            withdrawals_paused: false,
+            bridge_timelock: decode_address(&profile.timelock.address).unwrap().to_vec(),
+            runtime_administrator: decode_address(&profile.runtime_administrator)
+                .unwrap()
+                .to_vec(),
+            timelock_admin: decode_address(&profile.timelock.address).unwrap().to_vec(),
+            timelock_proposer: decode_address(&profile.governance_operator)
+                .unwrap()
+                .to_vec(),
+            timelock_canceller: decode_address(&profile.independent_canceller)
+                .unwrap()
+                .to_vec(),
+            timelock_executor: decode_address(&profile.governance_operator)
+                .unwrap()
+                .to_vec(),
+            timelock_runtime_code_hash: decode_hex(&profile.timelock.runtime_code_hash).unwrap(),
+            bridge_approved_timelock_runtime_code_hash: decode_hex(
+                &profile.timelock.runtime_code_hash,
+            )
+            .unwrap(),
+            timelock_minimum_delay_seconds: profile.timelock.minimum_delay_seconds,
+            bsns_address: decode_address(&profile.bsns_contract).unwrap().to_vec(),
+            bsns_runtime_sha256: decode_hex(&profile.bsns_runtime_bytecode_sha256).unwrap(),
+            bsns_name: "KINIC".into(),
+            bsns_symbol: "KINIC".into(),
+            bsns_decimals: profile.decimals,
+            bsns_bridge: decode_address(&profile.bridge_contract).unwrap().to_vec(),
+            base_service_fee: profile.parameters.service_fee,
+        };
+
+        assert!(validate_activation_attestation_time(attestation.observed_at_ns, 0, now,).is_err());
+        assert!(
+            validate_activation_attestation_content(&profile, &attestation, 1, Some(false),)
+                .is_ok()
+        );
     }
 
     fn test_principal(seed: u8) -> String {
