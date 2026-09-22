@@ -34,6 +34,13 @@ class StagingWasmArtifactTests(unittest.TestCase):
         jest = package.index("jest --config integration/jest.config.js")
         self.assertLess(builder, jest)
 
+    def test_schema35_predecessor_uses_the_canonical_artifact_unchanged(self) -> None:
+        helper = (
+            ROOT / "scripts/plan007/build-schema35-predecessor-wasm.sh"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(helper.count("build-staging-canister-wasm.sh"), 1)
+        self.assertNotIn("ic-wasm", helper)
+
 
 if __name__ == "__main__":
     unittest.main()
