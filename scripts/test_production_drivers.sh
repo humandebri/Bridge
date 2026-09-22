@@ -16,6 +16,9 @@ SCHEMA_CONSISTENCY_FIXTURE='{"schema_version":36,"expected_bridge_signer":"curre
 grep -q 'production_require_clean_source' "$VALIDATION"
 grep -q 'production_run_proof_gate' "$VALIDATION"
 grep -q 'rebuild-release-artifacts.sh' "$VALIDATION"
+grep -q -- '-u BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE' "$VALIDATION"
+grep -q -- '-u BRIDGE_CONFIRM_SNS_DAPP_REGISTRATION' "$VALIDATION"
+grep -q -- '-u BRIDGE_CONFIRM_SNS_SAME_WASM_UPGRADE' "$VALIDATION"
 
 # Handover now delegates the state transition and in-memory continuity check
 # to the fixed current-state verifier binary.

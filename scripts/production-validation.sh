@@ -63,7 +63,11 @@ production_run_proof_gate() {
     return 1
   }
   # Execution consent belongs to the driver, not nested validation fixtures.
-  env -u BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE "$proof_script" proofs || {
+  env \
+    -u BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE \
+    -u BRIDGE_CONFIRM_SNS_DAPP_REGISTRATION \
+    -u BRIDGE_CONFIRM_SNS_SAME_WASM_UPGRADE \
+    "$proof_script" proofs || {
     echo "release proof gate failed" >&2
     return 1
   }
