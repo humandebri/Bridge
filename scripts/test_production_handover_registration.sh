@@ -4,9 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/bridge-handover-registration-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/bin" "$T/source/scripts" "$T/source/tools/sns-proposal" "$T/bundle"
+mkdir -p "$T/bin" "$T/source/scripts/candid" "$T/source/tools/sns-proposal" "$T/bundle"
 cp "$ROOT/scripts/production-handover-registration-proposal.sh" "$T/source/scripts/"
+cp "$ROOT/scripts/candid/kinic-sns-governance.did" "$T/source/scripts/candid/"
 cp "$ROOT/tools/sns-proposal/handover.mjs" "$T/source/tools/sns-proposal/"
+[[ "$(shasum -a 256 "$T/source/scripts/candid/kinic-sns-governance.did" | awk '{print $1}')" \
+  == fa1d98d76edc1b09b70b39c7722291eb746006adefee03246bb5077a670fddae ]]
 printf '\0asm\1\0\0\0test' >"$T/candidate.wasm"
 CANDIDATE_SHA="$(shasum -a 256 "$T/candidate.wasm" | awk '{print $1}')"
 cat >"$T/bundle/profile.json" <<'JSON'
@@ -47,6 +50,9 @@ if [[ "$*" == *'identity principal --identity production'* ]]; then
 elif [[ "$*" == *'identity principal --identity llm-wiki-mainnet'* ]]; then
   printf 'r75h6-lqd7b-5jack-at55d-vvti2-lg5qy-ly73a-5ezve-odnkc-kagu3-nae\n'
 elif [[ "$*" == *'get_neuron'* ]]; then
+  [[ "$*" == *"--candid $TEST_GOVERNANCE_CANDID"* ]] || {
+    printf 'get_neuron omitted the reviewed Candid: %s\n' "$*" >&2; exit 98;
+  }
   printf 'record { permissions = vec { record { "principal" = opt principal "r75h6-lqd7b-5jack-at55d-vvti2-lg5qy-ly73a-5ezve-odnkc-kagu3-nae"; permission_type = vec { 3 : int32; 4 : int32 } } } }\n'
 elif [[ "$*" == *'status lb5i5-ziaaa-aaaar-qcgwq-cai'* ]]; then
   printf '{"module_hash":"0x%s"}\n' "$CANDIDATE_SHA"
@@ -54,9 +60,15 @@ elif [[ "$*" == *'build bridge-canister'* ]]; then
   mkdir -p "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release"
   cp "$TEST_SOURCE_WASM" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/bridge_canister.wasm"
 elif [[ "$*" == *'manage_neuron'* ]]; then
+  [[ "$*" == *"--candid $TEST_GOVERNANCE_CANDID"* ]] || {
+    printf 'manage_neuron omitted the reviewed Candid: %s\n' "$*" >&2; exit 98;
+  }
   [[ "${SUBMIT_FAIL:-false}" != true ]] || exit 1
   printf '{"response_bytes":"00"}\n'
 elif [[ "$*" == *'get_proposal'* ]]; then
+  [[ "$*" == *"--candid $TEST_GOVERNANCE_CANDID"* ]] || {
+    printf 'get_proposal omitted the reviewed Candid: %s\n' "$*" >&2; exit 98;
+  }
   printf 'record { id = opt record { id = 42 : nat64 }; failed_timestamp_seconds = 0 : nat64; executed_timestamp_seconds = 1 : nat64; proposal = opt record { title = "Register KINIC Bridge with SNS"; action = opt variant { RegisterDappCanisters = record { canister_ids = vec { principal "lb5i5-ziaaa-aaaar-qcgwq-cai" } } } } }\n'
 else
   printf '{"response_bytes":"00"}\n'
@@ -76,12 +88,22 @@ esac
 SH
 chmod +x "$T/bin/"* "$T/source/scripts/production-handover-registration-proposal.sh"
 export PATH="$T/bin:$PATH" TRACE="$T/trace" CANDIDATE_SHA TEST_SOURCE_WASM="$T/candidate.wasm"
+TEST_GOVERNANCE_CANDID="$(cd "$T/source/scripts/candid" && pwd)/kinic-sns-governance.did"
+export TEST_GOVERNANCE_CANDID
 export BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ICP_IDENTITY=production
 DRIVER="$T/source/scripts/production-handover-registration-proposal.sh"
 
 "$DRIVER" check-registration --wasm "$T/candidate.wasm" >"$T/check-registration.out"
 rg -q 'kind=registration' "$T/check-registration.out"
 rg -q 'joint-unregistered' "$TRACE"
+
+cp "$TEST_GOVERNANCE_CANDID" "$T/reviewed-governance.did"
+printf '\n' >>"$TEST_GOVERNANCE_CANDID"
+if "$DRIVER" check-registration --wasm "$T/candidate.wasm" >/dev/null 2>"$T/candid-drift.err"; then
+  echo "handover check accepted Governance Candid drift" >&2; exit 1
+fi
+rg -q 'Governance Candid differs from the reviewed interface' "$T/candid-drift.err"
+mv "$T/reviewed-governance.did" "$TEST_GOVERNANCE_CANDID"
 
 if "$DRIVER" execute-registration --wasm "$T/candidate.wasm" \
   --expected-current-wasm "$CANDIDATE_SHA" >/dev/null 2>&1; then
