@@ -18,7 +18,7 @@ const schema35Revision = "e0b426e7465531d2e572b5b741509f1889e6def8";
 const schema35ArchiveSha256 = "24dfae12273dd04c899b058f2665610fb8c273b9099f0574838898d686f14866";
 const schema35WasmSha256ByHost: Readonly<Record<string, string>> = {
   "darwin-arm64": "ed270392bcb3b4adf74a3eae083d24b337149d1f6b352c24931852318336ab3b",
-  "linux-x64": "ed270392bcb3b4adf74a3eae083d24b337149d1f6b352c24931852318336ab3b",
+  "linux-x64": "0ee5c687528eb7725624f244506eaa3d09a7280f2d962662bc78059e14657809",
 };
 const schema35BuildHost = `${process.platform}-${process.arch}`;
 const schema35WasmSha256 = schema35WasmSha256ByHost[schema35BuildHost];

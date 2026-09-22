@@ -4439,7 +4439,7 @@ fn verify_production_current_state(
             ),
             "root-registered" => (BTreeSet::from([root]), true, root),
             _ => return Err(
-                "controller mode must be sole-unregistered, joint-unregistered, or root-registered"
+                "controller mode must be sole or joint registration state: sole-unregistered, joint-unregistered, or root-registered"
                     .into(),
             ),
         };
@@ -4565,6 +4565,11 @@ fn verify_production_current_state(
         production_installer_storage_integrity(bridge, release_query_principal)?,
         StorageIntegrityResultView::Ok(ref value) if value == "ok"
     );
+    let bridge_is_registered = root_state.dapps.contains(&bridge);
+    let bridge_registration_count = root_state.dapps.iter().filter(|id| **id == bridge).count();
+    if bridge_is_registered != (bridge_registration_count == 1) {
+        return Err("SNS Root contains duplicate Bridge registrations".into());
+    }
     validate_production_current_state_core(
         &controllers,
         &expected_controllers,
@@ -4576,7 +4581,7 @@ fn verify_production_current_state(
         &status,
         &pending,
         history_ready,
-        root_state.dapps.iter().filter(|id| **id == bridge).count(),
+        bridge_registration_count,
         expected_registered,
         storage_ok,
     )?;
