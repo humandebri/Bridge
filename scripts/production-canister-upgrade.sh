@@ -135,7 +135,7 @@ print(s)')"
 fi
 [[ "$CURRENT_WASM" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid current module hash" >&2; exit 1; }
 export BRIDGE_PRODUCTION_INSTALLER_IDENTITY=production
-"$PROFILE_BIN" verify-production-current-state "$PROFILE" "$CONTROLLER" "$CURRENT_WASM" sole
+"$PROFILE_BIN" verify-production-current-state "$PROFILE" "$CONTROLLER" "$CURRENT_WASM" sole-unregistered
 
 production_run_proof_gate "$ROOT" "$REVISION" "$TREE"
 for index in 1 2; do

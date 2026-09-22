@@ -1,55 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/bridge-handover-registration-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/bin" "$T/bundle" "$T/source/scripts"
+mkdir -p "$T/bin" "$T/source/scripts" "$T/source/tools/sns-proposal" "$T/bundle"
 cp "$ROOT/scripts/production-handover-registration-proposal.sh" "$T/source/scripts/"
-cat >"$T/source/scripts/production-validation.sh" <<'SH'
-production_freeze_bundle(){ cp -R "$1/." "$2/"; }
-production_freeze_receipt(){ cp "$1" "$2"; }
-production_require_clean_source(){ :; }
-production_run_proof_gate(){ printf 'proof %s\n' "$*" >>"$TRACE"; [[ "${REGISTRATION_GATE_FAIL:-false}" != true ]]; }
-SH
+cp "$ROOT/tools/sns-proposal/handover.mjs" "$T/source/tools/sns-proposal/"
+printf '\0asm\1\0\0\0test' >"$T/candidate.wasm"
+CANDIDATE_SHA="$(shasum -a 256 "$T/candidate.wasm" | awk '{print $1}')"
 cat >"$T/bundle/profile.json" <<'JSON'
-{"bridge_canister_id":"2vxsx-fae","root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","bridge_canister_wasm_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+{"bridge_canister_id":"lb5i5-ziaaa-aaaar-qcgwq-cai","pause_principal":"lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe","root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","ic_host":"https://icp-api.io"}
 JSON
-cat >"$T/bundle/release-manifest.json" <<'JSON'
-{"release_id":"release-1","source_revision":"revision-1","source_tree_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-JSON
-MANIFEST_SHA="$(shasum -a 256 "$T/bundle/release-manifest.json" | awk '{print $1}')"
-cat >"$T/reviewed.json" <<'JSON'
-{"schema_version":1,"governance_canister_id":"74ncn-fqaaa-aaaaq-aaasa-cai","root_canister_id":"7jkta-eyaaa-aaaaq-aaarq-cai","bridge_canister_id":"2vxsx-fae","wasm_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","already_registered":false,"registration_proposal":"record { action = opt variant { RegisterDappCanisters = record { canister_ids = vec { principal \"2vxsx-fae\" } } } }"}
-JSON
-cat >"$T/bin/node" <<'SH'
-#!/usr/bin/env bash
-if [[ "$*" == *decode-root* ]]; then printf '[]\n'
-elif [[ "$*" == *registration-payload* ]]; then printf 'record { action = opt variant { RegisterDappCanisters = record { canister_ids = vec { principal "2vxsx-fae" } } } }\n'
-else printf '42\n'
-fi
-SH
-cat >"$T/bin/icp" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$TRACE"
-if [[ "$*" == *'identity principal'* ]]; then printf 'aaaaa-aa\n'
-elif [[ "$*" == *'status bridge-canister'* ]]; then printf '{"controllers":["7jkta-eyaaa-aaaaq-aaarq-cai","aaaaa-aa"]}\n'
-elif [[ "$*" == *list_sns_canisters* ]]; then printf '{"response_bytes":"00"}\n'
-elif [[ "$*" == *manage_neuron* ]]; then
-  [[ "${REGISTRATION_FAIL:-false}" != true ]] || { printf 'uncertain\n' >&2; exit 1; }
-  printf '{"response_bytes":"00"}\n'
-else exit 1
-fi
-SH
-cat >"$T/bin/cargo" <<'SH'
-#!/usr/bin/env bash
-mkdir -p "$CARGO_TARGET_DIR/release"
-cat >"$CARGO_TARGET_DIR/release/bridge-profile" <<'INNER'
-#!/usr/bin/env bash
-printf 'verify %s\n' "$*" >>"$TRACE"
-[[ "$1" == verify-production-current-state && "$5" == joint ]]
-INNER
-chmod +x "$CARGO_TARGET_DIR/release/bridge-profile"
+cat >"$T/source/scripts/production-validation.sh" <<'SH'
+production_require_clean_source(){ :; }
+production_run_proof_gate(){ printf 'proof %s\n' "$*" >>"$TRACE"; [[ "${PROOF_FAIL:-false}" != true ]]; }
 SH
 cat >"$T/bin/git" <<'SH'
 #!/usr/bin/env bash
@@ -58,66 +23,101 @@ elif [[ "$*" == *'archive HEAD'* ]]; then printf 'tree\n'
 else exit 0
 fi
 SH
-chmod +x "$T/bin/node" "$T/bin/icp" "$T/bin/cargo" "$T/bin/git" "$T/source/scripts/production-handover-registration-proposal.sh"
-export PATH="$T/bin:$PATH"
-export TRACE="$T/trace"
-printf '{}\n' >"$T/seal.json"
-printf '{}\n' >"$T/schedule.json"
-printf '{}\n' >"$T/execute.json"
-export BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$T/seal.json"
-export BRIDGE_CONTROLLER_SCHEDULE_RECEIPT="$T/schedule.json"
-export BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$T/execute.json"
-SUBMIT="$T/source/scripts/production-handover-registration-proposal.sh"
-
-"$SUBMIT" "$T/bundle" "$MANIFEST_SHA" "$T/submission.json" production \
-  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/reviewed.json"
-python3 - "$T/reviewed.json" "$T/submission.json" <<'PY'
-import hashlib,json,sys
-reviewed,submission=sys.argv[1:]
-value=json.load(open(submission))
-assert value['schema_version']==1 and value['kind']=='sns-dapp-registration-submission'
-assert value['proposal_id']==42 and value['bridge_canister_id']=='2vxsx-fae'
-assert value['current_module_sha256']=='a'*64
-assert value['reviewed_handover_sha256']==hashlib.sha256(open(reviewed,'rb').read()).hexdigest()
-assert value['proposal_command_argv'].count('<fixed-candid-payload>')==1
-PY
-[[ -s "$T/submission.json.response.json" ]]
-[[ "$(rg -c manage_neuron "$TRACE")" == 1 ]]
-
-cp "$T/reviewed.json" "$T/reviewed.valid.json"
-python3 - "$T/reviewed.json" <<'PY'
-import json,sys
-path=sys.argv[1]; value=json.load(open(path)); value['registration_proposal']='record { action = opt variant { Motion = record { motion_text = "wrong" } } }'; json.dump(value,open(path,'w'))
-PY
-before="$(rg -c manage_neuron "$TRACE")"
-if "$SUBMIT" "$T/bundle" "$MANIFEST_SHA" "$T/wrong-action.json" production \
-  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/reviewed.json" >/dev/null 2>&1; then
-  echo "registration submission accepted a non-registration action" >&2; exit 1
+cat >"$T/bin/cargo" <<'SH'
+#!/usr/bin/env bash
+mkdir -p "$CARGO_TARGET_DIR/release"
+cat >"$CARGO_TARGET_DIR/release/bridge-profile" <<'INNER'
+#!/usr/bin/env bash
+printf 'verify %s\n' "$*" >>"$TRACE"
+case "$1" in
+  verify-production-current-state)
+    case "$5" in joint-unregistered|root-registered) ;; *) exit 1 ;; esac
+    ;;
+  verify-sns-registration-live|verify-sns-upgrade-live) ;;
+  *) exit 1 ;;
+esac
+INNER
+chmod +x "$CARGO_TARGET_DIR/release/bridge-profile"
+SH
+cat >"$T/bin/icp" <<'SH'
+#!/usr/bin/env bash
+printf 'icp %s\n' "$*" >>"$TRACE"
+if [[ "$*" == *'identity principal --identity production'* ]]; then
+  printf 'lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe\n'
+elif [[ "$*" == *'identity principal --identity llm-wiki-mainnet'* ]]; then
+  printf 'r75h6-lqd7b-5jack-at55d-vvti2-lg5qy-ly73a-5ezve-odnkc-kagu3-nae\n'
+elif [[ "$*" == *'get_neuron'* ]]; then
+  printf 'record { permissions = vec { record { "principal" = opt principal "r75h6-lqd7b-5jack-at55d-vvti2-lg5qy-ly73a-5ezve-odnkc-kagu3-nae"; permission_type = vec { 3 : int32; 4 : int32 } } } }\n'
+elif [[ "$*" == *'status lb5i5-ziaaa-aaaar-qcgwq-cai'* ]]; then
+  printf '{"module_hash":"0x%s"}\n' "$CANDIDATE_SHA"
+elif [[ "$*" == *'build bridge-canister'* ]]; then
+  mkdir -p "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release"
+  cp "$TEST_SOURCE_WASM" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/bridge_canister.wasm"
+elif [[ "$*" == *'manage_neuron'* ]]; then
+  [[ "${SUBMIT_FAIL:-false}" != true ]] || exit 1
+  printf '{"response_bytes":"00"}\n'
+elif [[ "$*" == *'get_proposal'* ]]; then
+  printf 'record { id = opt record { id = 42 : nat64 }; failed_timestamp_seconds = 0 : nat64; executed_timestamp_seconds = 1 : nat64; proposal = opt record { title = "Register KINIC Bridge with SNS"; action = opt variant { RegisterDappCanisters = record { canister_ids = vec { principal "lb5i5-ziaaa-aaaar-qcgwq-cai" } } } } }\n'
+else
+  printf '{"response_bytes":"00"}\n'
 fi
-[[ "$before" == "$(rg -c manage_neuron "$TRACE")" && ! -e "$T/wrong-action.json" ]]
-mv "$T/reviewed.valid.json" "$T/reviewed.json"
+SH
+cat >"$T/bin/node" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *registration-payload*) printf 'record {title="Register KINIC Bridge with SNS";url="";summary="reviewed";action=opt variant {RegisterDappCanisters=record {canister_ids=vec {principal "lb5i5-ziaaa-aaaar-qcgwq-cai"}}}}\n' ;;
+  *upgrade-payload*) printf 'record {title="Verify DAO upgrade of KINIC Bridge";url="";summary="reviewed";action=opt variant {UpgradeSnsControlledCanister=record {}}}\n' ;;
+  *decode-chunk*) printf '%s\n' "$CANDIDATE_SHA" ;;
+  *decode-stored-chunks*) printf '["%s"]\n' "$CANDIDATE_SHA" ;;
+  *decode-response*) printf '42\n' ;;
+  --check*) exit 0 ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$T/bin/"* "$T/source/scripts/production-handover-registration-proposal.sh"
+export PATH="$T/bin:$PATH" TRACE="$T/trace" CANDIDATE_SHA TEST_SOURCE_WASM="$T/candidate.wasm"
+export BRIDGE_RELEASE_BUNDLE="$T/bundle" BRIDGE_ICP_IDENTITY=production
+DRIVER="$T/source/scripts/production-handover-registration-proposal.sh"
 
-before="$(rg -c manage_neuron "$TRACE")"
-if REGISTRATION_GATE_FAIL=true "$SUBMIT" "$T/bundle" "$MANIFEST_SHA" "$T/gate-failed.json" production \
-  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/reviewed.json" >/dev/null 2>&1; then
-  echo "registration submission accepted a failed current proof gate" >&2; exit 1
-fi
-[[ "$before" == "$(rg -c manage_neuron "$TRACE")" && ! -e "$T/gate-failed.json" ]]
+"$DRIVER" check-registration --wasm "$T/candidate.wasm" >"$T/check-registration.out"
+rg -q 'kind=registration' "$T/check-registration.out"
+rg -q 'joint-unregistered' "$TRACE"
 
-if "$SUBMIT" "$T/bundle" "$MANIFEST_SHA" "$T/submission.json" production \
-  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/reviewed.json" >/dev/null 2>&1; then
-  echo "registration submission overwrote an existing receipt" >&2; exit 1
+if "$DRIVER" execute-registration --wasm "$T/candidate.wasm" \
+  --expected-current-wasm "$CANDIDATE_SHA" >/dev/null 2>&1; then
+  echo "registration accepted missing confirmation" >&2; exit 1
 fi
-[[ "$(rg -c manage_neuron "$TRACE")" == 1 ]]
+BRIDGE_CONFIRM_SNS_DAPP_REGISTRATION=REGISTER_PRODUCTION_BRIDGE_WITH_KINIC_SNS \
+  "$DRIVER" execute-registration --wasm "$T/candidate.wasm" \
+  --expected-current-wasm "$CANDIDATE_SHA" >"$T/registration.out"
+rg -q 'proposal_id=42' "$T/registration.out"
+[[ "$(rg -c 'manage_neuron' "$TRACE")" == 1 ]]
+[[ "$(rg -c 'upload_chunk' "$TRACE")" == 1 ]]
 
-if REGISTRATION_FAIL=true "$SUBMIT" "$T/bundle" "$MANIFEST_SHA" "$T/uncertain.json" production \
-  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/reviewed.json" >/dev/null 2>&1; then
-  echo "registration submission accepted an uncertain proposal result" >&2; exit 1
+"$DRIVER" check-upgrade --wasm "$T/candidate.wasm" --registration-proposal-id 42 >"$T/check-upgrade.out"
+rg -q 'kind=upgrade' "$T/check-upgrade.out"
+rg -q 'root-registered' "$TRACE"
+
+BRIDGE_CONFIRM_SNS_SAME_WASM_UPGRADE=UPGRADE_REGISTERED_BRIDGE_WITH_SAME_WASM \
+  "$DRIVER" execute-upgrade --wasm "$T/candidate.wasm" \
+  --expected-current-wasm "$CANDIDATE_SHA" --registration-proposal-id 42 >"$T/upgrade.out"
+rg -q 'proposal_id=42' "$T/upgrade.out"
+[[ "$(rg -c 'manage_neuron' "$TRACE")" == 2 ]]
+
+"$DRIVER" verify-upgrade --wasm "$T/candidate.wasm" \
+  --registration-proposal-id 42 --upgrade-proposal-id 43 >"$T/verify-upgrade.out"
+rg -q 'verify-sns-upgrade-live .*candidate.wasm 42 43' "$TRACE"
+[[ "$(rg -c 'manage_neuron' "$TRACE")" == 2 ]]
+
+before="$(rg -c 'manage_neuron' "$TRACE")"
+if PROOF_FAIL=true "$DRIVER" check-registration --wasm "$T/candidate.wasm" >/dev/null 2>&1; then
+  echo "proposal check accepted a failed proof gate" >&2; exit 1
 fi
-[[ -e "$T/uncertain.json" && -s "$T/uncertain.json.response.json" ]]
-before="$(rg -c manage_neuron "$TRACE")"
-if "$SUBMIT" "$T/bundle" "$MANIFEST_SHA" "$T/uncertain.json" production \
-  "$(printf 'c%.0s' {1..64})" aaaaa-aa "$T/reviewed.json" >/dev/null 2>&1; then
-  echo "registration submission retried an uncertain proposal" >&2; exit 1
+[[ "$before" == "$(rg -c 'manage_neuron' "$TRACE")" ]]
+
+if SUBMIT_FAIL=true BRIDGE_CONFIRM_SNS_SAME_WASM_UPGRADE=UPGRADE_REGISTERED_BRIDGE_WITH_SAME_WASM \
+  "$DRIVER" execute-upgrade --wasm "$T/candidate.wasm" \
+  --expected-current-wasm "$CANDIDATE_SHA" --registration-proposal-id 42 >/dev/null 2>"$T/uncertain.err"; then
+  echo "uncertain proposal submission succeeded" >&2; exit 1
 fi
-[[ "$before" == "$(rg -c manage_neuron "$TRACE")" ]]
+rg -q 'do not resubmit for 6 minutes' "$T/uncertain.err"
