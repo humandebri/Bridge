@@ -54,7 +54,7 @@ test('proposal response requires typed MakeProposal success', async () => {
 });
 
 test('handover preparation skips registered dapps and fixes exact upgrade bytes', async () => {
-  const {prepareHandover,decodeProposalResponse,decodeRootDapps,KINIC_GOVERNANCE,KINIC_ROOT} = await import('./handover.mjs');
+  const {prepareHandover,decodeChunkHash,decodeStoredChunks,decodeProposalResponse,decodeRootDapps,KINIC_GOVERNANCE,KINIC_ROOT} = await import('./handover.mjs');
   const {createHash} = await import('node:crypto');
   const wasm = Buffer.from([0,97,115,109,1,0,0,0]);
   const hash = createHash('sha256').update(wasm).digest('hex');
@@ -73,4 +73,11 @@ test('handover preparation skips registered dapps and fixes exact upgrade bytes'
   const response = value => ({response_bytes:Buffer.from(IDL.encode([responseType],[value])).toString('hex')});
   assert.equal(decodeProposalResponse(response({command:[{MakeProposal:{proposal_id:[{id:77n}]}}]})),'77');
   assert.throws(()=>decodeProposalResponse(response({command:[{Error:{error_type:1,error_message:'denied'}}]})));
+  const chunkType = IDL.Record({hash:IDL.Vec(IDL.Nat8)});
+  const chunkEnvelope = value => ({response_bytes:Buffer.from(IDL.encode([chunkType],[value])).toString('hex')});
+  assert.equal(decodeChunkHash(chunkEnvelope({hash:[0x12,0x34]})),'1234');
+  const storedType = IDL.Vec(chunkType);
+  const stored = {response_bytes:Buffer.from(IDL.encode([storedType],[[{hash:[0x34]},{hash:[0x12]}]])).toString('hex')};
+  assert.deepEqual(decodeStoredChunks(stored),['12','34']);
+  assert.throws(()=>decodeChunkHash({hash:[0x12]}));
 });

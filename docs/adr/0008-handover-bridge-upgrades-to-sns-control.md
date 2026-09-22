@@ -10,8 +10,8 @@ Keep the Bridge canister upgradeable. Before demonstrating DAO operations, valid
 
 1. Verify the certified individual sole controller, current module, runtime, storage, lifecycle, and clean-source reproducibility. After explicit approval, add only SNS Root and verify joint control by the individual identity and Root.
 2. While retaining joint control, demonstrate schedule/execute reactivation through SNS custom proposals. Do not include production changes to fees or recipients, and stop with joint control after the demonstration.
-3. Only after separate explicit approval, execute the standard `RegisterDappCanisters` proposal and verify Root registration and transition to Root as sole controller. Do not begin this procedure from an already-registered state.
-4. Upgrade to the same Wasm through a standard `UpgradeSnsControlledCanister` proposal and verify preserved state and continued asset admission to complete handover. Do not remove the emergency pause principal.
+3. Only after separate explicit approval, execute the standard `RegisterDappCanisters` proposal and verify Root registration and transition to Root as sole controller. Do not begin this procedure from an already-registered state. Do not persist a handover receipt; the authenticated current state and Governance proposal are authoritative.
+4. After a second explicit approval, upgrade to the same Wasm through a standard `UpgradeSnsControlledCanister` proposal and verify the SNS Root post-upgrade observation, preserved state, and continued asset admission to complete handover. Standard SNS Governance rejects this upgrade before Root registration, even when Root is already a co-controller. Do not remove the emergency pause principal.
 
 Production SNS Root registration removes controllers other than Root. Do not apply testflight behavior that retains joint controllers to production. Do not use a path that demonstrates standard SNS upgrades while retaining the individual controller. Do not assume direct individual repair is available if registration or upgrade fails after handover.
 

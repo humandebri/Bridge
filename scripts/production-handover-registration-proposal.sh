@@ -1,155 +1,294 @@
 #!/usr/bin/env bash
-# Submit the reviewed RegisterDappCanisters proposal only while recovery control remains available.
+# Prepare and submit the native Kinic SNS registration and same-Wasm upgrade proposals.
 set -euo pipefail
 
-BUNDLE="${1:?usage: production-handover-registration-proposal.sh BUNDLE MANIFEST_SHA256 OUTPUT IDENTITY NEURON_SUBACCOUNT PROPOSER_PRINCIPAL REVIEWED_HANDOVER_JSON}"
-MANIFEST_SHA256="${2:?missing Gate B manifest hash}"
-OUTPUT="${3:?missing output path}"
-IDENTITY="${4:?missing ICP identity name}"
-NEURON_SUBACCOUNT="${5:?missing SNS neuron subaccount}"
-PROPOSER_PRINCIPAL="${6:?missing proposer principal}"
-REVIEWED="${7:?missing reviewed handover JSON}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=production-validation.sh
 source "$ROOT/scripts/production-validation.sh"
 
-: "${BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT:?missing operational config seal receipt}"
-: "${BRIDGE_CONTROLLER_SCHEDULE_RECEIPT:?missing controller schedule receipt}"
-: "${BRIDGE_CONTROLLER_ACTIVATION_RECEIPT:?missing controller execute receipt}"
+MODE="${1:-}"
+shift || true
+WASM=""
+EXPECTED_CURRENT_WASM=""
+REGISTRATION_PROPOSAL_ID=""
+UPGRADE_PROPOSAL_ID=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --wasm) WASM="$2"; shift 2 ;;
+    --expected-current-wasm)
+      EXPECTED_CURRENT_WASM="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+      shift 2
+      ;;
+    --registration-proposal-id) REGISTRATION_PROPOSAL_ID="$2"; shift 2 ;;
+    --upgrade-proposal-id) UPGRADE_PROPOSAL_ID="$2"; shift 2 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
 
-[[ -d "$BUNDLE" && -f "$BUNDLE/release-manifest.json" && -f "$BUNDLE/profile.json" ]] || {
-  echo "handover bundle is incomplete" >&2; exit 1;
+usage() {
+  cat >&2 <<USAGE
+usage: BRIDGE_RELEASE_BUNDLE=ABS BRIDGE_ICP_IDENTITY=production $0 check-registration --wasm ABS
+       BRIDGE_RELEASE_BUNDLE=ABS BRIDGE_ICP_IDENTITY=production BRIDGE_CONFIRM_SNS_DAPP_REGISTRATION=REGISTER_PRODUCTION_BRIDGE_WITH_KINIC_SNS $0 execute-registration --wasm ABS --expected-current-wasm SHA256
+       BRIDGE_RELEASE_BUNDLE=ABS BRIDGE_ICP_IDENTITY=production $0 check-upgrade --wasm ABS --registration-proposal-id ID
+       BRIDGE_RELEASE_BUNDLE=ABS BRIDGE_ICP_IDENTITY=production BRIDGE_CONFIRM_SNS_SAME_WASM_UPGRADE=UPGRADE_REGISTERED_BRIDGE_WITH_SAME_WASM $0 execute-upgrade --wasm ABS --expected-current-wasm SHA256 --registration-proposal-id ID
+       BRIDGE_RELEASE_BUNDLE=ABS BRIDGE_ICP_IDENTITY=production $0 verify-upgrade --wasm ABS --registration-proposal-id ID --upgrade-proposal-id ID
+USAGE
+  exit 2
 }
-[[ -f "$REVIEWED" && ! -L "$REVIEWED" ]] || { echo "reviewed handover is missing or unsafe" >&2; exit 1; }
-[[ ! -e "$OUTPUT" && ! -L "$OUTPUT" ]] || { echo "registration submission output already exists" >&2; exit 1; }
-[[ ! -e "$OUTPUT.response.json" && ! -L "$OUTPUT.response.json" ]] || { echo "proposal response journal already exists" >&2; exit 1; }
-for tool in icp node python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }; done
+case "$MODE" in
+  check-registration|execute-registration|check-upgrade|execute-upgrade|verify-upgrade) ;;
+  *) usage ;;
+esac
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/bridge-handover-registration.XXXXXX")"
-trap 'chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf "$TMP"' EXIT
-mkdir -m 700 "$TMP/release-bundle"
-production_freeze_bundle "$BUNDLE" "$TMP/release-bundle"
-production_freeze_receipt "$REVIEWED" "$TMP/reviewed.json" "reviewed handover"
-production_freeze_receipt "$BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT" "$TMP/seal.json" "seal receipt"
-production_freeze_receipt "$BRIDGE_CONTROLLER_SCHEDULE_RECEIPT" "$TMP/schedule.json" "schedule receipt"
-production_freeze_receipt "$BRIDGE_CONTROLLER_ACTIVATION_RECEIPT" "$TMP/execute.json" "execute receipt"
-BUNDLE="$TMP/release-bundle"
-REVIEWED="$TMP/reviewed.json"
-BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT="$TMP/seal.json"
-BRIDGE_CONTROLLER_SCHEDULE_RECEIPT="$TMP/schedule.json"
-BRIDGE_CONTROLLER_ACTIVATION_RECEIPT="$TMP/execute.json"
-export BRIDGE_HANDOVER_VALIDATOR_BIN="$TMP/bridge-profile"
-BRIDGE_CURRENT_MODULE_SHA256="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["wasm_sha256"])' "$REVIEWED")"
-export BRIDGE_CURRENT_MODULE_SHA256 BRIDGE_PRODUCTION_INSTALLER_IDENTITY=production
-CARGO_TARGET_DIR="$TMP/profile-target" cargo build --locked --quiet --release \
-  --manifest-path "$ROOT/Cargo.toml" -p bridge-profile
-BRIDGE_HANDOVER_VALIDATOR_BIN="$TMP/profile-target/release/bridge-profile"
+: "${BRIDGE_RELEASE_BUNDLE:?missing reviewed release bundle}"
+[[ "${BRIDGE_ICP_IDENTITY:-}" == production ]] || {
+  echo "handover validation requires BRIDGE_ICP_IDENTITY=production" >&2; exit 1;
+}
+PROFILE="$BRIDGE_RELEASE_BUNDLE/profile.json"
+for path in "$WASM" "$PROFILE"; do
+  [[ "$path" == /* && -f "$path" && ! -L "$path" ]] || {
+    echo "handover inputs must be absolute regular files" >&2; exit 1;
+  }
+done
+if [[ "$MODE" == execute-registration ]]; then
+  [[ "${BRIDGE_CONFIRM_SNS_DAPP_REGISTRATION:-}" == REGISTER_PRODUCTION_BRIDGE_WITH_KINIC_SNS ]] || {
+    echo "registration requires the exact explicit confirmation token" >&2; exit 1;
+  }
+elif [[ -n "${BRIDGE_CONFIRM_SNS_DAPP_REGISTRATION:-}" ]]; then
+  echo "the registration confirmation token is accepted only in execute-registration" >&2; exit 1
+fi
+if [[ "$MODE" == execute-upgrade ]]; then
+  [[ "${BRIDGE_CONFIRM_SNS_SAME_WASM_UPGRADE:-}" == UPGRADE_REGISTERED_BRIDGE_WITH_SAME_WASM ]] || {
+    echo "SNS upgrade requires the exact explicit confirmation token" >&2; exit 1;
+  }
+elif [[ -n "${BRIDGE_CONFIRM_SNS_SAME_WASM_UPGRADE:-}" ]]; then
+  echo "the upgrade confirmation token is accepted only in execute-upgrade" >&2; exit 1
+fi
+if [[ "$MODE" == execute-* ]]; then
+  [[ "$EXPECTED_CURRENT_WASM" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "execute requires --expected-current-wasm SHA256" >&2; exit 1;
+  }
+fi
+if [[ "$MODE" == *-upgrade ]]; then
+  [[ "$REGISTRATION_PROPOSAL_ID" =~ ^[1-9][0-9]*$ ]] || {
+    echo "upgrade requires --registration-proposal-id" >&2; exit 1;
+  }
+fi
+if [[ "$MODE" == verify-upgrade ]]; then
+  [[ "$UPGRADE_PROPOSAL_ID" =~ ^[1-9][0-9]*$ ]] || {
+    echo "verify-upgrade requires --upgrade-proposal-id" >&2; exit 1;
+  }
+elif [[ -n "$UPGRADE_PROPOSAL_ID" ]]; then
+  echo "--upgrade-proposal-id is accepted only in verify-upgrade" >&2; exit 1
+fi
+for tool in cargo git icp node python3 shasum split; do
+  command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }
+done
+
+readonly GOVERNANCE=74ncn-fqaaa-aaaaq-aaasa-cai
+readonly SNS_ROOT=7jkta-eyaaa-aaaaq-aaarq-cai
+readonly PRODUCTION_CONTROLLER=lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe
+readonly PROPOSER_IDENTITY=llm-wiki-mainnet
+readonly PROPOSER_PRINCIPAL=r75h6-lqd7b-5jack-at55d-vvti2-lg5qy-ly73a-5ezve-odnkc-kagu3-nae
+
 production_require_clean_source "$ROOT"
 REVISION="$(git -C "$ROOT" rev-parse HEAD)"
 TREE="$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')"
-production_run_proof_gate "$ROOT" "$REVISION" "$TREE"
-"$BRIDGE_HANDOVER_VALIDATOR_BIN" verify-production-current-state "$BUNDLE/profile.json" \
-  "$PROPOSER_PRINCIPAL" "$BRIDGE_CURRENT_MODULE_SHA256" joint
+require_source_identity() {
+  production_require_clean_source "$ROOT" \
+    && [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$REVISION" ]] \
+    && [[ "$(git -C "$ROOT" archive HEAD | shasum -a 256 | awk '{print tolower($1)}')" == "$TREE" ]] || {
+      echo "source changed during SNS handover validation" >&2
+      return 1
+    }
+}
 
-python3 - "$BUNDLE" "$MANIFEST_SHA256" "$OUTPUT" "$IDENTITY" "$NEURON_SUBACCOUNT" "$PROPOSER_PRINCIPAL" "$REVIEWED" "$ROOT" <<'PY'
-import hashlib,json,os,re,subprocess,sys,tempfile,time
-from pathlib import Path
-
-bundle,manifest_hash,output,identity,subaccount,proposer,reviewed_path,repo=sys.argv[1:]
-bundle=Path(bundle); output=Path(output); reviewed_path=Path(reviewed_path); repo=Path(repo)
-governance='74ncn-fqaaa-aaaaq-aaasa-cai'; root='7jkta-eyaaa-aaaaq-aaarq-cai'
-manifest=json.loads((bundle/'release-manifest.json').read_text()); profile=json.loads((bundle/'profile.json').read_text())
-reviewed_bytes=reviewed_path.read_bytes(); reviewed=json.loads(reviewed_bytes)
-if not re.fullmatch(r'[0-9a-fA-F]{64}',manifest_hash): raise SystemExit('invalid Gate B manifest hash')
-if hashlib.sha256((bundle/'release-manifest.json').read_bytes()).hexdigest()!=manifest_hash.lower(): raise SystemExit('Gate B manifest bytes differ from approval')
-if not re.fullmatch(r'[A-Za-z0-9_.-]+',identity): raise SystemExit('invalid ICP identity name')
-if not re.fullmatch(r'[0-9a-fA-F]{64}',subaccount): raise SystemExit('neuron subaccount must be 32-byte hex')
-if not re.fullmatch(r'[a-z0-9-]{5,80}',proposer): raise SystemExit('invalid proposer principal')
-if reviewed.get('schema_version')!=1 or reviewed.get('governance_canister_id')!=governance or reviewed.get('root_canister_id')!=root: raise SystemExit('reviewed handover governance domain differs')
-if reviewed.get('bridge_canister_id')!=profile.get('bridge_canister_id') or reviewed.get('wasm_sha256')!=profile.get('bridge_canister_wasm_sha256'): raise SystemExit('reviewed handover target differs')
-if reviewed.get('already_registered') is not False or not isinstance(reviewed.get('registration_proposal'),str): raise SystemExit('Bridge must be unregistered before proposal submission')
-expected=subprocess.run(['node',str(repo/'tools/sns-proposal/handover.mjs'),'registration-payload',profile['bridge_canister_id']],text=True,capture_output=True,check=False)
-if expected.returncode!=0 or reviewed['registration_proposal']!=expected.stdout.rstrip('\n'): raise SystemExit('reviewed handover is not the fixed single-Bridge RegisterDappCanisters action')
-
-resolved=subprocess.run(['icp','identity','principal','--identity',identity],text=True,capture_output=True,check=False)
-if resolved.returncode!=0 or resolved.stdout.strip()!=proposer: raise SystemExit('SNS proposer identity differs from approval')
-status=subprocess.run(['icp','canister','status','bridge-canister','-e','production','--identity',identity,'--json'],text=True,capture_output=True,check=False)
-if status.returncode!=0: raise SystemExit('failed to read Bridge controller state')
-try: status_json=json.loads(status.stdout)
-except json.JSONDecodeError: raise SystemExit('Bridge status is not JSON')
-def values(item,key):
- out=[]
- if isinstance(item,dict):
-  for k,v in item.items():
-   if k==key: out.append(v)
-   out.extend(values(v,key))
- elif isinstance(item,list):
-  for v in item: out.extend(values(v,key))
- return out
-controllers=values(status_json,'controllers')
-controllers=controllers[0] if len(controllers)==1 and isinstance(controllers[0],list) else []
-if len(controllers)!=2 or set(map(str,controllers))!={proposer,root}: raise SystemExit('live Bridge controllers are not the exact reviewed co-controller set')
-root_call=['icp','canister','call',root,'list_sns_canisters','(record {})','-n','ic','--query','--identity',identity,'--json']
-root_result=subprocess.run(root_call,text=True,capture_output=True,check=False)
-if root_result.returncode!=0: raise SystemExit('failed to read SNS Root registration')
-with tempfile.TemporaryDirectory(prefix='bridge-root-registration.') as work:
- p=Path(work)/'root.json'; p.write_text(root_result.stdout)
- decoded=subprocess.run(['node',str(repo/'tools/sns-proposal/handover.mjs'),'decode-root',str(p)],text=True,capture_output=True,check=False)
- if decoded.returncode!=0: raise SystemExit('SNS Root response could not be decoded')
- dapps=json.loads(decoded.stdout)
-if profile['bridge_canister_id'] in dapps: raise SystemExit('Bridge is already registered; do not submit a duplicate proposal')
-
-parent=output.parent.resolve()
-if not parent.is_dir(): raise SystemExit('submission parent directory does not exist')
-reserve_fd=os.open(output,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-response_path=Path(str(output)+'.response.json')
-response_fd=os.open(response_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-os.fsync(reserve_fd); os.close(reserve_fd)
-parent_fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); os.fsync(parent_fd); os.close(parent_fd)
-proposal=reviewed['registration_proposal']
-blob='blob "'+''.join(f'\\{b:02x}' for b in bytes.fromhex(subaccount))+'"'
-argument=f'(record {{ subaccount = {blob}; command = opt variant {{ MakeProposal = {proposal} }} }})'
-command=['icp','canister','call',governance,'manage_neuron',argument,'-n','ic','--identity',identity,'--json']
-submitted_at=int(time.time())
-result=subprocess.run(command,text=True,capture_output=True,check=False)
-journal={'command_argv':[v if v!=argument else '<fixed-candid-payload>' for v in command],'exit_code':result.returncode,
- 'stdout':result.stdout,'stderr':result.stderr,'observed_at_unix':int(time.time()),
- 'stdout_sha256':hashlib.sha256(result.stdout.encode()).hexdigest()}
-data=(json.dumps(journal,sort_keys=True,separators=(',',':'))+'\n').encode()
-view=memoryview(data)
-while view:
- written=os.write(response_fd,view)
- if written<=0: raise SystemExit('short write while persisting registration response journal')
- view=view[written:]
-os.fsync(response_fd); os.close(response_fd)
-if result.returncode!=0: raise SystemExit('registration proposal result is uncertain; preserve journal and do not resubmit')
-try: response_json=json.loads(result.stdout)
-except json.JSONDecodeError: raise SystemExit('registration proposal response is not JSON; preserve journal and do not resubmit')
-with tempfile.TemporaryDirectory(prefix='bridge-registration-response.') as work:
- p=Path(work)/'response.json'; p.write_text(result.stdout)
- decoded=subprocess.run(['node',str(repo/'tools/sns-proposal/handover.mjs'),'decode-response',str(p)],text=True,capture_output=True,check=False)
- if decoded.returncode!=0: raise SystemExit('registration proposal ID is unavailable; preserve journal and do not resubmit')
- proposal_id=int(decoded.stdout.strip())
-evidence={'schema_version':1,'kind':'sns-dapp-registration-submission','release_id':manifest['release_id'],
- 'source_revision':manifest['source_revision'],'source_tree_sha256':manifest['source_tree_sha256'],
- 'gate_b_manifest_sha256':manifest_hash.lower(),'governance_canister_id':governance,'sns_root_canister_id':root,
- 'bridge_canister_id':profile['bridge_canister_id'],'proposer_principal':proposer,'neuron_subaccount':subaccount.lower(),
- 'proposal_id':proposal_id,'submitted_at_unix':submitted_at,'proposal_sha256':hashlib.sha256(proposal.encode()).hexdigest(),
- 'current_module_sha256':reviewed['wasm_sha256'],'reviewed_handover_sha256':hashlib.sha256(reviewed_bytes).hexdigest(),
- 'root_query_response_hex':root_result.stdout.encode().hex(),'root_query_response_sha256':hashlib.sha256(root_result.stdout.encode()).hexdigest(),
- 'proposal_response_hex':result.stdout.encode().hex(),'proposal_response_sha256':hashlib.sha256(result.stdout.encode()).hexdigest(),
- 'root_command_argv':root_call,'proposal_command_argv':[v if v!=argument else '<fixed-candid-payload>' for v in command]}
-payload=(json.dumps(evidence,sort_keys=True,separators=(',',':'))+'\n').encode()
-fd,tmp=tempfile.mkstemp(prefix='.handover-registration.',dir=parent)
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/bridge-sns-handover.XXXXXX")"
+cleanup() { chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf "$TMP"; }
+trap cleanup EXIT
+python3 -I -S - "$WASM" "$TMP/candidate.wasm" <<'PY'
+import os,stat,sys
+source,target=sys.argv[1:]
+fd=os.open(source,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
 try:
- os.fchmod(fd,0o400)
- view=memoryview(payload)
- while view:
-  written=os.write(fd,view)
-  if written<=0: raise SystemExit('short write while persisting registration submission')
-  view=view[written:]
- os.fsync(fd)
+ before=os.fstat(fd)
+ if not stat.S_ISREG(before.st_mode) or before.st_size>128*1024*1024: raise SystemExit('unsafe Wasm input')
+ out=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400)
+ try:
+  while True:
+   chunk=os.read(fd,1024*1024)
+   if not chunk: break
+   os.write(out,chunk)
+  os.fsync(out)
+ finally: os.close(out)
+ after=os.fstat(fd)
+ if (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
+  raise SystemExit('Wasm changed while being read')
 finally: os.close(fd)
-os.replace(tmp,output); parent_fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); os.fsync(parent_fd); os.close(parent_fd)
-print(f'registration_proposal_submitted proposal_id={proposal_id} submission={output}')
 PY
+WASM="$TMP/candidate.wasm"
+CANDIDATE_WASM="$(shasum -a 256 "$WASM" | awk '{print tolower($1)}')"
+read -r CANISTER PROFILE_CONTROLLER PROFILE_ROOT HOST < <(python3 -I -S - "$PROFILE" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1]))
+print(p['bridge_canister_id'],p['pause_principal'],p['root_canister_id'],p['ic_host'])
+PY
+)
+[[ "$CANISTER" == lb5i5-ziaaa-aaaar-qcgwq-cai \
+  && "$PROFILE_CONTROLLER" == "$PRODUCTION_CONTROLLER" \
+  && "$PROFILE_ROOT" == "$SNS_ROOT" \
+  && "$HOST" == https://icp-api.io ]] || {
+  echo "release profile differs from the fixed Kinic production domain" >&2; exit 1;
+}
+[[ "$(icp identity principal --identity production)" == "$PRODUCTION_CONTROLLER" ]] || {
+  echo "production identity differs from the fixed controller" >&2; exit 1;
+}
+[[ "$(icp identity principal --identity "$PROPOSER_IDENTITY")" == "$PROPOSER_PRINCIPAL" ]] || {
+  echo "SNS proposer identity differs from the reviewed signer" >&2; exit 1;
+}
+
+NEURON_ARG='(record { neuron_id = opt record { id = blob "\5e\0f\2f\10\3a\68\88\29\ee\f9\c9\6b\f7\f8\31\5e\d4\61\03\7c\23\47\d5\5f\50\80\a3\67\b7\1c\1f\60" } })'
+NEURON_RESPONSE="$(icp canister call --network ic --identity "$PROPOSER_IDENTITY" "$GOVERNANCE" get_neuron "$NEURON_ARG" --query)"
+printf '%s' "$NEURON_RESPONSE" | python3 -I -S -c '
+import re,sys
+principal=sys.argv[1]; text=sys.stdin.read(); at=text.find(principal)
+if at<0: raise SystemExit("reviewed signer has no permission on proposer neuron")
+block=text[at:at+500]
+if not re.search(r"permission_type\s*=\s*vec\s*\{[^}]*\b3\s*:\s*int32",block,re.S) or not re.search(r"permission_type\s*=\s*vec\s*\{[^}]*\b4\s*:\s*int32",block,re.S):
+ raise SystemExit("reviewed signer lacks SubmitProposal/Vote permissions")
+' "$PROPOSER_PRINCIPAL"
+
+CARGO_TARGET_DIR="$TMP/profile" cargo build --quiet --locked --release --manifest-path "$ROOT/Cargo.toml" -p bridge-profile
+PROFILE_BIN="$TMP/profile/release/bridge-profile"
+if [[ "$MODE" == *-registration ]]; then
+  CONTROLLER_MODE=joint-unregistered
+  VALIDATION_PRINCIPAL="$PRODUCTION_CONTROLLER"
+  if [[ -n "$EXPECTED_CURRENT_WASM" ]]; then
+    CURRENT_WASM="$EXPECTED_CURRENT_WASM"
+  else
+    CURRENT_WASM="$(icp canister status "$CANISTER" -n ic --identity production --json | python3 -c '
+import json,re,sys
+value=json.load(sys.stdin); values=[]
+def walk(item):
+ if isinstance(item,dict):
+  for key,val in item.items():
+   if key in ("module_hash","module"): values.append(val)
+   walk(val)
+ elif isinstance(item,list):
+  for val in item: walk(val)
+walk(value)
+if len(values)!=1: raise SystemExit("ambiguous module hash")
+digest=str(values[0]).strip().lower().removeprefix("0x")
+if not re.fullmatch(r"[0-9a-f]{64}",digest): raise SystemExit("invalid module hash")
+print(digest)')"
+  fi
+else
+  CONTROLLER_MODE=root-registered
+  VALIDATION_PRINCIPAL="$SNS_ROOT"
+  CURRENT_WASM="${EXPECTED_CURRENT_WASM:-$CANDIDATE_WASM}"
+fi
+[[ "$CURRENT_WASM" == "$CANDIDATE_WASM" ]] || {
+  echo "handover test requires the candidate to be the exact current Wasm" >&2; exit 1;
+}
+export BRIDGE_PRODUCTION_INSTALLER_IDENTITY=production
+"$PROFILE_BIN" verify-production-current-state "$PROFILE" "$VALIDATION_PRINCIPAL" "$CURRENT_WASM" "$CONTROLLER_MODE"
+if [[ "$MODE" == *-upgrade ]]; then
+  "$PROFILE_BIN" verify-sns-registration-live "$PROFILE" "$CURRENT_WASM" "$REGISTRATION_PROPOSAL_ID"
+fi
+production_run_proof_gate "$ROOT" "$REVISION" "$TREE"
+for index in 1 2; do
+  CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$TMP/repro-$index" \
+    icp build bridge-canister -e production --project-root-override "$ROOT" >/dev/null
+  BUILT="$TMP/repro-$index/wasm32-unknown-unknown/release/bridge_canister.wasm"
+  [[ -f "$BUILT" && "$(shasum -a 256 "$BUILT" | awk '{print tolower($1)}')" == "$CANDIDATE_WASM" ]] || {
+    echo "candidate Wasm is not reproducible from current source" >&2; exit 1;
+  }
+done
+require_source_identity
+"$PROFILE_BIN" verify-production-current-state "$PROFILE" "$VALIDATION_PRINCIPAL" "$CURRENT_WASM" "$CONTROLLER_MODE"
+if [[ "$MODE" == *-upgrade ]]; then
+  "$PROFILE_BIN" verify-sns-registration-live "$PROFILE" "$CURRENT_WASM" "$REGISTRATION_PROPOSAL_ID"
+fi
+
+if [[ "$MODE" == verify-upgrade ]]; then
+  "$PROFILE_BIN" verify-sns-upgrade-live \
+    "$PROFILE" "$CURRENT_WASM" "$WASM" "$REGISTRATION_PROPOSAL_ID" "$UPGRADE_PROPOSAL_ID"
+  exit 0
+fi
+
+if [[ "$MODE" == *-registration ]]; then
+  PROPOSAL="$(node "$ROOT/tools/sns-proposal/handover.mjs" registration-payload "$CANISTER")"
+  KIND=registration
+else
+  PROPOSAL="$(node "$ROOT/tools/sns-proposal/handover.mjs" upgrade-payload "$CANISTER" "$WASM" "$CANDIDATE_WASM")"
+  KIND=upgrade
+fi
+PROPOSAL_SHA256="$(printf '%s' "$PROPOSAL" | shasum -a 256 | awk '{print tolower($1)}')"
+printf 'sns_handover_check=pass kind=%s current_module_sha256=%s candidate_module_sha256=%s source_revision=%s proposal_sha256=%s\n' \
+  "$KIND" "$CURRENT_WASM" "$CANDIDATE_WASM" "$REVISION" "$PROPOSAL_SHA256"
+printf '%s\n' "$PROPOSAL"
+[[ "$MODE" == check-* ]] && exit 0
+
+upload_chunks() {
+  mkdir -m 700 "$TMP/chunks"
+  split -b 1000000 -d -a 3 "$WASM" "$TMP/chunks/chunk-"
+  icp canister call --network ic --identity production aaaaa-aa clear_chunk_store \
+    "(record { canister_id = principal \"$CANISTER\" })" --json >"$TMP/clear.json"
+  : >"$TMP/expected-chunks"
+  for chunk in "$TMP"/chunks/chunk-*; do
+    digest="$(shasum -a 256 "$chunk" | awk '{print tolower($1)}')"
+    printf '%s\n' "$digest" >>"$TMP/expected-chunks"
+    python3 -I -S - "$CANISTER" "$chunk" "$TMP/upload.did" <<'PY'
+import os,sys
+canister,source,target=sys.argv[1:]
+data=open(source,'rb').read()
+body='(record { canister_id = principal "'+canister+'"; chunk = blob "'+''.join(f'\\{byte:02x}' for byte in data)+'" })\n'
+fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+try: os.write(fd,body.encode())
+finally: os.close(fd)
+PY
+    icp canister call --network ic --identity production --args-file "$TMP/upload.did" \
+      aaaaa-aa upload_chunk --json >"$TMP/upload.json"
+    observed="$(node "$ROOT/tools/sns-proposal/handover.mjs" decode-chunk "$TMP/upload.json")"
+    [[ "$observed" == "$digest" ]] || { echo "uploaded chunk hash differs" >&2; return 1; }
+  done
+  icp canister call --network ic --identity production aaaaa-aa stored_chunks \
+    "(record { canister_id = principal \"$CANISTER\" })" --json >"$TMP/stored.json"
+  node "$ROOT/tools/sns-proposal/handover.mjs" decode-stored-chunks "$TMP/stored.json" >"$TMP/stored-hashes.json"
+  python3 -I -S - "$TMP/expected-chunks" "$TMP/stored-hashes.json" <<'PY'
+import json,sys
+expected=sorted(line.strip() for line in open(sys.argv[1]) if line.strip())
+observed=json.load(open(sys.argv[2]))
+if observed!=expected: raise SystemExit('stored chunk set differs from the exact candidate chunks')
+print(f'sns_handover_chunks=verified count={len(expected)}')
+PY
+}
+
+if [[ "$MODE" == execute-registration ]]; then
+  upload_chunks
+  require_source_identity
+  "$PROFILE_BIN" verify-production-current-state "$PROFILE" "$PRODUCTION_CONTROLLER" "$CURRENT_WASM" joint-unregistered
+fi
+
+SUBACCOUNT_BLOB='blob "\5e\0f\2f\10\3a\68\88\29\ee\f9\c9\6b\f7\f8\31\5e\d4\61\03\7c\23\47\d5\5f\50\80\a3\67\b7\1c\1f\60"'
+MANAGE_ARG="(record { subaccount = $SUBACCOUNT_BLOB; command = opt variant { MakeProposal = $PROPOSAL } })"
+set +e
+icp canister call --network ic --identity "$PROPOSER_IDENTITY" "$GOVERNANCE" manage_neuron "$MANAGE_ARG" --json \
+  >"$TMP/proposal-response.json" 2>"$TMP/proposal-response.stderr"
+SUBMIT_STATUS=$?
+set -e
+if [[ $SUBMIT_STATUS -ne 0 ]]; then
+  sed -n '1,120p' "$TMP/proposal-response.stderr" >&2
+  echo "proposal submission outcome is uncertain; do not resubmit for 6 minutes, then search Governance for the exact proposer and proposal SHA-256 $PROPOSAL_SHA256" >&2
+  exit 1
+fi
+PROPOSAL_ID="$(node "$ROOT/tools/sns-proposal/handover.mjs" decode-response "$TMP/proposal-response.json")" || {
+  echo "proposal ID is unavailable; do not resubmit for 6 minutes, then search Governance for the exact proposal" >&2
+  exit 1
+}
+READBACK_ARG="(record { proposal_id = opt record { id = $PROPOSAL_ID : nat64 } })"
+icp canister call --network ic --identity "$PROPOSER_IDENTITY" "$GOVERNANCE" get_proposal "$READBACK_ARG" --query \
+  >"$TMP/proposal-readback.txt"
+cat "$TMP/proposal-readback.txt"
+printf 'sns_handover_proposal=submitted kind=%s proposal_id=%s proposal_sha256=%s\n' \
+  "$KIND" "$PROPOSAL_ID" "$PROPOSAL_SHA256"

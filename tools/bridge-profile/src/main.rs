@@ -4425,11 +4425,24 @@ fn verify_production_current_state(
     let expected_controller =
         Principal::from_text(expected_controller_text).map_err(|error| error.to_string())?;
     let root = Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?;
-    let expected_controllers = match controller_mode {
-        "sole" => BTreeSet::from([expected_controller]),
-        "joint" => BTreeSet::from([expected_controller, root]),
-        _ => return Err("controller mode must be sole or joint".into()),
-    };
+    let (expected_controllers, expected_registered, release_query_principal) =
+        match controller_mode {
+            "sole-unregistered" => (
+                BTreeSet::from([expected_controller]),
+                false,
+                expected_controller,
+            ),
+            "joint-unregistered" => (
+                BTreeSet::from([expected_controller, root]),
+                false,
+                expected_controller,
+            ),
+            "root-registered" => (BTreeSet::from([root]), true, root),
+            _ => return Err(
+                "controller mode must be sole or joint registration state: sole-unregistered, joint-unregistered, or root-registered"
+                    .into(),
+            ),
+        };
     let agent = mainnet_agent(&profile.ic_host, false)?;
     let (
         lifecycle_raw,
@@ -4549,9 +4562,14 @@ fn verify_production_current_state(
         ProductionUiHistoryResult::Ok(_)
     );
     let storage_ok = matches!(
-        production_installer_storage_integrity(bridge, expected_controller)?,
+        production_installer_storage_integrity(bridge, release_query_principal)?,
         StorageIntegrityResultView::Ok(ref value) if value == "ok"
     );
+    let bridge_is_registered = root_state.dapps.contains(&bridge);
+    let bridge_registration_count = root_state.dapps.iter().filter(|id| **id == bridge).count();
+    if bridge_is_registered != (bridge_registration_count == 1) {
+        return Err("SNS Root contains duplicate Bridge registrations".into());
+    }
     validate_production_current_state_core(
         &controllers,
         &expected_controllers,
@@ -4563,7 +4581,8 @@ fn verify_production_current_state(
         &status,
         &pending,
         history_ready,
-        root_state.dapps.contains(&bridge),
+        bridge_registration_count,
+        expected_registered,
         storage_ok,
     )?;
     profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
@@ -4593,7 +4612,7 @@ fn verify_production_current_state(
     }
     validate_activation_attestation_content(&profile, &attestation, 1, Some(false))?;
     let operational_response =
-        production_installer_query(bridge, expected_controller, "get_operational_config")?;
+        production_installer_query(bridge, release_query_principal, "get_operational_config")?;
     let operational_evidence = OperationalEpochEvidence::from_response(
         std::str::from_utf8(&operational_response)
             .map_err(|_| "invalid operational config output")?
@@ -4626,7 +4645,8 @@ fn validate_production_current_state_core(
     status: &BridgeStatusLiveView,
     pending: &PendingGovernanceTransactionsView,
     history_ready: bool,
-    registered_with_root: bool,
+    root_registration_count: usize,
+    expected_registered: bool,
     storage_ok: bool,
 ) -> Result<(), String> {
     let observed_controllers = controllers.iter().copied().collect::<BTreeSet<_>>();
@@ -4653,7 +4673,7 @@ fn validate_production_current_state_core(
         || !status.reserve.sufficient
         || !matches!(pending, PendingGovernanceTransactionsView::Ok(values) if values.is_empty())
         || !history_ready
-        || registered_with_root
+        || root_registration_count != usize::from(expected_registered)
         || !storage_ok
     {
         return Err("authenticated production state is not ready".into());
@@ -7823,7 +7843,7 @@ fn execute_production_canister_upgrade(
         profile_path,
         expected_principal_text,
         expected_current_module_sha256,
-        "sole",
+        "sole-unregistered",
     )?;
     let before = production_upgrade_current_state_snapshot(&agent, canister)?;
     let submission = build_production_upgrade_submission(&agent, host, canister, sender, &wasm)?;
@@ -7914,7 +7934,7 @@ fn execute_production_canister_upgrade(
                         profile_path,
                         expected_principal_text,
                         &submission.wasm_sha256,
-                        "sole",
+                        "sole-unregistered",
                     )?;
                     println!(
                         "production_upgrade=ambiguous-response-verified request_id={}",
@@ -7945,7 +7965,7 @@ fn execute_production_canister_upgrade(
         profile_path,
         expected_principal_text,
         &submission.wasm_sha256,
-        "sole",
+        "sole-unregistered",
     )?;
     Ok(())
 }
@@ -8150,7 +8170,7 @@ fn execute_production_root_addition(
         profile_path,
         expected_controller_text,
         expected_module_sha256,
-        "sole",
+        "sole-unregistered",
     )?;
     let before = production_upgrade_current_state_snapshot(&agent, canister)?;
     if before.controllers != BTreeSet::from([expected_controller])
@@ -8198,7 +8218,7 @@ fn execute_production_root_addition(
             profile_path,
             expected_controller_text,
             expected_module_sha256,
-            "joint",
+            "joint-unregistered",
         )
     })();
 
@@ -8267,19 +8287,200 @@ struct ReleaseUpgradeObservationView {
 #[allow(dead_code)]
 fn validate_sns_upgrade_completion(
     observation: &ReleaseUpgradeObservationView,
-    decided_at: u64,
+    proposal_executed_at: u64,
     handover_at: u64,
     now: u64,
 ) -> Result<(), String> {
     if !bridge_core::kernel::sns_upgrade_completion_allowed(
         observation.upgrader.to_text() == KINIC_ROOT,
         observation.completed_at_ns / 1_000_000_000,
-        decided_at,
+        proposal_executed_at,
         handover_at,
         now,
     ) {
         return Err("SNS Root acknowledged the proposal, but no matching successful post_upgrade is observed".into());
     }
+    Ok(())
+}
+
+fn authenticated_sns_proposal(
+    agent: &Agent,
+    governance: Principal,
+    proposal_id: u64,
+) -> Result<ProposalDataView, String> {
+    let argument = Encode!(&GetProposalRequest {
+        proposal_id: Some(ProposalId { id: proposal_id }),
+    })
+    .map_err(|error| error.to_string())?;
+    let raw = async_runtime()?.block_on(async {
+        agent
+            .query(&governance, "get_proposal")
+            .with_arg(argument)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())
+    })?;
+    match Decode!(&raw, GetProposalResponse)
+        .map_err(|error| error.to_string())?
+        .result
+    {
+        Some(GetProposalResult::Proposal(proposal)) => Ok(*proposal),
+        Some(GetProposalResult::Error(error)) => Err(format!(
+            "SNS get_proposal returned {}: {}",
+            error.error_type, error.error_message
+        )),
+        None => Err("SNS get_proposal returned no result".into()),
+    }
+}
+
+fn verified_executed_proposal(
+    proposal: ProposalDataView,
+    expected_id: u64,
+) -> Result<(u64, SnsProposalAction), String> {
+    if proposal.id.as_ref().map(|id| id.id) != Some(expected_id)
+        || proposal.decided_timestamp_seconds == 0
+        || proposal.executed_timestamp_seconds == 0
+        || proposal.failed_timestamp_seconds != 0
+        || proposal.failure_reason.is_some()
+    {
+        return Err("SNS handover proposal is not successfully executed".into());
+    }
+    let action = proposal
+        .proposal
+        .and_then(|proposal| proposal.action)
+        .ok_or("SNS handover proposal has no action")?;
+    Ok((proposal.executed_timestamp_seconds, action))
+}
+
+fn validate_sns_registration_action(
+    action: &SnsProposalAction,
+    bridge: Principal,
+) -> Result<(), String> {
+    let SnsProposalAction::RegisterDappCanisters(action) = action else {
+        return Err("SNS registration proposal has the wrong action".into());
+    };
+    if action.canister_ids != vec![bridge] {
+        return Err("SNS registration proposal does not target only the production Bridge".into());
+    }
+    Ok(())
+}
+
+fn expected_sns_wasm_chunks(
+    wasm_path: &Path,
+    expected_module_sha256: &str,
+) -> Result<Vec<Vec<u8>>, String> {
+    let metadata = fs::symlink_metadata(wasm_path).map_err(|error| error.to_string())?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > 128 * 1024 * 1024
+    {
+        return Err("SNS upgrade Wasm must be a bounded regular file".into());
+    }
+    let wasm = fs::read(wasm_path).map_err(|error| error.to_string())?;
+    if !hex(&Sha256::digest(&wasm)).eq_ignore_ascii_case(expected_module_sha256) {
+        return Err("SNS upgrade Wasm differs from the expected module SHA-256".into());
+    }
+    Ok(wasm
+        .chunks(1_000_000)
+        .map(|chunk| Sha256::digest(chunk).to_vec())
+        .collect())
+}
+
+fn validate_sns_upgrade_action(
+    action: &SnsProposalAction,
+    bridge: Principal,
+    expected_module_sha256: &str,
+    expected_chunk_hashes: &[Vec<u8>],
+) -> Result<(), String> {
+    let SnsProposalAction::UpgradeSnsControlledCanister(action) = action else {
+        return Err("SNS upgrade proposal has the wrong action".into());
+    };
+    let chunked = action
+        .chunked_canister_wasm
+        .as_ref()
+        .ok_or("SNS upgrade proposal is not chunked")?;
+    if action.canister_id != Some(bridge)
+        || !action.new_canister_wasm.is_empty()
+        || action.mode != Some(3)
+        || action.canister_upgrade_arg.as_deref() != Some(&[68, 73, 68, 76, 0, 0])
+        || action.canister_upgrade_options.is_some()
+        || chunked.store_canister_id != Some(bridge)
+        || chunked.chunk_hashes_list != expected_chunk_hashes
+        || !hex(&chunked.wasm_module_hash).eq_ignore_ascii_case(expected_module_sha256)
+    {
+        return Err("SNS upgrade proposal differs from the reviewed same-Wasm action".into());
+    }
+    Ok(())
+}
+
+fn verify_sns_registration_live(
+    profile_path: &Path,
+    expected_module_sha256: &str,
+    proposal_id: u64,
+) -> Result<(), String> {
+    let profile: Profile = read_json(profile_path)?;
+    let bridge =
+        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&profile.ic_host, false)?;
+    let proposal = authenticated_sns_proposal(&agent, governance, proposal_id)?;
+    let (_, action) = verified_executed_proposal(proposal, proposal_id)?;
+    validate_sns_registration_action(&action, bridge)?;
+    verify_production_current_state(
+        profile_path,
+        KINIC_ROOT,
+        expected_module_sha256,
+        "root-registered",
+    )?;
+    println!("sns_registration=verified proposal_id={proposal_id}");
+    Ok(())
+}
+
+fn verify_sns_upgrade_live(
+    profile_path: &Path,
+    expected_module_sha256: &str,
+    wasm_path: &Path,
+    registration_proposal_id: u64,
+    upgrade_proposal_id: u64,
+) -> Result<(), String> {
+    verify_sns_registration_live(
+        profile_path,
+        expected_module_sha256,
+        registration_proposal_id,
+    )?;
+    let profile: Profile = read_json(profile_path)?;
+    let bridge =
+        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&profile.ic_host, false)?;
+    let registration = authenticated_sns_proposal(&agent, governance, registration_proposal_id)?;
+    let (handover_at, _) = verified_executed_proposal(registration, registration_proposal_id)?;
+    let upgrade = authenticated_sns_proposal(&agent, governance, upgrade_proposal_id)?;
+    let (upgrade_executed_at, action) = verified_executed_proposal(upgrade, upgrade_proposal_id)?;
+    let expected_chunk_hashes = expected_sns_wasm_chunks(wasm_path, expected_module_sha256)?;
+    validate_sns_upgrade_action(
+        &action,
+        bridge,
+        expected_module_sha256,
+        &expected_chunk_hashes,
+    )?;
+    let raw = async_runtime()?.block_on(async {
+        agent
+            .query(&bridge, "get_release_upgrade_observation")
+            .with_arg(Encode!().map_err(|error| error.to_string())?)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())
+    })?;
+    let observation = Decode!(&raw, Option<ReleaseUpgradeObservationView>)
+        .map_err(|error| error.to_string())?
+        .ok_or("production Bridge has no successful release upgrade observation")?;
+    validate_sns_upgrade_completion(&observation, upgrade_executed_at, handover_at, now_unix()?)?;
+    println!(
+        "sns_same_wasm_upgrade=verified proposal_id={} module_sha256={}",
+        upgrade_proposal_id,
+        expected_module_sha256.to_ascii_lowercase()
+    );
     Ok(())
 }
 
@@ -8639,6 +8840,28 @@ fn run() -> Result<(), String> {
                 &args[5],
             )?;
         }
+        Some("verify-sns-registration-live") if args.len() == 5 => {
+            verify_sns_registration_live(
+                Path::new(&args[2]),
+                &args[3],
+                args[4]
+                    .parse()
+                    .map_err(|_| "invalid SNS registration proposal ID")?,
+            )?;
+        }
+        Some("verify-sns-upgrade-live") if args.len() == 7 => {
+            verify_sns_upgrade_live(
+                Path::new(&args[2]),
+                &args[3],
+                Path::new(&args[4]),
+                args[5]
+                    .parse()
+                    .map_err(|_| "invalid SNS registration proposal ID")?,
+                args[6]
+                    .parse()
+                    .map_err(|_| "invalid SNS upgrade proposal ID")?,
+            )?;
+        }
         Some("validate-operational-epoch-snapshot") if args.len() == 6 => {
             let evidence = OperationalEpochEvidence::from_response(&args[2])?;
             let runtime = decode_candid_hex::<RuntimeBindingView>(&args[3])?;
@@ -8655,7 +8878,7 @@ fn run() -> Result<(), String> {
                 println!("epoch={} operational_config_sha256={}", epoch, operational_epoch_digest(response.trim(), ledger_fee, epoch)?);
             }
         }
-        _ => return Err("usage: bridge-profile <command> <arguments>; production commands: verify-production-current-state, execute-production-canister-upgrade, execute-production-root-addition".into()),
+        _ => return Err("usage: bridge-profile <command> <arguments>; production commands: verify-production-current-state, execute-production-canister-upgrade, execute-production-root-addition, verify-sns-registration-live, verify-sns-upgrade-live".into()),
     }
     Ok(())
 }
@@ -8689,6 +8912,66 @@ mod tests {
         assert!(validate_sns_upgrade_completion(&valid, 99, 101, 102).is_err());
         assert!(validate_sns_upgrade_completion(&valid, 99, 98, 99).is_err());
         assert!(validate_sns_upgrade_completion(&valid, 0, 98, 101).is_err());
+    }
+
+    #[test]
+    fn sns_handover_actions_bind_exact_target_and_chunks() {
+        let bridge = Principal::from_text(PRODUCTION_BRIDGE_CANISTER).unwrap();
+        let other = Principal::anonymous();
+        let module_sha256 = "11".repeat(32);
+        let chunks = vec![vec![0x22; 32], vec![0x33; 32]];
+        let registration = SnsProposalAction::RegisterDappCanisters(RegisterDappCanistersView {
+            canister_ids: vec![bridge],
+        });
+        assert!(validate_sns_registration_action(&registration, bridge).is_ok());
+        let extra_registration =
+            SnsProposalAction::RegisterDappCanisters(RegisterDappCanistersView {
+                canister_ids: vec![bridge, other],
+            });
+        assert!(validate_sns_registration_action(&extra_registration, bridge).is_err());
+
+        let upgrade = |target, chunk_hashes, argument| {
+            SnsProposalAction::UpgradeSnsControlledCanister(UpgradeSnsControlledCanisterView {
+                mode: Some(3),
+                canister_upgrade_arg: Some(argument),
+                canister_upgrade_options: None,
+                chunked_canister_wasm: Some(ChunkedSnsWasmView {
+                    wasm_module_hash: vec![0x11; 32],
+                    store_canister_id: Some(bridge),
+                    chunk_hashes_list: chunk_hashes,
+                }),
+                new_canister_wasm: Vec::new(),
+                canister_id: Some(target),
+            })
+        };
+        assert!(validate_sns_upgrade_action(
+            &upgrade(bridge, chunks.clone(), vec![68, 73, 68, 76, 0, 0]),
+            bridge,
+            &module_sha256,
+            &chunks,
+        )
+        .is_ok());
+        assert!(validate_sns_upgrade_action(
+            &upgrade(other, chunks.clone(), vec![68, 73, 68, 76, 0, 0]),
+            bridge,
+            &module_sha256,
+            &chunks,
+        )
+        .is_err());
+        assert!(validate_sns_upgrade_action(
+            &upgrade(bridge, vec![vec![0x44; 32]], vec![68, 73, 68, 76, 0, 0]),
+            bridge,
+            &module_sha256,
+            &chunks,
+        )
+        .is_err());
+        assert!(validate_sns_upgrade_action(
+            &upgrade(bridge, chunks.clone(), Vec::new()),
+            bridge,
+            &module_sha256,
+            &chunks,
+        )
+        .is_err());
     }
 
     #[test]
@@ -10379,7 +10662,8 @@ mod tests {
                         status: &BridgeStatusLiveView,
                         pending: &PendingGovernanceTransactionsView,
                         history_ready,
-                        registered,
+                        registration_count,
+                        expected_registered,
                         storage_ok| {
             validate_production_current_state_core(
                 controllers,
@@ -10392,7 +10676,8 @@ mod tests {
                 status,
                 pending,
                 history_ready,
-                registered,
+                registration_count,
+                expected_registered,
                 storage_ok,
             )
         };
@@ -10409,6 +10694,7 @@ mod tests {
             &ok_status,
             &ok_pending,
             true,
+            0,
             false,
             true,
         )
@@ -10422,6 +10708,7 @@ mod tests {
             &ok_status,
             &ok_pending,
             true,
+            0,
             false,
             true
         )
@@ -10435,6 +10722,7 @@ mod tests {
             &ok_status,
             &ok_pending,
             true,
+            0,
             false,
             true
         )
@@ -10448,6 +10736,7 @@ mod tests {
             &ok_status,
             &ok_pending,
             true,
+            0,
             false,
             true
         )
@@ -10461,6 +10750,7 @@ mod tests {
             &ok_status,
             &ok_pending,
             true,
+            0,
             false,
             true
         )
@@ -10474,6 +10764,7 @@ mod tests {
             &ok_status,
             &ok_pending,
             true,
+            0,
             false,
             true
         )
@@ -10487,6 +10778,7 @@ mod tests {
             &status(true),
             &ok_pending,
             true,
+            0,
             false,
             true
         )
@@ -10500,6 +10792,7 @@ mod tests {
             &ok_status,
             &PendingGovernanceTransactionsView::Err(Reserved),
             true,
+            0,
             false,
             true
         )
@@ -10513,6 +10806,7 @@ mod tests {
             &ok_status,
             &ok_pending,
             false,
+            0,
             false,
             true
         )
@@ -10526,10 +10820,28 @@ mod tests {
             &ok_status,
             &ok_pending,
             true,
-            true,
+            1,
+            false,
             true
         )
         .is_err());
+        let registered_root = Principal::from_text(KINIC_ROOT).unwrap();
+        assert!(validate_production_current_state_core(
+            &[registered_root],
+            &BTreeSet::from([registered_root]),
+            &module,
+            &module_sha256,
+            ProductionLifecycleView::Activated,
+            &ok_activation,
+            &ok_runtime,
+            &ok_status,
+            &ok_pending,
+            true,
+            1,
+            true,
+            true,
+        )
+        .is_ok());
         assert!(validate(
             &[controller],
             &module,
@@ -10539,6 +10851,7 @@ mod tests {
             &ok_status,
             &ok_pending,
             true,
+            0,
             false,
             false
         )
