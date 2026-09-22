@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Exercise result ownership, test identity, and fail-closed reuse boundaries."""
+import hashlib
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch, Mock
@@ -76,6 +78,25 @@ class ExecutionTests(unittest.TestCase):
                 session.dispatch(payload)
         self.assertEqual(session.results, {})
         self.assertNotEqual(session.run_id, self.session(Path("/tmp")).run_id)
+
+    def test_changed_consumed_artifact_reports_its_identity_and_digests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in execution.JEST_ARTIFACTS:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(name.encode())
+            session = self.session(root)
+            session.check_artifacts()
+            changed = execution.JEST_ARTIFACTS[1]
+            baseline = session.artifacts[changed]
+            (root / changed).write_bytes(b"changed")
+            actual = hashlib.sha256(b"changed").hexdigest()
+            with self.assertRaisesRegex(
+                ValueError,
+                f"{re.escape(changed)} expected={baseline} actual={actual}",
+            ):
+                session.check_artifacts()
 
     def test_missing_duplicate_skipped_or_failed_results_do_not_satisfy_a_selector(self):
         record = {"target": "ui/example.test.ts", "name": "pass", "status": "passed"}
