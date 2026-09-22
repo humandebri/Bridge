@@ -15,5 +15,6 @@ git -C "$ROOT" archive "$PREDECESSOR_REVISION" | tar -x -C "$SOURCE"
 mkdir -p "$ROOT/target/test-deployment/predecessor-v35"
 mkdir -p "$ROOT/target/test-deployment/schema35-build"
 ln -s "$ROOT/target/test-deployment/schema35-build" "$SOURCE/target"
-"$SOURCE/scripts/plan007/build-staging-canister-wasm.sh" "$OUTPUT" >/dev/null
+CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 \
+  "$SOURCE/scripts/plan007/build-staging-canister-wasm.sh" "$OUTPUT" >/dev/null
 printf '%s\n' "$OUTPUT"

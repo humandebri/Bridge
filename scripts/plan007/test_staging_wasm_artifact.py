@@ -40,6 +40,7 @@ class StagingWasmArtifactTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertEqual(helper.count("build-staging-canister-wasm.sh"), 1)
         self.assertNotIn("ic-wasm", helper)
+        self.assertIn("CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0", helper)
 
 
 if __name__ == "__main__":

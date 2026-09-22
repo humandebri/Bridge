@@ -254,9 +254,13 @@ class Session:
         for name in JEST_ARTIFACTS:
             path = self.root / name
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            if self.artifacts.setdefault(name, digest) != digest:
+            baseline = self.artifacts.setdefault(name, digest)
+            if baseline != digest:
                 self.failed = True
-                raise ValueError("a consumed test artifact changed during execution")
+                raise ValueError(
+                    f"consumed test artifact changed during execution: "
+                    f"{name} expected={baseline} actual={digest}"
+                )
 
     def execute(self, runner: str, target: str, selectors: list[str]) -> dict:
         with self.lock:
