@@ -90,6 +90,16 @@ readonly SNS_ROOT=7jkta-eyaaa-aaaaq-aaarq-cai
 readonly PRODUCTION_CONTROLLER=lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe
 readonly PROPOSER_IDENTITY=llm-wiki-mainnet
 readonly PROPOSER_PRINCIPAL=r75h6-lqd7b-5jack-at55d-vvti2-lg5qy-ly73a-5ezve-odnkc-kagu3-nae
+# Whitespace-normalized reviewed snapshot of the Governance canister's candid:service metadata.
+readonly GOVERNANCE_CANDID="$ROOT/scripts/candid/kinic-sns-governance.did"
+readonly GOVERNANCE_CANDID_SHA256=5550f148fb63467b94f25f3b5e05db5fbb1168ebf65e5f70c3c0e192e1aeea27
+
+[[ -f "$GOVERNANCE_CANDID" && ! -L "$GOVERNANCE_CANDID" ]] || {
+  echo "reviewed SNS Governance Candid is unavailable" >&2; exit 1;
+}
+[[ "$(shasum -a 256 "$GOVERNANCE_CANDID" | awk '{print tolower($1)}')" == "$GOVERNANCE_CANDID_SHA256" ]] || {
+  echo "SNS Governance Candid differs from the reviewed interface" >&2; exit 1;
+}
 
 production_require_clean_source "$ROOT"
 REVISION="$(git -C "$ROOT" rev-parse HEAD)"
@@ -148,7 +158,8 @@ PY
 }
 
 NEURON_ARG='(record { neuron_id = opt record { id = blob "\5e\0f\2f\10\3a\68\88\29\ee\f9\c9\6b\f7\f8\31\5e\d4\61\03\7c\23\47\d5\5f\50\80\a3\67\b7\1c\1f\60" } })'
-NEURON_RESPONSE="$(icp canister call --network ic --identity "$PROPOSER_IDENTITY" "$GOVERNANCE" get_neuron "$NEURON_ARG" --query)"
+NEURON_RESPONSE="$(icp canister call --network ic --identity "$PROPOSER_IDENTITY" \
+  --candid "$GOVERNANCE_CANDID" "$GOVERNANCE" get_neuron "$NEURON_ARG" --query)"
 printf '%s' "$NEURON_RESPONSE" | python3 -I -S -c '
 import re,sys
 principal=sys.argv[1]; text=sys.stdin.read(); at=text.find(principal)
@@ -273,7 +284,8 @@ fi
 SUBACCOUNT_BLOB='blob "\5e\0f\2f\10\3a\68\88\29\ee\f9\c9\6b\f7\f8\31\5e\d4\61\03\7c\23\47\d5\5f\50\80\a3\67\b7\1c\1f\60"'
 MANAGE_ARG="(record { subaccount = $SUBACCOUNT_BLOB; command = opt variant { MakeProposal = $PROPOSAL } })"
 set +e
-icp canister call --network ic --identity "$PROPOSER_IDENTITY" "$GOVERNANCE" manage_neuron "$MANAGE_ARG" --json \
+icp canister call --network ic --identity "$PROPOSER_IDENTITY" --candid "$GOVERNANCE_CANDID" \
+  "$GOVERNANCE" manage_neuron "$MANAGE_ARG" --json \
   >"$TMP/proposal-response.json" 2>"$TMP/proposal-response.stderr"
 SUBMIT_STATUS=$?
 set -e
@@ -287,7 +299,8 @@ PROPOSAL_ID="$(node "$ROOT/tools/sns-proposal/handover.mjs" decode-response "$TM
   exit 1
 }
 READBACK_ARG="(record { proposal_id = opt record { id = $PROPOSAL_ID : nat64 } })"
-icp canister call --network ic --identity "$PROPOSER_IDENTITY" "$GOVERNANCE" get_proposal "$READBACK_ARG" --query \
+icp canister call --network ic --identity "$PROPOSER_IDENTITY" --candid "$GOVERNANCE_CANDID" \
+  "$GOVERNANCE" get_proposal "$READBACK_ARG" --query \
   >"$TMP/proposal-readback.txt"
 cat "$TMP/proposal-readback.txt"
 printf 'sns_handover_proposal=submitted kind=%s proposal_id=%s proposal_sha256=%s\n' \
