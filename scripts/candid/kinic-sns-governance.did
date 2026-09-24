@@ -273,7 +273,7 @@ type TreasuryMetrics = record {
 
   // A human-readable identified for this treasury, e.g., "ICP".
   name : opt text;
-  
+
   // The source of truth for the treasury balance is this ledger canister / account.
   ledger_canister_id : opt principal;
   account : opt Account;
@@ -1077,4 +1077,3 @@ service : (Governance) -> {
   reset_timers : (record {}) -> (record {});
   get_timers : (record {}) -> (GetTimersResponse) query;
 }
-

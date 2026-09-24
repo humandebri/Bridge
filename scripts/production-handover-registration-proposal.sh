@@ -90,9 +90,9 @@ readonly SNS_ROOT=7jkta-eyaaa-aaaaq-aaarq-cai
 readonly PRODUCTION_CONTROLLER=lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe
 readonly PROPOSER_IDENTITY=llm-wiki-mainnet
 readonly PROPOSER_PRINCIPAL=r75h6-lqd7b-5jack-at55d-vvti2-lg5qy-ly73a-5ezve-odnkc-kagu3-nae
-# Reviewed snapshot of the Governance canister's candid:service metadata.
+# Whitespace-normalized reviewed snapshot of the Governance canister's candid:service metadata.
 readonly GOVERNANCE_CANDID="$ROOT/scripts/candid/kinic-sns-governance.did"
-readonly GOVERNANCE_CANDID_SHA256=fa1d98d76edc1b09b70b39c7722291eb746006adefee03246bb5077a670fddae
+readonly GOVERNANCE_CANDID_SHA256=5550f148fb63467b94f25f3b5e05db5fbb1168ebf65e5f70c3c0e192e1aeea27
 
 [[ -f "$GOVERNANCE_CANDID" && ! -L "$GOVERNANCE_CANDID" ]] || {
   echo "reviewed SNS Governance Candid is unavailable" >&2; exit 1;

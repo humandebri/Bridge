@@ -9,7 +9,7 @@ cp "$ROOT/scripts/production-handover-registration-proposal.sh" "$T/source/scrip
 cp "$ROOT/scripts/candid/kinic-sns-governance.did" "$T/source/scripts/candid/"
 cp "$ROOT/tools/sns-proposal/handover.mjs" "$T/source/tools/sns-proposal/"
 [[ "$(shasum -a 256 "$T/source/scripts/candid/kinic-sns-governance.did" | awk '{print $1}')" \
-  == fa1d98d76edc1b09b70b39c7722291eb746006adefee03246bb5077a670fddae ]]
+  == 5550f148fb63467b94f25f3b5e05db5fbb1168ebf65e5f70c3c0e192e1aeea27 ]]
 printf '\0asm\1\0\0\0test' >"$T/candidate.wasm"
 CANDIDATE_SHA="$(shasum -a 256 "$T/candidate.wasm" | awk '{print $1}')"
 cat >"$T/bundle/profile.json" <<'JSON'
