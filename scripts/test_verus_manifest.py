@@ -197,6 +197,96 @@ verus! {{
         )
         validate_shared_expression(source, "kernel", "shared_body", ())
 
+    def test_accepts_function_local_integer_aliases(self) -> None:
+        source = self.shared_source(
+            "let bound: u64 = 7; shared_body!(first, bound)",
+            "shared_body!(left, bound)",
+            specification_prefix="let bound: int = 7;",
+        )
+        source += "fn unrelated() { let bound: u64 = 99; }"
+        validate_shared_expression(source, "kernel", "shared_body", ())
+
+    def test_rejects_changed_shared_expression_returns_on_either_side(self) -> None:
+        bodies = (
+            "!{call}",
+            "{call} || true",
+            "{{ {call} }}",
+            "let ignored = {call}; true",
+            "{call}; false",
+            "return true; {call}",
+            "if first == 0 {{ return true; }} {call}",
+            "if first == 0 {{ {call} }} else {{ false }}",
+            "some_wrapper({call})",
+        )
+        for side in ("production", "specification"):
+            for body in bodies:
+                production = "shared_body!(first, second)"
+                specification = "shared_body!(left, right)"
+                if side == "production":
+                    production = body.format(call=production)
+                else:
+                    specification = body.format(call=specification).replace("first", "left")
+                with self.subTest(side=side, body=body), self.assertRaisesRegex(
+                    ValueError, "must return the unmodified macro result"
+                ):
+                    validate_shared_expression(
+                        self.shared_source(production, specification), "kernel", "shared_body"
+                    )
+
+    def test_rejects_nonconstant_or_shadowing_shared_expression_prologues(self) -> None:
+        prefixes = (
+            "let first: u64 = 0;",
+            "let mut bound: u64 = 1;",
+            "let bound = first;",
+            "let bound = 1; let bound = 2;",
+            "let bound = 1; bound = 2;",
+            "side_effect();",
+        )
+        for side in ("production", "specification"):
+            for prefix in prefixes:
+                production = "shared_body!(first, second)"
+                specification = "shared_body!(left, right)"
+                if side == "production":
+                    production = prefix + production
+                else:
+                    specification = prefix.replace("first", "left") + specification
+                with self.subTest(side=side, prefix=prefix), self.assertRaisesRegex(
+                    ValueError, "unmodified macro result|constant and unshadowed"
+                ):
+                    validate_shared_expression(
+                        self.shared_source(production, specification), "kernel", "shared_body"
+                    )
+
+    def test_rejects_constant_alias_taken_from_another_function(self) -> None:
+        source = self.shared_source(
+            "shared_body!(first, unrelated_bound)",
+            "shared_body!(left, 7)",
+        )
+        source += "fn unrelated() { let unrelated_bound: u64 = 7; }"
+        with self.assertRaisesRegex(ValueError, "argument binding differs"):
+            validate_shared_expression(source, "kernel", "shared_body")
+
+    def test_binds_the_complete_legacy_activation_enum_adapter(self) -> None:
+        source = checker.KERNEL.read_text()
+        kernel = "legacy_activation_evidence_requirement"
+        macro = kernel + "_body"
+        validate_shared_expression(source, kernel, macro)
+        mutations = (
+            ("1 => LegacyActivationEvidenceRequirement::Schedule,",
+             "1 => LegacyActivationEvidenceRequirement::Execute,"),
+            ("_ => LegacyActivationEvidenceRequirement::NotRequired,",
+             "_ => LegacyActivationEvidenceRequirement::Schedule,"),
+            ("match legacy_activation_evidence_requirement_body!(",
+             "return LegacyActivationEvidenceRequirement::NotRequired; "
+             "match legacy_activation_evidence_requirement_body!("),
+        )
+        for original, replacement in mutations:
+            self.assertEqual(source.count(original), 1)
+            with self.subTest(replacement=replacement), self.assertRaisesRegex(
+                ValueError, "return adapter differs"
+            ):
+                validate_shared_expression(source.replace(original, replacement), kernel, macro)
+
     def test_accepts_derived_production_expression_as_specification_input(self) -> None:
         source = self.shared_source(
             "shared_body!(first > 0, second == 1)",
@@ -638,6 +728,25 @@ fn registered_proof()
 
 
 class KernelProductionCfgTests(unittest.TestCase):
+    def test_main_rejects_inverted_production_shared_expression(self) -> None:
+        original_read_text = Path.read_text
+        original = "    asset_operations_allowed_body!(operational_config_sealed)"
+
+        def read_mutated_kernel(path, *args, **kwargs):
+            source = original_read_text(path, *args, **kwargs)
+            if path.resolve() == checker.KERNEL.resolve():
+                self.assertEqual(source.count(original), 1)
+                return source.replace(original, original.replace("    ", "    !", 1))
+            return source
+
+        with patch.object(Path, "read_text", read_mutated_kernel):
+            checker._production_file_source.cache_clear()
+            try:
+                with self.assertRaisesRegex(ValueError, "unmodified macro result: asset_operations_allowed"):
+                    checker.main()
+            finally:
+                checker._production_file_source.cache_clear()
+
     def test_main_rejects_inactive_or_unknown_kernel_call_site(self) -> None:
         original_read_text = Path.read_text
         signature = "pub const fn deposit_releases_reservation(state: u8, event: u8) -> bool {"
