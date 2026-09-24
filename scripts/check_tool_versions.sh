@@ -20,7 +20,7 @@ require_output() {
   fi
 
   while [[ "$attempt" -le "$max_attempts" ]]; do
-    if actual="$($command_name --version 2>&1)"; then
+    if actual="$("$command_name" --version 2>&1)"; then
       if ! output_has_matching_line "$actual" "$expected_pattern"; then
         echo "$command_name version mismatch: expected $expected_version" >&2
         echo "$actual" >&2
@@ -70,6 +70,7 @@ require_git_revision() {
 check_tool_versions() {
   require_output rustc "1.97.0" "$RUST_VERSION_PATTERN"
   require_output icp "1.0.2" "$ICP_VERSION_PATTERN"
+  require_output "$HOME/.cargo/bin/ic-wasm" "0.10.0" "$IC_WASM_VERSION_PATTERN"
   require_output forge "1.7.1" "$FOUNDRY_VERSION_PATTERN"
   require_output anvil "1.7.1" "$ANVIL_VERSION_PATTERN"
   require_output z3 "5.0.0" "$Z3_VERSION_PATTERN"

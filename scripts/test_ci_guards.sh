@@ -142,6 +142,14 @@ expect_no_match \
   "icp 1.0.20" \
   "$ICP_VERSION_PATTERN"
 expect_match \
+  "exact ic-wasm release" \
+  "ic-wasm 0.10.0" \
+  "$IC_WASM_VERSION_PATTERN"
+expect_no_match \
+  "older ic-wasm release" \
+  "ic-wasm 0.9.11" \
+  "$IC_WASM_VERSION_PATTERN"
+expect_match \
   "Z3 release with platform metadata" \
   "Z3 version 5.0.0 - 64 bit" \
   "$Z3_VERSION_PATTERN"

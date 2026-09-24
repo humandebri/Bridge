@@ -2,6 +2,9 @@
 """Keep every staging consumer bound to the metadata-bearing Wasm artifact."""
 
 from pathlib import Path
+import os
+import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -10,6 +13,53 @@ RAW = "target/test-deployment/wasm32-unknown-unknown/release/bridge_canister.was
 
 
 class StagingWasmArtifactTests(unittest.TestCase):
+    def test_builder_ignores_an_older_ic_wasm_earlier_on_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            cargo_bin = temporary / "path"
+            pinned_bin = temporary / "home" / ".cargo" / "bin"
+            trace = temporary / "trace"
+            cargo_bin.mkdir()
+            pinned_bin.mkdir(parents=True)
+
+            (cargo_bin / "cargo").write_text(
+                "#!/usr/bin/env bash\necho cargo >>\"$TRACE\"\nexit 73\n",
+                encoding="utf-8",
+            )
+            (cargo_bin / "ic-wasm").write_text(
+                "#!/usr/bin/env bash\necho path-ic-wasm >>\"$TRACE\"\necho 'ic-wasm 0.9.11'\n",
+                encoding="utf-8",
+            )
+            (pinned_bin / "ic-wasm").write_text(
+                "#!/usr/bin/env bash\necho pinned-ic-wasm >>\"$TRACE\"\necho 'ic-wasm 0.10.0'\n",
+                encoding="utf-8",
+            )
+            executables = (
+                cargo_bin / "cargo",
+                cargo_bin / "ic-wasm",
+                pinned_bin / "ic-wasm",
+            )
+            for executable in executables:
+                executable.chmod(0o755)
+
+            environment = os.environ.copy()
+            environment["HOME"] = str(temporary / "home")
+            environment["PATH"] = f"{cargo_bin}:{environment['PATH']}"
+            environment["TRACE"] = str(trace)
+            result = subprocess.run(
+                [str(ROOT / "scripts/plan007/build-staging-canister-wasm.sh")],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(73, result.returncode, result.stderr)
+            self.assertEqual(
+                ["pinned-ic-wasm", "cargo"], trace.read_text().splitlines()
+            )
+
     def test_recipe_delegates_to_the_canonical_builder(self) -> None:
         recipe = (ROOT / "recipes/test-bridge-rust.hbs").read_text(encoding="utf-8")
         self.assertIn("scripts/plan007/build-staging-canister-wasm.sh", recipe)
