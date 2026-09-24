@@ -6,7 +6,7 @@ RAW_WASM="$ROOT/target/test-deployment/wasm32-unknown-unknown/release/bridge_can
 DEFAULT_OUTPUT="$ROOT/target/test-deployment/staging/bridge_canister.wasm"
 OUTPUT="${1:-$DEFAULT_OUTPUT}"
 DID="$ROOT/canister/bridge-canister/bridge.did"
-IC_WASM="$HOME/.cargo/bin/ic-wasm"
+IC_WASM="${CARGO_HOME:-$HOME/.cargo}/bin/ic-wasm"
 
 command -v cargo >/dev/null 2>&1 || { echo >&2 "cargo is required"; exit 1; }
 if [[ ! -x "$IC_WASM" ]]; then

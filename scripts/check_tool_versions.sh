@@ -70,7 +70,7 @@ require_git_revision() {
 check_tool_versions() {
   require_output rustc "1.97.0" "$RUST_VERSION_PATTERN"
   require_output icp "1.0.2" "$ICP_VERSION_PATTERN"
-  require_output "$HOME/.cargo/bin/ic-wasm" "0.10.0" "$IC_WASM_VERSION_PATTERN"
+  require_output "${CARGO_HOME:-$HOME/.cargo}/bin/ic-wasm" "0.10.0" "$IC_WASM_VERSION_PATTERN"
   require_output forge "1.7.1" "$FOUNDRY_VERSION_PATTERN"
   require_output anvil "1.7.1" "$ANVIL_VERSION_PATTERN"
   require_output z3 "5.0.0" "$Z3_VERSION_PATTERN"

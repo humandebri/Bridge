@@ -17,7 +17,7 @@ class StagingWasmArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
             cargo_bin = temporary / "path"
-            pinned_bin = temporary / "home" / ".cargo" / "bin"
+            pinned_bin = temporary / "cargo-home" / "bin"
             trace = temporary / "trace"
             cargo_bin.mkdir()
             pinned_bin.mkdir(parents=True)
@@ -44,6 +44,7 @@ class StagingWasmArtifactTests(unittest.TestCase):
 
             environment = os.environ.copy()
             environment["HOME"] = str(temporary / "home")
+            environment["CARGO_HOME"] = str(temporary / "cargo-home")
             environment["PATH"] = f"{cargo_bin}:{environment['PATH']}"
             environment["TRACE"] = str(trace)
             result = subprocess.run(
