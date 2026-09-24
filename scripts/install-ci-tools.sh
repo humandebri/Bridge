@@ -68,7 +68,7 @@ install_ic_wasm() {
   echo "00c361c9c1d53ef464660c0e414cbaf50b602e21f16811fe4134077deaaecabb  $installer" \
     | sha256sum --check
   IC_WASM_NO_MODIFY_PATH=1 sh "$installer" --quiet
-  test "$(ic-wasm --version)" = "ic-wasm 0.10.0"
+  test "$("${CARGO_HOME:-$HOME/.cargo}/bin/ic-wasm" --version)" = "ic-wasm 0.10.0"
 }
 
 install_solc() {

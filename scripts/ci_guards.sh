@@ -3,6 +3,7 @@
 
 readonly RUST_VERSION_PATTERN='^rustc 1\.97\.0([[:space:]]|$)'
 readonly ICP_VERSION_PATTERN='^icp 1\.0\.2$'
+readonly IC_WASM_VERSION_PATTERN='^ic-wasm 0\.10\.0$'
 readonly FOUNDRY_VERSION_PATTERN='^forge Version: 1\.7\.1$'
 readonly ANVIL_VERSION_PATTERN='^anvil Version: 1\.7\.1$'
 readonly Z3_VERSION_PATTERN='^Z3 version 5\.0\.0([[:space:]]|$)'

@@ -380,14 +380,49 @@ def _constant_aliases(body: str) -> dict[str, int]:
     ):
         value = _integer_value(match.group(2))
         if value is not None:
+            if match.group(1) in aliases:
+                raise ValueError(f"ambiguous shared-expression constant: {match.group(1)}")
             aliases[match.group(1)] = value
-    for match in re.finditer(
-        r"\blet\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=;]+)?\s*=\s*([^;]+);",
-        body,
-    ):
-        value = _integer_value(match.group(2))
-        if value is not None:
-            aliases[match.group(1)] = value
+    return aliases
+
+
+def _shared_expression_result_aliases(
+    body: str, function: str, macro: str, parameters: tuple[str, ...]
+) -> dict[str, int]:
+    """Accept only a closed return expression and immutable integer aliases."""
+    marker = re.search(rf"\b{re.escape(macro)}\s*!\s*\(", body)
+    assert marker is not None  # The caller already checked exactly one invocation.
+    _, end = _balanced(body, marker.end() - 1, "(", ")")
+    prefix, suffix = body[1:marker.start()].strip(), body[end:-1].strip()
+    if function == "legacy_activation_evidence_requirement":
+        # This existing adapter returns an enum while the spec returns a code.
+        # Bind the entire conversion, including its default, instead of allowing
+        # arbitrary match expressions around a shared predicate.
+        expected = """{
+            1 => LegacyActivationEvidenceRequirement::Schedule,
+            2 => LegacyActivationEvidenceRequirement::Execute,
+            _ => LegacyActivationEvidenceRequirement::NotRequired,
+        }"""
+        if prefix != "match" or re.sub(r"\s+", "", suffix) != re.sub(r"\s+", "", expected):
+            raise ValueError(f"shared-expression return adapter differs: {function}")
+        return {}
+    if suffix:
+        raise ValueError(f"shared-expression must return the unmodified macro result: {function}")
+    aliases: dict[str, int] = {}
+    declaration = re.compile(
+        r"(?:let|const)\s+([A-Za-z_][A-Za-z0-9_]*)"
+        r"(?:\s*:\s*(?:int|nat|[ui](?:8|16|32|64|128)))?\s*=\s*([^;]+);"
+    )
+    while prefix:
+        binding = declaration.match(prefix)
+        if binding is None:
+            raise ValueError(f"shared-expression must return the unmodified macro result: {function}")
+        name, expression = binding.groups()
+        value = _integer_value(expression)
+        if value is None or name in parameters or name in aliases:
+            raise ValueError(f"shared-expression alias must be constant and unshadowed: {function}/{name}")
+        aliases[name] = value
+        prefix = prefix[binding.end():].strip()
     return aliases
 
 
@@ -457,8 +492,13 @@ def validate_shared_expression(
     specification_parameters = _function_parameters(
         cleaned, f"{kernel}_spec", specification=True
     )
-    production_aliases = _constant_aliases(cleaned)
-    specification_aliases = production_aliases | _constant_aliases(specification)
+    constants = _constant_aliases(cleaned)
+    production_aliases = constants | _shared_expression_result_aliases(
+        production, kernel, macro, production_parameters
+    )
+    specification_aliases = constants | _shared_expression_result_aliases(
+        specification, f"{kernel}_spec", macro, specification_parameters
+    )
     declared_derived = {
         production_index: (specification_index, expression)
         for production_index, specification_index, expression in derived_bindings
