@@ -58,7 +58,48 @@ pub enum BaseBridgeKind {
 #[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetLifecycle {
     Prepared,
+    WithdrawalEnabled,
     Enabled,
+}
+
+#[derive(CandidType, Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct AssetRuntimeAttestation {
+    pub asset_id: Vec<u8>,
+    pub chain_id: u64,
+    pub finalized_block_number: u64,
+    pub finalized_block_hash: Vec<u8>,
+    pub observed_at_ns: u64,
+    pub bridge_runtime_sha256: Vec<u8>,
+    pub token_runtime_sha256: Vec<u8>,
+    pub bridge_signer: Vec<u8>,
+    pub token_contract: Vec<u8>,
+    pub token_bridge: Vec<u8>,
+    pub token_name: String,
+    pub token_symbol: String,
+    pub token_decimals: u8,
+    pub global_epoch: u64,
+    pub asset_epoch: u64,
+    pub service_fee: u128,
+    pub max_service_fee: u128,
+    pub per_deposit_limit: u128,
+    pub mint_window_limit: u128,
+    pub mint_window_duration: u64,
+    pub global_deposits_paused: bool,
+    pub global_withdrawals_paused: bool,
+    pub asset_deposits_paused: bool,
+    pub asset_withdrawals_paused: bool,
+}
+
+impl AssetRuntimeAttestation {
+    pub fn permits_withdrawal_ingestion(&self) -> bool {
+        !self.global_withdrawals_paused && !self.asset_withdrawals_paused
+    }
+
+    pub fn permits_deposit_admission(&self) -> bool {
+        self.permits_withdrawal_ingestion()
+            && !self.global_deposits_paused
+            && !self.asset_deposits_paused
+    }
 }
 
 #[derive(CandidType, Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]

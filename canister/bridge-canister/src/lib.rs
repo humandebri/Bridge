@@ -22,6 +22,7 @@ mod cycles_top_up;
 mod evm_rpc;
 mod ledger;
 mod mint_authorization;
+mod multi_asset;
 mod phases;
 mod scheduler;
 mod signer;
@@ -714,6 +715,90 @@ fn register_asset(asset: config::AssetConfig) -> Result<(), admin::AdminError> {
     })
 }
 
+#[ic_cdk::query]
+fn get_asset_runtime_attestation(
+    asset_id: Vec<u8>,
+) -> Result<Option<config::AssetRuntimeAttestation>, admin::AdminError> {
+    STORE.with(|store| {
+        store
+            .borrow()
+            .asset_runtime_attestation(&asset_id)
+            .map_err(|_| admin::AdminError::InvalidArgument("invalid asset ID".into()))
+    })
+}
+
+#[ic_cdk::update]
+async fn refresh_asset_runtime_attestation(
+    asset_id: Vec<u8>,
+) -> Result<config::AssetRuntimeAttestation, admin::AdminError> {
+    let caller = ic_cdk::api::msg_caller();
+    if !admin::is_governance(caller)? {
+        return Err(admin::AdminError::Unauthorized);
+    }
+    let asset_id = multi_asset::parse_asset_id(&asset_id)
+        .map_err(|error| admin::AdminError::InvalidArgument(error.into()))?;
+    let context = STORE
+        .with(|store| {
+            let store = store.borrow();
+            let root = store
+                .config()?
+                .ok_or(storage::StorageError::RecordNotFound)?;
+            let asset = store
+                .asset(&asset_id)?
+                .ok_or(storage::StorageError::RecordNotFound)?;
+            multi_asset::AssetExecutionContext::new(root, asset, false)
+                .map_err(|_| storage::StorageError::DecodeFailed)
+        })
+        .map_err(|_| admin::AdminError::InvalidArgument("unknown or invalid asset".into()))?;
+    if !context.is_shared() {
+        return Err(admin::AdminError::InvalidArgument(
+            "legacy KINIC runtime uses the existing activation attestation".into(),
+        ));
+    }
+    let observation = evm_rpc::shared_asset_observation(&context.evm_args(), asset_id)
+        .await
+        .map_err(|error| {
+            admin::AdminError::InvalidArgument(format!(
+                "shared Bridge runtime observation failed: {error:?}"
+            ))
+        })?;
+    let snapshot = observation.snapshot;
+    let attestation = config::AssetRuntimeAttestation {
+        asset_id: asset_id.to_vec(),
+        chain_id: context.asset.base_chain_id,
+        finalized_block_number: observation.finalized.block_number,
+        finalized_block_hash: observation.finalized.block_hash.to_vec(),
+        observed_at_ns: observation.finalized.observed_at_ns,
+        bridge_runtime_sha256: observation.bridge_runtime_sha256.to_vec(),
+        token_runtime_sha256: observation.token_runtime_sha256.to_vec(),
+        bridge_signer: snapshot.bridge_signer.to_vec(),
+        token_contract: snapshot.token.to_vec(),
+        token_bridge: observation.token_bridge.to_vec(),
+        token_name: observation.token_name,
+        token_symbol: observation.token_symbol,
+        token_decimals: observation.token_decimals,
+        global_epoch: snapshot.global_epoch,
+        asset_epoch: snapshot.asset_epoch,
+        service_fee: snapshot.mint.service_fee.get(),
+        max_service_fee: snapshot.mint.max_service_fee.get(),
+        per_deposit_limit: snapshot.mint.per_deposit_limit.get(),
+        mint_window_limit: snapshot.mint.mint_window_limit.get(),
+        mint_window_duration: snapshot.mint.mint_window_duration,
+        global_deposits_paused: snapshot.global_deposits_paused,
+        global_withdrawals_paused: snapshot.global_withdrawals_paused,
+        asset_deposits_paused: snapshot.asset_deposits_paused,
+        asset_withdrawals_paused: snapshot.asset_withdrawals_paused,
+    };
+    STORE
+        .with(|store| {
+            store
+                .borrow_mut()
+                .attest_asset_runtime(&attestation, caller, ic_cdk::api::time())
+        })
+        .map_err(|error| admin::AdminError::InvalidArgument(error.to_string()))?;
+    Ok(attestation)
+}
+
 #[ic_cdk::update]
 async fn request_deposit(args: api::DepositArgs) -> Result<api::DepositReceipt, api::DepositError> {
     require_asset_operations_for_deposit()?;
@@ -733,6 +818,37 @@ async fn request_deposit(args: api::DepositArgs) -> Result<api::DepositReceipt, 
         return Err(api::DepositError::Busy);
     };
     let receipt = api::request_deposit(caller, args).await;
+    drop(guard);
+    scheduler::arm_funding_recovery();
+    if receipt.is_ok() {
+        scheduler::arm();
+    }
+    receipt
+}
+
+#[ic_cdk::update]
+async fn request_asset_deposit(
+    args: multi_asset::AssetOperationArgs<api::DepositArgs>,
+) -> Result<api::DepositReceipt, api::DepositError> {
+    require_asset_operations_for_deposit()?;
+    let caller = ic_cdk::api::msg_caller();
+    let asset_id = multi_asset::parse_asset_id(&args.asset_id)
+        .map_err(|error| api::DepositError::InvalidRequest(error.into()))?;
+    let id = api::asset_deposit_action_id(caller, &args)?;
+    let existed = STORE.with(|store| {
+        store
+            .borrow()
+            .deposit(id)
+            .map(|record| record.is_some())
+            .map_err(|_| api::DepositError::StorageFailure)
+    })?;
+    if existed {
+        return api::request_deposit_for_asset(caller, asset_id, args.operation).await;
+    }
+    let Some(guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
+        return Err(api::DepositError::Busy);
+    };
+    let receipt = api::request_deposit_for_asset(caller, asset_id, args.operation).await;
     drop(guard);
     scheduler::arm_funding_recovery();
     if receipt.is_ok() {
@@ -816,7 +932,7 @@ async fn notify_deposit_mint(
     let Some(_deposit_guard) = InFlightGuard::acquire(ActionKey::Deposit(id)) else {
         return Err(Error::Busy);
     };
-    let (config, authorization) = STORE.with(|store| {
+    let (context, authorization) = STORE.with(|store| {
         let store = store.borrow();
         let record = store
             .deposit(id)
@@ -839,17 +955,29 @@ async fn notify_deposit_mint(
             .mint_authorization
             .filter(|a| a.signature.is_some())
             .ok_or(Error::NotAdmissible)?;
-        let config = store
-            .config()
-            .map_err(|_| Error::StorageFailure)?
-            .ok_or(Error::StorageFailure)?;
-        Ok((Some(config), Some(authorization)))
+        let context = multi_asset::AssetExecutionContext::for_record(
+            &store,
+            storage::RecordAssetKind::Deposit,
+            &id,
+            true,
+        )
+        .map_err(|_| Error::StorageFailure)?;
+        if context.is_shared()
+            && store
+                .shared_authorization_binding(id)
+                .map_err(|_| Error::StorageFailure)?
+                .is_none()
+        {
+            return Err(Error::IdentityConflict);
+        }
+        Ok((Some(context), Some(authorization)))
     })?;
-    let (Some(config), Some(authorization)) = (config, authorization) else {
+    let (Some(context), Some(authorization)) = (context, authorization) else {
         return Ok(api::NotifyDepositMintReceipt::Duplicate {
             deposit_id: id.to_vec(),
         });
     };
+    let config = context.root.clone();
     let caller_cooldown_key: [u8; 32] = {
         use sha2::{Digest, Sha256};
         let mut hash = Sha256::new();
@@ -920,28 +1048,59 @@ async fn notify_deposit_mint(
         config.notification_rate_limit_window_seconds,
     );
     let result = async {
-        let runtime_attested = api::runtime_attested(&config).map_err(|_| Error::StorageFailure)?;
-        let observation = evm_rpc::recovery_observation(
-            &config,
-            evm_rpc::RecoveryTarget::Deposit(id),
-            runtime_attested,
-        )
-        .await
-        .map_err(map_mint_notification_error)?;
-        if !matches!(
-            observation.state,
-            evm_rpc::RecoveryBaseState::DepositProcessed(true)
-        ) {
-            return Err(Error::TransactionNotConfirmed);
-        }
-        let evidence = evm_rpc::exact_mint_receipt_evidence(
-            &config,
-            &authorization,
-            observation.finalized,
-            transaction_hash,
-        )
-        .await
-        .map_err(map_mint_notification_error)?;
+        let evidence = if context.is_shared() {
+            let observation =
+                evm_rpc::shared_asset_observation(&context.evm_args(), context.asset_id)
+                    .await
+                    .map_err(map_mint_notification_error)?;
+            if !context.validates_shared_observation(&observation) {
+                return Err(Error::IdentityConflict);
+            }
+            let processed = evm_rpc::shared_deposit_processed_at(
+                &context.evm_args(),
+                context.asset_id,
+                id,
+                observation.finalized,
+            )
+            .await
+            .map_err(map_mint_notification_error)?;
+            if !processed {
+                return Err(Error::TransactionNotConfirmed);
+            }
+            evm_rpc::shared_exact_mint_receipt_evidence(
+                &context.evm_args(),
+                context.asset_id,
+                &authorization,
+                observation.finalized,
+                transaction_hash,
+            )
+            .await
+            .map_err(map_mint_notification_error)?
+        } else {
+            let runtime_attested =
+                api::runtime_attested(&config).map_err(|_| Error::StorageFailure)?;
+            let observation = evm_rpc::recovery_observation(
+                &config,
+                evm_rpc::RecoveryTarget::Deposit(id),
+                runtime_attested,
+            )
+            .await
+            .map_err(map_mint_notification_error)?;
+            if !matches!(
+                observation.state,
+                evm_rpc::RecoveryBaseState::DepositProcessed(true)
+            ) {
+                return Err(Error::TransactionNotConfirmed);
+            }
+            evm_rpc::exact_mint_receipt_evidence(
+                &config,
+                &authorization,
+                observation.finalized,
+                transaction_hash,
+            )
+            .await
+            .map_err(map_mint_notification_error)?
+        };
         STORE.with(|store| {
             let mut store = store.borrow_mut();
             let mut deposit = store
@@ -1012,13 +1171,16 @@ async fn request_deposit_refund(
         .as_slice()
         .try_into()
         .map_err(|_| Error::InvalidDepositId)?;
-    let config = STORE.with(|store| {
-        store
-            .borrow()
-            .config()
-            .map_err(|_| Error::StorageFailure)?
-            .ok_or(Error::StorageFailure)
+    let context = STORE.with(|store| {
+        multi_asset::AssetExecutionContext::for_record(
+            &store.borrow(),
+            storage::RecordAssetKind::Deposit,
+            &id,
+            true,
+        )
+        .map_err(|_| Error::StorageFailure)
     })?;
+    let config = context.root.clone();
     let reserve_token = STORE
         .with(|store| {
             let store = store.borrow();
@@ -1066,13 +1228,31 @@ async fn request_deposit_refund(
                     .ok_or(Error::StorageFailure)
             })?;
             prepaid_quota = Some(reserve_refund_rpc_quota(&config, id, caller)?);
-            let (snapshot, _) = api::base_mint_snapshot(&config, ic_cdk::api::time())
-                .await
-                .map_err(|error| match error {
-                    api::DepositError::BaseObservationUnavailable => Error::FinalityUnavailable,
-                    _ => Error::StorageFailure,
-                })?;
-            if snapshot.confirmed_block_timestamp <= deadline {
+            let finalized_timestamp = if context.is_shared() {
+                let observation =
+                    evm_rpc::shared_asset_observation(&context.evm_args(), context.asset_id)
+                        .await
+                        .map_err(|error| {
+                            map_deposit_refund_observation_error(
+                                "request_deposit_refund_shared_pending",
+                                error,
+                            )
+                        })?;
+                if !context.validates_shared_observation(&observation) {
+                    return Err(Error::BaseStateMismatch);
+                }
+                observation.finalized_timestamp
+            } else {
+                api::base_mint_snapshot(&config, ic_cdk::api::time())
+                    .await
+                    .map_err(|error| match error {
+                        api::DepositError::BaseObservationUnavailable => Error::FinalityUnavailable,
+                        _ => Error::StorageFailure,
+                    })?
+                    .0
+                    .confirmed_block_timestamp
+            };
+            if finalized_timestamp <= deadline {
                 return Err(Error::NotClaimable);
             }
             STORE.with(|store| {
@@ -1088,7 +1268,7 @@ async fn request_deposit_refund(
                     let result = deposit
                         .apply(bridge_core::DepositEvent::MarkRefundAvailable {
                             reason: bridge_core::DepositRefundReason::AuthorizationExpired,
-                            finalized_timestamp: Some(snapshot.confirmed_block_timestamp),
+                            finalized_timestamp: Some(finalized_timestamp),
                         })
                         .map_err(|_| Error::StorageFailure)?;
                     store
@@ -1131,33 +1311,103 @@ async fn request_deposit_refund(
                 );
             } else {
                 let authorization = authorization.ok_or(Error::StorageFailure)?;
-                if api::cached_authorization_observation(&config, id)
-                    .map_err(|_| Error::StorageFailure)?
-                    .is_some_and(|cached| {
-                        cached.is_fresh_at(ic_cdk::api::time())
-                            && cached.snapshot.mint.confirmed_block_timestamp
-                                <= authorization.authorization.deadline
-                    })
-                {
-                    return Err(Error::NotClaimable);
-                }
-                let runtime_attested =
-                    api::runtime_attested(&config).map_err(|_| Error::StorageFailure)?;
                 prepaid_quota = Some(reserve_refund_rpc_quota(&config, id, caller)?);
-                let observation = evm_rpc::recovery_observation(
-                    &config,
-                    evm_rpc::RecoveryTarget::Deposit(id),
-                    runtime_attested,
-                )
-                .await
-                .map_err(|error| {
-                    map_deposit_refund_observation_error("request_deposit_refund_recovery", error)
-                })?;
-                api::cache_recovery_observation(&config, id, &observation)
-                    .map_err(|_| Error::StorageFailure)?;
-                if observation.snapshot.mint.confirmed_block_timestamp
-                    <= authorization.authorization.deadline
-                {
+                let (
+                    processed,
+                    finalized,
+                    finalized_timestamp,
+                    bridge_signer,
+                    authorization_epoch,
+                    runtime_sha256,
+                    rpc_request_digest,
+                    rpc_response_digest,
+                ) = if context.is_shared() {
+                    let observation =
+                        evm_rpc::shared_asset_observation(&context.evm_args(), context.asset_id)
+                            .await
+                            .map_err(|error| {
+                                map_deposit_refund_observation_error(
+                                    "request_deposit_refund_shared_recovery",
+                                    error,
+                                )
+                            })?;
+                    if !context.validates_shared_observation(&observation) {
+                        return Err(Error::BaseStateMismatch);
+                    }
+                    let binding = STORE
+                        .with(|store| store.borrow().shared_authorization_binding(id))
+                        .map_err(|_| Error::StorageFailure)?
+                        .ok_or(Error::DepositIdentityConflict)?;
+                    if binding.asset_id != context.asset_id
+                        || binding.global_epoch != authorization.authorization.authorization_epoch
+                    {
+                        return Err(Error::DepositIdentityConflict);
+                    }
+                    let processed = evm_rpc::shared_deposit_processed_at(
+                        &context.evm_args(),
+                        context.asset_id,
+                        id,
+                        observation.finalized,
+                    )
+                    .await
+                    .map_err(|error| {
+                        map_deposit_refund_observation_error(
+                            "request_deposit_refund_shared_processed",
+                            error,
+                        )
+                    })?;
+                    (
+                        processed,
+                        observation.finalized,
+                        observation.finalized_timestamp,
+                        observation.snapshot.bridge_signer,
+                        observation.snapshot.global_epoch,
+                        observation.bridge_runtime_sha256,
+                        observation.rpc_audit.request_digest,
+                        observation.rpc_audit.quorum_response_digest,
+                    )
+                } else {
+                    if api::cached_authorization_observation(&config, id)
+                        .map_err(|_| Error::StorageFailure)?
+                        .is_some_and(|cached| {
+                            cached.is_fresh_at(ic_cdk::api::time())
+                                && cached.snapshot.mint.confirmed_block_timestamp
+                                    <= authorization.authorization.deadline
+                        })
+                    {
+                        return Err(Error::NotClaimable);
+                    }
+                    let runtime_attested =
+                        api::runtime_attested(&config).map_err(|_| Error::StorageFailure)?;
+                    let observation = evm_rpc::recovery_observation(
+                        &config,
+                        evm_rpc::RecoveryTarget::Deposit(id),
+                        runtime_attested,
+                    )
+                    .await
+                    .map_err(|error| {
+                        map_deposit_refund_observation_error(
+                            "request_deposit_refund_recovery",
+                            error,
+                        )
+                    })?;
+                    api::cache_recovery_observation(&config, id, &observation)
+                        .map_err(|_| Error::StorageFailure)?;
+                    (
+                        matches!(
+                            observation.state,
+                            evm_rpc::RecoveryBaseState::DepositProcessed(true)
+                        ),
+                        observation.finalized,
+                        observation.snapshot.mint.confirmed_block_timestamp,
+                        observation.bridge_identity.signer,
+                        observation.snapshot.mint_authorization_epoch,
+                        observation.bridge_identity.runtime_sha256,
+                        observation.rpc_audit.request_digest,
+                        observation.rpc_audit.quorum_response_digest,
+                    )
+                };
+                if finalized_timestamp <= authorization.authorization.deadline {
                     return Err(Error::NotClaimable);
                 }
                 STORE.with(|store| {
@@ -1173,9 +1423,7 @@ async fn request_deposit_refund(
                         let result = deposit
                             .apply(bridge_core::DepositEvent::MarkRefundAvailable {
                                 reason: bridge_core::DepositRefundReason::AuthorizationExpired,
-                                finalized_timestamp: Some(
-                                    observation.snapshot.mint.confirmed_block_timestamp,
-                                ),
+                                finalized_timestamp: Some(finalized_timestamp),
                             })
                             .map_err(|_| Error::StorageFailure)?;
                         store
@@ -1184,63 +1432,58 @@ async fn request_deposit_refund(
                     }
                     Ok::<_, Error>(())
                 })?;
-                match observation.state {
-                    evm_rpc::RecoveryBaseState::DepositProcessed(false) => {
-                        refund_start = Some(
-                            tasks::prepare_deposit_refund(
-                                id,
-                                bridge_core::DepositRefundReason::AuthorizationExpired,
-                                Some(bridge_core::MintExpiryEvidence {
-                                    deposit_id: authorization.authorization.deposit_id,
-                                    authorization_digest: authorization.digest,
-                                    chain_id: config.base_chain_id,
-                                    verifying_contract: authorization.domain.verifying_contract,
-                                    deposit_processed: false,
-                                    finalized_block_number: observation.finalized.block_number,
-                                    finalized_block_hash: observation.finalized.block_hash,
-                                    finalized_block_timestamp: observation
-                                        .snapshot
-                                        .mint
-                                        .confirmed_block_timestamp,
-                                    bridge_signer: observation.bridge_identity.signer,
-                                    mint_authorization_epoch: observation
-                                        .snapshot
-                                        .mint_authorization_epoch,
-                                    runtime_sha256: observation.bridge_identity.runtime_sha256,
-                                    rpc_request_digest: observation.rpc_audit.request_digest,
-                                    rpc_response_digest: observation
-                                        .rpc_audit
-                                        .quorum_response_digest,
-                                }),
-                            )
-                            .map_err(|_| Error::StorageFailure)?,
-                        );
-                    }
-                    evm_rpc::RecoveryBaseState::DepositProcessed(true) => {
-                        let evidence = evm_rpc::exact_mint_evidence(
-                            &config,
+                if !processed {
+                    refund_start = Some(
+                        tasks::prepare_deposit_refund(
+                            id,
+                            bridge_core::DepositRefundReason::AuthorizationExpired,
+                            Some(bridge_core::MintExpiryEvidence {
+                                deposit_id: authorization.authorization.deposit_id,
+                                authorization_digest: authorization.digest,
+                                chain_id: config.base_chain_id,
+                                verifying_contract: authorization.domain.verifying_contract,
+                                deposit_processed: false,
+                                finalized_block_number: finalized.block_number,
+                                finalized_block_hash: finalized.block_hash,
+                                finalized_block_timestamp: finalized_timestamp,
+                                bridge_signer,
+                                mint_authorization_epoch: authorization_epoch,
+                                runtime_sha256,
+                                rpc_request_digest,
+                                rpc_response_digest,
+                            }),
+                        )
+                        .map_err(|_| Error::StorageFailure)?,
+                    );
+                } else {
+                    let evidence = if context.is_shared() {
+                        evm_rpc::shared_exact_mint_evidence(
+                            &context.evm_args(),
+                            context.asset_id,
                             &authorization,
-                            observation.finalized,
+                            finalized,
                         )
                         .await
-                        .map_err(map_deposit_refund_exact_mint_error)?;
-                        STORE.with(|store| {
-                            let mut store = store.borrow_mut();
-                            let mut deposit = store
-                                .deposit(id)
-                                .map_err(|_| Error::StorageFailure)?
-                                .ok_or(Error::NotFound)?;
-                            let result = deposit
-                                .apply(bridge_core::DepositEvent::MintReconciled {
-                                    evidence: Box::new(evidence),
-                                })
-                                .map_err(|_| Error::BaseStateMismatch)?;
-                            store
-                                .put_deposit_transition(&deposit, result)
-                                .map_err(|_| Error::StorageFailure)
-                        })?;
-                        return Err(Error::NotClaimable);
+                    } else {
+                        evm_rpc::exact_mint_evidence(&config, &authorization, finalized).await
                     }
+                    .map_err(map_deposit_refund_exact_mint_error)?;
+                    STORE.with(|store| {
+                        let mut store = store.borrow_mut();
+                        let mut deposit = store
+                            .deposit(id)
+                            .map_err(|_| Error::StorageFailure)?
+                            .ok_or(Error::NotFound)?;
+                        let result = deposit
+                            .apply(bridge_core::DepositEvent::MintReconciled {
+                                evidence: Box::new(evidence),
+                            })
+                            .map_err(|_| Error::BaseStateMismatch)?;
+                        store
+                            .put_deposit_transition(&deposit, result)
+                            .map_err(|_| Error::StorageFailure)
+                    })?;
+                    return Err(Error::NotClaimable);
                 }
             }
         }
@@ -1411,6 +1654,109 @@ async fn notify_withdrawal(
     match &receipt {
         api::NotifyWithdrawalReceipt::Ingested { .. } => {}
         api::NotifyWithdrawalReceipt::Duplicate { .. } => return Ok(receipt),
+    }
+    drop(notification_guard);
+    Ok(receipt)
+}
+
+#[ic_cdk::update]
+async fn notify_asset_withdrawal(
+    args: multi_asset::AssetOperationArgs<api::NotifyWithdrawalArgs>,
+) -> Result<api::NotifyWithdrawalReceipt, api::NotifyWithdrawalError> {
+    require_asset_operations_for_withdrawal_notification()?;
+    let caller = ic_cdk::api::msg_caller();
+    let asset_id = multi_asset::parse_asset_id(&args.asset_id)
+        .map_err(|_| api::NotifyWithdrawalError::BaseStateMismatch)?;
+    let transaction_hash = api::notification_action_hash(caller, &args.operation)?;
+    if let Some(receipt) = api::existing_notified_withdrawal_by_hash(transaction_hash)? {
+        return Ok(receipt);
+    }
+    let config = STORE.with(|store| {
+        store
+            .borrow()
+            .config()
+            .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?
+            .ok_or(api::NotifyWithdrawalError::StorageFailure)
+    })?;
+    let now_ns = ic_cdk::api::time();
+    let protected_lane = caller == config.confirmation_relayer_principal;
+    if STORE
+        .with(|store| {
+            store
+                .borrow()
+                .notification_failure_cooldown_active(transaction_hash, now_ns)
+        })
+        .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?
+    {
+        return Err(api::NotifyWithdrawalError::RateLimited);
+    }
+    let reserve_token = STORE
+        .with(|store| {
+            let store = store.borrow();
+            Ok::<_, storage::StorageError>((
+                store.deposit_reserve_token()?,
+                store.deposit_funding_reservation_count()?,
+            ))
+        })
+        .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?;
+    if !has_notification_cycle_budget(
+        ic_cdk::api::canister_liquid_cycle_balance(),
+        config.reserve_policy(),
+        reserve_token.0,
+        reserve_token.1,
+    ) {
+        return Err(api::NotifyWithdrawalError::InsufficientCycles);
+    }
+    let Some(_quota_guard) = NotificationQuotaGuard::acquire(caller, protected_lane) else {
+        return Err(api::NotifyWithdrawalError::RateLimited);
+    };
+    let Some(notification_guard) =
+        InFlightGuard::acquire(ActionKey::Notification(transaction_hash))
+    else {
+        return Err(api::NotifyWithdrawalError::Busy);
+    };
+    let caller_count = NotificationAdmissionGuard::caller_count(
+        caller,
+        now_ns,
+        config.notification_rate_limit_window_seconds,
+    );
+    let admitted = STORE
+        .with(|store| {
+            store.borrow_mut().consume_notification_verification_quota(
+                now_ns,
+                config.notification_rate_limit_window_seconds,
+                config.notification_rate_limit_global,
+                caller_count,
+                NotificationAdmissionGuard::PER_CALLER_LIMIT,
+                protected_lane,
+            )
+        })
+        .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?;
+    if !admitted {
+        return Err(api::NotifyWithdrawalError::RateLimited);
+    }
+    NotificationAdmissionGuard::record(
+        caller,
+        now_ns,
+        config.notification_rate_limit_window_seconds,
+    );
+    let receipt = match api::notify_asset_withdrawal(caller, asset_id, args.operation).await {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            STORE
+                .with(|store| {
+                    store.borrow_mut().record_notification_failure_cooldown(
+                        transaction_hash,
+                        ic_cdk::api::time(),
+                        30_000_000_000,
+                    )
+                })
+                .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?;
+            return Err(error);
+        }
+    };
+    if matches!(receipt, api::NotifyWithdrawalReceipt::Duplicate { .. }) {
+        return Ok(receipt);
     }
     drop(notification_guard);
     Ok(receipt)

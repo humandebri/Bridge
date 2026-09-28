@@ -360,22 +360,32 @@ fn ledger_stop(outcome: &LedgerCallOutcome) -> SettlementStopReason {
 }
 
 async fn advance_hold(
-    config: &crate::config::BridgeInitArgs,
+    _config: &crate::config::BridgeInitArgs,
     hold: ReconciliationHoldRecord,
     lease: &mut crate::scheduler::SettlementLease,
 ) -> Result<HoldAdvance, SettlementActionError> {
+    let context = STORE.with(|store| {
+        crate::multi_asset::AssetExecutionContext::for_record(
+            &store.borrow(),
+            crate::storage::RecordAssetKind::ReconciliationHold,
+            &hold.id.get().to_be_bytes(),
+            true,
+        )
+        .map_err(|_| SettlementActionError::StorageFailure)
+    })?;
+    let config = &context.root;
     if ledger_identity_can_still_be_accepted(hold.transfer.created_at_time_ns, ic_cdk::api::time())
     {
         lease.renew_before_external_call()?;
         let outcome = match hold.transfer.operation {
             LedgerOperation::PullDeposit => {
-                ledger::pull(config.ledger_canister_id, &hold.transfer).await
+                ledger::pull(context.asset.ledger_canister_id, &hold.transfer).await
             }
             LedgerOperation::RefundDeposit => {
-                ledger::refund(config.ledger_canister_id, &hold.transfer).await
+                ledger::refund(context.asset.ledger_canister_id, &hold.transfer).await
             }
             LedgerOperation::ReleaseWithdrawal => {
-                ledger::release(config.ledger_canister_id, &hold.transfer).await
+                ledger::release(context.asset.ledger_canister_id, &hold.transfer).await
             }
             LedgerOperation::FeePayout => {
                 return Ok(HoldAdvance::Stopped(
@@ -440,8 +450,8 @@ async fn advance_hold(
     })?;
     lease.renew_before_external_call()?;
     let outcome = ledger::reconcile_step(
-        config.ledger_canister_id,
-        config.index_canister_id,
+        context.asset.ledger_canister_id,
+        context.asset.index_canister_id,
         progress,
     )
     .await;
@@ -488,6 +498,7 @@ enum EscrowPreparation {
     Authorization {
         quote: DepositQuote,
         authorization: Box<bridge_core::MintAuthorizationRecord>,
+        shared_binding: Option<crate::multi_asset::SharedAuthorizationBinding>,
     },
     RefundAvailable(DepositRefundReason),
     Stopped(SettlementStopReason),
@@ -504,7 +515,14 @@ pub(crate) fn prepare_deposit_refund(
             .deposit(deposit_id)
             .map_err(|_| SettlementActionError::StorageFailure)?
             .ok_or(SettlementActionError::NotFound)?;
-        let fee = ledger::KINIC_LEDGER_FEE;
+        let context = crate::multi_asset::AssetExecutionContext::for_record(
+            &store,
+            crate::storage::RecordAssetKind::Deposit,
+            &deposit_id,
+            true,
+        )
+        .map_err(|_| SettlementActionError::StorageFailure)?;
+        let fee = context.ledger_fee;
         let charged_service_fee = if deposit
             .mint_authorization
             .as_ref()
@@ -551,6 +569,18 @@ async fn prepare_escrowed_deposit(
     config: &crate::config::BridgeInitArgs,
     deposit: &bridge_core::DepositRecord,
 ) -> Result<EscrowPreparation, SettlementActionError> {
+    let context = STORE.with(|store| {
+        crate::multi_asset::AssetExecutionContext::for_record(
+            &store.borrow(),
+            crate::storage::RecordAssetKind::Deposit,
+            &deposit.id.bytes(),
+            true,
+        )
+        .map_err(|_| SettlementActionError::StorageFailure)
+    })?;
+    if context.is_shared() {
+        return prepare_shared_escrowed_deposit(&context, deposit).await;
+    }
     let cached = crate::api::cached_authorization_observation(config, deposit.id.bytes())
         .map_err(|_| SettlementActionError::StorageFailure)?;
     let now_ns = ic_cdk::api::time();
@@ -701,6 +731,145 @@ async fn prepare_escrowed_deposit(
     Ok(EscrowPreparation::Authorization {
         quote,
         authorization: Box::new(authorization),
+        shared_binding: None,
+    })
+}
+
+async fn prepare_shared_escrowed_deposit(
+    context: &crate::multi_asset::AssetExecutionContext,
+    deposit: &bridge_core::DepositRecord,
+) -> Result<EscrowPreparation, SettlementActionError> {
+    let observation =
+        match evm_rpc::shared_asset_observation(&context.evm_args(), context.asset_id).await {
+            Ok(observation) => observation,
+            Err(evm_rpc::ObservationError::Inconsistent) => {
+                return Ok(EscrowPreparation::Stopped(
+                    SettlementStopReason::RpcInconsistent,
+                ));
+            }
+            Err(evm_rpc::ObservationError::InsufficientCycles) => {
+                return Ok(EscrowPreparation::Stopped(
+                    SettlementStopReason::InsufficientCycles,
+                ));
+            }
+            Err(_) => {
+                return Ok(EscrowPreparation::Stopped(
+                    SettlementStopReason::RpcUnavailable,
+                ));
+            }
+        };
+    if !context.validates_shared_observation(&observation) {
+        return Ok(EscrowPreparation::Stopped(
+            SettlementStopReason::BaseStateMismatch,
+        ));
+    }
+    let snapshot = observation.snapshot;
+    if snapshot.global_deposits_paused || snapshot.asset_deposits_paused {
+        return Ok(EscrowPreparation::RefundAvailable(
+            DepositRefundReason::BasePaused,
+        ));
+    }
+    let recipient = STORE.with(|store| {
+        store
+            .borrow()
+            .deposit_intent(deposit.id.bytes())
+            .map_err(|_| SettlementActionError::StorageFailure)?
+            .map(|intent| intent.base_recipient)
+            .ok_or(SettlementActionError::StorageFailure)
+    })?;
+    if recipient == [0; 20]
+        || recipient == context.bridge_contract
+        || Some(recipient) == context.token_contract
+    {
+        return Ok(EscrowPreparation::RefundAvailable(
+            DepositRefundReason::InvalidRecipient,
+        ));
+    }
+    let net_amount = match snapshot
+        .mint
+        .quote(deposit.gross_amount, deposit.max_service_fee)
+    {
+        Ok(amount) => amount,
+        Err(
+            bridge_core::CoreError::ServiceFeeAboveMaximum
+            | bridge_core::CoreError::ServiceFeeAboveUserMaximum
+            | bridge_core::CoreError::InvalidAmount
+            | bridge_core::CoreError::ArithmeticUnderflow,
+        ) => {
+            return Ok(EscrowPreparation::RefundAvailable(
+                DepositRefundReason::ServiceFeeRejected,
+            ));
+        }
+        Err(bridge_core::CoreError::PerDepositLimitExceeded) => {
+            return Ok(EscrowPreparation::RefundAvailable(
+                DepositRefundReason::PerDepositLimitExceeded,
+            ));
+        }
+        Err(bridge_core::CoreError::MintWindowLimitExceeded) => {
+            return Ok(EscrowPreparation::RefundAvailable(
+                DepositRefundReason::MintWindowLimitExceeded,
+            ));
+        }
+        Err(_) => return Err(SettlementActionError::StorageFailure),
+    };
+    if ::bridge_core::kernel::deposit_refund_amount(
+        deposit.gross_amount.get(),
+        snapshot.mint.service_fee.get(),
+        context.ledger_fee.get(),
+    )
+    .is_none()
+    {
+        return Ok(EscrowPreparation::RefundAvailable(
+            DepositRefundReason::RefundAmountTooSmall,
+        ));
+    }
+    let quote = DepositQuote {
+        service_fee: snapshot.mint.service_fee,
+        net_amount,
+    };
+    let issued_at_timestamp = ic_cdk::api::time() / 1_000_000_000;
+    let deadline =
+        bridge_core::MintAuthorization::deadline_from_issued_at_timestamp(issued_at_timestamp)
+            .ok_or(SettlementActionError::StorageFailure)?;
+    let authorization_value = bridge_core::MintAuthorization {
+        deposit_id: deposit.id.bytes(),
+        recipient,
+        gross_amount: deposit.gross_amount,
+        max_service_fee: deposit.max_service_fee,
+        charged_service_fee: quote.service_fee,
+        deadline,
+        authorization_epoch: snapshot.global_epoch,
+    };
+    let domain =
+        crate::multi_asset::shared_domain(context.asset.base_chain_id, context.bridge_contract);
+    let shared = crate::multi_asset::SharedMintAuthorization {
+        asset_id: context.asset_id,
+        authorization: authorization_value,
+        global_epoch: snapshot.global_epoch,
+        asset_epoch: snapshot.asset_epoch,
+    };
+    let binding = crate::multi_asset::SharedAuthorizationBinding {
+        asset_id: context.asset_id,
+        global_epoch: snapshot.global_epoch,
+        asset_epoch: snapshot.asset_epoch,
+    };
+    Ok(EscrowPreparation::Authorization {
+        quote,
+        authorization: Box::new(bridge_core::MintAuthorizationRecord {
+            digest: crate::multi_asset::shared_authorization_digest(&domain, shared),
+            authorization: authorization_value,
+            domain,
+            origin: bridge_core::MintAuthorizationOrigin {
+                finalized_block_number: observation.finalized.block_number,
+                finalized_block_hash: observation.finalized.block_hash,
+                finalized_block_timestamp: observation.finalized_timestamp,
+                issued_at_timestamp,
+            },
+            signature_dispatch_attempt: 0,
+            signature_dispatched: false,
+            signature: None,
+        }),
+        shared_binding: Some(binding),
     })
 }
 
@@ -708,6 +877,53 @@ async fn authorization_still_matches_base(
     config: &crate::config::BridgeInitArgs,
     authorization: &bridge_core::MintAuthorizationRecord,
 ) -> Result<bool, SettlementStopReason> {
+    let shared = STORE.with(|store| {
+        let store = store.borrow();
+        let context = crate::multi_asset::AssetExecutionContext::for_record(
+            &store,
+            crate::storage::RecordAssetKind::Deposit,
+            &authorization.authorization.deposit_id,
+            true,
+        )
+        .map_err(|_| SettlementStopReason::InvalidBaseResponse)?;
+        let binding = store
+            .shared_authorization_binding(authorization.authorization.deposit_id)
+            .map_err(|_| SettlementStopReason::InvalidBaseResponse)?;
+        Ok::<_, SettlementStopReason>((context, binding))
+    })?;
+    if shared.0.is_shared() {
+        let (context, Some(binding)) = shared else {
+            return Err(SettlementStopReason::InvalidBaseResponse);
+        };
+        let observation = evm_rpc::shared_asset_observation(&context.evm_args(), context.asset_id)
+            .await
+            .map_err(|error| match error {
+                evm_rpc::ObservationError::Inconsistent => SettlementStopReason::RpcInconsistent,
+                evm_rpc::ObservationError::InsufficientCycles => {
+                    SettlementStopReason::InsufficientCycles
+                }
+                _ => SettlementStopReason::RpcUnavailable,
+            })?;
+        let snapshot = observation.snapshot;
+        let signed = authorization.authorization;
+        let expected_net = signed
+            .gross_amount
+            .checked_sub(signed.charged_service_fee)
+            .ok();
+        let quoted_net = snapshot
+            .mint
+            .quote(signed.gross_amount, signed.max_service_fee)
+            .ok();
+        return Ok(context.validates_shared_observation(&observation)
+            && !snapshot.global_deposits_paused
+            && !snapshot.asset_deposits_paused
+            && binding.asset_id == context.asset_id
+            && binding.global_epoch == snapshot.global_epoch
+            && binding.asset_epoch == snapshot.asset_epoch
+            && signed.authorization_epoch == snapshot.global_epoch
+            && snapshot.mint.service_fee == signed.charged_service_fee
+            && quoted_net == expected_net);
+    }
     let runtime_attested = crate::api::runtime_attested(config)
         .map_err(|_| SettlementStopReason::InvalidBaseResponse)?;
     let completed = evm_rpc::bridge_snapshot(config, runtime_attested)
@@ -760,13 +976,16 @@ pub(crate) async fn advance_deposit(
     deposit_id: [u8; 32],
     lease: &mut crate::scheduler::SettlementLease,
 ) -> Result<SettlementActionResult, SettlementActionError> {
-    let config = STORE.with(|store| {
-        store
-            .borrow()
-            .config()
-            .map_err(|_| SettlementActionError::StorageFailure)?
-            .ok_or(SettlementActionError::StorageFailure)
+    let context = STORE.with(|store| {
+        crate::multi_asset::AssetExecutionContext::for_record(
+            &store.borrow(),
+            crate::storage::RecordAssetKind::Deposit,
+            &deposit_id,
+            true,
+        )
+        .map_err(|_| SettlementActionError::StorageFailure)
     })?;
+    let config = context.root.clone();
     loop {
         let deposit = STORE.with(|store| {
             store
@@ -784,7 +1003,8 @@ pub(crate) async fn advance_deposit(
                 )
                 .map_err(|_| SettlementActionError::StorageFailure)?;
                 lease.renew_before_external_call()?;
-                let outcome = ledger::pull(config.ledger_canister_id, &deposit.transfer).await;
+                let outcome =
+                    ledger::pull(context.asset.ledger_canister_id, &deposit.transfer).await;
                 lease.ensure_current()?;
                 match outcome {
                     LedgerCallOutcome::Succeeded { block_index }
@@ -877,6 +1097,7 @@ pub(crate) async fn advance_deposit(
                     EscrowPreparation::Authorization {
                         quote,
                         authorization,
+                        shared_binding,
                     } => {
                         let result = STORE.with(|store| {
                             crate::api::commit_deposit_authorization(
@@ -884,6 +1105,7 @@ pub(crate) async fn advance_deposit(
                                 deposit_id,
                                 quote,
                                 *authorization,
+                                shared_binding,
                             )
                         });
                         match result {
@@ -934,9 +1156,9 @@ pub(crate) async fn advance_deposit(
                         .mint_authorization
                         .as_ref()
                         .ok_or(SettlementActionError::StorageFailure)?;
-                    let reason = crate::api::unsigned_authorization_rejection(
+                    let reason = crate::api::unsigned_asset_authorization_rejection(
                         &store,
-                        &config,
+                        &context,
                         authorization,
                     )
                     .map_err(|_| SettlementActionError::StorageFailure)?;
@@ -1019,9 +1241,18 @@ pub(crate) async fn advance_deposit(
                     });
                 };
                 lease.renew_before_external_call()?;
-                let expected_signer = crate::api::cached_signer_address(&config)
-                    .await
-                    .map_err(|_| SettlementActionError::StorageFailure)?;
+                let expected_signer = if context.is_shared() {
+                    context
+                        .asset
+                        .expected_bridge_signer
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| SettlementActionError::StorageFailure)?
+                } else {
+                    crate::api::cached_signer_address(&config)
+                        .await
+                        .map_err(|_| SettlementActionError::StorageFailure)?
+                };
                 let signature = match signer::sign_mint_authorization_digest(digest, &config).await
                 {
                     Ok(signature) => signature,
@@ -1093,9 +1324,13 @@ pub(crate) async fn advance_deposit(
                         .mint_authorization
                         .as_ref()
                         .ok_or(SettlementActionError::StorageFailure)?;
-                    if crate::api::unsigned_authorization_rejection(&store, &config, authorization)
-                        .map_err(|_| SettlementActionError::StorageFailure)?
-                        .is_some()
+                    if crate::api::unsigned_asset_authorization_rejection(
+                        &store,
+                        &context,
+                        authorization,
+                    )
+                    .map_err(|_| SettlementActionError::StorageFailure)?
+                    .is_some()
                     {
                         return Err(SettlementActionError::StorageFailure);
                     }
@@ -1164,7 +1399,8 @@ pub(crate) async fn advance_deposit(
             }
             bridge_core::DepositState::RefundPending { attempt, .. } => {
                 lease.renew_before_external_call()?;
-                let outcome = ledger::refund(config.ledger_canister_id, &attempt.identity).await;
+                let outcome =
+                    ledger::refund(context.asset.ledger_canister_id, &attempt.identity).await;
                 lease.ensure_current()?;
                 match outcome {
                     LedgerCallOutcome::Succeeded { block_index }
@@ -1238,13 +1474,16 @@ pub(crate) async fn advance_withdrawal(
     withdrawal_id: [u8; 32],
     lease: &mut crate::scheduler::SettlementLease,
 ) -> Result<SettlementActionResult, SettlementActionError> {
-    let config = STORE.with(|store| {
-        store
-            .borrow()
-            .config()
-            .map_err(|_| SettlementActionError::StorageFailure)?
-            .ok_or(SettlementActionError::StorageFailure)
+    let context = STORE.with(|store| {
+        crate::multi_asset::AssetExecutionContext::for_record(
+            &store.borrow(),
+            crate::storage::RecordAssetKind::Withdrawal,
+            &withdrawal_id,
+            true,
+        )
+        .map_err(|_| SettlementActionError::StorageFailure)
     })?;
+    let config = context.root.clone();
     loop {
         let withdrawal = STORE.with(|store| {
             store
@@ -1256,7 +1495,7 @@ pub(crate) async fn advance_withdrawal(
         let state = SettlementState::Withdrawal(WithdrawalPhase::from(&withdrawal.state));
         match withdrawal.state {
             WithdrawalState::ReleasePending { attempt, .. } => {
-                let live_ledger_fee = ledger::KINIC_LEDGER_FEE;
+                let live_ledger_fee = context.ledger_fee;
                 if !prepared_release_fee_matches_configured(
                     attempt.identity.fee.get(),
                     live_ledger_fee.get(),
@@ -1271,7 +1510,8 @@ pub(crate) async fn advance_withdrawal(
                     });
                 }
                 lease.renew_before_external_call()?;
-                let outcome = ledger::release(config.ledger_canister_id, &attempt.identity).await;
+                let outcome =
+                    ledger::release(context.asset.ledger_canister_id, &attempt.identity).await;
                 lease.ensure_current()?;
                 match outcome {
                     LedgerCallOutcome::Succeeded { block_index }

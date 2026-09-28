@@ -28,5 +28,7 @@ pub(super) const VALIDATION_TABLES: &[&str] = &[
     "withdrawal_stop_reason_counts",
     "settlement_jobs",
     "asset_registry",
+    "asset_runtime_attestations",
+    "withdrawal_origins",
     "record_asset_bindings",
 ];

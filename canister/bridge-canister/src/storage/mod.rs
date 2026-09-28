@@ -24,8 +24,8 @@ use validation::expect_row_shape;
 
 use crate::admin::AdminState;
 use crate::config::{
-    AssetConfig, AssetLifecycle, BaseBridgeKind, BridgeInitArgs, FeeRecipientConfig,
-    ImmutableBridgeConfig, KINIC_ASSET_ID,
+    AssetConfig, AssetLifecycle, AssetRuntimeAttestation, BaseBridgeKind, BridgeInitArgs,
+    FeeRecipientConfig, ImmutableBridgeConfig, KINIC_ASSET_ID,
 };
 use bridge_core::{
     resolve_deposit_hold, resolve_withdrawal_hold, AccountingState, Amount, ApplyResult,
@@ -313,8 +313,16 @@ CREATE TABLE asset_registry (
     key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
     value BLOB NOT NULL
 ) STRICT, WITHOUT ROWID;
+CREATE TABLE asset_runtime_attestations (
+    key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
+    value BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE TABLE withdrawal_origins (
+    key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
+    value BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
 CREATE TABLE record_asset_bindings (
-    key BLOB PRIMARY KEY NOT NULL CHECK (length(key) > 1 AND substr(key, 1, 1) IN (X'00', X'01', X'02', X'03')),
+    key BLOB PRIMARY KEY NOT NULL CHECK (length(key) > 1 AND substr(key, 1, 1) IN (X'00', X'01', X'02', X'03', X'04')),
     value BLOB NOT NULL CHECK (length(value) = 32)
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE deposit_owner_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
@@ -421,6 +429,8 @@ INSERT INTO table_counts(name, count) VALUES
  ('withdrawal_transaction_index', X'0000000000000000'),
  ('withdrawal_stop_reason_counts', X'0000000000000000'),
  ('asset_registry', X'0000000000000000'),
+ ('asset_runtime_attestations', X'0000000000000000'),
+ ('withdrawal_origins', X'0000000000000000'),
  ('record_asset_bindings', X'0000000000000000');
 "#;
 
@@ -439,6 +449,14 @@ pub enum RecordAssetKind {
     Withdrawal = 1,
     ReconciliationHold = 2,
     FeePayout = 3,
+    DepositFundingAttempt = 4,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedWithdrawalOrigin {
+    pub asset_id: Vec<u8>,
+    pub base_withdrawal_id: Vec<u8>,
+    pub bridge_contract: Vec<u8>,
 }
 
 impl RecordAssetKind {
@@ -2094,6 +2112,11 @@ pub enum AuditEventKind {
         bridge_contract: Vec<u8>,
         token_contract: Vec<u8>,
     },
+    AssetRuntimeAttested {
+        asset_id: Vec<u8>,
+        finalized_block_number: u64,
+        lifecycle: AssetLifecycle,
+    },
     FeePayoutRequested {
         amount: u128,
     },
@@ -2351,6 +2374,8 @@ struct StoredDeposit {
     record: DepositRecord,
     owner_sequence: u64,
     base_recipient: [u8; 20],
+    #[serde(default)]
+    shared_authorization_binding: Option<crate::multi_asset::SharedAuthorizationBinding>,
 }
 
 impl StoredDeposit {
@@ -2515,8 +2540,22 @@ fn migrate_previous_schema(
         )?;
         connection.execute(
             "CREATE TABLE record_asset_bindings (
-                key BLOB PRIMARY KEY NOT NULL CHECK (length(key) > 1 AND substr(key, 1, 1) IN (X'00', X'01', X'02', X'03')),
+                key BLOB PRIMARY KEY NOT NULL CHECK (length(key) > 1 AND substr(key, 1, 1) IN (X'00', X'01', X'02', X'03', X'04')),
                 value BLOB NOT NULL CHECK (length(value) = 32)
+            ) STRICT, WITHOUT ROWID",
+            params![],
+        )?;
+        connection.execute(
+            "CREATE TABLE asset_runtime_attestations (
+                key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
+                value BLOB NOT NULL
+            ) STRICT, WITHOUT ROWID",
+            params![],
+        )?;
+        connection.execute(
+            "CREATE TABLE withdrawal_origins (
+                key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
+                value BLOB NOT NULL
             ) STRICT, WITHOUT ROWID",
             params![],
         )?;
@@ -2524,9 +2563,38 @@ fn migrate_previous_schema(
             "INSERT INTO asset_registry(key, value) VALUES (?1, ?2)",
             params![KINIC_ASSET_ID.to_vec(), kinic.to_sql_bytes()],
         )?;
+        for (prefix, table) in [
+            ("00", "deposits"),
+            ("01", "withdrawals"),
+            ("02", "reconciliation_holds"),
+            ("03", "fee_payouts"),
+            ("04", "deposit_funding_attempts"),
+        ] {
+            connection.execute(
+                &format!(
+                    "INSERT INTO record_asset_bindings(key, value)
+                     SELECT CAST(X'{prefix}' || key AS BLOB), ?1 FROM {table}"
+                ),
+                params![KINIC_ASSET_ID.to_vec()],
+            )?;
+        }
+        let binding_count = connection.query_scalar::<i64>(
+            "SELECT COUNT(*) FROM record_asset_bindings",
+            params![],
+        )?;
+        let binding_count = u64::try_from(binding_count)
+            .map_err(|_| DbError::Constraint("record binding count overflow".into()))?;
         connection.execute(
-            "INSERT INTO table_counts(name, count) VALUES ('asset_registry', ?1), ('record_asset_bindings', ?2)",
-            params![1u64.to_sql_bytes(), 0u64.to_sql_bytes()],
+            "INSERT INTO table_counts(name, count) VALUES
+                ('asset_registry', ?1),
+                ('asset_runtime_attestations', ?2),
+                ('record_asset_bindings', ?3),
+                ('withdrawal_origins', ?2)",
+            params![
+                1u64.to_sql_bytes(),
+                0u64.to_sql_bytes(),
+                binding_count.to_sql_bytes()
+            ],
         )?;
         connection.execute(
             "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
@@ -2544,7 +2612,15 @@ fn verify_schema_shape(handle: DbHandle, predecessor: bool) -> Result<(), Storag
     handle
         .query(|connection| {
             for table in VALIDATION_TABLES {
-                if predecessor && matches!(*table, "asset_registry" | "record_asset_bindings") {
+                if predecessor
+                    && matches!(
+                        *table,
+                        "asset_registry"
+                            | "asset_runtime_attestations"
+                            | "withdrawal_origins"
+                            | "record_asset_bindings"
+                    )
+                {
                     continue;
                 }
                 let count = connection.query_scalar::<i64>(
@@ -3165,6 +3241,45 @@ fn validate_storage_row(
                 return Err(DbError::Constraint("asset registry key mismatch".into()));
             }
         }
+        "asset_runtime_attestations" => {
+            expect_row_shape(
+                key,
+                value,
+                32,
+                value.len(),
+                "invalid asset runtime attestation row",
+            )?;
+            let attestation: AssetRuntimeAttestation =
+                decode_with_context(value.to_vec(), "invalid asset runtime attestation")?;
+            if attestation.asset_id != key
+                || !referenced_row_exists(connection, "asset_registry", key)?
+                || attestation.finalized_block_hash.len() != 32
+                || attestation.bridge_runtime_sha256.len() != 32
+                || attestation.token_runtime_sha256.len() != 32
+                || attestation.bridge_signer.len() != 20
+                || attestation.token_contract.len() != 20
+                || attestation.token_bridge.len() != 20
+            {
+                return Err(DbError::Constraint(
+                    "invalid asset runtime attestation binding".into(),
+                ));
+            }
+        }
+        "withdrawal_origins" => {
+            expect_row_shape(key, value, 32, value.len(), "invalid withdrawal origin row")?;
+            let origin: SharedWithdrawalOrigin =
+                decode_with_context(value.to_vec(), "invalid withdrawal origin")?;
+            if origin.asset_id.len() != 32
+                || origin.base_withdrawal_id.len() != 32
+                || origin.bridge_contract.len() != 20
+                || !referenced_row_exists(connection, "withdrawals", key)?
+                || !referenced_row_exists(connection, "asset_registry", &origin.asset_id)?
+            {
+                return Err(DbError::Constraint(
+                    "invalid withdrawal origin binding".into(),
+                ));
+            }
+        }
         "record_asset_bindings" => {
             if key.len() <= 1 || value.len() != 32 {
                 return Err(DbError::Constraint("invalid record asset binding".into()));
@@ -3174,6 +3289,7 @@ fn validate_storage_row(
                 1 => "withdrawals",
                 2 => "reconciliation_holds",
                 3 => "fee_payouts",
+                4 => "deposit_funding_attempts",
                 _ => return Err(DbError::Constraint("invalid record asset kind".into())),
             };
             if !referenced_row_exists(connection, primary_table, &key[1..])? {
@@ -3958,6 +4074,8 @@ impl StableStore {
             "withdrawal_notification_index",
             "withdrawal_stop_reason_counts",
             "asset_registry",
+            "asset_runtime_attestations",
+            "withdrawal_origins",
             "record_asset_bindings",
         ];
         self.handle.query(|connection| {
@@ -6409,6 +6527,132 @@ impl StableStore {
         Ok(())
     }
 
+    pub fn asset_runtime_attestation(
+        &self,
+        asset_id: &[u8],
+    ) -> Result<Option<AssetRuntimeAttestation>, StorageError> {
+        if asset_id.len() != 32 {
+            return Err(StorageError::DecodeFailed);
+        }
+        let value = self.handle.query(|connection| {
+            connection.query_optional_scalar::<Vec<u8>>(
+                "SELECT value FROM asset_runtime_attestations WHERE key = ?1",
+                params![asset_id],
+            )
+        })?;
+        value
+            .map(|bytes| decode(&StableBlob::new(bytes)?))
+            .transpose()
+    }
+
+    pub fn attest_asset_runtime(
+        &mut self,
+        attestation: &AssetRuntimeAttestation,
+        caller: Principal,
+        timestamp_ns: u64,
+    ) -> Result<AssetConfig, StorageError> {
+        let mut asset = self
+            .asset(&attestation.asset_id)?
+            .ok_or(StorageError::RecordNotFound)?;
+        if asset.bridge_kind != BaseBridgeKind::SharedMultiToken
+            || attestation.asset_id != asset.asset_id
+            || attestation.chain_id != asset.base_chain_id
+            || attestation.bridge_runtime_sha256 != asset.expected_bridge_runtime_sha256
+            || attestation.token_runtime_sha256 != asset.expected_token_runtime_sha256
+            || attestation.bridge_signer != asset.expected_bridge_signer
+            || attestation.token_contract != asset.token_contract
+            || attestation.token_bridge != asset.bridge_contract
+            || attestation.token_name != asset.name
+            || attestation.token_symbol != asset.symbol
+            || attestation.token_decimals != asset.decimals
+            || attestation.finalized_block_hash.len() != 32
+            || attestation.global_epoch == 0
+            || attestation.asset_epoch == 0
+            || attestation.service_fee > attestation.max_service_fee
+            || attestation.per_deposit_limit == 0
+            || attestation.mint_window_limit == 0
+            || attestation.mint_window_duration == 0
+        {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        if self
+            .asset_runtime_attestation(&attestation.asset_id)?
+            .is_some_and(|previous| {
+                previous.finalized_block_number > attestation.finalized_block_number
+                    || (previous.finalized_block_number == attestation.finalized_block_number
+                        && previous.finalized_block_hash != attestation.finalized_block_hash)
+            })
+        {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        let withdrawal_fee_safe = attestation.service_fee >= asset.ledger_fee;
+        let observed_lifecycle = if withdrawal_fee_safe && attestation.permits_deposit_admission() {
+            AssetLifecycle::Enabled
+        } else if withdrawal_fee_safe && attestation.permits_withdrawal_ingestion() {
+            AssetLifecycle::WithdrawalEnabled
+        } else {
+            AssetLifecycle::Prepared
+        };
+        asset.lifecycle = match (asset.lifecycle, observed_lifecycle) {
+            (AssetLifecycle::Enabled, _) | (_, AssetLifecycle::Enabled) => AssetLifecycle::Enabled,
+            (AssetLifecycle::WithdrawalEnabled, _) | (_, AssetLifecycle::WithdrawalEnabled) => {
+                AssetLifecycle::WithdrawalEnabled
+            }
+            _ => AssetLifecycle::Prepared,
+        };
+        let asset_blob = encode(&asset)?;
+        let attestation_blob = encode(attestation)?;
+        let existed = self
+            .asset_runtime_attestation(&attestation.asset_id)?
+            .is_some();
+        let mut counters = self.counters()?;
+        let previous_counters = encode(&counters)?;
+        let audit = self.prepare_audit_batch(
+            &mut counters,
+            caller,
+            timestamp_ns,
+            vec![AuditEventKind::AssetRuntimeAttested {
+                asset_id: asset.asset_id.clone(),
+                finalized_block_number: attestation.finalized_block_number,
+                lifecycle: asset.lifecycle,
+            }],
+        )?;
+        let counters_blob = encode(&counters)?;
+        self.handle.update(|connection| {
+            let persisted_counters = connection.query_scalar::<Vec<u8>>(
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted_counters != previous_counters.to_sql_bytes() {
+                return Err(DbError::Constraint("stale asset attestation".into()));
+            }
+            connection.execute(
+                "UPDATE asset_registry SET value = ?1 WHERE key = ?2",
+                params![asset_blob.to_sql_bytes(), asset.asset_id.clone()],
+            )?;
+            connection.execute(
+                "INSERT INTO asset_runtime_attestations(key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![
+                    attestation.asset_id.clone(),
+                    attestation_blob.to_sql_bytes()
+                ],
+            )?;
+            if !existed {
+                increment_table_count(connection, "asset_runtime_attestations")?;
+            }
+            commit_audit_batch(connection, &audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET counters = ?1, audit_retention = ?2 WHERE id = 1",
+                params![
+                    counters_blob.to_sql_bytes(),
+                    audit.retention_blob.to_sql_bytes()
+                ],
+            )
+        })?;
+        Ok(asset)
+    }
+
     #[cfg(test)]
     fn bind_record_asset(
         &mut self,
@@ -6426,6 +6670,7 @@ impl StableStore {
                 RecordAssetKind::Withdrawal => "withdrawals",
                 RecordAssetKind::ReconciliationHold => "reconciliation_holds",
                 RecordAssetKind::FeePayout => "fee_payouts",
+                RecordAssetKind::DepositFundingAttempt => "deposit_funding_attempts",
             };
             if !referenced_row_exists(connection, primary_table, record_id)? {
                 return Err(DbError::Constraint(
@@ -6474,6 +6719,21 @@ impl StableStore {
             return Err(StorageError::RecordNotFound);
         }
         Ok(KINIC_ASSET_ID)
+    }
+
+    pub fn withdrawal_origin(
+        &self,
+        withdrawal_id: [u8; 32],
+    ) -> Result<Option<SharedWithdrawalOrigin>, StorageError> {
+        self.handle
+            .query(|connection| {
+                connection.query_optional_scalar::<Vec<u8>>(
+                    "SELECT value FROM withdrawal_origins WHERE key = ?1",
+                    params![withdrawal_id.to_sql_bytes()],
+                )
+            })?
+            .map(|bytes| decode::<SharedWithdrawalOrigin>(&StableBlob::new(bytes)?))
+            .transpose()
     }
 
     pub fn kinic_asset_binding_valid(&self) -> Result<bool, StorageError> {
@@ -7368,7 +7628,7 @@ impl StableStore {
     }
 
     pub fn put_deposit(&mut self, value: &DepositRecord) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, None, None, None)
+        self.put_deposit_with_audit(value, None, None, None, None, None)
             .map(|_| ())
     }
 
@@ -7377,7 +7637,17 @@ impl StableStore {
         value: &DepositRecord,
         result: ApplyResult,
     ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, None, Some(result), None)
+        self.put_deposit_with_audit(value, None, None, Some(result), None, None)
+            .map(|_| ())
+    }
+
+    pub fn put_deposit_transition_with_shared_authorization_binding(
+        &mut self,
+        value: &DepositRecord,
+        result: ApplyResult,
+        binding: crate::multi_asset::SharedAuthorizationBinding,
+    ) -> Result<(), StorageError> {
+        self.put_deposit_with_audit(value, None, None, Some(result), None, Some(binding))
             .map(|_| ())
     }
 
@@ -7388,7 +7658,7 @@ impl StableStore {
         context: ManualSettlementClaimContext,
     ) -> Result<ManualSettlementClaim, SettlementAdmissionError> {
         let outcome = self
-            .put_deposit_with_audit(value, None, None, Some(result), Some(context))
+            .put_deposit_with_audit(value, None, None, Some(result), Some(context), None)
             .map_err(|_| SettlementAdmissionError::Storage)?
             .ok_or(SettlementAdmissionError::Storage)?;
         Self::manual_claim_outcome(outcome)
@@ -7399,7 +7669,7 @@ impl StableStore {
         value: &DepositRecord,
         token: &SettlementCallbackToken,
     ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, Some(token), None, None)
+        self.put_deposit_with_audit(value, None, Some(token), None, None, None)
             .map(|_| ())
     }
 
@@ -7409,7 +7679,7 @@ impl StableStore {
         token: &SettlementCallbackToken,
         result: ApplyResult,
     ) -> Result<(), StorageError> {
-        self.put_deposit_with_audit(value, None, Some(token), Some(result), None)
+        self.put_deposit_with_audit(value, None, Some(token), Some(result), None, None)
             .map(|_| ())
     }
 
@@ -7420,6 +7690,7 @@ impl StableStore {
         callback_token: Option<&SettlementCallbackToken>,
         transition_result: Option<ApplyResult>,
         manual_claim: Option<ManualSettlementClaimContext>,
+        shared_authorization_binding: Option<crate::multi_asset::SharedAuthorizationBinding>,
     ) -> Result<Option<ManualClaimTransaction>, StorageError> {
         let previous_stored = self.stored_deposit(value.id.bytes())?;
         let previous = previous_stored.as_ref().map(|stored| stored.record.clone());
@@ -7434,11 +7705,14 @@ impl StableStore {
                 record: value.clone(),
                 owner_sequence: stored.owner_sequence,
                 base_recipient: stored.base_recipient,
+                shared_authorization_binding: shared_authorization_binding
+                    .or(stored.shared_authorization_binding),
             },
             None if cfg!(test) => StoredDeposit {
                 record: value.clone(),
                 owner_sequence: 0,
                 base_recipient: [0; 20],
+                shared_authorization_binding,
             },
             None => return Err(StorageError::RecordNotFound),
         };
@@ -7772,7 +8046,22 @@ impl StableStore {
         quota: DepositQuotaAdmission,
         cycles: DepositCycleAdmission,
     ) -> Result<DepositAdmissionOutcome, StorageError> {
-        self.prepare_deposit_funding_attempt_inner(owner, attempt, quota, cycles)
+        self.prepare_deposit_funding_attempt_inner(owner, attempt, quota, cycles, KINIC_ASSET_ID)
+    }
+
+    pub fn prepare_asset_deposit_funding_attempt(
+        &mut self,
+        owner: Principal,
+        attempt: &DepositFundingAttempt,
+        quota: DepositQuotaAdmission,
+        cycles: DepositCycleAdmission,
+        asset_id: [u8; 32],
+    ) -> Result<DepositAdmissionOutcome, StorageError> {
+        let asset = self.asset(&asset_id)?.ok_or(StorageError::RecordNotFound)?;
+        if asset.lifecycle != AssetLifecycle::Enabled {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        self.prepare_deposit_funding_attempt_inner(owner, attempt, quota, cycles, asset_id)
     }
 
     fn prepare_deposit_funding_attempt_inner(
@@ -7781,6 +8070,7 @@ impl StableStore {
         attempt: &DepositFundingAttempt,
         quota: DepositQuotaAdmission,
         cycles: DepositCycleAdmission,
+        asset_id: [u8; 32],
     ) -> Result<DepositAdmissionOutcome, StorageError> {
         if self.deposit(attempt.intent.deposit_id)?.is_some() {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
@@ -7789,6 +8079,10 @@ impl StableStore {
             if existing.intent.payload_hash == attempt.intent.payload_hash
                 && existing.intent == attempt.intent
                 && existing.transfer == attempt.transfer
+                && self.record_asset(
+                    RecordAssetKind::DepositFundingAttempt,
+                    &attempt.intent.deposit_id,
+                )? == asset_id
             {
                 return Ok(DepositAdmissionOutcome::Existing);
             }
@@ -7847,6 +8141,8 @@ impl StableStore {
         let key = attempt.intent.deposit_id.to_sql_bytes();
         let nonterminal_index_key =
             deposit_owner_index_key(owner, attempt.intent.owner_sequence)?.to_sql_bytes();
+        let asset_binding_key =
+            RecordAssetKind::DepositFundingAttempt.key(&attempt.intent.deposit_id)?;
         self.handle.update(|connection| {
             expect_blob(
                 connection,
@@ -7890,6 +8186,12 @@ impl StableStore {
                 "deposit_funding_attempts",
                 key.clone(),
                 attempt_blob.to_sql_bytes(),
+            )?;
+            insert_tracked_entry(
+                connection,
+                "record_asset_bindings",
+                asset_binding_key,
+                asset_id.to_sql_bytes(),
             )?;
             connection.execute(
                 "UPDATE deposit_funding_attempts SET recovery_due_ns = ?1 WHERE key = ?2",
@@ -7984,6 +8286,8 @@ impl StableStore {
         let key = attempt.intent.deposit_id.to_sql_bytes();
         let nonterminal_index_key =
             deposit_owner_index_key(owner, attempt.intent.owner_sequence)?.to_sql_bytes();
+        let asset_binding_key =
+            RecordAssetKind::DepositFundingAttempt.key(&attempt.intent.deposit_id)?;
         self.handle.update(|connection| {
             expect_blob(
                 connection,
@@ -8000,6 +8304,7 @@ impl StableStore {
                 "stale deposit funding reservation",
             )?;
             delete_tracked_entry(connection, "deposit_funding_attempts", key)?;
+            delete_tracked_entry(connection, "record_asset_bindings", asset_binding_key)?;
             delete_tracked_entry(
                 connection,
                 "nonterminal_deposit_owner_index",
@@ -8146,6 +8451,7 @@ impl StableStore {
             record: record.clone(),
             owner_sequence: intent.owner_sequence,
             base_recipient: intent.base_recipient,
+            shared_authorization_binding: None,
         })?;
         let counters_blob = encode(&counters)?;
         let previous_counters_blob = encode(&previous_counters)?;
@@ -8178,6 +8484,21 @@ impl StableStore {
         let promotion_hold = funding_promotion
             .and_then(|(_, hold)| hold)
             .map(|hold| encode(hold).map(|blob| (hold, blob)))
+            .transpose()?;
+        let asset_id = if funding_promotion.is_some() {
+            self.record_asset(RecordAssetKind::DepositFundingAttempt, &record.id.bytes())?
+        } else {
+            KINIC_ASSET_ID
+        };
+        let deposit_asset_key = RecordAssetKind::Deposit.key(&record.id.bytes())?;
+        let funding_asset_key = RecordAssetKind::DepositFundingAttempt.key(&record.id.bytes())?;
+        let hold_asset_key = promotion_hold
+            .as_ref()
+            .map(|(hold, _)| {
+                RecordAssetKind::ReconciliationHold
+                    .key(&hold.id.get().to_sql_bytes())
+                    .map(|key| key)
+            })
             .transpose()?;
         self.handle.update(|connection| {
             expect_blob(
@@ -8229,6 +8550,12 @@ impl StableStore {
             )?;
             insert_tracked_entry(
                 connection,
+                "record_asset_bindings",
+                deposit_asset_key,
+                asset_id.to_sql_bytes(),
+            )?;
+            insert_tracked_entry(
+                connection,
                 "deposit_owner_index",
                 index_key.to_sql_bytes(),
                 deposit_key.clone(),
@@ -8269,6 +8596,14 @@ impl StableStore {
                     hold.id.get().to_sql_bytes(),
                     0u8.to_sql_bytes(),
                 )?;
+                insert_tracked_entry(
+                    connection,
+                    "record_asset_bindings",
+                    hold_asset_key
+                        .clone()
+                        .ok_or_else(|| DbError::Constraint("missing hold asset key".into()))?,
+                    asset_id.to_sql_bytes(),
+                )?;
             }
             if promotion_attempt.is_some() {
                 delete_tracked_entry(
@@ -8276,6 +8611,7 @@ impl StableStore {
                     "deposit_funding_attempts",
                     record.id.bytes().to_sql_bytes(),
                 )?;
+                delete_tracked_entry(connection, "record_asset_bindings", funding_asset_key)?;
             }
             upsert_table_entry(
                 connection,
@@ -8601,6 +8937,14 @@ impl StableStore {
         if parent_index_present != previous_index {
             return Err(StorageError::RecordNotFound);
         }
+        let parent_kind = if table == "deposits" {
+            RecordAssetKind::Deposit
+        } else {
+            RecordAssetKind::Withdrawal
+        };
+        let asset_id = self.record_asset(parent_kind, &key)?;
+        let hold_asset_key =
+            RecordAssetKind::ReconciliationHold.key(&hold.id.get().to_sql_bytes())?;
         hold_bundle_storage_failpoint(HoldBundleFailpoint::Encode)?;
         let hold_blob = encode(hold)?;
         let previous_counters_blob = encode(&previous_counters)?;
@@ -8672,6 +9016,12 @@ impl StableStore {
                 params![hold.id.get().to_sql_bytes(), hold_blob.to_sql_bytes()],
             )?;
             increment_table_count(connection, "reconciliation_holds")?;
+            insert_tracked_entry(
+                connection,
+                "record_asset_bindings",
+                hold_asset_key,
+                asset_id.to_sql_bytes(),
+            )?;
             hold_bundle_db_failpoint(HoldBundleFailpoint::Hold)?;
             transition_tracked_entry(
                 connection,
@@ -8693,7 +9043,9 @@ impl StableStore {
         withdrawal: &WithdrawalRecord,
         progress: &ExternalProgress,
     ) -> Result<bool, StorageError> {
-        self.commit_new_withdrawal_release_bundle_inner(withdrawal, progress, None, None, None)
+        self.commit_new_withdrawal_release_bundle_inner(
+            withdrawal, progress, None, None, None, None,
+        )
     }
 
     // Keep the business record, audit identity, replay key, and quota inputs explicit at
@@ -8720,6 +9072,44 @@ impl StableStore {
                 notification_window_seconds,
                 notification_ingestion_limit,
             )),
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_new_asset_withdrawal_release_bundle_with_rpc_audit(
+        &mut self,
+        withdrawal: &WithdrawalRecord,
+        progress: &ExternalProgress,
+        caller: Principal,
+        timestamp_ns: u64,
+        audit_kinds: Vec<AuditEventKind>,
+        transaction_hash: [u8; 32],
+        notification_window_seconds: u64,
+        notification_ingestion_limit: u16,
+        asset_id: [u8; 32],
+        origin: &SharedWithdrawalOrigin,
+    ) -> Result<bool, StorageError> {
+        if origin.asset_id.as_slice() != asset_id
+            || origin.base_withdrawal_id.len() != 32
+            || origin.bridge_contract.len() != 20
+            || self
+                .asset(&asset_id)?
+                .is_none_or(|asset| asset.lifecycle == AssetLifecycle::Prepared)
+        {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        self.commit_new_withdrawal_release_bundle_inner(
+            withdrawal,
+            progress,
+            Some((caller, timestamp_ns, audit_kinds)),
+            Some(transaction_hash),
+            Some((
+                timestamp_ns,
+                notification_window_seconds,
+                notification_ingestion_limit,
+            )),
+            Some((asset_id, origin)),
         )
     }
 
@@ -8730,6 +9120,7 @@ impl StableStore {
         rpc_audit: Option<(Principal, u64, Vec<AuditEventKind>)>,
         notification_hash: Option<[u8; 32]>,
         notification_ingestion: Option<(u64, u64, u16)>,
+        asset_origin: Option<([u8; 32], &SharedWithdrawalOrigin)>,
     ) -> Result<bool, StorageError> {
         if notification_hash
             .is_some_and(|hash| self.withdrawal_notification_index.get(&hash).is_some())
@@ -8774,6 +9165,14 @@ impl StableStore {
         let counters_blob = encode(&counters)?;
         let progress_blob = encode(progress)?;
         let key = withdrawal.id.bytes().to_sql_bytes();
+        let asset_id = asset_origin
+            .as_ref()
+            .map_or(KINIC_ASSET_ID, |(asset_id, _)| *asset_id);
+        let asset_binding_key = RecordAssetKind::Withdrawal.key(&withdrawal.id.bytes())?;
+        let origin_blob = asset_origin
+            .as_ref()
+            .map(|(_, origin)| encode(*origin))
+            .transpose()?;
         let notification_blobs = notification_ingestion
             .map(|(now_ns, window_seconds, limit)| {
                 self.prepare_notification_ingestion_quota(now_ns, window_seconds, limit)
@@ -8803,6 +9202,20 @@ impl StableStore {
                 None,
                 &withdrawal_blob,
             )?;
+            insert_tracked_entry(
+                connection,
+                "record_asset_bindings",
+                asset_binding_key,
+                asset_id.to_sql_bytes(),
+            )?;
+            if let Some(origin_blob) = &origin_blob {
+                insert_tracked_entry(
+                    connection,
+                    "withdrawal_origins",
+                    key.clone(),
+                    origin_blob.to_sql_bytes(),
+                )?;
+            }
             if let Some(transaction_hash) = notification_hash {
                 insert_tracked_entry(
                     connection,
@@ -8907,6 +9320,7 @@ impl StableStore {
         let previous_admin_blob = self.admin_state.get()?;
         let withdrawal_blob = encode(withdrawal)?;
         let key = withdrawal.id.bytes().to_sql_bytes();
+        let asset_binding_key = RecordAssetKind::Withdrawal.key(&withdrawal.id.bytes())?;
         let (previous_notification_blob, notification_blob) = self
             .prepare_notification_ingestion_quota(
                 timestamp_ns,
@@ -8944,6 +9358,12 @@ impl StableStore {
                 "stale withdrawal fee guard trip",
             )?;
             replace_withdrawal_row(connection, key.clone(), None, &withdrawal_blob)?;
+            insert_tracked_entry(
+                connection,
+                "record_asset_bindings",
+                asset_binding_key,
+                KINIC_ASSET_ID.to_sql_bytes(),
+            )?;
             insert_tracked_entry(
                 connection,
                 "withdrawal_notification_index",
@@ -9139,6 +9559,15 @@ impl StableStore {
         self.deposits.get(&id).map(|blob| decode(&blob)).transpose()
     }
 
+    pub fn shared_authorization_binding(
+        &self,
+        id: [u8; 32],
+    ) -> Result<Option<crate::multi_asset::SharedAuthorizationBinding>, StorageError> {
+        Ok(self
+            .stored_deposit(id)?
+            .and_then(|stored| stored.shared_authorization_binding))
+    }
+
     fn deposit_record_blobs(
         &self,
         previous: &DepositRecord,
@@ -9157,6 +9586,7 @@ impl StableStore {
             record: next.clone(),
             owner_sequence: stored.owner_sequence,
             base_recipient: stored.base_recipient,
+            shared_authorization_binding: stored.shared_authorization_binding,
         };
         Ok((encode(&stored)?, encode(&next_stored)?))
     }
@@ -13921,7 +14351,12 @@ mod tests {
             .handle
             .0
             .update(|connection| {
-                for table in ["record_asset_bindings", "asset_registry"] {
+                for table in [
+                    "record_asset_bindings",
+                    "withdrawal_origins",
+                    "asset_runtime_attestations",
+                    "asset_registry",
+                ] {
                     connection.execute(&format!("DROP TABLE IF EXISTS {table}"), params![])?;
                     connection
                         .execute("DELETE FROM table_counts WHERE name = ?1", params![table])?;
@@ -13939,7 +14374,12 @@ mod tests {
             .handle
             .0
             .update(|connection| {
-                for table in ["record_asset_bindings", "asset_registry"] {
+                for table in [
+                    "record_asset_bindings",
+                    "withdrawal_origins",
+                    "asset_runtime_attestations",
+                    "asset_registry",
+                ] {
                     connection.execute(&format!("DROP TABLE IF EXISTS {table}"), params![])?;
                     connection
                         .execute("DELETE FROM table_counts WHERE name = ?1", params![table])?;
@@ -14084,15 +14524,52 @@ mod tests {
         assert!(store
             .bind_record_asset(RecordAssetKind::Deposit, &record_id, &KINIC_ASSET_ID)
             .is_err());
-        let mut enabled = asset.clone();
-        enabled.asset_id = vec![0x64; 32];
-        enabled.ledger_canister_id = Principal::self_authenticating([0x65; 32]);
-        enabled.index_canister_id = Principal::self_authenticating([0x66; 32]);
-        enabled.token_contract = vec![0x67; 20];
-        enabled.lifecycle = AssetLifecycle::Enabled;
-        store
-            .register_asset(&enabled, Principal::self_authenticating([0x4c; 32]), 58)
-            .expect("register enabled test asset");
+        let attestation = AssetRuntimeAttestation {
+            asset_id: asset.asset_id.clone(),
+            chain_id: asset.base_chain_id,
+            finalized_block_number: 100,
+            finalized_block_hash: vec![0x61; 32],
+            observed_at_ns: 58,
+            bridge_runtime_sha256: asset.expected_bridge_runtime_sha256.clone(),
+            token_runtime_sha256: asset.expected_token_runtime_sha256.clone(),
+            bridge_signer: asset.expected_bridge_signer.clone(),
+            token_contract: asset.token_contract.clone(),
+            token_bridge: asset.bridge_contract.clone(),
+            token_name: asset.name.clone(),
+            token_symbol: asset.symbol.clone(),
+            token_decimals: asset.decimals,
+            global_epoch: 2,
+            asset_epoch: 3,
+            service_fee: 10,
+            max_service_fee: 10,
+            per_deposit_limit: 1_000,
+            mint_window_limit: 10_000,
+            mint_window_duration: 3_600,
+            global_deposits_paused: false,
+            global_withdrawals_paused: false,
+            asset_deposits_paused: false,
+            asset_withdrawals_paused: false,
+        };
+        let mut unsafe_fee_attestation = attestation.clone();
+        unsafe_fee_attestation.service_fee = asset.ledger_fee - 1;
+        let still_prepared = store
+            .attest_asset_runtime(
+                &unsafe_fee_attestation,
+                Principal::self_authenticating([0x4c; 32]),
+                57,
+            )
+            .expect("attest fee-unsafe asset without enabling it");
+        assert_eq!(still_prepared.lifecycle, AssetLifecycle::Prepared);
+        let enabled = store
+            .attest_asset_runtime(&attestation, Principal::self_authenticating([0x4c; 32]), 58)
+            .expect("attest enabled asset");
+        assert_eq!(enabled.lifecycle, AssetLifecycle::Enabled);
+        assert_eq!(
+            store
+                .asset_runtime_attestation(&asset.asset_id)
+                .expect("read attestation"),
+            Some(attestation)
+        );
         assert!(matches!(
             store.record_asset(RecordAssetKind::Withdrawal, &[0x68; 32]),
             Err(StorageError::RecordNotFound)
