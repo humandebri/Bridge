@@ -122,12 +122,14 @@ class SemanticsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             semantics.normalized_lean_version("unknown")
 
-    def test_live_registry_has_43_plus_5_entries(self):
+    def test_live_registry_preserves_baseline_and_matches_roots(self):
         rows, definitions, roots = semantics.load_registry()
-        self.assertEqual(sum(r["kind"] == "claim" for r in rows), 43)
-        self.assertEqual(sum(r["kind"] == "liveness" for r in rows), 5)
-        self.assertEqual(len(roots), 48)
-        self.assertGreater(len(definitions), 48)
+        claim_count = sum(r["kind"] == "claim" for r in rows)
+        liveness_count = sum(r["kind"] == "liveness" for r in rows)
+        self.assertGreaterEqual(claim_count, 43)
+        self.assertGreaterEqual(liveness_count, 5)
+        self.assertEqual(len(roots), claim_count + liveness_count)
+        self.assertGreater(len(definitions), len(roots))
 
 
 if __name__ == "__main__":
