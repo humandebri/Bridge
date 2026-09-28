@@ -16,6 +16,7 @@ REQUIRED_STRENGTHS = {"production-linked", "implementation-proved"}
 REQUIRED_CLAIM_IDS = frozenset(
     """cycles_top_up_request_policy activation_preflight authorization_binding automatic_retry_limit canonical_probe committed_quote
     deposit_admission deposit_backing deposit_identity_preflight epoch_invalidation
+    multi_asset_isolation asset_registry_binding schema_v37_migration
     exact_mint_finalization expiry_refund
     fee_accounting_once fee_payout fee_recipient_rotation funding_attempt_lifecycle
     funding_reconciliation_freshness

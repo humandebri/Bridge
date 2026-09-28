@@ -64,7 +64,7 @@ if (command !== "smoke") {
     { cwd: root, encoding: "utf8" },
   )
   const manifest =
-    /^production_ui=current-live-pass schema=36 module_sha256=[0-9a-f]{64} manifest_sha256=([0-9a-f]{64})$/m.exec(
+    /^production_ui=current-live-pass schema=37 module_sha256=[0-9a-f]{64} manifest_sha256=([0-9a-f]{64})$/m.exec(
       output,
     )?.[1]
   assertProductionUiProfile(profile, manifest)

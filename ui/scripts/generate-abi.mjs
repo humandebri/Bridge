@@ -6,6 +6,7 @@ const outputDirectory = resolve(root, "ui/src/generated/abi")
 const inputs = [
   ["Bridge", "bridgeAbi"],
   ["BSNS", "bsnsAbi"],
+  ["MultiTokenBridge", "multiTokenBridgeAbi"],
 ]
 const check = process.argv.includes("--check")
 

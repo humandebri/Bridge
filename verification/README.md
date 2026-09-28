@@ -15,7 +15,7 @@ The refinement manifest has five columns: section, abstract definition, finite-w
 CI permits only the approved Rust, Foundry, and Vitest runners. It rejects incomplete manifest/renderer coverage, generated drift, and selectors duplicated by non-generated tests, then verifies that each selector passes exactly once. Production links express ownership; the presence of a string does not increase proof strength.
 Vector comparisons establish bounded conformance for the enumerated cases, not complete semantic refinement of the Rust, Solidity, or TypeScript implementations.
 
-For `shared-expression`, both function bodies must return the unmodified shared macro result. Only immutable integer aliases may precede the call; parameter shadowing, result transformations, discarded values, and early returns are rejected. The existing `legacy_activation_evidence_requirement` enum adapter is checked against its complete fixed code-to-variant mapping, including the default branch. This return binding does not prove external inputs or caller side effects.
+For `shared-expression`, both function bodies must return the unmodified shared macro result. Only immutable integer aliases may precede the call; parameter shadowing, result transformations, discarded values, early returns, and arbitrary return adapters are rejected. This return binding does not prove external inputs or caller side effects.
 
 Withdrawal verification covers the irreversible `Committed` burn on Base and outstanding Canister liabilities. The model has no Base refund, release acknowledgement, or Withdrawal EVM operation.
 
@@ -37,7 +37,7 @@ If the fixed Ledger Fee of 100,000 raw exceeds the charged Service Fee, the fixe
 
 Lean's `step` has no post-filter based on `Safe next`. `raw_step_preserves_safe` directly proves safety for each accepted raw transition, and the finite-trace theorem follows by induction from that lemma. Canonical and Ledger certificates include the target identity, but authenticity of their history and RPC information remains an external assumption.
 
-Rust transaction tests and same-Wasm PocketIC tests validate schema v36 reopening and wire v30. Only production and test-deployment post-upgrade paths accept the one-time atomic migration from deployed schema v35 to v36; all other old or unknown schemas fail closed.
+Rust transaction tests and same-Wasm PocketIC tests validate schema v37 reopening and wire v30. Only production and test-deployment post-upgrade paths accept the one-time atomic migration from certified version 36 state to v37; all other old or unknown schemas fail closed.
 
 ## Production-equivalence definition
 

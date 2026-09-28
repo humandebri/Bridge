@@ -128,7 +128,7 @@ export const releaseProfileSchema = deploymentProfileSchema.safeExtend({
   gateBManifestSha256: releaseSha256.nullable(),
   profileFileSha256: releaseSha256,
   profileCanonicalSha256: releaseSha256,
-  canisterSchemaVersion: z.literal(36).optional(),
+  canisterSchemaVersion: z.literal(37).optional(),
   canisterModuleSha256: releaseSha256.optional(),
   uiRpcConfigSha256: releaseSha256.optional(),
 })

@@ -15,7 +15,7 @@ Plans 001–004 are completed historical records. The repository-root `README.md
 | [006](006-sns-handover-upgrade-production-preflight.md) | SNS handover, upgrade compatibility, and production preflight | P0 | L | 001–005 | IN PROGRESS |
 | [007](007-local-ic-mainnet-base-sepolia-frontend-e2e.md) | E2E from local to IC mainnet test Canister, Base Sepolia, and test frontend | P0 | L | 001–004 | LOCAL DONE / EXTERNAL PENDING |
 | [008](008-proof-strength-production-equivalence.md) | Stronger formal evidence: Verus executable proofs, SMT obligations, vector coverage | P1 | M | 001–004 | COMPLETE |
-| [009](009-multiple-assets-evm-deployments.md) | Multiple assets and EVM chains while preserving existing KINIC on Base | P1 | L | 006, 008 | PLANNED |
+| [009](009-multiple-assets-evm-deployments.md) | Extend the existing Canister for IC–Base assets; one new shared Bridge with multiple ERC-20s, preserving the existing KINIC pair | P1 | L | 006, 008 | IN PROGRESS |
 
 ## Dependencies
 

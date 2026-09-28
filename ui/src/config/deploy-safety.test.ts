@@ -14,7 +14,7 @@ describe("UI deployment safety", () => {
       gateBManifestSha256: manifest,
       deploymentBlock: 1n,
       ...hashes,
-      canisterSchemaVersion: 36,
+      canisterSchemaVersion: 37,
       canisterModuleSha256: "d".repeat(64),
       uiRpcConfigSha256: "f".repeat(64),
     }

@@ -258,7 +258,12 @@ def main() -> int:
     base = args.base_sha or os.environ.get("BRIDGE_TRUSTED_BASE_SHA")
     if base:
         print(json.dumps(check_base(snapshot, base), ensure_ascii=False, indent=2))
-    print("claim semantics passed (43 release claims, 5 conditional liveness properties)")
+    claim_count = sum(statement["kind"] == "claim" for statement in snapshot["semantics"])
+    liveness_count = sum(statement["kind"] == "liveness" for statement in snapshot["semantics"])
+    print(
+        f"claim semantics passed ({claim_count} release claims, "
+        f"{liveness_count} conditional liveness properties)"
+    )
     return 0
 
 

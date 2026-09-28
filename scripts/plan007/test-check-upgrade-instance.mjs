@@ -23,12 +23,12 @@ assert.equal(deploymentInstanceHex(previousBytes, "test"), previousHex)
 assert.deepEqual(
   verifyUpgradeInstance(
     currentProfile,
-    { schema_version: 35, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
+    { schema_version: 36, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
     currentStatus,
   ),
   {
     replacement_mode: "current-schema-upgrade",
-    live_schema_version: 35,
+    live_schema_version: 36,
     previous_deployment_instance_id: previousHex,
     live_module_hash: currentStatus.module_hash,
     next: previousHex,
@@ -37,27 +37,27 @@ assert.deepEqual(
 assert.equal(
   verifyUpgradeInstance(
     currentProfile,
-    { schema_version: 36, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
+    { schema_version: 37, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
     currentStatus,
   ).live_schema_version,
-  36,
+  37,
 )
 assert.throws(
   () => verifyUpgradeInstance(
     { ...currentProfile, deploymentInstanceId: changedHex },
-    { schema_version: 35, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
+    { schema_version: 36, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
     currentStatus,
   ),
   /reinstall is prohibited/,
 )
-for (const schemaVersion of [38, 37, 34, 33, 32, 31, 30]) {
+for (const schemaVersion of [39, 38, 35, 34, 33, 32, 31, 30]) {
   assert.throws(
     () => verifyUpgradeInstance(
       currentProfile,
       { schema_version: schemaVersion, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
       currentStatus,
     ),
-    /requires deployed schema v35 or current schema v36/,
+    /requires deployed schema v36 or current schema v37/,
   )
 }
 
@@ -71,27 +71,27 @@ assert.throws(
 )
 assert.throws(() => verifyUpgradeInstance(
   currentProfile,
-  { schema_version: 35, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
+  { schema_version: 36, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
   { ...currentStatus, module_hash: "0x0" },
 ), /module hash/)
 assert.throws(() => verifyUpgradeInstance(
   { ...currentProfile, rpcProviderUrlsSha256: `0x${"44".repeat(32)}` },
-  { schema_version: 35, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
+  { schema_version: 36, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
   currentStatus,
 ), /RPC provider digest differs/)
 assert.throws(() => verifyUpgradeInstance(
   currentProfile,
-  { schema_version: 35, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
+  { schema_version: 36, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
   { ...currentStatus, canister_id: "aaaaa-aa" },
 ), /reviewed Bridge canister/)
 assert.throws(() => verifyUpgradeInstance(
   currentProfile,
-  { schema_version: 35, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
+  { schema_version: 36, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
   { module_hash: currentStatus.module_hash, controller_principals: ["aaaaa-aa"], cycles_balance: 100 },
 ), /fields differ/)
 assert.throws(() => verifyUpgradeInstance(
   currentProfile,
-  { schema_version: 35, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
+  { schema_version: 36, deployment_instance_id: previousBytes, rpc_provider_urls_sha256: rpcDigestBytes },
   { ...currentStatus, extra: true },
 ), /fields differ/)
 

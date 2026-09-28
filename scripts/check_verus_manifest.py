@@ -394,18 +394,6 @@ def _shared_expression_result_aliases(
     assert marker is not None  # The caller already checked exactly one invocation.
     _, end = _balanced(body, marker.end() - 1, "(", ")")
     prefix, suffix = body[1:marker.start()].strip(), body[end:-1].strip()
-    if function == "legacy_activation_evidence_requirement":
-        # This existing adapter returns an enum while the spec returns a code.
-        # Bind the entire conversion, including its default, instead of allowing
-        # arbitrary match expressions around a shared predicate.
-        expected = """{
-            1 => LegacyActivationEvidenceRequirement::Schedule,
-            2 => LegacyActivationEvidenceRequirement::Execute,
-            _ => LegacyActivationEvidenceRequirement::NotRequired,
-        }"""
-        if prefix != "match" or re.sub(r"\s+", "", suffix) != re.sub(r"\s+", "", expected):
-            raise ValueError(f"shared-expression return adapter differs: {function}")
-        return {}
     if suffix:
         raise ValueError(f"shared-expression must return the unmodified macro result: {function}")
     aliases: dict[str, int] = {}

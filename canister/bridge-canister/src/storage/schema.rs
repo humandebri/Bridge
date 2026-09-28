@@ -1,6 +1,6 @@
 use ic_sqlite_vfs::MemoryId;
 
-pub const SCHEMA_VERSION: u16 = 36;
+pub const SCHEMA_VERSION: u16 = 37;
 pub(super) const WIRE_VERSION: u8 = 30;
 
 pub const RETIRED_STABLE_STRUCTURE_MEMORY_IDS: core::ops::RangeInclusive<u8> = 0..=32;
@@ -27,4 +27,6 @@ pub(super) const VALIDATION_TABLES: &[&str] = &[
     "withdrawal_transaction_index",
     "withdrawal_stop_reason_counts",
     "settlement_jobs",
+    "asset_registry",
+    "record_asset_bindings",
 ];

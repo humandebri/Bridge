@@ -12,7 +12,7 @@ Fix the mainnet Ledger to `73mez-iiaaa-aaaaq-aaasq-cai` and Index to `7vojr-tyaa
 ## Current progress
 
 Base contract Phase 1E and Plans 001–004 are complete.
-The Bridge canister implements stable schema v36, external integrations, Settlement Reserve, stable settlement executor, EIP-712 Mint Authorization, operational administration, and Verus proofs.
+The Bridge canister implements stable schema v37, an asset registry, external integrations, Settlement Reserve, stable settlement executor, EIP-712 Mint Authorization, operational administration, and Verus proofs.
 Plan 005's seven-day, 10-per-type production measurements and Plan 006's RPC rehearsal/monitor drill moved to Gate C after unpause. They do not authorize Gate B or controller handover. Retain SNS-proposal activation receipts for reactivation after handover. Initial activation separates seal/schedule/execute by the production controller fixed at seal time, anonymous relay, and the fixed confirmation relayer; Confirmed execute permanently consumes internal bootstrap authority. Operators separately decide when to remove the external controller; this is not automated. Even before removal, only the existing Governance principal has activation authority after initial execute. Plan 007 local staging and PocketIC/Anvil/frontend E2E are implemented; external runs for additional wallet compatibility and five additional scenarios await explicit approval but do not block production activation.
 
 ## Architecture
@@ -122,7 +122,7 @@ First implement Deposit and Withdrawal state machines as pure logic with mocked 
 Separate ICRC ledger, EVM RPC, and threshold ECDSA calls to confine Verus proofs to deterministic logic.
 
 Phase 2 implemented the deterministic state machine, initial stable schema, and observation queries.
-Subsequent Plans 002/003 and current ADRs added external integrations, operational state, settlement executor, fund-before-formal-deposit, wallet-funded EIP-712 Mint Authorization, role-specific Governance nonce lanes, and confirmed activation evidence. The current format is stable schema v36.
+Subsequent Plans 002/003 and current ADRs added external integrations, operational state, settlement executor, fund-before-formal-deposit, wallet-funded EIP-712 Mint Authorization, role-specific Governance nonce lanes, confirmed activation evidence, and the multi-asset registry. The current format is stable schema v37.
 
 ### 2-1. State design (ADRs 0008, 0010)
 
@@ -130,7 +130,7 @@ Subsequent Plans 002/003 and current ADRs added external integrations, operation
 - Persist all state directly in ic-stable-structures; avoid serializing everything in `pre_upgrade`.
 - Represent unfinished Deposits, Withdrawals, EVM transactions, and Reconciliation Holds so they can resume after upgrades.
 - Before initial production deployment, replace stable schemas directly without migrations, dual reads, or fallbacks. Fail closed for any version other than current.
-- Use only `bridge_metadata` as the source of truth for schema version; the current format is schema v36/record wire v30.
+- Use only `bridge_metadata` as the source of truth for schema version; the current format is schema v37/record wire v30.
 - Save Deposit record, owner sequence, and Base recipient in one envelope. Use corresponding index table counts as authoritative counts for pending EVM, open Holds, and nonterminal Withdrawals.
 - Update Withdrawal primary rows, liability indexes, totals, and stop-reason aggregates together in typed SQLite transactions without relying on change-log triggers.
 

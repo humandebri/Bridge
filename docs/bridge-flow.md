@@ -8,7 +8,7 @@ This document explains current ICP/Base flows across the boundaries between user
 |---|---|
 | IC wallet | ICRC-2 approve, `request_deposit`, `request_deposit_refund` |
 | Base wallet | Pay gas for Mint Authorization submission; approve and submit Withdrawal burns |
-| Bridge Canister | SQLite schema v36, Ledger operations, EIP-712 signing, Finalized reconciliation, Governance transaction signing |
+| Bridge Canister | SQLite schema v37, asset registry, Ledger operations, EIP-712 signing, Finalized reconciliation, Governance transaction signing |
 | Ledger / Index | Deposit pulls, refunds, Withdrawal releases, history reconciliation |
 | EVM RPC Canister | Canonical Finalized observations through provider quorum |
 | Base Bridge / bSNS | Signature-verified Deposit minting and atomic Withdrawal burns |

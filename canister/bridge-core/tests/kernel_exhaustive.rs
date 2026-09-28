@@ -5,18 +5,17 @@ use bridge_core::{
     deposit_reservation_active, deposit_transition, deposit_transition_decision,
     expiry_refund_allowed, fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
     hold_resolution_decision, lease_generation_next, lease_outcome_is_current,
-    legacy_activation_evidence_requirement, manual_claim_decision, mint_admission_total,
-    mint_authorization_has_minimum_remaining_time, mint_finalization_allowed, next_attempt,
-    operational_config_seal_decision, outbound_settlement, paid_call_cycle_requirement,
-    payout_allowed, payout_debit, refresh_generation_next, refresh_owner_matches,
-    release_transfer_matches, reservation_decision, reserve_admission_preserves_requirement,
-    scan_complete, service_fee_change_allowed, settlement_decision, settlement_failure_count,
-    signature_install_allowed, signing_cycle_requirement, transaction_liability_wei,
-    withdrawal_phase_allows, withdrawal_phase_step, withdrawal_transition_effects,
-    AssetOperationLifecycleDecision, BootstrapPausePrincipalMigrationDecision, DepositEventGuard,
-    DepositTransitionDecision, DepositTransitionInput, FeeRecipientRotationDecision,
-    HoldResolutionDecision, LegacyActivationEvidenceRequirement, ManualClaimDecision,
-    OperationalConfigSealDecision,
+    manual_claim_decision, mint_admission_total, mint_authorization_has_minimum_remaining_time,
+    mint_finalization_allowed, next_attempt, operational_config_seal_decision, outbound_settlement,
+    paid_call_cycle_requirement, payout_allowed, payout_debit, refresh_generation_next,
+    refresh_owner_matches, release_transfer_matches, reservation_decision,
+    reserve_admission_preserves_requirement, scan_complete, service_fee_change_allowed,
+    settlement_decision, settlement_failure_count, signature_install_allowed,
+    signing_cycle_requirement, transaction_liability_wei, withdrawal_phase_allows,
+    withdrawal_phase_step, withdrawal_transition_effects, AssetOperationLifecycleDecision,
+    BootstrapPausePrincipalMigrationDecision, DepositEventGuard, DepositTransitionDecision,
+    DepositTransitionInput, FeeRecipientRotationDecision, HoldResolutionDecision,
+    ManualClaimDecision, OperationalConfigSealDecision,
 };
 
 #[test]
@@ -312,45 +311,6 @@ fn bootstrap_pause_principal_migration_is_exact_and_idempotent() {
                                     expected
                                 );
                             }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn legacy_activation_migration_requires_only_the_exact_recoverable_phase() {
-    use LegacyActivationEvidenceRequirement::{Execute, NotRequired, Schedule};
-    for sealed in [false, true] {
-        for pending in [false, true] {
-            for controller_present in [false, true] {
-                for staging_sentinel in [false, true] {
-                    for paused in [false, true] {
-                        for exact_execute in [false, true] {
-                            let expected = if !sealed {
-                                NotRequired
-                            } else if pending {
-                                Schedule
-                            } else if !controller_present
-                                || (staging_sentinel && (!paused || exact_execute))
-                            {
-                                Execute
-                            } else {
-                                NotRequired
-                            };
-                            assert_eq!(
-                                legacy_activation_evidence_requirement(
-                                    sealed,
-                                    pending,
-                                    controller_present,
-                                    staging_sentinel,
-                                    paused,
-                                    exact_execute,
-                                ),
-                                expected
-                            );
                         }
                     }
                 }

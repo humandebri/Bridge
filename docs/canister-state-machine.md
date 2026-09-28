@@ -4,8 +4,8 @@
 
 `bridge-core` defines deterministic state transitions independent of caller, time, ICRC Ledger, EVM RPC, Candid, and storage. `bridge-canister` persists state in a single SQLite database and connects the Ledger, EVM RPC, threshold ECDSA, administration APIs, and stable job executor.
 
-Normal reopen accepts only stable schema v36 and record wire version v30. Only production and test-deployment `post_upgrade` accept the one-time atomic migration from deployed version 35/wire v30 to v36; all other old/unknown schemas, unknown wire formats, and undecodable databases fail closed and refuse startup. Current staging also accepts only upgrades preserving the same Canister and deployment instance; never replay or resume the one-time reinstall history.
-Upgrade validation checks same-Wasm reopening with current-schema v36 records, configuration, quotas, and audit state preserved, activation evidence migration from version 35, and rejection of other old schemas/wire formats.
+Normal reopen accepts only stable schema v37 and record wire version v30. Only production and test-deployment `post_upgrade` accept the one-time atomic migration from certified version 36/wire v30 state to v37; all other old/unknown schemas, unknown wire formats, and undecodable databases fail closed and refuse startup. Current staging also accepts only upgrades preserving the same Canister and deployment instance; never replay or resume the one-time reinstall history.
+Upgrade validation checks same-Wasm reopening with current schema v37 records, configuration, quotas, audit state, asset registry, and record bindings preserved, plus rejection of other old schemas and wire formats.
 
 `settlement_jobs` is authoritative for running and stopped Settlements. Timers automatically claim Deposits and fee payouts; only explicit `continue_withdrawal` manually claims Withdrawals. Withdrawal notification atomically saves only the record and fixed transfer identity, without creating a job. Persist signature dispatch or Ledger transfer identity before external `await`; only lease generation and database state determine execution authority.
 

@@ -26,6 +26,7 @@ MAX_REQUEST = 1024 * 1024
 JEST_ARTIFACTS = (
     "target/test-deployment/staging/bridge_canister.wasm",
     "target/test-deployment/predecessor-v35/bridge_canister.wasm",
+    "target/test-deployment/predecessor-v36/bridge_canister.wasm",
     "target/wasm32-unknown-unknown/release/mock_external.wasm",
 )
 

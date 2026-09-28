@@ -1,6 +1,6 @@
 # IC mainnet × Base Sepolia staging E2E
 
-This runbook targets the same live stack: current staging Canister, deployment instance, Timelock, Bridge, bSNS, and signer. Hash-fix the destructive reinstall and fresh-stack creation completed on 2026-08-27/28 as one-time history; never use it to rerun, resume, or create another stack. Migrate deployed stable schema v35 to v36 exactly once through same-instance `upgrade`, preserving record wire v30. Subsequent Canister updates permit only reviewed v36 upgrades.
+This runbook targets the same live stack: current staging Canister, deployment instance, Timelock, Bridge, bSNS, and signer. Hash-fix the destructive reinstall and fresh-stack creation completed on 2026-08-27/28 as one-time history; never use it to rerun, resume, or create another stack. The historical same-instance v35-to-v36 upgrade remains immutable evidence. The current multi-asset candidate permits only the reviewed same-instance v36-to-v37 upgrade, preserving record wire v30.
 
 Base Sepolia staging uses a 300-second Timelock under `short-delay-test-only`. Preserve the production 86400-second constraint stated here; never use shortened artifacts/evidence for production rehearsals. Production Canister, KINIC Ledger, Base Mainnet, and SNS are excluded.
 
@@ -39,7 +39,7 @@ Each stage saves source commit, artifact SHA-256, target, raw receipts, and obse
 
 `current_schema_upgrade` accepts only evidence of applying canonical test-deployment Wasm `target/test-deployment/staging/bridge_canister.wasm` in `upgrade` mode. Require all of the following:
 
-- Unchanged Canister ID, deployment instance, stable schema v36, record wire v30, and minimum Withdrawal ID.
+- Unchanged Canister ID, deployment instance, record wire v30, and minimum Withdrawal ID; migrate stable schema v36 to v37.
 - Module/Candid hashes match reviewed bindings.
 - Controller set and all state counts match before/after, with storage integrity `ok`.
 - Reject `reinstall`, `auto`, instance drift, old/unknown schemas, and unregistered wire formats.
@@ -63,7 +63,7 @@ Fix RPC order to PublicNode, `sepolia.base.org`, and dRPC; verify preflight chai
 Only new v8 manifests may enter `SHORT_DELAY_LIVE`, requiring every condition below:
 
 - Base Deposits/Withdrawals and Canister Deposits are unpaused.
-- Canister ID, module, schema v36, wire v30, deployment instance, minimum Withdrawal ID, and contract/runtime/profile hashes match; storage integrity is `ok`.
+- Canister ID, module, schema v37, wire v30, deployment instance, minimum Withdrawal ID, and contract/runtime/profile hashes match; storage integrity is `ok`.
 - Historical/retired stack identities are excluded from active profiles, signers, and automations.
 - Pending Governance, Timelock, Deposit, Withdrawal, Ledger operation, reconciliation, mint reservation, and unpaid liability counts are all zero.
 - Fixed RPC-provider preflight chain binding and health are valid.

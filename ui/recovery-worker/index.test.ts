@@ -17,7 +17,7 @@ const profile = {
   chainId: 8453,
   testOnly: false,
   icHost: "https://icp-api.io",
-  canisterSchemaVersion: 36,
+  canisterSchemaVersion: 37,
   bridgeCanisterId: "aaaaa-aa",
   bridgeAddress: bridge,
   bsnsAddress: token,
@@ -62,7 +62,7 @@ beforeEach(() => {
     },
   ])
   mocks.runtime.mockResolvedValue({
-    schema_version: 36,
+    schema_version: 37,
     base_chain_id: 8453n,
     deployment_instance_id: new Uint8Array(32).fill(0x33),
     bridge_contract: new Uint8Array(20).fill(0x55),

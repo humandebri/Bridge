@@ -27,7 +27,7 @@ See the “Test Ledger fee” section in `sepolia-staging-e2e.md` for detailed c
 Never reuse staging Wasm as a production artifact.
 For production builds, synchronize the constant with the live KINIC mainnet Ledger fee and approved profile, updating Candid bindings, Rust/UI/integration tests, and production preflight in the same change.
 
-Current formats are stable schema v36 and record wire v30. Only production/test-deployment `post_upgrade` also accepts the one-time migration from deployed version 35/wire v30. Base Sepolia staging accepts only reviewed upgrades preserving Canister and deployment instance; no reinstall.
+Current formats are stable schema v37 and record wire v30. Only production/test-deployment `post_upgrade` also accepts the one-time migration from certified version 36/wire v30 state. Base Sepolia staging accepts only reviewed upgrades preserving Canister and deployment instance; no reinstall.
 
 ## Retention and auditing
 
@@ -35,10 +35,10 @@ If a requested `get_audit_events` sequence has been pruned, the response starts 
 
 `list_deposit_ids.history_truncated = true` means older owner-list index entries were removed. Even for Deposits older than `oldest_available_cursor`, known-ID `get_deposit` and idempotent retries of the same request remain available.
 
-Normal production reopen rejects stable state other than schema v36/wire v30. Only post-upgrade accepts the one-time atomic migration from deployed schema v35/wire v30 to v36. All other old/unknown schemas or undecodable databases fail closed even if empty.
+Normal candidate reopen rejects stable state other than schema v37/wire v30. Only post-upgrade accepts the one-time atomic migration from deployed schema v36/wire v30 to v37. All other old/unknown schemas or undecodable databases fail closed even if empty.
 
 If `get_bridge_status.withdrawal_fee_guard_active` becomes true, immediately pause Base Bridge Withdrawals. The record's `last_settlement_stop_reason` and audit event retain `LedgerFeeExceedsServiceFee`; no IC release or reserve change occurs. Compare the build-selected fixed `KINIC_LEDGER_FEE`—production `100000 raw`, staging `10000 raw`—and prepared record's charged Service Fee with the reviewed profile. Then any non-anonymous actor may run `continue_withdrawal` from History. The Canister does not query `icrc1_fee()` at runtime; it starts release from the same record and clears the guard only after revalidating fixed Ledger Fee ≤ charged Service Fee.
-Current formats are stable schema v36/record wire v30, rejecting everything except the deployed-v35→v36 post-upgrade migration fail closed. Staging upgrade policy fixes the existing test Canister principal, current module/certified Candid, deployment instance, controllers, and new target module/Candid hashes. Update only through reviewed same-instance upgrades; reinstall is prohibited.
+Current formats are stable schema v37/record wire v30, rejecting everything except the reviewed v36→v37 post-upgrade migration fail closed. Staging upgrade policy fixes the existing test Canister principal, current module/certified Candid, deployment instance, controllers, and new target module/Candid hashes. Update only through reviewed same-instance upgrades; reinstall is prohibited.
 Never manually edit SQLite databases or counters.
 
 Only `bridge_metadata.application_schema_version` is authoritative for schema version. Store Deposit record, owner sequence, Base recipient, Authorization, and expiry/mint confirmation evidence in one stable envelope. Corresponding index `table_counts` are authoritative for pending Ledger operations, open reconciliation holds, and nonterminal Withdrawals; update primary rows, liability indexes, and aggregates in one SQLite transaction.
@@ -53,7 +53,7 @@ After fresh install and before controller handover, call `initialize_public_conf
 2. Verify `storage_integrity_check()` returns `ok`. Upgrades do not automatically run this check.
 3. Repeat `refresh_storage_checksum(4194304)` until `complete = true`. Each call covers at most 4 MiB; this is not a raw stable-memory copy or filesystem backup.
 
-Production is now deployed at stable schema v36; v35 is the historical initial-deployment/activation root. Normal current-release Gate B accepts only v36. Historical verification may accept v35 or v36 only when profile, Gate A receipt, upgrade-chain terminal, Wasm, and live RuntimeBinding converge on one version. Post-activation UI publication requires a deployed v36 terminal with valid upgrade evidence rooted in immutable v35 Gate B. Reject v34, v37, disconnected mixed versions, dual reads, shims, and generic fallbacks. The new UI cannot target v35. Replace never-deployed formats directly, updating all callers, tests, fixtures, and documentation together.
+Production is currently deployed at stable schema v36; v35 is the historical initial-deployment/activation root. The multi-asset release targets schema v37 and accepts only the reviewed v36→v37 migration or an already-current v37 state. Historical verification may accept v35 or v36 only for its recorded release evidence. UI publication for this release requires a deployed v37 terminal with current upgrade evidence. Reject v34, v35 as an upgrade source, v38, disconnected mixed versions, dual reads, shims, and generic fallbacks. Replace never-deployed formats directly, updating all callers, tests, fixtures, and documentation together.
 
 ## ETH and cycles replenishment
 
@@ -261,7 +261,7 @@ also grants replenishment authorization. This change alone performs no registrat
 Bind local `cycles_top_up_request_policy` conditions to shared kernels and Verus.
 Unit/PocketIC tests verify in-flight flags, controller inputs, timers, and Candid responses,
 but whole-operation guarantees remain `partial`, depending on launcher authorization/funds/success and IC runtime.
-Stable schema v36 is unchanged. Existing `attempts` counts consecutive automatic failures. Transient RPC, signing, Ledger, and insufficient-cycles failures stop automatically on the third attempt including the first; successful replenishment alone does not resume. Explicitly call `continue_deposit` from the same History record for one recovery attempt. Only actual progress resets failures to zero and resumes automatic processing. Fee payouts use administrator-only `continue_fee_payout`.
+Stable schema v37 keeps the existing settlement retry semantics. Existing `attempts` counts consecutive automatic failures. Transient RPC, signing, Ledger, and insufficient-cycles failures stop automatically on the third attempt including the first; successful replenishment alone does not resume. Explicitly call `continue_deposit` from the same History record for one recovery attempt. Only actual progress resets failures to zero and resumes automatic processing. Fee payouts use administrator-only `continue_fee_payout`.
 
 `settlement_cycle_ceiling` is a per-liability reservation and one-operation margin, not cycles attached to an external call. Immediately before paid EVM RPC/threshold signing, require the checked sum of existing-liability reserves, actual call cycles, and this margin. Even zero-attached-cycles calls such as Ledger calls are prohibited if reserves plus margin cannot be maintained.
 

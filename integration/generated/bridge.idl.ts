@@ -311,7 +311,51 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'Ok' : ActivationStatus,
     'Err' : BaseGovernanceError,
   });
+  const AssetLifecycle = IDL.Variant({
+    'Enabled' : IDL.Null,
+    'Prepared' : IDL.Null,
+  });
+  const BaseBridgeKind = IDL.Variant({
+    'SharedMultiToken' : IDL.Null,
+    'LegacySingleToken' : IDL.Null,
+  });
+  const AssetConfig = IDL.Record({
+    'expected_bridge_signer' : IDL.Vec(IDL.Nat8),
+    'expected_token_runtime_sha256' : IDL.Vec(IDL.Nat8),
+    'decimals' : IDL.Nat8,
+    'base_chain_id' : IDL.Nat64,
+    'bridge_contract' : IDL.Vec(IDL.Nat8),
+    'name' : IDL.Text,
+    'deployment_instance_id' : IDL.Vec(IDL.Nat8),
+    'ledger_fee' : IDL.Nat,
+    'index_canister_id' : IDL.Principal,
+    'lifecycle' : AssetLifecycle,
+    'ledger_canister_id' : IDL.Principal,
+    'expected_timelock_minimum_delay_seconds' : IDL.Nat64,
+    'asset_id' : IDL.Vec(IDL.Nat8),
+    'expected_bridge_runtime_sha256' : IDL.Vec(IDL.Nat8),
+    'token_contract' : IDL.Vec(IDL.Nat8),
+    'bridge_kind' : BaseBridgeKind,
+    'timelock_contract' : IDL.Vec(IDL.Nat8),
+    'symbol' : IDL.Text,
+  });
+  const AdminError = IDL.Variant({
+    'Busy' : IDL.Null,
+    'InsufficientFeeReserve' : IDL.Null,
+    'Unauthorized' : IDL.Null,
+    'InvalidArgument' : IDL.Text,
+    'StorageFailure' : IDL.Null,
+  });
+  const Result_9 = IDL.Variant({
+    'Ok' : IDL.Opt(AssetConfig),
+    'Err' : AdminError,
+  });
   const AuditEventKind = IDL.Variant({
+    'AssetPrepared' : IDL.Record({
+      'bridge_contract' : IDL.Vec(IDL.Nat8),
+      'asset_id' : IDL.Vec(IDL.Nat8),
+      'token_contract' : IDL.Vec(IDL.Nat8),
+    }),
     'PausePrincipalRotated' : IDL.Null,
     'DepositsPauseRepeated' : IDL.Null,
     'EvmRpcObservation' : IDL.Record({
@@ -362,14 +406,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'pruned_count' : IDL.Nat64,
     'pruned_through_sequence' : IDL.Opt(IDL.Nat64),
   });
-  const AdminError = IDL.Variant({
-    'Busy' : IDL.Null,
-    'InsufficientFeeReserve' : IDL.Null,
-    'Unauthorized' : IDL.Null,
-    'InvalidArgument' : IDL.Text,
-    'StorageFailure' : IDL.Null,
-  });
-  const Result_9 = IDL.Variant({ 'Ok' : AuditEventPage, 'Err' : AdminError });
+  const Result_10 = IDL.Variant({ 'Ok' : AuditEventPage, 'Err' : AdminError });
   const ReserveStatus = IDL.Record({
     'cycles_balance' : IDL.Nat,
     'cycles_surplus' : IDL.Nat,
@@ -435,7 +472,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'Uninitialized' : IDL.Null,
     'StorageFailure' : IDL.Null,
   });
-  const Result_10 = IDL.Variant({
+  const Result_11 = IDL.Variant({
     'Ok' : ControlPlaneAddressesView,
     'Err' : ControlPlaneAddressesError,
   });
@@ -540,11 +577,11 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'cycles_floor' : IDL.Nat,
   });
   const OperationalConfigError = IDL.Variant({ 'Unauthorized' : IDL.Null });
-  const Result_11 = IDL.Variant({
+  const Result_12 = IDL.Variant({
     'Ok' : OperationalConfig,
     'Err' : OperationalConfigError,
   });
-  const Result_12 = IDL.Variant({
+  const Result_13 = IDL.Variant({
     'Ok' : IDL.Vec(SignedBaseGovernanceTransaction),
     'Err' : BaseGovernanceError,
   });
@@ -553,11 +590,11 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'Activated' : IDL.Null,
     'OperationalConfigSealed' : IDL.Null,
   });
-  const Result_13 = IDL.Variant({
+  const Result_14 = IDL.Variant({
     'Ok' : ProductionLifecycle,
     'Err' : BaseGovernanceError,
   });
-  const Result_14 = IDL.Variant({
+  const Result_15 = IDL.Variant({
     'Ok' : IDL.Text,
     'Err' : StorageMaintenanceError,
   });
@@ -568,6 +605,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
   const RuntimeBinding = IDL.Record({
     'expected_bridge_signer' : IDL.Vec(IDL.Nat8),
     'base_chain_id' : IDL.Nat64,
+    'kinic_asset_binding_valid' : IDL.Bool,
     'bridge_contract' : IDL.Vec(IDL.Nat8),
     'evm_rpc_canister_id' : IDL.Principal,
     'deployment_instance_id' : IDL.Vec(IDL.Nat8),
@@ -592,7 +630,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'amount' : IDL.Nat,
   });
   const GetWithdrawalsError = IDL.Variant({ 'TooManyIds' : IDL.Null });
-  const Result_15 = IDL.Variant({
+  const Result_16 = IDL.Variant({
     'Ok' : IDL.Vec(IDL.Opt(WithdrawalView)),
     'Err' : GetWithdrawalsError,
   });
@@ -646,9 +684,13 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'StorageFailure' : IDL.Null,
     'DerivationUnavailable' : IDL.Null,
   });
-  const Result_16 = IDL.Variant({
+  const Result_17 = IDL.Variant({
     'Ok' : IDL.Null,
     'Err' : PublicConfigInitializationError,
+  });
+  const Result_18 = IDL.Variant({
+    'Ok' : IDL.Vec(AssetConfig),
+    'Err' : AdminError,
   });
   const ListDepositIdsArgs = IDL.Record({
     'owner' : IDL.Principal,
@@ -662,7 +704,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'deposit_ids' : IDL.Vec(IDL.Vec(IDL.Nat8)),
   });
   const ListDepositIdsError = IDL.Variant({ 'InvalidLimit' : IDL.Null });
-  const Result_17 = IDL.Variant({
+  const Result_19 = IDL.Variant({
     'Ok' : DepositIdPage,
     'Err' : ListDepositIdsError,
   });
@@ -674,7 +716,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'next_cursor' : IDL.Opt(IDL.Nat64),
     'deposits' : IDL.Vec(NonterminalDepositRef),
   });
-  const Result_18 = IDL.Variant({
+  const Result_20 = IDL.Variant({
     'Ok' : NonterminalDepositRefPage,
     'Err' : ListDepositIdsError,
   });
@@ -703,7 +745,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'StorageFailure' : IDL.Null,
     'InvalidLimit' : IDL.Null,
   });
-  const Result_19 = IDL.Variant({
+  const Result_21 = IDL.Variant({
     'Ok' : WithdrawalHistoryPage,
     'Err' : ListWithdrawalsError,
   });
@@ -731,7 +773,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'StorageFailure' : IDL.Null,
     'AnonymousCaller' : IDL.Null,
   });
-  const Result_20 = IDL.Variant({
+  const Result_22 = IDL.Variant({
     'Ok' : NotifyDepositMintReceipt,
     'Err' : NotifyDepositMintError,
   });
@@ -770,11 +812,11 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'AnonymousCaller' : IDL.Null,
     'InvalidBaseResponse' : IDL.Null,
   });
-  const Result_21 = IDL.Variant({
+  const Result_23 = IDL.Variant({
     'Ok' : NotifyWithdrawalReceipt,
     'Err' : NotifyWithdrawalError,
   });
-  const Result_22 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : AdminError });
+  const Result_24 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : AdminError });
   const BaseGovernanceAction = IDL.Variant({
     'ExecuteControlPlaneRotation' : IDL.Null,
     'PauseDepositMints' : IDL.Null,
@@ -795,7 +837,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'complete' : IDL.Bool,
     'checksum' : IDL.Nat64,
   });
-  const Result_23 = IDL.Variant({
+  const Result_25 = IDL.Variant({
     'Ok' : ChecksumRefreshStatus,
     'Err' : StorageMaintenanceError,
   });
@@ -835,7 +877,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       'retry_after_seconds' : IDL.Nat64,
     }),
   });
-  const Result_24 = IDL.Variant({
+  const Result_26 = IDL.Variant({
     'Ok' : DepositReceipt,
     'Err' : DepositError,
   });
@@ -856,7 +898,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'FinalityUnavailable' : IDL.Null,
     'AnonymousCaller' : IDL.Null,
   });
-  const Result_25 = IDL.Variant({
+  const Result_27 = IDL.Variant({
     'Ok' : DepositView,
     'Err' : RequestDepositRefundError,
   });
@@ -865,7 +907,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'state' : FeePayoutState,
     'amount' : IDL.Nat,
   });
-  const Result_26 = IDL.Variant({
+  const Result_28 = IDL.Variant({
     'Ok' : FeePayoutReceipt,
     'Err' : AdminError,
   });
@@ -881,14 +923,14 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'activation_attestation' : ActivationAttestation,
     'lifecycle' : ProductionLifecycle,
   });
-  const Result_27 = IDL.Variant({
+  const Result_29 = IDL.Variant({
     'Ok' : OperationalConfigSealReceipt,
     'Err' : BaseGovernanceError,
   });
   const SnsActivationProposal = IDL.Record({
     'previous_governance_operation_id' : IDL.Nat64,
   });
-  const Result_28 = IDL.Variant({ 'Ok' : IDL.Text, 'Err' : IDL.Text });
+  const Result_30 = IDL.Variant({ 'Ok' : IDL.Text, 'Err' : IDL.Text });
   return IDL.Service({
     'check_cycles_top_up' : IDL.Func([], [Result], []),
     'confirm_base_governance_transaction' : IDL.Func(
@@ -904,13 +946,14 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'execute_activation' : IDL.Func([], [Result_6], []),
     'get_activation_attestation' : IDL.Func([], [Result_7], ['query']),
     'get_activation_status' : IDL.Func([], [Result_8], ['query']),
+    'get_asset' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_9], ['query']),
     'get_audit_events' : IDL.Func(
         [IDL.Nat64, IDL.Nat16],
-        [Result_9],
+        [Result_10],
         ['query'],
       ),
     'get_bridge_status' : IDL.Func([], [BridgeStatus], ['query']),
-    'get_control_plane_addresses' : IDL.Func([], [Result_10], ['query']),
+    'get_control_plane_addresses' : IDL.Func([], [Result_11], ['query']),
     'get_deposit' : IDL.Func(
         [IDL.Vec(IDL.Nat8)],
         [IDL.Opt(DepositView)],
@@ -926,15 +969,15 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
         [IDL.Nat64],
         ['query'],
       ),
-    'get_operational_config' : IDL.Func([], [Result_11], ['query']),
+    'get_operational_config' : IDL.Func([], [Result_12], ['query']),
     'get_pending_base_governance_transaction' : IDL.Func(
         [],
-        [Result_12],
+        [Result_13],
         ['query'],
       ),
-    'get_production_lifecycle' : IDL.Func([], [Result_13], ['query']),
-    'get_release_operational_config' : IDL.Func([], [Result_11], ['query']),
-    'get_release_storage_integrity' : IDL.Func([], [Result_14], ['query']),
+    'get_production_lifecycle' : IDL.Func([], [Result_14], ['query']),
+    'get_release_operational_config' : IDL.Func([], [Result_12], ['query']),
+    'get_release_storage_integrity' : IDL.Func([], [Result_15], ['query']),
     'get_release_upgrade_observation' : IDL.Func(
         [],
         [IDL.Opt(ReleaseUpgradeObservation)],
@@ -948,7 +991,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       ),
     'get_withdrawals' : IDL.Func(
         [IDL.Vec(IDL.Vec(IDL.Nat8))],
-        [Result_15],
+        [Result_16],
         ['query'],
       ),
     'icrc10_supported_standards' : IDL.Func(
@@ -961,21 +1004,22 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
         [Icrc21ConsentMessageResponse],
         [],
       ),
-    'initialize_public_config' : IDL.Func([], [Result_16], []),
-    'list_deposit_ids' : IDL.Func([ListDepositIdsArgs], [Result_17], ['query']),
+    'initialize_public_config' : IDL.Func([], [Result_17], []),
+    'list_assets' : IDL.Func([], [Result_18], ['query']),
+    'list_deposit_ids' : IDL.Func([ListDepositIdsArgs], [Result_19], ['query']),
     'list_nonterminal_deposit_refs' : IDL.Func(
         [ListDepositIdsArgs],
-        [Result_18],
+        [Result_20],
         ['query'],
       ),
     'list_withdrawals' : IDL.Func(
         [ListWithdrawalsArgs],
-        [Result_19],
+        [Result_21],
         ['query'],
       ),
-    'notify_deposit_mint' : IDL.Func([NotifyDepositMintArgs], [Result_20], []),
-    'notify_withdrawal' : IDL.Func([NotifyWithdrawalArgs], [Result_21], []),
-    'pause_new_deposits' : IDL.Func([], [Result_22], []),
+    'notify_deposit_mint' : IDL.Func([NotifyDepositMintArgs], [Result_22], []),
+    'notify_withdrawal' : IDL.Func([NotifyWithdrawalArgs], [Result_23], []),
+    'pause_new_deposits' : IDL.Func([], [Result_24], []),
     'prepare_base_governance_action' : IDL.Func(
         [BaseGovernanceAction],
         [Result_6],
@@ -988,34 +1032,35 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       ),
     'prepare_next_emergency_base_action' : IDL.Func([], [Result_6], []),
     'refresh_activation_attestation' : IDL.Func([], [Result_7], []),
-    'refresh_storage_checksum' : IDL.Func([IDL.Nat64], [Result_23], []),
-    'request_deposit' : IDL.Func([DepositArgs], [Result_24], []),
-    'request_deposit_refund' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_25], []),
-    'request_fee_payout' : IDL.Func([IDL.Nat], [Result_26], []),
-    'rotate_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_22], []),
+    'refresh_storage_checksum' : IDL.Func([IDL.Nat64], [Result_25], []),
+    'register_asset' : IDL.Func([AssetConfig], [Result_24], []),
+    'request_deposit' : IDL.Func([DepositArgs], [Result_26], []),
+    'request_deposit_refund' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_27], []),
+    'request_fee_payout' : IDL.Func([IDL.Nat], [Result_28], []),
+    'rotate_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_24], []),
     'rotate_pause_principal' : IDL.Func(
         [RotatePausePrincipalArgs],
-        [Result_22],
+        [Result_24],
         [],
       ),
     'schedule_activation' : IDL.Func([], [Result_6], []),
     'seal_operational_config' : IDL.Func(
         [OperationalConfigArgs],
-        [Result_27],
+        [Result_29],
         [],
       ),
     'sns_execute_activation' : IDL.Func([SnsActivationProposal], [], []),
     'sns_schedule_activation' : IDL.Func([SnsActivationProposal], [], []),
     'start_storage_validation' : IDL.Func([], [Result_4], []),
-    'storage_integrity_check' : IDL.Func([], [Result_14], ['query']),
+    'storage_integrity_check' : IDL.Func([], [Result_15], ['query']),
     'validate_sns_execute_activation' : IDL.Func(
         [SnsActivationProposal],
-        [Result_28],
+        [Result_30],
         [],
       ),
     'validate_sns_schedule_activation' : IDL.Func(
         [SnsActivationProposal],
-        [Result_28],
+        [Result_30],
         [],
       ),
   });

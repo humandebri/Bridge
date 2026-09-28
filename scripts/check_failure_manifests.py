@@ -26,6 +26,10 @@ REQUIRED_LEAN_FAILURE_SHA256 = {
     ),
     "BackingViolation.lean": "0ad4d6a1424518a8b8f9968310d0a88619133f86d4ce877fa7134a0f22b206d2",
     "ConflictingFundingReplay.lean": "fd5f6abf7f8812e64bf2cbf457991ca46fcea6cdcc71acd074a6b162317c7b96",
+    "CrossAssetAuthorization.lean": (
+        "d591df55e433262e15f6c9ef13055196"
+        "6d9e8e69eaea6348fb91ff5507f1f1ba"
+    ),
     "DeadlineOverflow.lean": "864692b1294fc6b36f398fc91ea14695d07fea1c3defc14708eccc329aa74d5c",
     "DestinationMutation.lean": "a3992470b4340e01eb81291efe4172fb9b3269141e987beea8238f02fded0cae",
     "DoubleDepositFeeTrace.lean": "9f00413132deded07cee5385e9a56384775d7b6b869bfad08b31c384059605ba",
@@ -40,9 +44,17 @@ REQUIRED_LEAN_FAILURE_SHA256 = {
     "IncompleteExpiryAudit.lean": "4c30cb6604648725bea1d9a376cd758efedc2bbbc029c26088ed070229be55bd",
     "IncompleteMintAudit.lean": "34a54671a3271bf8efb75d8ffa94483006cb795bca44a73eeccd29384ed3ec1c",
     "InvalidExecutionStep.lean": "a6b48a8e639af5578312a150535c1b778d45877f353b449eca9559558c156213",
+    "InvalidSchemaV37Migration.lean": (
+        "f2555b62e1105d5a05155d6993d045d5"
+        "2e9b84774f8024f1a8a157ea2d5d214b"
+    ),
     "ManualActiveLeaseBypass.lean": "05b63de3fa0532e200bdd0c2f8e75495f96b40683b11177827e16335ee5fa7a7",
     "ManualClaimEconomicMutation.lean": "9b60fdf900a577eea35aa64585347ed44b629cceae79b2dbbc0ede270ad7722d",
     "MintFeeAlreadyCounted.lean": "1506eb9046d1280a73afc6a2e0203ad2ebc477b2eb62afc1e8360bbd6bbb4a68",
+    "MissingKinicRegistryBinding.lean": (
+        "faf38ece305edea6bf6853f05d613e75"
+        "ca529a426e847cc7fb8913ca97731938"
+    ),
     "MissingUserLiveness.lean": "285ee5520011c8603f7db684c1a6365bef69da98d9e38c6ed60a4f0b69bbe07e",
     "ProcessedExpiryRefund.lean": "4dcff1642961a5f622a762ac1b4748b990a5b4ee6a480d4e6a42abf76f7e0773",
     "RefundBeforeFunding.lean": "47ac92b520aef0fc257bf1a3fa956af2ce6130b9bf676b56d8936e62c2bd56f0",

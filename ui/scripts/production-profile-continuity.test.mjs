@@ -7,7 +7,7 @@ import {
   requireUnchangedProductionProfile,
 } from "./production-profile-continuity.mjs"
 
-const profile = JSON.stringify({ environment: "mainnet-candidate", canisterSchemaVersion: 36 })
+const profile = JSON.stringify({ environment: "mainnet-candidate", canisterSchemaVersion: 37 })
 
 /** @param {string} body @param {{ status?: number, headers?: Record<string, string> }} [overrides] */
 function response(body, overrides = {}) {
