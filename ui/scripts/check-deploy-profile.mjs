@@ -66,7 +66,7 @@ try {
     { cwd: sourceRoot, encoding: "utf8" },
   )
   const verifiedManifestSha256 =
-    /^production_ui=current-live-pass schema=36 module_sha256=[0-9a-f]{64} manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
+    /^production_ui=current-live-pass schema=37 module_sha256=[0-9a-f]{64} manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
       gateOutput,
     )?.[1]
   if (!verifiedManifestSha256)

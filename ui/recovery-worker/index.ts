@@ -14,7 +14,7 @@ const profileSchema = z.object({
   chainId: z.literal(8453),
   testOnly: z.literal(false),
   icHost: z.literal("https://icp-api.io"),
-  canisterSchemaVersion: z.literal(36),
+  canisterSchemaVersion: z.literal(37),
   bridgeCanisterId: z.string().min(1),
   bridgeAddress: z.string().regex(/^0x[0-9a-f]{40}$/i),
   bsnsAddress: z.string().regex(/^0x[0-9a-f]{40}$/i),
@@ -182,7 +182,7 @@ export async function handleMintRecovery(request: Request, env: Env): Promise<Re
       })
       const runtime = await actor.get_runtime_binding()
       if (
-        runtime.schema_version !== 36 ||
+        runtime.schema_version !== 37 ||
         runtime.base_chain_id !== 8453n ||
         toHex(Uint8Array.from(runtime.deployment_instance_id)).toLowerCase() !==
           profile.deploymentInstanceId.toLowerCase() ||

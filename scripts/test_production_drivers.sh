@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VALIDATION="$ROOT/scripts/production-validation.sh"
-SCHEMA_CONSISTENCY_FIXTURE='{"schema_version":36,"expected_bridge_signer":"current-state-policy"}'
-[[ "$SCHEMA_CONSISTENCY_FIXTURE" == *'"schema_version":36'* ]]
+SCHEMA_CONSISTENCY_FIXTURE='{"schema_version":37,"expected_bridge_signer":"current-state-policy"}'
+[[ "$SCHEMA_CONSISTENCY_FIXTURE" == *'"schema_version":37'* ]]
 
 # Historical upgrade chains and handover recovery are no longer executable policy.
 ! grep -q 'production_validate_gate_b_source_chain' "$VALIDATION"

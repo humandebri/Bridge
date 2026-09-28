@@ -20,7 +20,7 @@ CHAIN_ID = 84532
 ENVIRONMENT_MODE = "short-delay-test-only"
 ACTIVATION_TIMELOCK_DELAY_SECONDS = 300
 EVM_RPC_CANISTER_ID = "7hfb6-caaaa-aaaar-qadga-cai"
-CURRENT_STABLE_SCHEMA = 36
+CURRENT_STABLE_SCHEMA = 37
 CURRENT_RECORD_WIRE_VERSION = 30
 LIVE_PUBLIC_CONFIG_ARTIFACT_KIND = "live-public-config"
 UPGRADE_INSTANCE_CHECK_ARTIFACT_KIND = "upgrade-instance-check"
@@ -444,8 +444,8 @@ def upgrade_instance_check(
         "schema_version",
         "live RuntimeBinding",
     )
-    if schema_version not in (35, CURRENT_STABLE_SCHEMA):
-        fail("staging upgrade requires deployed schema v35 or current stable schema v36")
+    if schema_version not in (36, CURRENT_STABLE_SCHEMA):
+        fail("staging upgrade requires deployed schema v36 or current stable schema v37")
     previous = deployment_instance_hex(
         live_public_config.get("deployment_instance_id"),
         "live RuntimeBinding deployment_instance_id",
@@ -497,8 +497,8 @@ def normalized_upgrade_check(value: dict[str, Any]) -> dict[str, Any]:
         f"{context} previous_deployment_instance_id",
     )
     next_id = deployment_instance_hex(value["next"], f"{context} next")
-    if schema_version not in (35, CURRENT_STABLE_SCHEMA) or previous != next_id:
-        fail(f"{context} must use deployed schema v35 or current schema v{CURRENT_STABLE_SCHEMA} and preserve the deployment instance ID")
+    if schema_version not in (36, CURRENT_STABLE_SCHEMA) or previous != next_id:
+        fail(f"{context} must use deployed schema v36 or current schema v{CURRENT_STABLE_SCHEMA} and preserve the deployment instance ID")
     if replacement_mode != CURRENT_SCHEMA_UPGRADE:
         fail(f"{context} replacement_mode must be {CURRENT_SCHEMA_UPGRADE}")
     return {
@@ -933,8 +933,8 @@ def validate_current_schema_upgrade(details: dict[str, Any], binding: dict[str, 
             fail("upgrade changed the Bridge Canister ID")
     schema_before = require_nat(details, "schema_version_before", context)
     schema_after = require_nat(details, "schema_version_after", context)
-    if schema_before not in (35, CURRENT_STABLE_SCHEMA) or schema_after != CURRENT_STABLE_SCHEMA:
-        fail("upgrade must migrate deployed schema v35 to v36 or remain on current schema v36")
+    if schema_before not in (36, CURRENT_STABLE_SCHEMA) or schema_after != CURRENT_STABLE_SCHEMA:
+        fail("upgrade must migrate deployed schema v36 to v37 or remain on current schema v37")
     for field in ("record_wire_version_before", "record_wire_version_after"):
         if require_nat(details, field, context) != CURRENT_RECORD_WIRE_VERSION:
             fail("upgrade must start and finish on the current record wire version")
@@ -2012,8 +2012,8 @@ def validate_local_promotion_evidence(local: dict[str, Any]) -> dict[str, Any]:
         fail("local promotion evidence has malformed upgrade states")
     before_schema = require_nat(upgrade["before"]["status"], "schema_version", f"{context}.state_upgrade.before.status")
     after_schema = require_nat(upgrade["after"]["status"], "schema_version", f"{context}.state_upgrade.after.status")
-    if before_schema not in (35, CURRENT_STABLE_SCHEMA) or after_schema != CURRENT_STABLE_SCHEMA:
-        fail("local promotion evidence must migrate schema v35 to v36 or remain on v36")
+    if before_schema not in (36, CURRENT_STABLE_SCHEMA) or after_schema != CURRENT_STABLE_SCHEMA:
+        fail("local promotion evidence must migrate schema v36 to v37 or remain on v37")
     normalized_before = copy.deepcopy(upgrade["before"])
     normalized_after = copy.deepcopy(upgrade["after"])
     for state in (normalized_before, normalized_after):

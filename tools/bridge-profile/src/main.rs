@@ -34,8 +34,9 @@ const PRODUCTION_PAUSE_PRINCIPAL: &str =
 const OFFICIAL_EVM_RPC_CANISTER: &str = "7hfb6-caaaa-aaaar-qadga-cai";
 const MAX_EVIDENCE_AGE_SECS: u64 = 90 * 24 * 60 * 60;
 const MAX_ACTIVATION_ATTESTATION_AGE_SECS: u64 = 5 * 60;
-const CURRENT_STABLE_SCHEMA_VERSION: u16 = 36;
-const PREVIOUS_STABLE_SCHEMA_VERSION: u16 = 35;
+const CURRENT_STABLE_SCHEMA_VERSION: u16 = 37;
+const PREVIOUS_STABLE_SCHEMA_VERSION: u16 = 36;
+const LEGACY_STABLE_SCHEMA_VERSION: u16 = 35;
 const RELEASE_PROFILE_SCHEMA_VERSION: u8 = 5;
 const PRODUCTION_CANISTER_INSTALL_RECEIPT_SCHEMA_VERSION: u8 = 3;
 const PRODUCTION_UPGRADE_CHUNK_SIZE: usize = 1024 * 1024;
@@ -2344,7 +2345,9 @@ fn validate_profile_with_schema_policy(
         }
         ProfileSchemaPolicy::Historical => matches!(
             profile.canister_schema_version,
-            PREVIOUS_STABLE_SCHEMA_VERSION | CURRENT_STABLE_SCHEMA_VERSION
+            LEGACY_STABLE_SCHEMA_VERSION
+                | PREVIOUS_STABLE_SCHEMA_VERSION
+                | CURRENT_STABLE_SCHEMA_VERSION
         ),
     };
     if !schema_version_valid {
@@ -2353,7 +2356,7 @@ fn validate_profile_with_schema_policy(
                 "profile must bind the current stable schema version".into()
             }
             ProfileSchemaPolicy::Historical => {
-                "historical profile must bind stable schema version 35 or 36".into()
+                "historical profile must bind stable schema version 35, 36, or 37".into()
             }
         });
     }
@@ -4719,7 +4722,7 @@ fn production_current_ui_runtime_profile_value(
     rpc_bytes: &[u8],
 ) -> Result<Value, String> {
     if profile.canister_schema_version != CURRENT_STABLE_SCHEMA_VERSION {
-        return Err("production UI profile must use current schema v36".into());
+        return Err("production UI profile must use current schema v37".into());
     }
     let rpc: ProductionUiRpcConfig = serde_json::from_slice(rpc_bytes)
         .map_err(|_| "invalid reviewed production UI RPC configuration")?;
@@ -4775,7 +4778,7 @@ fn render_production_current_ui_runtime(
         .map_err(|error| error.to_string())?
         .write_all(&canonical_bytes(&rendered)?)
         .map_err(|error| error.to_string())?;
-    println!("production_ui_runtime=rendered schema=36");
+    println!("production_ui_runtime=rendered schema=37");
     Ok(())
 }
 
@@ -4800,7 +4803,7 @@ fn verify_production_current_ui_live(
         controller_mode,
     )?;
     println!(
-        "production_ui=current-live-pass schema=36 module_sha256={} manifest_sha256={}",
+        "production_ui=current-live-pass schema=37 module_sha256={} manifest_sha256={}",
         module_sha256.to_ascii_lowercase(),
         bundle.manifest_sha256
     );
@@ -9548,7 +9551,7 @@ mod tests {
     }
 
     #[test]
-    fn historical_profile_schema_policy_is_bounded_to_v35_and_v36() {
+    fn historical_profile_schema_policy_is_bounded_to_v35_through_v37() {
         let mut profile = valid_profile();
         assert!(validate_profile(&profile, true).is_ok());
         assert!(validate_profile_with_schema_policy(
@@ -9567,8 +9570,16 @@ mod tests {
         )
         .is_ok());
 
+        profile.canister_schema_version = LEGACY_STABLE_SCHEMA_VERSION;
+        assert!(validate_profile_with_schema_policy(
+            &profile,
+            true,
+            ProfileSchemaPolicy::Historical,
+        )
+        .is_ok());
+
         for unknown in [
-            PREVIOUS_STABLE_SCHEMA_VERSION - 1,
+            LEGACY_STABLE_SCHEMA_VERSION - 1,
             CURRENT_STABLE_SCHEMA_VERSION + 1,
         ] {
             profile.canister_schema_version = unknown;
@@ -9613,7 +9624,7 @@ mod tests {
     }
 
     #[test]
-    fn production_ui_runtime_profile_binds_v36_current_module_and_reviewed_rpc() {
+    fn production_ui_runtime_profile_binds_v37_current_module_and_reviewed_rpc() {
         let root = env::temp_dir().join(format!("bridge-ui-runtime-{}", process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -9635,7 +9646,7 @@ mod tests {
         )
         .unwrap();
         let parsed: Value = serde_json::from_slice(&expected).unwrap();
-        assert_eq!(parsed["canisterSchemaVersion"], 36);
+        assert_eq!(parsed["canisterSchemaVersion"], 37);
         assert_eq!(parsed["canisterModuleSha256"], module);
         assert!(parsed.get("postActivationUpgradeSha256").is_none());
         assert_eq!(
@@ -9643,7 +9654,7 @@ mod tests {
             hex(&Sha256::digest(&profile_bytes))
         );
         assert_eq!(parsed["uiRpcConfigSha256"], hex(&Sha256::digest(rpc)));
-        for schema in [34, 35, 37] {
+        for schema in [34, 35, 36, 38] {
             profile.canister_schema_version = schema;
             assert!(production_current_ui_runtime_profile_value(
                 &profile,
@@ -9654,7 +9665,7 @@ mod tests {
             )
             .is_err());
         }
-        profile.canister_schema_version = 36;
+        profile.canister_schema_version = 37;
         for invalid_rpc in [
             br#"{"schema_version":1,"base_rpc_url":"https://mainnet.base.org"}"#.as_slice(),
             br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/key?secret=1"}"#.as_slice(),
@@ -10682,7 +10693,7 @@ mod tests {
             )
         };
         let ok_activation = activation(false);
-        let ok_runtime = runtime(36);
+        let ok_runtime = runtime(37);
         let ok_status = status(false);
         let ok_pending = PendingGovernanceTransactionsView::Ok(Vec::new());
         assert!(validate(

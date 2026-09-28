@@ -1254,49 +1254,18 @@ describe("Phase 3 PocketIC saga", () => {
     keeps_signing_privileged_while_restricting_confirmation_callers,
   );
 
-  async function migrates_the_exact_confirmed_old_generation_from_schema_35() {
-    const {
-      bridge,
-      evm,
-      controller,
-      confirmationRelayerPrincipal,
-    } = await setup(false, {}, schema35BridgeWasm, true, true);
+  async function rejects_schema_35_as_an_obsolete_upgrade_source() {
+    const { bridge } = await setup(false, {}, schema35BridgeWasm, true, true);
     expect(await (bridge.actor as any).get_runtime_binding())
       .toHaveProperty("schema_version", 35);
-    await (evm.actor as any).set_receipt_mode({ Confirmed: null });
-    bridge.actor.setPrincipal(controller);
-    const original: any = await (bridge.actor as any).schedule_activation();
-    expect(original).toHaveProperty("Ok.kind.ScheduleActivation");
-    const bumped = (value: bigint) => (value * 11_250n + 9_999n) / 10_000n;
-    const replacement: any = await (bridge.actor as any).prepare_base_governance_replacement({
-      operation_id: original.Ok.operation_id,
-      expected_transaction_hash: original.Ok.transaction_hash,
-      max_fee_per_gas: bumped(original.Ok.max_fee_per_gas),
-      max_priority_fee_per_gas: bumped(original.Ok.max_priority_fee_per_gas),
-    });
-    expect(replacement).toHaveProperty("Ok.generation", 1);
-    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
-    expect(await (bridge.actor as any).confirm_base_governance_transaction({
-      operation_id: original.Ok.operation_id,
-      transaction_hash: original.Ok.transaction_hash,
-    })).toHaveProperty("Ok.succeeded", true);
-
-    await upgradeBridge(bridge);
+    await expect(upgradeBridge(bridge)).rejects.toThrow();
     expect(await (bridge.actor as any).get_runtime_binding())
-      .toHaveProperty("schema_version", 36);
-    const activation: any = await (bridge.actor as any).get_activation_status();
-    expect(activation).toHaveProperty("Ok.last_confirmed_activation.0.generation", 0);
-    expect(activation.Ok.last_confirmed_activation[0].signed_at_ns)
-      .toBe(original.Ok.signed_at_ns);
-    expect(activation.Ok.last_confirmed_activation[0].transaction_hash)
-      .toEqual(original.Ok.transaction_hash);
-    expect(await (bridge.actor as any).get_production_lifecycle())
-      .toEqual({ Ok: { OperationalConfigSealed: null } });
+      .toHaveProperty("schema_version", 35);
   }
 
   it(
-    "migrates the exact confirmed old generation from the deployed schema 35 Wasm",
-    migrates_the_exact_confirmed_old_generation_from_schema_35,
+    "rejects schema 35 as an obsolete upgrade source",
+    rejects_schema_35_as_an_obsolete_upgrade_source,
   );
 
   async function fails_closed_when_bootstrap_controller_is_removed() {
@@ -1552,7 +1521,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(standards).toEqual([{ name: "ICRC-21", url: "https://github.com/dfinity/ICRC/blob/main/ICRCs/ICRC-21/ICRC-21.md" }]);
     const config: any = await (bridge.actor as any).get_runtime_binding();
     expect(config.base_chain_id).toBe(8453n);
-    expect(config.schema_version).toBe(36);
+    expect(config.schema_version).toBe(37);
     expect(Array.from(config.minimum_withdrawal_id)).toEqual(Array.from(init.minimum_withdrawal_id));
     expect(config.ledger_canister_id.toText()).toBe(init.ledger_canister_id.toText());
     expect(config.evm_rpc_canister_id.toText()).toBe(init.evm_rpc_canister_id.toText());
@@ -3623,7 +3592,7 @@ describe("Phase 3 PocketIC saga", () => {
   it("fee payout stalled scan stops and real progress restores automatic work",
     fee_payout_stalled_scan_stops_and_real_progress_restores_automatic_work);
 
-  async function preserves_representative_v36_current_state_across_a_same_wasm_upgrade() {
+  async function preserves_representative_v37_current_state_across_a_same_wasm_upgrade() {
     const { bridge, evm, runtimePrincipal } = await setup();
     const deposit: any = await requestDefaultDeposit(bridge);
     expect(deposit).toHaveProperty("Ok.deposit_id");
@@ -3640,7 +3609,7 @@ describe("Phase 3 PocketIC saga", () => {
       limit: 20,
     });
     const controllersBefore = await pic!.getControllers(bridge.canisterId);
-    expect(runtimeBefore.schema_version).toBe(36);
+    expect(runtimeBefore.schema_version).toBe(37);
     expect(statusBefore.mint_authorization_epoch).toBeGreaterThan(0n);
     expect(historyBefore.Ok.deposit_ids).toContainEqual(deposit.Ok.deposit_id);
 
@@ -3683,8 +3652,8 @@ describe("Phase 3 PocketIC saga", () => {
   }
 
   it(
-    "preserves representative v36 current state across a same-Wasm upgrade",
-    preserves_representative_v36_current_state_across_a_same_wasm_upgrade,
+    "preserves representative v37 current state across a same-Wasm upgrade",
+    preserves_representative_v37_current_state_across_a_same_wasm_upgrade,
   );
 
   it("keeps large SQLite status and upgrade work bounded and completes controller maintenance", async () => {
@@ -3795,7 +3764,7 @@ describe("Phase 3 PocketIC saga", () => {
       median(hundredJobInstructions) * 2n,
     );
     const before: any = await (bridge.actor as any).get_bridge_status();
-    expect(before.schema_version).toBe(36);
+    expect(before.schema_version).toBe(37);
     expect(before.counts.withdrawals).toBe(10_000n);
     expect(before.counts.retained_audit_events).toBe(10_000n);
     expect(
@@ -3813,7 +3782,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(await (bridge.actor as any).get_withdrawal(firstId)).toHaveLength(1);
     await upgradeBridge(bridge);
     const after: any = await (bridge.actor as any).get_bridge_status();
-    expect(after.schema_version).toBe(36);
+    expect(after.schema_version).toBe(37);
     expect(after.counts).toEqual(before.counts);
     expect(after.settlement_scheduler.scheduled).toBe(before.settlement_scheduler.scheduled);
     expect(after.settlement_scheduler.leased).toBe(before.settlement_scheduler.leased);

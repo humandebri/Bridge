@@ -645,6 +645,74 @@ async fn check_cycles_top_up() -> Result<(), String> {
     cycles_top_up::check(ic_cdk::api::is_controller(&ic_cdk::api::msg_caller())).await
 }
 
+#[ic_cdk::query]
+fn list_assets() -> Result<Vec<config::AssetConfig>, admin::AdminError> {
+    STORE.with(|store| {
+        store
+            .borrow()
+            .assets()
+            .map_err(|_| admin::AdminError::StorageFailure)
+    })
+}
+
+#[ic_cdk::query]
+fn get_asset(asset_id: Vec<u8>) -> Result<Option<config::AssetConfig>, admin::AdminError> {
+    STORE.with(|store| {
+        store
+            .borrow()
+            .asset(&asset_id)
+            .map_err(|_| admin::AdminError::InvalidArgument("invalid asset ID".into()))
+    })
+}
+
+#[ic_cdk::update]
+fn register_asset(asset: config::AssetConfig) -> Result<(), admin::AdminError> {
+    let caller = ic_cdk::api::msg_caller();
+    if !admin::is_governance(caller)? {
+        return Err(admin::AdminError::Unauthorized);
+    }
+    asset
+        .validate()
+        .map_err(|error| admin::AdminError::InvalidArgument(error.into()))?;
+    if asset.bridge_kind != config::BaseBridgeKind::SharedMultiToken
+        || asset.lifecycle != config::AssetLifecycle::Prepared
+    {
+        return Err(admin::AdminError::InvalidArgument(
+            "new assets must use the shared Bridge and start prepared".into(),
+        ));
+    }
+    let (configured, signer) = STORE
+        .with(|store| {
+            let store = store.borrow();
+            Ok::<_, storage::StorageError>((
+                store
+                    .config()?
+                    .ok_or(storage::StorageError::RecordNotFound)?,
+                store
+                    .signer_address()?
+                    .ok_or(storage::StorageError::RecordNotFound)?,
+            ))
+        })
+        .map_err(|_| admin::AdminError::StorageFailure)?;
+    if asset.base_chain_id != configured.base_chain_id
+        || asset.deployment_instance_id != configured.deployment_instance_id
+        || asset.timelock_contract != configured.timelock_contract
+        || asset.expected_timelock_minimum_delay_seconds
+            != configured.expected_timelock_minimum_delay_seconds
+        || asset.expected_bridge_signer.as_slice() != signer
+    {
+        return Err(admin::AdminError::InvalidArgument(
+            "asset does not match the configured chain, instance, signer, or Timelock".into(),
+        ));
+    }
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .register_asset(&asset, caller, ic_cdk::api::time())
+            .map_err(|error| admin::AdminError::InvalidArgument(error.to_string()))
+    })
+}
+
 #[ic_cdk::update]
 async fn request_deposit(args: api::DepositArgs) -> Result<api::DepositReceipt, api::DepositError> {
     require_asset_operations_for_deposit()?;

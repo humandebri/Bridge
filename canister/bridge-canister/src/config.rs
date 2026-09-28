@@ -43,6 +43,137 @@ pub const KINIC_LEDGER_CANISTER_ID: &str = "73mez-iiaaa-aaaaq-aaasq-cai";
 pub const KINIC_INDEX_CANISTER_ID: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
 pub const BASE_MAINNET_CHAIN_ID: u64 = 8453;
 pub const OFFICIAL_EVM_RPC_CANISTER_ID: &str = "7hfb6-caaaa-aaaar-qadga-cai";
+/// sha256("KINIC_BRIDGE_ASSET_ID_V1\\0" || KINIC_LEDGER_CANISTER_ID)
+pub const KINIC_ASSET_ID: [u8; 32] = [
+    0xa0, 0x4c, 0xdc, 0x1d, 0xbf, 0x56, 0x1c, 0x21, 0xc4, 0x6f, 0x9e, 0xdf, 0x3a, 0xdc, 0xf3, 0xdd,
+    0x27, 0x21, 0x2f, 0x75, 0xcd, 0x01, 0x7f, 0x44, 0x0d, 0x55, 0xb9, 0x0e, 0xe5, 0x71, 0x28, 0x99,
+];
+
+#[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BaseBridgeKind {
+    LegacySingleToken,
+    SharedMultiToken,
+}
+
+#[derive(CandidType, Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetLifecycle {
+    Prepared,
+    Enabled,
+}
+
+#[derive(CandidType, Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct AssetConfig {
+    pub asset_id: Vec<u8>,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u8,
+    pub ledger_canister_id: Principal,
+    pub index_canister_id: Principal,
+    pub ledger_fee: u128,
+    pub base_chain_id: u64,
+    pub deployment_instance_id: Vec<u8>,
+    pub bridge_kind: BaseBridgeKind,
+    pub bridge_contract: Vec<u8>,
+    pub token_contract: Vec<u8>,
+    pub expected_bridge_runtime_sha256: Vec<u8>,
+    pub expected_token_runtime_sha256: Vec<u8>,
+    pub timelock_contract: Vec<u8>,
+    pub expected_bridge_signer: Vec<u8>,
+    pub expected_timelock_minimum_delay_seconds: u64,
+    pub lifecycle: AssetLifecycle,
+}
+
+impl AssetConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.asset_id.len() != 32 || self.asset_id.iter().all(|byte| *byte == 0) {
+            return Err("asset ID must be 32 nonzero bytes");
+        }
+        if self.name.is_empty()
+            || self.symbol.is_empty()
+            || self.name.len() > 64
+            || self.symbol.len() > 16
+        {
+            return Err("asset name and symbol must be bounded and nonempty");
+        }
+        if self.ledger_canister_id == Principal::anonymous()
+            || self.index_canister_id == Principal::anonymous()
+            || self.ledger_fee == 0
+        {
+            return Err("asset Ledger, Index, and fee must be valid");
+        }
+        if self.bridge_contract.len() != 20
+            || self.bridge_contract.iter().all(|byte| *byte == 0)
+            || self.expected_bridge_runtime_sha256.len() != 32
+            || self
+                .expected_bridge_runtime_sha256
+                .iter()
+                .all(|byte| *byte == 0)
+            || self.expected_token_runtime_sha256.len() != 32
+            || self
+                .expected_token_runtime_sha256
+                .iter()
+                .all(|byte| *byte == 0)
+        {
+            return Err("asset Base contracts and runtime hashes must be fixed");
+        }
+        if self.base_chain_id == 0
+            || self.deployment_instance_id.len() != 32
+            || self.deployment_instance_id.iter().all(|byte| *byte == 0)
+        {
+            return Err("asset Base chain and deployment instance must be fixed");
+        }
+        match self.bridge_kind {
+            BaseBridgeKind::LegacySingleToken => {
+                if (!self.token_contract.is_empty() && self.token_contract.len() != 20)
+                    || (!self.expected_bridge_signer.is_empty()
+                        && self.expected_bridge_signer.len() != 20)
+                {
+                    return Err("legacy token and signer addresses must be empty or 20 bytes");
+                }
+            }
+            BaseBridgeKind::SharedMultiToken => {
+                if self.ledger_canister_id == self.index_canister_id
+                    || self.token_contract.len() != 20
+                    || self.token_contract.iter().all(|byte| *byte == 0)
+                    || self.token_contract == self.bridge_contract
+                    || self.timelock_contract.len() != 20
+                    || self.timelock_contract.iter().all(|byte| *byte == 0)
+                    || self.expected_bridge_signer.len() != 20
+                    || self.expected_bridge_signer.iter().all(|byte| *byte == 0)
+                    || self.expected_timelock_minimum_delay_seconds == 0
+                {
+                    return Err(
+                        "shared Bridge assets require fixed token, signer, and Timelock bindings",
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn legacy_kinic(config: &BridgeInitArgs) -> Self {
+        Self {
+            asset_id: KINIC_ASSET_ID.to_vec(),
+            name: "KINIC".into(),
+            symbol: "KINIC".into(),
+            decimals: config.expected_bsns_decimals,
+            ledger_canister_id: config.ledger_canister_id,
+            index_canister_id: config.index_canister_id,
+            ledger_fee: crate::ledger::KINIC_LEDGER_FEE.get(),
+            base_chain_id: config.base_chain_id,
+            deployment_instance_id: config.deployment_instance_id.clone(),
+            bridge_kind: BaseBridgeKind::LegacySingleToken,
+            bridge_contract: config.bridge_contract.clone(),
+            token_contract: Vec::new(),
+            expected_bridge_runtime_sha256: config.expected_bridge_runtime_sha256.clone(),
+            expected_token_runtime_sha256: config.expected_bsns_runtime_sha256.clone(),
+            timelock_contract: config.timelock_contract.clone(),
+            expected_bridge_signer: Vec::new(),
+            expected_timelock_minimum_delay_seconds: config.expected_timelock_minimum_delay_seconds,
+            lifecycle: AssetLifecycle::Enabled,
+        }
+    }
+}
 
 #[cfg(feature = "test-deployment")]
 pub const BASE_SEPOLIA_CHAIN_ID: u64 = 84_532;
@@ -662,6 +793,7 @@ fn rpc_host(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn fixed_kinic_canister_ids_are_valid_and_distinct() {
@@ -675,6 +807,10 @@ mod tests {
             official_evm_rpc_canister_id().to_text(),
             OFFICIAL_EVM_RPC_CANISTER_ID
         );
+        let mut asset_id = Sha256::new();
+        asset_id.update(b"KINIC_BRIDGE_ASSET_ID_V1\0");
+        asset_id.update(KINIC_LEDGER_CANISTER_ID.as_bytes());
+        assert_eq!(asset_id.finalize().as_slice(), KINIC_ASSET_ID);
     }
 
     #[test]

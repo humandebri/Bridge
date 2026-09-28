@@ -44,21 +44,6 @@ pub(super) fn write_withdrawal_transaction(
     )
 }
 
-pub(super) fn create_history_indexes(connection: &UpdateConnection<'_>) -> Result<(), DbError> {
-    for table in ["withdrawal_requester_index", "withdrawal_transaction_index"] {
-        connection.execute(&format!("CREATE TABLE {table} (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID"), params![])?;
-        connection.execute(
-            "INSERT INTO table_counts(name, count) VALUES (?1, ?2)",
-            params![table, 0u64.to_sql_bytes()],
-        )?;
-    }
-    connection.execute("CREATE TABLE history_index_progress (id INTEGER PRIMARY KEY CHECK(id=1), stage INTEGER NOT NULL, cursor BLOB NOT NULL) STRICT", params![])?;
-    connection.execute(
-        "INSERT INTO history_index_progress VALUES (1, 0, X'')",
-        params![],
-    )
-}
-
 impl StableStore {
     /// Each message commits at most 100 rows together with its restart cursor.
     pub fn advance_history_indexes(&mut self) -> Result<bool, StorageError> {

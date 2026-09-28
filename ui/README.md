@@ -120,8 +120,9 @@ pnpm run deploy
 ```
 
 Run this command only from the clean source revision bound by the standalone UI asset receipt.
-The current post-activation path accepts only the already-deployed stable schema v35 Gate B and
-its immutable seal/schedule/execute lineage; the normal current-release Gate B path remains v36.
+Historical verification retains the already-deployed schema v35 Gate B and its immutable
+seal/schedule/execute lineage. The multi-asset release publishes only against a certified schema
+v37 terminal produced by the reviewed v36-to-v37 upgrade and the matching current-release Gate B.
 The installer identity name is resolved locally and must match the sole controller recorded by
 Gate B; it is used only for the controller-protected storage-integrity query and no key material is
 written to release evidence or deployment output.

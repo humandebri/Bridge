@@ -33,7 +33,7 @@ function fixture(profileOverrides = {}) {
       gateBManifestSha256: gate,
       profileFileSha256: "1".repeat(64),
       profileCanonicalSha256: "2".repeat(64),
-      canisterSchemaVersion: 36,
+      canisterSchemaVersion: 37,
       canisterModuleSha256: "3".repeat(64),
       uiRpcConfigSha256: "5".repeat(64),
       icHost: "https://icp-api.io",
@@ -74,7 +74,7 @@ function fixture(profileOverrides = {}) {
     `#!/usr/bin/env node
 const a=process.argv.slice(2); const i=a.indexOf('verify-production-current-ui-live');
 if(process.cwd()!==process.env.EXPECTED_CARGO_CWD || i<0 || a[i+1]!==process.env.BRIDGE_RELEASE_BUNDLE || a[i+2]!=='${"3".repeat(64)}' || a[i+3]!==process.env.BRIDGE_UI_RPC_CONFIG || a[i+4]!==process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE || a[i+5]!==process.env.BRIDGE_UI_CONTROLLER_MODE || process.env.FAKE_VERIFY_FAIL) process.exit(1);
-console.log('production_ui=current-live-pass schema='+ (process.env.FAKE_VERIFY_SCHEMA ?? '36') +' module_sha256=${"3".repeat(64)} manifest_sha256=${gate}');
+console.log('production_ui=current-live-pass schema='+ (process.env.FAKE_VERIFY_SCHEMA ?? '37') +' module_sha256=${"3".repeat(64)} manifest_sha256=${gate}');
 `,
   )
   chmodSync(cargo, 0o755)

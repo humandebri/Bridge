@@ -15,7 +15,7 @@ The [implementation plan index](plans/README.md) is the source of truth for prog
 | Production | Deployed paused on both Base and IC | No asset admission until Gate B with 13 artifacts and production activation are complete |
 
 `bridge-core` handles deterministic transitions for Deposits, Withdrawals, Mint Authorizations, Reconciliation Holds, Settlement Reserves, and accounting.
-`bridge-canister` persists state in a single SQLite database with stable schema v36 and record wire v30, connecting the owner-sequence Deposit API, status queries, ICRC Ledger, EVM RPC, threshold ECDSA, and operational administration APIs.
+`bridge-canister` persists state in a single SQLite database with stable schema v37 and record wire v30, connecting the owner-sequence Deposit API, status queries, ICRC Ledger, EVM RPC, threshold ECDSA, and operational administration APIs. Production upgrades migrate certified version 36 state atomically by adding the asset registry and immutable record-to-asset bindings.
 For ICP→Base, the Canister checks state, fees, and pause status against a Finalized Base snapshot, then signs an EIP-712 Mint Authorization expiring 15 minutes after issuance according to IC consensus time. If fewer than five minutes remain when the signature is installed, it stops without accruing a service fee; it does not create or submit a Base transaction. Any Base wallet can submit `mintDepositWithAuthorization` with at least five minutes remaining, paying the gas itself. Solidity separately enforces a deadline no more than 15 minutes ahead of the current Base time.
 After expiry, a bounded local scan in deadline order uses the existing Base Finalized snapshot to release only mint reservations. There are no per-Deposit timers, individual Base reconciliation calls, or automatic refunds. When any non-anonymous Principal explicitly calls `request_deposit_refund`, expiry and `isDepositProcessed` are checked at the same canonical Finalized block. If unprocessed, the Ledger refund uses the original account, amount, and transfer identity fixed in the record; if processed, the exact `DepositMinted` event and canonical receipt are saved and the Deposit advances to `Minted`. RPC disagreement, a missing event, or a digest mismatch must not move funds.
 There is no mint ETH reserve, gas estimation, nonce, raw transaction, rebroadcast, or replacement. For Base governance, the Canister threshold-signs Governance Operator transactions, and only the external `governance-relayer` CLI broadcasts them, waits for Finalized confirmation, and notifies the Canister. Replacement is never automatic: only an explicit Governance request can re-sign the same nonce, at most three times, with a fee bump of at least 12.5%.
@@ -183,7 +183,7 @@ The 43 release claims, abstract/finite-width/trace theorems, typed Verus/SMT/Hal
 
 1. Only when starting a new network, temporarily set `gateway.port` to an available port if port 8000 is occupied.
 2. Start the local PocketIC network bundled with ICP CLI.
-3. Deploy `bridge-canister` and verify `Running`, schema version 36 in `get_bridge_status`, and zero for all counts.
+3. Deploy `bridge-canister` and verify `Running`, schema version 37 in `get_bridge_status`, and zero for all counts.
 4. Start Anvil with chain ID 31337.
 5. Deploy OpenZeppelin `TimelockController` with a 24-hour delay, the Canister-derived Governance Operator as the sole proposer/executor/canceller, and self-administration.
 6. Deploy `Bridge` with the Timelock address as Base Admin, then verify the runtime bytecode, cross-references, and metadata of the bSNS created by its constructor.
@@ -207,4 +207,4 @@ icp network stop --project-root-override .
 
 A manual `prepare_local_network.py --write` permanently changes `icp.yaml`. Restore the original port after stopping the network if needed.
 
-The initial production deployment installed v35/wire v30. Migration to the current v36, which adds confirmed activation evidence, is atomic and runs exactly once during post-upgrade; normal reopen, other old or unknown schemas, dual reads, and fallbacks fail closed. Current staging likewise accepts only the reviewed v35→v36 upgrade that preserves the same Canister, deployment instance, and Base contract binding, followed only by current-schema upgrades. v7 staging evidence remains read-only and must not be resumed or migrated to v8.
+The initial production deployment installed v35/wire v30 and was migrated to v36 with confirmed activation evidence. The current v37 migration atomically adds the asset registry and record bindings from the certified v36 state. Normal reopen, other old or unknown schemas, dual reads, and fallbacks fail closed. Historical staging evidence remains read-only and must not be resumed as a current deployment.

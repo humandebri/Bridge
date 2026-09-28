@@ -74,8 +74,7 @@ Gate A binds the pre-deployment profile plus five Bridge/BSNS build artifacts, s
 
 Query response authentication means signature verification via `call_with_verification()`. It does not certify the returned application state. Module hashes and controller sets are verified separately through certified `read_state` responses.
 
-The production Bridge Canister runs stable schema v36. Published evidence for corrected v36 and the UI uses the local layout below.
-Normal current-release Gate B remains v36-only.
+The deployed production Bridge Canister remains on stable schema v36 until the reviewed multi-asset upgrade. The candidate and its UI target schema v37; publication requires certified v37 current state.
 Upgrades and UI publication use certified current state plus a Wasm reproduced twice from clean current source.
 `verify-production-current-ui-live` verifies the v36 RuntimeBinding from signature-verified queries, module/controllers from certified `read_state`, Activated and unpaused state, complete indexes, fresh attestation, reviewed `BRIDGE_UI_RPC_CONFIG`, and explicit `sole` or `joint` controller mode.
 Use `BRIDGE_PRODUCTION_INSTALLER_IDENTITY` for controller-only queries, matching the production controller.
@@ -111,7 +110,7 @@ Do not put build/PocketIC TMPDIR under these deep directories; use a short path 
 
 ## IC mainnet × Base Sepolia test staging
 
-Plan 007 IC staging preserves `bridge-sepolia` (`rlhjx-iyaaa-aaaaf-qcnyq-cai`), deployment instance, Base contracts, signer, and shared `testicrc` Ledger/Index fixed in current `sepolia-staging` bindings. Reinstall/fresh-stack creation on 2026-08-27/28 is one-time history, never rerun or resumed. Migrate deployed schema v35 once to v36 through same-instance `upgrade`, preserving wire v30; thereafter allow only reviewed v36 upgrades. Serve the test frontend's static assets through Cloudflare Worker `kinic-bridge-ui-test`, not an IC Asset Canister. Do not touch KINIC Ledger, Base Mainnet, or SNS.
+Plan 007 IC staging preserves `bridge-sepolia` (`rlhjx-iyaaa-aaaaf-qcnyq-cai`), deployment instance, Base contracts, signer, and shared `testicrc` Ledger/Index fixed in current `sepolia-staging` bindings. Reinstall/fresh-stack creation on 2026-08-27/28 and the completed v35-to-v36 migration are one-time history, never rerun or resumed. The multi-asset candidate permits only the reviewed same-instance v36-to-v37 upgrade and preserves wire v30. Serve the test frontend's static assets through Cloudflare Worker `kinic-bridge-ui-test`, not an IC Asset Canister. Do not touch KINIC Ledger, Base Mainnet, or SNS.
 
 Before external deployment, run repository-root `scripts/plan007-local-gate.sh /secure/work/local-e2e.json` from a clean commit, issuing evidence outside the repository. Dirty trees or hash drift must produce no evidence. External deployment, cycles funding, Base Sepolia transactions, and Cloudflare Worker publication each require separate explicit approval.
 
@@ -121,7 +120,7 @@ Use existing `bridge-sepolia` in `.icp/data/mappings/sepolia-staging.ids.json` a
 
 ## Base Sepolia staging Bridge target on IC mainnet
 
-Target existing `rlhjx-iyaaa-aaaaf-qcnyq-cai`, reusing `bridge-sepolia` in `.icp/data/mappings/sepolia-staging.ids.json`. Preserve deployment instance, minimum Withdrawal ID, and Base contract binding. Permit only `upgrade` performing the one-time deployed-v35→v36 migration or preserving v36/wire v30. Reject `install`, `reinstall`, and `auto`; provide no future-reinstall init templates or render/validate commands.
+Target existing `rlhjx-iyaaa-aaaaf-qcnyq-cai`, reusing `bridge-sepolia` in `.icp/data/mappings/sepolia-staging.ids.json`. Preserve deployment instance, minimum Withdrawal ID, and Base contract binding. Permit only `upgrade` performing the one-time deployed-v36→v37 migration or preserving v37/wire v30. Reject `install`, `reinstall`, and `auto`; provide no future-reinstall init templates or render/validate commands.
 
 Before deployment, recheck target ID/controllers and replenish required cycles. This is test-only staging; do not use it for production assets, production controller handover, or SNS operations.
 

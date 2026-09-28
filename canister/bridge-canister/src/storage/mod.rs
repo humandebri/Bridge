@@ -23,14 +23,17 @@ use transaction::*;
 use validation::expect_row_shape;
 
 use crate::admin::AdminState;
-use crate::config::{BridgeInitArgs, FeeRecipientConfig, ImmutableBridgeConfig};
+use crate::config::{
+    AssetConfig, BaseBridgeKind, BridgeInitArgs, FeeRecipientConfig, ImmutableBridgeConfig,
+    KINIC_ASSET_ID,
+};
 use bridge_core::{
     resolve_deposit_hold, resolve_withdrawal_hold, AccountingState, Amount, ApplyResult,
     BaseMintSnapshot, CoreError, DepositHoldResolution, DepositId, DepositRecord, ExternalProgress,
     FeeKind, FinalizedObservationRecord, HoldId, LedgerFailure, LedgerTransferIdentity,
-    LegacyActivationEvidenceRequirement, ReconciliationHoldRecord, ReconciliationHoldState,
-    ReconciliationScanProgress, ReconciliationTarget, WithdrawalEvent, WithdrawalHoldResolution,
-    WithdrawalId, WithdrawalRecord, WithdrawalState,
+    ReconciliationHoldRecord, ReconciliationHoldState, ReconciliationScanProgress,
+    ReconciliationTarget, WithdrawalEvent, WithdrawalHoldResolution, WithdrawalId,
+    WithdrawalRecord, WithdrawalState,
 };
 use candid::{CandidType, Principal};
 use ic_sqlite_vfs::db::migrate::Migration;
@@ -269,7 +272,7 @@ CREATE TABLE bridge_metadata (
     application_schema_version INTEGER NOT NULL,
     record_wire_version INTEGER NOT NULL
 ) STRICT;
-INSERT INTO bridge_metadata VALUES (1, 36, 30);
+INSERT INTO bridge_metadata VALUES (1, 37, 30);
 
 CREATE TABLE singleton_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -306,6 +309,14 @@ CREATE TABLE reconciliation_holds (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT
 CREATE TABLE reconciliation_scans (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE audit_events (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE fee_payouts (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
+CREATE TABLE asset_registry (
+    key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
+    value BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE TABLE record_asset_bindings (
+    key BLOB PRIMARY KEY NOT NULL CHECK (length(key) > 1 AND substr(key, 1, 1) IN (X'00', X'01', X'02', X'03')),
+    value BLOB NOT NULL CHECK (length(value) = 32)
+) STRICT, WITHOUT ROWID;
 CREATE TABLE deposit_owner_index (key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT, WITHOUT ROWID;
 CREATE TABLE nonterminal_deposit_owner_index (
     key BLOB PRIMARY KEY NOT NULL,
@@ -408,7 +419,9 @@ INSERT INTO table_counts(name, count) VALUES
  ('withdrawal_notification_index', X'0000000000000000'),
  ('withdrawal_requester_index', X'0000000000000000'),
  ('withdrawal_transaction_index', X'0000000000000000'),
- ('withdrawal_stop_reason_counts', X'0000000000000000');
+ ('withdrawal_stop_reason_counts', X'0000000000000000'),
+ ('asset_registry', X'0000000000000000'),
+ ('record_asset_bindings', X'0000000000000000');
 "#;
 
 const MIGRATIONS: &[Migration] = &[Migration {
@@ -416,7 +429,29 @@ const MIGRATIONS: &[Migration] = &[Migration {
     sql: SQLITE_SCHEMA,
 }];
 
-const PREVIOUS_SCHEMA_VERSION: u16 = 35;
+const PREVIOUS_SCHEMA_VERSION: u16 = 36;
+
+const MAX_ASSETS: usize = 100;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordAssetKind {
+    Deposit = 0,
+    Withdrawal = 1,
+    ReconciliationHold = 2,
+    FeePayout = 3,
+}
+
+impl RecordAssetKind {
+    fn key(self, record_id: &[u8]) -> Result<Vec<u8>, StorageError> {
+        if record_id.is_empty() {
+            return Err(StorageError::DecodeFailed);
+        }
+        let mut key = Vec::with_capacity(record_id.len() + 1);
+        key.push(self as u8);
+        key.extend_from_slice(record_id);
+        Ok(key)
+    }
+}
 
 #[derive(Clone, Copy)]
 enum SchemaMigrationMode {
@@ -2054,6 +2089,11 @@ pub enum AuditEventKind {
         previous_sha256: Vec<u8>,
         current_sha256: Vec<u8>,
     },
+    AssetPrepared {
+        asset_id: Vec<u8>,
+        bridge_contract: Vec<u8>,
+        token_contract: Vec<u8>,
+    },
     FeePayoutRequested {
         amount: u128,
     },
@@ -2448,118 +2488,46 @@ fn migrate_previous_schema(
         });
     }
     verify_schema_shape(handle, true)?;
-    StableStore::attach_handle(handle)?.validate_singletons()?;
-    let previous_admission = handle.query(|connection| {
-        connection.query_scalar::<Vec<u8>>(
-            "SELECT deposit_admission FROM singleton_state WHERE id = 1",
-            params![],
-        )
-    })?;
-    let mut admission =
-        decode::<DepositAdmissionControl>(&StableBlob::new(previous_admission.clone())?)?;
-    let admin = handle.query(|connection| {
-        connection.query_scalar::<Vec<u8>>(
-            "SELECT admin_state FROM singleton_state WHERE id = 1",
-            params![],
-        )
-    })?;
-    let deposits_paused = decode::<Option<AdminState>>(&StableBlob::new(admin)?)?
-        .map(|admin| admin.deposits_paused)
-        .unwrap_or(true);
-    let last_completed = admission.last_completed_governance_transaction.as_ref();
-    let derived = last_completed
-        .map(confirmed_activation_record)
-        .transpose()?
-        .flatten();
-    if let (Some(stored), Some(derived)) = (&admission.last_confirmed_activation, &derived) {
-        if stored != derived {
-            return Err(StorageError::DecodeFailed);
-        }
-    } else if admission.last_confirmed_activation.is_none() {
-        admission.last_confirmed_activation = derived.clone();
-    }
-    let pending_activation = admission
-        .pending_timelock_operation
-        .filter(|_| admission.pending_control_plane_rotation.is_none());
-    #[cfg(feature = "test-deployment")]
-    let legacy_staging_controller = matches!(_mode, SchemaMigrationMode::Staging)
-        && admission.bootstrap_activation_controller == Some(Principal::anonymous());
-    #[cfg(not(feature = "test-deployment"))]
-    let legacy_staging_controller = false;
-    match ::bridge_core::kernel::legacy_activation_evidence_requirement(
-        admission.operational_config_sealed,
-        pending_activation.is_some(),
-        admission.bootstrap_activation_controller.is_some(),
-        legacy_staging_controller,
-        deposits_paused,
-        derived
-            .as_ref()
-            .is_some_and(|record| record.phase == "execute"),
-    ) {
-        LegacyActivationEvidenceRequirement::Schedule => {
-            let pending = pending_activation.ok_or(StorageError::DecodeFailed)?;
-            let schedule_matches = matches!(
-                last_completed.map(|transaction| &transaction.kind),
-                Some(GovernanceTransactionKind::ScheduleActivation { operation_id, salt })
-                    if *operation_id == pending.operation_id && *salt == pending.salt
-            ) && admission.last_confirmed_activation.as_ref().is_some_and(
-                |record| {
-                    record.phase == "schedule"
-                        && record.timelock_operation_id == pending.operation_id
-                },
-            );
-            let pending_execute_matches = admission
-                .pending_governance_transaction
-                .as_ref()
-                .is_none_or(|transaction| {
-                    matches!(
-                        transaction.kind,
-                        GovernanceTransactionKind::ExecuteActivation { operation_id, salt }
-                            if operation_id == pending.operation_id && salt == pending.salt
-                    )
-                });
-            if !schedule_matches || !pending_execute_matches {
-                return Err(StorageError::DecodeFailed);
-            }
-        }
-        LegacyActivationEvidenceRequirement::Execute => {
-            if admission
-                .last_confirmed_activation
-                .as_ref()
-                .is_none_or(|record| record.phase != "execute")
-            {
-                return Err(StorageError::DecodeFailed);
-            }
-            if legacy_staging_controller {
-                admission.bootstrap_activation_controller = None;
-            }
-        }
-        LegacyActivationEvidenceRequirement::NotRequired => {}
-    }
-    let next_admission = encode(&admission)?;
+    let store = StableStore::attach_handle(handle)?;
+    store.validate_singletons()?;
+    let config = store.config()?.ok_or(StorageError::RecordNotFound)?;
+    let kinic = encode(&AssetConfig::legacy_kinic(&config))?;
+    drop(store);
     handle.update(|connection| {
         let (persisted_schema, persisted_wire): (i64, i64) = connection.query_one(
             "SELECT application_schema_version, record_wire_version FROM bridge_metadata WHERE id = 1",
             params![],
             |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
         )?;
-        let persisted_admission = connection.query_scalar::<Vec<u8>>(
-            "SELECT deposit_admission FROM singleton_state WHERE id = 1",
-            params![],
-        )?;
         if persisted_schema != i64::from(PREVIOUS_SCHEMA_VERSION)
             || persisted_wire != i64::from(WIRE_VERSION)
-            || persisted_admission != previous_admission
         {
             return Err(DbError::Constraint(
                 "stale stable schema migration input".into(),
             ));
         }
         connection.execute(
-            "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
-            params![next_admission.to_sql_bytes()],
+            "CREATE TABLE asset_registry (
+                key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
+                value BLOB NOT NULL
+            ) STRICT, WITHOUT ROWID",
+            params![],
         )?;
-        history::create_history_indexes(connection)?;
+        connection.execute(
+            "CREATE TABLE record_asset_bindings (
+                key BLOB PRIMARY KEY NOT NULL CHECK (length(key) > 1 AND substr(key, 1, 1) IN (X'00', X'01', X'02', X'03')),
+                value BLOB NOT NULL CHECK (length(value) = 32)
+            ) STRICT, WITHOUT ROWID",
+            params![],
+        )?;
+        connection.execute(
+            "INSERT INTO asset_registry(key, value) VALUES (?1, ?2)",
+            params![KINIC_ASSET_ID.to_vec(), kinic.to_sql_bytes()],
+        )?;
+        connection.execute(
+            "INSERT INTO table_counts(name, count) VALUES ('asset_registry', ?1), ('record_asset_bindings', ?2)",
+            params![1u64.to_sql_bytes(), 0u64.to_sql_bytes()],
+        )?;
         connection.execute(
             "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
             params![i64::from(SCHEMA_VERSION)],
@@ -2576,12 +2544,7 @@ fn verify_schema_shape(handle: DbHandle, predecessor: bool) -> Result<(), Storag
     handle
         .query(|connection| {
             for table in VALIDATION_TABLES {
-                if predecessor
-                    && matches!(
-                        *table,
-                        "withdrawal_requester_index" | "withdrawal_transaction_index"
-                    )
-                {
+                if predecessor && matches!(*table, "asset_registry" | "record_asset_bindings") {
                     continue;
                 }
                 let count = connection.query_scalar::<i64>(
@@ -2665,6 +2628,24 @@ fn initialize_singleton_state(
                 0u128.to_sql_bytes()
             ],
         )
+    })?;
+    Ok(())
+}
+
+fn initialize_asset_registry(
+    handle: DbHandle,
+    config: Option<&BridgeInitArgs>,
+) -> Result<(), StorageError> {
+    let Some(config) = config else {
+        return Ok(());
+    };
+    let asset = encode(&AssetConfig::legacy_kinic(config))?;
+    handle.update(|connection| {
+        connection.execute(
+            "INSERT INTO asset_registry(key, value) VALUES (?1, ?2)",
+            params![KINIC_ASSET_ID.to_vec(), asset.to_sql_bytes()],
+        )?;
+        increment_table_count(connection, "asset_registry")
     })?;
     Ok(())
 }
@@ -3174,6 +3155,34 @@ fn validate_storage_row(
                 .checked_add(1)
                 .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
         }
+        "asset_registry" => {
+            expect_row_shape(key, value, 32, value.len(), "invalid asset registry row")?;
+            let asset: AssetConfig = decode_with_context(value.to_vec(), "invalid asset config")?;
+            asset
+                .validate()
+                .map_err(|error| DbError::Constraint(error.into()))?;
+            if asset.asset_id != key {
+                return Err(DbError::Constraint("asset registry key mismatch".into()));
+            }
+        }
+        "record_asset_bindings" => {
+            if key.len() <= 1 || value.len() != 32 {
+                return Err(DbError::Constraint("invalid record asset binding".into()));
+            }
+            let primary_table = match key[0] {
+                0 => "deposits",
+                1 => "withdrawals",
+                2 => "reconciliation_holds",
+                3 => "fee_payouts",
+                _ => return Err(DbError::Constraint("invalid record asset kind".into())),
+            };
+            if !referenced_row_exists(connection, primary_table, &key[1..])? {
+                return Err(DbError::Constraint("orphan record asset binding".into()));
+            }
+            if !referenced_row_exists(connection, "asset_registry", value)? {
+                return Err(DbError::Constraint("unknown bound asset".into()));
+            }
+        }
         _ => {
             return Err(DbError::Constraint(format!(
                 "unsupported validation table: {table}"
@@ -3266,6 +3275,7 @@ impl StableStore {
         verify_metadata(handle)?;
         verify_current_schema_shape(handle)?;
         initialize_singleton_state(handle, config)?;
+        initialize_asset_registry(handle, config)?;
         Self::attach_handle(handle)
     }
 
@@ -3947,6 +3957,8 @@ impl StableStore {
             "withdrawal_liability_index",
             "withdrawal_notification_index",
             "withdrawal_stop_reason_counts",
+            "asset_registry",
+            "record_asset_bindings",
         ];
         self.handle.query(|connection| {
             for table in COUNTED_TABLES {
@@ -6280,6 +6292,178 @@ impl StableStore {
             admin.pause_principal,
             admin.fee_recipient,
         )))
+    }
+
+    pub fn asset(&self, asset_id: &[u8]) -> Result<Option<AssetConfig>, StorageError> {
+        if asset_id.len() != 32 {
+            return Err(StorageError::DecodeFailed);
+        }
+        let value = self.handle.query(|connection| {
+            connection.query_optional_scalar::<Vec<u8>>(
+                "SELECT value FROM asset_registry WHERE key = ?1",
+                params![asset_id],
+            )
+        })?;
+        value
+            .map(|bytes| decode(&StableBlob::new(bytes)?))
+            .transpose()
+    }
+
+    pub fn assets(&self) -> Result<Vec<AssetConfig>, StorageError> {
+        let values = self.handle.query(|connection| {
+            connection.query_all(
+                "SELECT value FROM asset_registry ORDER BY key LIMIT 101",
+                params![],
+                |row| row.get::<Vec<u8>>(0),
+            )
+        })?;
+        if values.len() > MAX_ASSETS {
+            return Err(StorageError::ValueTooLarge {
+                actual: values.len(),
+                maximum: MAX_ASSETS,
+            });
+        }
+        values
+            .into_iter()
+            .map(|bytes| decode(&StableBlob::new(bytes)?))
+            .collect()
+    }
+
+    pub fn register_asset(
+        &mut self,
+        asset: &AssetConfig,
+        caller: Principal,
+        timestamp_ns: u64,
+    ) -> Result<(), StorageError> {
+        asset
+            .validate()
+            .map_err(|_| StorageError::Core(CoreError::PayloadConflict))?;
+        let assets = self.assets()?;
+        if assets.len() >= MAX_ASSETS {
+            return Err(StorageError::ValueTooLarge {
+                actual: assets.len(),
+                maximum: MAX_ASSETS,
+            });
+        }
+        if assets.iter().any(|existing| {
+            existing.asset_id == asset.asset_id
+                || existing.ledger_canister_id == asset.ledger_canister_id
+                || (!asset.token_contract.is_empty()
+                    && existing.token_contract == asset.token_contract)
+        }) {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        if asset.bridge_kind == BaseBridgeKind::SharedMultiToken
+            && assets.iter().any(|existing| {
+                existing.bridge_kind == BaseBridgeKind::SharedMultiToken
+                    && (existing.bridge_contract != asset.bridge_contract
+                        || existing.expected_bridge_runtime_sha256
+                            != asset.expected_bridge_runtime_sha256
+                        || existing.deployment_instance_id != asset.deployment_instance_id
+                        || existing.timelock_contract != asset.timelock_contract
+                        || existing.expected_bridge_signer != asset.expected_bridge_signer
+                        || existing.expected_timelock_minimum_delay_seconds
+                            != asset.expected_timelock_minimum_delay_seconds)
+            })
+        {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        let encoded = encode(asset)?;
+        let mut counters = self.counters()?;
+        let previous_counters = encode(&counters)?;
+        let audit = self.prepare_audit_batch(
+            &mut counters,
+            caller,
+            timestamp_ns,
+            vec![AuditEventKind::AssetPrepared {
+                asset_id: asset.asset_id.clone(),
+                bridge_contract: asset.bridge_contract.clone(),
+                token_contract: asset.token_contract.clone(),
+            }],
+        )?;
+        let counters_blob = encode(&counters)?;
+        self.handle.update(|connection| {
+            let persisted_counters = connection.query_scalar::<Vec<u8>>(
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+            )?;
+            if persisted_counters != previous_counters.to_sql_bytes() {
+                return Err(DbError::Constraint("stale asset registration".into()));
+            }
+            connection.execute(
+                "INSERT INTO asset_registry(key, value) VALUES (?1, ?2)",
+                params![asset.asset_id.clone(), encoded.to_sql_bytes()],
+            )?;
+            increment_table_count(connection, "asset_registry")?;
+            commit_audit_batch(connection, &audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET counters = ?1, audit_retention = ?2 WHERE id = 1",
+                params![
+                    counters_blob.to_sql_bytes(),
+                    audit.retention_blob.to_sql_bytes()
+                ],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    pub fn bind_record_asset(
+        &mut self,
+        record_kind: RecordAssetKind,
+        record_id: &[u8],
+        asset_id: &[u8],
+    ) -> Result<(), StorageError> {
+        if asset_id.len() != 32 || self.asset(asset_id)?.is_none() {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        let key = record_kind.key(record_id)?;
+        self.handle.update(|connection| {
+            let primary_table = match record_kind {
+                RecordAssetKind::Deposit => "deposits",
+                RecordAssetKind::Withdrawal => "withdrawals",
+                RecordAssetKind::ReconciliationHold => "reconciliation_holds",
+                RecordAssetKind::FeePayout => "fee_payouts",
+            };
+            if !referenced_row_exists(connection, primary_table, record_id)? {
+                return Err(DbError::Constraint(
+                    "record asset binding target is missing".into(),
+                ));
+            }
+            let existing = connection.query_optional_scalar::<Vec<u8>>(
+                "SELECT value FROM record_asset_bindings WHERE key = ?1",
+                params![key.clone()],
+            )?;
+            if let Some(existing) = existing {
+                if existing != asset_id {
+                    return Err(DbError::Constraint("record asset binding conflict".into()));
+                }
+                return Ok(());
+            }
+            connection.execute(
+                "INSERT INTO record_asset_bindings(key, value) VALUES (?1, ?2)",
+                params![key, asset_id],
+            )?;
+            increment_table_count(connection, "record_asset_bindings")
+        })?;
+        Ok(())
+    }
+
+    pub fn record_asset(
+        &self,
+        record_kind: RecordAssetKind,
+        record_id: &[u8],
+    ) -> Result<[u8; 32], StorageError> {
+        let key = record_kind.key(record_id)?;
+        let value = self.handle.query(|connection| {
+            connection.query_optional_scalar::<Vec<u8>>(
+                "SELECT value FROM record_asset_bindings WHERE key = ?1",
+                params![key],
+            )
+        })?;
+        value
+            .map(|bytes| bytes.try_into().map_err(|_| StorageError::DecodeFailed))
+            .unwrap_or(Ok(KINIC_ASSET_ID))
     }
 
     #[cfg(feature = "test-deployment")]
@@ -13722,11 +13906,7 @@ mod tests {
             .handle
             .0
             .update(|connection| {
-                for table in [
-                    "withdrawal_requester_index",
-                    "withdrawal_transaction_index",
-                    "history_index_progress",
-                ] {
+                for table in ["record_asset_bindings", "asset_registry"] {
                     connection.execute(&format!("DROP TABLE IF EXISTS {table}"), params![])?;
                     connection
                         .execute("DELETE FROM table_counts WHERE name = ?1", params![table])?;
@@ -13739,85 +13919,31 @@ mod tests {
             .expect("mark stored schema");
     }
 
-    fn write_v35_admission(store: &StableStore, admission: &DepositAdmissionControl) {
-        let legacy = without_field(admission, "last_confirmed_activation");
+    fn mark_as_schema_v36(store: &StableStore) {
         store
             .handle
             .0
             .update(|connection| {
-                for table in [
-                    "withdrawal_requester_index",
-                    "withdrawal_transaction_index",
-                    "history_index_progress",
-                ] {
+                for table in ["record_asset_bindings", "asset_registry"] {
                     connection.execute(&format!("DROP TABLE IF EXISTS {table}"), params![])?;
                     connection
                         .execute("DELETE FROM table_counts WHERE name = ?1", params![table])?;
                 }
                 connection.execute(
-                    "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
-                    params![legacy.to_sql_bytes()],
-                )?;
-                connection.execute(
                     "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
                     params![i64::from(PREVIOUS_SCHEMA_VERSION)],
                 )
             })
-            .expect("write schema 35 admission");
-    }
-
-    #[cfg(feature = "test-deployment")]
-    fn write_v35_admission_without_controller(
-        store: &StableStore,
-        admission: &DepositAdmissionControl,
-    ) {
-        let legacy = without_fields(
-            admission,
-            &[
-                "last_confirmed_activation",
-                "bootstrap_activation_controller",
-            ],
-        );
-        store
-            .handle
-            .0
-            .update(|connection| {
-                for table in [
-                    "withdrawal_requester_index",
-                    "withdrawal_transaction_index",
-                    "history_index_progress",
-                ] {
-                    connection.execute(&format!("DROP TABLE IF EXISTS {table}"), params![])?;
-                    connection
-                        .execute("DELETE FROM table_counts WHERE name = ?1", params![table])?;
-                }
-                connection.execute(
-                    "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
-                    params![legacy.to_sql_bytes()],
-                )?;
-                connection.execute(
-                    "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
-                    params![i64::from(PREVIOUS_SCHEMA_VERSION)],
-                )
-            })
-            .expect("write legacy staging admission");
+            .expect("write schema 36 shape");
     }
 
     #[test]
     #[serial]
-    fn schema_v35_is_migrated_only_by_upgrade_reopen() {
+    fn schema_v36_is_migrated_only_by_upgrade_reopen() {
         let memory = VectorMemory::default();
-        let mut store =
+        let store =
             StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
-        let (execute, _) = confirmed_activation_transaction(&mut store);
-        store
-            .complete_governance_transaction(execute.clone())
-            .expect("complete activation");
-        let expected = confirmed_activation_record(&execute)
-            .expect("derive activation evidence")
-            .expect("execute evidence");
-        let admission = store.deposit_admission().expect("admission");
-        write_v35_admission(&store, &admission);
+        mark_as_schema_v36(&store);
         drop(store);
 
         assert!(matches!(
@@ -13826,175 +13952,94 @@ mod tests {
                 PREVIOUS_SCHEMA_VERSION
             ))
         ));
-        let reopened = StableStore::reopen_after_upgrade(memory).expect("migrate schema 35");
+        let reopened = StableStore::reopen_after_upgrade(memory).expect("migrate schema 36");
         assert_eq!(reopened.schema_version(), SCHEMA_VERSION);
+        let kinic = reopened
+            .asset(&KINIC_ASSET_ID)
+            .expect("read asset")
+            .expect("migrated KINIC asset");
+        assert_eq!(kinic.symbol, "KINIC");
+        assert_eq!(kinic.ledger_canister_id, config().ledger_canister_id);
         assert_eq!(
             reopened
-                .last_confirmed_activation()
-                .expect("migrated activation evidence"),
-            Some(expected)
+                .record_asset(RecordAssetKind::Deposit, &[1; 32])
+                .unwrap(),
+            KINIC_ASSET_ID
         );
     }
 
     #[test]
     #[serial]
-    fn failed_schema_v35_migration_keeps_schema_and_admission_unchanged() {
-        let memory = VectorMemory::default();
-        let store =
-            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
-        let mut admission = store.deposit_admission().expect("admission");
-        admission.operational_config_sealed = true;
-        admission.bootstrap_activation_controller = None;
-        admission.last_completed_governance_transaction = None;
-        admission.last_confirmed_activation = None;
-        write_v35_admission(&store, &admission);
-        let before = store
-            .handle
-            .query(|connection| {
-                connection.query_scalar::<Vec<u8>>(
-                    "SELECT deposit_admission FROM singleton_state WHERE id = 1",
-                    params![],
-                )
-            })
-            .expect("read legacy admission");
-        drop(store);
-
-        assert_eq!(
-            StableStore::reopen_after_upgrade(memory.clone()).err(),
-            Some(StorageError::DecodeFailed)
-        );
-        reset_sqlite_test_runtime();
-        let handle = open_database(memory).expect("open failed migration state");
-        assert_eq!(
-            stored_metadata(handle).expect("stored metadata"),
-            (PREVIOUS_SCHEMA_VERSION, WIRE_VERSION)
-        );
-        assert_eq!(
-            handle
-                .query(|connection| {
-                    connection.query_scalar::<Vec<u8>>(
-                        "SELECT deposit_admission FROM singleton_state WHERE id = 1",
-                        params![],
-                    )
-                })
-                .expect("unchanged admission"),
-            before
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn schema_v35_pending_activation_requires_its_exact_confirmed_schedule() {
-        let memory = VectorMemory::default();
+    fn asset_registry_rejects_duplicates_and_preserves_record_bindings() {
         let mut store =
-            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
-        store.initialize_governance_nonce(7).expect("nonce");
-        let operation_id = [0x81; 32];
-        let salt = [0x82; 32];
-        let mut schedule = GovernanceTransaction {
-            id: 0,
-            kind: GovernanceTransactionKind::ScheduleActivation { operation_id, salt },
-            envelope: governance_intent(GovernanceOperationId::new(0), [0x83; 32]).assign_nonce(7),
-            activation_controller_authority: None,
-            state: GovernanceTransactionState::Prepared,
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        let asset = AssetConfig {
+            asset_id: [0x44; 32].to_vec(),
+            name: "Additional Token".into(),
+            symbol: "ADD".into(),
+            decimals: 8,
+            ledger_canister_id: Principal::self_authenticating([0x45; 32]),
+            index_canister_id: Principal::self_authenticating([0x46; 32]),
+            ledger_fee: 10,
+            base_chain_id: config().base_chain_id,
+            deployment_instance_id: vec![0x43; 32],
+            bridge_kind: crate::config::BaseBridgeKind::SharedMultiToken,
+            bridge_contract: vec![0x47; 20],
+            token_contract: vec![0x48; 20],
+            expected_bridge_runtime_sha256: vec![0x49; 32],
+            expected_token_runtime_sha256: vec![0x4a; 32],
+            timelock_contract: config().timelock_contract,
+            expected_bridge_signer: vec![0x4b; 20],
+            expected_timelock_minimum_delay_seconds: config()
+                .expected_timelock_minimum_delay_seconds,
+            lifecycle: crate::config::AssetLifecycle::Prepared,
         };
         store
-            .prepare_governance_transaction(schedule.clone())
-            .expect("prepare schedule");
-        record_confirmed_attempt(&mut store, &mut schedule, [0x84; 32], 10, 2);
+            .register_asset(&asset, Principal::self_authenticating([0x4c; 32]), 55)
+            .expect("register asset");
+        assert_eq!(store.asset(&asset.asset_id).unwrap(), Some(asset.clone()));
+        assert!(store
+            .register_asset(&asset, Principal::self_authenticating([0x4c; 32]), 56)
+            .is_err());
+        let audit = store.audit_events(0, 10).expect("asset audit").events;
+        assert!(matches!(
+            audit.as_slice(),
+            [AuditEvent {
+                timestamp_ns: 55,
+                kind: AuditEventKind::AssetPrepared { asset_id, .. },
+                ..
+            }] if *asset_id == asset.asset_id
+        ));
+
+        let record = deposit();
+        let record_id = record.id.bytes();
+        store.put_deposit(&record).expect("seed bound deposit");
         store
-            .complete_governance_transaction(schedule)
-            .expect("complete schedule");
-        let mut admission = store.deposit_admission().expect("admission");
-        admission.operational_config_sealed = true;
-        admission.bootstrap_activation_controller = Some(Principal::self_authenticating([9; 32]));
-        write_v35_admission(&store, &admission);
-        drop(store);
-
-        let reopened = StableStore::reopen_after_upgrade(memory).expect("migrate schedule");
-        let record = reopened
-            .last_confirmed_activation()
-            .expect("schedule record")
-            .expect("confirmed schedule");
-        assert_eq!(record.phase, "schedule");
-        assert_eq!(record.timelock_operation_id, operation_id);
-        assert_eq!(record.generation, 2);
-
-        let memory = VectorMemory::default();
-        let store = StableStore::init_configured(memory.clone(), &config()).expect("store");
-        admission.last_completed_governance_transaction = Some(GovernanceTransaction {
-            id: 1,
-            kind: GovernanceTransactionKind::SetServiceFee { value: 1 },
-            envelope: governance_intent(GovernanceOperationId::new(1), [0x85; 32]).assign_nonce(8),
-            activation_controller_authority: None,
-            state: GovernanceTransactionState::Confirmed {
-                transaction_hash: [0x86; 32],
-                receipt_block_number: 11,
-            },
-        });
-        write_v35_admission(&store, &admission);
-        drop(store);
+            .bind_record_asset(RecordAssetKind::Deposit, &record_id, &asset.asset_id)
+            .expect("bind record");
+        store
+            .bind_record_asset(RecordAssetKind::Deposit, &record_id, &asset.asset_id)
+            .expect("idempotent binding");
         assert_eq!(
-            StableStore::reopen_after_upgrade(memory).err(),
-            Some(StorageError::DecodeFailed)
-        );
-    }
-
-    #[cfg(feature = "test-deployment")]
-    #[test]
-    #[serial]
-    fn schema_v35_staging_consumes_only_an_executed_sentinel() {
-        for deposits_paused in [true, false] {
-            let memory = VectorMemory::default();
-            let mut store =
-                StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
-            let (execute, _) = confirmed_activation_transaction(&mut store);
             store
-                .complete_governance_transaction(execute)
-                .expect("complete activation");
-            let mut admin = store.admin_state().expect("admin");
-            admin.deposits_paused = deposits_paused;
-            store.set_admin_state(&admin).expect("set pause state");
-            let mut admission = store.deposit_admission().expect("admission");
-            admission.operational_config_sealed = true;
-            write_v35_admission_without_controller(&store, &admission);
-            drop(store);
-
-            let reopened = StableStore::reopen_after_staging_upgrade(
-                memory,
-                Some(config().confirmation_relayer_principal),
-            )
-            .expect("migrate activated staging");
-            assert_eq!(reopened.bootstrap_activation_controller().unwrap(), None);
-            assert_eq!(
-                reopened
-                    .last_confirmed_activation()
-                    .unwrap()
-                    .expect("execute record")
-                    .phase,
-                "execute"
-            );
-        }
-
-        let memory = VectorMemory::default();
-        let mut store =
-            StableStore::init_configured(memory.clone(), &config()).expect("initialize store");
-        let mut admin = store.admin_state().expect("admin");
-        admin.deposits_paused = false;
-        store.set_admin_state(&admin).expect("unpause");
-        let mut admission = store.deposit_admission().expect("admission");
-        admission.operational_config_sealed = true;
-        admission.last_completed_governance_transaction = None;
-        write_v35_admission_without_controller(&store, &admission);
-        drop(store);
-        assert_eq!(
-            StableStore::reopen_after_staging_upgrade(
-                memory,
-                Some(config().confirmation_relayer_principal)
-            )
-            .err(),
-            Some(StorageError::DecodeFailed)
+                .record_asset(RecordAssetKind::Deposit, &record_id)
+                .unwrap()
+                .to_vec(),
+            asset.asset_id
         );
+        assert!(store
+            .bind_record_asset(RecordAssetKind::Deposit, &record_id, &KINIC_ASSET_ID)
+            .is_err());
+        store.start_storage_validation().expect("start validation");
+        loop {
+            let status = store
+                .continue_storage_validation(MAX_VALIDATION_ROWS)
+                .expect("validate asset registry");
+            if status.complete {
+                break;
+            }
+        }
+        store.validate_relations().expect("validate table counts");
     }
 
     #[test]

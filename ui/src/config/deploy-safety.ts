@@ -68,7 +68,7 @@ export function assertProductionUiProfile(
     throw new Error("Production UI profile requires nonzero source profile hashes")
   }
   if (
-    profile.canisterSchemaVersion !== 36 ||
+    profile.canisterSchemaVersion !== 37 ||
     ![profile.canisterModuleSha256, profile.uiRpcConfigSha256].every(
       (value) => /^[0-9a-f]{64}$/i.test(value ?? "") && !/^0+$/.test(value ?? ""),
     )
