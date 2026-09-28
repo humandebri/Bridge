@@ -619,6 +619,7 @@ export interface RotatePausePrincipalArgs { 'pause_principal' : Principal }
 export interface RuntimeBinding {
   'expected_bridge_signer' : Uint8Array | number[],
   'base_chain_id' : bigint,
+  'kinic_asset_binding_valid' : boolean,
   'bridge_contract' : Uint8Array | number[],
   'evm_rpc_canister_id' : Principal,
   'deployment_instance_id' : Uint8Array | number[],

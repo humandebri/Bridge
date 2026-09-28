@@ -626,6 +626,7 @@ type RotatePausePrincipalArgs = record { pause_principal : principal };
 type RuntimeBinding = record {
   expected_bridge_signer : blob;
   base_chain_id : nat64;
+  kinic_asset_binding_valid : bool;
   bridge_contract : blob;
   evm_rpc_canister_id : principal;
   deployment_instance_id : blob;

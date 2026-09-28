@@ -84,7 +84,7 @@ pub struct AssetConfig {
 }
 
 impl AssetConfig {
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate_asset(&self) -> Result<(), &'static str> {
         if self.asset_id.len() != 32 || self.asset_id.iter().all(|byte| *byte == 0) {
             return Err("asset ID must be 32 nonzero bytes");
         }

@@ -115,6 +115,7 @@ pub struct RuntimeBinding {
     pub evm_rpc_canister_id: candid::Principal,
     pub rpc_provider_urls_sha256: Vec<u8>,
     pub operational_config_sha256: Vec<u8>,
+    pub kinic_asset_binding_valid: bool,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -672,7 +673,7 @@ fn register_asset(asset: config::AssetConfig) -> Result<(), admin::AdminError> {
         return Err(admin::AdminError::Unauthorized);
     }
     asset
-        .validate()
+        .validate_asset()
         .map_err(|error| admin::AdminError::InvalidArgument(error.into()))?;
     if asset.bridge_kind != config::BaseBridgeKind::SharedMultiToken
         || asset.lifecycle != config::AssetLifecycle::Prepared
@@ -2281,6 +2282,10 @@ fn get_runtime_binding() -> RuntimeBinding {
             evm_rpc_canister_id: config.evm_rpc_canister_id,
             rpc_provider_urls_sha256,
             operational_config_sha256,
+            kinic_asset_binding_valid: storage_or_trap(
+                "KINIC asset binding validation",
+                store.kinic_asset_binding_valid(),
+            ),
         }
     })
 }

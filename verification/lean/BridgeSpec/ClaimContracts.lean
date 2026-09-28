@@ -618,6 +618,54 @@ theorem epoch_invalidation_witness : EpochInvalidation :=
     retired_signer_rejects_even_future_epoch_authorizations,
     authorization_binding_witness⟩
 
+def multiAssetAuthorizationAccepted
+    (signedAsset selectedAsset signedGlobalEpoch currentGlobalEpoch
+      signedAssetEpoch currentAssetEpoch : Nat) : Bool :=
+  signedAsset == selectedAsset &&
+    signedGlobalEpoch == currentGlobalEpoch &&
+    signedAssetEpoch == currentAssetEpoch
+
+def MultiAssetIsolation : Prop :=
+  ∀ signedAsset selectedAsset signedGlobalEpoch currentGlobalEpoch
+      signedAssetEpoch currentAssetEpoch : Nat,
+    multiAssetAuthorizationAccepted signedAsset selectedAsset signedGlobalEpoch
+        currentGlobalEpoch signedAssetEpoch currentAssetEpoch = true ↔
+      signedAsset = selectedAsset ∧ signedGlobalEpoch = currentGlobalEpoch ∧
+        signedAssetEpoch = currentAssetEpoch
+
+theorem multi_asset_isolation_witness : MultiAssetIsolation := by
+  intro signedAsset selectedAsset signedGlobalEpoch currentGlobalEpoch
+    signedAssetEpoch currentAssetEpoch
+  simp [multiAssetAuthorizationAccepted, Bool.and_eq_true, and_assoc]
+
+def assetRegistryBindingValid
+    (kinicPresent kinicMatchesConfig indexUnique : Bool) : Bool :=
+  kinicPresent && kinicMatchesConfig && indexUnique
+
+def AssetRegistryBinding : Prop :=
+  ∀ kinicPresent kinicMatchesConfig indexUnique : Bool,
+    assetRegistryBindingValid kinicPresent kinicMatchesConfig indexUnique = true ↔
+      kinicPresent = true ∧ kinicMatchesConfig = true ∧ indexUnique = true
+
+theorem asset_registry_binding_witness : AssetRegistryBinding := by
+  intro kinicPresent kinicMatchesConfig indexUnique
+  cases kinicPresent <;> cases kinicMatchesConfig <;> cases indexUnique <;>
+    simp [assetRegistryBindingValid]
+
+def schemaV37MigrationAccepted
+    (sourceSchema targetSchema : Nat) (statePreserved kinicInstalled : Bool) : Bool :=
+  decide (sourceSchema = 36 ∧ targetSchema = 37) && statePreserved && kinicInstalled
+
+def SchemaV37Migration : Prop :=
+  ∀ sourceSchema targetSchema : Nat, ∀ statePreserved kinicInstalled : Bool,
+    schemaV37MigrationAccepted sourceSchema targetSchema statePreserved kinicInstalled = true ↔
+      sourceSchema = 36 ∧ targetSchema = 37 ∧
+        statePreserved = true ∧ kinicInstalled = true
+
+theorem schema_v37_migration_witness : SchemaV37Migration := by
+  intro sourceSchema targetSchema statePreserved kinicInstalled
+  simp [schemaV37MigrationAccepted, Bool.and_eq_true, and_assoc]
+
 def NonterminalDepositIndexConsistency : Prop :=
   ∀ phase : MintAuthorization.DepositPhase,
     MintAuthorization.nonterminalDepositIndexed phase = true ↔

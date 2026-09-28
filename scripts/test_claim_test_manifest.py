@@ -237,7 +237,7 @@ class ClaimTestManifestTests(unittest.TestCase):
         root = Path("/tmp/claim-test-root")
         claim_tests.prepare_test_dependencies(tests, root, runner)
 
-        self.assertEqual(len(commands), 3)
+        self.assertEqual(len(commands), 4)
         self.assertEqual(
             commands[0],
             [str(root / "scripts/plan007/build-staging-canister-wasm.sh")],
@@ -246,7 +246,11 @@ class ClaimTestManifestTests(unittest.TestCase):
             commands[1],
             [str(root / "scripts/plan007/build-schema35-predecessor-wasm.sh")],
         )
-        self.assertIn("mock-external", commands[2])
+        self.assertEqual(
+            commands[2],
+            [str(root / "scripts/plan007/build-schema36-predecessor-wasm.sh")],
+        )
+        self.assertIn("mock-external", commands[3])
 
     def test_non_jest_dependencies_require_no_build(self) -> None:
         test = claim_tests.ClaimTest(

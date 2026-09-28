@@ -61,3 +61,6 @@ BridgeSpec.Protocol.Safe	model-support	verification/README.md	Accounting, quote,
 BridgeSpec.Protocol.filterSafeStoredState	model-support	verification/README.md	Abstract filter accepting states under the Safe condition, not production decoding or migration
 BridgeSpec.signatureTimeAllowed	specification	verification/README.md	Predicate for a u64 deadline, rejection of addition overflow, and at least 300 seconds remaining
 BridgeSpec.ClaimContracts.governanceAffordabilityDecision	specification	docs/canister-state-machine.md	Returns the smaller observed balance and the inclusive affordability comparison
+BridgeSpec.ClaimContracts.MultiAssetIsolation	specification	plans/009-multiple-assets-evm-deployments.md	Requires exact asset identity plus global and per-asset epoch equality for authorization acceptance
+BridgeSpec.ClaimContracts.AssetRegistryBinding	specification	plans/009-multiple-assets-evm-deployments.md	Requires the mandatory KINIC row to match immutable configuration and Index identities to remain unique
+BridgeSpec.ClaimContracts.SchemaV37Migration	specification	plans/009-multiple-assets-evm-deployments.md	Accepts only the v36 to v37 transition when predecessor state is preserved and KINIC is installed

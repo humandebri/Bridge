@@ -408,6 +408,7 @@ run_rust_integration() {
   if [[ -n "${BRIDGE_TEST_SESSION:-}" ]]; then
     "$ROOT/scripts/plan007/build-staging-canister-wasm.sh"
     "$ROOT/scripts/plan007/build-schema35-predecessor-wasm.sh"
+    "$ROOT/scripts/plan007/build-schema36-predecessor-wasm.sh"
     python3 "$ROOT/scripts/execution_session.py" suite jest
   else
     pnpm --dir "$ROOT" run test:e2e

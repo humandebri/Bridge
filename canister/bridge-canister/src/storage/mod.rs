@@ -24,8 +24,8 @@ use validation::expect_row_shape;
 
 use crate::admin::AdminState;
 use crate::config::{
-    AssetConfig, BaseBridgeKind, BridgeInitArgs, FeeRecipientConfig, ImmutableBridgeConfig,
-    KINIC_ASSET_ID,
+    AssetConfig, AssetLifecycle, BaseBridgeKind, BridgeInitArgs, FeeRecipientConfig,
+    ImmutableBridgeConfig, KINIC_ASSET_ID,
 };
 use bridge_core::{
     resolve_deposit_hold, resolve_withdrawal_hold, AccountingState, Amount, ApplyResult,
@@ -3159,7 +3159,7 @@ fn validate_storage_row(
             expect_row_shape(key, value, 32, value.len(), "invalid asset registry row")?;
             let asset: AssetConfig = decode_with_context(value.to_vec(), "invalid asset config")?;
             asset
-                .validate()
+                .validate_asset()
                 .map_err(|error| DbError::Constraint(error.into()))?;
             if asset.asset_id != key {
                 return Err(DbError::Constraint("asset registry key mismatch".into()));
@@ -6336,7 +6336,7 @@ impl StableStore {
         timestamp_ns: u64,
     ) -> Result<(), StorageError> {
         asset
-            .validate()
+            .validate_asset()
             .map_err(|_| StorageError::Core(CoreError::PayloadConflict))?;
         let assets = self.assets()?;
         if assets.len() >= MAX_ASSETS {
@@ -6348,6 +6348,7 @@ impl StableStore {
         if assets.iter().any(|existing| {
             existing.asset_id == asset.asset_id
                 || existing.ledger_canister_id == asset.ledger_canister_id
+                || existing.index_canister_id == asset.index_canister_id
                 || (!asset.token_contract.is_empty()
                     && existing.token_contract == asset.token_contract)
         }) {
@@ -6408,7 +6409,8 @@ impl StableStore {
         Ok(())
     }
 
-    pub fn bind_record_asset(
+    #[cfg(test)]
+    fn bind_record_asset(
         &mut self,
         record_kind: RecordAssetKind,
         record_id: &[u8],
@@ -6461,9 +6463,22 @@ impl StableStore {
                 params![key],
             )
         })?;
-        value
-            .map(|bytes| bytes.try_into().map_err(|_| StorageError::DecodeFailed))
-            .unwrap_or(Ok(KINIC_ASSET_ID))
+        if let Some(bytes) = value {
+            return bytes.try_into().map_err(|_| StorageError::DecodeFailed);
+        }
+        let shared_asset_enabled = self.assets()?.iter().any(|asset| {
+            asset.bridge_kind == BaseBridgeKind::SharedMultiToken
+                && asset.lifecycle == AssetLifecycle::Enabled
+        });
+        if shared_asset_enabled {
+            return Err(StorageError::RecordNotFound);
+        }
+        Ok(KINIC_ASSET_ID)
+    }
+
+    pub fn kinic_asset_binding_valid(&self) -> Result<bool, StorageError> {
+        let config = self.config()?.ok_or(StorageError::RecordNotFound)?;
+        Ok(self.asset(&KINIC_ASSET_ID)? == Some(AssetConfig::legacy_kinic(&config)))
     }
 
     #[cfg(feature = "test-deployment")]
@@ -13960,12 +13975,40 @@ mod tests {
             .expect("migrated KINIC asset");
         assert_eq!(kinic.symbol, "KINIC");
         assert_eq!(kinic.ledger_canister_id, config().ledger_canister_id);
+        assert!(reopened.kinic_asset_binding_valid().unwrap());
         assert_eq!(
             reopened
                 .record_asset(RecordAssetKind::Deposit, &[1; 32])
                 .unwrap(),
             KINIC_ASSET_ID
         );
+    }
+
+    #[test]
+    #[serial]
+    fn kinic_asset_binding_detects_registry_drift() {
+        let store =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("store");
+        assert!(store.kinic_asset_binding_valid().unwrap());
+
+        let mut drifted = store
+            .asset(&KINIC_ASSET_ID)
+            .expect("read KINIC asset")
+            .expect("KINIC asset");
+        drifted.ledger_fee += 1;
+        let encoded = encode(&drifted).expect("encode drifted asset");
+        store
+            .handle
+            .0
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE asset_registry SET value = ?1 WHERE key = ?2",
+                    params![encoded.to_sql_bytes(), KINIC_ASSET_ID.to_vec()],
+                )
+            })
+            .expect("write drifted asset");
+
+        assert!(!store.kinic_asset_binding_valid().unwrap());
     }
 
     #[test]
@@ -14001,6 +14044,17 @@ mod tests {
         assert!(store
             .register_asset(&asset, Principal::self_authenticating([0x4c; 32]), 56)
             .is_err());
+        let mut duplicate_index = asset.clone();
+        duplicate_index.asset_id = vec![0x54; 32];
+        duplicate_index.ledger_canister_id = Principal::self_authenticating([0x55; 32]);
+        duplicate_index.token_contract = vec![0x56; 20];
+        assert!(store
+            .register_asset(
+                &duplicate_index,
+                Principal::self_authenticating([0x4c; 32]),
+                57,
+            )
+            .is_err());
         let audit = store.audit_events(0, 10).expect("asset audit").events;
         assert!(matches!(
             audit.as_slice(),
@@ -14030,6 +14084,19 @@ mod tests {
         assert!(store
             .bind_record_asset(RecordAssetKind::Deposit, &record_id, &KINIC_ASSET_ID)
             .is_err());
+        let mut enabled = asset.clone();
+        enabled.asset_id = vec![0x64; 32];
+        enabled.ledger_canister_id = Principal::self_authenticating([0x65; 32]);
+        enabled.index_canister_id = Principal::self_authenticating([0x66; 32]);
+        enabled.token_contract = vec![0x67; 20];
+        enabled.lifecycle = AssetLifecycle::Enabled;
+        store
+            .register_asset(&enabled, Principal::self_authenticating([0x4c; 32]), 58)
+            .expect("register enabled test asset");
+        assert!(matches!(
+            store.record_asset(RecordAssetKind::Withdrawal, &[0x68; 32]),
+            Err(StorageError::RecordNotFound)
+        ));
         store.start_storage_validation().expect("start validation");
         loop {
             let status = store

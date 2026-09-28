@@ -14,6 +14,7 @@ import { PocketIc, SubnetStateType } from "@dfinity/pic";
 const root = resolve(__dirname, "..");
 const bridgeWasm = resolve(root, "target/test-deployment/staging/bridge_canister.wasm");
 const schema35BridgeWasm = resolve(root, "target/test-deployment/predecessor-v35/bridge_canister.wasm");
+const schema36BridgeWasm = resolve(root, "target/test-deployment/predecessor-v36/bridge_canister.wasm");
 const schema35Revision = "e0b426e7465531d2e572b5b741509f1889e6def8";
 const schema35ArchiveSha256 = "24dfae12273dd04c899b058f2665610fb8c273b9099f0574838898d686f14866";
 const schema35WasmSha256ByHost: Readonly<Record<string, string>> = {
@@ -27,13 +28,23 @@ if (schema35WasmSha256 === undefined) {
 }
 const mockWasm = resolve(root, "target/wasm32-unknown-unknown/release/mock_external.wasm");
 const wasmBytes = new Map<string, Buffer>();
+let schema36PredecessorPrepared = false;
 function readWasm(path: string): Buffer {
   if (path === schema35BridgeWasm) buildSchema35Predecessor();
+  if (path === schema36BridgeWasm) buildSchema36Predecessor();
   const cached = wasmBytes.get(path);
   if (cached) return cached;
   const bytes = readFileSync(path);
   wasmBytes.set(path, bytes);
   return bytes;
+}
+function buildSchema36Predecessor(): void {
+  if (schema36PredecessorPrepared) return;
+  execFileSync(join(root, "scripts/plan007/build-schema36-predecessor-wasm.sh"), [], {
+    stdio: "inherit",
+    env: { ...process.env, CARGO_NET_OFFLINE: "true", CARGO_INCREMENTAL: "0" },
+  });
+  schema36PredecessorPrepared = true;
 }
 const testLedgerFee = 10_000n;
 
@@ -628,8 +639,8 @@ describe("Phase 3 PocketIC saga", () => {
       .toEqual({Err:{IdentityConflict:null}});
   });
 
-  it("rebuilds_requester_history_from_deployed_v35_records_and_transaction_index", async () => {
-    const { evm, bridge, runtimePrincipal } = await setup(true, {}, schema35BridgeWasm);
+  it("rebuilds_requester_history_from_deployed_v36_records_and_transaction_index", async () => {
+    const { evm, bridge, runtimePrincipal } = await setup(true, {}, schema36BridgeWasm);
     const id = new Uint8Array(32).fill(6);
     const transactionHash = new Uint8Array(32).fill(9);
     const requester = new Uint8Array(20).fill(0x22);
@@ -674,6 +685,7 @@ describe("Phase 3 PocketIC saga", () => {
     // and, if necessary, rebuild it before PocketIC starts so both workloads do
     // not compete for the trusted runner's memory.
     readWasm(schema35BridgeWasm);
+    readWasm(schema36BridgeWasm);
     const probe = createServer();
     const port = await new Promise<number>((resolvePort, reject) => {
       probe.once("error", reject);
@@ -1256,10 +1268,10 @@ describe("Phase 3 PocketIC saga", () => {
 
   async function rejects_schema_35_as_an_obsolete_upgrade_source() {
     const { bridge } = await setup(false, {}, schema35BridgeWasm, true, true);
-    expect(await (bridge.actor as any).get_runtime_binding())
+    expect(await (bridge.actor as any).get_bridge_status())
       .toHaveProperty("schema_version", 35);
     await expect(upgradeBridge(bridge)).rejects.toThrow();
-    expect(await (bridge.actor as any).get_runtime_binding())
+    expect(await (bridge.actor as any).get_bridge_status())
       .toHaveProperty("schema_version", 35);
   }
 
@@ -3654,6 +3666,47 @@ describe("Phase 3 PocketIC saga", () => {
   it(
     "preserves representative v37 current state across a same-Wasm upgrade",
     preserves_representative_v37_current_state_across_a_same_wasm_upgrade,
+  );
+
+  async function migrates_representative_v36_state_with_the_real_predecessor_wasm() {
+    const { bridge, evm, runtimePrincipal } = await setup(true, {}, schema36BridgeWasm);
+    const deposit: any = await requestDefaultDeposit(bridge);
+    expect(deposit).toHaveProperty("Ok.deposit_id");
+    expect(await mintAuthorizedDeposit(bridge, evm, deposit.Ok.deposit_id)).toHaveProperty("Ok");
+    const statusBefore: any = await (bridge.actor as any).get_bridge_status();
+    const historyBefore: any = await (bridge.actor as any).list_deposit_ids({
+      owner: runtimePrincipal,
+      before_cursor: [],
+      limit: 20,
+    });
+    expect(statusBefore.mint_authorization_epoch).toBeGreaterThan(0n);
+    expect(historyBefore.Ok.deposit_ids).toContainEqual(deposit.Ok.deposit_id);
+
+    await upgradeBridge(bridge);
+
+    const runtimeAfter: any = await (bridge.actor as any).get_runtime_binding();
+    const statusAfter: any = await (bridge.actor as any).get_bridge_status();
+    const historyAfter: any = await (bridge.actor as any).list_deposit_ids({
+      owner: runtimePrincipal,
+      before_cursor: [],
+      limit: 20,
+    });
+    const assetsAfter: any = await (bridge.actor as any).list_assets();
+    expect(runtimeAfter.schema_version).toBe(37);
+    expect(runtimeAfter.kinic_asset_binding_valid).toBe(true);
+    expect(assetsAfter).toHaveProperty("Ok");
+    expect(assetsAfter.Ok).toHaveLength(1);
+    expect(assetsAfter.Ok[0].symbol).toBe("KINIC");
+    expect(assetsAfter.Ok[0].ledger_canister_id.toText()).toBe(runtimeAfter.ledger_canister_id.toText());
+    expect(historyAfter).toEqual(historyBefore);
+    expect((await (bridge.actor as any).get_deposit(deposit.Ok.deposit_id))[0]).toBeDefined();
+    expect(statusAfter.mint_authorization_epoch).toBe(statusBefore.mint_authorization_epoch);
+    expect(statusAfter.counts).toEqual(statusBefore.counts);
+  }
+
+  it(
+    "migrates representative v36 state from the real predecessor Wasm",
+    migrates_representative_v36_state_with_the_real_predecessor_wasm,
   );
 
   it("keeps large SQLite status and upgrade work bounded and completes controller maintenance", async () => {

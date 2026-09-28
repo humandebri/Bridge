@@ -24,6 +24,26 @@ BridgeSpec.ClaimContracts.activation_preflight_witness : BridgeSpec.ClaimContrac
 
 Major definitions: `BridgeSpec.ClaimContracts.ActivationPreflight`
 
+## claim: asset_registry_binding
+
+Specification: `plans/009-multiple-assets-evm-deployments.md`
+
+Premises: The KINIC registry row exists, matches immutable configuration, and Index identities are unique
+
+Conclusion: Production authorization accepts only a complete and unambiguous registry binding
+
+Unproved boundary: SQLite execution and correspondence between the Boolean runtime observation and stored rows remain external evidence boundaries
+
+Evidence and external assumptions: `claims.tsv:asset_registry_binding` / `claims.tsv:asset_registry_binding`
+
+Review rationale: Introduces the registry integrity claim used by RuntimeBinding and the production release gate.
+
+```lean
+BridgeSpec.ClaimContracts.asset_registry_binding_witness : BridgeSpec.ClaimContracts.AssetRegistryBinding
+```
+
+Major definitions: `BridgeSpec.ClaimContracts.AssetRegistryBinding`
+
 ## claim: authorization_binding
 
 Specification: `docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md`
@@ -524,6 +544,26 @@ BridgeSpec.ClaimContracts.ledger_block_provenance_witness : BridgeSpec.ClaimCont
 
 Major definitions: `BridgeSpec.ClaimContracts.LedgerBlockProvenance`
 
+## claim: multi_asset_isolation
+
+Specification: `plans/009-multiple-assets-evm-deployments.md`
+
+Premises: A mint authorization identifies an asset plus the current global and asset epochs
+
+Conclusion: Acceptance requires the selected asset and both epochs to match exactly
+
+Unproved boundary: ECDSA authenticity, ERC-20 execution, and the Solidity refinement remain separate evidence boundaries
+
+Evidence and external assumptions: `claims.tsv:multi_asset_isolation` / `claims.tsv:multi_asset_isolation`
+
+Review rationale: Introduces the multi-token authorization separation claim and records its external execution boundaries.
+
+```lean
+BridgeSpec.ClaimContracts.multi_asset_isolation_witness : BridgeSpec.ClaimContracts.MultiAssetIsolation
+```
+
+Major definitions: `BridgeSpec.ClaimContracts.MultiAssetIsolation`
+
 ## claim: nonterminal_deposit_index_consistency
 
 Specification: `docs/canister-state-machine.md`
@@ -743,6 +783,26 @@ BridgeSpec.ClaimContracts.runtime_attestation_reuse_witness : BridgeSpec.ClaimCo
 ```
 
 Major definitions: `BridgeSpec.ClaimContracts.RuntimeAttestationReuse`
+
+## claim: schema_v37_migration
+
+Specification: `plans/009-multiple-assets-evm-deployments.md`
+
+Premises: The predecessor is schema v36, the candidate is schema v37, existing state is preserved, and KINIC is installed
+
+Conclusion: Only the reviewed v36 to v37 transition with preserved state and a KINIC row is accepted
+
+Unproved boundary: Wasm execution, SQLite durability, and fixture fidelity remain external evidence boundaries
+
+Evidence and external assumptions: `claims.tsv:schema_v37_migration` / `claims.tsv:schema_v37_migration`
+
+Review rationale: Introduces the predecessor-bound migration claim and binds it to the real-v36 PocketIC fixture.
+
+```lean
+BridgeSpec.ClaimContracts.schema_v37_migration_witness : BridgeSpec.ClaimContracts.SchemaV37Migration
+```
+
+Major definitions: `BridgeSpec.ClaimContracts.SchemaV37Migration`
 
 ## claim: service_fee_maximum
 
@@ -979,6 +1039,20 @@ BridgeSpec.ClaimContracts.ActivationPreflight : Prop
     Eq.{1} (BridgeSpec.ControlPlane.State.paused state) Bool.false →
       GT.gt.{0} (BridgeSpec.ControlPlane.State.activationCount state) 0 →
         Eq.{1} (BridgeSpec.ControlPlane.State.lastActivationValidated state) Bool.true
+```
+
+### BridgeSpec.ClaimContracts.AssetRegistryBinding
+
+specification: Requires the mandatory KINIC row to match immutable configuration and Index identities to remain unique
+
+Specification: `plans/009-multiple-assets-evm-deployments.md`
+
+```lean
+BridgeSpec.ClaimContracts.AssetRegistryBinding : Prop
+∀ (kinicPresent kinicMatchesConfig indexUnique : Bool),
+  Iff
+    (Eq.{1} (BridgeSpec.ClaimContracts.assetRegistryBindingValid kinicPresent kinicMatchesConfig indexUnique) Bool.true)
+    (And (Eq.{1} kinicPresent Bool.true) (And (Eq.{1} kinicMatchesConfig Bool.true) (Eq.{1} indexUnique Bool.true)))
 ```
 
 ### BridgeSpec.ClaimContracts.AuthorizationBinding
@@ -1573,6 +1647,24 @@ BridgeSpec.ClaimContracts.LedgerBlockProvenance : Prop
 BridgeSpec.LedgerBlockProvenance.ClaimContract
 ```
 
+### BridgeSpec.ClaimContracts.MultiAssetIsolation
+
+specification: Requires exact asset identity plus global and per-asset epoch equality for authorization acceptance
+
+Specification: `plans/009-multiple-assets-evm-deployments.md`
+
+```lean
+BridgeSpec.ClaimContracts.MultiAssetIsolation : Prop
+∀ (signedAsset selectedAsset signedGlobalEpoch currentGlobalEpoch signedAssetEpoch currentAssetEpoch : Nat),
+  Iff
+    (Eq.{1}
+      (BridgeSpec.ClaimContracts.multiAssetAuthorizationAccepted signedAsset selectedAsset signedGlobalEpoch
+        currentGlobalEpoch signedAssetEpoch currentAssetEpoch)
+      Bool.true)
+    (And (Eq.{1} signedAsset selectedAsset)
+      (And (Eq.{1} signedGlobalEpoch currentGlobalEpoch) (Eq.{1} signedAssetEpoch currentAssetEpoch)))
+```
+
 ### BridgeSpec.ClaimContracts.NonterminalDepositIndexConsistency
 
 specification: Only phases other than refunded, cancelled, and minted are indexed
@@ -1784,6 +1876,23 @@ BridgeSpec.ClaimContracts.RuntimeAttestationReuse : Prop
     ∀ (reusedDomain : BridgeSpec.ControlPlane.InstallDomain),
       Eq.{1} (BridgeSpec.ControlPlane.State.lastReusedDomain state) (Option.some.{0} reusedDomain) →
         Eq.{1} reusedDomain (BridgeSpec.ControlPlane.State.domain state)
+```
+
+### BridgeSpec.ClaimContracts.SchemaV37Migration
+
+specification: Accepts only the v36 to v37 transition when predecessor state is preserved and KINIC is installed
+
+Specification: `plans/009-multiple-assets-evm-deployments.md`
+
+```lean
+BridgeSpec.ClaimContracts.SchemaV37Migration : Prop
+∀ (sourceSchema targetSchema : Nat) (statePreserved kinicInstalled : Bool),
+  Iff
+    (Eq.{1}
+      (BridgeSpec.ClaimContracts.schemaV37MigrationAccepted sourceSchema targetSchema statePreserved kinicInstalled)
+      Bool.true)
+    (And (Eq.{1} sourceSchema 36)
+      (And (Eq.{1} targetSchema 37) (And (Eq.{1} statePreserved Bool.true) (Eq.{1} kinicInstalled Bool.true))))
 ```
 
 ### BridgeSpec.ClaimContracts.ServiceFeeMaximum
@@ -2389,7 +2498,7 @@ fun observedTimestamp deadline =>
 | Source | Lines | Declarations | SHA-256 |
 |---|---:|---:|---|
 | verification/lean/BridgeSpec/AuditExport.lean | 18 | 1 | 71f528152dcd1c0a250ae213e0d250e8c4a46d42002c38d579b13679dd7bf501 |
-| verification/lean/BridgeSpec/ClaimContracts.lean | 639 | 107 | c9b78c3d0f847ebfdcb06b013805eada5964bed831c23eefe7128c1f9abd36c3 |
+| verification/lean/BridgeSpec/ClaimContracts.lean | 687 | 116 | 91c3152474996493dd694be25946cfc484669094c033f3176c529638035fa1fa |
 | verification/lean/BridgeSpec/Claims.lean | 226 | 28 | f74ffe05f86fbdfa4e94095bdc2dc64a1dd3ed94c947a4b800af6433dada3430 |
 | verification/lean/BridgeSpec/ControlPlane.lean | 323 | 32 | 57e6656b42d4da34726d8e69bfe129939d7649070923beddc9c5fdce8876936c |
 | verification/lean/BridgeSpec/DepositAuthorization.lean | 586 | 48 | 737633200787c8db2275d4a8408e8bad75754e04415c9cbc435b934660ca001e |
@@ -2411,6 +2520,7 @@ fun observedTimestamp deadline =>
 | verification/lean/fail/AuthorizationReissue.lean | 25 | 4 | ee67fee642f47c1d116fc94f8a5f9387e96525dfa5397646063d6fbc6451d508 |
 | verification/lean/fail/BackingViolation.lean | 12 | 0 | 0ad4d6a1424518a8b8f9968310d0a88619133f86d4ce877fa7134a0f22b206d2 |
 | verification/lean/fail/ConflictingFundingReplay.lean | 9 | 0 | fd5f6abf7f8812e64bf2cbf457991ca46fcea6cdcc71acd074a6b162317c7b96 |
+| verification/lean/fail/CrossAssetAuthorization.lean | 6 | 0 | d591df55e433262e15f6c9ef130551966d9e8e69eaea6348fb91ff5507f1f1ba |
 | verification/lean/fail/DeadlineOverflow.lean | 6 | 0 | 864692b1294fc6b36f398fc91ea14695d07fea1c3defc14708eccc329aa74d5c |
 | verification/lean/fail/DestinationMutation.lean | 20 | 3 | a3992470b4340e01eb81291efe4172fb9b3269141e987beea8238f02fded0cae |
 | verification/lean/fail/DoubleDepositFeeTrace.lean | 7 | 0 | 9f00413132deded07cee5385e9a56384775d7b6b869bfad08b31c384059605ba |
@@ -2423,9 +2533,11 @@ fun observedTimestamp deadline =>
 | verification/lean/fail/IncompleteExpiryAudit.lean | 22 | 2 | 4c30cb6604648725bea1d9a376cd758efedc2bbbc029c26088ed070229be55bd |
 | verification/lean/fail/IncompleteMintAudit.lean | 21 | 2 | 34a54671a3271bf8efb75d8ffa94483006cb795bca44a73eeccd29384ed3ec1c |
 | verification/lean/fail/InvalidExecutionStep.lean | 10 | 1 | a6b48a8e639af5578312a150535c1b778d45877f353b449eca9559558c156213 |
+| verification/lean/fail/InvalidSchemaV37Migration.lean | 6 | 0 | f2555b62e1105d5a05155d6993d045d52e9b84774f8024f1a8a157ea2d5d214b |
 | verification/lean/fail/ManualActiveLeaseBypass.lean | 6 | 0 | 05b63de3fa0532e200bdd0c2f8e75495f96b40683b11177827e16335ee5fa7a7 |
 | verification/lean/fail/ManualClaimEconomicMutation.lean | 13 | 1 | 9b60fdf900a577eea35aa64585347ed44b629cceae79b2dbbc0ede270ad7722d |
 | verification/lean/fail/MintFeeAlreadyCounted.lean | 19 | 2 | 1506eb9046d1280a73afc6a2e0203ad2ebc477b2eb62afc1e8360bbd6bbb4a68 |
+| verification/lean/fail/MissingKinicRegistryBinding.lean | 6 | 0 | faf38ece305edea6bf6853f05d613e75ca529a426e847cc7fb8913ca97731938 |
 | verification/lean/fail/MissingUserLiveness.lean | 16 | 1 | 285ee5520011c8603f7db684c1a6365bef69da98d9e38c6ed60a4f0b69bbe07e |
 | verification/lean/fail/ProcessedExpiryRefund.lean | 21 | 2 | 4dcff1642961a5f622a762ac1b4748b990a5b4ee6a480d4e6a42abf76f7e0773 |
 | verification/lean/fail/QuoteChangedDuringTrace.lean | 8 | 0 | 9a520139c90b0736b11e639ee117cd5e8d2b58e7f36ef7fe039ebbb7b72fa645 |

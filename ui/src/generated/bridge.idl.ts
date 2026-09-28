@@ -506,6 +506,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
   const RuntimeBinding = IDL.Record({
     'expected_bridge_signer' : IDL.Vec(IDL.Nat8),
     'base_chain_id' : IDL.Nat64,
+    'kinic_asset_binding_valid' : IDL.Bool,
     'bridge_contract' : IDL.Vec(IDL.Nat8),
     'evm_rpc_canister_id' : IDL.Principal,
     'deployment_instance_id' : IDL.Vec(IDL.Nat8),

@@ -759,6 +759,7 @@ struct LiveRuntimeBinding {
     evm_rpc_canister_id: String,
     rpc_provider_urls_sha256: String,
     operational_config_sha256: String,
+    kinic_asset_binding_valid: bool,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -1234,6 +1235,7 @@ struct RuntimeBindingView {
     evm_rpc_canister_id: Principal,
     rpc_provider_urls_sha256: Vec<u8>,
     operational_config_sha256: Vec<u8>,
+    kinic_asset_binding_valid: bool,
 }
 
 #[derive(CandidType)]
@@ -3267,6 +3269,7 @@ fn write_production_canister_install_receipt(
             evm_rpc_canister_id: runtime.evm_rpc_canister_id.to_text(),
             rpc_provider_urls_sha256: hex(&runtime.rpc_provider_urls_sha256),
             operational_config_sha256: hex(&runtime.operational_config_sha256),
+            kinic_asset_binding_valid: runtime.kinic_asset_binding_valid,
         },
         governance_operator: format!("0x{}", hex(&observed_governance_operator)),
         runtime_administrator: format!("0x{}", hex(&control_plane.runtime_administrator)),
@@ -4010,6 +4013,7 @@ fn validate_live_runtime_binding(
         || !observed
             .operational_config_sha256
             .eq_ignore_ascii_case(&hex(operational_config_sha256))
+        || !observed.kinic_asset_binding_valid
     {
         return Err("live Canister RuntimeBinding does not exactly match the profile".into());
     }
@@ -4030,6 +4034,7 @@ fn live_runtime_binding_from_view(observed: &RuntimeBindingView) -> LiveRuntimeB
         evm_rpc_canister_id: observed.evm_rpc_canister_id.to_text(),
         rpc_provider_urls_sha256: hex(&observed.rpc_provider_urls_sha256),
         operational_config_sha256: hex(&observed.operational_config_sha256),
+        kinic_asset_binding_valid: observed.kinic_asset_binding_valid,
     }
 }
 
@@ -4672,6 +4677,7 @@ fn validate_production_current_state_core(
         return Err("production activation is not in a completed active state".into());
     }
     if runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || !runtime.kinic_asset_binding_valid
         || status.deposits_paused
         || !status.reserve.sufficient
         || !matches!(pending, PendingGovernanceTransactionsView::Ok(values) if values.is_empty())
@@ -9709,6 +9715,7 @@ mod tests {
             evm_rpc_canister_id: profile.evm_rpc_canister_id.clone(),
             rpc_provider_urls_sha256: rpc_url_hash,
             operational_config_sha256,
+            kinic_asset_binding_valid: true,
         }
     }
 
@@ -10010,6 +10017,15 @@ mod tests {
         )
         .is_ok());
         observed.schema_version -= 1;
+        assert!(validate_live_runtime_binding(
+            &observed,
+            &profile,
+            &rpc_url_hash,
+            &operational_config_sha256,
+        )
+        .is_err());
+        observed.schema_version = profile.canister_schema_version;
+        observed.kinic_asset_binding_valid = false;
         assert!(validate_live_runtime_binding(
             &observed,
             &profile,
@@ -10659,6 +10675,7 @@ mod tests {
             evm_rpc_canister_id: Principal::anonymous(),
             rpc_provider_urls_sha256: vec![0; 32],
             operational_config_sha256: vec![0; 32],
+            kinic_asset_binding_valid: true,
         };
         let status = |paused| {
             let mut value = matching_handover_status();
@@ -10710,6 +10727,22 @@ mod tests {
             true,
         )
         .is_ok());
+        let mut invalid_registry_runtime = ok_runtime.clone();
+        invalid_registry_runtime.kinic_asset_binding_valid = false;
+        assert!(validate(
+            &[controller],
+            &module,
+            ProductionLifecycleView::Activated,
+            &ok_activation,
+            &invalid_registry_runtime,
+            &ok_status,
+            &ok_pending,
+            true,
+            0,
+            false,
+            true,
+        )
+        .is_err());
         assert!(validate(
             &[controller, Principal::anonymous()],
             &module,

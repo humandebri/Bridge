@@ -368,6 +368,11 @@ def prepare_test_dependencies(
         runner,
     )
     run_command(
+        [str(root / "scripts/plan007/build-schema36-predecessor-wasm.sh")],
+        root,
+        runner,
+    )
+    run_command(
         [
             "cargo",
             "build",
@@ -429,7 +434,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "tests": len(tests), "groups": len(groups),
         "runner_invocations": sum(2 if group[0].runner.startswith("rust-") else 1 for group in groups),
         "native_builds": sorted({test.runner for test in tests if test.runner.startswith("rust-") or test.runner == "foundry"}),
-        "dependency_builds": ["staging-canister", "schema35-predecessor", "mock-external"]
+        "dependency_builds": ["staging-canister", "schema35-predecessor", "schema36-predecessor", "mock-external"]
             if any(test.runner == "jest" for test in tests) else [],
         "execution_plan": [{"runner": group[0].runner, "target": group[0].target,
                             "execution": group[0].execution,

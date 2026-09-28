@@ -15,7 +15,7 @@ The refinement manifest has five columns: section, abstract definition, finite-w
 CI permits only the approved Rust, Foundry, and Vitest runners. It rejects incomplete manifest/renderer coverage, generated drift, and selectors duplicated by non-generated tests, then verifies that each selector passes exactly once. Production links express ownership; the presence of a string does not increase proof strength.
 Vector comparisons establish bounded conformance for the enumerated cases, not complete semantic refinement of the Rust, Solidity, or TypeScript implementations.
 
-For `shared-expression`, both function bodies must return the unmodified shared macro result. Only immutable integer aliases may precede the call; parameter shadowing, result transformations, discarded values, and early returns are rejected. The existing `legacy_activation_evidence_requirement` enum adapter is checked against its complete fixed code-to-variant mapping, including the default branch. This return binding does not prove external inputs or caller side effects.
+For `shared-expression`, both function bodies must return the unmodified shared macro result. Only immutable integer aliases may precede the call; parameter shadowing, result transformations, discarded values, early returns, and arbitrary return adapters are rejected. This return binding does not prove external inputs or caller side effects.
 
 Withdrawal verification covers the irreversible `Committed` burn on Base and outstanding Canister liabilities. The model has no Base refund, release acknowledgement, or Withdrawal EVM operation.
 

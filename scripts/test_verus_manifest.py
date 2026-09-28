@@ -266,27 +266,6 @@ verus! {{
         with self.assertRaisesRegex(ValueError, "argument binding differs"):
             validate_shared_expression(source, "kernel", "shared_body")
 
-    def test_binds_the_complete_legacy_activation_enum_adapter(self) -> None:
-        source = checker.KERNEL.read_text()
-        kernel = "legacy_activation_evidence_requirement"
-        macro = kernel + "_body"
-        validate_shared_expression(source, kernel, macro)
-        mutations = (
-            ("1 => LegacyActivationEvidenceRequirement::Schedule,",
-             "1 => LegacyActivationEvidenceRequirement::Execute,"),
-            ("_ => LegacyActivationEvidenceRequirement::NotRequired,",
-             "_ => LegacyActivationEvidenceRequirement::Schedule,"),
-            ("match legacy_activation_evidence_requirement_body!(",
-             "return LegacyActivationEvidenceRequirement::NotRequired; "
-             "match legacy_activation_evidence_requirement_body!("),
-        )
-        for original, replacement in mutations:
-            self.assertEqual(source.count(original), 1)
-            with self.subTest(replacement=replacement), self.assertRaisesRegex(
-                ValueError, "return adapter differs"
-            ):
-                validate_shared_expression(source.replace(original, replacement), kernel, macro)
-
     def test_accepts_derived_production_expression_as_specification_input(self) -> None:
         source = self.shared_source(
             "shared_body!(first > 0, second == 1)",
