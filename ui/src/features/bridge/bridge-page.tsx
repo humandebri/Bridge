@@ -243,14 +243,16 @@ export function BridgePage({
   const selectedAssetId = selectedAsset
     ? (bytesHex(selectedAsset.asset_id) as `0x${string}`)
     : undefined
+  const selectedShared = Boolean(selectedAsset && "SharedMultiToken" in selectedAsset.bridge_kind)
   const selectedBridgeAddress = selectedAsset
     ? (bytesHex(selectedAsset.bridge_contract) as `0x${string}`)
     : undefined
   const selectedTokenAddress = selectedAsset
-    ? (bytesHex(selectedAsset.token_contract) as `0x${string}`)
+    ? selectedShared
+      ? (bytesHex(selectedAsset.token_contract) as `0x${string}`)
+      : (deploymentProfile.bsnsAddress ?? undefined)
     : undefined
   const selectedLedgerCanisterId = selectedAsset?.ledger_canister_id.toText()
-  const selectedShared = Boolean(selectedAsset && "SharedMultiToken" in selectedAsset.bridge_kind)
   const quoteAsset =
     selectedAsset && selectedAssetId && selectedBridgeAddress && selectedTokenAddress
       ? {

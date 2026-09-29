@@ -113,7 +113,9 @@ async function setup() {
   // remove an existing file. Long gates can reuse a PID, so remove only this
   // process's stale rendezvous file before waiting for the new server port.
   await rm(path.join(tmpdir(), `pocket_ic_${process.ppid}.port`), { force: true })
-  const picServer = await PocketIcServer.start()
+  // The full real flow runs two tests with ten-minute bounds after setup, so
+  // keep the owned PocketIC server alive for the entire suite.
+  const picServer = await PocketIcServer.start({ ttl: 1_800 })
   resources.picServer = picServer
   const pic = await PocketIc.create(picServer.getUrl(), {
     nns: { state: { type: SubnetStateType.New } },

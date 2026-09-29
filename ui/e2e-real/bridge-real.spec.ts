@@ -77,7 +77,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await expect(page.getByRole("button", { name: /IC wallet connected as /i })).toBeVisible()
 
   await refreshBridgeData(page)
-  await expect(page.getByText("TICRC1", { exact: true }).first()).toBeVisible()
+  await expect(page.getByText("KINIC", { exact: true }).first()).toBeVisible()
   await page.getByLabel("You send").fill("2.00000000")
   await expect(page.getByText("1.99 KINIC", { exact: true })).toBeVisible()
   await postControl(request, "/test/fail-next-deposit-response", {})
@@ -103,7 +103,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await expect(
     page.getByText("Previous deposit outcome is unconfirmed", { exact: true }),
   ).toBeVisible()
-  await page.getByRole("button", { name: "Close", exact: true }).click()
+  await page.getByRole("button", { name: "Close confirmation", exact: true }).click()
   await expect(page.getByRole("button", { name: "Check previous deposit" })).toBeVisible()
   expect(await controlState(request)).toMatchObject({
     knownDepositCount: 1,
@@ -219,7 +219,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   for (const heading of [
     "Direction",
     "Base tx",
-    "KINIC tx",
+    "IC tx",
     "Amount",
     "Status",
     "Time",
@@ -262,7 +262,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await refreshBridgeData(page)
   await expect(page.getByText("KINIC", { exact: true }).first()).toBeVisible()
   await page.getByLabel("You send").fill("1.00000000")
-  await expect(page.getByText("0.99 TICRC1", { exact: true })).toBeVisible()
+  await expect(page.getByText("0.99 KINIC", { exact: true })).toBeVisible()
   const withdraw = page.getByRole("button", { name: "Bridge to IC" })
   await expect
     .poll(

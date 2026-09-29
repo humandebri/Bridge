@@ -220,6 +220,7 @@ describe("BridgePage automatic wallet refresh", () => {
 
   beforeEach(() => {
     deploymentProfile.bridgeCanisterId = "aaaaa-aa"
+    deploymentProfile.bsnsAddress = `0x${"22".repeat(20)}`
     clearTransferFacts()
     browserLocalStorage().clear()
     mocks.useAccount.mockReset().mockReturnValue({ address: undefined, isConnected: false })
@@ -247,7 +248,7 @@ describe("BridgePage automatic wallet refresh", () => {
           deployment_instance_id: new Uint8Array(32).fill(0xbb),
           bridge_kind: { LegacySingleToken: null },
           bridge_contract: new Uint8Array(20).fill(0x11),
-          token_contract: new Uint8Array(20).fill(0x22),
+          token_contract: new Uint8Array(),
           expected_bridge_runtime_sha256: new Uint8Array(32).fill(0x33),
           expected_token_runtime_sha256: new Uint8Array(32).fill(0x44),
           timelock_contract: new Uint8Array(20).fill(0x55),
@@ -450,6 +451,12 @@ describe("BridgePage automatic wallet refresh", () => {
     view.rerender(<BridgePage direction="withdraw" onDirectionChange={vi.fn()} />)
 
     await waitFor(() => expect(mocks.bsnsBalance).toHaveBeenCalledOnce())
+    expect(mocks.bsnsBalance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: `0x${"22".repeat(20)}`,
+        functionName: "balanceOf",
+      }),
+    )
   })
 
   it("loads the connected wallet balance while runtime validation is unavailable", async () => {
