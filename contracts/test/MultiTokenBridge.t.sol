@@ -415,7 +415,7 @@ contract MultiTokenBridgeTest is TestBase {
         uint64 startedAt = bridge.assetSnapshot(ASSET_A).mintWindowStartedAt;
         vm.warp(uint256(startedAt) + 1 hours);
         IMultiTokenBridge.AssetSnapshot memory snapshot = bridge.assetSnapshot(ASSET_A);
-        assert(snapshot.mintWindowStartedAt == block.timestamp);
+        assert(snapshot.mintWindowStartedAt == startedAt + 1 hours);
         assert(snapshot.mintedInWindow == 0);
     }
 
