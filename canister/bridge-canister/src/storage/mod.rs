@@ -22,7 +22,7 @@ pub use settlement::{
 use transaction::*;
 use validation::expect_row_shape;
 
-use crate::admin::AdminState;
+use crate::admin::{AdminState, WithdrawalFeeGuard};
 use crate::config::{
     AssetConfig, AssetLifecycle, AssetRuntimeAttestation, BaseBridgeKind, BridgeInitArgs,
     FeeRecipientConfig, ImmutableBridgeConfig, KINIC_ASSET_ID,
@@ -313,6 +313,10 @@ CREATE TABLE asset_registry (
     key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
     value BLOB NOT NULL
 ) STRICT, WITHOUT ROWID;
+CREATE TABLE asset_financial_states (
+    key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
+    value BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
 CREATE TABLE asset_runtime_attestations (
     key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
     value BLOB NOT NULL
@@ -429,6 +433,7 @@ INSERT INTO table_counts(name, count) VALUES
  ('withdrawal_transaction_index', X'0000000000000000'),
  ('withdrawal_stop_reason_counts', X'0000000000000000'),
  ('asset_registry', X'0000000000000000'),
+ ('asset_financial_states', X'0000000000000000'),
  ('asset_runtime_attestations', X'0000000000000000'),
  ('withdrawal_origins', X'0000000000000000'),
  ('record_asset_bindings', X'0000000000000000');
@@ -457,6 +462,17 @@ pub struct SharedWithdrawalOrigin {
     pub asset_id: Vec<u8>,
     pub base_withdrawal_id: Vec<u8>,
     pub bridge_contract: Vec<u8>,
+}
+
+/// Monetary state is denominated in exactly one asset. KINIC continues to use
+/// the v36 singleton fields; shared-bridge assets use one row each in
+/// `asset_financial_states` so amounts with different units are never summed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetFinancialState {
+    pub accounting: AccountingState,
+    pub reserved_deposit_mint_amount: u128,
+    pub withdrawal_liability_amount: u128,
+    pub withdrawal_fee_guard: Option<WithdrawalFeeGuard>,
 }
 
 impl RecordAssetKind {
@@ -785,11 +801,87 @@ fn adjust_withdrawal_liability_record(
     Ok(())
 }
 
+fn read_asset_financial_state(
+    connection: &UpdateConnection<'_>,
+    asset_id: [u8; 32],
+) -> Result<AssetFinancialState, DbError> {
+    if asset_id == KINIC_ASSET_ID {
+        let (accounting, counters, liability, admin): (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) =
+            connection.query_one(
+                "SELECT accounting, counters, withdrawal_liability_amount, admin_state
+                 FROM singleton_state WHERE id = 1",
+                params![],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+        let accounting: AccountingState = decode_with_context(accounting, "invalid accounting")?;
+        let counters: CounterState = decode_with_context(counters, "invalid counters")?;
+        let admin: Option<AdminState> = decode_with_context(admin, "invalid admin state")?;
+        return Ok(AssetFinancialState {
+            accounting,
+            reserved_deposit_mint_amount: counters.reserved_deposit_mint_amount,
+            withdrawal_liability_amount: u128::from_sql_bytes(liability)
+                .map_err(|_| DbError::Constraint("invalid withdrawal liability amount".into()))?,
+            withdrawal_fee_guard: admin.and_then(|value| value.withdrawal_fee_guard),
+        });
+    }
+    let bytes = connection.query_scalar::<Vec<u8>>(
+        "SELECT value FROM asset_financial_states WHERE key = ?1",
+        params![asset_id.to_sql_bytes()],
+    )?;
+    decode_with_context(bytes, "invalid asset financial state")
+}
+
+fn bound_asset_id(
+    connection: &UpdateConnection<'_>,
+    kind: RecordAssetKind,
+    record_id: &[u8],
+) -> Result<[u8; 32], DbError> {
+    let key = kind
+        .key(record_id)
+        .map_err(|_| DbError::Constraint("invalid record asset key".into()))?;
+    let value = connection.query_scalar::<Vec<u8>>(
+        "SELECT value FROM record_asset_bindings WHERE key = ?1",
+        params![key],
+    )?;
+    value
+        .try_into()
+        .map_err(|_| DbError::Constraint("invalid bound asset ID".into()))
+}
+
+fn write_shared_asset_financial_state(
+    connection: &UpdateConnection<'_>,
+    asset_id: [u8; 32],
+    expected: &AssetFinancialState,
+    next: &AssetFinancialState,
+) -> Result<(), DbError> {
+    if asset_id == KINIC_ASSET_ID {
+        return Err(DbError::Constraint(
+            "KINIC financial state must use singleton fields".into(),
+        ));
+    }
+    let expected = encode(expected)
+        .map_err(|_| DbError::Constraint("asset financial encoding failed".into()))?;
+    let next =
+        encode(next).map_err(|_| DbError::Constraint("asset financial encoding failed".into()))?;
+    let persisted = connection.query_optional_scalar::<Vec<u8>>(
+        "SELECT value FROM asset_financial_states WHERE key = ?1",
+        params![asset_id.to_sql_bytes()],
+    )?;
+    if persisted.as_deref() != Some(expected.as_slice()) {
+        return Err(DbError::Constraint("stale asset financial state".into()));
+    }
+    connection.execute(
+        "UPDATE asset_financial_states SET value = ?1 WHERE key = ?2",
+        params![next.to_sql_bytes(), asset_id.to_sql_bytes()],
+    )
+}
+
 fn replace_withdrawal_row(
     connection: &UpdateConnection<'_>,
     key: Vec<u8>,
     expected: Option<&StableBlob>,
     next: &StableBlob,
+    asset_id: [u8; 32],
 ) -> Result<(), DbError> {
     let persisted = connection.query_optional_scalar::<Vec<u8>>(
         "SELECT value FROM withdrawals WHERE key = ?1",
@@ -798,12 +890,9 @@ fn replace_withdrawal_row(
     if persisted.as_deref() != expected.map(StableBlob::as_slice) {
         return Err(DbError::Constraint("stale withdrawal write".into()));
     }
-    let raw_amount = connection.query_scalar::<Vec<u8>>(
-        "SELECT withdrawal_liability_amount FROM singleton_state WHERE id = 1",
-        params![],
-    )?;
-    let mut amount = u128::from_sql_bytes(raw_amount)
-        .map_err(|_| DbError::Constraint("invalid withdrawal liability amount".into()))?;
+    let previous_financial = read_asset_financial_state(connection, asset_id)?;
+    let mut next_financial = previous_financial;
+    let mut amount = previous_financial.withdrawal_liability_amount;
     let old_record = persisted.map(decode_withdrawal_blob).transpose()?;
     let next_record = decode_withdrawal_blob(next.to_sql_bytes())?;
     if old_record
@@ -845,10 +934,21 @@ fn replace_withdrawal_row(
     }
     write_withdrawal_history(connection, &next_record)?;
     adjust_withdrawal_liability_record(connection, &next_record, true, &mut amount)?;
-    connection.execute(
-        "UPDATE singleton_state SET withdrawal_liability_amount = ?1 WHERE id = 1",
-        params![amount.to_sql_bytes()],
-    )
+    next_financial.withdrawal_liability_amount = amount;
+    if asset_id == KINIC_ASSET_ID {
+        connection.execute(
+            "UPDATE singleton_state SET withdrawal_liability_amount = ?1 WHERE id = 1",
+            params![amount.to_sql_bytes()],
+        )?;
+    } else {
+        write_shared_asset_financial_state(
+            connection,
+            asset_id,
+            &previous_financial,
+            &next_financial,
+        )?;
+    }
+    Ok(())
 }
 
 fn bump_storage_revision(connection: &UpdateConnection<'_>) -> Result<(), DbError> {
@@ -1354,6 +1454,48 @@ pub enum GovernanceTransactionKind {
     SetServiceFee {
         value: u128,
     },
+    PauseAssetDepositMints {
+        asset_id: [u8; 32],
+    },
+    PauseAssetWithdrawals {
+        asset_id: [u8; 32],
+    },
+    SetAssetServiceFee {
+        asset_id: [u8; 32],
+        value: u128,
+    },
+    ScheduleAssetRegistration {
+        asset_id: [u8; 32],
+        operation_id: [u8; 32],
+        salt: [u8; 32],
+        per_deposit_limit: u128,
+        mint_window_limit: u128,
+        mint_window_duration: u64,
+        min_service_fee: u128,
+        max_service_fee: u128,
+        initial_service_fee: u128,
+    },
+    ExecuteAssetRegistration {
+        asset_id: [u8; 32],
+        operation_id: [u8; 32],
+        salt: [u8; 32],
+        per_deposit_limit: u128,
+        mint_window_limit: u128,
+        mint_window_duration: u64,
+        min_service_fee: u128,
+        max_service_fee: u128,
+        initial_service_fee: u128,
+    },
+    ScheduleAssetActivation {
+        asset_id: [u8; 32],
+        operation_id: [u8; 32],
+        salt: [u8; 32],
+    },
+    ExecuteAssetActivation {
+        asset_id: [u8; 32],
+        operation_id: [u8; 32],
+        salt: [u8; 32],
+    },
     CancelTimelock {
         operation_id: [u8; 32],
     },
@@ -1395,12 +1537,19 @@ pub(crate) enum GovernanceNonceLane {
 impl GovernanceTransactionKind {
     pub(crate) fn nonce_lane(&self) -> GovernanceNonceLane {
         match self {
-            Self::PauseDepositMints | Self::PauseWithdrawals | Self::SetServiceFee { .. } => {
-                GovernanceNonceLane::RuntimeAdministrator
-            }
+            Self::PauseDepositMints
+            | Self::PauseWithdrawals
+            | Self::SetServiceFee { .. }
+            | Self::PauseAssetDepositMints { .. }
+            | Self::PauseAssetWithdrawals { .. }
+            | Self::SetAssetServiceFee { .. } => GovernanceNonceLane::RuntimeAdministrator,
             Self::CancelTimelock { .. } => GovernanceNonceLane::IndependentCanceller,
             Self::ScheduleActivation { .. }
             | Self::ExecuteActivation { .. }
+            | Self::ScheduleAssetRegistration { .. }
+            | Self::ExecuteAssetRegistration { .. }
+            | Self::ScheduleAssetActivation { .. }
+            | Self::ExecuteAssetActivation { .. }
             | Self::ScheduleControlPlaneRotation { .. }
             | Self::ExecuteControlPlaneRotation { .. } => GovernanceNonceLane::Governance,
         }
@@ -2553,6 +2702,13 @@ fn migrate_previous_schema(
             params![],
         )?;
         connection.execute(
+            "CREATE TABLE asset_financial_states (
+                key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
+                value BLOB NOT NULL
+            ) STRICT, WITHOUT ROWID",
+            params![],
+        )?;
+        connection.execute(
             "CREATE TABLE withdrawal_origins (
                 key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
                 value BLOB NOT NULL
@@ -2587,6 +2743,7 @@ fn migrate_previous_schema(
         connection.execute(
             "INSERT INTO table_counts(name, count) VALUES
                 ('asset_registry', ?1),
+                ('asset_financial_states', ?2),
                 ('asset_runtime_attestations', ?2),
                 ('record_asset_bindings', ?3),
                 ('withdrawal_origins', ?2)",
@@ -2616,6 +2773,7 @@ fn verify_schema_shape(handle: DbHandle, predecessor: bool) -> Result<(), Storag
                     && matches!(
                         *table,
                         "asset_registry"
+                            | "asset_financial_states"
                             | "asset_runtime_attestations"
                             | "withdrawal_origins"
                             | "record_asset_bindings"
@@ -2815,15 +2973,17 @@ fn validate_storage_row(
                     .reserved_deposit_mint_operations
                     .checked_add(1)
                     .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
-                progress.reserved_deposit_mint_amount = progress
-                    .reserved_deposit_mint_amount
-                    .checked_add(
-                        record
-                            .reserved_mint_amount()
-                            .map_err(|_| DbError::Constraint("invalid deposit quote".into()))?
-                            .get(),
-                    )
-                    .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
+                if bound_asset_id(connection, RecordAssetKind::Deposit, key)? == KINIC_ASSET_ID {
+                    progress.reserved_deposit_mint_amount = progress
+                        .reserved_deposit_mint_amount
+                        .checked_add(
+                            record
+                                .reserved_mint_amount()
+                                .map_err(|_| DbError::Constraint("invalid deposit quote".into()))?
+                                .get(),
+                        )
+                        .ok_or_else(|| DbError::Constraint("validation counter overflow".into()))?;
+                }
             }
             let nonterminal_key = deposit_owner_index_bytes(
                 &deposit_owner_index_prefix(Principal::from_slice(record.transfer.from.owner())),
@@ -3240,6 +3400,16 @@ fn validate_storage_row(
             if asset.asset_id != key {
                 return Err(DbError::Constraint("asset registry key mismatch".into()));
             }
+        }
+        "asset_financial_states" => {
+            expect_row_shape(key, value, 32, value.len(), "invalid asset financial row")?;
+            if key == KINIC_ASSET_ID || !referenced_row_exists(connection, "asset_registry", key)? {
+                return Err(DbError::Constraint(
+                    "invalid asset financial state binding".into(),
+                ));
+            }
+            let _: AssetFinancialState =
+                decode_with_context(value.to_vec(), "invalid asset financial state")?;
         }
         "asset_runtime_attestations" => {
             expect_row_shape(
@@ -3954,7 +4124,13 @@ impl StableStore {
         self.handle
             .update(|connection| {
                 for (id, withdrawal, sequence, audit) in &rows {
-                    replace_withdrawal_row(connection, id.to_sql_bytes(), None, withdrawal)?;
+                    replace_withdrawal_row(
+                        connection,
+                        id.to_sql_bytes(),
+                        None,
+                        withdrawal,
+                        KINIC_ASSET_ID,
+                    )?;
                     connection.execute(
                         "INSERT INTO settlement_jobs(
                             settlement_kind, settlement_id, status, next_run_at_ns,
@@ -4074,6 +4250,7 @@ impl StableStore {
             "withdrawal_notification_index",
             "withdrawal_stop_reason_counts",
             "asset_registry",
+            "asset_financial_states",
             "asset_runtime_attestations",
             "withdrawal_origins",
             "record_asset_bindings",
@@ -5206,12 +5383,20 @@ impl StableStore {
                     "UPDATE deposits SET value = ?1 WHERE key = ?2",
                     params![next_record.to_sql_bytes(), record_key.clone()],
                 )?,
-                "withdrawals" => replace_withdrawal_row(
-                    connection,
-                    record_key.clone(),
-                    Some(&previous_record),
-                    &next_record,
-                )?,
+                "withdrawals" => {
+                    let asset_id = bound_asset_id(
+                        connection,
+                        RecordAssetKind::Withdrawal,
+                        &record_key,
+                    )?;
+                    replace_withdrawal_row(
+                        connection,
+                        record_key.clone(),
+                        Some(&previous_record),
+                        &next_record,
+                        asset_id,
+                    )?
+                }
                 "fee_payouts" => {},
                 _ => return Err(DbError::Constraint("invalid settlement record table".into())),
             }
@@ -5941,7 +6126,33 @@ impl StableStore {
                 admission.pending_timelock_operation =
                     Some(PendingTimelockOperation { operation_id, salt });
             }
+            GovernanceTransactionKind::ScheduleAssetRegistration {
+                operation_id, salt, ..
+            }
+            | GovernanceTransactionKind::ScheduleAssetActivation {
+                operation_id, salt, ..
+            } => {
+                if admission.pending_timelock_operation.is_some()
+                    || admission.pending_control_plane_rotation.is_some()
+                {
+                    return Err(StorageError::DecodeFailed);
+                }
+                admission.pending_timelock_operation =
+                    Some(PendingTimelockOperation { operation_id, salt });
+            }
             GovernanceTransactionKind::ExecuteActivation { operation_id, salt } => {
+                if admission.pending_timelock_operation
+                    != Some(PendingTimelockOperation { operation_id, salt })
+                {
+                    return Err(StorageError::DecodeFailed);
+                }
+            }
+            GovernanceTransactionKind::ExecuteAssetRegistration {
+                operation_id, salt, ..
+            }
+            | GovernanceTransactionKind::ExecuteAssetActivation {
+                operation_id, salt, ..
+            } => {
                 if admission.pending_timelock_operation
                     != Some(PendingTimelockOperation { operation_id, salt })
                 {
@@ -6020,7 +6231,10 @@ impl StableStore {
             }
             GovernanceTransactionKind::PauseDepositMints
             | GovernanceTransactionKind::PauseWithdrawals
-            | GovernanceTransactionKind::SetServiceFee { .. } => {}
+            | GovernanceTransactionKind::SetServiceFee { .. }
+            | GovernanceTransactionKind::PauseAssetDepositMints { .. }
+            | GovernanceTransactionKind::PauseAssetWithdrawals { .. }
+            | GovernanceTransactionKind::SetAssetServiceFee { .. } => {}
         }
         admission.next_governance_operation_id = admission
             .next_governance_operation_id
@@ -6073,6 +6287,11 @@ impl StableStore {
             || !matches!(
                 transaction.kind,
                 GovernanceTransactionKind::SetServiceFee { .. }
+                    | GovernanceTransactionKind::SetAssetServiceFee { .. }
+                    | GovernanceTransactionKind::ScheduleAssetRegistration { .. }
+                    | GovernanceTransactionKind::ExecuteAssetRegistration { .. }
+                    | GovernanceTransactionKind::ScheduleAssetActivation { .. }
+                    | GovernanceTransactionKind::ExecuteAssetActivation { .. }
                     | GovernanceTransactionKind::ScheduleActivation { .. }
                     | GovernanceTransactionKind::ExecuteActivation { .. }
                     | GovernanceTransactionKind::ScheduleControlPlaneRotation { .. }
@@ -6089,6 +6308,21 @@ impl StableStore {
         }
         if let GovernanceTransactionKind::ScheduleActivation { operation_id, salt } =
             transaction.kind
+        {
+            if admission.pending_timelock_operation
+                != Some(PendingTimelockOperation { operation_id, salt })
+            {
+                return Err(StorageError::DecodeFailed);
+            }
+            admission.pending_timelock_operation = None;
+            admission.emergency_cancel_required = false;
+        }
+        if let GovernanceTransactionKind::ScheduleAssetRegistration {
+            operation_id, salt, ..
+        }
+        | GovernanceTransactionKind::ScheduleAssetActivation {
+            operation_id, salt, ..
+        } = transaction.kind
         {
             if admission.pending_timelock_operation
                 != Some(PendingTimelockOperation { operation_id, salt })
@@ -6267,10 +6501,32 @@ impl StableStore {
             {
                 return Err(StorageError::DecodeFailed);
             }
+            GovernanceTransactionKind::ScheduleAssetRegistration {
+                operation_id, salt, ..
+            }
+            | GovernanceTransactionKind::ScheduleAssetActivation {
+                operation_id, salt, ..
+            } if reverted
+                && admission.pending_timelock_operation
+                    != Some(PendingTimelockOperation { operation_id, salt }) =>
+            {
+                return Err(StorageError::DecodeFailed);
+            }
             GovernanceTransactionKind::ExecuteActivation { operation_id, salt }
                 if confirmed
                     && admission.pending_timelock_operation
                         != Some(PendingTimelockOperation { operation_id, salt }) =>
+            {
+                return Err(StorageError::DecodeFailed);
+            }
+            GovernanceTransactionKind::ExecuteAssetRegistration {
+                operation_id, salt, ..
+            }
+            | GovernanceTransactionKind::ExecuteAssetActivation {
+                operation_id, salt, ..
+            } if confirmed
+                && admission.pending_timelock_operation
+                    != Some(PendingTimelockOperation { operation_id, salt }) =>
             {
                 return Err(StorageError::DecodeFailed);
             }
@@ -6327,10 +6583,34 @@ impl StableStore {
                 admission.pending_timelock_operation = None;
                 admission.emergency_cancel_required = false;
             }
+            GovernanceTransactionKind::ScheduleAssetRegistration {
+                operation_id, salt, ..
+            }
+            | GovernanceTransactionKind::ScheduleAssetActivation {
+                operation_id, salt, ..
+            } if reverted
+                && admission.pending_timelock_operation
+                    == Some(PendingTimelockOperation { operation_id, salt }) =>
+            {
+                admission.pending_timelock_operation = None;
+                admission.emergency_cancel_required = false;
+            }
             GovernanceTransactionKind::ExecuteActivation { operation_id, salt }
                 if confirmed
                     && admission.pending_timelock_operation
                         == Some(PendingTimelockOperation { operation_id, salt }) =>
+            {
+                admission.pending_timelock_operation = None;
+                admission.emergency_cancel_required = false;
+            }
+            GovernanceTransactionKind::ExecuteAssetRegistration {
+                operation_id, salt, ..
+            }
+            | GovernanceTransactionKind::ExecuteAssetActivation {
+                operation_id, salt, ..
+            } if confirmed
+                && admission.pending_timelock_operation
+                    == Some(PendingTimelockOperation { operation_id, salt }) =>
             {
                 admission.pending_timelock_operation = None;
                 admission.emergency_cancel_required = false;
@@ -6363,11 +6643,18 @@ impl StableStore {
                 admission.emergency_cancel_required = false;
             }
             GovernanceTransactionKind::SetServiceFee { .. }
+            | GovernanceTransactionKind::SetAssetServiceFee { .. }
             | GovernanceTransactionKind::ScheduleActivation { .. }
+            | GovernanceTransactionKind::ScheduleAssetRegistration { .. }
+            | GovernanceTransactionKind::ScheduleAssetActivation { .. }
             | GovernanceTransactionKind::ScheduleControlPlaneRotation { .. } => {}
             GovernanceTransactionKind::PauseDepositMints
             | GovernanceTransactionKind::PauseWithdrawals
+            | GovernanceTransactionKind::PauseAssetDepositMints { .. }
+            | GovernanceTransactionKind::PauseAssetWithdrawals { .. }
             | GovernanceTransactionKind::ExecuteActivation { .. }
+            | GovernanceTransactionKind::ExecuteAssetRegistration { .. }
+            | GovernanceTransactionKind::ExecuteAssetActivation { .. }
             | GovernanceTransactionKind::ExecuteControlPlaneRotation { .. }
             | GovernanceTransactionKind::CancelTimelock { .. } => {}
         }
@@ -6447,6 +6734,40 @@ impl StableStore {
             .collect()
     }
 
+    pub fn asset_financial_state(
+        &self,
+        asset_id: &[u8; 32],
+    ) -> Result<AssetFinancialState, StorageError> {
+        if *asset_id == KINIC_ASSET_ID {
+            let accounting = self.accounting()?;
+            let counters = self.counters()?;
+            let admin = decode::<Option<AdminState>>(&self.admin_state.get()?)?;
+            let withdrawal_liability_amount = self.handle.query(|connection| {
+                connection.query_scalar::<Vec<u8>>(
+                    "SELECT withdrawal_liability_amount FROM singleton_state WHERE id = 1",
+                    params![],
+                )
+            })?;
+            return Ok(AssetFinancialState {
+                accounting,
+                reserved_deposit_mint_amount: counters.reserved_deposit_mint_amount,
+                withdrawal_liability_amount: u128::from_sql_bytes(withdrawal_liability_amount)
+                    .map_err(|_| StorageError::DecodeFailed)?,
+                withdrawal_fee_guard: admin.and_then(|value| value.withdrawal_fee_guard),
+            });
+        }
+        let bytes = self.handle.query(|connection| {
+            connection.query_optional_scalar::<Vec<u8>>(
+                "SELECT value FROM asset_financial_states WHERE key = ?1",
+                params![asset_id.to_vec()],
+            )
+        })?;
+        bytes
+            .map(|bytes| decode(&StableBlob::new(bytes)?))
+            .transpose()?
+            .ok_or(StorageError::RecordNotFound)
+    }
+
     pub fn register_asset(
         &mut self,
         asset: &AssetConfig,
@@ -6488,6 +6809,7 @@ impl StableStore {
             return Err(StorageError::Core(CoreError::PayloadConflict));
         }
         let encoded = encode(asset)?;
+        let financial = encode(&AssetFinancialState::default())?;
         let mut counters = self.counters()?;
         let previous_counters = encode(&counters)?;
         let audit = self.prepare_audit_batch(
@@ -6514,6 +6836,13 @@ impl StableStore {
                 params![asset.asset_id.clone(), encoded.to_sql_bytes()],
             )?;
             increment_table_count(connection, "asset_registry")?;
+            if asset.asset_id.as_slice() != KINIC_ASSET_ID {
+                connection.execute(
+                    "INSERT INTO asset_financial_states(key, value) VALUES (?1, ?2)",
+                    params![asset.asset_id.clone(), financial.to_sql_bytes()],
+                )?;
+                increment_table_count(connection, "asset_financial_states")?;
+            }
             commit_audit_batch(connection, &audit)?;
             connection.execute(
                 "UPDATE singleton_state SET counters = ?1, audit_retention = ?2 WHERE id = 1",
@@ -7694,6 +8023,7 @@ impl StableStore {
     ) -> Result<Option<ManualClaimTransaction>, StorageError> {
         let previous_stored = self.stored_deposit(value.id.bytes())?;
         let previous = previous_stored.as_ref().map(|stored| stored.record.clone());
+        let asset_id = self.record_asset(RecordAssetKind::Deposit, &value.id.bytes())?;
         if let Some(token) = callback_token {
             let previous = previous.as_ref().ok_or(StorageError::RecordNotFound)?;
             if !token.matches_deposit(previous)? {
@@ -7726,11 +8056,21 @@ impl StableStore {
                 .unwrap_or(false),
             is_pending_deposit_ledger(value),
         )?;
-        counters.reserved_deposit_mint_amount = adjust_reserved_mint_amount(
-            counters.reserved_deposit_mint_amount,
-            previous.as_ref(),
-            value,
-        )?;
+        let previous_financial = self.asset_financial_state(&asset_id)?;
+        let mut next_financial = previous_financial;
+        if asset_id == KINIC_ASSET_ID {
+            counters.reserved_deposit_mint_amount = adjust_reserved_mint_amount(
+                counters.reserved_deposit_mint_amount,
+                previous.as_ref(),
+                value,
+            )?;
+        } else {
+            next_financial.reserved_deposit_mint_amount = adjust_reserved_mint_amount(
+                next_financial.reserved_deposit_mint_amount,
+                previous.as_ref(),
+                value,
+            )?;
+        }
         counters.reserved_deposit_mint_operations = adjust_reserved_mint_operations(
             counters.reserved_deposit_mint_operations,
             previous.as_ref(),
@@ -7833,10 +8173,10 @@ impl StableStore {
         } else {
             derived_fee_delta
         };
-        let previous_accounting = self.accounting()?;
-        let mut accounting = previous_accounting;
         if fee_delta != Amount::ZERO {
-            accounting.confirm_fee(FeeKind::Deposit, fee_delta)?;
+            next_financial
+                .accounting
+                .confirm_fee(FeeKind::Deposit, fee_delta)?;
         }
         let audit = audit_kind
             .map(|(caller, kind)| {
@@ -7846,8 +8186,8 @@ impl StableStore {
         let value_blob = encode(&next_stored)?;
         let counters_blob = encode(&counters)?;
         let previous_counters_blob = encode(&previous_counters)?;
-        let accounting_blob = encode(&accounting)?;
-        let previous_accounting_blob = encode(&previous_accounting)?;
+        let accounting_blob = encode(&next_financial.accounting)?;
+        let previous_accounting_blob = encode(&previous_financial.accounting)?;
         record_write_storage_failpoint(RecordWriteFailpoint::Encode)?;
         let key = value.id.bytes().to_sql_bytes();
         let nonterminal_index_key = deposit_owner_index_key(
@@ -7923,13 +8263,15 @@ impl StableStore {
                 previous_counters_blob.as_slice(),
                 "stale deposit counters",
             )?;
-            expect_blob(
-                connection,
-                "SELECT accounting FROM singleton_state WHERE id = 1",
-                params![],
-                previous_accounting_blob.as_slice(),
-                "stale deposit accounting",
-            )?;
+            if asset_id == KINIC_ASSET_ID {
+                expect_blob(
+                    connection,
+                    "SELECT accounting FROM singleton_state WHERE id = 1",
+                    params![],
+                    previous_accounting_blob.as_slice(),
+                    "stale deposit accounting",
+                )?;
+            }
             if previous.as_ref().is_some_and(is_pending_deposit_ledger) {
                 remove_table_entry(connection, "pull_pending_deposit_index", key.clone())?;
             }
@@ -7975,23 +8317,45 @@ impl StableStore {
             record_write_db_failpoint(RecordWriteFailpoint::OperationOwner)?;
             upsert_table_entry(connection, "deposits", key, value_blob.to_sql_bytes())?;
             record_write_db_failpoint(RecordWriteFailpoint::Record)?;
+            if asset_id != KINIC_ASSET_ID {
+                write_shared_asset_financial_state(
+                    connection,
+                    asset_id,
+                    &previous_financial,
+                    &next_financial,
+                )?;
+            }
             if let Some(audit) = &audit {
                 commit_audit_batch(connection, audit)?;
-                connection.execute(
-                    "UPDATE singleton_state
-                     SET counters = ?1, audit_retention = ?2, accounting = ?3
-                     WHERE id = 1",
-                    params![
-                        counters_blob.to_sql_bytes(),
-                        audit.retention_blob.to_sql_bytes(),
-                        accounting_blob.to_sql_bytes()
-                    ],
-                )?;
+                if asset_id == KINIC_ASSET_ID {
+                    connection.execute(
+                        "UPDATE singleton_state
+                         SET counters = ?1, audit_retention = ?2, accounting = ?3
+                         WHERE id = 1",
+                        params![
+                            counters_blob.to_sql_bytes(),
+                            audit.retention_blob.to_sql_bytes(),
+                            accounting_blob.to_sql_bytes()
+                        ],
+                    )?;
+                } else {
+                    connection.execute(
+                        "UPDATE singleton_state SET counters = ?1, audit_retention = ?2 WHERE id = 1",
+                        params![counters_blob.to_sql_bytes(), audit.retention_blob.to_sql_bytes()],
+                    )?;
+                }
             } else {
-                connection.execute(
-                    "UPDATE singleton_state SET counters = ?1, accounting = ?2 WHERE id = 1",
-                    params![counters_blob.to_sql_bytes(), accounting_blob.to_sql_bytes()],
-                )?;
+                if asset_id == KINIC_ASSET_ID {
+                    connection.execute(
+                        "UPDATE singleton_state SET counters = ?1, accounting = ?2 WHERE id = 1",
+                        params![counters_blob.to_sql_bytes(), accounting_blob.to_sql_bytes()],
+                    )?;
+                } else {
+                    connection.execute(
+                        "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
+                        params![counters_blob.to_sql_bytes()],
+                    )?;
+                }
             }
             record_write_db_failpoint(RecordWriteFailpoint::SingletonState)?;
             Ok(TransactionEffect::Changed(claim_outcome))
@@ -8409,6 +8773,13 @@ impl StableStore {
             .checked_add(1)
             .ok_or(StorageError::CounterOverflow)?;
 
+        let asset_id = if funding_promotion.is_some() {
+            self.record_asset(RecordAssetKind::DepositFundingAttempt, &record.id.bytes())?
+        } else {
+            KINIC_ASSET_ID
+        };
+        let previous_financial = self.asset_financial_state(&asset_id)?;
+        let mut next_financial = previous_financial;
         let previous_counters = self.counters()?;
         let mut counters = previous_counters;
         if let Some((_, Some(hold))) = funding_promotion {
@@ -8429,16 +8800,27 @@ impl StableStore {
             false,
             is_pending_deposit_ledger(record),
         )?;
-        counters.reserved_deposit_mint_amount =
-            adjust_reserved_mint_amount(counters.reserved_deposit_mint_amount, None, record)?;
+        if asset_id == KINIC_ASSET_ID {
+            counters.reserved_deposit_mint_amount =
+                adjust_reserved_mint_amount(counters.reserved_deposit_mint_amount, None, record)?;
+        } else {
+            next_financial.reserved_deposit_mint_amount = adjust_reserved_mint_amount(
+                next_financial.reserved_deposit_mint_amount,
+                None,
+                record,
+            )?;
+        }
         let reservation = ::bridge_core::kernel::reservation_decision(
-            previous_counters.reserved_deposit_mint_amount,
+            previous_financial.reserved_deposit_mint_amount,
             0,
         )
         .ok_or(StorageError::CounterOverflow)?;
-        if reservation.reserved != counters.reserved_deposit_mint_amount
-            || reservation.candidate != 0
-        {
+        let reserved_after = if asset_id == KINIC_ASSET_ID {
+            counters.reserved_deposit_mint_amount
+        } else {
+            next_financial.reserved_deposit_mint_amount
+        };
+        if reservation.reserved != reserved_after || reservation.candidate != 0 {
             return Err(StorageError::CounterOverflow);
         }
         counters.reserved_deposit_mint_operations = adjust_reserved_mint_operations(
@@ -8485,11 +8867,6 @@ impl StableStore {
             .and_then(|(_, hold)| hold)
             .map(|hold| encode(hold).map(|blob| (hold, blob)))
             .transpose()?;
-        let asset_id = if funding_promotion.is_some() {
-            self.record_asset(RecordAssetKind::DepositFundingAttempt, &record.id.bytes())?
-        } else {
-            KINIC_ASSET_ID
-        };
         let deposit_asset_key = RecordAssetKind::Deposit.key(&record.id.bytes())?;
         let funding_asset_key = RecordAssetKind::DepositFundingAttempt.key(&record.id.bytes())?;
         let hold_asset_key = promotion_hold
@@ -8619,6 +8996,14 @@ impl StableStore {
                 owner_sequence_key.to_sql_bytes(),
                 next_owner_sequence.to_sql_bytes(),
             )?;
+            if asset_id != KINIC_ASSET_ID {
+                write_shared_asset_financial_state(
+                    connection,
+                    asset_id,
+                    &previous_financial,
+                    &next_financial,
+                )?;
+            }
             if let Some((_, _, admission)) = &quota_state {
                 connection.execute(
                     "UPDATE singleton_state SET counters = ?1, deposit_admission = ?2 WHERE id = 1",
@@ -8984,7 +9369,13 @@ impl StableStore {
                     params![next_blob.to_sql_bytes(), key.clone()],
                 )?;
             } else {
-                replace_withdrawal_row(connection, key.clone(), Some(&previous_blob), &next_blob)?;
+                replace_withdrawal_row(
+                    connection,
+                    key.clone(),
+                    Some(&previous_blob),
+                    &next_blob,
+                    asset_id,
+                )?;
             }
             hold_bundle_db_failpoint(HoldBundleFailpoint::Parent)?;
             let index_table = if table == "deposits" {
@@ -9201,6 +9592,7 @@ impl StableStore {
                 key.clone(),
                 None,
                 &withdrawal_blob,
+                asset_id,
             )?;
             insert_tracked_entry(
                 connection,
@@ -9357,7 +9749,13 @@ impl StableStore {
                 previous_admin_blob.as_slice(),
                 "stale withdrawal fee guard trip",
             )?;
-            replace_withdrawal_row(connection, key.clone(), None, &withdrawal_blob)?;
+            replace_withdrawal_row(
+                connection,
+                key.clone(),
+                None,
+                &withdrawal_blob,
+                KINIC_ASSET_ID,
+            )?;
             insert_tracked_entry(
                 connection,
                 "record_asset_bindings",
@@ -9387,6 +9785,216 @@ impl StableStore {
                 ],
             )?;
             rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
+        })?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_asset_withdrawal_fee_guard_trip_bundle(
+        &mut self,
+        withdrawal: &WithdrawalRecord,
+        progress: &ExternalProgress,
+        asset_id: [u8; 32],
+        origin: &SharedWithdrawalOrigin,
+        guard: WithdrawalFeeGuard,
+        caller: Principal,
+        timestamp_ns: u64,
+        audit_kinds: Vec<AuditEventKind>,
+        transaction_hash: [u8; 32],
+        notification_window_seconds: u64,
+        notification_ingestion_limit: u16,
+    ) -> Result<(), StorageError> {
+        if asset_id == KINIC_ASSET_ID
+            || origin.asset_id.as_slice() != asset_id
+            || self.withdrawal(withdrawal.id.bytes())?.is_some()
+            || self
+                .withdrawal_notification_index
+                .get(&transaction_hash)
+                .is_some()
+            || !matches!(withdrawal.state, WithdrawalState::Observed)
+            || withdrawal.last_settlement_stop_reason.as_deref()
+                != Some("LedgerFeeExceedsServiceFee")
+            || guard.ledger_fee <= guard.charged_service_fee
+            || guard.charged_service_fee != withdrawal.charged_service_fee.get()
+        {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        let previous_financial = self.asset_financial_state(&asset_id)?;
+        if previous_financial.withdrawal_fee_guard.is_some() {
+            return Err(StorageError::Core(CoreError::ConflictingReplay));
+        }
+        let mut counters = self.counters()?;
+        let previous_counters_blob = encode(&counters)?;
+        let audit = self.prepare_audit_batch(&mut counters, caller, timestamp_ns, audit_kinds)?;
+        let counters_blob = encode(&counters)?;
+        let progress_blob = encode(progress)?;
+        let previous_progress_blob = self.external_progress.get()?;
+        let withdrawal_blob = encode(withdrawal)?;
+        let origin_blob = encode(origin)?;
+        let key = withdrawal.id.bytes().to_sql_bytes();
+        let asset_binding_key = RecordAssetKind::Withdrawal.key(&withdrawal.id.bytes())?;
+        let (previous_notification_blob, notification_blob) = self
+            .prepare_notification_ingestion_quota(
+                timestamp_ns,
+                notification_window_seconds,
+                notification_ingestion_limit,
+            )?;
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+                previous_counters_blob.as_slice(),
+                "stale asset fee guard trip",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT notification_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_notification_blob.as_slice(),
+                "stale asset fee guard notification",
+            )?;
+            expect_blob(
+                connection,
+                "SELECT external_progress FROM singleton_state WHERE id = 1",
+                params![],
+                previous_progress_blob.as_slice(),
+                "stale asset fee guard progress",
+            )?;
+            replace_withdrawal_row(connection, key.clone(), None, &withdrawal_blob, asset_id)?;
+            insert_tracked_entry(
+                connection,
+                "record_asset_bindings",
+                asset_binding_key,
+                asset_id.to_sql_bytes(),
+            )?;
+            insert_tracked_entry(
+                connection,
+                "withdrawal_origins",
+                key.clone(),
+                origin_blob.to_sql_bytes(),
+            )?;
+            insert_tracked_entry(
+                connection,
+                "withdrawal_notification_index",
+                transaction_hash.to_sql_bytes(),
+                key.clone(),
+            )?;
+            write_withdrawal_transaction(connection, &key, &transaction_hash)?;
+            let liability_state = read_asset_financial_state(connection, asset_id)?;
+            let mut next_financial = liability_state;
+            next_financial.withdrawal_fee_guard = Some(guard);
+            write_shared_asset_financial_state(
+                connection,
+                asset_id,
+                &liability_state,
+                &next_financial,
+            )?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Business)?;
+            commit_audit_batch(connection, &audit)?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET counters = ?1, external_progress = ?2,
+                    audit_retention = ?3, notification_admission = ?4 WHERE id = 1",
+                params![
+                    counters_blob.to_sql_bytes(),
+                    progress_blob.to_sql_bytes(),
+                    audit.retention_blob.to_sql_bytes(),
+                    notification_blob.to_sql_bytes()
+                ],
+            )?;
+            rpc_atomic_db_failpoint(RpcAtomicFailpoint::Singleton)
+        })?;
+        Ok(())
+    }
+
+    pub fn commit_asset_withdrawal_fee_guard_update(
+        &mut self,
+        withdrawal: &WithdrawalRecord,
+        guard: Option<WithdrawalFeeGuard>,
+        caller: Principal,
+        timestamp_ns: u64,
+        audit_kinds: Vec<AuditEventKind>,
+    ) -> Result<(), StorageError> {
+        let previous = self
+            .withdrawal(withdrawal.id.bytes())?
+            .ok_or(StorageError::RecordNotFound)?;
+        let asset_id = self.record_asset(RecordAssetKind::Withdrawal, &withdrawal.id.bytes())?;
+        if asset_id == KINIC_ASSET_ID
+            || !matches!(previous.state, WithdrawalState::Observed)
+            || !matches!(
+                withdrawal.state,
+                WithdrawalState::Observed | WithdrawalState::ReleasePending { .. }
+            )
+        {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        if let Some(guard) = guard {
+            if guard.ledger_fee <= guard.charged_service_fee
+                || guard.charged_service_fee != withdrawal.charged_service_fee.get()
+                || !matches!(withdrawal.state, WithdrawalState::Observed)
+            {
+                return Err(StorageError::Core(CoreError::PayloadConflict));
+            }
+        }
+        let previous_financial = self.asset_financial_state(&asset_id)?;
+        if previous_financial.withdrawal_fee_guard.is_none() {
+            return Err(StorageError::Core(CoreError::PayloadConflict));
+        }
+        let make_release_runnable =
+            matches!(withdrawal.state, WithdrawalState::ReleasePending { .. });
+        let mut counters = self.counters()?;
+        let previous_counters_blob = encode(&counters)?;
+        counters.pending_ledger_operations = adjust_active_count(
+            counters.pending_ledger_operations,
+            is_pending_withdrawal_ledger(&previous),
+            is_pending_withdrawal_ledger(withdrawal),
+        )?;
+        let audit = self.prepare_audit_batch(&mut counters, caller, timestamp_ns, audit_kinds)?;
+        let counters_blob = encode(&counters)?;
+        let previous_blob = encode(&previous)?;
+        let withdrawal_blob = encode(withdrawal)?;
+        let key = withdrawal.id.bytes().to_sql_bytes();
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT counters FROM singleton_state WHERE id = 1",
+                params![],
+                previous_counters_blob.as_slice(),
+                "stale asset fee guard counters",
+            )?;
+            replace_withdrawal_row(
+                connection,
+                key.clone(),
+                Some(&previous_blob),
+                &withdrawal_blob,
+                asset_id,
+            )?;
+            let liability_state = read_asset_financial_state(connection, asset_id)?;
+            let mut next_financial = liability_state;
+            next_financial.withdrawal_fee_guard = guard;
+            write_shared_asset_financial_state(
+                connection,
+                asset_id,
+                &liability_state,
+                &next_financial,
+            )?;
+            if make_release_runnable {
+                insert_tracked_entry(
+                    connection,
+                    "release_pending_withdrawal_index",
+                    key,
+                    0u8.to_sql_bytes(),
+                )?;
+            }
+            commit_audit_batch(connection, &audit)?;
+            connection.execute(
+                "UPDATE singleton_state SET counters = ?1, audit_retention = ?2 WHERE id = 1",
+                params![
+                    counters_blob.to_sql_bytes(),
+                    audit.retention_blob.to_sql_bytes()
+                ],
+            )
         })?;
         Ok(())
     }
@@ -9526,6 +10134,7 @@ impl StableStore {
                 key.clone(),
                 Some(&previous_blob),
                 &withdrawal_blob,
+                KINIC_ASSET_ID,
             )?;
             if make_release_runnable {
                 connection.execute(
@@ -9593,6 +10202,7 @@ impl StableStore {
 
     pub fn put_withdrawal(&mut self, value: &WithdrawalRecord) -> Result<(), StorageError> {
         let previous = self.withdrawal(value.id.bytes())?;
+        let asset_id = self.record_asset(RecordAssetKind::Withdrawal, &value.id.bytes())?;
         let fee_delta = match (previous.as_ref().map(|record| &record.state), &value.state) {
             (
                 Some(WithdrawalState::ReleasePending { .. }),
@@ -9600,9 +10210,12 @@ impl StableStore {
             ) => settlement.net_service_fee()?,
             _ => Amount::ZERO,
         };
-        let mut accounting = self.accounting()?;
+        let previous_financial = self.asset_financial_state(&asset_id)?;
+        let mut next_financial = previous_financial;
         if fee_delta != Amount::ZERO {
-            accounting.confirm_fee(FeeKind::Withdrawal, fee_delta)?;
+            next_financial
+                .accounting
+                .confirm_fee(FeeKind::Withdrawal, fee_delta)?;
         }
         let mut counters = self.counters()?;
         counters.pending_ledger_operations = adjust_active_count(
@@ -9615,7 +10228,7 @@ impl StableStore {
         )?;
         let value_blob = encode(value)?;
         let counters_blob = encode(&counters)?;
-        let accounting_blob = encode(&accounting)?;
+        let accounting_blob = encode(&next_financial.accounting)?;
         record_write_storage_failpoint(RecordWriteFailpoint::Encode)?;
         let key = value.id.bytes().to_sql_bytes();
         let previous_blob = previous.as_ref().map(encode).transpose()?;
@@ -9641,12 +10254,36 @@ impl StableStore {
             }
             record_write_db_failpoint(RecordWriteFailpoint::AddIndex)?;
             record_write_db_failpoint(RecordWriteFailpoint::OperationOwner)?;
-            replace_withdrawal_row(connection, key, previous_blob.as_ref(), &value_blob)?;
-            record_write_db_failpoint(RecordWriteFailpoint::Record)?;
-            connection.execute(
-                "UPDATE singleton_state SET counters = ?1, accounting = ?2 WHERE id = 1",
-                params![counters_blob.to_sql_bytes(), accounting_blob.to_sql_bytes()],
+            replace_withdrawal_row(
+                connection,
+                key,
+                previous_blob.as_ref(),
+                &value_blob,
+                asset_id,
             )?;
+            record_write_db_failpoint(RecordWriteFailpoint::Record)?;
+            if asset_id == KINIC_ASSET_ID {
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, accounting = ?2 WHERE id = 1",
+                    params![counters_blob.to_sql_bytes(), accounting_blob.to_sql_bytes()],
+                )?;
+            } else {
+                // `replace_withdrawal_row` already advanced the liability in the same
+                // row. Preserve that value while applying the fee accounting delta.
+                let liability_state = read_asset_financial_state(connection, asset_id)?;
+                next_financial.withdrawal_liability_amount =
+                    liability_state.withdrawal_liability_amount;
+                write_shared_asset_financial_state(
+                    connection,
+                    asset_id,
+                    &liability_state,
+                    &next_financial,
+                )?;
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
+                    params![counters_blob.to_sql_bytes()],
+                )?;
+            }
             record_write_db_failpoint(RecordWriteFailpoint::SingletonState)
         })?;
         Ok(())
@@ -9895,6 +10532,15 @@ impl StableStore {
         if !is_open_hold(&previous_hold) || is_open_hold(hold) {
             return Err(StorageError::Core(CoreError::HoldMismatch));
         }
+        let (parent_kind, parent_id) = match &parent {
+            ResolveHoldBundleParent::Deposit { next, .. } => {
+                (RecordAssetKind::Deposit, next.id.bytes())
+            }
+            ResolveHoldBundleParent::Withdrawal { next, .. } => {
+                (RecordAssetKind::Withdrawal, next.id.bytes())
+            }
+        };
+        let asset_id = self.record_asset(parent_kind, &parent_id)?;
         let fee_delta = match parent {
             ResolveHoldBundleParent::Withdrawal { previous, next }
                 if matches!(previous.state, WithdrawalState::ReconciliationHold { .. }) =>
@@ -9906,9 +10552,12 @@ impl StableStore {
             }
             _ => Amount::ZERO,
         };
-        let mut accounting = self.accounting()?;
+        let previous_financial = self.asset_financial_state(&asset_id)?;
+        let mut next_financial = previous_financial;
         if fee_delta != Amount::ZERO {
-            accounting.confirm_fee(FeeKind::Withdrawal, fee_delta)?;
+            next_financial
+                .accounting
+                .confirm_fee(FeeKind::Withdrawal, fee_delta)?;
         }
         let previous_counters = self.counters()?;
         let mut counters = previous_counters;
@@ -9920,11 +10569,19 @@ impl StableStore {
                         is_pending_deposit_ledger(previous),
                         is_pending_deposit_ledger(next),
                     )?;
-                    counters.reserved_deposit_mint_amount = adjust_reserved_mint_amount(
-                        counters.reserved_deposit_mint_amount,
-                        Some(previous),
-                        next,
-                    )?;
+                    if asset_id == KINIC_ASSET_ID {
+                        counters.reserved_deposit_mint_amount = adjust_reserved_mint_amount(
+                            counters.reserved_deposit_mint_amount,
+                            Some(previous),
+                            next,
+                        )?;
+                    } else {
+                        next_financial.reserved_deposit_mint_amount = adjust_reserved_mint_amount(
+                            next_financial.reserved_deposit_mint_amount,
+                            Some(previous),
+                            next,
+                        )?;
+                    }
                     counters.reserved_deposit_mint_operations = adjust_reserved_mint_operations(
                         counters.reserved_deposit_mint_operations,
                         Some(previous),
@@ -9972,7 +10629,7 @@ impl StableStore {
         let hold_blob = encode(hold)?;
         let previous_counters_blob = encode(&previous_counters)?;
         let counters_blob = encode(&counters)?;
-        let accounting_blob = encode(&accounting)?;
+        let accounting_blob = encode(&next_financial.accounting)?;
         let scan_blob = scan_target
             .map(|target| {
                 self.reconciliation_scan(target)?
@@ -10019,6 +10676,7 @@ impl StableStore {
                     key.clone(),
                     Some(&previous_parent_blob),
                     &parent_blob,
+                    asset_id,
                 )?;
             }
             resolve_hold_bundle_db_failpoint(ResolveHoldBundleFailpoint::Parent)?;
@@ -10073,10 +10731,26 @@ impl StableStore {
                 decrement_table_count(connection, "reconciliation_scans")?;
             }
             resolve_hold_bundle_db_failpoint(ResolveHoldBundleFailpoint::ReconciliationScan)?;
-            connection.execute(
-                "UPDATE singleton_state SET counters = ?1, accounting = ?2 WHERE id = 1",
-                params![counters_blob.to_sql_bytes(), accounting_blob.to_sql_bytes()],
-            )?;
+            if asset_id == KINIC_ASSET_ID {
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1, accounting = ?2 WHERE id = 1",
+                    params![counters_blob.to_sql_bytes(), accounting_blob.to_sql_bytes()],
+                )?;
+            } else {
+                let liability_state = read_asset_financial_state(connection, asset_id)?;
+                next_financial.withdrawal_liability_amount =
+                    liability_state.withdrawal_liability_amount;
+                write_shared_asset_financial_state(
+                    connection,
+                    asset_id,
+                    &liability_state,
+                    &next_financial,
+                )?;
+                connection.execute(
+                    "UPDATE singleton_state SET counters = ?1 WHERE id = 1",
+                    params![counters_blob.to_sql_bytes()],
+                )?;
+            }
             resolve_hold_bundle_db_failpoint(ResolveHoldBundleFailpoint::SingletonState)
         })?;
         Ok(())
@@ -14355,6 +15029,7 @@ mod tests {
                     "record_asset_bindings",
                     "withdrawal_origins",
                     "asset_runtime_attestations",
+                    "asset_financial_states",
                     "asset_registry",
                 ] {
                     connection.execute(&format!("DROP TABLE IF EXISTS {table}"), params![])?;
@@ -14378,6 +15053,7 @@ mod tests {
                     "record_asset_bindings",
                     "withdrawal_origins",
                     "asset_runtime_attestations",
+                    "asset_financial_states",
                     "asset_registry",
                 ] {
                     connection.execute(&format!("DROP TABLE IF EXISTS {table}"), params![])?;
@@ -14480,6 +15156,40 @@ mod tests {
         store
             .register_asset(&asset, Principal::self_authenticating([0x4c; 32]), 55)
             .expect("register asset");
+        let asset_id: [u8; 32] = asset.asset_id.clone().try_into().unwrap();
+        assert_eq!(
+            store
+                .asset_financial_state(&asset_id)
+                .expect("read isolated asset financial state"),
+            AssetFinancialState::default()
+        );
+        let isolated = AssetFinancialState {
+            accounting: AccountingState {
+                fee_reserve: Amount::new(7),
+                confirmed_deposit_fees: Amount::new(3),
+                confirmed_withdrawal_fees: Amount::new(4),
+            },
+            reserved_deposit_mint_amount: 11,
+            withdrawal_liability_amount: 12,
+            withdrawal_fee_guard: None,
+        };
+        let isolated_blob = encode(&isolated).unwrap();
+        store
+            .handle
+            .0
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE asset_financial_states SET value = ?1 WHERE key = ?2",
+                    params![isolated_blob.to_sql_bytes(), asset.asset_id.clone()],
+                )
+            })
+            .unwrap();
+        assert_eq!(store.asset_financial_state(&asset_id).unwrap(), isolated);
+        assert_eq!(
+            store.asset_financial_state(&KINIC_ASSET_ID).unwrap(),
+            AssetFinancialState::default(),
+            "KINIC singleton accounting must remain independent"
+        );
         assert_eq!(store.asset(&asset.asset_id).unwrap(), Some(asset.clone()));
         assert!(store
             .register_asset(&asset, Principal::self_authenticating([0x4c; 32]), 56)

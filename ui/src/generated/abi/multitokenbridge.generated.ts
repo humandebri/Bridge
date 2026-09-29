@@ -84,6 +84,11 @@ export const multiTokenBridgeAbi = [
             "internalType": "uint256"
           },
           {
+            "name": "minServiceFee",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
             "name": "maxServiceFee",
             "type": "uint256",
             "internalType": "uint256"

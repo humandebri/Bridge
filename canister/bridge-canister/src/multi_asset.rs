@@ -142,6 +142,39 @@ impl AssetExecutionContext {
             && observation.token_symbol == self.asset.symbol
             && observation.token_decimals == self.asset.decimals
     }
+
+    pub fn attestation_from_shared_observation(
+        &self,
+        observation: &crate::evm_rpc::SharedAssetObservation,
+    ) -> crate::config::AssetRuntimeAttestation {
+        let snapshot = observation.snapshot;
+        crate::config::AssetRuntimeAttestation {
+            asset_id: self.asset_id.to_vec(),
+            chain_id: self.asset.base_chain_id,
+            finalized_block_number: observation.finalized.block_number,
+            finalized_block_hash: observation.finalized.block_hash.to_vec(),
+            observed_at_ns: observation.finalized.observed_at_ns,
+            bridge_runtime_sha256: observation.bridge_runtime_sha256.to_vec(),
+            token_runtime_sha256: observation.token_runtime_sha256.to_vec(),
+            bridge_signer: snapshot.bridge_signer.to_vec(),
+            token_contract: snapshot.token.to_vec(),
+            token_bridge: observation.token_bridge.to_vec(),
+            token_name: observation.token_name.clone(),
+            token_symbol: observation.token_symbol.clone(),
+            token_decimals: observation.token_decimals,
+            global_epoch: snapshot.global_epoch,
+            asset_epoch: snapshot.asset_epoch,
+            service_fee: snapshot.mint.service_fee.get(),
+            max_service_fee: snapshot.mint.max_service_fee.get(),
+            per_deposit_limit: snapshot.mint.per_deposit_limit.get(),
+            mint_window_limit: snapshot.mint.mint_window_limit.get(),
+            mint_window_duration: snapshot.mint.mint_window_duration,
+            global_deposits_paused: snapshot.global_deposits_paused,
+            global_withdrawals_paused: snapshot.global_withdrawals_paused,
+            asset_deposits_paused: snapshot.asset_deposits_paused,
+            asset_withdrawals_paused: snapshot.asset_withdrawals_paused,
+        }
+    }
 }
 
 pub fn parse_asset_id(value: &[u8]) -> Result<[u8; 32], &'static str> {

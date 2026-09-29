@@ -24,7 +24,11 @@ const CALL_TIMEOUT_MS = 120_000
 const OISY_SIGNER_URL = "https://oisy.com/sign"
 const BRIDGE_SERVICE = idlFactory({ IDL })
 
-type BridgeWalletMethod = "continue_deposit" | "request_deposit" | "request_deposit_refund"
+type BridgeWalletMethod =
+  | "continue_deposit"
+  | "request_asset_deposit"
+  | "request_deposit"
+  | "request_deposit_refund"
 
 export type IcWalletProvider = "oisy" | "plug"
 export interface IcAccount {
@@ -32,12 +36,15 @@ export interface IcAccount {
   subaccount?: Uint8Array
 }
 export interface DepositCall {
+  assetId?: Uint8Array
+  ledgerCanisterId?: string
   ownerSequence: bigint
   baseRecipient: Uint8Array
   grossAmount: bigint
   maxServiceFee: bigint
 }
 export interface ApprovalCall {
+  ledgerCanisterId?: string
   amount: bigint
   currentAllowance: bigint
   ledgerFee: bigint
@@ -48,7 +55,7 @@ export interface IcWalletAdapter {
   readonly requiresUserGesture: boolean
   connect(): Promise<IcAccount>
   getAccount(): Promise<IcAccount>
-  prepare(): Promise<() => Promise<void>>
+  prepare(ledgerCanisterId?: string): Promise<() => Promise<void>>
   disconnect(): Promise<void>
   approve(call: ApprovalCall): Promise<bigint>
   requestDeposit(call: DepositCall): Promise<DepositReceipt>
@@ -180,23 +187,28 @@ export class OisyAdapter implements IcWalletAdapter {
       }
       return wallet.approve({
         owner: account.owner,
-        ledgerCanisterId: this.ledgerCanisterId,
+        ledgerCanisterId: call.ledgerCanisterId ?? this.ledgerCanisterId,
         params,
       })
     })
   }
 
   async requestDeposit(call: DepositCall): Promise<DepositReceipt> {
+    const operation = {
+      owner_sequence: call.ownerSequence,
+      base_recipient: call.baseRecipient,
+      from_subaccount: this.requiredAccount().subaccount
+        ? [this.requiredAccount().subaccount!]
+        : [],
+      gross_amount: call.grossAmount,
+      max_service_fee: call.maxServiceFee,
+    }
     return unwrapDepositResult(
-      await this.bridgeCall("request_deposit", (account) => [
-        {
-          owner_sequence: call.ownerSequence,
-          base_recipient: call.baseRecipient,
-          from_subaccount: account.subaccount ? [account.subaccount] : [],
-          gross_amount: call.grossAmount,
-          max_service_fee: call.maxServiceFee,
-        },
-      ]),
+      call.assetId
+        ? await this.bridgeCall("request_asset_deposit", () => [
+            { asset_id: call.assetId!, operation },
+          ])
+        : await this.bridgeCall("request_deposit", () => [operation]),
     )
   }
 
@@ -340,7 +352,7 @@ export class PlugAdapter implements IcWalletAdapter {
     this.#account = undefined
   }
 
-  async prepare(): Promise<() => Promise<void>> {
+  async prepare(ledgerCanisterId = this.ledgerCanisterId): Promise<() => Promise<void>> {
     const plug = requiredPlug()
     let connected = false
     try {
@@ -348,9 +360,9 @@ export class PlugAdapter implements IcWalletAdapter {
     } catch {
       // A failed session probe requires an explicit reconnect below.
     }
-    if (!connected || !plug.agent) {
+    if (!connected || !plug.agent || ledgerCanisterId !== this.ledgerCanisterId) {
       const accepted = await plug.requestConnect({
-        whitelist: [this.ledgerCanisterId, this.bridgeCanisterId],
+        whitelist: [ledgerCanisterId, this.bridgeCanisterId],
         host: this.host,
       })
       if (!accepted) throw new Error("Plug connection was rejected")
@@ -367,11 +379,11 @@ export class PlugAdapter implements IcWalletAdapter {
   async approve(call: ApprovalCall): Promise<bigint> {
     const account = await this.assertConnectedPrincipal()
     const actor = await requiredPlug().createActor<PlugLedgerActor>({
-      canisterId: this.ledgerCanisterId,
+      canisterId: call.ledgerCanisterId ?? this.ledgerCanisterId,
       interfaceFactory: plugLedgerIdlFactory,
     })
     const result = await actor.icrc2_approve({
-      from_subaccount: [],
+      from_subaccount: [] as [],
       spender: { owner: Principal.fromText(this.bridgeCanisterId), subaccount: [] },
       amount: call.amount,
       expected_allowance: [call.currentAllowance],
@@ -391,13 +403,16 @@ export class PlugAdapter implements IcWalletAdapter {
       canisterId: this.bridgeCanisterId,
       interfaceFactory: idlFactory,
     })
-    const result = await actor.request_deposit({
+    const operation = {
       owner_sequence: call.ownerSequence,
       base_recipient: call.baseRecipient,
-      from_subaccount: [],
+      from_subaccount: [] as [],
       gross_amount: call.grossAmount,
       max_service_fee: call.maxServiceFee,
-    })
+    }
+    const result = call.assetId
+      ? await actor.request_asset_deposit({ asset_id: call.assetId, operation })
+      : await actor.request_deposit(operation)
     await this.assertSameConnectedAccount(account, "deposit")
     return unwrapDepositResult(result)
   }

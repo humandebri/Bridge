@@ -663,23 +663,24 @@ fn ingest_notified_withdrawal(
             }
             return Err(NotifyWithdrawalError::WithdrawalConflict);
         }
-        if let Some(guard) = store
-            .admin_state()
-            .map_err(|_| NotifyWithdrawalError::StorageFailure)?
-            .withdrawal_fee_guard
-        {
+        let active_guard = if let Some((context, _)) = asset_context {
+            store
+                .asset_financial_state(&context.asset_id)
+                .map_err(|_| NotifyWithdrawalError::StorageFailure)?
+                .withdrawal_fee_guard
+        } else {
+            store
+                .admin_state()
+                .map_err(|_| NotifyWithdrawalError::StorageFailure)?
+                .withdrawal_fee_guard
+        };
+        if let Some(guard) = active_guard {
             return Err(NotifyWithdrawalError::LedgerFeeExceedsServiceFee {
                 ledger_fee: Nat::from(guard.ledger_fee),
                 charged_service_fee: Nat::from(guard.charged_service_fee),
             });
         }
         if ledger_fee.get() > observed.charged_service_fee {
-            if asset_context.is_some() {
-                return Err(NotifyWithdrawalError::LedgerFeeExceedsServiceFee {
-                    ledger_fee: Nat::from(ledger_fee.get()),
-                    charged_service_fee: Nat::from(observed.charged_service_fee),
-                });
-            }
             let mut withdrawal = WithdrawalRecord::observed(
                 WithdrawalId::new(observed.id),
                 observed.requester,
@@ -703,22 +704,37 @@ fn ingest_notified_withdrawal(
             progress
                 .observe_finalized(stable_observation)
                 .map_err(|_| NotifyWithdrawalError::BaseStateMismatch)?;
-            let mut admin = store
-                .admin_state()
-                .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
             let now_ns = ic_cdk::api::time();
-            admin.withdrawal_fee_guard = Some(crate::admin::WithdrawalFeeGuard {
+            let guard = crate::admin::WithdrawalFeeGuard {
                 ledger_fee: ledger_fee.get(),
                 charged_service_fee: observed.charged_service_fee,
                 tripped_at_ns: now_ns,
-            });
+            };
             let mut audit = rpc_audit;
             audit.push(crate::storage::AuditEventKind::WithdrawalFeeGuardTripped {
                 ledger_fee: ledger_fee.get(),
                 charged_service_fee: observed.charged_service_fee,
             });
-            store
-                .commit_withdrawal_fee_guard_trip_bundle(
+            let committed = if let Some((context, origin)) = asset_context {
+                store.commit_asset_withdrawal_fee_guard_trip_bundle(
+                    &withdrawal,
+                    &progress,
+                    context.asset_id,
+                    origin,
+                    guard,
+                    ic_cdk::api::canister_self(),
+                    now_ns,
+                    audit,
+                    transaction_hash,
+                    notification_window_seconds,
+                    notification_ingestion_limit,
+                )
+            } else {
+                let mut admin = store
+                    .admin_state()
+                    .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+                admin.withdrawal_fee_guard = Some(guard);
+                store.commit_withdrawal_fee_guard_trip_bundle(
                     &withdrawal,
                     &progress,
                     &admin,
@@ -729,7 +745,8 @@ fn ingest_notified_withdrawal(
                     notification_window_seconds,
                     notification_ingestion_limit,
                 )
-                .map_err(notification_commit_error)?;
+            };
+            committed.map_err(notification_commit_error)?;
             return Err(NotifyWithdrawalError::LedgerFeeExceedsServiceFee {
                 ledger_fee: Nat::from(ledger_fee.get()),
                 charged_service_fee: Nat::from(observed.charged_service_fee),

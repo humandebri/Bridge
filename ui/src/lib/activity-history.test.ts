@@ -76,6 +76,9 @@ function bothBoundaries(depositNs?: bigint, withdrawalNs?: bigint): ActivityBoun
 
 function deposit(sequence: number, createdAtNs: bigint): DepositView {
   return {
+    asset_id: new Uint8Array(32).fill(1),
+    bridge_kind: { LegacySingleToken: null },
+    asset_authorization_epoch: [],
     deposit_id: new Uint8Array(32).fill(sequence),
     owner_sequence: BigInt(sequence),
     created_at_ns: createdAtNs,

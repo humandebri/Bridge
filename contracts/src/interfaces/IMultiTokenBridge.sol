@@ -25,6 +25,7 @@ interface IMultiTokenBridge {
         address token;
         uint256 assetEpoch;
         uint256 serviceFee;
+        uint256 minServiceFee;
         uint256 maxServiceFee;
         uint256 perDepositLimit;
         uint256 mintWindowLimit;

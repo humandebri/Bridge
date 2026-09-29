@@ -985,7 +985,7 @@ pub(crate) async fn advance_deposit(
         )
         .map_err(|_| SettlementActionError::StorageFailure)
     })?;
-    let config = context.root.clone();
+    let config = context.evm_args();
     loop {
         let deposit = STORE.with(|store| {
             store
@@ -1602,7 +1602,7 @@ pub(crate) async fn advance_withdrawal(
             }
             WithdrawalState::Paid { .. } => return Ok(SettlementActionResult::Complete { state }),
             WithdrawalState::Observed => {
-                let ledger_fee = ledger::KINIC_LEDGER_FEE;
+                let ledger_fee = context.ledger_fee;
                 if ledger_fee.get() > withdrawal.charged_service_fee.get() {
                     STORE.with(|store| {
                         let mut store = store.borrow_mut();
@@ -1612,23 +1612,31 @@ pub(crate) async fn advance_withdrawal(
                             .ok_or(SettlementActionError::NotFound)?;
                         current.last_settlement_stop_reason =
                             Some("LedgerFeeExceedsServiceFee".to_owned());
-                        let mut admin = store
-                            .admin_state()
-                            .map_err(|_| SettlementActionError::StorageFailure)?;
                         let now_ns = ic_cdk::api::time();
-                        let guard_changed = admin.withdrawal_fee_guard.is_none_or(|guard| {
+                        let existing_guard = if context.is_shared() {
+                            store
+                                .asset_financial_state(&context.asset_id)
+                                .map_err(|_| SettlementActionError::StorageFailure)?
+                                .withdrawal_fee_guard
+                        } else {
+                            store
+                                .admin_state()
+                                .map_err(|_| SettlementActionError::StorageFailure)?
+                                .withdrawal_fee_guard
+                        };
+                        let guard_changed = existing_guard.is_none_or(|guard| {
                             guard.ledger_fee != ledger_fee.get()
                                 || guard.charged_service_fee != current.charged_service_fee.get()
                         });
-                        admin.withdrawal_fee_guard = Some(if guard_changed {
+                        let guard = if guard_changed {
                             crate::admin::WithdrawalFeeGuard {
                                 ledger_fee: ledger_fee.get(),
                                 charged_service_fee: current.charged_service_fee.get(),
                                 tripped_at_ns: now_ns,
                             }
                         } else {
-                            admin.withdrawal_fee_guard.expect("checked fee guard")
-                        });
+                            existing_guard.expect("checked fee guard")
+                        };
                         let audit = guard_changed
                             .then(
                                 || crate::storage::AuditEventKind::WithdrawalFeeGuardTripped {
@@ -1638,15 +1646,28 @@ pub(crate) async fn advance_withdrawal(
                             )
                             .into_iter()
                             .collect();
-                        store
-                            .commit_withdrawal_fee_guard_continue_bundle(
+                        if context.is_shared() {
+                            store.commit_asset_withdrawal_fee_guard_update(
+                                &current,
+                                Some(guard),
+                                ic_cdk::api::canister_self(),
+                                now_ns,
+                                audit,
+                            )
+                        } else {
+                            let mut admin = store
+                                .admin_state()
+                                .map_err(|_| SettlementActionError::StorageFailure)?;
+                            admin.withdrawal_fee_guard = Some(guard);
+                            store.commit_withdrawal_fee_guard_continue_bundle(
                                 &current,
                                 &admin,
                                 ic_cdk::api::canister_self(),
                                 now_ns,
                                 audit,
                             )
-                            .map_err(|_| SettlementActionError::StorageFailure)
+                        }
+                        .map_err(|_| SettlementActionError::StorageFailure)
                     })?;
                     return Ok(SettlementActionResult::Stopped {
                         state,
@@ -1672,7 +1693,7 @@ pub(crate) async fn advance_withdrawal(
                         fee: ledger_fee,
                         from: bridge_core::Account::new(
                             ic_cdk::api::canister_self().as_slice().to_vec(),
-                            [0; 32],
+                            context.custody_subaccount,
                         )
                         .map_err(|_| SettlementActionError::StorageFailure)?,
                         to: bridge_core::Account::new(current.owner.clone(), current.subaccount)
@@ -1689,12 +1710,30 @@ pub(crate) async fn advance_withdrawal(
                         })
                         .map_err(|_| SettlementActionError::StorageFailure)?;
                     current.last_settlement_stop_reason = None;
-                    let mut admin = store
-                        .admin_state()
-                        .map_err(|_| SettlementActionError::StorageFailure)?;
-                    let cleared = admin.withdrawal_fee_guard.take().is_some();
-                    store
-                        .commit_withdrawal_fee_guard_clear_bundle(
+                    if context.is_shared() {
+                        let cleared = store
+                            .asset_financial_state(&context.asset_id)
+                            .map_err(|_| SettlementActionError::StorageFailure)?
+                            .withdrawal_fee_guard
+                            .is_some();
+                        store.commit_asset_withdrawal_fee_guard_update(
+                            &current,
+                            None,
+                            ic_cdk::api::canister_self(),
+                            ic_cdk::api::time(),
+                            cleared
+                                .then_some(
+                                    crate::storage::AuditEventKind::WithdrawalFeeGuardCleared,
+                                )
+                                .into_iter()
+                                .collect(),
+                        )
+                    } else {
+                        let mut admin = store
+                            .admin_state()
+                            .map_err(|_| SettlementActionError::StorageFailure)?;
+                        let cleared = admin.withdrawal_fee_guard.take().is_some();
+                        store.commit_withdrawal_fee_guard_clear_bundle(
                             &current,
                             &admin,
                             ic_cdk::api::canister_self(),
@@ -1706,7 +1745,8 @@ pub(crate) async fn advance_withdrawal(
                                 .into_iter()
                                 .collect(),
                         )
-                        .map_err(|_| SettlementActionError::StorageFailure)
+                    }
+                    .map_err(|_| SettlementActionError::StorageFailure)
                 })?;
             }
         }

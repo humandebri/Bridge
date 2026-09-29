@@ -48,6 +48,12 @@ contract MultiTokenBridgeTest is TestBase {
         assert(tokenB.decimals() == 6);
         assert(bridge.tokenForAsset(ASSET_A) == address(tokenA));
         assert(bridge.tokenForAsset(ASSET_B) == address(tokenB));
+        IMultiTokenBridge.AssetSnapshot memory a = bridge.assetSnapshot(ASSET_A);
+        IMultiTokenBridge.AssetSnapshot memory b = bridge.assetSnapshot(ASSET_B);
+        assert(a.minServiceFee == 1);
+        assert(a.maxServiceFee == 100);
+        assert(b.minServiceFee == 1);
+        assert(b.maxServiceFee == 100);
     }
 
     function testRegistrationRejectsDuplicateAndUnknownAssets() public {

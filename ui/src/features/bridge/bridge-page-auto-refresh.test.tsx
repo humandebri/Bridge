@@ -9,12 +9,14 @@ import { BridgeProgressProvider } from "./bridge-progress-provider"
 import { browserLocalStorage } from "@/lib/browser-lock"
 import type * as BrowserLockModule from "@/lib/browser-lock"
 import { createBridgeProgress, saveLatestBridgeProgress } from "@/lib/bridge-progress"
+import { deploymentProfile } from "@/config/profile"
 
 const mocks = vi.hoisted(() => ({
   useAccount: vi.fn(),
   useIcWallet: vi.fn(),
   getNextDepositSequence: vi.fn(),
   getRuntimeBinding: vi.fn(),
+  listAssets: vi.fn(),
   ledgerBalance: vi.fn(),
   ledgerFee: vi.fn(),
   ledgerAllowance: vi.fn(),
@@ -24,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   readDepositIntent: vi.fn(),
   runtimeWriteReadiness: vi.fn(),
   runtimeHeartbeatHook: vi.fn(),
+  currentBaseQuoteHook: vi.fn(),
   runtimeRefetch: vi.fn(),
   heartbeatIsError: { value: false },
   heartbeatIsFetching: { value: false },
@@ -87,25 +90,28 @@ vi.mock("@/features/status/use-status", () => ({
       refetch: mocks.baseRefetch,
     }
   },
-  useCurrentBaseQuote: () => ({
-    data: {
-      serviceFee: 50_000_000n,
-      maxServiceFee: 50_000_000n,
-      perDepositLimit: 15_000_000_000_000n,
-      minted: 0n,
-      limit: 15_000_000_000_000n,
-      startedAt: 0n,
-      duration: 86_400n,
-      depositsPaused: mocks.heartbeatDepositsPaused.value,
-      withdrawalsPaused: mocks.heartbeatWithdrawalsPaused.value,
-      bridgeSigner: "0x0000000000000000000000000000000000000001",
-      mintAuthorizationEpoch: 1n,
-      blockTimestamp: BigInt(Math.floor(Date.now() / 1_000)),
-    },
-    isError: false,
-    isFetching: mocks.heartbeatIsFetching.value,
-    refetch: mocks.baseRefetch,
-  }),
+  useCurrentBaseQuote: (...args: unknown[]) => {
+    mocks.currentBaseQuoteHook(...args)
+    return {
+      data: {
+        serviceFee: 50_000_000n,
+        maxServiceFee: 50_000_000n,
+        perDepositLimit: 15_000_000_000_000n,
+        minted: 0n,
+        limit: 15_000_000_000_000n,
+        startedAt: 0n,
+        duration: 86_400n,
+        depositsPaused: mocks.heartbeatDepositsPaused.value,
+        withdrawalsPaused: mocks.heartbeatWithdrawalsPaused.value,
+        bridgeSigner: "0x0000000000000000000000000000000000000001",
+        mintAuthorizationEpoch: 1n,
+        blockTimestamp: BigInt(Math.floor(Date.now() / 1_000)),
+      },
+      isError: false,
+      isFetching: mocks.heartbeatIsFetching.value,
+      refetch: mocks.baseRefetch,
+    }
+  },
 }))
 
 vi.mock("@/lib/ic/bridge", () => ({
@@ -114,6 +120,7 @@ vi.mock("@/lib/ic/bridge", () => ({
       get_next_deposit_sequence: mocks.getNextDepositSequence,
       get_deposit_by_owner_sequence: mocks.getDepositByOwnerSequence,
       get_runtime_binding: mocks.getRuntimeBinding,
+      list_assets: mocks.listAssets,
     }),
 }))
 
@@ -212,6 +219,7 @@ describe("BridgePage automatic wallet refresh", () => {
   afterEach(cleanup)
 
   beforeEach(() => {
+    deploymentProfile.bridgeCanisterId = "aaaaa-aa"
     clearTransferFacts()
     browserLocalStorage().clear()
     mocks.useAccount.mockReset().mockReturnValue({ address: undefined, isConnected: false })
@@ -225,6 +233,30 @@ describe("BridgePage automatic wallet refresh", () => {
     })
     mocks.getNextDepositSequence.mockReset().mockResolvedValue(3n)
     mocks.getRuntimeBinding.mockReset().mockResolvedValue({})
+    mocks.listAssets.mockReset().mockResolvedValue({
+      Ok: [
+        {
+          asset_id: new Uint8Array(32).fill(0xaa),
+          name: "KINIC",
+          symbol: "KINIC",
+          decimals: 8,
+          ledger_canister_id: { toText: () => "aaaaa-aa" },
+          index_canister_id: { toText: () => "aaaaa-aa" },
+          ledger_fee: 100_000n,
+          base_chain_id: 84_532n,
+          deployment_instance_id: new Uint8Array(32).fill(0xbb),
+          bridge_kind: { LegacySingleToken: null },
+          bridge_contract: new Uint8Array(20).fill(0x11),
+          token_contract: new Uint8Array(20).fill(0x22),
+          expected_bridge_runtime_sha256: new Uint8Array(32).fill(0x33),
+          expected_token_runtime_sha256: new Uint8Array(32).fill(0x44),
+          timelock_contract: new Uint8Array(20).fill(0x55),
+          expected_bridge_signer: new Uint8Array(20).fill(0x66),
+          expected_timelock_minimum_delay_seconds: 86_400n,
+          lifecycle: { Enabled: null },
+        },
+      ],
+    })
     mocks.ledgerBalance.mockReset().mockResolvedValue(1_000_000_000n)
     mocks.ledgerFee.mockReset().mockResolvedValue(100_000n)
     mocks.ledgerAllowance.mockReset().mockResolvedValue({ allowance: 0n })
@@ -232,6 +264,7 @@ describe("BridgePage automatic wallet refresh", () => {
     mocks.readDepositIntent.mockReset().mockReturnValue(undefined)
     mocks.runtimeWriteReadiness.mockReset().mockReturnValue({ ready: true, reason: undefined })
     mocks.runtimeHeartbeatHook.mockReset()
+    mocks.currentBaseQuoteHook.mockReset()
     mocks.heartbeatIsError.value = false
     mocks.heartbeatIsFetching.value = false
     mocks.heartbeatDepositsPaused.value = false
@@ -346,8 +379,63 @@ describe("BridgePage automatic wallet refresh", () => {
     await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalledOnce())
     expect(mocks.ledgerAllowance).toHaveBeenCalledOnce()
     expect(mocks.getNextDepositSequence).toHaveBeenCalledOnce()
-    expect(screen.getByText("Balance 10 TICRC1")).toBeInTheDocument()
+    expect(screen.getByText("Balance 10 KINIC")).toBeInTheDocument()
   })
+
+  it(
+    "binds the selected shared asset to its ledger, contracts, hashes, and decimals",
+    binds_selected_shared_asset_to_registered_runtime,
+  )
+  async function binds_selected_shared_asset_to_registered_runtime() {
+    const sharedAsset = {
+      asset_id: new Uint8Array(32).fill(0xcc),
+      name: "Additional Token",
+      symbol: "ADD",
+      decimals: 6,
+      ledger_canister_id: { toText: () => "ryjl3-tyaaa-aaaaa-aaaba-cai" },
+      index_canister_id: { toText: () => "qhbym-qaaaa-aaaaa-aaafq-cai" },
+      ledger_fee: 10_000n,
+      base_chain_id: 84_532n,
+      deployment_instance_id: new Uint8Array(32).fill(0xdd),
+      bridge_kind: { SharedMultiToken: null },
+      bridge_contract: new Uint8Array(20).fill(0x77),
+      token_contract: new Uint8Array(20).fill(0x88),
+      expected_bridge_runtime_sha256: new Uint8Array(32).fill(0x99),
+      expected_token_runtime_sha256: new Uint8Array(32).fill(0xaa),
+      timelock_contract: new Uint8Array(20).fill(0xbb),
+      expected_bridge_signer: new Uint8Array(20).fill(0xcc),
+      expected_timelock_minimum_delay_seconds: 86_400n,
+      lifecycle: { Enabled: null },
+    }
+    const legacy = (await mocks.listAssets()).Ok[0]
+    mocks.listAssets.mockResolvedValue({ Ok: [legacy, sharedAsset] })
+    mocks.useIcWallet.mockReturnValue({
+      account: { owner: "aaaaa-aa" },
+      provider: "plug",
+      adapter: {},
+      connecting: undefined,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    const selector = await screen.findByRole("combobox", { name: "Asset" })
+    await screen.findByRole("option", { name: "Additional Token (ADD)" })
+    fireEvent.change(selector, { target: { value: `0x${"cc".repeat(32)}` } })
+
+    await waitFor(() => expect(screen.getByText("Balance 1000 ADD")).toBeVisible())
+    expect(mocks.currentBaseQuoteHook).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: true }),
+      {
+        assetId: `0x${"cc".repeat(32)}`,
+        bridgeAddress: `0x${"77".repeat(20)}`,
+        tokenAddress: `0x${"88".repeat(20)}`,
+        expectedBridgeRuntimeSha256: `0x${"99".repeat(32)}`,
+        expectedTokenRuntimeSha256: `0x${"aa".repeat(32)}`,
+        shared: true,
+      },
+    )
+  }
 
   it("loads the bSNS balance when a Base wallet appears later", async () => {
     const view = render(<BridgePage direction="withdraw" onDirectionChange={vi.fn()} />, {
@@ -381,7 +469,7 @@ describe("BridgePage automatic wallet refresh", () => {
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
 
     await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalledOnce())
-    expect(screen.getByText("Balance 10 TICRC1")).toBeInTheDocument()
+    expect(screen.getByText("Balance 10 KINIC")).toBeInTheDocument()
     expect(mocks.getRuntimeBinding).not.toHaveBeenCalled()
   })
 
@@ -416,7 +504,7 @@ describe("BridgePage automatic wallet refresh", () => {
     fireEvent.click(screen.getByRole("button", { name: "MAX" }))
 
     expect(screen.getByRole<HTMLInputElement>("textbox", { name: "You send" }).value).toBe("10")
-    expect(screen.getByText("9.5 TICRC1")).toBeVisible()
+    expect(screen.getByText("9.5 KINIC")).toBeVisible()
   })
 
   it("disables MAX until the selected wallet balance is available", () => {
@@ -445,10 +533,11 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled()
   })
 
-  it("hides an RPC refresh error while keeping the last known fee", () => {
+  it("hides an RPC refresh error while keeping the last known fee", async () => {
     mocks.heartbeatIsError.value = true
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await screen.findByRole("option", { name: "KINIC (KINIC)" })
 
     expect(
       screen.queryByText(
@@ -457,7 +546,7 @@ describe("BridgePage automatic wallet refresh", () => {
     ).not.toBeInTheDocument()
     expect(screen.queryByRole("link", { name: "View status" })).not.toBeInTheDocument()
     expect(screen.getByText("Current bridge fee")).toBeVisible()
-    expect(screen.getByText("0.5 TICRC1")).toBeVisible()
+    expect(screen.getByText("0.5 KINIC")).toBeVisible()
     expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled()
   })
 
@@ -471,7 +560,7 @@ describe("BridgePage automatic wallet refresh", () => {
     })
   })
 
-  it("blocks the entry point only when a fresh heartbeat confirms the selected direction is paused", () => {
+  it("blocks the entry point only when a fresh heartbeat confirms the selected direction is paused", async () => {
     const account = { owner: "aaaaa-aa" }
     mocks.heartbeatDepositsPaused.value = true
     mocks.useAccount.mockReturnValue({
@@ -490,6 +579,7 @@ describe("BridgePage automatic wallet refresh", () => {
     })
 
     render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await screen.findByRole("option", { name: "KINIC (KINIC)" })
     fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
 
     expect(screen.getByRole("button", { name: "Bridge to Base" })).toBeDisabled()
@@ -992,7 +1082,7 @@ describe("BridgePage automatic wallet refresh", () => {
         sendAmount: "2",
         receiveAmount: "1.5",
         sendSymbol: "KINIC",
-        receiveSymbol: "TICRC1",
+        receiveSymbol: "KINIC",
         transactionHash: `0x${"33".repeat(32)}`,
         withdrawal: { owner: "aaaaa-aa" },
       }),

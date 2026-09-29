@@ -51,6 +51,9 @@ function authorizationRecord(): DepositView {
     gross_amount: BigInt(vector.authorization.gross_amount),
   } satisfies MintAuthorizationView
   return {
+    asset_id: new Uint8Array(32),
+    bridge_kind: { LegacySingleToken: null },
+    asset_authorization_epoch: [],
     base_recipient: authorization.recipient,
     deposit_id: authorization.deposit_id,
     quote: [

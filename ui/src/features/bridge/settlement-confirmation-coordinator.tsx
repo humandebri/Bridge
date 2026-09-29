@@ -185,7 +185,11 @@ export function SettlementConfirmationCoordinator() {
               })
             return
           }
-          const details = await withdrawalReceiptDetails(hash, owner)
+          const details = await withdrawalReceiptDetails(hash, owner, {
+            assetId: progress.assetId,
+            bridgeAddress: progress.contractAddress,
+            shared: progress.shared,
+          })
           if (!stillCurrent()) return
           withdrawalId = toHex(details.id, { size: 32 })
           update(progress.id, { observationSource: "base", observationError: undefined })
@@ -425,7 +429,11 @@ export function SettlementConfirmationCoordinator() {
       if (receipt.blockHash === null) return
       if (receipt.status === "success") {
         try {
-          await withdrawalReceiptDetails(entry.transactionHash, entry.owner)
+          await withdrawalReceiptDetails(entry.transactionHash, entry.owner, {
+            assetId: entry.assetId,
+            bridgeAddress: entry.contractAddress,
+            shared: entry.shared,
+          })
         } catch (error) {
           if (error instanceof TransactionEvidenceMismatch && latest) {
             update(latest.id, {
@@ -607,7 +615,11 @@ async function notifyWithdrawal(
   completeWithdrawal: ReturnType<typeof useBridgeProgress>["completeWithdrawal"],
   presentationIsCurrent: (progressId: string | undefined, entry: PendingWithdrawal) => boolean,
 ) {
-  const notified = await notifyWithdrawalWithBrowserIdentity(hexToBytes(entry.transactionHash))
+  const notified = await notifyWithdrawalWithBrowserIdentity(
+    hexToBytes(entry.transactionHash),
+    deploymentProfile,
+    entry.shared && entry.assetId ? hexToBytes(entry.assetId) : undefined,
+  )
   const canPresentAfterNotification = presentationIsCurrent(progressId, entry)
   const withdrawalId =
     "Duplicate" in notified ? notified.Duplicate.withdrawal_id : notified.Ingested.withdrawal_id

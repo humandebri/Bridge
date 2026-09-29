@@ -50,6 +50,19 @@ pub struct StatusCounts {
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AssetFinancialStatus {
+    pub asset_id: Vec<u8>,
+    pub fee_reserve: u128,
+    pub confirmed_deposit_fees: u128,
+    pub confirmed_withdrawal_fees: u128,
+    pub reserved_deposit_mint_amount: u128,
+    pub withdrawal_liability_amount: u128,
+    pub withdrawal_fee_guard_active: bool,
+    pub withdrawal_fee_guard_ledger_fee: Option<u128>,
+    pub withdrawal_fee_guard_charged_service_fee: Option<u128>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BridgeStatus {
     pub schema_version: u16,
     pub mint_authorization_ttl_seconds: u64,
@@ -664,6 +677,37 @@ fn get_asset(asset_id: Vec<u8>) -> Result<Option<config::AssetConfig>, admin::Ad
             .borrow()
             .asset(&asset_id)
             .map_err(|_| admin::AdminError::InvalidArgument("invalid asset ID".into()))
+    })
+}
+
+#[ic_cdk::query]
+fn get_asset_financial_status(
+    asset_id: Vec<u8>,
+) -> Result<AssetFinancialStatus, admin::AdminError> {
+    let asset_id: [u8; 32] = asset_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| admin::AdminError::InvalidArgument("asset ID must be 32 bytes".into()))?;
+    STORE.with(|store| {
+        let state = store
+            .borrow()
+            .asset_financial_state(&asset_id)
+            .map_err(|_| admin::AdminError::InvalidArgument("unknown asset".into()))?;
+        Ok(AssetFinancialStatus {
+            asset_id: asset_id.to_vec(),
+            fee_reserve: state.accounting.fee_reserve.get(),
+            confirmed_deposit_fees: state.accounting.confirmed_deposit_fees.get(),
+            confirmed_withdrawal_fees: state.accounting.confirmed_withdrawal_fees.get(),
+            reserved_deposit_mint_amount: state.reserved_deposit_mint_amount,
+            withdrawal_liability_amount: state.withdrawal_liability_amount,
+            withdrawal_fee_guard_active: state.withdrawal_fee_guard.is_some(),
+            withdrawal_fee_guard_ledger_fee: state
+                .withdrawal_fee_guard
+                .map(|guard| guard.ledger_fee),
+            withdrawal_fee_guard_charged_service_fee: state
+                .withdrawal_fee_guard
+                .map(|guard| guard.charged_service_fee),
+        })
     })
 }
 

@@ -35,10 +35,12 @@ beforeEach(() => {
   mocks.simulate.mockResolvedValue({})
   mocks.create.mockReturnValue({ simulateContract: mocks.simulate })
 })
+const legacyRecord = () =>
+  ({ asset_id: new Uint8Array(32), bridge_kind: { LegacySingleToken: null } }) as DepositView
 it("passes_the_trial_abort_signal_to_isolated_ic_and_base_reads", async () => {
   const signal = new AbortController().signal
   const context = { signal, check: vi.fn(), stage: vi.fn() }
-  await prepareMint({} as DepositView, "0x11", 8453, undefined, context)
+  await prepareMint(legacyRecord(), "0x11", 8453, undefined, context)
   expect(mocks.validate.mock.calls[0]?.[2]).toBe(signal)
   expect(mocks.heartbeat.mock.calls[0]?.[2]).toBe(signal)
   expect(mocks.create.mock.calls[0]?.[1]).toBe(signal)
@@ -51,7 +53,7 @@ it("passes_the_trial_abort_signal_to_isolated_ic_and_base_reads", async () => {
 it("rejects_a_different_runtime_profile_before_simulation", async () => {
   mocks.heartbeat.mockResolvedValue({ ready: true, profileFingerprint: "two" })
   await expect(
-    prepareMint({} as DepositView, "0x11", 8453, undefined, {
+    prepareMint(legacyRecord(), "0x11", 8453, undefined, {
       signal: new AbortController().signal,
       check: () => {},
       stage: () => {},
@@ -60,7 +62,7 @@ it("rejects_a_different_runtime_profile_before_simulation", async () => {
   expect(mocks.simulate).not.toHaveBeenCalled()
 })
 it("checks_elapsed_time_before_wallet_dispatch", async () => {
-  const prepared = await prepareMint({} as DepositView, "0x11", 8453, undefined, {
+  const prepared = await prepareMint(legacyRecord(), "0x11", 8453, undefined, {
     signal: new AbortController().signal,
     check: () => {},
     stage: () => {},

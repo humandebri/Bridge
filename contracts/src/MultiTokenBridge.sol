@@ -335,6 +335,7 @@ contract MultiTokenBridge is IMultiTokenBridge, EIP712 {
             token: address(asset.token),
             assetEpoch: asset.assetEpoch,
             serviceFee: asset.serviceFee,
+            minServiceFee: asset.minServiceFee,
             maxServiceFee: asset.maxServiceFee,
             perDepositLimit: asset.perDepositLimit,
             mintWindowLimit: asset.mintWindowLimit,

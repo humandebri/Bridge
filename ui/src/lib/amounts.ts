@@ -1,26 +1,34 @@
 export const TOKEN_DECIMALS = 8
-const SCALE = 100_000_000n
+
+function scale(decimals: number): bigint {
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18)
+    throw new Error("Token decimals must be between 0 and 18")
+  return 10n ** BigInt(decimals)
+}
 
 export type AmountResult = { ok: true; value: bigint } | { ok: false; reason: string }
 
-export function parseTokenAmount(input: string): AmountResult {
+export function parseTokenAmount(input: string, decimals = TOKEN_DECIMALS): AmountResult {
   const normalized = input.trim()
-  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,8})?$/.test(normalized)) {
+  const pattern =
+    decimals === 0 ? /^(?:0|[1-9]\d*)$/ : new RegExp(`^(?:0|[1-9]\\d*)(?:\\.\\d{1,${decimals}})?$`)
+  if (!pattern.test(normalized)) {
     return {
       ok: false,
-      reason: "Enter a positive token amount with no more than 8 decimal places.",
+      reason: `Enter a positive token amount with no more than ${decimals} decimal places.`,
     }
   }
   const [whole = "0", fraction = ""] = normalized.split(".")
-  const value = BigInt(whole) * SCALE + BigInt(fraction.padEnd(TOKEN_DECIMALS, "0"))
+  const value = BigInt(whole) * scale(decimals) + BigInt(fraction.padEnd(decimals, "0") || "0")
   return value > 0n
     ? { ok: true, value }
     : { ok: false, reason: "Amount must be greater than zero." }
 }
 
-export function formatTokenAmount(value: bigint): string {
-  const whole = value / SCALE
-  const fraction = (value % SCALE).toString().padStart(TOKEN_DECIMALS, "0").replace(/0+$/, "")
+export function formatTokenAmount(value: bigint, decimals = TOKEN_DECIMALS): string {
+  const tokenScale = scale(decimals)
+  const whole = value / tokenScale
+  const fraction = (value % tokenScale).toString().padStart(decimals, "0").replace(/0+$/, "")
   return fraction ? `${whole}.${fraction}` : whole.toString()
 }
 

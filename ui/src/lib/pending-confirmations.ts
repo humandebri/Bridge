@@ -30,6 +30,9 @@ export interface PendingNotificationAttemptState {
 
 export interface PendingWithdrawalConfirmation extends PendingConfirmationBase {
   kind: "withdrawal"
+  assetId?: Hex
+  contractAddress?: Hex
+  shared?: boolean
   notification: PendingNotificationAttemptState | { status: "notified"; withdrawalId: Hex }
 }
 
@@ -43,6 +46,9 @@ const STORAGE_PREFIX = "kinic.bridge.pending-confirmations.v7"
 let sessionQueue: PendingConfirmation[] | undefined
 
 export interface PendingMintExpectation {
+  assetId?: Hex
+  bridgeAddress?: Hex
+  shared?: boolean
   depositId: Hex
   authorizationDigest: Hex
   recipient: Hex
@@ -59,7 +65,7 @@ function pendingMintKey(expected: PendingMintExpectation): string {
   return [
     "kinic.bridge.pending-mint.v2",
     deploymentProfile.chainId,
-    String(deploymentProfile.bridgeAddress).toLowerCase(),
+    String(expected.bridgeAddress ?? deploymentProfile.bridgeAddress).toLowerCase(),
     deploymentProfile.bridgeCanisterId ?? "",
     deploymentProfile.deploymentInstanceId?.toLowerCase() ?? "",
     expected.depositId.toLowerCase(),
@@ -114,14 +120,7 @@ export async function removePendingMint(expected: PendingMintExpectation): Promi
 }
 
 export function readAllPendingMints(): PendingMint[] {
-  const prefix = [
-    "kinic.bridge.pending-mint.v2",
-    deploymentProfile.chainId,
-    String(deploymentProfile.bridgeAddress).toLowerCase(),
-    deploymentProfile.bridgeCanisterId ?? "",
-    deploymentProfile.deploymentInstanceId?.toLowerCase() ?? "",
-    "",
-  ].join(":")
+  const prefix = ["kinic.bridge.pending-mint.v2", deploymentProfile.chainId, ""].join(":")
   const found = new Map<string, PendingMint>()
   const accept = (key: string, raw: unknown) => {
     if (
@@ -134,6 +133,8 @@ export function readAllPendingMints(): PendingMint[] {
     const value = raw as PendingMint
     if (
       !/^0x[0-9a-fA-F]{64}$/.test(value.depositId ?? "") ||
+      (value.assetId !== undefined && !/^0x[0-9a-fA-F]{64}$/.test(value.assetId)) ||
+      (value.bridgeAddress !== undefined && !/^0x[0-9a-fA-F]{40}$/.test(value.bridgeAddress)) ||
       !/^0x[0-9a-fA-F]{64}$/.test(value.authorizationDigest ?? "") ||
       !/^0x[0-9a-fA-F]{40}$/.test(value.recipient ?? "") ||
       ![value.grossAmount, value.chargedServiceFee, value.mintedAmount].every(
@@ -172,6 +173,12 @@ function pendingMintMatches(
   return (
     /^0x[0-9a-fA-F]{64}$/.test(candidate.transactionHash ?? "") &&
     candidate.depositId?.toLowerCase() === expected.depositId.toLowerCase() &&
+    (candidate.assetId?.toLowerCase() ?? "") === (expected.assetId?.toLowerCase() ?? "") &&
+    (candidate.bridgeAddress?.toLowerCase() ??
+      String(deploymentProfile.bridgeAddress).toLowerCase()) ===
+      (expected.bridgeAddress?.toLowerCase() ??
+        String(deploymentProfile.bridgeAddress).toLowerCase()) &&
+    Boolean(candidate.shared) === Boolean(expected.shared) &&
     candidate.authorizationDigest?.toLowerCase() === expected.authorizationDigest.toLowerCase() &&
     candidate.recipient?.toLowerCase() === expected.recipient.toLowerCase() &&
     candidate.grossAmount === expected.grossAmount &&
@@ -339,7 +346,13 @@ function isPendingConfirmation(value: unknown): value is PendingConfirmation {
     typeof item.blocked === "boolean" &&
     typeof item.bridgeCanisterId === "string" &&
     typeof item.chainId === "number" &&
-    typeof item.bridgeAddress === "string"
+    typeof item.bridgeAddress === "string" &&
+    (item.assetId === undefined ||
+      (typeof item.assetId === "string" && /^0x[0-9a-fA-F]{64}$/.test(item.assetId))) &&
+    (item.contractAddress === undefined ||
+      (typeof item.contractAddress === "string" &&
+        /^0x[0-9a-fA-F]{40}$/.test(item.contractAddress))) &&
+    (item.shared === undefined || typeof item.shared === "boolean")
   if (
     !common ||
     item.kind !== "withdrawal" ||

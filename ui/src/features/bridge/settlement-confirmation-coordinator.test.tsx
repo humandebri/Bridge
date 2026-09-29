@@ -855,7 +855,11 @@ describe("displayed withdrawal observation after another tab removes the queue",
     mocks.getWithdrawal.mockResolvedValue([icRecord({ Paid: null })])
     render(<SettlementConfirmationCoordinator />)
     await waitFor(() => expect(mocks.completeWithdrawalProgress).toHaveBeenCalled())
-    expect(mocks.receiptDetails).toHaveBeenCalledWith(hash, "aaaaa-aa")
+    expect(mocks.receiptDetails).toHaveBeenCalledWith(hash, "aaaaa-aa", {
+      assetId: undefined,
+      bridgeAddress: undefined,
+      shared: undefined,
+    })
     expectReadOnly()
   })
 

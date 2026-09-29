@@ -9,7 +9,7 @@ import {
   TriangleAlert,
 } from "lucide-react"
 import { Principal } from "@icp-sdk/core/principal"
-import { useEffect, useMemo, useReducer, useRef } from "react"
+import { useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { toast } from "sonner"
 import { hexToBytes } from "viem"
 import { useAccount, useChainId, useConnectorClient, useWriteContract } from "wagmi"
@@ -38,6 +38,7 @@ import { useWalletDialog } from "@/features/wallet/wallet-controls"
 import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
 import type { DepositView } from "@/generated/bridge.did"
 import { bsnsAbi } from "@/generated/abi/bsns.generated"
+import { multiTokenBridgeAbi } from "@/generated/abi/multitokenbridge.generated"
 import {
   estimatedAmountOut,
   formatTokenAmount,
@@ -96,6 +97,9 @@ const NETWORKS: Record<BridgeNetwork, { label: string; logo: string }> = {
 }
 
 export function validatedDepositWriteGate(input: {
+  bridgeAddress?: string
+  tokenAddress?: string
+  tokenSymbol?: string
   recipient: string
   amount: bigint
   expectedSequence: bigint
@@ -108,8 +112,8 @@ export function validatedDepositWriteGate(input: {
     !/^0x[0-9a-fA-F]{40}$/.test(recipient) ||
     [
       "0x0000000000000000000000000000000000000000",
-      deploymentProfile.bridgeAddress,
-      deploymentProfile.bsnsAddress,
+      input.bridgeAddress ?? deploymentProfile.bridgeAddress,
+      input.tokenAddress ?? deploymentProfile.bsnsAddress,
     ].some((address) => address?.toLowerCase() === recipient.toLowerCase())
   )
     throw new Error("Recipient cannot be zero, the Bridge contract, or the token contract")
@@ -132,7 +136,7 @@ export function validatedDepositWriteGate(input: {
     throw new Error("Another deposit used this owner sequence; refresh and review again")
   if (ledger.balance < requiredDepositBalance(amount, ledger.fee, ledger.allowance))
     throw new Error(
-      `${deploymentProfile.icToken.symbol} balance does not cover the deposit and required ledger fees`,
+      `${input.tokenSymbol ?? deploymentProfile.icToken.symbol} balance does not cover the deposit and required ledger fees`,
     )
   return { base: quote, ledger, sequence, observation }
 }
@@ -157,6 +161,10 @@ function initialPreflight(runId: number, direction: BridgeDirection): PreflightS
     phase: "checking",
     checks: PREFLIGHT_CHECKS.map((check) => ({ ...check, status: "waiting" })),
   }
+}
+
+function runtimeObservationCheckedAt(): number {
+  return Date.now()
 }
 
 export function BridgePage({
@@ -208,6 +216,52 @@ export function BridgePage({
   const wallets = useWalletDialog()
   const write = useWriteContract()
   const connectorClient = useConnectorClient()
+  const assetsQuery = useQuery({
+    queryKey: ["bridge-assets", deploymentProfile.bridgeCanisterId],
+    enabled: Boolean(deploymentProfile.bridgeCanisterId),
+    staleTime: 60_000,
+    queryFn: async () => {
+      const actor = await createBridgeActor(
+        deploymentProfile.icHost,
+        deploymentProfile.bridgeCanisterId as string,
+      )
+      const result = await actor.list_assets()
+      if ("Err" in result) throw new Error("Registered bridge assets are unavailable")
+      return result.Ok
+    },
+  })
+  const [selectedAssetKey, setSelectedAssetKey] = useState<string>()
+  const availableAssets = useMemo(() => assetsQuery.data ?? [], [assetsQuery.data])
+  const preferredAsset =
+    availableAssets.find((asset) => "LegacySingleToken" in asset.bridge_kind) ?? availableAssets[0]
+  const effectiveAssetKey = unresolvedDeposit?.call.assetId
+    ? bytesHex(unresolvedDeposit.call.assetId)
+    : (selectedAssetKey ?? (preferredAsset ? bytesHex(preferredAsset.asset_id) : undefined))
+  const selectedAsset = availableAssets.find(
+    (asset) => bytesHex(asset.asset_id) === effectiveAssetKey,
+  )
+  const selectedAssetId = selectedAsset
+    ? (bytesHex(selectedAsset.asset_id) as `0x${string}`)
+    : undefined
+  const selectedBridgeAddress = selectedAsset
+    ? (bytesHex(selectedAsset.bridge_contract) as `0x${string}`)
+    : undefined
+  const selectedTokenAddress = selectedAsset
+    ? (bytesHex(selectedAsset.token_contract) as `0x${string}`)
+    : undefined
+  const selectedLedgerCanisterId = selectedAsset?.ledger_canister_id.toText()
+  const selectedShared = Boolean(selectedAsset && "SharedMultiToken" in selectedAsset.bridge_kind)
+  const quoteAsset =
+    selectedAsset && selectedAssetId && selectedBridgeAddress && selectedTokenAddress
+      ? {
+          assetId: selectedAssetId,
+          bridgeAddress: selectedBridgeAddress,
+          tokenAddress: selectedTokenAddress,
+          expectedBridgeRuntimeSha256: bytesHex(selectedAsset.expected_bridge_runtime_sha256),
+          expectedTokenRuntimeSha256: bytesHex(selectedAsset.expected_token_runtime_sha256),
+          shared: selectedShared,
+        }
+      : undefined
   const currentBaseWallet = () => currentInjectedWallet(connectorClient.data?.transport)
   const runtime = useRuntimeValidation(chainId, {
     enabled: false,
@@ -219,14 +273,46 @@ export function BridgePage({
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   })
-  const baseQuote = useCurrentBaseQuote({ enabled: true, staleTime: 15_000 })
-  const sendToken =
-    direction === "deposit" ? deploymentProfile.icToken : deploymentProfile.baseToken
-  const receiveToken =
-    direction === "deposit" ? deploymentProfile.baseToken : deploymentProfile.icToken
+  const baseQuote = useCurrentBaseQuote(
+    { enabled: Boolean(selectedAsset), staleTime: 15_000 },
+    quoteAsset,
+  )
+  const sharedRuntimeObservation = (
+    quote: NonNullable<typeof baseQuote.data>,
+    checkedAt: number,
+  ): FinalizedRuntimeObservation => {
+    if (!selectedAsset || !selectedShared)
+      throw new Error("The selected shared asset is unavailable")
+    const expectedSigner = bytesHex(selectedAsset.expected_bridge_signer)
+    if (quote.bridgeSigner.toLowerCase() !== expectedSigner.toLowerCase())
+      throw new Error("Shared Bridge signer does not match the registered asset")
+    if (!("Enabled" in selectedAsset.lifecycle))
+      throw new Error("The selected asset is not enabled for deposits")
+    return {
+      ready: true,
+      blockers: [],
+      checkedAt,
+      chainId: Number(selectedAsset.base_chain_id),
+      snapshot: quote,
+    }
+  }
+  const refetchSelectedRuntime = async (): Promise<FinalizedRuntimeObservation> => {
+    if (!selectedShared)
+      return refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
+    const result = await baseQuote.refetch()
+    if (result.isError || !result.data) throw new Error("Shared Bridge runtime is unavailable")
+    return sharedRuntimeObservation(result.data, runtimeObservationCheckedAt())
+  }
+  const selectedToken = selectedAsset
+    ? { name: selectedAsset.name, symbol: selectedAsset.symbol, decimals: selectedAsset.decimals }
+    : deploymentProfile.icToken
+  const sendToken = selectedToken
+  const receiveToken = selectedToken
+  const selectedDecimals = selectedToken.decimals
   const baseData = baseQuote.data
-  const depositParsed = useMemo(() => parseTokenAmount(depositAmount), [depositAmount])
-  const withdrawParsed = useMemo(() => parseTokenAmount(withdrawAmount), [withdrawAmount])
+  const depositParsed = parseTokenAmount(depositAmount, selectedDecimals)
+  const withdrawParsed = parseTokenAmount(withdrawAmount, selectedDecimals)
+  const formatSelectedAmount = (value: bigint) => formatTokenAmount(value, selectedToken.decimals)
 
   const ownerSequenceKey = ["deposit-owner-sequence", ic.account?.owner] as const
   const ownerSequence = useQuery({
@@ -309,15 +395,16 @@ export function BridgePage({
   const ledger = useQuery({
     queryKey: [
       "deposit-ledger",
+      effectiveAssetKey,
       ic.account?.owner,
       bytesHex(ic.account?.subaccount ?? new Uint8Array()),
     ],
-    enabled: direction === "deposit" && Boolean(ic.account),
+    enabled: direction === "deposit" && Boolean(ic.account && selectedLedgerCanisterId),
     ...automaticQueryOptions,
     queryFn: async () => {
       const ledgerActor = await createLedgerActor(
         deploymentProfile.icHost,
-        deploymentProfile.ledgerCanisterId as string,
+        selectedLedgerCanisterId as string,
       )
       const account = ledgerAccount(ic.account!.owner, ic.account!.subaccount)
       const spender = ledgerAccount(deploymentProfile.bridgeCanisterId as string)
@@ -334,12 +421,12 @@ export function BridgePage({
     },
   })
   const bsnsBalance = useQuery({
-    queryKey: ["bsns-balance", address],
-    enabled: direction === "withdraw" && Boolean(address),
+    queryKey: ["base-token-balance", effectiveAssetKey, address],
+    enabled: direction === "withdraw" && Boolean(address && selectedTokenAddress),
     ...automaticQueryOptions,
     queryFn: () =>
       basePublicClient.readContract({
-        address: deploymentProfile.bsnsAddress as `0x${string}`,
+        address: selectedTokenAddress as `0x${string}`,
         abi: bsnsAbi,
         functionName: "balanceOf",
         args: [address!],
@@ -378,7 +465,6 @@ export function BridgePage({
       active = false
     }
   }, [ic.account])
-
   const deposit = useMutation({
     mutationFn: async ({ attempt, closeWalletSession }: DepositMutationInput) => {
       if (!address || !isConnected || !ic.account || !ic.adapter)
@@ -466,10 +552,12 @@ export function BridgePage({
       if (!unresolvedDeposit && !reviewedDeposit)
         throw new Error("Check the deposit again before opening OISY")
       dispatch({ type: "deposit-progress-changed", progress: "oisy-action" })
-      const walletSession = ic.adapter.prepare()
+      const walletSession = ic.adapter.prepare(
+        unresolvedDeposit?.call.ledgerCanisterId ?? selectedLedgerCanisterId,
+      )
       if (unresolvedDeposit) {
         closeWalletSession = onceAsync(await walletSession)
-        await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
+        await refetchSelectedRuntime()
         bridgeProgress.update(progressId, { phase: "awaiting-ic-deposit" })
         await withBrowserLock(`kinic-deposit-owner:${unresolvedDeposit.account.owner}`, () =>
           deposit.mutateAsync({
@@ -503,6 +591,7 @@ export function BridgePage({
           bridgeProgress.update(progressId, { phase: "awaiting-ic-allowance" })
           await withBrowserLock(`kinic-wallet-prompt:ic:${confirmedAccount.owner}`, () =>
             ic.adapter!.approve({
+              ledgerCanisterId: selectedLedgerCanisterId,
               amount: requiredAllowance,
               currentAllowance: beforeApproval.ledger.allowance,
               ledgerFee: beforeApproval.ledger.fee,
@@ -527,6 +616,9 @@ export function BridgePage({
         )
         const attempt: UnresolvedDepositAttempt = {
           call: {
+            assetId:
+              selectedShared && selectedAsset ? Uint8Array.from(selectedAsset.asset_id) : undefined,
+            ledgerCanisterId: selectedLedgerCanisterId,
             ownerSequence: final.sequence,
             baseRecipient: hexToBytes(confirmedRecipient),
             grossAmount: reviewed.amount,
@@ -563,7 +655,7 @@ export function BridgePage({
     const observationPromise =
       reusableObservation && runtimeWriteBlocker(reusableObservation) === undefined
         ? Promise.resolve(reusableObservation)
-        : refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
+        : refetchSelectedRuntime()
     const [observation, ledgerResult, sequenceResult] = await Promise.all([
       observationPromise,
       ledger.refetch(),
@@ -580,6 +672,9 @@ export function BridgePage({
       throw new Error("Deposit limits, balance, fee, allowance, or sequence could not be verified")
     }
     return validatedDepositWriteGate({
+      bridgeAddress: selectedBridgeAddress,
+      tokenAddress: selectedTokenAddress,
+      tokenSymbol: selectedToken.symbol,
       amount,
       expectedSequence,
       recipient,
@@ -651,9 +746,7 @@ export function BridgePage({
         )
         return { account, recipient }
       })
-      const observation = await runPreflightCheck(runId, "runtime", () =>
-        refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch),
-      )
+      const observation = await runPreflightCheck(runId, "runtime", () => refetchSelectedRuntime())
       const financials = await runPreflightCheck(runId, "financials", async () => {
         if (unresolvedDeposit) return undefined
         if (!depositParsed.ok) throw new Error(depositParsed.reason)
@@ -678,6 +771,9 @@ export function BridgePage({
         if (!depositParsed.ok || !financials)
           throw new Error("Deposit amount or financial information is unavailable")
         return validatedDepositWriteGate({
+          bridgeAddress: selectedBridgeAddress,
+          tokenAddress: selectedTokenAddress,
+          tokenSymbol: selectedToken.symbol,
           amount: depositParsed.value,
           recipient: walletSnapshot.recipient,
           expectedSequence: financials.sequence,
@@ -732,7 +828,7 @@ export function BridgePage({
           icAccount: { owner: ic.account.owner, subaccount: ic.account.subaccount },
         }
         try {
-          closeWalletSession = await ic.adapter.prepare()
+          closeWalletSession = await ic.adapter.prepare(selectedLedgerCanisterId)
           const [activeEvm, activeIc] = await Promise.all([
             currentBaseWallet(),
             ic.adapter.getAccount(),
@@ -747,9 +843,7 @@ export function BridgePage({
           await closeWalletSession?.()
         }
       })
-      const observation = await runPreflightCheck(runId, "runtime", () =>
-        refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch),
-      )
+      const observation = await runPreflightCheck(runId, "runtime", () => refetchSelectedRuntime())
       const balance = await runPreflightCheck(runId, "financials", async () => {
         if (!withdrawParsed.ok) throw new Error(withdrawParsed.reason)
         const quote = observation.snapshot
@@ -777,10 +871,10 @@ export function BridgePage({
           throw new Error("Amount must be greater than the current service fee")
         if (balance < withdrawParsed.value) throw new Error("bSNS balance is insufficient")
         return basePublicClient.readContract({
-          address: deploymentProfile.bsnsAddress as `0x${string}`,
+          address: selectedTokenAddress as `0x${string}`,
           abi: bsnsAbi,
           functionName: "allowance",
-          args: [address!, deploymentProfile.bridgeAddress as `0x${string}`],
+          args: [address!, selectedBridgeAddress as `0x${string}`],
         })
       })
       if (!withdrawParsed.ok) throw new Error(withdrawParsed.reason)
@@ -881,10 +975,10 @@ export function BridgePage({
             tokenApproval: "required",
             source: unresolvedDeposit.account.owner,
             destination: unresolvedDeposit.recipient,
-            sendAmount: formatTokenAmount(canonical.gross_amount),
-            receiveAmount: formatTokenAmount(quotedNetAmount),
-            sendSymbol: deploymentProfile.icToken.symbol,
-            receiveSymbol: deploymentProfile.baseToken.symbol,
+            sendAmount: formatSelectedAmount(canonical.gross_amount),
+            receiveAmount: formatSelectedAmount(quotedNetAmount),
+            sendSymbol: selectedToken.symbol,
+            receiveSymbol: selectedToken.symbol,
             deposit: depositIdentity,
           })
         }
@@ -943,7 +1037,7 @@ export function BridgePage({
       const owner = Principal.fromText(confirmedIcAccount.owner).toUint8Array()
       const subaccount = confirmedIcAccount.subaccount ?? new Uint8Array(32)
       const [approvalObservation, approvalBalance] = await Promise.all([
-        refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch),
+        refetchSelectedRuntime(),
         bsnsBalance.refetch(),
       ])
       const approvalQuote = approvalObservation.snapshot
@@ -958,10 +1052,10 @@ export function BridgePage({
         throw new Error("Withdrawal fee or balance changed; review again")
       const client = basePublicClient
       const allowance = await client.readContract({
-        address: deploymentProfile.bsnsAddress as `0x${string}`,
+        address: selectedTokenAddress as `0x${string}`,
         abi: bsnsAbi,
         functionName: "allowance",
-        args: [snapshotAddress, deploymentProfile.bridgeAddress as `0x${string}`],
+        args: [snapshotAddress, selectedBridgeAddress as `0x${string}`],
       })
       let approvalReceipt: ApprovalReceipt | undefined
       if (allowance < withdrawParsed.value) {
@@ -974,10 +1068,10 @@ export function BridgePage({
           () =>
             write.writeContractAsync({
               account: snapshotAddress,
-              address: deploymentProfile.bsnsAddress as `0x${string}`,
+              address: selectedTokenAddress as `0x${string}`,
               abi: bsnsAbi,
               functionName: "approve",
-              args: [deploymentProfile.bridgeAddress as `0x${string}`, withdrawParsed.value],
+              args: [selectedBridgeAddress as `0x${string}`, withdrawParsed.value],
             }),
         )
         approvalReceipt = await client.waitForTransactionReceipt({ hash: approvalHash })
@@ -990,14 +1084,52 @@ export function BridgePage({
         })
       }
       bridgeProgress.update(progressId, { phase: "awaiting-base-approval-reflection" })
-      const withdrawalRequest = (serviceFee: bigint) =>
-        ({
-          account: snapshotAddress,
-          address: deploymentProfile.bridgeAddress as `0x${string}`,
-          abi: withdrawalAbi,
-          functionName: "createWithdrawal",
-          args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)],
-        }) as const
+      const simulateWithdrawal = (serviceFee: bigint, blockNumber: bigint) =>
+        selectedShared
+          ? client.simulateContract({
+              account: snapshotAddress,
+              address: selectedBridgeAddress as `0x${string}`,
+              abi: multiTokenBridgeAbi,
+              functionName: "createWithdrawal",
+              args: [
+                selectedAssetId as `0x${string}`,
+                withdrawParsed.value,
+                serviceFee,
+                bytesToHex(owner),
+                bytesToHex(subaccount),
+              ],
+              blockNumber,
+            })
+          : client.simulateContract({
+              account: snapshotAddress,
+              address: selectedBridgeAddress as `0x${string}`,
+              abi: withdrawalAbi,
+              functionName: "createWithdrawal",
+              args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)],
+              blockNumber,
+            })
+      const sendWithdrawal = (serviceFee: bigint) =>
+        selectedShared
+          ? write.writeContractAsync({
+              account: snapshotAddress,
+              address: selectedBridgeAddress as `0x${string}`,
+              abi: multiTokenBridgeAbi,
+              functionName: "createWithdrawal",
+              args: [
+                selectedAssetId as `0x${string}`,
+                withdrawParsed.value,
+                serviceFee,
+                bytesToHex(owner),
+                bytesToHex(subaccount),
+              ],
+            })
+          : write.writeContractAsync({
+              account: snapshotAddress,
+              address: selectedBridgeAddress as `0x${string}`,
+              abi: withdrawalAbi,
+              functionName: "createWithdrawal",
+              args: [withdrawParsed.value, serviceFee, bytesToHex(owner), bytesToHex(subaccount)],
+            })
       const broadcast = await withBrowserLock(
         `kinic-wallet-prompt:base:${snapshotAddress.toLowerCase()}`,
         () =>
@@ -1011,20 +1143,16 @@ export function BridgePage({
                 ),
               readAllowance: (blockNumber) =>
                 client.readContract({
-                  address: deploymentProfile.bsnsAddress as `0x${string}`,
+                  address: selectedTokenAddress as `0x${string}`,
                   abi: bsnsAbi,
                   functionName: "allowance",
-                  args: [snapshotAddress, deploymentProfile.bridgeAddress as `0x${string}`],
+                  args: [snapshotAddress, selectedBridgeAddress as `0x${string}`],
                   blockNumber,
                 }),
             },
             expectedWallets,
             refetchRuntime: async () => ({
-              data: await refetchRuntimeAttestedWriteReady(
-                runtime.data,
-                runtime.refetch,
-                heartbeat.refetch,
-              ),
+              data: await refetchSelectedRuntime(),
             }),
             currentEvmWallet: currentBaseWallet,
             currentIcAccount: () =>
@@ -1056,11 +1184,11 @@ export function BridgePage({
                 throw new Error("bSNS balance is insufficient")
             },
             simulateWithdrawal: ({ serviceFee }, blockNumber) =>
-              client.simulateContract({ ...withdrawalRequest(serviceFee), blockNumber }),
+              simulateWithdrawal(serviceFee, blockNumber),
             createWithdrawal: ({ serviceFee }) => {
               walletDispatched = true
               bridgeProgress.update(progressId, { phase: "awaiting-base-withdrawal" })
-              return write.writeContractAsync(withdrawalRequest(serviceFee))
+              return sendWithdrawal(serviceFee)
             },
             onBroadcast: async (transactionHash) => {
               bridgeProgress.update(progressId, {
@@ -1071,6 +1199,9 @@ export function BridgePage({
                 kind: "withdrawal",
                 transactionHash,
                 owner: confirmedIcAccount.owner,
+                assetId: selectedAssetId,
+                contractAddress: selectedBridgeAddress,
+                shared: selectedShared,
               })
             },
           }),
@@ -1115,12 +1246,16 @@ export function BridgePage({
   const quoteForDisplay = reviewedQuote ?? baseData
   const depositsConfirmedPaused = baseData?.depositsPaused === true
   const withdrawalsConfirmedPaused = baseData?.withdrawalsPaused === true
+  const assetDepositEnabled = Boolean(selectedAsset && "Enabled" in selectedAsset.lifecycle)
+  const assetWithdrawalEnabled = Boolean(selectedAsset && !("Prepared" in selectedAsset.lifecycle))
   const activeTransferReason = bridgeProgress.progress
     ? "Complete or close the current transfer before starting another one"
     : undefined
   const depositBlockers = unresolvedDeposit
     ? ([
         activeTransferReason,
+        !selectedAsset && "Select an available asset",
+        selectedAsset && !assetDepositEnabled && "This asset is not enabled for deposits",
         depositsConfirmedPaused && "Deposits are paused on Base",
         !ic.account && "Reconnect the original IC wallet",
         !address && "Reconnect the original EVM wallet",
@@ -1129,6 +1264,8 @@ export function BridgePage({
       ].filter(Boolean) as string[])
     : ([
         activeTransferReason,
+        !selectedAsset && "Select an available asset",
+        selectedAsset && !assetDepositEnabled && "This asset is not enabled for deposits",
         !address && "Connect both wallets",
         !ic.account && "Connect both wallets",
         depositsConfirmedPaused && "Deposits are paused on Base",
@@ -1136,6 +1273,8 @@ export function BridgePage({
       ].filter(Boolean) as string[])
   const withdrawalBlockers = [
     activeTransferReason,
+    !selectedAsset && "Select an available asset",
+    selectedAsset && !assetWithdrawalEnabled && "This asset is not enabled for withdrawals",
     !address && "Connect both wallets",
     !ic.account && "Connect both wallets",
     withdrawalsConfirmedPaused && "Withdrawals are paused on Base",
@@ -1161,7 +1300,7 @@ export function BridgePage({
   const amount =
     direction === "deposit"
       ? unresolvedDeposit
-        ? formatTokenAmount(unresolvedDeposit.call.grossAmount)
+        ? formatSelectedAmount(unresolvedDeposit.call.grossAmount)
         : depositAmount
       : withdrawAmount
   const balance = direction === "deposit" ? ledgerData?.balance : bsnsBalanceData
@@ -1202,6 +1341,8 @@ export function BridgePage({
   const depositControlsLocked =
     direction === "deposit" &&
     (Boolean(unresolvedDeposit) || effectiveDepositProgress !== "idle" || depositFlowActive)
+  const assetControlsLocked =
+    depositControlsLocked || submittingWithdrawal || confirming || Boolean(bridgeProgress.progress)
   const maximumAmount =
     direction === "deposit"
       ? ledgerData !== undefined
@@ -1212,7 +1353,7 @@ export function BridgePage({
     depositControlsLocked || maximumAmount === undefined || maximumAmount === 0n
   const useMaximumAmount = () => {
     if (maximumAmountDisabled || maximumAmount === undefined) return
-    const formatted = formatTokenAmount(maximumAmount)
+    const formatted = formatSelectedAmount(maximumAmount)
     dispatch({ type: "amount-changed", direction, value: formatted })
   }
 
@@ -1249,9 +1390,12 @@ export function BridgePage({
         source: source.wallet,
         destination: destination.wallet,
         sendAmount: amount || "—",
-        receiveAmount: receive !== undefined ? formatTokenAmount(receive) : "—",
+        receiveAmount: receive !== undefined ? formatSelectedAmount(receive) : "—",
         sendSymbol: sendToken.symbol,
         receiveSymbol: receiveToken.symbol,
+        assetId: selectedAssetId,
+        contractAddress: selectedBridgeAddress,
+        shared: selectedShared,
         deposit:
           direction === "deposit"
             ? unresolvedDeposit
@@ -1292,7 +1436,7 @@ export function BridgePage({
     <div className="route-enter mx-auto w-full max-w-[620px] pb-6 pt-4 lg:pb-10 lg:pt-10">
       <section
         className="overflow-hidden rounded-[24px] border border-[var(--line)] bg-[var(--panel)] p-4 shadow-[0_24px_70px_rgba(20,34,53,.09)] sm:p-5"
-        aria-label="KINIC bridge"
+        aria-label={`${selectedToken.symbol} bridge`}
         data-testid="bridge-panel"
       >
         <div className="mb-5 flex items-center justify-between gap-4">
@@ -1309,6 +1453,29 @@ export function BridgePage({
             <RefreshCcw className={refreshing ? "size-4 animate-spin" : "size-4"} />
             {refreshing ? "Refreshing…" : "Refresh"}
           </Button>
+        </div>
+        <div className="mb-3 rounded-2xl bg-white p-4">
+          <Label htmlFor="bridge-asset">Asset</Label>
+          <select
+            id="bridge-asset"
+            value={effectiveAssetKey ?? ""}
+            disabled={assetControlsLocked || assetsQuery.isLoading}
+            onChange={(event) => {
+              preflightRunId.current += 1
+              dispatch({ type: "review-closed" })
+              setSelectedAssetKey(event.target.value)
+            }}
+            className="mt-2 h-11 w-full rounded-xl border border-[var(--line)] bg-white px-3 text-sm font-bold text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] disabled:cursor-not-allowed disabled:text-[var(--muted)]"
+          >
+            {availableAssets.map((asset) => {
+              const key = bytesHex(asset.asset_id)
+              return (
+                <option key={key} value={key}>
+                  {asset.name} ({asset.symbol})
+                </option>
+              )
+            })}
+          </select>
         </div>
         <div className="relative grid gap-2 sm:grid-cols-2">
           <EndpointCard
@@ -1339,7 +1506,8 @@ export function BridgePage({
           <div className="flex items-center justify-between gap-4">
             <Label htmlFor="bridge-amount">You send</Label>
             <span className="text-sm text-[var(--muted)]">
-              Balance {balance !== undefined ? formatTokenAmount(balance) : "—"} {sendToken.symbol}
+              Balance {balance !== undefined ? formatSelectedAmount(balance) : "—"}{" "}
+              {sendToken.symbol}
             </span>
           </div>
           <div className="mt-1 flex items-center gap-2 sm:gap-3">
@@ -1374,12 +1542,14 @@ export function BridgePage({
         <div className="mt-3 grid grid-cols-2 gap-3 rounded-2xl bg-white p-4 text-sm">
           <Quote
             label={feeLabel}
-            value={fee !== undefined ? `${formatTokenAmount(fee)} ${sendToken.symbol}` : "—"}
+            value={fee !== undefined ? `${formatSelectedAmount(fee)} ${sendToken.symbol}` : "—"}
           />
           <Quote
             label="Estimated receive"
             value={
-              receive !== undefined ? `${formatTokenAmount(receive)} ${receiveToken.symbol}` : "—"
+              receive !== undefined
+                ? `${formatSelectedAmount(receive)} ${receiveToken.symbol}`
+                : "—"
             }
           />
         </div>
@@ -1496,6 +1666,7 @@ export function BridgePage({
         fee={fee}
         sendSymbol={sendToken.symbol}
         receiveSymbol={receiveToken.symbol}
+        decimals={selectedToken.decimals}
         pending={deposit.isPending || write.isPending || submittingWithdrawal}
         onRetry={beginBridgeReview}
         onConfirm={confirmBridgeReview}
@@ -1625,6 +1796,7 @@ export function BridgeConfirmationDialog({
   fee,
   sendSymbol,
   receiveSymbol,
+  decimals = 8,
   pending,
   onRetry,
   onConfirm,
@@ -1640,6 +1812,7 @@ export function BridgeConfirmationDialog({
   fee?: bigint
   sendSymbol: string
   receiveSymbol: string
+  decimals?: number
   pending: boolean
   onRetry: () => void
   onConfirm: () => void
@@ -1695,11 +1868,11 @@ export function BridgeConfirmationDialog({
               <ConfirmRow label="You send" value={`${amount || "—"} ${sendSymbol}`} />
               <ConfirmRow
                 label="You receive"
-                value={`${receive !== undefined ? formatTokenAmount(receive) : "—"} ${receiveSymbol}`}
+                value={`${receive !== undefined ? formatTokenAmount(receive, decimals) : "—"} ${receiveSymbol}`}
               />
               <ConfirmRow
                 label="Bridge fee"
-                value={`${fee !== undefined ? formatTokenAmount(fee) : "—"} ${sendSymbol}`}
+                value={`${fee !== undefined ? formatTokenAmount(fee, decimals) : "—"} ${sendSymbol}`}
               />
               <ConfirmRow label="From" value={source} />
               <div className="sm:col-span-2">

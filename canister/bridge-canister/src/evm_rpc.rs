@@ -199,6 +199,7 @@ pub struct BridgeSnapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SharedAssetSnapshot {
     pub mint: BaseMintSnapshot,
+    pub min_service_fee: u128,
     pub token: [u8; 20],
     pub bridge_signer: [u8; 20],
     pub global_epoch: u64,
@@ -587,10 +588,51 @@ pub async fn shared_asset_observation(
 ) -> Result<SharedAssetObservation, ObservationError> {
     let block = finalized_block(args).await?;
     let finalized = FinalizedObservation {
-        block_number: u64::try_from(block.number).map_err(|_| ObservationError::Overflow)?,
+        block_number: u64::try_from(block.number.clone())
+            .map_err(|_| ObservationError::Overflow)?,
         block_hash: *block.hash.as_array(),
         observed_at_ns: ic_cdk::api::time(),
     };
+    shared_asset_observation_from_block(args, asset_id, finalized, block).await
+}
+
+pub async fn shared_asset_observation_at(
+    args: &BridgeInitArgs,
+    asset_id: [u8; 32],
+    finalized: FinalizedObservation,
+) -> Result<SharedAssetObservation, ObservationError> {
+    let result = client(args)
+        .get_block_by_number(BlockTag::Number(Nat256::from(finalized.block_number)))
+        .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
+        .with_response_consensus(ConsensusStrategy::Equality)
+        .try_send()
+        .await
+        .map_err(observation_call_error)?;
+    let block = match result {
+        MultiRpcResult::Consistent(Ok(block)) => block,
+        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(results) => {
+            exact_provider_response_quorum_by(results, |left, right| {
+                withdrawal_finalized_identity(left).is_some()
+                    && withdrawal_finalized_identity(left) == withdrawal_finalized_identity(right)
+            })?
+        }
+    };
+    if u64::try_from(block.number.clone()).map_err(|_| ObservationError::Overflow)?
+        != finalized.block_number
+        || *block.hash.as_array() != finalized.block_hash
+    {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    shared_asset_observation_from_block(args, asset_id, finalized, block).await
+}
+
+async fn shared_asset_observation_from_block(
+    args: &BridgeInitArgs,
+    asset_id: [u8; 32],
+    finalized: FinalizedObservation,
+    block: Block,
+) -> Result<SharedAssetObservation, ObservationError> {
     let finalized_timestamp =
         u64::try_from(block.timestamp).map_err(|_| ObservationError::Overflow)?;
     let mut snapshot_calldata = selector("assetSnapshot(bytes32)").to_vec();
@@ -672,6 +714,7 @@ pub async fn shared_asset_observation(
         "global_epoch": snapshot.global_epoch,
         "asset_epoch": snapshot.asset_epoch,
         "service_fee": snapshot.mint.service_fee.get().to_string(),
+        "min_service_fee": snapshot.min_service_fee.to_string(),
         "max_service_fee": snapshot.mint.max_service_fee.get().to_string(),
         "per_deposit_limit": snapshot.mint.per_deposit_limit.get().to_string(),
         "mint_window_limit": snapshot.mint.mint_window_limit.get().to_string(),
@@ -732,7 +775,7 @@ fn decode_shared_asset_snapshot(
             .strip_prefix("0x")
             .ok_or(ObservationError::InvalidResponse)?,
     )?;
-    if bytes.len() != 11 * ABI_WORD_BYTES {
+    if bytes.len() != 12 * ABI_WORD_BYTES {
         return Err(ObservationError::InvalidResponse);
     }
     let word = |index: usize| -> Result<&[u8], ObservationError> {
@@ -756,15 +799,16 @@ fn decode_shared_asset_snapshot(
             finalized_head_block_number: finalized_block_number,
             confirmed_block_timestamp: finalized_timestamp,
             service_fee: Amount::new(word_u128(word(2)?)?),
-            max_service_fee: Amount::new(word_u128(word(3)?)?),
-            per_deposit_limit: Amount::new(word_u128(word(4)?)?),
-            mint_window_limit: Amount::new(word_u128(word(5)?)?),
-            mint_window_duration: u64::try_from(word_u128(word(6)?)?)
+            max_service_fee: Amount::new(word_u128(word(4)?)?),
+            per_deposit_limit: Amount::new(word_u128(word(5)?)?),
+            mint_window_limit: Amount::new(word_u128(word(6)?)?),
+            mint_window_duration: u64::try_from(word_u128(word(7)?)?)
                 .map_err(|_| ObservationError::Overflow)?,
-            mint_window_started_at: u64::try_from(word_u128(word(7)?)?)
+            mint_window_started_at: u64::try_from(word_u128(word(8)?)?)
                 .map_err(|_| ObservationError::Overflow)?,
-            minted_in_window: Amount::new(word_u128(word(8)?)?),
+            minted_in_window: Amount::new(word_u128(word(9)?)?),
         },
+        min_service_fee: word_u128(word(3)?)?,
         token: address[12..]
             .try_into()
             .map_err(|_| ObservationError::InvalidResponse)?,
@@ -773,8 +817,8 @@ fn decode_shared_asset_snapshot(
         asset_epoch: u64::try_from(word_u128(word(1)?)?).map_err(|_| ObservationError::Overflow)?,
         global_deposits_paused,
         global_withdrawals_paused,
-        asset_deposits_paused: boolean(9)?,
-        asset_withdrawals_paused: boolean(10)?,
+        asset_deposits_paused: boolean(10)?,
+        asset_withdrawals_paused: boolean(11)?,
     })
 }
 
@@ -2904,6 +2948,7 @@ mod tests {
             token,
             word(7),
             word(5),
+            word(4),
             word(10),
             word(1_000),
             word(10_000),
@@ -2928,6 +2973,7 @@ mod tests {
         assert_eq!(snapshot.asset_epoch, 7);
         assert_eq!(snapshot.global_epoch, 9);
         assert_eq!(snapshot.mint.service_fee, Amount::new(5));
+        assert_eq!(snapshot.min_service_fee, 4);
         assert!(!snapshot.asset_deposits_paused);
         assert!(snapshot.asset_withdrawals_paused);
 

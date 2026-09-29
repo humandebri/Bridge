@@ -1,7 +1,10 @@
 import { decodeEventLog, type Hex } from "viem"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
+import { multiTokenBridgeAbi } from "@/generated/abi/multitokenbridge.generated"
 
 export interface ExpectedDepositMint {
+  assetId?: `0x${string}`
+  shared?: boolean
   depositId: `0x${string}`
   recipient: `0x${string}`
   authorizationDigest: `0x${string}`
@@ -44,7 +47,7 @@ export function receiptContainsExactDepositMint(
     if (log.address.toLowerCase() !== expectedBridgeAddress.toLowerCase()) return []
     try {
       const decoded = decodeEventLog({
-        abi: bridgeAbi,
+        abi: expected.shared ? multiTokenBridgeAbi : bridgeAbi,
         eventName: "DepositMinted",
         data: log.data,
         topics: log.topics as [Hex, ...Hex[]],
@@ -52,6 +55,9 @@ export function receiptContainsExactDepositMint(
       })
       if (
         decoded.eventName !== "DepositMinted" ||
+        (expected.shared &&
+          "assetId" in decoded.args &&
+          decoded.args.assetId.toLowerCase() !== expected.assetId?.toLowerCase()) ||
         decoded.args.depositId.toLowerCase() !== expected.depositId.toLowerCase()
       )
         return []

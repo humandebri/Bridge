@@ -19,6 +19,7 @@ import { useAccount, useChainId, useWriteContract } from "wagmi"
 import { toHex } from "viem"
 import type { DepositView } from "@/generated/bridge.did"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
+import { multiTokenBridgeAbi } from "@/generated/abi/multitokenbridge.generated"
 import { deploymentProfile } from "@/config/profile"
 import { Button } from "@/components/ui/button"
 import {
@@ -50,6 +51,10 @@ import {
 import { prepareMint, checkMintDeadline, mintWalletConnected } from "@/lib/mint-preflight"
 import { refetchRuntimeAttestedWriteReady } from "@/lib/runtime-validation"
 import { contractAuthorization, validateMintAuthorization } from "@/lib/mint-authorization"
+import type {
+  ContractMintAuthorization,
+  SharedContractMintAuthorization,
+} from "@/lib/mint-authorization"
 import { mintAuthorizationWindow } from "@/lib/mint-authorization-window"
 import {
   readPendingMint,
@@ -207,6 +212,9 @@ export function MintAuthorizationAction({
     () =>
       authorization && contract
         ? {
+            assetId: toHex(Uint8Array.from(record.asset_id)),
+            bridgeAddress: toHex(Uint8Array.from(authorization.verifying_contract)),
+            shared: "SharedMultiToken" in record.bridge_kind,
             depositId: contract.depositId,
             authorizationDigest: toHex(Uint8Array.from(authorization.digest)),
             recipient: contract.recipient,
@@ -215,7 +223,7 @@ export function MintAuthorizationAction({
             mintedAmount: (contract.grossAmount - contract.chargedServiceFee).toString(),
           }
         : undefined,
-    [authorization, contract],
+    [authorization, contract, record.asset_id, record.bridge_kind],
   )
   const authorizationAvailable = "AuthorizationAvailable" in record.state
   // IC polls recreate the authorization object; that must not cancel a receipt read.
@@ -439,13 +447,24 @@ export function MintAuthorizationAction({
           checkMintDeadline(context)
         },
         send: ({ validated }) =>
-          writeContractAsync({
-            account: address,
-            address: deploymentProfile.bridgeAddress as `0x${string}`,
-            abi: bridgeAbi,
-            functionName: "mintDepositWithAuthorization",
-            args: [validated.authorization, validated.signature],
-          }),
+          validated.shared
+            ? writeContractAsync({
+                account: address,
+                address: validated.bridgeAddress,
+                abi: multiTokenBridgeAbi,
+                functionName: "mintDepositWithAuthorization",
+                args: [
+                  validated.authorization as SharedContractMintAuthorization,
+                  validated.signature,
+                ],
+              })
+            : writeContractAsync({
+                account: address,
+                address: validated.bridgeAddress,
+                abi: bridgeAbi,
+                functionName: "mintDepositWithAuthorization",
+                args: [validated.authorization as ContractMintAuthorization, validated.signature],
+              }),
         save: async (hash) => {
           try {
             await savePendingMint({ ...pendingExpectation, transactionHash: hash })

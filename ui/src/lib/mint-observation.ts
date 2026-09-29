@@ -2,6 +2,7 @@ import { hexToBytes, type Hex } from "viem"
 import { deploymentProfile } from "@/config/profile"
 import type { DepositView } from "@/generated/bridge.did"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
+import { multiTokenBridgeAbi } from "@/generated/abi/multitokenbridge.generated"
 import { basePublicClient } from "@/lib/evm/client"
 import { readBaseBlock, readBaseReceipt, sharedBaseRead } from "@/lib/base-transaction-observation"
 import {
@@ -35,9 +36,10 @@ const bytesHex = (bytes: Uint8Array | number[]): Hex =>
   `0x${Array.from(bytes, (n) => n.toString(16).padStart(2, "0")).join("")}`
 
 export async function observeMint(pending: PendingMint): Promise<MintObservation> {
+  const bridgeAddress = (pending.bridgeAddress ?? deploymentProfile.bridgeAddress) as Hex
   const key = [
     deploymentProfile.chainId,
-    deploymentProfile.bridgeAddress,
+    bridgeAddress,
     deploymentProfile.deploymentInstanceId,
     pending.depositId,
     pending.transactionHash,
@@ -51,6 +53,8 @@ export async function observeMint(pending: PendingMint): Promise<MintObservation
     .toLowerCase()
   return sharedBaseRead(`mint:${key}`, async () => {
     const expected = {
+      assetId: pending.assetId,
+      shared: pending.shared,
       depositId: pending.depositId,
       recipient: pending.recipient,
       authorizationDigest: pending.authorizationDigest,
@@ -70,11 +74,7 @@ export async function observeMint(pending: PendingMint): Promise<MintObservation
       const receipt = await readBaseReceipt(pending.transactionHash)
       const included =
         receipt.status === "success" &&
-        receiptContainsExactDepositMint(
-          expected,
-          receipt.logs,
-          deploymentProfile.bridgeAddress as Hex,
-        )
+        receiptContainsExactDepositMint(expected, receipt.logs, bridgeAddress)
       const fingerprint = `${receipt.blockHash}:${receipt.blockNumber}:${receipt.status}:${included}`
       if (entry.fingerprint !== fingerprint) {
         entry = {
@@ -144,7 +144,7 @@ async function observeMintFinality(
     if (!isCurrent()) return
     const result = exactMintReceiptFinalization({
       expected,
-      expectedBridgeAddress: deploymentProfile.bridgeAddress as Hex,
+      expectedBridgeAddress: (pending.bridgeAddress ?? deploymentProfile.bridgeAddress) as Hex,
       receipt,
       finalizedBlockNumber: finalized.number,
       canonicalReceiptBlockHash: canonical.hash,
@@ -240,6 +240,9 @@ export async function observeDeposit(record: DepositView): Promise<MintObservati
   const authorization = record.mint_authorization[0]
   if (!authorization) return { status: "unsubmitted", finalized: false, recorded: false }
   const expected = {
+    assetId: bytesHex(record.asset_id),
+    bridgeAddress: bytesHex(authorization.verifying_contract),
+    shared: "SharedMultiToken" in record.bridge_kind,
     depositId: bytesHex(record.deposit_id),
     authorizationDigest: bytesHex(authorization.digest),
     recipient: bytesHex(authorization.recipient),
@@ -252,10 +255,10 @@ export async function observeDeposit(record: DepositView): Promise<MintObservati
   try {
     const processed = await sharedBaseRead(`processed:${expected.depositId}`, () =>
       basePublicClient.readContract({
-        address: deploymentProfile.bridgeAddress as Hex,
-        abi: bridgeAbi,
+        address: expected.bridgeAddress,
+        abi: expected.shared ? multiTokenBridgeAbi : bridgeAbi,
         functionName: "isDepositProcessed",
-        args: [expected.depositId],
+        args: expected.shared ? [expected.assetId, expected.depositId] : [expected.depositId],
       }),
     )
     return { status: processed ? "processed" : "unsubmitted", finalized: false, recorded: false }

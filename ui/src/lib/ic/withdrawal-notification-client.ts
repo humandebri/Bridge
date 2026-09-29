@@ -83,6 +83,7 @@ export async function getWithdrawalNotificationIdentity(
 export async function notifyWithdrawalWithBrowserIdentity(
   transactionHash: Uint8Array,
   profile: NotificationDeployment = deploymentProfile,
+  assetId?: Uint8Array,
 ): Promise<NotifyWithdrawalReceipt> {
   if (!profile.bridgeCanisterId) throw new Error("Bridge canister ID is unavailable")
   const identity = await getWithdrawalNotificationIdentity(profile)
@@ -98,7 +99,12 @@ export async function notifyWithdrawalWithBrowserIdentity(
         identity,
       )
       return unwrapNotifyWithdrawalResult(
-        await actor.notify_withdrawal({ transaction_hash: transactionHash }),
+        assetId
+          ? await actor.notify_asset_withdrawal({
+              asset_id: assetId,
+              operation: { transaction_hash: transactionHash },
+            })
+          : await actor.notify_withdrawal({ transaction_hash: transactionHash }),
       )
     },
   )
