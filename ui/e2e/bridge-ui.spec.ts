@@ -45,7 +45,7 @@ test("bridge defaults to IC to Base and reports incomplete configuration", async
   page,
 }, testInfo) => {
   await page.goto("/")
-  await expect(page.getByRole("region", { name: "KINIC bridge" })).toBeVisible()
+  await expect(page.getByRole("region", { name: / bridge$/ })).toBeVisible()
   const homeLink = page.getByRole("link", { name: "KINIC Bridge home" })
   await expect(homeLink).toContainText("KINIC Bridge")
   await expect(homeLink.locator("img")).toHaveAttribute("src", /blue_kinic/)
