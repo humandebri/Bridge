@@ -2523,7 +2523,7 @@ struct StoredDeposit {
     record: DepositRecord,
     owner_sequence: u64,
     base_recipient: [u8; 20],
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     shared_authorization_binding: Option<crate::multi_asset::SharedAuthorizationBinding>,
 }
 
