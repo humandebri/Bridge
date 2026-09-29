@@ -291,7 +291,7 @@ pub enum SharedNotifiedWithdrawalOutcome {
     Pending,
     Reverted,
     Confirmed {
-        withdrawal: ObservedWithdrawal,
+        withdrawal: Box<ObservedWithdrawal>,
         base_withdrawal_id: [u8; 32],
         observation: Box<SharedAssetObservation>,
         stable_observation: Box<FinalizedObservationRecord>,
@@ -2570,7 +2570,7 @@ pub async fn shared_notified_withdrawal_outcome(
         runtime_sha256: observation.bridge_runtime_sha256,
     });
     Ok(SharedNotifiedWithdrawalOutcome::Confirmed {
-        withdrawal,
+        withdrawal: Box::new(withdrawal),
         base_withdrawal_id,
         observation: Box::new(observation),
         stable_observation,

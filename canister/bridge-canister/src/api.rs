@@ -495,7 +495,7 @@ pub async fn notify_asset_withdrawal(
             observation,
             stable_observation,
         } => (
-            withdrawal,
+            *withdrawal,
             base_withdrawal_id,
             observation,
             stable_observation,

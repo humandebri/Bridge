@@ -8871,11 +8871,7 @@ impl StableStore {
         let funding_asset_key = RecordAssetKind::DepositFundingAttempt.key(&record.id.bytes())?;
         let hold_asset_key = promotion_hold
             .as_ref()
-            .map(|(hold, _)| {
-                RecordAssetKind::ReconciliationHold
-                    .key(&hold.id.get().to_sql_bytes())
-                    .map(|key| key)
-            })
+            .map(|(hold, _)| RecordAssetKind::ReconciliationHold.key(&hold.id.get().to_sql_bytes()))
             .transpose()?;
         self.handle.update(|connection| {
             expect_blob(
