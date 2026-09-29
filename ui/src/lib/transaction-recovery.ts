@@ -1,4 +1,13 @@
-import { decodeEventLog, decodeFunctionData, hexToBytes, type Hex } from "viem"
+import {
+  concatHex,
+  sha256,
+  stringToHex,
+  toHex,
+  decodeEventLog,
+  decodeFunctionData,
+  hexToBytes,
+  type Hex,
+} from "viem"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { multiTokenBridgeAbi } from "@/generated/abi/multitokenbridge.generated"
@@ -87,6 +96,18 @@ export async function withdrawalReceiptDetails(
     )
   return {
     id: args.withdrawalId,
+    icWithdrawalId: binding.shared
+      ? sha256(
+          concatHex([
+            stringToHex("IC_BASE_MULTI_ASSET_WITHDRAWAL_ID_V1\0"),
+            binding.assetId!,
+            bridgeAddress,
+            toHex(args.withdrawalId, { size: 32 }),
+          ]),
+        )
+      : toHex(args.withdrawalId, { size: 32 }),
+    contractAddress: bridgeAddress,
+    shared: Boolean(binding.shared),
     assetId: binding.shared && binding.assetId ? hexToBytes(binding.assetId) : undefined,
     amount: args.amount,
     amountOut: args.amountOut,

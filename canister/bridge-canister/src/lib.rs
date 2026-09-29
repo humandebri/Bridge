@@ -1608,7 +1608,9 @@ async fn notify_withdrawal(
     require_asset_operations_for_withdrawal_notification()?;
     let caller = ic_cdk::api::msg_caller();
     let transaction_hash = api::notification_action_hash(caller, &args)?;
-    if let Some(receipt) = api::existing_notified_withdrawal_by_hash(transaction_hash)? {
+    if let Some(receipt) =
+        api::existing_notified_withdrawal_by_hash(crate::config::KINIC_ASSET_ID, transaction_hash)?
+    {
         return Ok(receipt);
     }
     let config = STORE.with(|store| {
@@ -1712,7 +1714,7 @@ async fn notify_asset_withdrawal(
     let asset_id = multi_asset::parse_asset_id(&args.asset_id)
         .map_err(|_| api::NotifyWithdrawalError::BaseStateMismatch)?;
     let transaction_hash = api::notification_action_hash(caller, &args.operation)?;
-    if let Some(receipt) = api::existing_notified_withdrawal_by_hash(transaction_hash)? {
+    if let Some(receipt) = api::existing_notified_withdrawal_by_hash(asset_id, transaction_hash)? {
         return Ok(receipt);
     }
     let config = STORE.with(|store| {

@@ -12,6 +12,7 @@ import type {
 import {
   runtimeWriteBlocker,
   requireRuntimeWriteReady,
+  validateAssetRuntime,
   validateRuntime,
   validateRuntimeHeartbeat,
   type RuntimeValidation,
@@ -36,7 +37,15 @@ export async function prepareMint(
   context.stage("checking-ic")
   let observation
   if (shared) {
-    observation = { ready: true, blockers: [], checkedAt: Date.now() }
+    observation = await validateAssetRuntime(
+      deploymentProfile,
+      record.asset_id,
+      "deposit",
+      chainId,
+      context.signal,
+    )
+    context.check()
+    requireRuntimeWriteReady(observation)
   } else {
     if (runtimeWriteBlocker(attestation))
       attestation = await validateRuntime(deploymentProfile, chainId, context.signal)

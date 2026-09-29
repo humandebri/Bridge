@@ -291,3 +291,27 @@ Separate page fetching from receipt-validation queue consumption and Deposit rot
 Worker-signed cursors bind the fixed search upper bound, pageKey, and enumerated-range resume block. pageKey expires nine minutes after each issuance; afterward resume including the last block without pageKey. Handle blocks spanning pages without omissions, deduplicating saved hashes. After all pages, wait 60 seconds and rescan from the original Authorization start block to catch indexing delay. Neither candidates nor unsuccessful searches are settlement evidence.
 
 The 30-second failure cooldown for `notify_deposit_mint` applies only to a caller/Deposit pair. Changing hashes does not let the same caller spam; another party's failures do not restrict other callers or the confirmation relayer. Preserve global RPC budgets, in-flight exclusion, and strict Finalized mint evidence validation.
+
+
+### Shared Bridge asset activation and key rotation
+
+`ScheduleAssetActivation` and `ExecuteAssetActivation` require an explicit
+`activate_global` boolean. Use `true` for initial shared Bridge activation: the
+scheduled batch unpauses global deposit minting and withdrawals, then the selected
+asset. Use `false` for asset-only activation. Both calls must use the same flag,
+asset ID and operation nonce. The flag changes the salt and batch operation ID;
+a retry with a different flag is rejected. Global unpause remains subject to the
+contract's timelock and emergency signer-rotation requirements.
+
+While any shared asset is registered, the existing KINIC-only control-plane key
+rotation is rejected. Registration is also rejected while that rotation is
+pending. Coordinated legacy/shared signer rotation must be implemented and
+reviewed before rotating keys in a multi-asset deployment.
+
+Shared assets persist finalized observations separately from KINIC. Notification
+replay keys include the asset ID; KINIC retains its original transaction-hash key.
+Storage validation checks per-asset mint reservations, withdrawal liabilities,
+financial-row presence, and the asset/contract/Base-ID origin of shared withdrawals.
+The UI verifies the root deployment and the selected asset's ledger metadata,
+fee, index binding and runtime attestation before requesting wallet operations.
+WithdrawalEnabled assets may withdraw without enabling deposits.

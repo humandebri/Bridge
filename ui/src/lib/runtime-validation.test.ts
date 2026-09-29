@@ -8,6 +8,7 @@ import {
   requireRuntimeWriteReady,
   RUNTIME_VALIDATION_TTL_MS,
   runtimeWriteBlocker,
+  validateAssetRuntime,
   validateRuntime,
   validateRuntimeHeartbeat,
 } from "./runtime-validation"
@@ -571,5 +572,70 @@ describe("validateRuntime token bindings", () => {
     baseMetadata = { ...baseMetadata, [field]: value }
     const result = await validateRuntime(profile)
     expect(result.blockers).toContain("Base token metadata is not KINIC/8")
+  })
+})
+
+describe("selected shared asset runtime", () => {
+  it("verifies_asset_ledger_bindings_and_rejects_unsafe_shared_writes", async () => {
+    const asset = {
+      asset_id: new Uint8Array(32).fill(9),
+      name: ledgerMetadata.name,
+      symbol: ledgerMetadata.symbol,
+      decimals: 8,
+      ledger_fee: 10n,
+      ledger_canister_id: Principal.fromText(ledgerId),
+      index_canister_id: Principal.fromText(indexId),
+      base_chain_id: BigInt(profile.chainId),
+      bridge_kind: { SharedMultiToken: null },
+      bridge_contract: new Uint8Array(20).fill(0x11),
+      token_contract: new Uint8Array(20).fill(0x22),
+      expected_bridge_runtime_sha256: new Uint8Array(32).fill(0xaa),
+      expected_token_runtime_sha256: new Uint8Array(32).fill(0xbb),
+      expected_bridge_signer: new Uint8Array(20).fill(0x33),
+      deployment_instance_id: new Uint8Array(32).fill(0x99),
+      timelock_contract: new Uint8Array(20).fill(0x55),
+      expected_timelock_minimum_delay_seconds: 300n,
+      lifecycle: { WithdrawalEnabled: null } as { WithdrawalEnabled: null } | { Enabled: null },
+    }
+    const financial = { asset_id: asset.asset_id, withdrawal_fee_guard_active: false }
+    const evidence = {
+      asset_id: asset.asset_id,
+      chain_id: asset.base_chain_id,
+      bridge_runtime_sha256: asset.expected_bridge_runtime_sha256,
+      token_runtime_sha256: asset.expected_token_runtime_sha256,
+      bridge_signer: asset.expected_bridge_signer,
+      token_contract: asset.token_contract,
+      token_bridge: asset.bridge_contract,
+      token_name: asset.name,
+      token_symbol: asset.symbol,
+      token_decimals: asset.decimals,
+    }
+    const actor = {
+      get_runtime_binding: mocks.getRuntimeBinding,
+      get_bridge_status: mocks.getBridgeStatus,
+      get_asset: vi.fn(async () => ({ Ok: [asset] })),
+      get_asset_financial_status: vi.fn(async () => ({ Ok: financial })),
+      get_asset_runtime_attestation: vi.fn(async () => ({ Ok: [evidence] })),
+    }
+    mocks.createBridgeActor.mockResolvedValue(actor)
+    const ledger = await mocks.createLedgerActor()
+    ledger.icrc1_fee = vi.fn(async () => 10n)
+    const verify = (direction: "deposit" | "withdraw") =>
+      validateAssetRuntime(profile, asset.asset_id, direction, profile.chainId, undefined, asset)
+    await expect(verify("withdraw")).resolves.toMatchObject({ ready: true })
+    await expect(verify("deposit")).rejects.toThrow("not enabled")
+    asset.lifecycle = { Enabled: null }
+    await expect(verify("deposit")).resolves.toMatchObject({ ready: true })
+    financial.withdrawal_fee_guard_active = true
+    await expect(verify("withdraw")).rejects.toThrow("fee guard")
+    financial.withdrawal_fee_guard_active = false
+    ledger.icrc1_fee.mockResolvedValue(11n)
+    await expect(verify("withdraw")).rejects.toThrow("ledger metadata")
+    ledger.icrc1_fee.mockResolvedValue(10n)
+    evidence.token_bridge = new Uint8Array(20).fill(0x77)
+    await expect(verify("withdraw")).rejects.toThrow("runtime binding")
+    evidence.token_bridge = asset.bridge_contract
+    mocks.getRuntimeBinding.mockRejectedValue(new Error("IC unavailable"))
+    await expect(verify("withdraw")).rejects.toThrow("IC unavailable")
   })
 })

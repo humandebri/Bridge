@@ -369,7 +369,7 @@ async fn advance_hold(
             &store.borrow(),
             crate::storage::RecordAssetKind::ReconciliationHold,
             &hold.id.get().to_be_bytes(),
-            true,
+            false,
         )
         .map_err(|_| SettlementActionError::StorageFailure)
     })?;
@@ -1479,7 +1479,7 @@ pub(crate) async fn advance_withdrawal(
             &store.borrow(),
             crate::storage::RecordAssetKind::Withdrawal,
             &withdrawal_id,
-            true,
+            false,
         )
         .map_err(|_| SettlementActionError::StorageFailure)
     })?;

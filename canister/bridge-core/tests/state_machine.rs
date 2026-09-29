@@ -1476,3 +1476,40 @@ fn signing_refund_amount_boundary_is_checked_without_overflow() {
         }
     }
 }
+
+#[test]
+fn authorization_commit_accepts_supported_domains_and_rejects_other_names_and_versions() {
+    for (name, version, accepted) in [
+        (bridge_core::MINT_AUTHORIZATION_DOMAIN_NAME, "1", true),
+        (
+            bridge_core::SHARED_MINT_AUTHORIZATION_DOMAIN_NAME,
+            "1",
+            true,
+        ),
+        ("Unknown Bridge", "1", false),
+        (
+            bridge_core::SHARED_MINT_AUTHORIZATION_DOMAIN_NAME,
+            "2",
+            false,
+        ),
+    ] {
+        let mut deposit = accepted_deposit();
+        deposit
+            .apply(DepositEvent::FundingSucceeded {
+                funding_ledger_block_index: 1,
+            })
+            .unwrap();
+        let mut authorization = authorization_record(&deposit);
+        authorization.domain.name = name.into();
+        authorization.domain.version = version.into();
+        let before = deposit.clone();
+        let result = deposit.apply(DepositEvent::CommitAuthorization {
+            quote: test_deposit_quote(),
+            authorization: Box::new(authorization),
+        });
+        assert_eq!(result.is_ok(), accepted, "{name}/{version}");
+        if !accepted {
+            assert_eq!(deposit, before);
+        }
+    }
+}

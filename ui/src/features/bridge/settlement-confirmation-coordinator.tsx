@@ -5,7 +5,7 @@ import { useChainId } from "wagmi"
 import { readBaseReceipt, readBaseBlock } from "@/lib/base-transaction-observation"
 import { TransactionEvidenceMismatch, withdrawalReceiptDetails } from "@/lib/transaction-recovery"
 import { useEffect, useRef } from "react"
-import { hexToBytes, toHex } from "viem"
+import { hexToBytes } from "viem"
 import { toast } from "sonner"
 import { deploymentProfile } from "@/config/profile"
 import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
@@ -191,7 +191,7 @@ export function SettlementConfirmationCoordinator() {
             shared: progress.shared,
           })
           if (!stillCurrent()) return
-          withdrawalId = toHex(details.id, { size: 32 })
+          withdrawalId = details.icWithdrawalId
           update(progress.id, { observationSource: "base", observationError: undefined })
         }
         observationSource = "ic"

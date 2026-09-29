@@ -7,6 +7,8 @@ export type ActivityDirection = Exclude<ActivityFilter, "all">
 export interface WithdrawalHistoryItem {
   id?: bigint
   assetId?: Uint8Array | number[]
+  contractAddress?: `0x${string}`
+  shared?: boolean
   amount?: bigint
   amountOut?: bigint
   hash?: `0x${string}`

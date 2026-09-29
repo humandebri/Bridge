@@ -53,6 +53,8 @@ import { createLedgerActor, ledgerAccount } from "@/lib/ic/ledger"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import { basePublicClient } from "@/lib/evm/client"
 import {
+  validateAssetRuntime,
+  requireRuntimeWriteReady,
   refetchRuntimeAttestedWriteReady,
   runtimeWriteBlocker,
   RUNTIME_VALIDATION_TTL_MS,
@@ -288,7 +290,10 @@ export function BridgePage({
     const expectedSigner = bytesHex(selectedAsset.expected_bridge_signer)
     if (quote.bridgeSigner.toLowerCase() !== expectedSigner.toLowerCase())
       throw new Error("Shared Bridge signer does not match the registered asset")
-    if (!("Enabled" in selectedAsset.lifecycle))
+    if (
+      !("Enabled" in selectedAsset.lifecycle) &&
+      !(direction === "withdraw" && "WithdrawalEnabled" in selectedAsset.lifecycle)
+    )
       throw new Error("The selected asset is not enabled for deposits")
     return {
       ready: true,
@@ -301,6 +306,16 @@ export function BridgePage({
   const refetchSelectedRuntime = async (): Promise<FinalizedRuntimeObservation> => {
     if (!selectedShared)
       return refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
+    if (!selectedAsset) throw new Error("Selected asset is unavailable")
+    const verified = await validateAssetRuntime(
+      deploymentProfile,
+      selectedAsset.asset_id,
+      direction,
+      undefined,
+      undefined,
+      selectedAsset,
+    )
+    requireRuntimeWriteReady(verified)
     const result = await baseQuote.refetch()
     if (result.isError || !result.data) throw new Error("Shared Bridge runtime is unavailable")
     return sharedRuntimeObservation(result.data, runtimeObservationCheckedAt())

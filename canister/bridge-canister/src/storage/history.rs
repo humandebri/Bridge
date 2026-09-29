@@ -75,6 +75,25 @@ impl StableStore {
                 )?;
                 for (key, value) in &rows {
                     if stage == 0 {
+                        let asset_id =
+                            bound_asset_id(connection, RecordAssetKind::Withdrawal, value)?;
+                        if asset_id != KINIC_ASSET_ID {
+                            let hash = connection.query_scalar::<Vec<u8>>(
+                                "SELECT value FROM withdrawal_transaction_index WHERE key = ?1",
+                                params![value.as_slice()],
+                            )?;
+                            let hash: [u8; 32] = hash.as_slice().try_into().map_err(|_| {
+                                DbError::Constraint("invalid shared transaction hash".into())
+                            })?;
+                            if crate::multi_asset::notification_key(asset_id, hash).as_slice()
+                                != key
+                            {
+                                return Err(DbError::Constraint(
+                                    "shared notification key mismatch".into(),
+                                ));
+                            }
+                            continue;
+                        }
                         let hash: [u8; 32] = key
                             .as_slice()
                             .try_into()

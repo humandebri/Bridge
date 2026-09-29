@@ -205,6 +205,7 @@ export type BaseGovernanceAction = {
     'ExecuteAssetActivation' : {
       'operation_nonce' : bigint,
       'asset_id' : Uint8Array | number[],
+      'activate_global' : boolean,
     }
   } |
   { 'ExecuteControlPlaneRotation' : null } |
@@ -233,6 +234,7 @@ export type BaseGovernanceAction = {
     'ScheduleAssetActivation' : {
       'operation_nonce' : bigint,
       'asset_id' : Uint8Array | number[],
+      'activate_global' : boolean,
     }
   } |
   { 'ScheduleControlPlaneRotation' : null } |
@@ -265,6 +267,7 @@ export type BaseGovernanceOperationKind = {
       'salt' : Uint8Array | number[],
       'operation_id' : Uint8Array | number[],
       'asset_id' : Uint8Array | number[],
+      'activate_global' : boolean,
     }
   } |
   {
@@ -309,6 +312,7 @@ export type BaseGovernanceOperationKind = {
       'salt' : Uint8Array | number[],
       'operation_id' : Uint8Array | number[],
       'asset_id' : Uint8Array | number[],
+      'activate_global' : boolean,
     }
   } |
   { 'ScheduleActivation' : ActivationOperationView } |

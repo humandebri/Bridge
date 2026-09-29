@@ -7,7 +7,7 @@ import { bsnsAbi } from "@/generated/abi/bsns.generated"
 import { profileCompleteness, resolvedBaseRpcUrl, type DeploymentProfile } from "@/config/profile"
 import { runtimeBytecodeSha256 } from "@/lib/runtime-bytecode-hash"
 import { createBasePublicClient } from "@/lib/evm/client"
-import type { BridgeStatus } from "@/generated/bridge.did"
+import type { AssetConfig, BridgeStatus } from "@/generated/bridge.did"
 
 const timelockDelayAbi = [
   {
@@ -483,4 +483,104 @@ export function bridgeSignerBlockers(
   if (canisterAddress.toLowerCase() !== expected)
     blockers.push("Canister expected Bridge signer differs from the reviewed profile")
   return blockers
+}
+
+/** Verify the root deployment and the selected asset before any wallet request. */
+export async function validateAssetRuntime(
+  profile: DeploymentProfile,
+  assetId: Uint8Array | number[],
+  direction: "deposit" | "withdraw",
+  connectedChainId?: number,
+  signal?: AbortSignal,
+  expectedAsset?: AssetConfig,
+): Promise<FinalizedRuntimeObservation> {
+  const root = await validateRuntime(profile, connectedChainId, signal)
+  requireRuntimeWriteReady(root)
+  const actor = await createBridgeActor(
+    profile.icHost,
+    profile.bridgeCanisterId as string,
+    undefined,
+    signal,
+  )
+  const [registered, financial, attested] = await Promise.all([
+    actor.get_asset(Uint8Array.from(assetId)),
+    actor.get_asset_financial_status(Uint8Array.from(assetId)),
+    actor.get_asset_runtime_attestation(Uint8Array.from(assetId)),
+  ])
+  if (
+    "Err" in registered ||
+    !registered.Ok[0] ||
+    "Err" in financial ||
+    "Err" in attested ||
+    !attested.Ok[0]
+  )
+    throw new Error("Selected asset runtime verification is unavailable")
+  const asset = registered.Ok[0]
+  const evidence = attested.Ok[0]
+  const equal = (a: Uint8Array | number[], b: Uint8Array | number[]) =>
+    a.length === b.length && Array.from(a).every((value, index) => value === b[index])
+  if (
+    !equal(asset.asset_id, assetId) ||
+    !equal(financial.Ok.asset_id, assetId) ||
+    !equal(evidence.asset_id, assetId) ||
+    !("SharedMultiToken" in asset.bridge_kind) ||
+    asset.base_chain_id !== BigInt(profile.chainId) ||
+    evidence.chain_id !== asset.base_chain_id ||
+    !equal(evidence.bridge_runtime_sha256, asset.expected_bridge_runtime_sha256) ||
+    !equal(evidence.token_runtime_sha256, asset.expected_token_runtime_sha256) ||
+    !equal(evidence.bridge_signer, asset.expected_bridge_signer) ||
+    !equal(evidence.token_contract, asset.token_contract) ||
+    !equal(evidence.token_bridge, asset.bridge_contract) ||
+    evidence.token_name !== asset.name ||
+    evidence.token_symbol !== asset.symbol ||
+    evidence.token_decimals !== asset.decimals
+  )
+    throw new Error("Selected asset runtime binding does not match the registered asset")
+  if (expectedAsset) {
+    // Lifecycle may advance; all execution destinations and units must still match the selection.
+    const fingerprint = (value: AssetConfig) =>
+      JSON.stringify(
+        {
+          ...value,
+          lifecycle: undefined,
+          ledger_canister_id: value.ledger_canister_id.toText(),
+          index_canister_id: value.index_canister_id.toText(),
+        },
+        (_key, value) =>
+          typeof value === "bigint"
+            ? value.toString()
+            : value instanceof Uint8Array
+              ? Array.from(value)
+              : value,
+      )
+    if (fingerprint(asset) !== fingerprint(expectedAsset))
+      throw new Error("Selected asset configuration changed; refresh before continuing")
+  }
+  if (
+    !("Enabled" in asset.lifecycle) &&
+    !(direction === "withdraw" && "WithdrawalEnabled" in asset.lifecycle)
+  )
+    throw new Error("Selected asset is not enabled for this operation")
+  if (direction === "withdraw" && financial.Ok.withdrawal_fee_guard_active)
+    throw new Error("Selected asset withdrawal fee guard is active")
+  const [ledger, index] = await Promise.all([
+    createLedgerActor(profile.icHost, asset.ledger_canister_id.toText(), signal),
+    createIndexActor(profile.icHost, asset.index_canister_id.toText(), signal),
+  ])
+  const [name, symbol, decimals, fee, indexedLedger] = await Promise.all([
+    ledger.icrc1_name(),
+    ledger.icrc1_symbol(),
+    ledger.icrc1_decimals(),
+    ledger.icrc1_fee(),
+    index.ledger_id(),
+  ])
+  if (
+    name !== asset.name ||
+    symbol !== asset.symbol ||
+    decimals !== asset.decimals ||
+    fee !== asset.ledger_fee ||
+    indexedLedger.toText() !== asset.ledger_canister_id.toText()
+  )
+    throw new Error("Selected asset ledger metadata, fee, or index binding does not match")
+  return { ...root, checkedAt: Date.now() }
 }

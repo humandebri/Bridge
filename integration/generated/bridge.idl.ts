@@ -222,6 +222,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       'salt' : IDL.Vec(IDL.Nat8),
       'operation_id' : IDL.Vec(IDL.Nat8),
       'asset_id' : IDL.Vec(IDL.Nat8),
+      'activate_global' : IDL.Bool,
     }),
     'ExecuteControlPlaneRotation' : IDL.Record({
       'independent_canceller' : IDL.Vec(IDL.Nat8),
@@ -256,6 +257,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       'salt' : IDL.Vec(IDL.Nat8),
       'operation_id' : IDL.Vec(IDL.Nat8),
       'asset_id' : IDL.Vec(IDL.Nat8),
+      'activate_global' : IDL.Bool,
     }),
     'ScheduleActivation' : ActivationOperationView,
     'ScheduleControlPlaneRotation' : IDL.Record({
@@ -918,6 +920,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'ExecuteAssetActivation' : IDL.Record({
       'operation_nonce' : IDL.Nat64,
       'asset_id' : IDL.Vec(IDL.Nat8),
+      'activate_global' : IDL.Bool,
     }),
     'ExecuteControlPlaneRotation' : IDL.Null,
     'PauseDepositMints' : IDL.Null,
@@ -938,6 +941,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'ScheduleAssetActivation' : IDL.Record({
       'operation_nonce' : IDL.Nat64,
       'asset_id' : IDL.Vec(IDL.Nat8),
+      'activate_global' : IDL.Bool,
     }),
     'ScheduleControlPlaneRotation' : IDL.Null,
     'CancelPendingTimelock' : IDL.Null,

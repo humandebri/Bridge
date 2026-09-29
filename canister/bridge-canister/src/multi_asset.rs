@@ -5,7 +5,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tiny_keccak::{Hasher, Keccak};
 
-pub const SHARED_DOMAIN_NAME: &str = "IC Base Multi-Token Bridge";
+pub const SHARED_DOMAIN_NAME: &str = bridge_core::SHARED_MINT_AUTHORIZATION_DOMAIN_NAME;
 pub const SHARED_DOMAIN_VERSION: &str = "1";
 
 const DOMAIN_TYPE: &[u8] =
@@ -209,6 +209,18 @@ pub fn derive_deposit_id(
     hasher.update(asset_id);
     hasher.update(owner.as_slice());
     hasher.update(owner_sequence.to_be_bytes());
+    hasher.finalize().into()
+}
+
+/// Shared replay keys bind the immutable asset registry entry; legacy keys stay unchanged.
+pub fn notification_key(asset_id: [u8; 32], transaction_hash: [u8; 32]) -> [u8; 32] {
+    if asset_id == KINIC_ASSET_ID {
+        return transaction_hash;
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"IC_BASE_MULTI_ASSET_NOTIFICATION_V1\0");
+    hasher.update(asset_id);
+    hasher.update(transaction_hash);
     hasher.finalize().into()
 }
 

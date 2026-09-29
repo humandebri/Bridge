@@ -610,12 +610,13 @@ fn notification_commit_error(error: crate::storage::StorageError) -> NotifyWithd
 }
 
 pub(crate) fn existing_notified_withdrawal_by_hash(
+    asset_id: [u8; 32],
     transaction_hash: [u8; 32],
 ) -> Result<Option<NotifyWithdrawalReceipt>, NotifyWithdrawalError> {
     let found = STORE.with(|store| {
         let store = store.borrow();
         let Some(withdrawal_id) = store
-            .notified_withdrawal_id(transaction_hash)
+            .asset_notified_withdrawal_id(asset_id, transaction_hash)
             .map_err(|_| NotifyWithdrawalError::StorageFailure)?
         else {
             return Ok(None);
@@ -695,8 +696,15 @@ fn ingest_notified_withdrawal(
             )
             .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?;
             withdrawal.last_settlement_stop_reason = Some("LedgerFeeExceedsServiceFee".to_owned());
-            let mut progress = store
-                .external_progress()
+            let mut progress = asset_context
+                .map_or_else(
+                    || store.external_progress(),
+                    |(context, _)| {
+                        store
+                            .asset_financial_state(&context.asset_id)
+                            .map(|state| state.external_progress)
+                    },
+                )
                 .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
             if finalized_checkpoint_block_number != stable_observation.block_number {
                 return Err(NotifyWithdrawalError::BaseStateMismatch);
@@ -765,8 +773,15 @@ fn ingest_notified_withdrawal(
             stable_observation.observed_at_ns,
         )
         .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?;
-        let mut progress = store
-            .external_progress()
+        let mut progress = asset_context
+            .map_or_else(
+                || store.external_progress(),
+                |(context, _)| {
+                    store
+                        .asset_financial_state(&context.asset_id)
+                        .map(|state| state.external_progress)
+                },
+            )
             .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
         if finalized_checkpoint_block_number != stable_observation.block_number {
             return Err(NotifyWithdrawalError::BaseStateMismatch);
@@ -1486,7 +1501,7 @@ pub async fn request_deposit_for_asset(
         to: Account::new(canister.as_slice().to_vec(), context.custody_subaccount)
             .map_err(|e| DepositError::Rejected(format!("{e:?}")))?,
         spender: Some(
-            Account::new(canister.as_slice().to_vec(), context.custody_subaccount)
+            Account::new(canister.as_slice().to_vec(), [0; 32])
                 .map_err(|e| DepositError::Rejected(format!("{e:?}")))?,
         ),
     };

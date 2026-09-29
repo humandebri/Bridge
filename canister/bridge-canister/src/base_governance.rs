@@ -36,10 +36,12 @@ pub enum BaseGovernanceAction {
         registration: SharedAssetRegistrationArgs,
     },
     ScheduleAssetActivation {
+        activate_global: bool,
         asset_id: Vec<u8>,
         operation_nonce: u64,
     },
     ExecuteAssetActivation {
+        activate_global: bool,
         asset_id: Vec<u8>,
         operation_nonce: u64,
     },
@@ -72,10 +74,12 @@ pub(crate) enum GovernanceAction {
         registration: SharedAssetRegistrationArgs,
     },
     ScheduleAssetActivation {
+        activate_global: bool,
         asset_id: Vec<u8>,
         operation_nonce: u64,
     },
     ExecuteAssetActivation {
+        activate_global: bool,
         asset_id: Vec<u8>,
         operation_nonce: u64,
     },
@@ -108,16 +112,20 @@ impl From<BaseGovernanceAction> for GovernanceAction {
                 Self::ExecuteAssetRegistration { registration }
             }
             BaseGovernanceAction::ScheduleAssetActivation {
+                activate_global,
                 asset_id,
                 operation_nonce,
             } => Self::ScheduleAssetActivation {
+                activate_global,
                 asset_id,
                 operation_nonce,
             },
             BaseGovernanceAction::ExecuteAssetActivation {
+                activate_global,
                 asset_id,
                 operation_nonce,
             } => Self::ExecuteAssetActivation {
+                activate_global,
                 asset_id,
                 operation_nonce,
             },
@@ -158,11 +166,13 @@ pub enum BaseGovernanceOperationKind {
         salt: Vec<u8>,
     },
     ScheduleAssetActivation {
+        activate_global: bool,
         asset_id: Vec<u8>,
         operation_id: Vec<u8>,
         salt: Vec<u8>,
     },
     ExecuteAssetActivation {
+        activate_global: bool,
         asset_id: Vec<u8>,
         operation_id: Vec<u8>,
         salt: Vec<u8>,
@@ -1766,19 +1776,23 @@ fn kind_view(kind: &storage::GovernanceTransactionKind) -> BaseGovernanceOperati
             salt: salt.to_vec(),
         },
         storage::GovernanceTransactionKind::ScheduleAssetActivation {
+            activate_global,
             asset_id,
             operation_id,
             salt,
         } => BaseGovernanceOperationKind::ScheduleAssetActivation {
+            activate_global: *activate_global,
             asset_id: asset_id.to_vec(),
             operation_id: operation_id.to_vec(),
             salt: salt.to_vec(),
         },
         storage::GovernanceTransactionKind::ExecuteAssetActivation {
+            activate_global,
             asset_id,
             operation_id,
             salt,
         } => BaseGovernanceOperationKind::ExecuteAssetActivation {
+            activate_global: *activate_global,
             asset_id: asset_id.to_vec(),
             operation_id: operation_id.to_vec(),
             salt: salt.to_vec(),
@@ -2290,17 +2304,29 @@ fn action_matches_pending(
                 && nat_u128(&registration.initial_service_fee) == Some(*initial_service_fee)
         }
         (
-            GovernanceAction::ScheduleAssetActivation { asset_id, .. },
+            GovernanceAction::ScheduleAssetActivation {
+                asset_id,
+                activate_global,
+                ..
+            },
             storage::GovernanceTransactionKind::ScheduleAssetActivation {
-                asset_id: pending, ..
+                asset_id: pending,
+                activate_global: pending_global,
+                ..
             },
         )
         | (
-            GovernanceAction::ExecuteAssetActivation { asset_id, .. },
-            storage::GovernanceTransactionKind::ExecuteAssetActivation {
-                asset_id: pending, ..
+            GovernanceAction::ExecuteAssetActivation {
+                asset_id,
+                activate_global,
+                ..
             },
-        ) => asset_id.as_slice() == pending,
+            storage::GovernanceTransactionKind::ExecuteAssetActivation {
+                asset_id: pending,
+                activate_global: pending_global,
+                ..
+            },
+        ) => asset_id.as_slice() == pending && activate_global == pending_global,
         _ => false,
     }
 }
@@ -2350,11 +2376,13 @@ fn asset_postcondition_matches(
                 && snapshot.mint.max_service_fee.get() == *max_service_fee
                 && snapshot.mint.service_fee.get() == *initial_service_fee
         }
-        storage::GovernanceTransactionKind::ExecuteAssetActivation { .. } => {
-            !snapshot.global_deposits_paused
-                && !snapshot.global_withdrawals_paused
-                && !snapshot.asset_deposits_paused
+        storage::GovernanceTransactionKind::ExecuteAssetActivation {
+            activate_global, ..
+        } => {
+            !snapshot.asset_deposits_paused
                 && !snapshot.asset_withdrawals_paused
+                && (!activate_global
+                    || (!snapshot.global_deposits_paused && !snapshot.global_withdrawals_paused))
         }
         _ => true,
     }
@@ -2498,6 +2526,18 @@ async fn encode_action(
     action: GovernanceAction,
     governance_operation_id: u64,
 ) -> Result<(storage::GovernanceTransactionKind, [u8; 20], Vec<u8>), BaseGovernanceError> {
+    if matches!(
+        action,
+        GovernanceAction::ScheduleControlPlaneRotation
+            | GovernanceAction::ExecuteControlPlaneRotation
+    ) && STORE
+        .with(|store| store.borrow().assets())
+        .map_err(|_| BaseGovernanceError::StorageFailure)?
+        .iter()
+        .any(|asset| asset.bridge_kind == crate::config::BaseBridgeKind::SharedMultiToken)
+    {
+        return Err(BaseGovernanceError::InvalidArgument);
+    }
     let (bridge, timelock, deployment_instance_id) = STORE.with(|store| {
         let config = store
             .borrow()
@@ -2602,6 +2642,7 @@ async fn encode_action(
             ))
         }
         GovernanceAction::ScheduleAssetActivation {
+            activate_global,
             asset_id,
             operation_nonce,
         } => {
@@ -2610,15 +2651,20 @@ async fn encode_action(
                 deployment_instance_id,
                 asset_id,
                 operation_nonce,
-                b"ACTIVATE",
+                if activate_global {
+                    b"GLOBAL_ACTIVATE"
+                } else {
+                    b"ACTIVATE"
+                },
             );
-            let payloads = asset_activation_payloads(asset_id);
+            let payloads = asset_activation_payloads(asset_id, activate_global);
             let arguments =
                 asset_activation_arguments(context.bridge_contract, &payloads, salt, false);
             let operation_id = keccak(&arguments);
             let timelock = address20(&context.asset.timelock_contract)?;
             Ok((
                 storage::GovernanceTransactionKind::ScheduleAssetActivation {
+                    activate_global,
                     asset_id,
                     operation_id,
                     salt,
@@ -2628,6 +2674,7 @@ async fn encode_action(
             ))
         }
         GovernanceAction::ExecuteAssetActivation {
+            activate_global,
             asset_id,
             operation_nonce,
         } => {
@@ -2636,9 +2683,13 @@ async fn encode_action(
                 deployment_instance_id,
                 asset_id,
                 operation_nonce,
-                b"ACTIVATE",
+                if activate_global {
+                    b"GLOBAL_ACTIVATE"
+                } else {
+                    b"ACTIVATE"
+                },
             );
-            let payloads = asset_activation_payloads(asset_id);
+            let payloads = asset_activation_payloads(asset_id, activate_global);
             let operation_id = keccak(&asset_activation_arguments(
                 context.bridge_contract,
                 &payloads,
@@ -2649,6 +2700,7 @@ async fn encode_action(
             let timelock = address20(&context.asset.timelock_contract)?;
             Ok((
                 storage::GovernanceTransactionKind::ExecuteAssetActivation {
+                    activate_global,
                     asset_id,
                     operation_id,
                     salt,
@@ -2995,23 +3047,29 @@ fn execute_single_calldata(target: [u8; 20], payload: &[u8], salt: [u8; 32]) -> 
     calldata
 }
 
-fn asset_activation_payloads(asset_id: [u8; 32]) -> [Vec<u8>; 2] {
+fn asset_activation_payloads(asset_id: [u8; 32], activate_global: bool) -> Vec<Vec<u8>> {
     let mut deposits = selector("unpauseAssetDepositMints(bytes32)");
     deposits.extend_from_slice(&asset_id);
     let mut withdrawals = selector("unpauseAssetWithdrawals(bytes32)");
     withdrawals.extend_from_slice(&asset_id);
-    [deposits, withdrawals]
+    let mut payloads = Vec::new();
+    if activate_global {
+        payloads.push(selector("unpauseAllDepositMints()"));
+        payloads.push(selector("unpauseAllWithdrawals()"));
+    }
+    payloads.extend([deposits, withdrawals]);
+    payloads
 }
 
 fn asset_activation_arguments(
     bridge: [u8; 20],
-    payloads: &[Vec<u8>; 2],
+    payloads: &[Vec<u8>],
     salt: [u8; 32],
     include_delay: bool,
 ) -> Vec<u8> {
     timelock_batch_arguments(
-        encode_address_array(&[bridge, bridge]),
-        encode_u128_array(&[0, 0]),
+        encode_address_array(&vec![bridge; payloads.len()]),
+        encode_u128_array(&vec![0; payloads.len()]),
         encode_bytes_array(payloads),
         salt,
         include_delay,
@@ -3020,7 +3078,7 @@ fn asset_activation_arguments(
 
 fn schedule_asset_activation_calldata(
     bridge: [u8; 20],
-    payloads: &[Vec<u8>; 2],
+    payloads: &[Vec<u8>],
     salt: [u8; 32],
 ) -> Vec<u8> {
     let mut calldata =
@@ -3031,7 +3089,7 @@ fn schedule_asset_activation_calldata(
 
 fn execute_asset_activation_calldata(
     bridge: [u8; 20],
-    payloads: &[Vec<u8>; 2],
+    payloads: &[Vec<u8>],
     salt: [u8; 32],
 ) -> Vec<u8> {
     let mut calldata = selector("executeBatch(address[],uint256[],bytes[],bytes32,bytes32)");
@@ -3216,6 +3274,40 @@ mod tests {
     }
 
     #[test]
+    fn asset_activation_explicitly_binds_global_unpause_and_retry() {
+        let asset_id = [9; 32];
+        let local = super::asset_activation_payloads(asset_id, false);
+        let global = super::asset_activation_payloads(asset_id, true);
+        assert_eq!(local.len(), 2);
+        assert_eq!(global.len(), 4);
+        assert_eq!(global[0], super::selector("unpauseAllDepositMints()"));
+        assert_eq!(global[1], super::selector("unpauseAllWithdrawals()"));
+        assert_eq!(global[2..], local);
+        let local_args = super::asset_activation_arguments([3; 20], &local, [4; 32], false);
+        let global_args = super::asset_activation_arguments([3; 20], &global, [4; 32], false);
+        assert_ne!(super::keccak(&local_args), super::keccak(&global_args));
+        for activate_global in [false, true] {
+            let pending = crate::storage::GovernanceTransactionKind::ExecuteAssetActivation {
+                asset_id,
+                activate_global,
+                operation_id: [5; 32],
+                salt: [4; 32],
+            };
+            for requested in [false, true] {
+                let action = super::GovernanceAction::ExecuteAssetActivation {
+                    asset_id: asset_id.to_vec(),
+                    activate_global: requested,
+                    operation_nonce: 0,
+                };
+                assert_eq!(
+                    super::action_matches_pending(&action, &pending),
+                    requested == activate_global
+                );
+            }
+        }
+    }
+
+    #[test]
     fn asset_governance_postconditions_reject_every_partial_or_mismatched_state() {
         use crate::storage::GovernanceTransactionKind;
 
@@ -3238,6 +3330,7 @@ mod tests {
             initial_service_fee: 10,
         };
         let activation = GovernanceTransactionKind::ExecuteAssetActivation {
+            activate_global: true,
             asset_id,
             operation_id: [5; 32],
             salt: [6; 32],
@@ -3281,6 +3374,25 @@ mod tests {
         activated.asset_deposits_paused = false;
         activated.asset_withdrawals_paused = false;
         assert!(super::asset_postcondition_matches(&activation, &activated));
+        let local_activation = GovernanceTransactionKind::ExecuteAssetActivation {
+            asset_id,
+            activate_global: false,
+            operation_id: [5; 32],
+            salt: [6; 32],
+        };
+        let mut globally_paused = activated;
+        globally_paused.global_deposits_paused = true;
+        globally_paused.global_withdrawals_paused = true;
+        assert!(super::asset_postcondition_matches(
+            &local_activation,
+            &globally_paused
+        ));
+        globally_paused.asset_deposits_paused = true;
+        assert!(!super::asset_postcondition_matches(
+            &local_activation,
+            &globally_paused
+        ));
+
         for mutate in [0, 1, 2, 3] {
             let mut partial = activated;
             match mutate {

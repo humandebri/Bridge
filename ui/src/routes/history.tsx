@@ -520,8 +520,30 @@ function HistoryPage() {
       setRetryingHash(item.hash)
       await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
       if (!item.hash) throw new Error("The Base transaction hash is unavailable.")
+      let binding = {
+        shared: item.shared,
+        contractAddress: item.contractAddress,
+        assetId: item.assetId,
+      }
+      if (item.assetId) {
+        const registered = await assets.refetch()
+        if (registered.isError) throw new Error("Registered withdrawal asset is unavailable")
+        const asset = registered.data?.find(
+          (candidate) => bytesHex(candidate.asset_id) === bytesHex(item.assetId!),
+        )
+        if (!asset) throw new Error("Registered withdrawal asset is unavailable")
+        const shared = "SharedMultiToken" in asset.bridge_kind
+        const contractAddress = bytesHex(asset.bridge_contract)
+        if (
+          (item.shared !== undefined && item.shared !== shared) ||
+          (item.contractAddress &&
+            item.contractAddress.toLowerCase() !== contractAddress.toLowerCase())
+        )
+          throw new Error("Withdrawal contract differs from the registered asset")
+        binding = { shared, contractAddress, assetId: asset.asset_id }
+      }
       const { pending, receipt, withdrawalId } = await notifyHistoryWithdrawal(
-        { ...item, hash: item.hash },
+        { ...item, ...binding, hash: item.hash },
         undefined,
         (await readBaseBlock("finalized")).number ?? 0n,
       )

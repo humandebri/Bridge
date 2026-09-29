@@ -3,6 +3,7 @@ import type { DepositView } from "@/generated/bridge.did"
 import { prepareMint, checkMintDeadline } from "./mint-preflight"
 const mocks = vi.hoisted(() => ({
   validate: vi.fn(),
+  asset: vi.fn(),
   heartbeat: vi.fn(),
   authorize: vi.fn(),
   simulate: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock("./runtime-validation", () => ({
   requireRuntimeWriteReady: (v: { ready: boolean }) => {
     if (!v.ready) throw new Error("not ready")
   },
+  validateAssetRuntime: mocks.asset,
   validateRuntime: mocks.validate,
   validateRuntimeHeartbeat: mocks.heartbeat,
 }))
@@ -70,4 +72,18 @@ it("checks_elapsed_time_before_wallet_dispatch", async () => {
   expect(() => checkMintDeadline(prepared)).not.toThrow()
   prepared.observedAt = performance.now() - 100000
   expect(() => checkMintDeadline(prepared)).toThrow("expired during preflight")
+})
+
+it("rejects_shared_mint_before_simulation_when_asset_runtime_fails", async () => {
+  mocks.asset.mockRejectedValue(new Error("asset unavailable"))
+  const record = { ...legacyRecord(), bridge_kind: { SharedMultiToken: null } } as DepositView
+  await expect(
+    prepareMint(record, "0x11", 8453, undefined, {
+      signal: new AbortController().signal,
+      check: () => {},
+      stage: () => {},
+    }),
+  ).rejects.toThrow("asset unavailable")
+  expect(mocks.authorize).not.toHaveBeenCalled()
+  expect(mocks.simulate).not.toHaveBeenCalled()
 })

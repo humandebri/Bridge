@@ -42,12 +42,15 @@ export function decodeWithdrawalDestination(
 
 interface HistoryWithdrawalNotificationTarget {
   hash: Hex
+  assetId?: Uint8Array | number[]
+  contractAddress?: Hex
+  shared?: boolean
   destinationAccount: WithdrawalDestinationAccount
 }
 
 interface HistoryWithdrawalNotificationDependencies {
   ensurePending: (value: PendingConfirmationInput) => Promise<void>
-  notify: (transactionHash: Uint8Array) => Promise<NotifyWithdrawalReceipt>
+  notify: (transactionHash: Uint8Array, assetId?: Uint8Array) => Promise<NotifyWithdrawalReceipt>
   markNotified: (value: PendingConfirmationInput, withdrawalId: Hex) => Promise<void>
   markAttempt?: typeof markPendingConfirmationNotificationAttempt
   setFailure?: typeof setPendingConfirmationNotificationFailure
@@ -58,7 +61,7 @@ export async function notifyHistoryWithdrawal(
   target: HistoryWithdrawalNotificationTarget,
   dependencies: HistoryWithdrawalNotificationDependencies = {
     ensurePending: ensurePendingWithdrawalConfirmation,
-    notify: notifyWithdrawalWithBrowserIdentity,
+    notify: (hash, assetId) => notifyWithdrawalWithBrowserIdentity(hash, undefined, assetId),
     markNotified: markPendingConfirmationNotified,
   },
   finalizedBlock = 0n,
@@ -67,10 +70,16 @@ export async function notifyHistoryWithdrawal(
   receipt: NotifyWithdrawalReceipt
   withdrawalId: Uint8Array
 }> {
+  if (target.shared && (target.assetId?.length !== 32 || !target.contractAddress))
+    throw new Error("Shared withdrawal asset binding is unavailable.")
+  const assetId = target.shared ? Uint8Array.from(target.assetId!) : undefined
   const pending: PendingConfirmationInput = {
     kind: "withdrawal",
     transactionHash: target.hash,
     owner: target.destinationAccount.owner,
+    ...(assetId
+      ? { assetId: bytesToHex(assetId), contractAddress: target.contractAddress, shared: true }
+      : {}),
   }
   await dependencies.ensurePending(pending)
   const markAttempt = dependencies.markAttempt ?? markPendingConfirmationNotificationAttempt
@@ -82,13 +91,13 @@ export async function notifyHistoryWithdrawal(
   await markAttempt(pending, "manual", finalizedBlock).catch(() => undefined)
   let receipt: NotifyWithdrawalReceipt
   try {
-    receipt = await dependencies.notify(hexToBytes(target.hash))
+    receipt = await dependencies.notify(hexToBytes(target.hash), assetId)
   } catch (error) {
     if (historyNotificationAllowsShortRetry(error)) {
       await wait(5_000)
       await markAttempt(pending, "short-retry", finalizedBlock).catch(() => undefined)
       try {
-        receipt = await dependencies.notify(hexToBytes(target.hash))
+        receipt = await dependencies.notify(hexToBytes(target.hash), assetId)
       } catch (retryError) {
         await setFailure(pending, historyNotificationFailure(retryError))
         throw retryError

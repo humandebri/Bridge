@@ -130,3 +130,42 @@ describe("withdrawal log scanning", () => {
     expect(result).toEqual(Array.from({ length: 21 }, (_, index) => `view-${index}`))
   })
 })
+
+it("preserves_shared_asset_binding_through_history_notification", async () => {
+  const assetId = new Uint8Array(32).fill(0x12)
+  const hash = `0x${"34".repeat(32)}` as const
+  const contractAddress = `0x${"56".repeat(20)}` as const
+  const withdrawalId = new Uint8Array(32).fill(0x78)
+  const ensurePending = vi.fn(async () => {})
+  const notify = vi.fn(async () => ({
+    Ingested: { withdrawal_id: withdrawalId, finalized_checkpoint_block_number: 1n },
+  }))
+  const markNotified = vi.fn(async () => {})
+  const result = await notifyHistoryWithdrawal(
+    {
+      hash,
+      assetId,
+      contractAddress,
+      shared: true,
+      destinationAccount: { owner: "aaaaa-aa", subaccount: new Uint8Array(32) },
+    },
+    { ensurePending, notify, markNotified, markAttempt: vi.fn(async () => {}) },
+  )
+  expect(notify).toHaveBeenCalledWith(expect.any(Uint8Array), assetId)
+  expect(result.pending).toMatchObject({
+    assetId: bytesToHex(assetId),
+    contractAddress,
+    shared: true,
+  })
+  await expect(
+    notifyHistoryWithdrawal(
+      {
+        hash,
+        shared: true,
+        destinationAccount: { owner: "aaaaa-aa", subaccount: new Uint8Array(32) },
+      },
+      { ensurePending, notify, markNotified },
+    ),
+  ).rejects.toThrow("binding")
+  expect(notify).toHaveBeenCalledTimes(1)
+})

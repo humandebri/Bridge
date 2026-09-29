@@ -148,7 +148,7 @@ beforeEach(() => {
   mocks.readPending.mockImplementation(() => mocks.pendingEntries)
   mocks.getReceipt.mockResolvedValue({ status: "success", blockNumber: 10n, blockHash })
   mocks.getBlock.mockResolvedValue({ number: 9n, hash: blockHash })
-  mocks.receiptDetails.mockResolvedValue({ id: new Uint8Array(32).fill(7) })
+  mocks.receiptDetails.mockResolvedValue({ id: 1n, icWithdrawalId: withdrawalId })
   mocks.revertQuorum.mockResolvedValue(true)
   mocks.removePending.mockResolvedValue(undefined)
   mocks.markNotified.mockImplementation(

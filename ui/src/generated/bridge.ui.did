@@ -178,7 +178,11 @@ type AutomaticProgressState = variant {
 type AutomaticProgressView = record { state : AutomaticProgressState };
 type BaseBridgeKind = variant { SharedMultiToken; LegacySingleToken };
 type BaseGovernanceAction = variant {
-  ExecuteAssetActivation : record { operation_nonce : nat64; asset_id : blob };
+  ExecuteAssetActivation : record {
+    operation_nonce : nat64;
+    asset_id : blob;
+    activate_global : bool;
+  };
   ExecuteControlPlaneRotation;
   PauseDepositMints;
   ExecuteAssetRegistration : record {
@@ -192,7 +196,11 @@ type BaseGovernanceAction = variant {
   PauseAssetWithdrawals : record { asset_id : blob };
   SetServiceFee : record { value : nat };
   PauseWithdrawals;
-  ScheduleAssetActivation : record { operation_nonce : nat64; asset_id : blob };
+  ScheduleAssetActivation : record {
+    operation_nonce : nat64;
+    asset_id : blob;
+    activate_global : bool;
+  };
   ScheduleControlPlaneRotation;
   CancelPendingTimelock;
 };
@@ -224,6 +232,7 @@ type BaseGovernanceOperationKind = variant {
     salt : blob;
     operation_id : blob;
     asset_id : blob;
+    activate_global : bool;
   };
   ExecuteControlPlaneRotation : record {
     independent_canceller : blob;
@@ -255,6 +264,7 @@ type BaseGovernanceOperationKind = variant {
     salt : blob;
     operation_id : blob;
     asset_id : blob;
+    activate_global : bool;
   };
   ScheduleActivation : ActivationOperationView;
   ScheduleControlPlaneRotation : record {
