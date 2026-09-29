@@ -1030,6 +1030,11 @@ class SepoliaEvidenceTests(unittest.TestCase):
         self.assertEqual(
             set(schema["properties"]["binding"]["required"]), set(binding)
         )
+        self.assertEqual(
+            schema["properties"]["binding"]["properties"]
+            ["stable_schema_version"]["const"],
+            sepolia_e2e.CURRENT_STABLE_SCHEMA,
+        )
 
 
 if __name__ == "__main__":
