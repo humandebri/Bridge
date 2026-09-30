@@ -8577,6 +8577,7 @@ fn expected_sns_wasm_chunks(
 fn validate_sns_upgrade_action(
     action: &SnsProposalAction,
     bridge: Principal,
+    expected_store: Principal,
     expected_module_sha256: &str,
     expected_chunk_hashes: &[Vec<u8>],
 ) -> Result<(), String> {
@@ -8592,11 +8593,11 @@ fn validate_sns_upgrade_action(
         || action.mode != Some(3)
         || action.canister_upgrade_arg.as_deref() != Some(&[68, 73, 68, 76, 0, 0])
         || action.canister_upgrade_options.is_some()
-        || chunked.store_canister_id != Some(bridge)
+        || chunked.store_canister_id != Some(expected_store)
         || chunked.chunk_hashes_list != expected_chunk_hashes
         || !hex(&chunked.wasm_module_hash).eq_ignore_ascii_case(expected_module_sha256)
     {
-        return Err("SNS upgrade proposal differs from the reviewed same-Wasm action".into());
+        return Err("SNS upgrade proposal differs from the reviewed upgrade action".into());
     }
     Ok(())
 }
@@ -8648,6 +8649,7 @@ fn verify_sns_upgrade_live(
     let expected_chunk_hashes = expected_sns_wasm_chunks(wasm_path, expected_module_sha256)?;
     validate_sns_upgrade_action(
         &action,
+        bridge,
         bridge,
         expected_module_sha256,
         &expected_chunk_hashes,
@@ -8728,10 +8730,17 @@ fn verify_production_sns_migration_live(
     target_sha256: &str,
     wasm_path: &Path,
     proposal_id: u64,
+    reviewed_store: Principal,
 ) -> Result<(), String> {
     let profile: Profile = read_json(profile_path)?;
     let bridge =
         Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    if reviewed_store == bridge
+        || reviewed_store == Principal::anonymous()
+        || reviewed_store == Principal::management_canister()
+    {
+        return Err("SNS migration requires a reviewed external Wasm store canister".into());
+    }
     if profile.bridge_canister_id != PRODUCTION_BRIDGE_CANISTER
         || profile.ic_host != "https://icp-api.io"
     {
@@ -8765,6 +8774,7 @@ fn verify_production_sns_migration_live(
     validate_sns_upgrade_action(
         &action,
         bridge,
+        reviewed_store,
         target_sha256,
         &expected_sns_wasm_chunks(wasm_path, target_sha256)?,
     )?;
@@ -8788,8 +8798,8 @@ fn run() -> Result<(), String> {
         Some("capture-production-sns-migration-source") if args.len() == 5 => {
             capture_production_sns_migration_source(Path::new(&args[2]), &args[3], Path::new(&args[4]))?;
         }
-        Some("verify-production-sns-migration-live") if args.len() == 7 => {
-            verify_production_sns_migration_live(Path::new(&args[2]), Path::new(&args[3]), &args[4], Path::new(&args[5]), args[6].parse().map_err(|_| "invalid SNS migration proposal ID")?)?;
+        Some("verify-production-sns-migration-live") if args.len() == 8 => {
+            verify_production_sns_migration_live(Path::new(&args[2]), Path::new(&args[3]), &args[4], Path::new(&args[5]), args[6].parse().map_err(|_| "invalid SNS migration proposal ID")?, Principal::from_text(&args[7]).map_err(|_| "invalid reviewed SNS Wasm store canister ID")?)?;
         }
         Some("verify-production-current-state") if args.len() == 6 => {
             verify_production_current_state(
@@ -9182,7 +9192,7 @@ fn run() -> Result<(), String> {
                 println!("epoch={} operational_config_sha256={}", epoch, operational_epoch_digest(response.trim(), ledger_fee, epoch)?);
             }
         }
-        _ => return Err("usage: bridge-profile <command> <arguments>; production commands: verify-production-current-state, execute-production-canister-upgrade, execute-production-root-addition, verify-sns-registration-live, verify-sns-upgrade-live".into()),
+        _ => return Err("usage: bridge-profile <command> <arguments>; production commands: capture-production-sns-migration-source, verify-production-sns-migration-live, verify-production-current-state, execute-production-canister-upgrade, execute-production-root-addition, verify-sns-registration-live, verify-sns-upgrade-live".into()),
     }
     Ok(())
 }
@@ -9251,12 +9261,14 @@ mod tests {
         assert!(validate_sns_upgrade_action(
             &upgrade(bridge, chunks.clone(), vec![68, 73, 68, 76, 0, 0]),
             bridge,
+            bridge,
             &module_sha256,
             &chunks,
         )
         .is_ok());
         assert!(validate_sns_upgrade_action(
             &upgrade(other, chunks.clone(), vec![68, 73, 68, 76, 0, 0]),
+            bridge,
             bridge,
             &module_sha256,
             &chunks,
@@ -9265,6 +9277,7 @@ mod tests {
         assert!(validate_sns_upgrade_action(
             &upgrade(bridge, vec![vec![0x44; 32]], vec![68, 73, 68, 76, 0, 0]),
             bridge,
+            bridge,
             &module_sha256,
             &chunks,
         )
@@ -9272,8 +9285,45 @@ mod tests {
         assert!(validate_sns_upgrade_action(
             &upgrade(bridge, chunks.clone(), Vec::new()),
             bridge,
+            bridge,
             &module_sha256,
             &chunks,
+        )
+        .is_err());
+
+        let store = Principal::self_authenticating([0x45; 32]);
+        let mut migration = upgrade(bridge, chunks.clone(), vec![68, 73, 68, 76, 0, 0]);
+        if let SnsProposalAction::UpgradeSnsControlledCanister(action) = &mut migration {
+            action
+                .chunked_canister_wasm
+                .as_mut()
+                .unwrap()
+                .store_canister_id = Some(store);
+        }
+        assert!(
+            validate_sns_upgrade_action(&migration, bridge, store, &module_sha256, &chunks).is_ok()
+        );
+        assert!(
+            validate_sns_upgrade_action(&migration, bridge, bridge, &module_sha256, &chunks)
+                .is_err()
+        );
+        assert!(
+            validate_sns_upgrade_action(&migration, bridge, other, &module_sha256, &chunks)
+                .is_err()
+        );
+        assert!(
+            validate_sns_upgrade_action(&migration, other, store, &module_sha256, &chunks).is_err()
+        );
+        assert!(
+            validate_sns_upgrade_action(&migration, bridge, store, &"55".repeat(32), &chunks)
+                .is_err()
+        );
+        assert!(validate_sns_upgrade_action(
+            &migration,
+            bridge,
+            store,
+            &module_sha256,
+            &[vec![0x66; 32]]
         )
         .is_err());
     }

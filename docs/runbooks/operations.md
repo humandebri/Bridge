@@ -333,16 +333,29 @@ The legacy personal-controller upgrade driver does not authorize this path.
    and storage integrity. It reruns the complete proof gate and builds the
    production Wasm twice from clean HEAD. The current state must remain identical
    through validation. The evidence binds source revision/tree and both modules.
-3. Review the exact proposal: fixed Bridge Canister ID, upgrade mode, empty
-   upgrade argument, candidate Wasm hash, and chunk hashes. Immediately before
+3. Prepare a dedicated Wasm store canister on the **same subnet as the Bridge**
+   under separately approved operational authorization. Its controllers must
+   include the uploader and KINIC SNS Root, which executes `install_chunked_code`.
+   Do not change the Bridge controllers or attempt to upload chunks to the
+   Root-only Bridge. Upload the twice-reproduced Wasm in ordered 1,000,000-byte
+   chunks, verify every returned SHA-256, and retain the reviewed store ID and
+   controller/subnet evidence. Keep the store and chunks available until final
+   target verification; store cleanup requires separate authorization.
+   See the [management canister specification](https://docs.internetcomputer.org/references/ic-interface-spec/management-canister/)
+   for the store access and subnet requirements, and the [SNS implementation](https://github.com/dfinity/ic/blob/master/rs/sns/governance/src/governance.rs)
+   for Governance forwarding this action to Root.
+
+   Review the exact proposal: fixed Bridge Canister ID, reviewed external store
+   Canister ID, upgrade mode, empty upgrade argument, candidate Wasm hash, and
+   ordered chunk hashes. Immediately before
    submission recapture the certified v36 source using
    `bridge-profile capture-production-sns-migration-source PROFILE SOURCE_HASH ABS`
    and compare that snapshot with the reviewed evidence's `snapshot`. A change
    requires repeating review/validation. Proposal submission is a separate
    explicitly approved governance action; the check command never submits it.
 4. After execution, run `bridge-profile verify-production-sns-migration-live
-   PROFILE EVIDENCE TARGET_HASH WASM PROPOSAL_ID`. It verifies the executed SNS
-   action and chunk hashes, certified target module/Root controllers, live v37
+   PROFILE EVIDENCE TARGET_HASH WASM PROPOSAL_ID REVIEWED_STORE_ID`. It verifies the executed SNS
+   action, exact reviewed store ID and chunk hashes, certified target module/Root controllers, live v37
    readiness, and preservation of the recorded state. The only allowed snapshot
    difference is module hash plus v36→v37 RuntimeBinding schema and a valid KINIC
    registry binding. Activity that changes other observed state fails this strict

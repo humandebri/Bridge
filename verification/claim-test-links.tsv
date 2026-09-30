@@ -578,3 +578,4 @@ schema_v37_migration	tools/bridge-profile/src/main.rs	v36_migration_is_explicit_
 service_fee_maximum	ui/src/lib/mint-authorization.test.ts	honors_signed_shared_fee_after_current_fee_change
 asset_registry_binding	ui/recovery-worker/index.test.ts	uses_registered_shared_token_and_bridge_for_recovery
 asset_registry_binding	ui/recovery-worker/index.test.ts	rejects_unavailable_or_conflicting_registered_asset
+schema_v37_migration	tools/bridge-profile/src/main.rs	sns_handover_actions_bind_exact_target_and_chunks
