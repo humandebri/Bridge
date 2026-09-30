@@ -335,7 +335,9 @@ The legacy personal-controller upgrade driver does not authorize this path.
    through validation. The evidence binds source revision/tree and both modules.
 3. Prepare a dedicated Wasm store canister on the **same subnet as the Bridge**
    under separately approved operational authorization. Its controllers must
-   include the uploader and KINIC SNS Root, which executes `install_chunked_code`.
+   include the uploader, KINIC SNS Governance (which validates `stored_chunks`
+   before accepting the proposal), and KINIC SNS Root (which executes
+   `install_chunked_code`).
    Do not change the Bridge controllers or attempt to upload chunks to the
    Root-only Bridge. Upload the twice-reproduced Wasm in ordered 1,000,000-byte
    chunks, verify every returned SHA-256, and retain the reviewed store ID and
@@ -343,7 +345,8 @@ The legacy personal-controller upgrade driver does not authorize this path.
    target verification; store cleanup requires separate authorization.
    See the [management canister specification](https://docs.internetcomputer.org/references/ic-interface-spec/management-canister/)
    for the store access and subnet requirements, and the [SNS implementation](https://github.com/dfinity/ic/blob/master/rs/sns/governance/src/governance.rs)
-   for Governance forwarding this action to Root.
+   for Governance forwarding this action to Root. The [proposal validator](https://github.com/dfinity/ic/blob/master/rs/sns/governance/src/proposal.rs)
+   requires both Governance and Root to control the store.
 
    Review the exact proposal: fixed Bridge Canister ID, reviewed external store
    Canister ID, upgrade mode, empty upgrade argument, candidate Wasm hash, and
