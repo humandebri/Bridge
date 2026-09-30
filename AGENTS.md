@@ -4,9 +4,10 @@
 
 - The production Bridge Canister runs stable schema v36. Operational authorization is based on certified current IC state, not a historical upgrade chain: certified module hash and controllers, signature-verified queries, Activated/unpaused state, RuntimeBinding, operational configuration, storage integrity, and complete history indexes must agree in one observation.
 - A production upgrade must bind the certified current module immediately before submission and install only a Wasm reproduced twice from the clean current HEAD after the complete proof gate. A module or state change between review and submission fails closed.
-- Production UI authorization requires the same certified v36 current state and the reviewed UI RPC configuration. v35, v37, disconnected or mixed-version observations, aliases, shims, and runtime fallbacks must fail closed.
+- Production UI authorization for this v37 release requires the certified post-migration v37 current state and the reviewed UI RPC configuration. v35, v36, disconnected or mixed-version observations, aliases, shims, and runtime fallbacks must fail closed.
 - For formats and APIs that have not been deployed, replace obsolete shapes directly and update all callers, tests, fixtures, and documentation in the same change. Do not add compatibility shims or fallbacks unless the user explicitly requests them.
-- Bind the production UI runtime profile to the verified upgrade terminal and reviewed UI RPC configuration. Require completed history indexes and live v36 evidence before publishing.
+- Bind the production UI runtime profile to the verified upgrade terminal and reviewed UI RPC configuration. Require completed history indexes and live v37 evidence before publishing.
+- Accept deployed v36 only as the explicit SNS Root-only migration source. Keep predecessor decoding confined to that procedure; verify the approved module and preserved state before submission and the executed SNS upgrade and v37 registry binding after execution.
 
 ## RPC chain binding review policy
 

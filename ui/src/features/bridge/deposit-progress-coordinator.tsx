@@ -1,5 +1,6 @@
 import { useDepositRefund, depositRefundProgress } from "./use-deposit-refund"
 import { Principal } from "@icp-sdk/core/principal"
+import { hexToBytes, bytesToHex } from "viem"
 import { useCallback, useEffect, useState, useRef } from "react"
 import { toast } from "sonner"
 import type { DepositView } from "@/generated/bridge.did"
@@ -30,7 +31,9 @@ export function DepositProgressCoordinator() {
     [rawUpdate],
   )
   const identity = progress?.direction === "deposit" ? progress.deposit : undefined
-  const identityKey = identity ? `${identity.owner}:${identity.ownerSequence}` : undefined
+  const identityKey = identity
+    ? `${progress?.assetId ?? "kinic"}:${identity.depositId ?? `${identity.owner}:${identity.ownerSequence}`}`
+    : undefined
   const [observation, setObservation] = useState<{ identityKey: string; record: DepositView }>()
   const record =
     observation && observation.identityKey === identityKey ? observation.record : undefined
@@ -55,17 +58,32 @@ export function DepositProgressCoordinator() {
       if (!active || running) return
       running = true
       try {
+        if (progress.shared && !progress.assetId) throw new Error("Shared deposit asset is missing")
         const actor = await createBridgeActor(
           deploymentProfile.icHost,
           deploymentProfile.bridgeCanisterId as string,
         )
-        const result = await actor.get_deposit_by_owner_sequence(
-          Principal.fromText(identity.owner),
-          BigInt(identity.ownerSequence),
-        )
+        const result = identity.depositId
+          ? await actor.get_deposit(hexToBytes(identity.depositId))
+          : progress.shared
+            ? await actor.get_asset_deposit_by_owner_sequence(
+                hexToBytes(progress.assetId!),
+                Principal.fromText(identity.owner),
+                BigInt(identity.ownerSequence),
+              )
+            : await actor.get_deposit_by_owner_sequence(
+                Principal.fromText(identity.owner),
+                BigInt(identity.ownerSequence),
+              )
         if (!active || !result[0]) return
         const record = result[0]
-        setObservation({ identityKey: `${identity.owner}:${identity.ownerSequence}`, record })
+        if (
+          progress.assetId &&
+          bytesToHex(Uint8Array.from(record.asset_id)).toLowerCase() !==
+            progress.assetId.toLowerCase()
+        )
+          throw new Error("Deposit asset does not match the active transfer")
+        setObservation({ identityKey: identityKey!, record })
         const continuation = depositContinuation(record)
         if ("Minted" in record.state) {
           updateProgress(progress.id, {

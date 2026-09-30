@@ -45,6 +45,8 @@ export async function saveDepositIntent(intent: DurableDepositIntent): Promise<v
           baseRecipient: hex(intent.call.baseRecipient),
           grossAmount: intent.call.grossAmount.toString(),
           maxServiceFee: intent.call.maxServiceFee.toString(),
+          assetId: intent.call.assetId ? hex(intent.call.assetId) : undefined,
+          ledgerCanisterId: intent.call.ledgerCanisterId,
           state: intent.state,
         }),
       )
@@ -88,6 +90,8 @@ interface StoredIntent {
   baseRecipient: string
   grossAmount: string
   maxServiceFee: string
+  assetId?: string
+  ledgerCanisterId?: string
   state: DurableDepositIntentState
 }
 
@@ -108,6 +112,9 @@ function isStoredIntent(value: unknown): value is StoredIntent {
     /^\d+$/.test(item.grossAmount) &&
     typeof item.maxServiceFee === "string" &&
     /^\d+$/.test(item.maxServiceFee) &&
+    (item.assetId === undefined ||
+      (typeof item.assetId === "string" && /^0x[0-9a-fA-F]{64}$/.test(item.assetId))) &&
+    (item.ledgerCanisterId === undefined || typeof item.ledgerCanisterId === "string") &&
     ["prepared", "submitted", "accepted"].includes(String(item.state))
   )
 }
@@ -124,6 +131,8 @@ function fromStored(value: StoredIntent): DurableDepositIntent {
       baseRecipient: bytes(value.baseRecipient),
       grossAmount: BigInt(value.grossAmount),
       maxServiceFee: BigInt(value.maxServiceFee),
+      assetId: value.assetId ? bytes(value.assetId) : undefined,
+      ledgerCanisterId: value.ledgerCanisterId,
     },
     state: value.state,
   }
@@ -141,6 +150,10 @@ function cloneIntent(intent: DurableDepositIntent): DurableDepositIntent {
   return {
     ...intent,
     account: { ...intent.account, subaccount: intent.account.subaccount?.slice() },
-    call: { ...intent.call, baseRecipient: intent.call.baseRecipient.slice() },
+    call: {
+      ...intent.call,
+      assetId: intent.call.assetId?.slice(),
+      baseRecipient: intent.call.baseRecipient.slice(),
+    },
   }
 }

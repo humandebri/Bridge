@@ -766,6 +766,40 @@ describe("Phase 3 PocketIC saga", () => {
     await pic?.tearDown();
   });
 
+  async function sns_additional_asset_registration_rejects_unauthorized_calls_and_replays() {
+    const { bridge, init } = await setup();
+    const runtime: any = await bridge.actor.get_runtime_binding();
+    const asset = {
+      asset_id: new Uint8Array(32).fill(44), name: "Additional token", symbol: "ADD", decimals: 8,
+      ledger_canister_id: Principal.selfAuthenticating(new Uint8Array(32).fill(90)),
+      index_canister_id: Principal.selfAuthenticating(new Uint8Array(32).fill(91)), ledger_fee: 10_000n,
+      base_chain_id: init.base_chain_id, deployment_instance_id: init.deployment_instance_id,
+      bridge_contract: new Uint8Array(20).fill(45), token_contract: new Uint8Array(20).fill(46),
+      timelock_contract: init.timelock_contract,
+      expected_timelock_minimum_delay_seconds: init.expected_timelock_minimum_delay_seconds,
+      expected_bridge_runtime_sha256: new Uint8Array(32).fill(47), expected_token_runtime_sha256: new Uint8Array(32).fill(48),
+      expected_bridge_signer: runtime.expected_bridge_signer, bridge_kind: { SharedMultiToken: null }, lifecycle: { Prepared: null },
+    };
+    const proposal = { bridge_canister_id: bridge.canisterId, deployment_instance_id: runtime.deployment_instance_id,
+      operational_config_sha256: runtime.operational_config_sha256, expires_at_ns: BigInt(await pic!.getTime()) * 1_000_000n + 86_400_000_000_000n,
+      action: { RegisterAsset: asset } };
+    expect(await bridge.actor.validate_sns_manage_asset(proposal)).toHaveProperty("Ok");
+    bridge.actor.setPrincipal(Principal.anonymous());
+    await expect(bridge.actor.sns_manage_asset(proposal)).rejects.toThrow(/Only SNS Governance/);
+    expect(await bridge.actor.get_asset(asset.asset_id)).toHaveProperty("Ok", []);
+    bridge.actor.setPrincipal(init.governance_principal);
+    await bridge.actor.sns_manage_asset(proposal);
+    expect(await bridge.actor.get_asset(asset.asset_id)).toHaveProperty("Ok");
+    await expect(bridge.actor.sns_manage_asset(proposal)).rejects.toThrow();
+    const wrongDomain = { ...proposal, bridge_canister_id: Principal.anonymous() };
+    expect(await bridge.actor.validate_sns_manage_asset(wrongDomain)).toHaveProperty("Err");
+    const forbidden = { ...proposal, action: { PrepareBase: { expected_operation_id: 0n, action: { PauseDepositMints: null } } } };
+    expect(await bridge.actor.validate_sns_manage_asset(forbidden)).toHaveProperty("Err");
+    const stale = { ...proposal, action: { RefreshRuntime: { asset_id: asset.asset_id, expected_observed_at_ns: [1n] } } };
+    expect(await bridge.actor.validate_sns_manage_asset(stale)).toHaveProperty("Err");
+  }
+  it("sns additional asset registration rejects unauthorized calls and replays", sns_additional_asset_registration_rejects_unauthorized_calls_and_replays);
+
   async function persists_one_idempotent_Deposit_through_ledger_pull_Mint_Authorization_and_finalized_exact_Mint_evidence() {
     const { bridge, ledger, evm } = await setup();
 
@@ -3672,7 +3706,6 @@ describe("Phase 3 PocketIC saga", () => {
     const { bridge, evm, runtimePrincipal } = await setup(true, {}, schema36BridgeWasm);
     const deposit: any = await requestDefaultDeposit(bridge);
     expect(deposit).toHaveProperty("Ok.deposit_id");
-    expect(await mintAuthorizedDeposit(bridge, evm, deposit.Ok.deposit_id)).toHaveProperty("Ok");
     const statusBefore: any = await (bridge.actor as any).get_bridge_status();
     const historyBefore: any = await (bridge.actor as any).list_deposit_ids({
       owner: runtimePrincipal,
@@ -3685,7 +3718,6 @@ describe("Phase 3 PocketIC saga", () => {
     await upgradeBridge(bridge);
 
     const runtimeAfter: any = await (bridge.actor as any).get_runtime_binding();
-    const statusAfter: any = await (bridge.actor as any).get_bridge_status();
     const historyAfter: any = await (bridge.actor as any).list_deposit_ids({
       owner: runtimePrincipal,
       before_cursor: [],
@@ -3700,8 +3732,45 @@ describe("Phase 3 PocketIC saga", () => {
     expect(assetsAfter.Ok[0].ledger_canister_id.toText()).toBe(runtimeAfter.ledger_canister_id.toText());
     expect(historyAfter).toEqual(historyBefore);
     expect((await (bridge.actor as any).get_deposit(deposit.Ok.deposit_id))[0]).toBeDefined();
+    const authorization = await awaitMintAuthorization(bridge, deposit.Ok.deposit_id);
+    const statusAfter: any = await (bridge.actor as any).get_bridge_status();
     expect(statusAfter.mint_authorization_epoch).toBe(statusBefore.mint_authorization_epoch);
-    expect(statusAfter.counts).toEqual(statusBefore.counts);
+    const {
+      reserved_deposit_mint_amount: reservedAmountAfter,
+      reserved_deposit_mint_operations: reservedOperationsAfter,
+      ...stableCountsAfter
+    } = statusAfter.counts;
+    const {
+      reserved_deposit_mint_amount: reservedAmountBefore,
+      reserved_deposit_mint_operations: reservedOperationsBefore,
+      ...stableCountsBefore
+    } = statusBefore.counts;
+    expect(stableCountsAfter).toEqual(stableCountsBefore);
+    expect([reservedAmountBefore, reservedOperationsBefore]).toEqual([0n, 0n]);
+    expect(reservedOperationsAfter).toBe(1n);
+    expect(reservedAmountAfter).toBe(authorization.gross_amount - authorization.charged_service_fee);
+    const transactionHash = new Uint8Array(32).fill(0x46);
+    await evm.actor.set_observed_transaction(
+      transactionHash,
+      authorization.verifying_contract,
+      new Uint8Array(20).fill(0x77),
+      authorization.finalized_block_number,
+    );
+    await evm.actor.set_processed_deposit(true);
+    await evm.actor.set_mint_log([{
+      deposit_id: authorization.deposit_id,
+      recipient: authorization.recipient,
+      authorization_digest: authorization.digest,
+      gross_amount: authorization.gross_amount,
+      charged_service_fee: authorization.charged_service_fee,
+      minted_amount: authorization.gross_amount - authorization.charged_service_fee,
+      transaction_hash: transactionHash,
+    }]);
+    expect(await (bridge.actor as any).notify_deposit_mint({
+      deposit_id: deposit.Ok.deposit_id,
+      transaction_hash: transactionHash,
+    })).toHaveProperty("Ok.Recorded");
+    expect(phaseName((await bridge.actor.get_deposit(deposit.Ok.deposit_id))[0].state)).toBe("Minted");
   }
 
   it(

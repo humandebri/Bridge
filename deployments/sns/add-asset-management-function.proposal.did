@@ -1,0 +1,17 @@
+(record {
+  title = "Enable Governance Management of Additional Bridge Assets";
+  url = "https://github.com/humandebri/Bridge/pull/128";
+  summary = "## Overview\nAllow KINIC SNS Governance to register and manage additional IC–Base Bridge assets through reviewed proposals.\n\n## Changes\nRegister function 1009 with the existing Bridge canister. Its validator binds the canister, deployment instance, current operational configuration, admission deadline, asset and operation identity. Execution rejects failed calls rather than replying with an error result. Base transactions remain subject to Timelock, separate relay and Finalized confirmation.\n\nThis proposal registers the management function only. It does not register or activate a token. The Bridge upgrade exposing these methods must have executed and been verified first.";
+  action = opt variant { AddGenericNervousSystemFunction = record {
+    id = 1009 : nat64;
+    name = "Manage additional IC–Base Bridge assets";
+    description = opt "Register reviewed assets, refresh asset runtime attestations, and prepare asset-specific Base governance transactions.";
+    function_type = opt variant { GenericNervousSystemFunction = record {
+      target_canister_id = opt principal "lb5i5-ziaaa-aaaar-qcgwq-cai";
+      target_method_name = opt "sns_manage_asset";
+      validator_canister_id = opt principal "lb5i5-ziaaa-aaaar-qcgwq-cai";
+      validator_method_name = opt "validate_sns_manage_asset";
+      topic = opt variant { DappCanisterManagement };
+    } };
+  } };
+})

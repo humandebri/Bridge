@@ -445,14 +445,21 @@ async fn recover_one_funding_attempt() {
     else {
         return;
     };
-    let config = STORE.with(|store| store.borrow().config()).ok().flatten();
-    let Some(config) = config else {
-        mark_fault("missing funding reconciliation config");
+    let context = STORE.with(|store| {
+        crate::multi_asset::AssetExecutionContext::for_record(
+            &store.borrow(),
+            crate::storage::RecordAssetKind::DepositFundingAttempt,
+            &current.intent.deposit_id,
+            true,
+        )
+    });
+    let Ok(context) = context else {
+        mark_fault("missing funding reconciliation asset binding");
         return;
     };
     match crate::ledger::reconcile_step(
-        config.ledger_canister_id,
-        config.index_canister_id,
+        context.asset.ledger_canister_id,
+        context.asset.index_canister_id,
         progress.as_ref().clone(),
     )
     .await
@@ -479,7 +486,7 @@ async fn recover_one_funding_attempt() {
             }
         }
         crate::ledger::ReconciliationOutcome::Succeeded { block_index } => {
-            if crate::api::promote_funding_success(&current, block_index, &config).is_err() {
+            if crate::api::promote_funding_success(&current, block_index, &context.root).is_err() {
                 mark_fault("failed to promote reconciled funding");
             } else {
                 arm();

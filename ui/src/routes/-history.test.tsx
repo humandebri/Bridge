@@ -19,6 +19,7 @@ import { DepositActivityRow, Route, type WithdrawalHistoryData } from "./history
 
 const mocks = vi.hoisted(() => ({
   actor: {
+    list_assets: vi.fn(),
     list_deposit_ids: vi.fn(),
     list_nonterminal_deposit_refs: vi.fn(),
     get_deposit: vi.fn(),
@@ -67,6 +68,7 @@ beforeEach(() => {
     recorded: false,
   })
   mocks.block.mockResolvedValue({ timestamp: 1_000n })
+  mocks.actor.list_assets.mockResolvedValue({ Ok: [] })
   mocks.actor.list_deposit_ids.mockResolvedValue({
     Ok: {
       deposit_ids: [new Uint8Array(32).fill(1)],
@@ -133,6 +135,9 @@ describe("History refresh", () => {
 
   it("refreshes an older pending payout without changing the pagination cursor", async () => {
     const view = (tag: number, paid: boolean): WithdrawalView => ({
+      asset_id: new Uint8Array(32).fill(1),
+      bridge_kind: { LegacySingleToken: null },
+      base_withdrawal_id: [],
       withdrawal_id: new Uint8Array(32).fill(tag),
       amount: 100n,
       amount_out: 90n,
@@ -288,6 +293,9 @@ function depositItem(
   reason: SettlementStopReason,
 ): Extract<ActivityItem, { direction: "to-base" }> {
   const deposit: DepositView = {
+    asset_id: new Uint8Array(32).fill(1),
+    bridge_kind: { LegacySingleToken: null },
+    asset_authorization_epoch: [],
     base_recipient: new Uint8Array(20).fill(3),
     deposit_id: new Uint8Array(32).fill(1),
     quote: [{ net_amount: 90n, service_fee: 10n }],

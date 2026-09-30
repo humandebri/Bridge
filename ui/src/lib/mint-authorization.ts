@@ -1,8 +1,11 @@
 import { bytesToHex, hashTypedData, recoverAddress, type Address, type Hex } from "viem"
 import type { DepositView, MintAuthorizationView } from "@/generated/bridge.did"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
+import { multiTokenBridgeAbi } from "@/generated/abi/multitokenbridge.generated"
 import { deploymentProfile } from "@/config/profile"
 import { basePublicClient } from "@/lib/evm/client"
+import { createBridgeActor } from "@/lib/ic/bridge"
+import { runtimeBytecodeSha256 } from "@/lib/runtime-bytecode-hash"
 import type { FinalizedRuntimeObservation } from "@/lib/runtime-validation"
 import {
   hasCanonicalMintAuthorizationDeadline,
@@ -21,6 +24,20 @@ export const mintAuthorizationTypes = {
   ],
 } as const
 
+export const sharedMintAuthorizationTypes = {
+  MintAuthorization: [
+    { name: "assetId", type: "bytes32" },
+    { name: "depositId", type: "bytes32" },
+    { name: "recipient", type: "address" },
+    { name: "grossAmount", type: "uint256" },
+    { name: "maxServiceFee", type: "uint256" },
+    { name: "chargedServiceFee", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+    { name: "globalEpoch", type: "uint256" },
+    { name: "assetEpoch", type: "uint256" },
+  ],
+} as const
+
 export interface ContractMintAuthorization {
   depositId: Hex
   recipient: Address
@@ -32,12 +49,26 @@ export interface ContractMintAuthorization {
 }
 
 export interface ValidatedMintAuthorization {
-  authorization: ContractMintAuthorization
+  authorization: ContractMintAuthorization | SharedContractMintAuthorization
+  shared: boolean
+  bridgeAddress: Address
   signature: Hex
   digest: Hex
   recipient: Address
   signer: Address
   latestBlockTimestamp: bigint
+}
+
+export interface SharedContractMintAuthorization {
+  assetId: Hex
+  depositId: Hex
+  recipient: Address
+  grossAmount: bigint
+  maxServiceFee: bigint
+  chargedServiceFee: bigint
+  deadline: bigint
+  globalEpoch: bigint
+  assetEpoch: bigint
 }
 
 function assertMintAuthorizationContractHorizon(
@@ -101,10 +132,24 @@ export async function validateMintAuthorization(
     throw new Error("Mint authorization issue time and deadline are inconsistent")
   }
 
-  const configuredContract = deploymentProfile.bridgeAddress as Address
+  const shared = "SharedMultiToken" in record.bridge_kind
+  const registeredAsset = shared
+    ? await (async () => {
+        const actor = await createBridgeActor(
+          deploymentProfile.icHost,
+          deploymentProfile.bridgeCanisterId as string,
+        )
+        const result = await actor.get_asset(Uint8Array.from(record.asset_id))
+        if ("Err" in result || !result.Ok[0]) throw new Error("Registered asset is unavailable")
+        return result.Ok[0]
+      })()
+    : undefined
+  const configuredContract = shared
+    ? address(registeredAsset!.bridge_contract, "Registered shared Bridge")
+    : (deploymentProfile.bridgeAddress as Address)
   const domainContract = address(view.verifying_contract, "Authorization contract")
   if (
-    view.domain_name !== "KINIC Bridge" ||
+    view.domain_name !== (shared ? "IC Base Multi-Token Bridge" : "KINIC Bridge") ||
     view.domain_version !== "1" ||
     view.chain_id !== BigInt(deploymentProfile.chainId) ||
     domainContract.toLowerCase() !== configuredContract.toLowerCase()
@@ -112,19 +157,41 @@ export async function validateMintAuthorization(
     throw new Error("Mint authorization domain does not match this deployment")
   }
 
-  const authorization = contractAuthorization(view)
+  const legacyAuthorization = contractAuthorization(view)
+  const assetEpoch = record.asset_authorization_epoch[0]
+  if (shared && assetEpoch === undefined) throw new Error("Asset authorization epoch is missing")
+  const authorization: ContractMintAuthorization | SharedContractMintAuthorization = shared
+    ? {
+        assetId: fixedHex(record.asset_id, 32, "Asset ID"),
+        depositId: legacyAuthorization.depositId,
+        recipient: legacyAuthorization.recipient,
+        grossAmount: legacyAuthorization.grossAmount,
+        maxServiceFee: legacyAuthorization.maxServiceFee,
+        chargedServiceFee: legacyAuthorization.chargedServiceFee,
+        deadline: legacyAuthorization.deadline,
+        globalEpoch: legacyAuthorization.authorizationEpoch,
+        assetEpoch: BigInt(assetEpoch!),
+      }
+    : legacyAuthorization
   const domain = {
     name: view.domain_name,
     version: view.domain_version,
     chainId: view.chain_id,
     verifyingContract: domainContract,
   } as const
-  const digest = hashTypedData({
-    domain,
-    types: mintAuthorizationTypes,
-    primaryType: "MintAuthorization",
-    message: authorization,
-  })
+  const digest = shared
+    ? hashTypedData({
+        domain,
+        types: sharedMintAuthorizationTypes,
+        primaryType: "MintAuthorization",
+        message: authorization as SharedContractMintAuthorization,
+      })
+    : hashTypedData({
+        domain,
+        types: mintAuthorizationTypes,
+        primaryType: "MintAuthorization",
+        message: authorization as ContractMintAuthorization,
+      })
   if (digest.toLowerCase() !== fixedHex(view.digest, 32, "Authorization digest").toLowerCase()) {
     throw new Error("Mint authorization digest mismatch")
   }
@@ -132,19 +199,29 @@ export async function validateMintAuthorization(
   const signature = fixedHex(signatureBytes, 65, "Mint signature")
   const recovered = await recoverAddress({ hash: digest, signature })
   const snapshot = runtimeObservation.snapshot
-  if (!runtimeObservation.ready || !snapshot) {
+  if (!shared && (!runtimeObservation.ready || !snapshot)) {
     throw new Error("Finalized Base runtime observation is unavailable")
   }
   let processed: boolean
   let latestBlock: Awaited<ReturnType<typeof basePublicClient.getBlock>>
   try {
     ;[processed, latestBlock] = await Promise.all([
-      client.readContract({
-        address: configuredContract,
-        abi: bridgeAbi,
-        functionName: "isDepositProcessed",
-        args: [authorization.depositId],
-      }),
+      shared
+        ? client.readContract({
+            address: configuredContract,
+            abi: multiTokenBridgeAbi,
+            functionName: "isDepositProcessed",
+            args: [
+              (authorization as SharedContractMintAuthorization).assetId,
+              authorization.depositId,
+            ],
+          })
+        : client.readContract({
+            address: configuredContract,
+            abi: bridgeAbi,
+            functionName: "isDepositProcessed",
+            args: [authorization.depositId],
+          }),
       client.getBlock({ blockTag: "latest" }),
     ])
   } catch {
@@ -162,16 +239,82 @@ export async function validateMintAuthorization(
   if (!mintAuthorizationWindow(authorization.deadline, latestBlock.timestamp).isUnexpired) {
     throw new Error("Mint authorization has expired. No Base transaction was sent.")
   }
-  if (
-    snapshot.depositsPaused ||
-    snapshot.mintAuthorizationEpoch !== authorization.authorizationEpoch ||
-    recovered.toLowerCase() !== snapshot.bridgeSigner.toLowerCase()
+  if (shared) {
+    const sharedAuthorization = authorization as SharedContractMintAuthorization
+    const tokenAddress = address(registeredAsset!.token_contract, "Registered token")
+    const [assetSnapshot, globalPaused, globalEpoch, signer, token, bridgeCode, tokenCode] =
+      await Promise.all([
+        client.readContract({
+          address: configuredContract,
+          abi: multiTokenBridgeAbi,
+          functionName: "assetSnapshot",
+          args: [sharedAuthorization.assetId],
+        }),
+        client.readContract({
+          address: configuredContract,
+          abi: multiTokenBridgeAbi,
+          functionName: "globalDepositMintsPaused",
+        }),
+        client.readContract({
+          address: configuredContract,
+          abi: multiTokenBridgeAbi,
+          functionName: "globalEpoch",
+        }),
+        client.readContract({
+          address: configuredContract,
+          abi: multiTokenBridgeAbi,
+          functionName: "bridgeSigner",
+        }),
+        client.readContract({
+          address: configuredContract,
+          abi: multiTokenBridgeAbi,
+          functionName: "tokenForAsset",
+          args: [sharedAuthorization.assetId],
+        }),
+        client.getBytecode({ address: configuredContract }),
+        client.getBytecode({ address: tokenAddress }),
+      ])
+    if (
+      !bridgeCode ||
+      !tokenCode ||
+      runtimeBytecodeSha256(bridgeCode).toLowerCase() !==
+        fixedHex(
+          registeredAsset!.expected_bridge_runtime_sha256,
+          32,
+          "Bridge runtime hash",
+        ).toLowerCase() ||
+      runtimeBytecodeSha256(tokenCode).toLowerCase() !==
+        fixedHex(
+          registeredAsset!.expected_token_runtime_sha256,
+          32,
+          "Token runtime hash",
+        ).toLowerCase() ||
+      token.toLowerCase() !== tokenAddress.toLowerCase() ||
+      globalPaused ||
+      assetSnapshot.depositMintsPaused ||
+      assetSnapshot.minServiceFee === 0n ||
+      assetSnapshot.serviceFee < assetSnapshot.minServiceFee ||
+      assetSnapshot.maxServiceFee < assetSnapshot.minServiceFee ||
+      sharedAuthorization.chargedServiceFee > sharedAuthorization.maxServiceFee ||
+      sharedAuthorization.chargedServiceFee > assetSnapshot.maxServiceFee ||
+      globalEpoch !== sharedAuthorization.globalEpoch ||
+      assetSnapshot.assetEpoch !== sharedAuthorization.assetEpoch ||
+      recovered.toLowerCase() !== signer.toLowerCase()
+    ) {
+      throw new Error("Mint authorization is no longer valid on the shared Bridge")
+    }
+  } else if (
+    snapshot!.depositsPaused ||
+    snapshot!.mintAuthorizationEpoch !== legacyAuthorization.authorizationEpoch ||
+    recovered.toLowerCase() !== snapshot!.bridgeSigner.toLowerCase()
   ) {
     throw new Error("Mint authorization is no longer valid on Base")
   }
 
   return {
     authorization,
+    shared,
+    bridgeAddress: configuredContract,
     signature,
     digest,
     recipient: authorization.recipient,

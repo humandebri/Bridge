@@ -3,6 +3,7 @@ import type { DepositView } from "@/generated/bridge.did"
 import { prepareMint, checkMintDeadline } from "./mint-preflight"
 const mocks = vi.hoisted(() => ({
   validate: vi.fn(),
+  asset: vi.fn(),
   heartbeat: vi.fn(),
   authorize: vi.fn(),
   simulate: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock("./runtime-validation", () => ({
   requireRuntimeWriteReady: (v: { ready: boolean }) => {
     if (!v.ready) throw new Error("not ready")
   },
+  validateAssetRuntime: mocks.asset,
   validateRuntime: mocks.validate,
   validateRuntimeHeartbeat: mocks.heartbeat,
 }))
@@ -35,10 +37,12 @@ beforeEach(() => {
   mocks.simulate.mockResolvedValue({})
   mocks.create.mockReturnValue({ simulateContract: mocks.simulate })
 })
+const legacyRecord = () =>
+  ({ asset_id: new Uint8Array(32), bridge_kind: { LegacySingleToken: null } }) as DepositView
 it("passes_the_trial_abort_signal_to_isolated_ic_and_base_reads", async () => {
   const signal = new AbortController().signal
   const context = { signal, check: vi.fn(), stage: vi.fn() }
-  await prepareMint({} as DepositView, "0x11", 8453, undefined, context)
+  await prepareMint(legacyRecord(), "0x11", 8453, undefined, context)
   expect(mocks.validate.mock.calls[0]?.[2]).toBe(signal)
   expect(mocks.heartbeat.mock.calls[0]?.[2]).toBe(signal)
   expect(mocks.create.mock.calls[0]?.[1]).toBe(signal)
@@ -51,7 +55,7 @@ it("passes_the_trial_abort_signal_to_isolated_ic_and_base_reads", async () => {
 it("rejects_a_different_runtime_profile_before_simulation", async () => {
   mocks.heartbeat.mockResolvedValue({ ready: true, profileFingerprint: "two" })
   await expect(
-    prepareMint({} as DepositView, "0x11", 8453, undefined, {
+    prepareMint(legacyRecord(), "0x11", 8453, undefined, {
       signal: new AbortController().signal,
       check: () => {},
       stage: () => {},
@@ -60,7 +64,7 @@ it("rejects_a_different_runtime_profile_before_simulation", async () => {
   expect(mocks.simulate).not.toHaveBeenCalled()
 })
 it("checks_elapsed_time_before_wallet_dispatch", async () => {
-  const prepared = await prepareMint({} as DepositView, "0x11", 8453, undefined, {
+  const prepared = await prepareMint(legacyRecord(), "0x11", 8453, undefined, {
     signal: new AbortController().signal,
     check: () => {},
     stage: () => {},
@@ -68,4 +72,18 @@ it("checks_elapsed_time_before_wallet_dispatch", async () => {
   expect(() => checkMintDeadline(prepared)).not.toThrow()
   prepared.observedAt = performance.now() - 100000
   expect(() => checkMintDeadline(prepared)).toThrow("expired during preflight")
+})
+
+it("rejects_shared_mint_before_simulation_when_asset_runtime_fails", async () => {
+  mocks.asset.mockRejectedValue(new Error("asset unavailable"))
+  const record = { ...legacyRecord(), bridge_kind: { SharedMultiToken: null } } as DepositView
+  await expect(
+    prepareMint(record, "0x11", 8453, undefined, {
+      signal: new AbortController().signal,
+      check: () => {},
+      stage: () => {},
+    }),
+  ).rejects.toThrow("asset unavailable")
+  expect(mocks.authorize).not.toHaveBeenCalled()
+  expect(mocks.simulate).not.toHaveBeenCalled()
 })

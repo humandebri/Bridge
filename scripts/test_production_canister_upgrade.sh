@@ -36,4 +36,11 @@ fi
 [[ -z "$(find "$T" -type f ! -name candidate.wasm -print -quit)" ]] || {
   echo "rejected upgrade invocation created an operation artifact" >&2; exit 1;
 }
+if BRIDGE_RELEASE_BUNDLE="$T" "$DRIVER" check-sns-migration --wasm "$T/candidate.wasm" >/dev/null 2>&1; then
+  echo "SNS migration accepted an unbound current module" >&2; exit 1
+fi
+if BRIDGE_RELEASE_BUNDLE="$T" "$DRIVER" check-sns-migration --wasm "$T/candidate.wasm" \
+  --expected-current-wasm "$(printf 'a%.0s' {1..64})" --source-evidence relative.json >/dev/null 2>&1; then
+  echo "SNS migration accepted an unsafe evidence path" >&2; exit 1
+fi
 echo "production current-state upgrade contract: pass"

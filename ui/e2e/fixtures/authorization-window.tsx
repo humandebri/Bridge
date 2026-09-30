@@ -106,6 +106,9 @@ function depositItem(
   reason: SettlementStopReason,
 ): Extract<ActivityItem, { direction: "to-base" }> {
   const deposit: DepositView = {
+    asset_id: new Uint8Array(32).fill(1),
+    bridge_kind: { LegacySingleToken: null },
+    asset_authorization_epoch: [],
     base_recipient: new Uint8Array(20).fill(3),
     deposit_id: new Uint8Array(32).fill(1),
     quote: [{ net_amount: 90n, service_fee: 10n }],

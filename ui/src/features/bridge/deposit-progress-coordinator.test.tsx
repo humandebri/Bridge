@@ -38,7 +38,10 @@ vi.mock("@/features/bridge/mint-authorization-action", () => ({
 }))
 vi.mock("sonner", () => ({ toast: { error: mocks.toastError } }))
 vi.mock("@/lib/ic/bridge", () => ({
-  createBridgeActor: vi.fn().mockResolvedValue({ get_deposit_by_owner_sequence: mocks.getDeposit }),
+  createBridgeActor: vi.fn().mockResolvedValue({
+    get_deposit: mocks.getDeposit,
+    get_deposit_by_owner_sequence: mocks.getDeposit,
+  }),
 }))
 vi.mock("@/config/profile", () => ({
   deploymentProfile: { icHost: "https://ic.example", bridgeCanisterId: "aaaaa-aa" },

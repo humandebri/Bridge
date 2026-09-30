@@ -619,8 +619,9 @@ impl DepositRecord {
                     && record.digest != [0; 32]
                     && record.origin.finalized_block_hash != [0; 32]
                     && authorization.authorization_epoch != 0;
-                let canonical_domain_strings = record.domain.name
+                let canonical_domain_strings = (record.domain.name
                     == crate::MINT_AUTHORIZATION_DOMAIN_NAME
+                    || record.domain.name == crate::SHARED_MINT_AUTHORIZATION_DOMAIN_NAME)
                     && record.domain.version == crate::MINT_AUTHORIZATION_DOMAIN_VERSION;
                 let deadline_valid = record
                     .origin

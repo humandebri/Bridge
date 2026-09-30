@@ -69,6 +69,8 @@ const args = {
   mintedAmount: 90n,
 }
 const record = {
+  asset_id: new Uint8Array(32).fill(0xaa),
+  bridge_kind: { LegacySingleToken: null },
   deposit_id: new Uint8Array(32).fill(0x11),
   state: { AuthorizationAvailable: null },
   mint_receipt: [],
@@ -76,6 +78,7 @@ const record = {
     {
       signature: [new Uint8Array(65)],
       digest: new Uint8Array(32).fill(0x33),
+      verifying_contract: new Uint8Array(20).fill(0x44),
       recipient: new Uint8Array(20).fill(0x55),
       gross_amount: 100n,
       charged_service_fee: 10n,

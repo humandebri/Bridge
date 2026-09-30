@@ -57,6 +57,7 @@ describe("automatic status queries", () => {
   })
 
   beforeEach(() => {
+    deploymentProfile.bridgeAddress = "0x1111111111111111111111111111111111111111"
     mocks.readBaseBlock.mockReset().mockResolvedValue({ timestamp: 100n })
     focusManager.setFocused(true)
     onlineManager.setOnline(true)

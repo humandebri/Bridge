@@ -146,24 +146,68 @@ pub fn consent_message(
     if request.method == "request_deposit_refund" {
         return deposit_refund_consent(caller, canister, request, current_ledger_fee);
     }
-    if request.method != "request_deposit" {
+    let (args, asset) = if request.method == "request_asset_deposit" {
+        let args = match Decode!(
+            &request.arg,
+            crate::multi_asset::AssetOperationArgs<api::DepositArgs>
+        ) {
+            Ok(args) => args,
+            Err(error) => {
+                return unavailable(format!(
+                    "request_asset_deposit argument decode failed: {error}"
+                ))
+            }
+        };
+        let id = match crate::multi_asset::parse_asset_id(&args.asset_id) {
+            Ok(id) => id,
+            Err(error) => return unavailable(error),
+        };
+        let asset = match STORE.with(|store| store.borrow().asset(&id)) {
+            Ok(Some(asset)) => asset,
+            _ => return unavailable("deposit asset is unavailable"),
+        };
+        (args.operation, Some(asset))
+    } else if request.method == "request_deposit" {
+        let args = match Decode!(&request.arg, api::DepositArgs) {
+            Ok(args) => args,
+            Err(error) => {
+                return unavailable(format!("request_deposit argument decode failed: {error}"))
+            }
+        };
+        (args, None)
+    } else {
         return unsupported("unsupported canister call");
-    }
-    let args = match Decode!(&request.arg, api::DepositArgs) {
-        Ok(args) => args,
-        Err(error) => {
-            return unavailable(format!("request_deposit argument decode failed: {error}"));
-        }
     };
-    let validated = match api::validate_deposit_args(caller, &args) {
+    let ledger_fee = asset
+        .as_ref()
+        .map(|asset| asset.ledger_fee)
+        .or(current_ledger_fee);
+    let Some(ledger_fee) = ledger_fee else {
+        return unavailable("current ledger fee is unavailable");
+    };
+    let validated = match api::validate_deposit_args_with_fee(
+        caller,
+        &args,
+        bridge_core::Amount::new(ledger_fee),
+    ) {
         Ok(validated) => validated,
-        Err(error) => return unavailable(format!("invalid request_deposit call: {error:?}")),
+        Err(error) => return unavailable(format!("invalid deposit call: {error:?}")),
     };
     let base_chain_id = match STORE.with(|store| store.borrow().config()) {
         Ok(Some(config)) => config.base_chain_id,
-        Ok(None) => return unavailable("bridge configuration is unavailable"),
-        Err(error) => return unavailable(format!("bridge configuration read failed: {error}")),
+        _ => return unavailable("bridge configuration is unavailable"),
     };
+    let symbol = asset
+        .as_ref()
+        .map_or("KINIC", |asset| asset.symbol.as_str());
+    let decimals = asset.as_ref().map_or(8, |asset| asset.decimals);
+    let asset_description = asset.as_ref().map_or_else(String::new, |asset| {
+        format!(
+            "Asset ID: `0x{}`\n\nLedger canister: `{}`\n\n",
+            hex(&asset.asset_id),
+            asset.ledger_canister_id
+        )
+    });
     let language = if request.user_preferences.metadata.language.trim().is_empty() {
         "en".to_string()
     } else {
@@ -172,9 +216,6 @@ pub fn consent_message(
     let minimum = validated
         .gross_amount
         .saturating_sub(validated.max_service_fee);
-    let Some(ledger_fee) = current_ledger_fee else {
-        return unavailable("current ledger fee is unavailable");
-    };
     let Some(total_debit) = validated.gross_amount.checked_add(ledger_fee) else {
         return unavailable("deposit total debit exceeds u128");
     };
@@ -196,14 +237,14 @@ pub fn consent_message(
             utc_offset_minutes: request.user_preferences.metadata.utc_offset_minutes,
         },
         consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
-            "# Bridge KINIC to Base\n\nSource wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross bridge amount: `{gross}` KINIC\n\nLedger transfer fee: `{ledger_fee}` KINIC\n\nTotal wallet debit: `{total_debit}` KINIC\n\nMaximum service fee: `{fee}` KINIC\n\nMinimum Base amount: `{minimum}` KINIC\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nThe Bridge canister will pull the displayed total using an existing ICRC-2 allowance. After the pull, the Canister issues a Base Mint Authorization that is valid for {authorization_minutes} minutes from its IC consensus issue time. At least five minutes must remain before the Canister installs its signature. The UI permits submission until the authorization deadline; Base must include the transaction before it expires. You need a Base wallet and Base ETH to submit the Base transaction. Installing the signature permanently earns the displayed service fee. The initial pull Ledger fee is not refundable. If the authorization expires unused, no automatic transfer occurs: any non-anonymous Principal may advance the refund only after the Base Finalized timestamp has passed the deadline and the exact deposit remains unprocessed. The destination, amount, and Ledger transfer identity remain fixed by this deposit. The minimum refund after authorization is `{refund_amount}` KINIC after the maximum service fee and a second fixed Ledger fee are deducted.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
+            "# Bridge {symbol} to Base\n\n{asset_description}Source wallet: `{caller}`\n\nOwner sequence: `{owner_sequence}`\n\nSource subaccount: `{subaccount}`\n\nGross bridge amount: `{gross}` {symbol}\n\nLedger transfer fee: `{ledger_fee}` {symbol}\n\nTotal wallet debit: `{total_debit}` {symbol}\n\nMaximum service fee: `{fee}` {symbol}\n\nMinimum Base amount: `{minimum}` {symbol}\n\nBase chain ID: `{base_chain_id}`\n\nBase recipient: `0x{recipient}`\n\nBridge canister: `{canister}`\n\nSpender subaccount: default (32 zero bytes). The Bridge canister will pull the displayed total using an existing ICRC-2 allowance. After the pull, the Canister issues a Base Mint Authorization that is valid for {authorization_minutes} minutes from its IC consensus issue time. At least five minutes must remain before the Canister installs its signature. The UI permits submission until the authorization deadline; Base must include the transaction before it expires. You need a Base wallet and Base ETH to submit the Base transaction. Installing the signature permanently earns the displayed service fee. The initial pull Ledger fee is not refundable. If the authorization expires unused, no automatic transfer occurs: any non-anonymous Principal may advance the refund only after the Base Finalized timestamp has passed the deadline and the exact deposit remains unprocessed. The destination, amount, and Ledger transfer identity remain fixed by this deposit. The minimum refund after authorization is `{refund_amount}` {symbol} after the maximum service fee and a second fixed Ledger fee are deducted.\n\n**bSNS does not provide SNS voting rights or SNS voting rewards.**",
             owner_sequence = validated.owner_sequence,
-            gross = format_e8s(validated.gross_amount),
-            ledger_fee = format_e8s(ledger_fee),
-            total_debit = format_e8s(total_debit),
-            fee = format_e8s(validated.max_service_fee),
-            minimum = format_e8s(minimum),
-            refund_amount = format_e8s(refund_amount),
+            gross = format_units(validated.gross_amount, decimals),
+            ledger_fee = format_units(ledger_fee, decimals),
+            total_debit = format_units(total_debit, decimals),
+            fee = format_units(validated.max_service_fee, decimals),
+            minimum = format_units(minimum, decimals),
+            refund_amount = format_units(refund_amount, decimals),
             recipient = hex(&validated.base_recipient),
             authorization_minutes = bridge_core::MINT_AUTHORIZATION_TTL_SECONDS / 60,
         )),
@@ -259,7 +300,7 @@ fn fee_payout_consent(
         metadata: request.user_preferences.metadata,
         consent_message: Icrc21ConsentMessage::GenericDisplayMessage(format!(
             "# Continue fee payout\n\nAdministrator: `{caller}`\n\nPayout ID: `{payout_id}`\n\nAmount: `{amount}` KINIC\n\nRecipient: `{recipient}`\n\nRecipient subaccount: `{subaccount}`\n\nBridge canister: `{canister}`\n\nThis call performs one explicit payout or reconciliation step and does not schedule an automatic retry.",
-            amount = format_e8s(payout.amount),
+            amount = format_units(payout.amount, 8),
             recipient = payout.recipient.owner,
         )),
     })
@@ -311,7 +352,7 @@ fn deposit_refund_consent(
     caller: Principal,
     canister: Principal,
     request: Icrc21ConsentMessageRequest,
-    current_ledger_fee: Option<u128>,
+    _current_ledger_fee: Option<u128>,
 ) -> Icrc21ConsentMessageResponse {
     if caller == Principal::anonymous() {
         return unavailable("anonymous caller is not allowed");
@@ -335,12 +376,24 @@ fn deposit_refund_consent(
         Ok(None) => return unavailable("deposit does not exist"),
         Err(error) => return unavailable(format!("deposit read failed: {error}")),
     };
+    let asset = match STORE.with(|store| {
+        let store = store.borrow();
+        let id = store.record_asset(crate::storage::RecordAssetKind::Deposit, &deposit_id)?;
+        store
+            .asset(&id)?
+            .ok_or(crate::storage::StorageError::RecordNotFound)
+    }) {
+        Ok(asset) => asset,
+        Err(_) => return unavailable("refund asset is unavailable"),
+    };
     let message = match deposit_refund_consent_message(
         caller,
         canister,
         deposit_id,
         &record,
-        current_ledger_fee,
+        Some(asset.ledger_fee),
+        &asset.symbol,
+        asset.decimals,
     ) {
         Ok(message) => message,
         Err(error) => return unavailable(error),
@@ -357,6 +410,8 @@ fn deposit_refund_consent_message(
     deposit_id: [u8; 32],
     record: &bridge_core::DepositRecord,
     current_ledger_fee: Option<u128>,
+    symbol: &str,
+    decimals: u8,
 ) -> Result<String, String> {
     let service_fee = if record
         .mint_authorization
@@ -385,9 +440,9 @@ fn deposit_refund_consent_message(
             (
                 "# Check IC refund eligibility",
                 format!(
-                    "Potential refund if eligible: `{}` KINIC\n\nPotential non-refundable refund Ledger fee: `{}` KINIC",
-                    format_e8s(refund_amount),
-                    format_e8s(ledger_fee),
+                    "Potential refund if eligible: `{}` {symbol}\n\nPotential non-refundable refund Ledger fee: `{}` {symbol}",
+                    format_units(refund_amount, decimals),
+                    format_units(ledger_fee, decimals),
                 ),
                 "This call first checks one canonical Base Finalized observation. It starts a refund only after the authorization deadline has passed and the deposit is still unprocessed. A processed deposit is marked minted and no Ledger transfer is made.",
             )
@@ -397,9 +452,9 @@ fn deposit_refund_consent_message(
             (
                 "# Start IC refund",
                 format!(
-                    "Refund to send: `{}` KINIC\n\nNon-refundable refund Ledger fee: `{}` KINIC",
-                    format_e8s(refund_amount),
-                    format_e8s(ledger_fee),
+                    "Refund to send: `{}` {symbol}\n\nNon-refundable refund Ledger fee: `{}` {symbol}",
+                    format_units(refund_amount, decimals),
+                    format_units(ledger_fee, decimals),
                 ),
                 "This call starts the displayed refund transfer. It performs one explicit settlement step and does not promise completion before the Ledger result is known.",
             )
@@ -408,9 +463,9 @@ fn deposit_refund_consent_message(
         | bridge_core::DepositState::RefundReconciliationHold { attempt, .. } => (
             "# Continue IC refund",
             format!(
-                "Committed refund amount: `{}` KINIC\n\nCommitted non-refundable refund Ledger fee: `{}` KINIC",
-                format_e8s(attempt.identity.amount.get()),
-                format_e8s(attempt.identity.fee.get()),
+                "Committed refund amount: `{}` {symbol}\n\nCommitted non-refundable refund Ledger fee: `{}` {symbol}",
+                format_units(attempt.identity.amount.get(), decimals),
+                format_units(attempt.identity.fee.get(), decimals),
             ),
             "This call continues reconciliation for the same committed refund. It may query the Ledger or submit the displayed transfer only when prior absence is established.",
         ),
@@ -427,22 +482,25 @@ fn deposit_refund_consent_message(
     };
 
     Ok(format!(
-        "{title}\n\nIC wallet: `{caller}`\n\nDeposit ID: `0x{deposit_id}`\n\nGross deposit: `{gross}` KINIC\n\nNon-refundable service fee: `{service_fee}` KINIC\n\n{amount_line}\n\nBridge canister: `{canister}`\n\n{explanation}",
+        "{title}\n\nIC wallet: `{caller}`\n\nDeposit ID: `0x{deposit_id}`\n\nGross deposit: `{gross}` {symbol}\n\nNon-refundable service fee: `{service_fee}` {symbol}\n\n{amount_line}\n\nBridge canister: `{canister}`\n\n{explanation}",
         deposit_id = hex(&deposit_id),
-        gross = format_e8s(record.gross_amount.get()),
-        service_fee = format_e8s(service_fee),
+        gross = format_units(record.gross_amount.get(), decimals),
+        service_fee = format_units(service_fee, decimals),
     ))
 }
 
-fn format_e8s(value: u128) -> String {
-    let whole = value / 100_000_000;
-    let fraction = value % 100_000_000;
-    if fraction == 0 {
-        return whole.to_string();
+fn format_units(value: u128, decimals: u8) -> String {
+    if decimals == 0 {
+        return value.to_string();
     }
-    format!("{whole}.{fraction:08}")
-        .trim_end_matches('0')
-        .to_string()
+    let digits = format!("{value:0>width$}", width = usize::from(decimals) + 1);
+    let split = digits.len() - usize::from(decimals);
+    let fraction = digits[split..].trim_end_matches('0');
+    if fraction.is_empty() {
+        digits[..split].to_owned()
+    } else {
+        format!("{}.{}", &digits[..split], fraction)
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -719,9 +777,16 @@ mod tests {
         let pending = deposit(DepositState::AuthorizationAvailable {
             funding_ledger_block_index: 1,
         });
-        let message =
-            deposit_refund_consent_message(caller, canister, [7; 32], &pending, Some(10_000))
-                .expect("authorization consent");
+        let message = deposit_refund_consent_message(
+            caller,
+            canister,
+            [7; 32],
+            &pending,
+            Some(10_000),
+            "KINIC",
+            8,
+        )
+        .expect("authorization consent");
         assert!(message.contains("# Check IC refund eligibility"));
         assert!(message.contains("Potential refund if eligible"));
         assert!(!message.contains("Refund received"));
@@ -731,8 +796,9 @@ mod tests {
             funding_ledger_block_index: 2,
             attempt: refund_attempt(),
         });
-        let message = deposit_refund_consent_message(caller, canister, [7; 32], &refunding, None)
-            .expect("pending refund consent uses the committed attempt");
+        let message =
+            deposit_refund_consent_message(caller, canister, [7; 32], &refunding, None, "KINIC", 8)
+                .expect("pending refund consent uses the committed attempt");
         assert!(message.contains("# Continue IC refund"));
         assert!(message.contains("Committed refund amount"));
         assert!(message.contains("1.9999"));
@@ -744,7 +810,10 @@ mod tests {
         let minted = deposit(DepositState::Minted {
             funding_ledger_block_index: 3,
         });
-        assert!(deposit_refund_consent_message(caller, caller, [7; 32], &minted, None).is_err());
+        assert!(
+            deposit_refund_consent_message(caller, caller, [7; 32], &minted, None, "KINIC", 8)
+                .is_err()
+        );
 
         let refunded = deposit(DepositState::Refunded {
             reason: bridge_core::DepositRefundReason::BasePaused,
@@ -753,7 +822,10 @@ mod tests {
             refund_ledger_block_index: 4,
             source_hold: None,
         });
-        assert!(deposit_refund_consent_message(caller, caller, [7; 32], &refunded, None).is_err());
+        assert!(deposit_refund_consent_message(
+            caller, caller, [7; 32], &refunded, None, "KINIC", 8
+        )
+        .is_err());
 
         let unsupported = deposit(DepositState::FundingPending);
         assert!(deposit_refund_consent_message(
@@ -761,8 +833,37 @@ mod tests {
             caller,
             [7; 32],
             &unsupported,
-            Some(10_000)
+            Some(10_000),
+            "KINIC",
+            8
         )
         .is_err());
+    }
+    #[test]
+    fn shared_refund_consent_uses_selected_units_and_committed_pending_amounts() {
+        let caller = Principal::management_canister();
+        let refunding = deposit(DepositState::RefundPending {
+            reason: bridge_core::DepositRefundReason::BasePaused,
+            funding_ledger_block_index: 2,
+            attempt: refund_attempt(),
+        });
+        let message = deposit_refund_consent_message(
+            caller,
+            caller,
+            [7; 32],
+            &refunding,
+            Some(u128::MAX),
+            "SIX",
+            6,
+        )
+        .unwrap();
+        assert!(message.contains("199.99` SIX"));
+        assert!(!message.contains("KINIC"));
+        assert_eq!(format_units(1, 0), "1");
+        assert_eq!(format_units(123, 6), "0.000123");
+        assert_eq!(
+            format_units(1, 38),
+            "0.00000000000000000000000000000000000001"
+        );
     }
 }

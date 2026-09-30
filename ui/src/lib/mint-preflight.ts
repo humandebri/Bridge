@@ -1,12 +1,18 @@
 import { getAccount, getChainId } from "wagmi/actions"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
+import { multiTokenBridgeAbi } from "@/generated/abi/multitokenbridge.generated"
 import type { DepositView } from "@/generated/bridge.did"
 import { createBasePublicClient, wagmiConfig } from "./evm/client"
 import { validateMintAuthorization } from "./mint-authorization"
+import type {
+  ContractMintAuthorization,
+  SharedContractMintAuthorization,
+} from "./mint-authorization"
 import {
   runtimeWriteBlocker,
   requireRuntimeWriteReady,
+  validateAssetRuntime,
   validateRuntime,
   validateRuntimeHeartbeat,
   type RuntimeValidation,
@@ -27,16 +33,30 @@ export async function prepareMint(
   attestation: RuntimeValidation | undefined,
   context: MintExecutionContext,
 ) {
+  const shared = "SharedMultiToken" in record.bridge_kind
   context.stage("checking-ic")
-  if (runtimeWriteBlocker(attestation))
-    attestation = await validateRuntime(deploymentProfile, chainId, context.signal)
-  context.check()
-  requireRuntimeWriteReady(attestation)
-  const observation = await validateRuntimeHeartbeat(deploymentProfile, chainId, context.signal)
-  context.check()
-  requireRuntimeWriteReady(observation)
-  if (attestation.profileFingerprint !== observation.profileFingerprint)
-    throw new Error("Runtime deployment profile changed.")
+  let observation
+  if (shared) {
+    observation = await validateAssetRuntime(
+      deploymentProfile,
+      record.asset_id,
+      "deposit",
+      chainId,
+      context.signal,
+    )
+    context.check()
+    requireRuntimeWriteReady(observation)
+  } else {
+    if (runtimeWriteBlocker(attestation))
+      attestation = await validateRuntime(deploymentProfile, chainId, context.signal)
+    context.check()
+    requireRuntimeWriteReady(attestation)
+    observation = await validateRuntimeHeartbeat(deploymentProfile, chainId, context.signal)
+    context.check()
+    requireRuntimeWriteReady(observation)
+    if (attestation.profileFingerprint !== observation.profileFingerprint)
+      throw new Error("Runtime deployment profile changed.")
+  }
   context.stage("checking-base")
   const client = createBasePublicClient(deploymentProfile, context.signal)
   // Start the elapsed-time allowance before reading the block, conservatively covering RPC latency.
@@ -44,13 +64,23 @@ export async function prepareMint(
   const validated = await validateMintAuthorization(record, observation, client)
   context.check()
   context.stage("simulating")
-  await client.simulateContract({
-    account,
-    address: deploymentProfile.bridgeAddress as `0x${string}`,
-    abi: bridgeAbi,
-    functionName: "mintDepositWithAuthorization",
-    args: [validated.authorization, validated.signature],
-  })
+  if (validated.shared) {
+    await client.simulateContract({
+      account,
+      address: validated.bridgeAddress,
+      abi: multiTokenBridgeAbi,
+      functionName: "mintDepositWithAuthorization",
+      args: [validated.authorization as SharedContractMintAuthorization, validated.signature],
+    })
+  } else {
+    await client.simulateContract({
+      account,
+      address: validated.bridgeAddress,
+      abi: bridgeAbi,
+      functionName: "mintDepositWithAuthorization",
+      args: [validated.authorization as ContractMintAuthorization, validated.signature],
+    })
+  }
   context.check()
   return { validated, observedAt }
 }

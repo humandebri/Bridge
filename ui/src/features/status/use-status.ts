@@ -3,6 +3,7 @@ import { readBaseBlock } from "@/lib/base-transaction-observation"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { deploymentProfile } from "@/config/profile"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
+import { multiTokenBridgeAbi } from "@/generated/abi/multitokenbridge.generated"
 import { createBridgeActor } from "@/lib/ic/bridge"
 import {
   RUNTIME_VALIDATION_TTL_MS,
@@ -13,6 +14,7 @@ import {
   type RuntimeValidation,
 } from "@/lib/runtime-validation"
 import { basePublicClient } from "@/lib/evm/client"
+import { runtimeBytecodeSha256 } from "@/lib/runtime-bytecode-hash"
 
 interface AutomaticQueryOptions {
   enabled?: boolean
@@ -133,11 +135,24 @@ export function useBridgeStatus() {
   })
 }
 
-export function useCurrentBaseQuote(options: AutomaticQueryOptions = {}) {
+export interface QuoteAssetConfig {
+  assetId: `0x${string}`
+  bridgeAddress: `0x${string}`
+  tokenAddress: `0x${string}`
+  expectedBridgeRuntimeSha256: `0x${string}`
+  expectedTokenRuntimeSha256: `0x${string}`
+  shared: boolean
+}
+
+export function useCurrentBaseQuote(options: AutomaticQueryOptions = {}, asset?: QuoteAssetConfig) {
   const { enabled = false, refetchInterval, staleTime } = options
   return useQuery({
-    queryKey: ["base-quote", deploymentProfile.bridgeAddress],
-    enabled,
+    queryKey: [
+      "base-quote",
+      asset?.bridgeAddress ?? deploymentProfile.bridgeAddress,
+      asset?.assetId,
+    ],
+    enabled: enabled && Boolean(asset ?? deploymentProfile.bridgeAddress),
     staleTime,
     refetchInterval,
     refetchIntervalInBackground: true,
@@ -145,6 +160,92 @@ export function useCurrentBaseQuote(options: AutomaticQueryOptions = {}) {
     refetchOnReconnect: refetchInterval !== undefined,
     queryFn: async () => {
       const client = basePublicClient
+      if (asset?.shared) {
+        const block = await client.getBlock({ blockTag: "finalized" })
+        if (block.number === null) throw new Error("Finalized Base block is unavailable")
+        const [
+          snapshot,
+          globalDepositsPaused,
+          globalWithdrawalsPaused,
+          bridgeSigner,
+          globalEpoch,
+          token,
+          bridgeCode,
+          tokenCode,
+        ] = await Promise.all([
+          client.readContract({
+            address: asset.bridgeAddress,
+            abi: multiTokenBridgeAbi,
+            functionName: "assetSnapshot",
+            args: [asset.assetId],
+            blockNumber: block.number,
+          }),
+          client.readContract({
+            address: asset.bridgeAddress,
+            abi: multiTokenBridgeAbi,
+            functionName: "globalDepositMintsPaused",
+            blockNumber: block.number,
+          }),
+          client.readContract({
+            address: asset.bridgeAddress,
+            abi: multiTokenBridgeAbi,
+            functionName: "globalWithdrawalsPaused",
+            blockNumber: block.number,
+          }),
+          client.readContract({
+            address: asset.bridgeAddress,
+            abi: multiTokenBridgeAbi,
+            functionName: "bridgeSigner",
+            blockNumber: block.number,
+          }),
+          client.readContract({
+            address: asset.bridgeAddress,
+            abi: multiTokenBridgeAbi,
+            functionName: "globalEpoch",
+            blockNumber: block.number,
+          }),
+          client.readContract({
+            address: asset.bridgeAddress,
+            abi: multiTokenBridgeAbi,
+            functionName: "tokenForAsset",
+            args: [asset.assetId],
+            blockNumber: block.number,
+          }),
+          client.getBytecode({ address: asset.bridgeAddress, blockNumber: block.number }),
+          client.getBytecode({ address: asset.tokenAddress, blockNumber: block.number }),
+        ])
+        if (
+          !bridgeCode ||
+          !tokenCode ||
+          runtimeBytecodeSha256(bridgeCode).toLowerCase() !==
+            asset.expectedBridgeRuntimeSha256.toLowerCase() ||
+          runtimeBytecodeSha256(tokenCode).toLowerCase() !==
+            asset.expectedTokenRuntimeSha256.toLowerCase() ||
+          token.toLowerCase() !== asset.tokenAddress.toLowerCase() ||
+          snapshot.minServiceFee === 0n ||
+          snapshot.serviceFee < snapshot.minServiceFee ||
+          snapshot.maxServiceFee < snapshot.minServiceFee
+        ) {
+          throw new Error(
+            "Selected asset runtime does not match the registered Bridge configuration",
+          )
+        }
+        return {
+          serviceFee: snapshot.serviceFee,
+          maxServiceFee: snapshot.maxServiceFee,
+          perDepositLimit: snapshot.perDepositLimit,
+          minted: snapshot.mintedInWindow,
+          limit: snapshot.mintWindowLimit,
+          startedAt: snapshot.mintWindowStartedAt,
+          duration: snapshot.mintWindowDuration,
+          depositsPaused: globalDepositsPaused || snapshot.depositMintsPaused,
+          withdrawalsPaused: globalWithdrawalsPaused || snapshot.withdrawalsPaused,
+          bridgeSigner,
+          mintAuthorizationEpoch: globalEpoch,
+          assetEpoch: snapshot.assetEpoch,
+          blockTimestamp: block.timestamp,
+        }
+      }
       const address = deploymentProfile.bridgeAddress as `0x${string}`
       const snapshot = await client.readContract({
         address,
@@ -203,6 +304,7 @@ function bridgeSnapshotView(snapshot: {
   depositMintsPaused: boolean
   withdrawalsPaused: boolean
   bridgeSigner: `0x${string}`
+  mintAuthorizationEpoch: bigint
   blockTimestamp: bigint
 }) {
   return {
@@ -216,6 +318,7 @@ function bridgeSnapshotView(snapshot: {
     depositsPaused: snapshot.depositMintsPaused,
     withdrawalsPaused: snapshot.withdrawalsPaused,
     bridgeSigner: snapshot.bridgeSigner,
+    mintAuthorizationEpoch: snapshot.mintAuthorizationEpoch,
     blockTimestamp: snapshot.blockTimestamp,
   }
 }

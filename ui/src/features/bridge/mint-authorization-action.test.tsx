@@ -164,6 +164,9 @@ const pendingHash = `0x${"22".repeat(32)}`
 const finalizedBlockHash = `0x${"aa".repeat(32)}`
 const originalBridgeAddress = deploymentProfile.bridgeAddress
 const pendingExpectation = {
+  assetId: `0x${"aa".repeat(32)}`,
+  bridgeAddress: "0x1111111111111111111111111111111111111111",
+  shared: false,
   depositId: `0x${"11".repeat(32)}`,
   authorizationDigest: `0x${"11".repeat(32)}`,
   recipient: "0x0303030303030303030303030303030303030303",
@@ -173,6 +176,8 @@ const pendingExpectation = {
 }
 const pendingMint = { ...pendingExpectation, transactionHash: pendingHash }
 const record = {
+  asset_id: Array(32).fill(0xaa),
+  bridge_kind: { LegacySingleToken: null },
   deposit_id: Array(32).fill(0x11),
   state: { AuthorizationAvailable: null },
   mint_authorization: [
@@ -180,6 +185,7 @@ const record = {
       deadline: 2_000n,
       recipient: Array(20).fill(3),
       digest: Array(32).fill(0x11),
+      verifying_contract: Array(20).fill(0x11),
     },
   ],
 } as unknown as DepositView

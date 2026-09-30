@@ -64,6 +64,9 @@ export interface BridgeProgressRecord {
   createdAt: number
   updatedAt: number
   transactionHash?: `0x${string}`
+  assetId?: `0x${string}`
+  contractAddress?: `0x${string}`
+  shared?: boolean
   receiptBlockNumber?: string
   finalizedBlockNumber?: string
   baseTransactionOutcome?: "success" | "reverted"
@@ -105,6 +108,9 @@ interface StoredBridgeProgress {
   tokenApproval: BridgeTokenApproval
   createdAt: number
   transactionHash?: `0x${string}`
+  assetId?: `0x${string}`
+  contractAddress?: `0x${string}`
+  shared?: boolean
   deposit?: BridgeProgressDepositIdentity
   withdrawal?: BridgeProgressWithdrawalIdentity
   attentionMessage?: string
@@ -168,6 +174,9 @@ export function saveLatestBridgeProgress(record: BridgeProgressRecord): boolean 
       tokenApproval: record.tokenApproval,
       createdAt: record.createdAt,
       transactionHash: record.transactionHash,
+      assetId: record.assetId,
+      contractAddress: record.contractAddress,
+      shared: record.shared,
       deposit: record.deposit,
       withdrawal: record.withdrawal,
       attentionMessage: phase === "attention" ? record.attentionMessage : undefined,
@@ -456,6 +465,9 @@ function isStoredBridgeProgress(value: unknown): value is StoredBridgeProgress {
       Number.isFinite(item.createdAt) &&
       item.createdAt >= 0 &&
       validOptionalTransactionHash(item.transactionHash) &&
+      (item.assetId === undefined || /^0x[0-9a-fA-F]{64}$/.test(item.assetId)) &&
+      (item.contractAddress === undefined || /^0x[0-9a-fA-F]{40}$/.test(item.contractAddress)) &&
+      (item.shared === undefined || typeof item.shared === "boolean") &&
       validOptionalDepositIdentity(item.deposit) &&
       validOptionalWithdrawalIdentity(item.withdrawal)
     )

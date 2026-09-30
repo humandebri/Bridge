@@ -291,3 +291,163 @@ Separate page fetching from receipt-validation queue consumption and Deposit rot
 Worker-signed cursors bind the fixed search upper bound, pageKey, and enumerated-range resume block. pageKey expires nine minutes after each issuance; afterward resume including the last block without pageKey. Handle blocks spanning pages without omissions, deduplicating saved hashes. After all pages, wait 60 seconds and rescan from the original Authorization start block to catch indexing delay. Neither candidates nor unsuccessful searches are settlement evidence.
 
 The 30-second failure cooldown for `notify_deposit_mint` applies only to a caller/Deposit pair. Changing hashes does not let the same caller spam; another party's failures do not restrict other callers or the confirmation relayer. Preserve global RPC budgets, in-flight exclusion, and strict Finalized mint evidence validation.
+
+
+### Shared Bridge asset activation and key rotation
+
+`ScheduleAssetActivation` and `ExecuteAssetActivation` require an explicit
+`activate_global` boolean. Use `true` for initial shared Bridge activation: the
+scheduled batch unpauses global deposit minting and withdrawals, then the selected
+asset. Use `false` for asset-only activation. Both calls must use the same flag,
+asset ID and operation nonce. The flag changes the salt and batch operation ID;
+a retry with a different flag is rejected. Global unpause remains subject to the
+contract's timelock and emergency signer-rotation requirements.
+
+While any shared asset is registered, the existing KINIC-only control-plane key
+rotation is rejected. Registration is also rejected while that rotation is
+pending. Coordinated legacy/shared signer rotation must be implemented and
+reviewed before rotating keys in a multi-asset deployment.
+
+Shared assets persist finalized observations separately from KINIC. Notification
+replay keys include the asset ID; KINIC retains its original transaction-hash key.
+Storage validation checks per-asset mint reservations, withdrawal liabilities,
+financial-row presence, and the asset/contract/Base-ID origin of shared withdrawals.
+The UI verifies the root deployment and the selected asset's ledger metadata,
+fee, index binding and runtime attestation before requesting wallet operations.
+WithdrawalEnabled assets may withdraw without enabling deposits.
+
+
+## Registered SNS migration from deployed v36 to v37
+
+The production Bridge is controlled solely by KINIC SNS Root. Use the SNS
+`UpgradeSnsControlledCanister` action; a personal identity cannot install the Wasm.
+The legacy personal-controller upgrade driver does not authorize this path.
+
+1. Freeze a clean reviewed HEAD, initialize pinned submodules, and complete
+   `scripts/ci-local.sh all`. Bind the candidate release bundle to that HEAD.
+2. Run `scripts/production-canister-upgrade.sh check-sns-migration --wasm ABS
+   --expected-current-wasm SHA256 --source-evidence ABS` with
+   `BRIDGE_RELEASE_BUNDLE=ABS`. This read-only check requires certified sole Root
+   controllers and the current module, registered/Activated/unpaused v36 state,
+   signature-verified runtime and operational configuration, complete history,
+   and storage integrity. It reruns the complete proof gate and builds the
+   production Wasm twice from clean HEAD. The current state must remain identical
+   through validation. The evidence binds source revision/tree and both modules.
+3. Prepare a dedicated Wasm store canister on the **same subnet as the Bridge**
+   under separately approved operational authorization. Its controllers must
+   include the uploader, KINIC SNS Governance (which validates `stored_chunks`
+   before accepting the proposal), and KINIC SNS Root (which executes
+   `install_chunked_code`).
+   Do not change the Bridge controllers or attempt to upload chunks to the
+   Root-only Bridge. Upload the twice-reproduced Wasm in ordered 1,000,000-byte
+   chunks, verify every returned SHA-256, and retain the reviewed store ID and
+   controller/subnet evidence. Keep the store and chunks available until final
+   target verification; store cleanup requires separate authorization.
+   See the [management canister specification](https://docs.internetcomputer.org/references/ic-interface-spec/management-canister/)
+   for the store access and subnet requirements, and the [SNS implementation](https://github.com/dfinity/ic/blob/master/rs/sns/governance/src/governance.rs)
+   for Governance forwarding this action to Root. The [proposal validator](https://github.com/dfinity/ic/blob/master/rs/sns/governance/src/proposal.rs)
+   requires both Governance and Root to control the store.
+
+   Review the exact proposal: fixed Bridge Canister ID, reviewed external store
+   Canister ID, upgrade mode, empty upgrade argument, candidate Wasm hash, and
+   ordered chunk hashes. Immediately before
+   submission recapture the certified v36 source using
+   `bridge-profile capture-production-sns-migration-source PROFILE SOURCE_HASH ABS`
+   and compare that snapshot with the reviewed evidence's `snapshot`. A change
+   requires repeating review/validation. Proposal submission is a separate
+   explicitly approved governance action; the check command never submits it.
+4. After execution, run `bridge-profile verify-production-sns-migration-live
+   PROFILE EVIDENCE TARGET_HASH WASM PROPOSAL_ID REVIEWED_STORE_ID`. It verifies the executed SNS
+   action, exact reviewed store ID and chunk hashes, certified target module/Root controllers, live v37
+   readiness, and preservation of the recorded state. The only allowed snapshot
+   difference is module hash plus v36→v37 RuntimeBinding schema and a valid KINIC
+   registry binding. Activity that changes other observed state fails this strict
+   comparison and requires investigation; it is not silently accepted.
+5. Publish only a reviewed v37 UI profile bound to the verified target and reviewed
+   UI RPC configuration. v36 observations are accepted exclusively as this migration
+   source, never for UI writes. Keep KINIC's existing token and Bridge unchanged;
+   register and activate additional ERC-20s on the shared Bridge separately.
+
+The migration validates an unfinished v36 storage-validation cursor using its
+deployed shape and resets it transactionally. A new v37 validation traverses all
+asset tables. Malformed predecessor state is rejected.
+
+Emergency pause queues legacy and every registered shared asset's deposit and
+withdrawal pause independently. Prepared assets that do not yet exist on Base
+are excluded. Each flag survives upgrades/reverts and is cleared only by a
+confirmed matching transaction. Drain the whole queue before resuming admission;
+asset registration and activation are rejected while the queue is pending.
+
+
+## Additional-asset SNS governance and gas budgets
+
+The additional-asset boundary is `validate_sns_manage_asset` / `sns_manage_asset`.
+`SnsAssetProposal` binds the Bridge canister, deployment instance, current
+operational configuration SHA-256, an admission expiry no more than 30 days away,
+and one typed action: `RegisterAsset`, `RefreshRuntime`, or `PrepareBase`.
+The validator reads the same checks as execution. Only the configured SNS
+Governance may execute; failed execution rejects the IC call, because SNS treats
+any successful reply (even Candid `Err`) as successful proposal execution.
+
+`RegisterAsset` requires a new Prepared shared asset, unchanged root chain,
+instance, signer and existing Timelock, and all current registry uniqueness,
+rotation, emergency and asset-count checks. `RefreshRuntime` binds the previous
+attestation observation time and revalidates after EVM awaits before committing.
+`PrepareBase` accepts only asset-specific actions. Bind the expected operation ID
+from `get_asset_governance_operation_ids`, using `governance` for registration and
+activation and `runtime_administrator` for fee/pause operations. Pending recovery
+is permitted only for the same ID, typed payload and operation salt. New intent
+admission revalidates the proposal after outcalls and before the durable commit.
+Expiry is an admission deadline; an accepted durable intent retains its normal
+confirmation/recovery path after expiry. Relay and Finalized confirmation are
+separate operations, not success conditions of an IC preparation proposal.
+
+Legacy sealed Governance fee settings and KINIC gas limits remain unchanged.
+The production-shared additional-asset policy fixes these transaction gas limits:
+
+| Action | Gas limit |
+| --- | ---: |
+| Schedule additional-token registration | 500,000 |
+| Execute registration (creates the ERC-20) | 2,000,000 |
+| Schedule/execute asset activation | 500,000 |
+| Asset pause or service-fee operation | 200,000 |
+
+The same existing max-fee/priority-fee/L1 ceilings, replacement policy and checked
+liability/balance rules apply to the selected gas limit. These are reviewed fixed
+budgets, not caller-provided overrides or gas estimates. Reject preparation when
+the role balance cannot cover the complete liability. Benchmark the exact token
+metadata and calldata before launch; increase a budget only through a reviewed
+source change. Do not reseal or silently change the deployed KINIC parameters.
+
+After the verified Bridge upgrade, prepare the native registration proposal in
+`deployments/sns/add-asset-management-function.proposal.did`. Function ID1009 is a
+candidate: recheck the current active functions and reserved IDs immediately
+before submission. Target/validator are both `lb5i5-ziaaa-aaaar-qcgwq-cai`, methods
+`sns_manage_asset` / `validate_sns_manage_asset`, topic `DappCanisterManagement`.
+Review its full content and obtain operational submission authorization. Verify
+execution and the current registered function before proposing token actions.
+
+Prepare a typed `SnsAssetProposal` from live authenticated RuntimeBinding,
+operation IDs, asset configuration and previous attestation. Encode with
+`didc encode --defs canister/bridge-canister/bridge.did --method sns_manage_asset`,
+and compare the decode with the reviewed source payload. Put those bytes in
+`ExecuteGenericNervousSystemFunction { function_id = 1009; payload = ... }`.
+Revalidate the payload through the deployed validator immediately before
+submission. Use the Kinic SNS proposal procedure for the proposer permission,
+review, submission and proposal/action readback. Preparation alone authorizes
+neither registration of the SNS function nor a token nor Base transaction relay.
+
+This release uses the existing Timelock for the new shared Bridge because asset
+registration requires the configured Timelock. Separate Timelock/role keys are a
+future coordinated design. Additional tokens are ERC-20s created by the shared
+Bridge; choosing an arbitrary existing ERC-20 does not establish bridge mint/burn
+permissions. Confirm Ledger/Index support, decimals, fees, runtime hashes, custody
+and reserves before activation. Continue rejecting KINIC-only key rotation while
+shared assets are registered.
+
+The new proposal domain and gas-selection kernels have concrete negative and
+adapter/transaction tests and are linked to the asset-registry and governance
+claims. Their deployment assumptions remain explicit: authenticated caller and
+live config, Ledger behavior, EVM execution/finality, RPC configuration, role
+funding and runtime/toolchain. These additions do not turn externally conditional
+or production-linked claims into fully implementation-proved claims.

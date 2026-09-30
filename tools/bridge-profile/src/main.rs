@@ -1238,6 +1238,64 @@ struct RuntimeBindingView {
     kinic_asset_binding_valid: bool,
 }
 
+// Deployed predecessor decoding is confined to the explicitly selected migration source.
+#[derive(CandidType, Deserialize, Clone, PartialEq, Eq, Serialize)]
+struct V36RuntimeBindingView {
+    base_chain_id: u64,
+    bridge_contract: Vec<u8>,
+    expected_bridge_runtime_sha256: Vec<u8>,
+    timelock_contract: Vec<u8>,
+    deployment_instance_id: Vec<u8>,
+    minimum_withdrawal_id: Vec<u8>,
+    ledger_canister_id: Principal,
+    index_canister_id: Principal,
+    schema_version: u16,
+    expected_bridge_signer: Vec<u8>,
+    evm_rpc_canister_id: Principal,
+    rpc_provider_urls_sha256: Vec<u8>,
+    operational_config_sha256: Vec<u8>,
+}
+
+impl V36RuntimeBindingView {
+    fn predecessor_observation(self) -> RuntimeBindingView {
+        RuntimeBindingView {
+            base_chain_id: self.base_chain_id,
+            bridge_contract: self.bridge_contract,
+            expected_bridge_runtime_sha256: self.expected_bridge_runtime_sha256,
+            timelock_contract: self.timelock_contract,
+            deployment_instance_id: self.deployment_instance_id,
+            minimum_withdrawal_id: self.minimum_withdrawal_id,
+            ledger_canister_id: self.ledger_canister_id,
+            index_canister_id: self.index_canister_id,
+            schema_version: self.schema_version,
+            expected_bridge_signer: self.expected_bridge_signer,
+            evm_rpc_canister_id: self.evm_rpc_canister_id,
+            rpc_provider_urls_sha256: self.rpc_provider_urls_sha256,
+            operational_config_sha256: self.operational_config_sha256,
+            kinic_asset_binding_valid: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProductionStateSchema {
+    Current,
+    V36MigrationSource,
+}
+
+impl ProductionStateSchema {
+    fn version(self) -> u16 {
+        match self {
+            Self::Current => CURRENT_STABLE_SCHEMA_VERSION,
+            Self::V36MigrationSource => PREVIOUS_STABLE_SCHEMA_VERSION,
+        }
+    }
+    fn accepts(self, runtime: &RuntimeBindingView) -> bool {
+        runtime.schema_version == self.version()
+            && (self == Self::V36MigrationSource || runtime.kinic_asset_binding_valid)
+    }
+}
+
 #[derive(CandidType)]
 struct OperationalConfigBindingView {
     ledger_fee: u128,
@@ -3987,6 +4045,22 @@ fn validate_live_runtime_binding(
     rpc_url_hash: &str,
     operational_config_sha256: &[u8],
 ) -> Result<(), String> {
+    validate_live_runtime_binding_for_schema(
+        observed,
+        profile,
+        rpc_url_hash,
+        operational_config_sha256,
+        ProductionStateSchema::Current,
+    )
+}
+
+fn validate_live_runtime_binding_for_schema(
+    observed: &LiveRuntimeBinding,
+    profile: &Profile,
+    rpc_url_hash: &str,
+    operational_config_sha256: &[u8],
+    schema: ProductionStateSchema,
+) -> Result<(), String> {
     if observed.base_chain_id != profile.chain_id
         || !observed
             .bridge_contract
@@ -4013,7 +4087,8 @@ fn validate_live_runtime_binding(
         || !observed
             .operational_config_sha256
             .eq_ignore_ascii_case(&hex(operational_config_sha256))
-        || !observed.kinic_asset_binding_valid
+        || observed.schema_version != schema.version()
+        || (schema == ProductionStateSchema::Current && !observed.kinic_asset_binding_valid)
     {
         return Err("live Canister RuntimeBinding does not exactly match the profile".into());
     }
@@ -4424,6 +4499,25 @@ fn verify_production_current_state(
     expected_module_sha256: &str,
     controller_mode: &str,
 ) -> Result<(), String> {
+    verify_production_state_for_schema(
+        profile_path,
+        expected_controller_text,
+        expected_module_sha256,
+        controller_mode,
+        ProductionStateSchema::Current,
+    )
+}
+
+fn verify_production_state_for_schema(
+    profile_path: &Path,
+    expected_controller_text: &str,
+    expected_module_sha256: &str,
+    controller_mode: &str,
+    schema: ProductionStateSchema,
+) -> Result<(), String> {
+    if schema == ProductionStateSchema::V36MigrationSource && controller_mode != "root-registered" {
+        return Err("v36 migration requires the registered SNS Root as the sole controller".into());
+    }
     if !valid_sha256(expected_module_sha256) {
         return Err("expected production module SHA-256 is invalid".into());
     }
@@ -4560,7 +4654,14 @@ fn verify_production_current_state(
     else {
         return Err("authenticated activation status is unavailable".into());
     };
-    let runtime = Decode!(&runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?;
+    let runtime = match schema {
+        ProductionStateSchema::Current => {
+            Decode!(&runtime_raw, RuntimeBindingView).map_err(|error| error.to_string())?
+        }
+        ProductionStateSchema::V36MigrationSource => Decode!(&runtime_raw, V36RuntimeBindingView)
+            .map_err(|error| error.to_string())?
+            .predecessor_observation(),
+    };
     let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
     let pending = Decode!(&pending_raw, PendingGovernanceTransactionsView)
         .map_err(|error| error.to_string())?;
@@ -4578,22 +4679,41 @@ fn verify_production_current_state(
     if bridge_is_registered != (bridge_registration_count == 1) {
         return Err("SNS Root contains duplicate Bridge registrations".into());
     }
-    validate_production_current_state_core(
-        &controllers,
-        &expected_controllers,
-        &module_hash,
-        expected_module_sha256,
-        lifecycle,
-        &activation_status,
-        &runtime,
-        &status,
-        &pending,
-        history_ready,
-        bridge_registration_count,
-        expected_registered,
-        storage_ok,
-    )?;
-    profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
+    if schema == ProductionStateSchema::Current {
+        validate_production_current_state_core(
+            &controllers,
+            &expected_controllers,
+            &module_hash,
+            expected_module_sha256,
+            lifecycle,
+            &activation_status,
+            &runtime,
+            &status,
+            &pending,
+            history_ready,
+            bridge_registration_count,
+            expected_registered,
+            storage_ok,
+        )?;
+    } else {
+        validate_production_state_core_for_schema(
+            &controllers,
+            &expected_controllers,
+            &module_hash,
+            expected_module_sha256,
+            lifecycle,
+            &activation_status,
+            &runtime,
+            &status,
+            &pending,
+            history_ready,
+            bridge_registration_count,
+            expected_registered,
+            storage_ok,
+            schema,
+        )?;
+    }
+    profile.canister_schema_version = schema.version();
     profile.bridge_canister_wasm_sha256 = expected_module_sha256.to_ascii_lowercase();
     let rpc_url_hash = hex(&canonical_sha256(
         &profile
@@ -4607,11 +4727,12 @@ fn verify_production_current_state(
         status.mint_authorization_ttl_seconds,
         status.mint_authorization_epoch,
     )?;
-    validate_live_runtime_binding(
+    validate_live_runtime_binding_for_schema(
         &live_runtime_binding_from_view(&runtime),
         &profile,
         &rpc_url_hash,
         &operational_config_sha256,
+        schema,
     )?;
     if runtime.expected_bridge_runtime_sha256
         != decode_hex(&profile.bridge_runtime_bytecode_sha256)?
@@ -4657,6 +4778,41 @@ fn validate_production_current_state_core(
     expected_registered: bool,
     storage_ok: bool,
 ) -> Result<(), String> {
+    validate_production_state_core_for_schema(
+        controllers,
+        expected_controllers,
+        module_hash,
+        expected_module_sha256,
+        lifecycle,
+        activation_status,
+        runtime,
+        status,
+        pending,
+        history_ready,
+        root_registration_count,
+        expected_registered,
+        storage_ok,
+        ProductionStateSchema::Current,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_production_state_core_for_schema(
+    controllers: &[Principal],
+    expected_controllers: &BTreeSet<Principal>,
+    module_hash: &[u8],
+    expected_module_sha256: &str,
+    lifecycle: ProductionLifecycleView,
+    activation_status: &ActivationStatusView,
+    runtime: &RuntimeBindingView,
+    status: &BridgeStatusLiveView,
+    pending: &PendingGovernanceTransactionsView,
+    history_ready: bool,
+    root_registration_count: usize,
+    expected_registered: bool,
+    storage_ok: bool,
+    schema: ProductionStateSchema,
+) -> Result<(), String> {
     let observed_controllers = controllers.iter().copied().collect::<BTreeSet<_>>();
     if observed_controllers.len() != controllers.len()
         || &observed_controllers != expected_controllers
@@ -4676,8 +4832,7 @@ fn validate_production_current_state_core(
     {
         return Err("production activation is not in a completed active state".into());
     }
-    if runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
-        || !runtime.kinic_asset_binding_valid
+    if !schema.accepts(runtime)
         || status.deposits_paused
         || !status.reserve.sufficient
         || !matches!(pending, PendingGovernanceTransactionsView::Ok(values) if values.is_empty())
@@ -7979,7 +8134,8 @@ fn execute_production_canister_upgrade(
     Ok(())
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProductionUpgradeCurrentStateSnapshot {
     lifecycle: Vec<u8>,
     activation_attestation: Vec<u8>,
@@ -8000,6 +8156,29 @@ impl ProductionUpgradeCurrentStateSnapshot {
         let mut expected = self.clone();
         expected.module_hash = after.module_hash.clone();
         expected == *after
+    }
+
+    fn preserved_across_v36_migration(&self, after: &Self) -> Result<bool, String> {
+        let source = Decode!(&self.runtime_binding, V36RuntimeBindingView)
+            .map_err(|error| error.to_string())?;
+        if source.schema_version != PREVIOUS_STABLE_SCHEMA_VERSION {
+            return Err("migration source must be deployed v36".into());
+        }
+        let target = Decode!(&after.runtime_binding, RuntimeBindingView)
+            .map_err(|error| error.to_string())?;
+        if !ProductionStateSchema::Current.accepts(&target) {
+            return Ok(false);
+        }
+        let mut expected_runtime = source.predecessor_observation();
+        expected_runtime.schema_version = CURRENT_STABLE_SCHEMA_VERSION;
+        expected_runtime.kinic_asset_binding_valid = true;
+        if expected_runtime != target {
+            return Ok(false);
+        }
+        let mut expected = self.clone();
+        expected.module_hash = after.module_hash.clone();
+        expected.runtime_binding = after.runtime_binding.clone();
+        Ok(expected == *after)
     }
 
     fn preserved_across_root_addition(&self, after: &Self) -> bool {
@@ -8398,6 +8577,7 @@ fn expected_sns_wasm_chunks(
 fn validate_sns_upgrade_action(
     action: &SnsProposalAction,
     bridge: Principal,
+    expected_store: Principal,
     expected_module_sha256: &str,
     expected_chunk_hashes: &[Vec<u8>],
 ) -> Result<(), String> {
@@ -8413,11 +8593,11 @@ fn validate_sns_upgrade_action(
         || action.mode != Some(3)
         || action.canister_upgrade_arg.as_deref() != Some(&[68, 73, 68, 76, 0, 0])
         || action.canister_upgrade_options.is_some()
-        || chunked.store_canister_id != Some(bridge)
+        || chunked.store_canister_id != Some(expected_store)
         || chunked.chunk_hashes_list != expected_chunk_hashes
         || !hex(&chunked.wasm_module_hash).eq_ignore_ascii_case(expected_module_sha256)
     {
-        return Err("SNS upgrade proposal differs from the reviewed same-Wasm action".into());
+        return Err("SNS upgrade proposal differs from the reviewed upgrade action".into());
     }
     Ok(())
 }
@@ -8470,6 +8650,7 @@ fn verify_sns_upgrade_live(
     validate_sns_upgrade_action(
         &action,
         bridge,
+        bridge,
         expected_module_sha256,
         &expected_chunk_hashes,
     )?;
@@ -8493,9 +8674,133 @@ fn verify_sns_upgrade_live(
     Ok(())
 }
 
+fn capture_production_sns_migration_source(
+    profile_path: &Path,
+    module_sha256: &str,
+    output: &Path,
+) -> Result<(), String> {
+    let profile: Profile = read_json(profile_path)?;
+    let bridge =
+        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&profile.ic_host, false)?;
+    if profile.bridge_canister_id != PRODUCTION_BRIDGE_CANISTER
+        || profile.ic_host != "https://icp-api.io"
+    {
+        return Err("SNS migration profile differs from the fixed production domain".into());
+    }
+    let before = production_upgrade_current_state_snapshot(&agent, bridge)?;
+    verify_production_state_for_schema(
+        profile_path,
+        KINIC_ROOT,
+        module_sha256,
+        "root-registered",
+        ProductionStateSchema::V36MigrationSource,
+    )?;
+    let after = production_upgrade_current_state_snapshot(&agent, bridge)?;
+    if before != after || !hex(&after.module_hash).eq_ignore_ascii_case(module_sha256) {
+        return Err("production state changed during migration-source observation".into());
+    }
+    if output.exists() {
+        return Err("migration-source evidence output already exists".into());
+    }
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)
+        .map_err(|error| error.to_string())?;
+    serde_json::to_writer(&mut file, &after).map_err(|error| error.to_string())?;
+    file.sync_all().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionSnsMigrationEvidence {
+    schema_version: u8,
+    source_revision: String,
+    source_tree_sha256: String,
+    source_module_sha256: String,
+    target_module_sha256: String,
+    snapshot: ProductionUpgradeCurrentStateSnapshot,
+}
+
+fn verify_production_sns_migration_live(
+    profile_path: &Path,
+    before_path: &Path,
+    target_sha256: &str,
+    wasm_path: &Path,
+    proposal_id: u64,
+    reviewed_store: Principal,
+) -> Result<(), String> {
+    let profile: Profile = read_json(profile_path)?;
+    let bridge =
+        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    if reviewed_store == bridge
+        || reviewed_store == Principal::anonymous()
+        || reviewed_store == Principal::management_canister()
+    {
+        return Err("SNS migration requires a reviewed external Wasm store canister".into());
+    }
+    if profile.bridge_canister_id != PRODUCTION_BRIDGE_CANISTER
+        || profile.ic_host != "https://icp-api.io"
+    {
+        return Err("SNS migration profile differs from the fixed production domain".into());
+    }
+    let evidence: ProductionSnsMigrationEvidence = read_json(before_path)?;
+    if evidence.schema_version != 1
+        || evidence.source_revision.len() != 40
+        || !evidence
+            .source_revision
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || !valid_sha256(&evidence.source_tree_sha256)
+        || !valid_sha256(&evidence.source_module_sha256)
+        || !evidence
+            .target_module_sha256
+            .eq_ignore_ascii_case(target_sha256)
+        || !hex(&evidence.snapshot.module_hash).eq_ignore_ascii_case(&evidence.source_module_sha256)
+    {
+        return Err("migration evidence source or target binding is invalid".into());
+    }
+    let before = evidence.snapshot;
+    let root = Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?;
+    if before.controllers != BTreeSet::from([root]) {
+        return Err("migration source controllers differ from SNS Root".into());
+    }
+    let agent = mainnet_agent(&profile.ic_host, false)?;
+    let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|error| error.to_string())?;
+    let proposal = authenticated_sns_proposal(&agent, governance, proposal_id)?;
+    let (_, action) = verified_executed_proposal(proposal, proposal_id)?;
+    validate_sns_upgrade_action(
+        &action,
+        bridge,
+        reviewed_store,
+        target_sha256,
+        &expected_sns_wasm_chunks(wasm_path, target_sha256)?,
+    )?;
+    verify_production_current_state(profile_path, KINIC_ROOT, target_sha256, "root-registered")?;
+    let after = production_upgrade_current_state_snapshot(&agent, bridge)?;
+    if !hex(&after.module_hash).eq_ignore_ascii_case(target_sha256)
+        || !before.preserved_across_v36_migration(&after)?
+    {
+        return Err(
+            "v36 migration changed state beyond schema and the validated KINIC registry binding"
+                .into(),
+        );
+    }
+    println!("sns_v36_migration=verified proposal_id={proposal_id} module_sha256={target_sha256}");
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args = env::args().collect::<Vec<_>>();
     match args.get(1).map(String::as_str) {
+        Some("capture-production-sns-migration-source") if args.len() == 5 => {
+            capture_production_sns_migration_source(Path::new(&args[2]), &args[3], Path::new(&args[4]))?;
+        }
+        Some("verify-production-sns-migration-live") if args.len() == 8 => {
+            verify_production_sns_migration_live(Path::new(&args[2]), Path::new(&args[3]), &args[4], Path::new(&args[5]), args[6].parse().map_err(|_| "invalid SNS migration proposal ID")?, Principal::from_text(&args[7]).map_err(|_| "invalid reviewed SNS Wasm store canister ID")?)?;
+        }
         Some("verify-production-current-state") if args.len() == 6 => {
             verify_production_current_state(
                 Path::new(&args[2]),
@@ -8887,7 +9192,7 @@ fn run() -> Result<(), String> {
                 println!("epoch={} operational_config_sha256={}", epoch, operational_epoch_digest(response.trim(), ledger_fee, epoch)?);
             }
         }
-        _ => return Err("usage: bridge-profile <command> <arguments>; production commands: verify-production-current-state, execute-production-canister-upgrade, execute-production-root-addition, verify-sns-registration-live, verify-sns-upgrade-live".into()),
+        _ => return Err("usage: bridge-profile <command> <arguments>; production commands: capture-production-sns-migration-source, verify-production-sns-migration-live, verify-production-current-state, execute-production-canister-upgrade, execute-production-root-addition, verify-sns-registration-live, verify-sns-upgrade-live".into()),
     }
     Ok(())
 }
@@ -8956,12 +9261,14 @@ mod tests {
         assert!(validate_sns_upgrade_action(
             &upgrade(bridge, chunks.clone(), vec![68, 73, 68, 76, 0, 0]),
             bridge,
+            bridge,
             &module_sha256,
             &chunks,
         )
         .is_ok());
         assert!(validate_sns_upgrade_action(
             &upgrade(other, chunks.clone(), vec![68, 73, 68, 76, 0, 0]),
+            bridge,
             bridge,
             &module_sha256,
             &chunks,
@@ -8970,6 +9277,7 @@ mod tests {
         assert!(validate_sns_upgrade_action(
             &upgrade(bridge, vec![vec![0x44; 32]], vec![68, 73, 68, 76, 0, 0]),
             bridge,
+            bridge,
             &module_sha256,
             &chunks,
         )
@@ -8977,8 +9285,45 @@ mod tests {
         assert!(validate_sns_upgrade_action(
             &upgrade(bridge, chunks.clone(), Vec::new()),
             bridge,
+            bridge,
             &module_sha256,
             &chunks,
+        )
+        .is_err());
+
+        let store = Principal::self_authenticating([0x45; 32]);
+        let mut migration = upgrade(bridge, chunks.clone(), vec![68, 73, 68, 76, 0, 0]);
+        if let SnsProposalAction::UpgradeSnsControlledCanister(action) = &mut migration {
+            action
+                .chunked_canister_wasm
+                .as_mut()
+                .unwrap()
+                .store_canister_id = Some(store);
+        }
+        assert!(
+            validate_sns_upgrade_action(&migration, bridge, store, &module_sha256, &chunks).is_ok()
+        );
+        assert!(
+            validate_sns_upgrade_action(&migration, bridge, bridge, &module_sha256, &chunks)
+                .is_err()
+        );
+        assert!(
+            validate_sns_upgrade_action(&migration, bridge, other, &module_sha256, &chunks)
+                .is_err()
+        );
+        assert!(
+            validate_sns_upgrade_action(&migration, other, store, &module_sha256, &chunks).is_err()
+        );
+        assert!(
+            validate_sns_upgrade_action(&migration, bridge, store, &"55".repeat(32), &chunks)
+                .is_err()
+        );
+        assert!(validate_sns_upgrade_action(
+            &migration,
+            bridge,
+            store,
+            &module_sha256,
+            &[vec![0x66; 32]]
         )
         .is_err());
     }
@@ -10640,6 +10985,70 @@ mod tests {
         assert!(!GATE_B_ARTIFACTS.contains(&"post-gate-a-policy-transition.json"));
         assert!(GATE_B_ARTIFACTS.contains(&"gate-a-receipt.json"));
         assert!(GATE_B_ARTIFACTS.contains(&"gate-a-profile.json"));
+    }
+
+    #[test]
+    fn v36_migration_is_explicit_and_preserves_all_existing_runtime_fields() {
+        let old = V36RuntimeBindingView {
+            base_chain_id: 8453,
+            bridge_contract: vec![1; 20],
+            expected_bridge_runtime_sha256: vec![2; 32],
+            timelock_contract: vec![3; 20],
+            deployment_instance_id: vec![4; 32],
+            minimum_withdrawal_id: vec![5; 32],
+            ledger_canister_id: Principal::from_slice(&[6]),
+            index_canister_id: Principal::from_slice(&[7]),
+            schema_version: 36,
+            expected_bridge_signer: vec![8; 20],
+            evm_rpc_canister_id: Principal::from_slice(&[9]),
+            rpc_provider_urls_sha256: vec![10; 32],
+            operational_config_sha256: vec![11; 32],
+        };
+        let wire = Encode!(&old).unwrap();
+        assert!(Decode!(&wire, RuntimeBindingView).is_err());
+        let observation = Decode!(&wire, V36RuntimeBindingView)
+            .unwrap()
+            .predecessor_observation();
+        assert!(ProductionStateSchema::V36MigrationSource.accepts(&observation));
+        assert!(!ProductionStateSchema::Current.accepts(&observation));
+        let before = ProductionUpgradeCurrentStateSnapshot {
+            lifecycle: vec![1],
+            activation_attestation: vec![2],
+            activation_status: vec![3],
+            runtime_binding: wire,
+            bridge_status: matching_handover_status(),
+            pending_governance: vec![5],
+            withdrawal_index_probe: vec![6],
+            operational_config: vec![7],
+            control_plane_addresses: vec![8],
+            storage_integrity: vec![9],
+            controllers: BTreeSet::from([Principal::from_text(KINIC_ROOT).unwrap()]),
+            module_hash: vec![12; 32],
+        };
+        let mut target = observation;
+        target.schema_version = 37;
+        target.kinic_asset_binding_valid = true;
+        let mut after = before.clone();
+        after.module_hash = vec![13; 32];
+        after.runtime_binding = Encode!(&target).unwrap();
+        assert!(before.preserved_across_v36_migration(&after).unwrap());
+        assert!(!before.preserved_across_upgrade(&after));
+        for mutate in [0, 1, 2, 3] {
+            let mut altered = after.clone();
+            let mut binding = target.clone();
+            match mutate {
+                0 => binding.kinic_asset_binding_valid = false,
+                1 => binding.expected_bridge_signer[0] ^= 1,
+                2 => altered.operational_config.push(1),
+                _ => altered
+                    .controllers
+                    .insert(Principal::anonymous())
+                    .then_some(())
+                    .unwrap(),
+            }
+            altered.runtime_binding = Encode!(&binding).unwrap();
+            assert!(!before.preserved_across_v36_migration(&altered).unwrap());
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@ import { z } from "zod"
 import { deploymentProfile } from "@/config/profile"
 import type { DepositView } from "@/generated/bridge.did"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
+import { multiTokenBridgeAbi } from "@/generated/abi/multitokenbridge.generated"
 import { browserLocalStorage, withBrowserLock } from "@/lib/browser-lock"
 import { baseHistoryClients, firstSuccessfulHistoryClient } from "@/lib/evm/client"
 import { createBridgeActor } from "@/lib/ic/bridge"
@@ -193,6 +194,8 @@ export async function recoverMint(
       if (!isRecoverableMint(record))
         return { status: "unsubmitted", finalized: false, recorded: false }
       const expected = {
+        assetId: hex(record.asset_id),
+        shared: "SharedMultiToken" in record.bridge_kind,
         depositId: hex(record.deposit_id),
         authorizationDigest: hex(a.digest),
         recipient: hex(a.recipient),
@@ -201,6 +204,9 @@ export async function recoverMint(
         mintedAmount: a.gross_amount - a.charged_service_fee,
       }
       const pendingExpected = {
+        assetId: expected.assetId,
+        bridgeAddress: hex(a.verifying_contract),
+        shared: expected.shared,
         depositId: expected.depositId,
         authorizationDigest: expected.authorizationDigest,
         recipient: expected.recipient,
@@ -293,18 +299,23 @@ export async function recoverMint(
           const receipt = await firstSuccessfulHistoryClient(baseHistoryClients, (client) =>
             client.getTransactionReceipt({ hash: hash as Hex }),
           )
+          const bridgeAddress = hex(a.verifying_contract)
           const sameDeposit = receipt.logs.some((log) => {
-            if (log.address.toLowerCase() !== deploymentProfile.bridgeAddress?.toLowerCase())
-              return false
+            if (log.address.toLowerCase() !== bridgeAddress.toLowerCase()) return false
             try {
               const event = decodeEventLog({
-                abi: bridgeAbi,
+                abi: expected.shared ? multiTokenBridgeAbi : bridgeAbi,
                 eventName: "DepositMinted",
                 data: log.data,
                 topics: log.topics,
                 strict: true,
               })
-              return event.args.depositId.toLowerCase() === target.depositId
+              return (
+                event.args.depositId.toLowerCase() === target.depositId &&
+                (!expected.shared ||
+                  ("assetId" in event.args &&
+                    event.args.assetId.toLowerCase() === expected.assetId?.toLowerCase()))
+              )
             } catch {
               return false
             }
@@ -317,7 +328,7 @@ export async function recoverMint(
             )
             const result = exactMintReceiptFinalization({
               expected,
-              expectedBridgeAddress: deploymentProfile.bridgeAddress as Hex,
+              expectedBridgeAddress: bridgeAddress,
               receipt,
               finalizedBlockNumber: finalized.number,
               canonicalReceiptBlockHash: canonical.hash,

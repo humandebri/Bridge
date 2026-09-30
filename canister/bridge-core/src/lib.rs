@@ -4,6 +4,7 @@
 //! provide confirmed external facts as events and persist the returned state atomically.
 
 mod accounting;
+pub mod asset_governance_policy;
 mod authorization;
 mod deposit;
 mod external;
@@ -18,6 +19,7 @@ pub use authorization::{
     MintAuthorization, MintAuthorizationDomain, MintAuthorizationOrigin, MintAuthorizationRecord,
     MintExpiryEvidence, MintFinalizationEvidence, MINT_AUTHORIZATION_DOMAIN_NAME,
     MINT_AUTHORIZATION_DOMAIN_VERSION, MINT_AUTHORIZATION_TTL_SECONDS,
+    SHARED_MINT_AUTHORIZATION_DOMAIN_NAME,
 };
 pub use deposit::{
     DepositEvent, DepositQuote, DepositRecord, DepositRefundReason, DepositRequest, DepositState,

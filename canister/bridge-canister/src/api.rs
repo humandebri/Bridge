@@ -94,6 +94,8 @@ pub enum DepositError {
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct DepositView {
     pub deposit_id: Vec<u8>,
+    pub asset_id: Vec<u8>,
+    pub bridge_kind: crate::config::BaseBridgeKind,
     pub owner_sequence: u64,
     pub created_at_ns: u64,
     pub funding_ledger_block_index: Option<Nat>,
@@ -107,6 +109,7 @@ pub struct DepositView {
     pub state: DepositPhase,
     pub last_settlement_stop_reason: Option<crate::tasks::SettlementStopReason>,
     pub mint_authorization: Option<MintAuthorizationView>,
+    pub asset_authorization_epoch: Option<u64>,
     pub mint_receipt: Option<MintReceiptView>,
     pub automatic_progress: Option<AutomaticProgressView>,
 }
@@ -238,6 +241,9 @@ pub enum DepositRefundStatusView {
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawalView {
     pub withdrawal_id: Vec<u8>,
+    pub asset_id: Vec<u8>,
+    pub bridge_kind: crate::config::BaseBridgeKind,
+    pub base_withdrawal_id: Option<Vec<u8>>,
     pub amount: Nat,
     pub max_service_fee: Nat,
     pub charged_service_fee: Nat,
@@ -420,8 +426,120 @@ pub async fn notify_withdrawal(
         ],
         config.notification_rate_limit_window_seconds,
         config.notification_ingestion_rate_limit_global,
+        None,
     )?;
     Ok(receipt)
+}
+
+pub(crate) fn shared_withdrawal_notification_context(
+    asset_id: [u8; 32],
+) -> Result<crate::multi_asset::AssetExecutionContext, NotifyWithdrawalError> {
+    let context = STORE
+        .with(|store| {
+            let store = store.borrow();
+            let root = store
+                .config()?
+                .ok_or(crate::storage::StorageError::RecordNotFound)?;
+            let asset = store
+                .asset(&asset_id)?
+                .ok_or(crate::storage::StorageError::RecordNotFound)?;
+            crate::multi_asset::AssetExecutionContext::new(root, asset, false)
+                .map_err(|_| crate::storage::StorageError::DecodeFailed)
+        })
+        .map_err(|_| NotifyWithdrawalError::BaseStateMismatch)?;
+    if !context.is_shared() || context.asset.lifecycle == crate::config::AssetLifecycle::Prepared {
+        return Err(NotifyWithdrawalError::BaseStateMismatch);
+    }
+    let attestation = STORE
+        .with(|store| store.borrow().asset_runtime_attestation(&asset_id))
+        .map_err(|_| NotifyWithdrawalError::StorageFailure)?
+        .ok_or(NotifyWithdrawalError::BaseStateMismatch)?;
+    if !attestation.permits_withdrawal_ingestion()
+        || attestation.service_fee < context.asset.ledger_fee
+    {
+        return Err(NotifyWithdrawalError::BaseStateMismatch);
+    }
+    Ok(context)
+}
+
+pub async fn notify_asset_withdrawal(
+    caller: Principal,
+    asset_id: [u8; 32],
+    args: NotifyWithdrawalArgs,
+) -> Result<NotifyWithdrawalReceipt, NotifyWithdrawalError> {
+    if caller == Principal::anonymous() {
+        return Err(NotifyWithdrawalError::AnonymousCaller);
+    }
+    let transaction_hash: [u8; 32] = args
+        .transaction_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| NotifyWithdrawalError::InvalidTransactionHash)?;
+    if transaction_hash == [0; 32] {
+        return Err(NotifyWithdrawalError::InvalidTransactionHash);
+    }
+    let context = shared_withdrawal_notification_context(asset_id)?;
+    let outcome = evm_rpc::shared_notified_withdrawal_outcome(
+        &context.evm_args(),
+        asset_id,
+        transaction_hash,
+    )
+    .await
+    .map_err(map_withdrawal_observation_error)?;
+    let (observed, base_withdrawal_id, observation, stable_observation) = match outcome {
+        evm_rpc::SharedNotifiedWithdrawalOutcome::Missing => {
+            return Err(NotifyWithdrawalError::TransactionNotFound);
+        }
+        evm_rpc::SharedNotifiedWithdrawalOutcome::Pending => {
+            return Err(NotifyWithdrawalError::TransactionNotConfirmed);
+        }
+        evm_rpc::SharedNotifiedWithdrawalOutcome::Reverted => {
+            return Err(NotifyWithdrawalError::TransactionReverted);
+        }
+        evm_rpc::SharedNotifiedWithdrawalOutcome::Confirmed {
+            withdrawal,
+            base_withdrawal_id,
+            observation,
+            stable_observation,
+        } => (
+            *withdrawal,
+            base_withdrawal_id,
+            observation,
+            stable_observation,
+        ),
+    };
+    if !context.validates_shared_observation(&observation)
+        || observation.snapshot.global_withdrawals_paused
+        || observation.snapshot.asset_withdrawals_paused
+    {
+        return Err(NotifyWithdrawalError::BaseStateMismatch);
+    }
+    if let Some(receipt) = existing_notified_withdrawal(&observed)? {
+        return Ok(receipt);
+    }
+    let origin = crate::storage::SharedWithdrawalOrigin {
+        asset_id: asset_id.to_vec(),
+        base_withdrawal_id: base_withdrawal_id.to_vec(),
+        bridge_contract: context.bridge_contract.to_vec(),
+    };
+    ingest_notified_withdrawal(
+        observed,
+        transaction_hash,
+        context.ledger_fee,
+        observation.finalized.block_number,
+        *stable_observation,
+        vec![
+            rpc_audit_event_kind(&observation.rpc_audit),
+            rpc_decision_event_kind(&evm_rpc::quorum_continued_decision(
+                "notify_asset_withdrawal",
+                Some(transaction_hash),
+                true,
+            )),
+        ],
+        context.root.notification_rate_limit_window_seconds,
+        context.root.notification_ingestion_rate_limit_global,
+        Some((&context, &origin)),
+    )
 }
 
 pub(crate) fn notification_action_hash(
@@ -499,12 +617,13 @@ fn notification_commit_error(error: crate::storage::StorageError) -> NotifyWithd
 }
 
 pub(crate) fn existing_notified_withdrawal_by_hash(
+    asset_id: [u8; 32],
     transaction_hash: [u8; 32],
 ) -> Result<Option<NotifyWithdrawalReceipt>, NotifyWithdrawalError> {
     let found = STORE.with(|store| {
         let store = store.borrow();
         let Some(withdrawal_id) = store
-            .notified_withdrawal_id(transaction_hash)
+            .asset_notified_withdrawal_id(asset_id, transaction_hash)
             .map_err(|_| NotifyWithdrawalError::StorageFailure)?
         else {
             return Ok(None);
@@ -533,6 +652,10 @@ fn ingest_notified_withdrawal(
     rpc_audit: Vec<crate::storage::AuditEventKind>,
     notification_window_seconds: u64,
     notification_ingestion_limit: u16,
+    asset_context: Option<(
+        &crate::multi_asset::AssetExecutionContext,
+        &crate::storage::SharedWithdrawalOrigin,
+    )>,
 ) -> Result<NotifyWithdrawalReceipt, NotifyWithdrawalError> {
     let payload_hash = notified_withdrawal_payload_hash(&observed);
     STORE.with(|store| {
@@ -548,11 +671,18 @@ fn ingest_notified_withdrawal(
             }
             return Err(NotifyWithdrawalError::WithdrawalConflict);
         }
-        if let Some(guard) = store
-            .admin_state()
-            .map_err(|_| NotifyWithdrawalError::StorageFailure)?
-            .withdrawal_fee_guard
-        {
+        let active_guard = if let Some((context, _)) = asset_context {
+            store
+                .asset_financial_state(&context.asset_id)
+                .map_err(|_| NotifyWithdrawalError::StorageFailure)?
+                .withdrawal_fee_guard
+        } else {
+            store
+                .admin_state()
+                .map_err(|_| NotifyWithdrawalError::StorageFailure)?
+                .withdrawal_fee_guard
+        };
+        if let Some(guard) = active_guard {
             return Err(NotifyWithdrawalError::LedgerFeeExceedsServiceFee {
                 ledger_fee: Nat::from(guard.ledger_fee),
                 charged_service_fee: Nat::from(guard.charged_service_fee),
@@ -573,8 +703,15 @@ fn ingest_notified_withdrawal(
             )
             .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?;
             withdrawal.last_settlement_stop_reason = Some("LedgerFeeExceedsServiceFee".to_owned());
-            let mut progress = store
-                .external_progress()
+            let mut progress = asset_context
+                .map_or_else(
+                    || store.external_progress(),
+                    |(context, _)| {
+                        store
+                            .asset_financial_state(&context.asset_id)
+                            .map(|state| state.external_progress)
+                    },
+                )
                 .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
             if finalized_checkpoint_block_number != stable_observation.block_number {
                 return Err(NotifyWithdrawalError::BaseStateMismatch);
@@ -582,22 +719,37 @@ fn ingest_notified_withdrawal(
             progress
                 .observe_finalized(stable_observation)
                 .map_err(|_| NotifyWithdrawalError::BaseStateMismatch)?;
-            let mut admin = store
-                .admin_state()
-                .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
             let now_ns = ic_cdk::api::time();
-            admin.withdrawal_fee_guard = Some(crate::admin::WithdrawalFeeGuard {
+            let guard = crate::admin::WithdrawalFeeGuard {
                 ledger_fee: ledger_fee.get(),
                 charged_service_fee: observed.charged_service_fee,
                 tripped_at_ns: now_ns,
-            });
+            };
             let mut audit = rpc_audit;
             audit.push(crate::storage::AuditEventKind::WithdrawalFeeGuardTripped {
                 ledger_fee: ledger_fee.get(),
                 charged_service_fee: observed.charged_service_fee,
             });
-            store
-                .commit_withdrawal_fee_guard_trip_bundle(
+            let committed = if let Some((context, origin)) = asset_context {
+                store.commit_asset_withdrawal_fee_guard_trip_bundle(
+                    &withdrawal,
+                    &progress,
+                    context.asset_id,
+                    origin,
+                    guard,
+                    ic_cdk::api::canister_self(),
+                    now_ns,
+                    audit,
+                    transaction_hash,
+                    notification_window_seconds,
+                    notification_ingestion_limit,
+                )
+            } else {
+                let mut admin = store
+                    .admin_state()
+                    .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
+                admin.withdrawal_fee_guard = Some(guard);
+                store.commit_withdrawal_fee_guard_trip_bundle(
                     &withdrawal,
                     &progress,
                     &admin,
@@ -608,7 +760,8 @@ fn ingest_notified_withdrawal(
                     notification_window_seconds,
                     notification_ingestion_limit,
                 )
-                .map_err(notification_commit_error)?;
+            };
+            committed.map_err(notification_commit_error)?;
             return Err(NotifyWithdrawalError::LedgerFeeExceedsServiceFee {
                 ledger_fee: Nat::from(ledger_fee.get()),
                 charged_service_fee: Nat::from(observed.charged_service_fee),
@@ -627,8 +780,15 @@ fn ingest_notified_withdrawal(
             stable_observation.observed_at_ns,
         )
         .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?;
-        let mut progress = store
-            .external_progress()
+        let mut progress = asset_context
+            .map_or_else(
+                || store.external_progress(),
+                |(context, _)| {
+                    store
+                        .asset_financial_state(&context.asset_id)
+                        .map(|state| state.external_progress)
+                },
+            )
             .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
         if finalized_checkpoint_block_number != stable_observation.block_number {
             return Err(NotifyWithdrawalError::BaseStateMismatch);
@@ -643,8 +803,11 @@ fn ingest_notified_withdrawal(
             memo: payload_hash,
             amount: Amount::new(observed.amount_out),
             fee: ledger_fee,
-            from: Account::new(ic_cdk::api::canister_self().as_slice().to_vec(), [0; 32])
-                .map_err(|_| NotifyWithdrawalError::StorageFailure)?,
+            from: Account::new(
+                ic_cdk::api::canister_self().as_slice().to_vec(),
+                asset_context.map_or([0; 32], |(context, _)| context.custody_subaccount),
+            )
+            .map_err(|_| NotifyWithdrawalError::StorageFailure)?,
             to: Account::new(observed.owner, observed.subaccount)
                 .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?,
             spender: None,
@@ -663,8 +826,21 @@ fn ingest_notified_withdrawal(
             })
             .map_err(|_| NotifyWithdrawalError::InvalidBaseResponse)?;
         let now_ns = ic_cdk::api::time();
-        store
-            .commit_new_withdrawal_release_bundle_with_rpc_audit(
+        let commit = if let Some((context, origin)) = asset_context {
+            store.commit_new_asset_withdrawal_release_bundle_with_rpc_audit(
+                &withdrawal,
+                &progress,
+                ic_cdk::api::canister_self(),
+                now_ns,
+                rpc_audit,
+                transaction_hash,
+                notification_window_seconds,
+                notification_ingestion_limit,
+                context.asset_id,
+                origin,
+            )
+        } else {
+            store.commit_new_withdrawal_release_bundle_with_rpc_audit(
                 &withdrawal,
                 &progress,
                 ic_cdk::api::canister_self(),
@@ -674,7 +850,8 @@ fn ingest_notified_withdrawal(
                 notification_window_seconds,
                 notification_ingestion_limit,
             )
-            .map_err(notification_commit_error)?;
+        };
+        commit.map_err(notification_commit_error)?;
         Ok(NotifyWithdrawalReceipt::Ingested {
             withdrawal_id: observed.id.to_vec(),
             finalized_checkpoint_block_number,
@@ -863,6 +1040,14 @@ pub(crate) fn validate_deposit_args(
     caller: Principal,
     args: &DepositArgs,
 ) -> Result<ValidatedDepositArgs, DepositError> {
+    validate_deposit_args_with_fee(caller, args, ledger::KINIC_LEDGER_FEE)
+}
+
+pub(crate) fn validate_deposit_args_with_fee(
+    caller: Principal,
+    args: &DepositArgs,
+    ledger_fee: Amount,
+) -> Result<ValidatedDepositArgs, DepositError> {
     if caller == Principal::anonymous() {
         return Err(DepositError::InvalidRequest(
             "anonymous caller is not allowed".into(),
@@ -886,7 +1071,7 @@ pub(crate) fn validate_deposit_args(
     };
     let gross_amount = nat_u128(&args.gross_amount)?;
     let max_service_fee = nat_u128(&args.max_service_fee)?;
-    if gross_amount <= ledger::KINIC_LEDGER_FEE.get() {
+    if gross_amount <= ledger_fee.get() {
         return Err(DepositError::InvalidRequest(
             "gross_amount must exceed the fixed ledger fee".into(),
         ));
@@ -912,6 +1097,38 @@ pub(crate) fn deposit_action_id(
         caller,
         args.owner_sequence,
     )
+}
+
+pub(crate) fn asset_deposit_action_id(
+    caller: Principal,
+    args: &crate::multi_asset::AssetOperationArgs<DepositArgs>,
+) -> Result<[u8; 32], DepositError> {
+    let asset_id = crate::multi_asset::parse_asset_id(&args.asset_id)
+        .map_err(|error| DepositError::InvalidRequest(error.into()))?;
+    let context = STORE
+        .with(|store| {
+            let store = store.borrow();
+            let root = store
+                .config()?
+                .ok_or(crate::storage::StorageError::RecordNotFound)?;
+            let asset = store
+                .asset(&asset_id)?
+                .ok_or(crate::storage::StorageError::RecordNotFound)?;
+            crate::multi_asset::AssetExecutionContext::new(root, asset, true)
+                .map_err(|_| crate::storage::StorageError::DecodeFailed)
+        })
+        .map_err(|_| DepositError::InvalidRequest("asset is unknown or not enabled".into()))?;
+    validate_deposit_args_with_fee(caller, &args.operation, context.ledger_fee)?;
+    if !context.is_shared() {
+        return deposit_action_id(caller, &args.operation);
+    }
+    Ok(crate::multi_asset::derive_deposit_id(
+        &context.asset.deployment_instance_id,
+        ic_cdk::api::canister_self(),
+        asset_id,
+        caller,
+        args.operation.owner_sequence,
+    ))
 }
 
 fn derive_deposit_id(
@@ -1151,26 +1368,78 @@ pub async fn request_deposit(
     caller: Principal,
     args: DepositArgs,
 ) -> Result<DepositReceipt, DepositError> {
-    let validated = validate_deposit_args(caller, &args)?;
+    request_deposit_for_asset(caller, crate::config::KINIC_ASSET_ID, args).await
+}
+
+pub async fn request_deposit_for_asset(
+    caller: Principal,
+    asset_id: [u8; 32],
+    args: DepositArgs,
+) -> Result<DepositReceipt, DepositError> {
+    let context = STORE
+        .with(|store| {
+            let store = store.borrow();
+            let root = store
+                .config()?
+                .ok_or(crate::storage::StorageError::RecordNotFound)?;
+            let asset = store
+                .asset(&asset_id)?
+                .ok_or(crate::storage::StorageError::RecordNotFound)?;
+            crate::multi_asset::AssetExecutionContext::new(root, asset, true)
+                .map_err(|_| crate::storage::StorageError::DecodeFailed)
+        })
+        .map_err(|_| DepositError::InvalidRequest("asset is unknown or not enabled".into()))?;
+    if context.is_shared() {
+        let attestation = STORE
+            .with(|store| store.borrow().asset_runtime_attestation(&asset_id))
+            .map_err(|_| DepositError::StorageFailure)?
+            .ok_or(DepositError::BaseObservationUnavailable)?;
+        if !attestation.permits_deposit_admission() {
+            return Err(DepositError::DepositsPaused);
+        }
+    }
+    let validated = validate_deposit_args_with_fee(caller, &args, context.ledger_fee)?;
     let owner_sequence = validated.owner_sequence;
     let base_recipient = validated.base_recipient;
     let from_subaccount = validated.from_subaccount;
     let gross_amount = validated.gross_amount;
     let max_service_fee = validated.max_service_fee;
-    let deposit_id = derive_deposit_id(
-        &config()?,
-        ic_cdk::api::canister_self(),
-        caller,
-        owner_sequence,
-    )?;
-    let payload_hash = hash_concat(&[
-        b"KINIC-DEPOSIT-PAYLOAD-V3",
-        &deposit_id,
-        &base_recipient,
-        &from_subaccount,
-        &gross_amount.to_be_bytes(),
-        &max_service_fee.to_be_bytes(),
-    ]);
+    let deposit_id = if context.is_shared() {
+        crate::multi_asset::derive_deposit_id(
+            &context.asset.deployment_instance_id,
+            ic_cdk::api::canister_self(),
+            asset_id,
+            caller,
+            owner_sequence,
+        )
+    } else {
+        derive_deposit_id(
+            &context.root,
+            ic_cdk::api::canister_self(),
+            caller,
+            owner_sequence,
+        )?
+    };
+    let payload_hash = if context.is_shared() {
+        hash_concat(&[
+            b"IC-BASE-ASSET-DEPOSIT-PAYLOAD-V1",
+            &asset_id,
+            &deposit_id,
+            &base_recipient,
+            &from_subaccount,
+            &gross_amount.to_be_bytes(),
+            &max_service_fee.to_be_bytes(),
+        ])
+    } else {
+        hash_concat(&[
+            b"KINIC-DEPOSIT-PAYLOAD-V3",
+            &deposit_id,
+            &base_recipient,
+            &from_subaccount,
+            &gross_amount.to_be_bytes(),
+            &max_service_fee.to_be_bytes(),
+        ])
+    };
 
     if let Some(receipt) = existing_receipt(deposit_id, payload_hash)? {
         return Ok(receipt);
@@ -1188,7 +1457,7 @@ pub async fn request_deposit(
         });
     }
 
-    let config = config()?;
+    let config = context.root.clone();
     let deposits_paused = STORE.with(|store| {
         store
             .borrow()
@@ -1208,15 +1477,25 @@ pub async fn request_deposit(
     })?;
     // Existing funding attempts must finish reconciliation even if admission policy changed.
     if existing_attempt.is_none()
-        && !STORE
-            .with(|store| deposit_recipient_allowed(&store.borrow(), &config, base_recipient))?
+        && !if context.is_shared() {
+            base_recipient != [0; 20]
+                && base_recipient != context.bridge_contract
+                && context.token_contract != Some(base_recipient)
+        } else {
+            STORE
+                .with(|store| deposit_recipient_allowed(&store.borrow(), &config, base_recipient))?
+        }
     {
         return Err(DepositError::InvalidRequest(
             "Base recipient cannot be zero, Bridge, or BSNS".into(),
         ));
     }
-    let ledger_fee = ledger::KINIC_LEDGER_FEE;
-    let memo = hash_concat(&[b"KINIC-DEPOSIT-MEMO-V3", &deposit_id]);
+    let ledger_fee = context.ledger_fee;
+    let memo = if context.is_shared() {
+        hash_concat(&[b"IC-BASE-ASSET-DEPOSIT-MEMO-V1", &asset_id, &deposit_id])
+    } else {
+        hash_concat(&[b"KINIC-DEPOSIT-MEMO-V3", &deposit_id])
+    };
     let canister = ic_cdk::api::canister_self();
     let fresh_transfer = LedgerTransferIdentity {
         operation: LedgerOperation::PullDeposit,
@@ -1226,7 +1505,7 @@ pub async fn request_deposit(
         fee: ledger_fee,
         from: Account::new(caller.as_slice().to_vec(), from_subaccount)
             .map_err(|e| DepositError::Rejected(format!("{e:?}")))?,
-        to: Account::new(canister.as_slice().to_vec(), [0; 32])
+        to: Account::new(canister.as_slice().to_vec(), context.custody_subaccount)
             .map_err(|e| DepositError::Rejected(format!("{e:?}")))?,
         spender: Some(
             Account::new(canister.as_slice().to_vec(), [0; 32])
@@ -1267,7 +1546,7 @@ pub async fn request_deposit(
         STORE.with(|store| {
             store
                 .borrow_mut()
-                .prepare_deposit_funding_attempt(
+                .prepare_asset_deposit_funding_attempt(
                     caller,
                     &proposed,
                     quota,
@@ -1275,6 +1554,7 @@ pub async fn request_deposit(
                         cycles_balance: ic_cdk::api::canister_liquid_cycle_balance(),
                         reserve_policy: config.reserve_policy(),
                     },
+                    asset_id,
                 )
                 .map_err(deposit_storage_error)
         })?
@@ -1323,7 +1603,7 @@ pub async fn request_deposit(
             .map_err(|_| DepositError::StorageFailure)
     })?;
 
-    let ledger_outcome = ledger::pull(config.ledger_canister_id, &attempt.transfer).await;
+    let ledger_outcome = ledger::pull(context.ledger_canister_id(), &attempt.transfer).await;
     let outcome_kind = match &ledger_outcome {
         bridge_core::LedgerCallOutcome::Succeeded { .. } => 0,
         bridge_core::LedgerCallOutcome::Duplicate { .. } => 1,
@@ -1344,14 +1624,18 @@ pub async fn request_deposit(
             // preflight only for this asset-bound identity, but always expose
             // the funded record even when Base is temporarily unavailable or
             // rejects the current snapshot; settlement can retry or refund it.
-            let _preflight = fresh_deposit_preflight(
-                &config,
-                ic_cdk::api::time(),
-                deposit_id,
-                Amount::new(gross_amount),
-                Amount::new(max_service_fee),
-            )
-            .await;
+            if context.is_shared() {
+                let _ = evm_rpc::shared_asset_observation(&context.evm_args(), asset_id).await;
+            } else {
+                let _ = fresh_deposit_preflight(
+                    &config,
+                    ic_cdk::api::time(),
+                    deposit_id,
+                    Amount::new(gross_amount),
+                    Amount::new(max_service_fee),
+                )
+                .await;
+            }
             promote_funding_success(&attempt, block_index, &config)
         }
         (
@@ -1833,34 +2117,101 @@ pub(crate) fn unsigned_authorization_rejection(
     Ok(None)
 }
 
+pub(crate) fn unsigned_asset_authorization_rejection(
+    store: &crate::storage::StableStore,
+    context: &crate::multi_asset::AssetExecutionContext,
+    authorization: &bridge_core::MintAuthorizationRecord,
+) -> Result<Option<DepositRefundReason>, DepositError> {
+    if !context.is_shared() {
+        return unsigned_authorization_rejection(store, &context.root, authorization);
+    }
+    if authorization.signature.is_some() {
+        return Ok(None);
+    }
+    let recipient = authorization.authorization.recipient;
+    if recipient == [0; 20]
+        || recipient == context.bridge_contract
+        || Some(recipient) == context.token_contract
+    {
+        return Ok(Some(DepositRefundReason::InvalidRecipient));
+    }
+    if ::bridge_core::kernel::deposit_refund_amount(
+        authorization.authorization.gross_amount.get(),
+        authorization.authorization.charged_service_fee.get(),
+        context.ledger_fee.get(),
+    )
+    .is_none()
+    {
+        return Ok(Some(DepositRefundReason::RefundAmountTooSmall));
+    }
+    Ok(None)
+}
+
 pub(crate) fn commit_deposit_authorization(
     store: &mut crate::storage::StableStore,
     deposit_id: [u8; 32],
     quote: DepositQuote,
     authorization: bridge_core::MintAuthorizationRecord,
+    shared_binding: Option<crate::multi_asset::SharedAuthorizationBinding>,
 ) -> Result<(), DepositError> {
     let intent = store
         .deposit_intent(deposit_id)
         .map_err(|_| DepositError::StorageFailure)?
         .ok_or(DepositError::StorageFailure)?;
-    let config = store
-        .config()
-        .map_err(|_| DepositError::StorageFailure)?
-        .ok_or(DepositError::StorageFailure)?;
-    if let Some(reason) = unsigned_authorization_rejection(store, &config, &authorization)? {
-        return Err(DepositError::Rejected(format!("{reason:?}")));
-    }
-    let expected_contract: [u8; 20] = config
-        .bridge_contract
-        .as_slice()
-        .try_into()
-        .map_err(|_| DepositError::StorageFailure)?;
-    if authorization.authorization.recipient != intent.base_recipient
-        || authorization.domain.chain_id != config.base_chain_id
-        || authorization.domain.verifying_contract != expected_contract
-        || authorization.digest
-            != crate::mint_authorization::digest(&authorization.domain, authorization.authorization)
-    {
+    let context = crate::multi_asset::AssetExecutionContext::for_record(
+        store,
+        crate::storage::RecordAssetKind::Deposit,
+        &deposit_id,
+        true,
+    )
+    .map_err(|_| DepositError::StorageFailure)?;
+    let binding_valid = if context.is_shared() {
+        let binding = shared_binding.ok_or(DepositError::StorageFailure)?;
+        let recipient = authorization.authorization.recipient;
+        let expected_digest = crate::multi_asset::shared_authorization_digest(
+            &authorization.domain,
+            crate::multi_asset::SharedMintAuthorization {
+                asset_id: binding.asset_id,
+                authorization: authorization.authorization,
+                global_epoch: binding.global_epoch,
+                asset_epoch: binding.asset_epoch,
+            },
+        );
+        binding.asset_id == context.asset_id
+            && binding.global_epoch == authorization.authorization.authorization_epoch
+            && recipient != [0; 20]
+            && recipient != context.bridge_contract
+            && Some(recipient) != context.token_contract
+            && ::bridge_core::kernel::deposit_refund_amount(
+                authorization.authorization.gross_amount.get(),
+                authorization.authorization.charged_service_fee.get(),
+                context.ledger_fee.get(),
+            )
+            .is_some()
+            && authorization.domain
+                == crate::multi_asset::shared_domain(
+                    context.asset.base_chain_id,
+                    context.bridge_contract,
+                )
+            && authorization.digest == expected_digest
+    } else {
+        if shared_binding.is_some() {
+            return Err(DepositError::StorageFailure);
+        }
+        if let Some(reason) =
+            unsigned_authorization_rejection(store, &context.root, &authorization)?
+        {
+            return Err(DepositError::Rejected(format!("{reason:?}")));
+        }
+        authorization.domain.chain_id == context.root.base_chain_id
+            && authorization.domain.verifying_contract == context.bridge_contract
+            && authorization.digest
+                == crate::mint_authorization::digest(
+                    &authorization.domain,
+                    authorization.authorization,
+                )
+    };
+    if authorization.authorization.recipient != intent.base_recipient || !binding_valid {
         return Err(DepositError::Rejected(
             "Mint Authorization does not match the canonical Deposit".into(),
         ));
@@ -1875,9 +2226,15 @@ pub(crate) fn commit_deposit_authorization(
             authorization: Box::new(authorization),
         })
         .map_err(|e| DepositError::Rejected(format!("{e:?}")))?;
-    store
-        .put_deposit_transition(&deposit, result)
-        .map_err(|_| DepositError::StorageFailure)?;
+    if let Some(binding) = shared_binding {
+        store
+            .put_deposit_transition_with_shared_authorization_binding(&deposit, result, binding)
+            .map_err(|_| DepositError::StorageFailure)?;
+    } else {
+        store
+            .put_deposit_transition(&deposit, result)
+            .map_err(|_| DepositError::StorageFailure)?;
+    }
     Ok(())
 }
 
@@ -1914,12 +2271,27 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
         let store = store.borrow();
         let record = storage_or_trap("deposit read", store.deposit(id))?;
         let intent = storage_or_trap("deposit intent read", store.deposit_intent(id))?;
+        let context = storage_or_trap(
+            "deposit asset binding read",
+            crate::multi_asset::AssetExecutionContext::for_record(
+                &store,
+                crate::storage::RecordAssetKind::Deposit,
+                &id,
+                false,
+            ),
+        );
+        let shared_binding = storage_or_trap(
+            "deposit shared authorization binding read",
+            store.shared_authorization_binding(id),
+        );
         let job = storage_or_trap(
             "settlement job read",
             store.settlement_job(crate::storage::SettlementJobKind::Deposit, id),
         );
         Some(DepositView {
             deposit_id: id.to_vec(),
+            asset_id: context.asset_id.to_vec(),
+            bridge_kind: context.asset.bridge_kind,
             owner_sequence: intent.owner_sequence,
             created_at_ns: deposit_created_at_ns(&record),
             funding_ledger_block_index: deposit_funding_ledger_block_index(&record),
@@ -1929,7 +2301,8 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
                 net_amount: Nat::from(quote.net_amount.get()),
             }),
             refund: deposit_refund_view(&record),
-            available_refund_amount: available_refund_amount(&record).map(Nat::from),
+            available_refund_amount: available_refund_amount(&record, context.ledger_fee)
+                .map(Nat::from),
             max_service_fee: Nat::from(record.max_service_fee.get()),
             base_recipient: intent.base_recipient.to_vec(),
             from_subaccount: (intent.from_subaccount != [0; 32])
@@ -1949,12 +2322,13 @@ pub fn get_deposit(id: Vec<u8>) -> Option<DepositView> {
                 .mint_authorization
                 .as_ref()
                 .map(mint_authorization_view),
+            asset_authorization_epoch: shared_binding.map(|binding| binding.asset_epoch),
             automatic_progress: automatic_progress(job),
         })
     })
 }
 
-fn available_refund_amount(record: &DepositRecord) -> Option<u128> {
+fn available_refund_amount(record: &DepositRecord, ledger_fee: Amount) -> Option<u128> {
     if !matches!(record.state, DepositState::RefundAvailable { .. }) {
         return None;
     }
@@ -1967,11 +2341,7 @@ fn available_refund_amount(record: &DepositRecord) -> Option<u128> {
     } else {
         0
     };
-    bridge_core::deposit_refund_amount(
-        record.gross_amount.get(),
-        service_fee,
-        crate::ledger::KINIC_LEDGER_FEE.get(),
-    )
+    bridge_core::deposit_refund_amount(record.gross_amount.get(), service_fee, ledger_fee.get())
 }
 
 fn mint_authorization_view(record: &bridge_core::MintAuthorizationRecord) -> MintAuthorizationView {
@@ -2087,6 +2457,29 @@ fn withdrawal_release_ledger_block_index(record: &WithdrawalRecord) -> Option<Na
     }
 }
 
+pub fn get_asset_deposit_by_owner_sequence(
+    asset_id: Vec<u8>,
+    owner: Principal,
+    owner_sequence: u64,
+) -> Option<DepositView> {
+    let asset_id = crate::multi_asset::parse_asset_id(&asset_id).ok()?;
+    let asset = STORE.with(|store| store.borrow().asset(&asset_id)).ok()??;
+    let config = config().ok()?;
+    let id = if asset_id == crate::config::KINIC_ASSET_ID {
+        derive_deposit_id(&config, ic_cdk::api::canister_self(), owner, owner_sequence).ok()?
+    } else {
+        crate::multi_asset::derive_deposit_id(
+            &asset.deployment_instance_id,
+            ic_cdk::api::canister_self(),
+            asset_id,
+            owner,
+            owner_sequence,
+        )
+    };
+    let record = get_deposit(id.to_vec())?;
+    (record.asset_id == asset_id).then_some(record)
+}
+
 pub fn get_deposit_by_owner_sequence(owner: Principal, owner_sequence: u64) -> Option<DepositView> {
     let config = config().ok()?;
     let id =
@@ -2097,10 +2490,24 @@ pub fn get_deposit_by_owner_sequence(owner: Principal, owner_sequence: u64) -> O
 pub fn get_withdrawal(id: Vec<u8>) -> Option<WithdrawalView> {
     let id: [u8; 32] = id.as_slice().try_into().ok()?;
     STORE.with(|store| {
-        let record = storage_or_trap("withdrawal read", store.borrow().withdrawal(id))?;
+        let store = store.borrow();
+        let record = storage_or_trap("withdrawal read", store.withdrawal(id))?;
+        let context = storage_or_trap(
+            "withdrawal asset binding read",
+            crate::multi_asset::AssetExecutionContext::for_record(
+                &store,
+                crate::storage::RecordAssetKind::Withdrawal,
+                &id,
+                false,
+            ),
+        );
+        let origin = storage_or_trap("withdrawal origin read", store.withdrawal_origin(id));
         let state = WithdrawalPhase::from(&record.state);
         Some(WithdrawalView {
             withdrawal_id: id.to_vec(),
+            asset_id: context.asset_id.to_vec(),
+            bridge_kind: context.asset.bridge_kind,
+            base_withdrawal_id: origin.map(|origin| origin.base_withdrawal_id),
             amount: Nat::from(record.amount.get()),
             max_service_fee: Nat::from(record.max_service_fee.get()),
             charged_service_fee: Nat::from(record.charged_service_fee.get()),

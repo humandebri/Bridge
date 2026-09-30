@@ -2,6 +2,8 @@ use crate::Amount;
 
 /// Validity issued by the Canister from the IC consensus timestamp.
 pub const MINT_AUTHORIZATION_TTL_SECONDS: u64 = 15 * 60;
+pub const SHARED_MINT_AUTHORIZATION_DOMAIN_NAME: &str = "IC Base Multi-Token Bridge";
+
 pub const MINT_AUTHORIZATION_DOMAIN_NAME: &str = "KINIC Bridge";
 pub const MINT_AUTHORIZATION_DOMAIN_VERSION: &str = "1";
 

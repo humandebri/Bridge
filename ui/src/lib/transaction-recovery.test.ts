@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { encodeAbiParameters, encodeEventTopics, encodeFunctionData, type Hex } from "viem"
+import { multiTokenBridgeAbi } from "@/generated/abi/multitokenbridge.generated"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { withdrawalReceiptDetails } from "./transaction-recovery"
 const mocks = vi.hoisted(() => ({
@@ -80,4 +81,41 @@ describe("withdrawal receipt validation", () => {
     mocks.transaction.mockResolvedValue({ to: sender })
     await expect(withdrawalReceiptDetails(hash)).rejects.toThrow("another contract")
   })
+})
+
+it("shared_receipt_maps_base_id_to_asset_bound_ic_id", async () => {
+  const assetId = `0x${"12".repeat(32)}` as Hex
+  const receipt = await mocks.receipt()
+  receipt.logs[0].topics = encodeEventTopics({
+    abi: multiTokenBridgeAbi,
+    eventName: "WithdrawalCommitted",
+    args: { withdrawalId: 1n, assetId, requester: sender },
+  })
+  mocks.receipt.mockResolvedValue(receipt)
+  mocks.transaction.mockResolvedValue({
+    to: bridge,
+    from: sender,
+    input: encodeFunctionData({
+      abi: multiTokenBridgeAbi,
+      functionName: "createWithdrawal",
+      args: [assetId, 100n, 20n, "0x01", subaccount],
+    }),
+  })
+  const result = await withdrawalReceiptDetails(hash, undefined, {
+    shared: true,
+    assetId,
+    bridgeAddress: bridge,
+  })
+  expect(result.id).toBe(1n)
+  expect(result.icWithdrawalId).toBe(
+    "0x793051752765a910119a3ba90c78166d9a89b8233c1870b2bba71b14c12d6197",
+  )
+  expect(result).toMatchObject({ shared: true, contractAddress: bridge })
+  await expect(
+    withdrawalReceiptDetails(hash, undefined, {
+      shared: true,
+      assetId: `0x${"13".repeat(32)}`,
+      bridgeAddress: bridge,
+    }),
+  ).rejects.toThrow("asset")
 })

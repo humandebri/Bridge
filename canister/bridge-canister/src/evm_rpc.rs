@@ -196,6 +196,34 @@ pub struct BridgeSnapshot {
     pub withdrawals_paused: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SharedAssetSnapshot {
+    pub mint: BaseMintSnapshot,
+    pub min_service_fee: u128,
+    pub token: [u8; 20],
+    pub bridge_signer: [u8; 20],
+    pub global_epoch: u64,
+    pub asset_epoch: u64,
+    pub global_deposits_paused: bool,
+    pub global_withdrawals_paused: bool,
+    pub asset_deposits_paused: bool,
+    pub asset_withdrawals_paused: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedAssetObservation {
+    pub finalized: FinalizedObservation,
+    pub finalized_timestamp: u64,
+    pub snapshot: SharedAssetSnapshot,
+    pub bridge_runtime_sha256: [u8; 32],
+    pub token_runtime_sha256: [u8; 32],
+    pub token_bridge: [u8; 20],
+    pub token_name: String,
+    pub token_symbol: String,
+    pub token_decimals: u8,
+    pub rpc_audit: RpcAuditEvidence,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CurrentWithdrawal {
     pub requester: [u8; 20],
@@ -254,6 +282,19 @@ pub enum NotifiedWithdrawalOutcome {
         stable_observation: Box<FinalizedObservationRecord>,
         receipt_block_number: u64,
         finalized_checkpoint_block_number: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SharedNotifiedWithdrawalOutcome {
+    Missing,
+    Pending,
+    Reverted,
+    Confirmed {
+        withdrawal: Box<ObservedWithdrawal>,
+        base_withdrawal_id: [u8; 32],
+        observation: Box<SharedAssetObservation>,
+        stable_observation: Box<FinalizedObservationRecord>,
     },
 }
 
@@ -541,6 +582,246 @@ pub async fn deployment_postconditions_at(
     })
 }
 
+pub async fn shared_asset_observation(
+    args: &BridgeInitArgs,
+    asset_id: [u8; 32],
+) -> Result<SharedAssetObservation, ObservationError> {
+    let block = finalized_block(args).await?;
+    let finalized = FinalizedObservation {
+        block_number: u64::try_from(block.number.clone())
+            .map_err(|_| ObservationError::Overflow)?,
+        block_hash: *block.hash.as_array(),
+        observed_at_ns: ic_cdk::api::time(),
+    };
+    shared_asset_observation_from_block(args, asset_id, finalized, block).await
+}
+
+pub async fn shared_asset_observation_at(
+    args: &BridgeInitArgs,
+    asset_id: [u8; 32],
+    finalized: FinalizedObservation,
+) -> Result<SharedAssetObservation, ObservationError> {
+    let result = client(args)
+        .get_block_by_number(BlockTag::Number(Nat256::from(finalized.block_number)))
+        .with_response_size_estimate(BLOCK_RESPONSE_BYTES)
+        .with_response_consensus(ConsensusStrategy::Equality)
+        .try_send()
+        .await
+        .map_err(observation_call_error)?;
+    let block = match result {
+        MultiRpcResult::Consistent(Ok(block)) => block,
+        MultiRpcResult::Consistent(Err(_)) => return Err(ObservationError::Rpc),
+        MultiRpcResult::Inconsistent(results) => {
+            exact_provider_response_quorum_by(results, |left, right| {
+                withdrawal_finalized_identity(left).is_some()
+                    && withdrawal_finalized_identity(left) == withdrawal_finalized_identity(right)
+            })?
+        }
+    };
+    if u64::try_from(block.number.clone()).map_err(|_| ObservationError::Overflow)?
+        != finalized.block_number
+        || *block.hash.as_array() != finalized.block_hash
+    {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    shared_asset_observation_from_block(args, asset_id, finalized, block).await
+}
+
+async fn shared_asset_observation_from_block(
+    args: &BridgeInitArgs,
+    asset_id: [u8; 32],
+    finalized: FinalizedObservation,
+    block: Block,
+) -> Result<SharedAssetObservation, ObservationError> {
+    let finalized_timestamp =
+        u64::try_from(block.timestamp).map_err(|_| ObservationError::Overflow)?;
+    let mut snapshot_calldata = selector("assetSnapshot(bytes32)").to_vec();
+    snapshot_calldata.extend_from_slice(&asset_id);
+    let mut token_calldata = selector("tokenForAsset(bytes32)").to_vec();
+    token_calldata.extend_from_slice(&asset_id);
+    let bridge_signer_calldata = selector("bridgeSigner()");
+    let global_epoch_calldata = selector("globalEpoch()");
+    let global_deposits_paused_calldata = selector("globalDepositMintsPaused()");
+    let global_withdrawals_paused_calldata = selector("globalWithdrawalsPaused()");
+    let (
+        snapshot_value,
+        token_value,
+        bridge_signer_value,
+        global_epoch_value,
+        global_deposits_paused_value,
+        global_withdrawals_paused_value,
+        bridge_runtime,
+    ) = futures::join!(
+        eth_call_at_observation(args, &snapshot_calldata, finalized),
+        eth_call_at_observation(args, &token_calldata, finalized),
+        eth_call_at_observation(args, &bridge_signer_calldata, finalized),
+        eth_call_at_observation(args, &global_epoch_calldata, finalized),
+        eth_call_at_observation(args, &global_deposits_paused_calldata, finalized),
+        eth_call_at_observation(args, &global_withdrawals_paused_calldata, finalized),
+        runtime_at_observation(args, &args.bridge_contract, finalized),
+    );
+    let token = observed_address(&token_value?)?;
+    let snapshot = decode_shared_asset_snapshot(
+        &snapshot_value?,
+        finalized.block_number,
+        finalized_timestamp,
+        observed_address(&bridge_signer_value?)?,
+        observed_u64(&global_epoch_value?)?,
+        decode_bool_word(&global_deposits_paused_value?)?,
+        decode_bool_word(&global_withdrawals_paused_value?)?,
+    )?;
+    if token != snapshot.token {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let token_runtime = runtime_at_observation(args, &token, finalized).await?;
+    if token_runtime.is_empty() {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let name_calldata = selector("name()");
+    let symbol_calldata = selector("symbol()");
+    let decimals_calldata = selector("decimals()");
+    let token_bridge_calldata = selector("bridge()");
+    let (token_name, token_symbol, token_decimals, token_bridge) = futures::join!(
+        eth_call_target_at_observation(args, &token, &name_calldata, finalized),
+        eth_call_target_at_observation(args, &token, &symbol_calldata, finalized),
+        eth_call_target_at_observation(args, &token, &decimals_calldata, finalized),
+        eth_call_target_at_observation(args, &token, &token_bridge_calldata, finalized),
+    );
+    let token_runtime_sha256: [u8; 32] = Sha256::digest(&token_runtime).into();
+    let bridge_runtime_sha256: [u8; 32] = Sha256::digest(&bridge_runtime?).into();
+    let token_bridge = observed_address(&token_bridge?)?;
+    let token_name = observed_string(&token_name?)?;
+    let token_symbol = observed_string(&token_symbol?)?;
+    let token_decimals = observed_u64(&token_decimals?)?
+        .try_into()
+        .map_err(|_| ObservationError::Overflow)?;
+    let request = json!({
+        "evm_rpc_canister_id": args.evm_rpc_canister_id.to_text(),
+        "candid_method": "multi_request",
+        "configured_chain_id": args.base_chain_id,
+        "bridge_contract": format!("0x{}", hex(&args.bridge_contract)),
+        "asset_id": format!("0x{}", hex(&asset_id)),
+        "finalized_block_hash": format!("0x{}", hex(&finalized.block_hash)),
+        "calls": ["assetSnapshot", "tokenForAsset", "bridgeSigner", "globalEpoch",
+            "globalDepositMintsPaused", "globalWithdrawalsPaused", "bridgeRuntime",
+            "tokenRuntime", "tokenMetadata", "tokenBridge"]
+    });
+    let response = json!({
+        "finalized_block_number": finalized.block_number,
+        "finalized_timestamp": finalized_timestamp,
+        "token": format!("0x{}", hex(&snapshot.token)),
+        "bridge_signer": format!("0x{}", hex(&snapshot.bridge_signer)),
+        "global_epoch": snapshot.global_epoch,
+        "asset_epoch": snapshot.asset_epoch,
+        "service_fee": snapshot.mint.service_fee.get().to_string(),
+        "min_service_fee": snapshot.min_service_fee.to_string(),
+        "max_service_fee": snapshot.mint.max_service_fee.get().to_string(),
+        "per_deposit_limit": snapshot.mint.per_deposit_limit.get().to_string(),
+        "mint_window_limit": snapshot.mint.mint_window_limit.get().to_string(),
+        "mint_window_duration": snapshot.mint.mint_window_duration,
+        "mint_window_started_at": snapshot.mint.mint_window_started_at,
+        "minted_in_window": snapshot.mint.minted_in_window.get().to_string(),
+        "global_deposits_paused": snapshot.global_deposits_paused,
+        "global_withdrawals_paused": snapshot.global_withdrawals_paused,
+        "asset_deposits_paused": snapshot.asset_deposits_paused,
+        "asset_withdrawals_paused": snapshot.asset_withdrawals_paused,
+        "bridge_runtime_sha256": format!("0x{}", hex(&bridge_runtime_sha256)),
+        "token_runtime_sha256": format!("0x{}", hex(&token_runtime_sha256)),
+        "token_bridge": format!("0x{}", hex(&token_bridge)),
+        "token_name": token_name,
+        "token_symbol": token_symbol,
+        "token_decimals": token_decimals,
+    });
+    Ok(SharedAssetObservation {
+        finalized,
+        finalized_timestamp,
+        snapshot,
+        bridge_runtime_sha256,
+        token_runtime_sha256,
+        token_bridge,
+        token_name,
+        token_symbol,
+        token_decimals,
+        rpc_audit: RpcAuditEvidence {
+            evm_rpc_canister_id: args.evm_rpc_canister_id,
+            call_method: "multi_request".into(),
+            request_digest: Sha256::digest(
+                serde_json::to_vec(&request).map_err(|_| ObservationError::InvalidResponse)?,
+            )
+            .into(),
+            quorum_response_digest: Sha256::digest(
+                serde_json::to_vec(&response).map_err(|_| ObservationError::InvalidResponse)?,
+            )
+            .into(),
+            finalized_block_number: finalized.block_number,
+            finalized_block_hash: finalized.block_hash,
+            transaction_hash: None,
+        },
+    })
+}
+
+fn decode_shared_asset_snapshot(
+    value: &str,
+    finalized_block_number: u64,
+    finalized_timestamp: u64,
+    bridge_signer: [u8; 20],
+    global_epoch: u64,
+    global_deposits_paused: bool,
+    global_withdrawals_paused: bool,
+) -> Result<SharedAssetSnapshot, ObservationError> {
+    let bytes = decode_hex(
+        value
+            .trim_matches('"')
+            .strip_prefix("0x")
+            .ok_or(ObservationError::InvalidResponse)?,
+    )?;
+    if bytes.len() != 12 * ABI_WORD_BYTES {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let word = |index: usize| -> Result<&[u8], ObservationError> {
+        bytes
+            .get(index * ABI_WORD_BYTES..(index + 1) * ABI_WORD_BYTES)
+            .ok_or(ObservationError::InvalidResponse)
+    };
+    let address = word(0)?;
+    if address[..12].iter().any(|byte| *byte != 0) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let boolean = |index: usize| -> Result<bool, ObservationError> {
+        match word_u128(word(index)?)? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(ObservationError::InvalidResponse),
+        }
+    };
+    Ok(SharedAssetSnapshot {
+        mint: BaseMintSnapshot {
+            finalized_head_block_number: finalized_block_number,
+            confirmed_block_timestamp: finalized_timestamp,
+            service_fee: Amount::new(word_u128(word(2)?)?),
+            max_service_fee: Amount::new(word_u128(word(4)?)?),
+            per_deposit_limit: Amount::new(word_u128(word(5)?)?),
+            mint_window_limit: Amount::new(word_u128(word(6)?)?),
+            mint_window_duration: u64::try_from(word_u128(word(7)?)?)
+                .map_err(|_| ObservationError::Overflow)?,
+            mint_window_started_at: u64::try_from(word_u128(word(8)?)?)
+                .map_err(|_| ObservationError::Overflow)?,
+            minted_in_window: Amount::new(word_u128(word(9)?)?),
+        },
+        min_service_fee: word_u128(word(3)?)?,
+        token: address[12..]
+            .try_into()
+            .map_err(|_| ObservationError::InvalidResponse)?,
+        bridge_signer,
+        global_epoch,
+        asset_epoch: u64::try_from(word_u128(word(1)?)?).map_err(|_| ObservationError::Overflow)?,
+        global_deposits_paused,
+        global_withdrawals_paused,
+        asset_deposits_paused: boolean(10)?,
+        asset_withdrawals_paused: boolean(11)?,
+    })
+}
+
 fn observed_bytes32(value: &str) -> Result<[u8; 32], ObservationError> {
     decode_hex(value.trim_matches('"').strip_prefix("0x").unwrap_or(value))?
         .try_into()
@@ -694,6 +975,19 @@ pub async fn recovery_observation(
         state,
         rpc_audit,
     })
+}
+
+pub async fn shared_deposit_processed_at(
+    args: &BridgeInitArgs,
+    asset_id: [u8; 32],
+    deposit_id: [u8; 32],
+    finalized: FinalizedObservation,
+) -> Result<bool, ObservationError> {
+    let mut calldata = selector("isDepositProcessed(bytes32,bytes32)").to_vec();
+    calldata.extend_from_slice(&asset_id);
+    calldata.extend_from_slice(&deposit_id);
+    let value = eth_call_at_observation(args, &calldata, finalized).await?;
+    decode_bool_word(&value)
 }
 
 pub async fn deposit_preflight_observation(
@@ -932,6 +1226,196 @@ pub async fn exact_mint_receipt_evidence(
         receipt_observation,
         &receipt,
     )
+}
+
+pub async fn shared_exact_mint_receipt_evidence(
+    args: &BridgeInitArgs,
+    asset_id: [u8; 32],
+    authorization: &bridge_core::MintAuthorizationRecord,
+    finalized: FinalizedObservation,
+    transaction_hash: [u8; 32],
+) -> Result<bridge_core::MintFinalizationEvidence, ObservationError> {
+    let (receipt, receipt_observation) =
+        match canonical_finalized_receipt_at(args, transaction_hash, finalized).await? {
+            CanonicalFinalizedReceiptOutcome::Confirmed {
+                receipt,
+                receipt_observation,
+                ..
+            } => (receipt, receipt_observation),
+            _ => return Err(ObservationError::TransactionPending),
+        };
+    shared_mint_evidence_from_receipt(
+        args.base_chain_id,
+        &args.bridge_contract,
+        asset_id,
+        authorization,
+        finalized,
+        receipt_observation,
+        &receipt,
+    )
+}
+
+pub async fn shared_exact_mint_evidence(
+    args: &BridgeInitArgs,
+    asset_id: [u8; 32],
+    authorization: &bridge_core::MintAuthorizationRecord,
+    finalized: FinalizedObservation,
+) -> Result<bridge_core::MintFinalizationEvidence, ObservationError> {
+    let topic =
+        keccak256(b"DepositMinted(bytes32,bytes32,address,bytes32,uint256,uint256,uint256)");
+    let mut recipient_topic = [0u8; 32];
+    recipient_topic[12..].copy_from_slice(&authorization.authorization.recipient);
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_getLogs",
+        "params": [{
+            "address": format!("0x{}", hex(&args.bridge_contract)),
+            "fromBlock": format!("0x{:x}", authorization.origin.finalized_block_number),
+            "toBlock": format!("0x{:x}", finalized.block_number),
+            "topics": [
+                format!("0x{}", hex(&topic)),
+                format!("0x{}", hex(&asset_id)),
+                format!("0x{}", hex(&authorization.authorization.deposit_id)),
+                format!("0x{}", hex(&recipient_topic))
+            ]
+        }]
+    });
+    let request_digest = Sha256::digest(
+        serde_json::to_vec(&request).map_err(|_| ObservationError::InvalidResponse)?,
+    )
+    .into();
+    let value = exact_quorum_response(
+        client(args)
+            .multi_request(request)
+            .with_response_size_estimate(RECEIPT_RESPONSE_BYTES)
+            .try_send()
+            .await
+            .map_err(observation_call_error)?,
+    )?;
+    let response_digest = Sha256::digest(value.as_bytes()).into();
+    let logs: Vec<evm_rpc_types::LogEntry> =
+        serde_json::from_str(&value).map_err(|_| ObservationError::InvalidResponse)?;
+    if logs.len() != 1 {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let transaction_hash = logs[0]
+        .transaction_hash
+        .as_ref()
+        .map(|hash| *hash.as_array())
+        .ok_or(ObservationError::InvalidResponse)?;
+    let mut evidence = shared_exact_mint_receipt_evidence(
+        args,
+        asset_id,
+        authorization,
+        finalized,
+        transaction_hash,
+    )
+    .await?;
+    evidence.rpc_request_digest = request_digest;
+    evidence.rpc_response_digest = response_digest;
+    Ok(evidence)
+}
+
+fn shared_mint_evidence_from_receipt(
+    chain_id: u64,
+    bridge_contract: &[u8],
+    asset_id: [u8; 32],
+    authorization: &bridge_core::MintAuthorizationRecord,
+    finalized: FinalizedObservation,
+    receipt_observation: FinalizedObservation,
+    receipt: &TransactionReceipt,
+) -> Result<bridge_core::MintFinalizationEvidence, ObservationError> {
+    if receipt.status == Some(Nat256::from(0u64)) {
+        return Err(ObservationError::TransactionReverted);
+    }
+    if receipt.status != Some(Nat256::from(1u64)) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let topic =
+        keccak256(b"DepositMinted(bytes32,bytes32,address,bytes32,uint256,uint256,uint256)");
+    let candidates: Vec<_> = receipt
+        .logs
+        .iter()
+        .filter(|log| {
+            log.address.as_array().as_slice() == bridge_contract
+                && log
+                    .topics
+                    .first()
+                    .is_some_and(|value| value.as_array() == &topic)
+                && log
+                    .topics
+                    .get(1)
+                    .is_some_and(|value| value.as_array() == &asset_id)
+                && log.topics.get(2).is_some_and(|value| {
+                    value.as_array() == &authorization.authorization.deposit_id
+                })
+        })
+        .collect();
+    if candidates.len() != 1 {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let log = candidates[0];
+    let data = log.data.as_ref();
+    let net = authorization
+        .authorization
+        .gross_amount
+        .checked_sub(authorization.authorization.charged_service_fee)
+        .map_err(|_| ObservationError::Overflow)?;
+    if log.removed
+        || log.topics.len() != 4
+        || log.topics[3].as_array()[..12].iter().any(|byte| *byte != 0)
+        || log.topics[3].as_array()[12..] != authorization.authorization.recipient
+        || log.transaction_hash.as_ref() != Some(&receipt.transaction_hash)
+        || log.block_hash.as_ref() != Some(&receipt.block_hash)
+        || log.block_number.as_ref() != Some(&receipt.block_number)
+        || receipt_observation.block_number < authorization.origin.finalized_block_number
+        || receipt_observation.block_number > finalized.block_number
+        || data.len() != 4 * ABI_WORD_BYTES
+        || data[..ABI_WORD_BYTES] != authorization.digest
+        || word_u128(&data[ABI_WORD_BYTES..2 * ABI_WORD_BYTES])?
+            != authorization.authorization.gross_amount.get()
+        || word_u128(&data[2 * ABI_WORD_BYTES..3 * ABI_WORD_BYTES])?
+            != authorization.authorization.charged_service_fee.get()
+        || word_u128(&data[3 * ABI_WORD_BYTES..])? != net.get()
+    {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let transaction_hash = *receipt.transaction_hash.as_array();
+    let request = json!({"method": "eth_getTransactionReceipt",
+        "params": [format!("0x{}", hex(&transaction_hash))],
+        "chainId": chain_id,
+        "finalizedBlockHash": format!("0x{}", hex(&finalized.block_hash)),
+        "assetId": format!("0x{}", hex(&asset_id))});
+    Ok(bridge_core::MintFinalizationEvidence {
+        deposit_id: authorization.authorization.deposit_id,
+        recipient: authorization.authorization.recipient,
+        authorization_digest: authorization.digest,
+        chain_id,
+        verifying_contract: authorization.domain.verifying_contract,
+        gross_amount: authorization.authorization.gross_amount,
+        charged_service_fee: authorization.authorization.charged_service_fee,
+        minted_amount: net,
+        transaction_hash,
+        log_index: log
+            .log_index
+            .clone()
+            .ok_or(ObservationError::InvalidResponse)
+            .and_then(|index| u64::try_from(index).map_err(|_| ObservationError::Overflow))?,
+        receipt_succeeded: true,
+        receipt_block_number: receipt_observation.block_number,
+        receipt_block_hash: receipt_observation.block_hash,
+        finalized_block_number: finalized.block_number,
+        finalized_block_hash: finalized.block_hash,
+        rpc_request_digest: Sha256::digest(
+            serde_json::to_vec(&request).map_err(|_| ObservationError::InvalidResponse)?,
+        )
+        .into(),
+        rpc_response_digest: Sha256::digest(
+            serde_json::to_vec(receipt).map_err(|_| ObservationError::InvalidResponse)?,
+        )
+        .into(),
+    })
 }
 
 fn mint_evidence_from_receipt(
@@ -2011,6 +2495,88 @@ pub async fn notified_withdrawal_outcome(
     })
 }
 
+pub async fn shared_notified_withdrawal_outcome(
+    args: &BridgeInitArgs,
+    asset_id: [u8; 32],
+    transaction_hash: [u8; 32],
+) -> Result<SharedNotifiedWithdrawalOutcome, ObservationError> {
+    let hash = Hex32::from_str(&format!("0x{}", hex(&transaction_hash)))
+        .map_err(|_| ObservationError::InvalidResponse)?;
+    let receipt =
+        match canonical_semantically_finalized_withdrawal_receipt(args, transaction_hash).await? {
+            CanonicalFinalizedReceiptOutcome::Missing => {
+                return Ok(SharedNotifiedWithdrawalOutcome::Missing);
+            }
+            CanonicalFinalizedReceiptOutcome::Pending { .. } => {
+                return Ok(SharedNotifiedWithdrawalOutcome::Pending);
+            }
+            CanonicalFinalizedReceiptOutcome::Confirmed { receipt, .. } => *receipt,
+        };
+    match receipt.status {
+        Some(status) if status == Nat256::from(0u64) => {
+            return Ok(SharedNotifiedWithdrawalOutcome::Reverted);
+        }
+        Some(status) if status == Nat256::from(1u64) => {}
+        _ => return Err(ObservationError::InvalidResponse),
+    }
+    let address = Hex20::from_str(&format!("0x{}", hex(&args.bridge_contract)))
+        .map_err(|_| ObservationError::InvalidResponse)?;
+    let topic = Hex32::from_str(&format!(
+        "0x{}",
+        hex(&keccak256(
+            b"WithdrawalCommitted(uint256,bytes32,address,uint256,uint256,uint256,uint256,bytes,bytes32)",
+        ))
+    ))
+    .map_err(|_| ObservationError::InvalidResponse)?;
+    let mut matching = receipt.logs.iter().filter(|log| {
+        !log.removed
+            && log.address == address
+            && log.topics.first() == Some(&topic)
+            && log
+                .topics
+                .get(2)
+                .is_some_and(|value| value.as_array() == &asset_id)
+            && log.transaction_hash.as_ref() == Some(&hash)
+            && log.block_hash.as_ref() == Some(&receipt.block_hash)
+    });
+    let log = matching.next().ok_or(ObservationError::InvalidResponse)?;
+    if matching.next().is_some() || log.topics.len() != 4 {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let base_withdrawal_id = *log.topics[1].as_array();
+    let mut withdrawal = decode_shared_withdrawal_created_log(log)?;
+    let observation = shared_asset_observation(args, asset_id).await?;
+    let mut calldata = selector("getWithdrawal(uint256)").to_vec();
+    calldata.extend_from_slice(&base_withdrawal_id);
+    let current = decode_shared_current_withdrawal(
+        &eth_call_at_observation(args, &calldata, observation.finalized).await?,
+    )?;
+    if current.0 != asset_id || !is_same_committed_withdrawal(&current.1, &withdrawal) {
+        return Err(ObservationError::BaseStateMismatch);
+    }
+    let bridge_contract: [u8; 20] = args
+        .bridge_contract
+        .as_slice()
+        .try_into()
+        .map_err(|_| ObservationError::InvalidResponse)?;
+    withdrawal.id =
+        crate::multi_asset::internal_withdrawal_id(asset_id, bridge_contract, base_withdrawal_id);
+    let stable_observation = Box::new(FinalizedObservationRecord {
+        chain_id: args.base_chain_id,
+        block_number: observation.finalized.block_number,
+        block_hash: observation.finalized.block_hash,
+        observed_at_ns: observation.finalized.observed_at_ns,
+        bridge_signer: observation.snapshot.bridge_signer,
+        runtime_sha256: observation.bridge_runtime_sha256,
+    });
+    Ok(SharedNotifiedWithdrawalOutcome::Confirmed {
+        withdrawal: Box::new(withdrawal),
+        base_withdrawal_id,
+        observation: Box::new(observation),
+        stable_observation,
+    })
+}
+
 fn is_same_committed_withdrawal(
     current: &CurrentWithdrawal,
     observed: &ObservedWithdrawal,
@@ -2065,6 +2631,51 @@ fn decode_withdrawal_created_log(
         charged_service_fee: word_u128(word(2)?)?,
         amount_out: word_u128(word(3)?)?,
         owner,
+        subaccount: word(5)?
+            .try_into()
+            .map_err(|_| ObservationError::InvalidResponse)?,
+    })
+}
+
+fn decode_shared_withdrawal_created_log(
+    log: &evm_rpc_types::LogEntry,
+) -> Result<ObservedWithdrawal, ObservationError> {
+    let data = log.data.as_ref();
+    if data.len() < 8 * ABI_WORD_BYTES
+        || log.topics.len() != 4
+        || log.topics[3].as_array()[..12].iter().any(|byte| *byte != 0)
+    {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let word = |index: usize| -> Result<&[u8], ObservationError> {
+        data.get(index * ABI_WORD_BYTES..(index + 1) * ABI_WORD_BYTES)
+            .ok_or(ObservationError::InvalidResponse)
+    };
+    let owner_offset =
+        usize::try_from(word_u128(word(4)?)?).map_err(|_| ObservationError::Overflow)?;
+    if owner_offset != 6 * ABI_WORD_BYTES {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let owner_len =
+        usize::try_from(word_u128(word(6)?)?).map_err(|_| ObservationError::Overflow)?;
+    if !(1..=29).contains(&owner_len) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let owner_end = 7 * ABI_WORD_BYTES + owner_len;
+    let expected_len = 7 * ABI_WORD_BYTES + owner_len.div_ceil(ABI_WORD_BYTES) * ABI_WORD_BYTES;
+    if data.len() != expected_len || data[owner_end..].iter().any(|byte| *byte != 0) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    Ok(ObservedWithdrawal {
+        id: *log.topics[1].as_array(),
+        requester: log.topics[3].as_array()[12..]
+            .try_into()
+            .map_err(|_| ObservationError::InvalidResponse)?,
+        amount: word_u128(word(0)?)?,
+        max_service_fee: word_u128(word(1)?)?,
+        charged_service_fee: word_u128(word(2)?)?,
+        amount_out: word_u128(word(3)?)?,
+        owner: data[7 * ABI_WORD_BYTES..owner_end].to_vec(),
         subaccount: word(5)?
             .try_into()
             .map_err(|_| ObservationError::InvalidResponse)?,
@@ -2129,6 +2740,73 @@ fn decode_current_withdrawal(value: &str) -> Result<CurrentWithdrawal, Observati
             .map_err(|_| ObservationError::InvalidResponse)?,
         status,
     })
+}
+
+fn decode_shared_current_withdrawal(
+    value: &str,
+) -> Result<([u8; 32], CurrentWithdrawal), ObservationError> {
+    let bytes = decode_hex(
+        value
+            .trim_matches('"')
+            .strip_prefix("0x")
+            .ok_or(ObservationError::InvalidResponse)?,
+    )?;
+    if bytes.len() < 11 * ABI_WORD_BYTES
+        || word_u128(&bytes[..ABI_WORD_BYTES])? != ABI_WORD_BYTES as u128
+    {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let tuple_start = ABI_WORD_BYTES;
+    let word = |index: usize| -> Result<&[u8], ObservationError> {
+        bytes
+            .get(tuple_start + index * ABI_WORD_BYTES..tuple_start + (index + 1) * ABI_WORD_BYTES)
+            .ok_or(ObservationError::InvalidResponse)
+    };
+    let asset_id: [u8; 32] = word(0)?
+        .try_into()
+        .map_err(|_| ObservationError::InvalidResponse)?;
+    let requester_word = word(1)?;
+    if requester_word[..12].iter().any(|byte| *byte != 0) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let owner_offset =
+        usize::try_from(word_u128(word(6)?)?).map_err(|_| ObservationError::Overflow)?;
+    if owner_offset != 9 * ABI_WORD_BYTES {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let owner_len =
+        usize::try_from(word_u128(word(9)?)?).map_err(|_| ObservationError::Overflow)?;
+    if !(1..=29).contains(&owner_len) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    let owner_start = tuple_start + 10 * ABI_WORD_BYTES;
+    let owner_end = owner_start
+        .checked_add(owner_len)
+        .ok_or(ObservationError::Overflow)?;
+    let expected_len = owner_start
+        .checked_add(owner_len.div_ceil(ABI_WORD_BYTES) * ABI_WORD_BYTES)
+        .ok_or(ObservationError::Overflow)?;
+    if bytes.len() != expected_len || bytes[owner_end..].iter().any(|byte| *byte != 0) {
+        return Err(ObservationError::InvalidResponse);
+    }
+    Ok((
+        asset_id,
+        CurrentWithdrawal {
+            requester: requester_word[12..]
+                .try_into()
+                .map_err(|_| ObservationError::InvalidResponse)?,
+            amount: word_u128(word(2)?)?,
+            max_service_fee: word_u128(word(3)?)?,
+            charged_service_fee: word_u128(word(4)?)?,
+            amount_out: word_u128(word(5)?)?,
+            owner: bytes[owner_start..owner_end].to_vec(),
+            subaccount: word(7)?
+                .try_into()
+                .map_err(|_| ObservationError::InvalidResponse)?,
+            status: u8::try_from(word_u128(word(8)?)?)
+                .map_err(|_| ObservationError::InvalidResponse)?,
+        },
+    ))
 }
 
 fn decode_bool_word(value: &str) -> Result<bool, ObservationError> {
@@ -2254,6 +2932,64 @@ mod tests {
         assert_eq!(
             parse_u128("0x100000000000000000000000000000000"),
             Err(ObservationError::Overflow)
+        );
+    }
+
+    #[test]
+    fn shared_asset_snapshot_decoding_is_asset_local_and_strict() {
+        fn word(value: u128) -> [u8; 32] {
+            let mut result = [0; 32];
+            result[16..].copy_from_slice(&value.to_be_bytes());
+            result
+        }
+        let mut token = [0; 32];
+        token[12..].copy_from_slice(&[0x44; 20]);
+        let encoded = [
+            token,
+            word(7),
+            word(5),
+            word(4),
+            word(10),
+            word(1_000),
+            word(10_000),
+            word(3_600),
+            word(900),
+            word(2_000),
+            word(0),
+            word(1),
+        ]
+        .concat();
+        let snapshot = decode_shared_asset_snapshot(
+            &format!("0x{}", hex(&encoded)),
+            100,
+            1_000,
+            [0x55; 20],
+            9,
+            false,
+            false,
+        )
+        .expect("decode shared snapshot");
+        assert_eq!(snapshot.token, [0x44; 20]);
+        assert_eq!(snapshot.asset_epoch, 7);
+        assert_eq!(snapshot.global_epoch, 9);
+        assert_eq!(snapshot.mint.service_fee, Amount::new(5));
+        assert_eq!(snapshot.min_service_fee, 4);
+        assert!(!snapshot.asset_deposits_paused);
+        assert!(snapshot.asset_withdrawals_paused);
+
+        let mut malformed = encoded;
+        malformed[0] = 1;
+        assert_eq!(
+            decode_shared_asset_snapshot(
+                &format!("0x{}", hex(&malformed)),
+                100,
+                1_000,
+                [0x55; 20],
+                9,
+                false,
+                false,
+            ),
+            Err(ObservationError::InvalidResponse)
         );
     }
 

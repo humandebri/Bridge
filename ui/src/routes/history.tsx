@@ -28,6 +28,7 @@ import { useBridgeProgress } from "@/features/bridge/bridge-progress-provider"
 import { useRuntimeHeartbeat, useRuntimeValidation } from "@/features/status/use-status"
 import { useIcWallet } from "@/features/wallet/ic-wallet-provider"
 import type {
+  AssetConfig,
   AutomaticProgressView,
   DepositView,
   NonterminalDepositRef,
@@ -119,6 +120,20 @@ function HistoryPage() {
   const [actioningId, setActioningId] = useState<string>()
   const [loadingOlderWithdrawals, setLoadingOlderWithdrawals] = useState(false)
   const [loadingOlderDeposits, setLoadingOlderDeposits] = useState(false)
+
+  const assets = useQuery({
+    queryKey: ["bridge-assets", deploymentProfile.bridgeCanisterId],
+    queryFn: async () => {
+      const actor = await createBridgeActor(
+        deploymentProfile.icHost,
+        deploymentProfile.bridgeCanisterId as string,
+      )
+      const result = await actor.list_assets()
+      if ("Err" in result) throw new Error("Registered bridge assets are unavailable")
+      return result.Ok
+    },
+    staleTime: 60_000,
+  })
 
   const depositQueryKey = ["deposit-history", historyAccount?.owner] as const
   const readDepositHistory = async (
@@ -290,6 +305,7 @@ function HistoryPage() {
         if (previousIds.has(id)) reachedPrevious = true
         items.push({
           id,
+          assetId: row.withdrawal.asset_id,
           amount: row.withdrawal.amount,
           amountOut: row.withdrawal.amount_out,
           hash: row.transaction_hash[0] ? bytesHex(row.transaction_hash[0]) : undefined,
@@ -327,7 +343,11 @@ function HistoryPage() {
     for (const pending of readPendingConfirmations()) {
       if (knownHashes.has(pending.transactionHash.toLowerCase())) continue
       try {
-        const item = await withdrawalReceiptDetails(pending.transactionHash, pending.owner)
+        const item = await withdrawalReceiptDetails(pending.transactionHash, pending.owner, {
+          assetId: pending.assetId,
+          bridgeAddress: pending.contractAddress,
+          shared: pending.shared,
+        })
         if (item.requester.toLowerCase() === address?.toLowerCase()) {
           const block = await readBaseBlock(item.blockNumber)
           const finalized = await readBaseBlock("finalized")
@@ -500,8 +520,30 @@ function HistoryPage() {
       setRetryingHash(item.hash)
       await refetchRuntimeAttestedWriteReady(runtime.data, runtime.refetch, heartbeat.refetch)
       if (!item.hash) throw new Error("The Base transaction hash is unavailable.")
+      let binding = {
+        shared: item.shared,
+        contractAddress: item.contractAddress,
+        assetId: item.assetId,
+      }
+      if (item.assetId) {
+        const registered = await assets.refetch()
+        if (registered.isError) throw new Error("Registered withdrawal asset is unavailable")
+        const asset = registered.data?.find(
+          (candidate) => bytesHex(candidate.asset_id) === bytesHex(item.assetId!),
+        )
+        if (!asset) throw new Error("Registered withdrawal asset is unavailable")
+        const shared = "SharedMultiToken" in asset.bridge_kind
+        const contractAddress = bytesHex(asset.bridge_contract)
+        if (
+          (item.shared !== undefined && item.shared !== shared) ||
+          (item.contractAddress &&
+            item.contractAddress.toLowerCase() !== contractAddress.toLowerCase())
+        )
+          throw new Error("Withdrawal contract differs from the registered asset")
+        binding = { shared, contractAddress, assetId: asset.asset_id }
+      }
       const { pending, receipt, withdrawalId } = await notifyHistoryWithdrawal(
-        { ...item, hash: item.hash },
+        { ...item, ...binding, hash: item.hash },
         undefined,
         (await readBaseBlock("finalized")).number ?? 0n,
       )
@@ -615,6 +657,7 @@ function HistoryPage() {
   const refresh = async () => {
     {
       await Promise.all([
+        assets.refetch(),
         historyAccount ? deposits.refetch() : Promise.resolve(),
         hasUnresolvedMint ? mintObservations.refetch() : Promise.resolve(),
         hasUnresolvedMint ? finalizedClock.refetch() : Promise.resolve(),
@@ -623,10 +666,12 @@ function HistoryPage() {
     }
   }
   const refreshing =
+    assets.isFetching ||
     (hasUnresolvedMint && finalizedClock.isFetching) ||
     (Boolean(historyAccount) && (deposits.isFetching || mintObservations.isFetching)) ||
     (Boolean(address) && withdrawals.isFetching)
   const loadingInitial =
+    (!assets.data && assets.isFetching) ||
     Boolean(historyAccount && !deposits.data && deposits.isFetching) ||
     Boolean(address && !withdrawals.data && withdrawals.isFetching)
   const loadingOlder = loadingOlderDeposits || loadingOlderWithdrawals
@@ -634,18 +679,26 @@ function HistoryPage() {
   const sourceStates = {
     deposit: !historyAccount
       ? "disconnected"
-      : deposits.isError
+      : assets.isError
         ? "unavailable"
-        : !deposits.data
+        : !assets.data
           ? "loading"
-          : "ready",
+          : deposits.isError
+            ? "unavailable"
+            : !deposits.data
+              ? "loading"
+              : "ready",
     withdrawal: !address
       ? "disconnected"
-      : withdrawals.isError
+      : assets.isError
         ? "unavailable"
-        : !withdrawals.data
+        : !assets.data
           ? "loading"
-          : "ready",
+          : withdrawals.isError
+            ? "unavailable"
+            : !withdrawals.data
+              ? "loading"
+              : "ready",
   } satisfies Record<"deposit" | "withdrawal", HistorySourceState>
 
   return (
@@ -687,6 +740,7 @@ function HistoryPage() {
             pendingFunding={deposits.data?.pendingFunding ?? []}
             mintObservations={mintObservations.data ?? new Map()}
             finalizedTimestamp={finalizedClock.data?.timestamp}
+            assets={assets.data ?? []}
             hasOlder={olderSources.length > 0}
             loadingOlder={loadingOlder}
             onRequestDepositRefund={requestDepositRefund}
@@ -732,6 +786,7 @@ function ActivityList({
   pendingFunding,
   mintObservations,
   finalizedTimestamp,
+  assets,
   hasOlder,
   loadingOlder,
   onRequestDepositRefund,
@@ -750,6 +805,7 @@ function ActivityList({
   pendingFunding: NonterminalDepositRef[]
   mintObservations: Map<string, MintObservation>
   finalizedTimestamp?: bigint
+  assets: AssetConfig[]
   hasOlder: boolean
   loadingOlder: boolean
   onRequestDepositRefund: (record: DepositView) => Promise<void>
@@ -820,13 +876,41 @@ function ActivityList({
       <div className="hidden grid-cols-[minmax(6rem,0.7fr)_minmax(7rem,0.8fr)_minmax(7rem,0.8fr)_minmax(9rem,1.3fr)_minmax(7.5rem,1fr)_minmax(6rem,0.7fr)_9rem] gap-4 px-4 pb-1 text-xs font-bold uppercase tracking-[0.08em] text-[var(--muted)] lg:grid">
         <span>Direction</span>
         <span>Base tx</span>
-        <span>KINIC tx</span>
+        <span>IC tx</span>
         <span>Amount</span>
         <span>Status</span>
         <span>Time</span>
         <span>Next step</span>
       </div>
       {items.map((item) => {
+        const assetId =
+          item.direction === "to-base"
+            ? item.deposit.asset_id
+            : (item.withdrawal.canister?.asset_id ?? item.withdrawal.assetId)
+        const asset = assetId
+          ? assets.find((candidate) => bytesHex(candidate.asset_id) === bytesHex(assetId))
+          : undefined
+        const token = asset
+          ? {
+              symbol: asset.symbol,
+              decimals: asset.decimals,
+              legacy: "LegacySingleToken" in asset.bridge_kind,
+            }
+          : item.direction === "to-base" && "LegacySingleToken" in item.deposit.bridge_kind
+            ? {
+                symbol: deploymentProfile.baseToken.symbol,
+                decimals: deploymentProfile.baseToken.decimals,
+                legacy: true,
+              }
+            : item.direction === "to-ic" &&
+                item.withdrawal.canister &&
+                "LegacySingleToken" in item.withdrawal.canister.bridge_kind
+              ? {
+                  symbol: deploymentProfile.baseToken.symbol,
+                  decimals: deploymentProfile.baseToken.decimals,
+                  legacy: true,
+                }
+              : { symbol: "Unknown asset", decimals: 0, legacy: false }
         const observation =
           item.direction === "to-base"
             ? mintObservations.get(bytesHex(item.deposit.deposit_id))
@@ -865,6 +949,7 @@ function ActivityList({
             actioningId={actioningId}
             onRequestRefund={onRequestDepositRefund}
             onContinue={onContinueDeposit}
+            token={token}
           />
         ) : (
           <WithdrawalActivityRow
@@ -875,6 +960,7 @@ function ActivityList({
             retryingHash={retryingHash}
             onCheckAndNotify={onCheckAndNotify}
             onContinue={onContinueWithdrawal}
+            token={token}
           />
         )
       })}
@@ -958,6 +1044,11 @@ export function DepositActivityRow({
   actioningId,
   onRequestRefund,
   onContinue,
+  token = {
+    symbol: deploymentProfile.baseToken.symbol,
+    decimals: deploymentProfile.baseToken.decimals,
+    legacy: true,
+  },
 }: {
   item: Extract<ActivityItem, { direction: "to-base" }>
   mintFinalization: DepositMintFinalizationStatus
@@ -970,6 +1061,7 @@ export function DepositActivityRow({
   actioningId?: string
   onRequestRefund: (record: DepositView) => Promise<void>
   onContinue: (record: DepositView) => Promise<void>
+  token?: HistoryToken
 }) {
   const record = item.deposit
   const discoveryEnabled = deploymentProfile.chainId === 8453 && !!deploymentProfile.mintRecoveryUrl
@@ -1013,10 +1105,10 @@ export function DepositActivityRow({
     mintedOnBase,
   )
   const amountText = refund
-    ? `${formatTokenAmount(refund.amount)} KINIC`
+    ? `${formatTokenAmount(refund.amount, token.decimals)} ${token.symbol}`
     : quote
-      ? `${formatTokenAmount(quote.net_amount)} KINIC`
-      : `${formatTokenAmount(record.gross_amount)} KINIC`
+      ? `${formatTokenAmount(quote.net_amount, token.decimals)} ${token.symbol}`
+      : `${formatTokenAmount(record.gross_amount, token.decimals)} ${token.symbol}`
   return (
     <article className="grid gap-4 rounded-2xl bg-white p-4 lg:grid-cols-[minmax(6rem,0.7fr)_minmax(7rem,0.8fr)_minmax(7rem,0.8fr)_minmax(9rem,1.3fr)_minmax(7.5rem,1fr)_minmax(6rem,0.7fr)_9rem] lg:items-center">
       <div>
@@ -1048,13 +1140,13 @@ export function DepositActivityRow({
         )}
       </div>
       <div>
-        <MobileLabel>KINIC tx</MobileLabel>
+        <MobileLabel>IC tx</MobileLabel>
         {kinicTransactions.length === 0 ? (
           <p className="mt-1 text-xs text-[var(--muted)]">Not confirmed</p>
         ) : (
           <div>
             {kinicTransactions.map((transaction) => (
-              <KinicTransactionLink key={transaction.kind} {...transaction} />
+              <KinicTransactionLink key={transaction.kind} {...transaction} token={token} />
             ))}
           </div>
         )}
@@ -1199,6 +1291,7 @@ function WithdrawalActivityRow({
   retryingHash,
   onCheckAndNotify,
   onContinue,
+  token,
 }: {
   item: Extract<ActivityItem, { direction: "to-ic" }>
   writesEnabled: boolean
@@ -1206,6 +1299,7 @@ function WithdrawalActivityRow({
   retryingHash?: string
   onCheckAndNotify: (record: WithdrawalHistoryItem) => Promise<void>
   onContinue: (record: WithdrawalHistoryItem) => Promise<void>
+  token: HistoryToken
 }) {
   const record = item.withdrawal
   const presentation = useTransferPresentation(withdrawalFacts(record))
@@ -1235,11 +1329,11 @@ function WithdrawalActivityRow({
         )}
       </div>
       <div>
-        <MobileLabel>KINIC tx</MobileLabel>
+        <MobileLabel>IC tx</MobileLabel>
         {kinicTransactions.length === 0 ? (
           <p className="mt-1 text-xs text-[var(--muted)]">Not sent yet</p>
         ) : (
-          <KinicTransactionLink {...kinicTransactions[0]!} />
+          <KinicTransactionLink {...kinicTransactions[0]!} token={token} />
         )}
       </div>
       <div>
@@ -1247,7 +1341,7 @@ function WithdrawalActivityRow({
         <p className="text-sm font-bold">
           {record.amountOut === undefined
             ? "Amount unavailable"
-            : `${formatTokenAmount(record.amountOut)} KINIC`}
+            : `${formatTokenAmount(record.amountOut, token.decimals)} ${token.symbol}`}
         </p>
       </div>
       <div>
@@ -1340,6 +1434,7 @@ function BaseTransactionLink({ transactionHash }: { transactionHash: `0x${string
 
 type KinicTransactionKind = "deposit" | "refund" | "payout"
 type KinicTransaction = { kind: KinicTransactionKind; blockIndex: bigint }
+type HistoryToken = { symbol: string; decimals: number; legacy: boolean }
 
 export function depositKinicTransactions(record: DepositView): KinicTransaction[] {
   const fundingBlock = record.funding_ledger_block_index[0]
@@ -1355,17 +1450,27 @@ export function withdrawalKinicTransactions(record?: WithdrawalView): KinicTrans
   return releaseBlock === undefined ? [] : [{ kind: "payout", blockIndex: releaseBlock }]
 }
 
-export function KinicTransactionLink({ kind, blockIndex }: KinicTransaction) {
+export function KinicTransactionLink({
+  kind,
+  blockIndex,
+  token = {
+    symbol: deploymentProfile.baseToken.symbol,
+    decimals: deploymentProfile.baseToken.decimals,
+    legacy: true,
+  },
+}: KinicTransaction & { token?: HistoryToken }) {
   const label = `${kind[0]!.toUpperCase()}${kind.slice(1)}`
   const text = `${label} #${blockIndex.toLocaleString()}`
-  const href = kinicTransactionExplorerUrl(deploymentProfile.snsRootCanisterId, blockIndex)
+  const href = token.legacy
+    ? kinicTransactionExplorerUrl(deploymentProfile.snsRootCanisterId, blockIndex)
+    : undefined
   if (!href) return <p className="mt-1 truncate text-xs text-[var(--muted)]">{text}</p>
   return (
     <a
       href={href}
       target="_blank"
       rel="noreferrer"
-      aria-label={`Open KINIC ${kind} transaction ${blockIndex.toString()} in explorer`}
+      aria-label={`Open ${token.symbol} ${kind} transaction ${blockIndex.toString()} in explorer`}
       className="mt-1 block truncate text-xs text-blue-600 underline decoration-current/40 underline-offset-2 transition hover:text-blue-800"
     >
       {text}
