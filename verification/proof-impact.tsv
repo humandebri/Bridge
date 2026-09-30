@@ -64,3 +64,4 @@ exclude	ui_lib_withdrawal-notification_ts	ui/src/lib/withdrawal-notification.ts	
 exclude	ui_vite-env_d_ts	ui/src/vite-env.d.ts	presentation	Vite ambient type declarations only.
 root	ui_source_ts	ui/src	.ts	-
 root	ui_source_tsx	ui/src	.tsx	-
+area	sns_additional_asset_governance	canister/bridge-core/src/asset_governance_policy.rs;canister/bridge-core/tests/asset_governance_policy.rs;canister/bridge-canister/src/sns_assets.rs	asset_registry_binding;governance_nonce_chain_binding;governance_transaction_affordability	claim-manifest;lean;lean-negative;policy-vector-consumers;refinement-gate;claim-transaction-tests;known-answer-consumers;smt-and-negative;halmos-and-negative;verus-and-negative

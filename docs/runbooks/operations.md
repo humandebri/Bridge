@@ -377,3 +377,77 @@ withdrawal pause independently. Prepared assets that do not yet exist on Base
 are excluded. Each flag survives upgrades/reverts and is cleared only by a
 confirmed matching transaction. Drain the whole queue before resuming admission;
 asset registration and activation are rejected while the queue is pending.
+
+
+## Additional-asset SNS governance and gas budgets
+
+The additional-asset boundary is `validate_sns_manage_asset` / `sns_manage_asset`.
+`SnsAssetProposal` binds the Bridge canister, deployment instance, current
+operational configuration SHA-256, an admission expiry no more than 30 days away,
+and one typed action: `RegisterAsset`, `RefreshRuntime`, or `PrepareBase`.
+The validator reads the same checks as execution. Only the configured SNS
+Governance may execute; failed execution rejects the IC call, because SNS treats
+any successful reply (even Candid `Err`) as successful proposal execution.
+
+`RegisterAsset` requires a new Prepared shared asset, unchanged root chain,
+instance, signer and existing Timelock, and all current registry uniqueness,
+rotation, emergency and asset-count checks. `RefreshRuntime` binds the previous
+attestation observation time and revalidates after EVM awaits before committing.
+`PrepareBase` accepts only asset-specific actions. Bind the expected operation ID
+from `get_asset_governance_operation_ids`, using `governance` for registration and
+activation and `runtime_administrator` for fee/pause operations. Pending recovery
+is permitted only for the same ID, typed payload and operation salt. New intent
+admission revalidates the proposal after outcalls and before the durable commit.
+Expiry is an admission deadline; an accepted durable intent retains its normal
+confirmation/recovery path after expiry. Relay and Finalized confirmation are
+separate operations, not success conditions of an IC preparation proposal.
+
+Legacy sealed Governance fee settings and KINIC gas limits remain unchanged.
+The production-shared additional-asset policy fixes these transaction gas limits:
+
+| Action | Gas limit |
+| --- | ---: |
+| Schedule additional-token registration | 500,000 |
+| Execute registration (creates the ERC-20) | 2,000,000 |
+| Schedule/execute asset activation | 500,000 |
+| Asset pause or service-fee operation | 200,000 |
+
+The same existing max-fee/priority-fee/L1 ceilings, replacement policy and checked
+liability/balance rules apply to the selected gas limit. These are reviewed fixed
+budgets, not caller-provided overrides or gas estimates. Reject preparation when
+the role balance cannot cover the complete liability. Benchmark the exact token
+metadata and calldata before launch; increase a budget only through a reviewed
+source change. Do not reseal or silently change the deployed KINIC parameters.
+
+After the verified Bridge upgrade, prepare the native registration proposal in
+`deployments/sns/add-asset-management-function.proposal.did`. Function ID1009 is a
+candidate: recheck the current active functions and reserved IDs immediately
+before submission. Target/validator are both `lb5i5-ziaaa-aaaar-qcgwq-cai`, methods
+`sns_manage_asset` / `validate_sns_manage_asset`, topic `DappCanisterManagement`.
+Review its full content and obtain operational submission authorization. Verify
+execution and the current registered function before proposing token actions.
+
+Prepare a typed `SnsAssetProposal` from live authenticated RuntimeBinding,
+operation IDs, asset configuration and previous attestation. Encode with
+`didc encode --defs canister/bridge-canister/bridge.did --method sns_manage_asset`,
+and compare the decode with the reviewed source payload. Put those bytes in
+`ExecuteGenericNervousSystemFunction { function_id = 1009; payload = ... }`.
+Revalidate the payload through the deployed validator immediately before
+submission. Use the Kinic SNS proposal procedure for the proposer permission,
+review, submission and proposal/action readback. Preparation alone authorizes
+neither registration of the SNS function nor a token nor Base transaction relay.
+
+This release uses the existing Timelock for the new shared Bridge because asset
+registration requires the configured Timelock. Separate Timelock/role keys are a
+future coordinated design. Additional tokens are ERC-20s created by the shared
+Bridge; choosing an arbitrary existing ERC-20 does not establish bridge mint/burn
+permissions. Confirm Ledger/Index support, decimals, fees, runtime hashes, custody
+and reserves before activation. Continue rejecting KINIC-only key rotation while
+shared assets are registered.
+
+The new proposal domain and gas-selection kernels have concrete negative and
+adapter/transaction tests and are linked to the asset-registry and governance
+claims. Their deployment assumptions remain explicit: authenticated caller and
+live config, Ledger behavior, EVM execution/finality, RPC configuration, role
+funding and runtime/toolchain. These additions do not turn externally conditional
+or production-linked claims into fully implementation-proved claims.

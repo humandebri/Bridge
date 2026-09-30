@@ -1,6 +1,6 @@
 # Plan 009: 既存 Canister と Base の共有 Bridge による複数トークン対応
 
-Status: IN PROGRESS — shared Base Bridge, schema v37 asset registry, and v36→v37 migration implemented; asset-specific Canister operation paths, UI, and deployment remain.
+Status: IMPLEMENTED — shared Bridge, asset operation paths, UI, SNS asset governance, bounded operation-specific gas policy and migration are implemented. Production upgrade, SNS function registration, selected asset configuration and activation remain operational steps.
 Updated: 2026-09-28, based on the user's request to extend the existing Canister, use one new Bridge with multiple ERC-20s, and preserve KINIC.
 
 ## 1. 今回の対象と構成
@@ -46,7 +46,7 @@ flowchart LR
 
 新 Bridge の `asset_id`、Ledger binding、ERC-20、decimals、固定上限は登録後に変更・再利用できない。Ledger と登録 ID の重複も拒否する。削除して別トークンを同じ ID に割り当てる API は作らない。
 
-追加は既存 Canister の共通 Governance を通す。新 Bridge 側でも Timelock を通じた型付きの資産登録を必要とし、一般ユーザーによる任意 Ledger/ERC-20 の登録は許可しない。計画上は既存 KINIC 用とは別の Timelock と役割鍵を新 Bridge に割り当てる。
+追加は既存 Canister の共通 Governance を通す。新 Bridge 側でも Timelock を通じた型付きの資産登録を必要とし、一般ユーザーによる任意 Ledger/ERC-20 の登録は許可しない。現行実装では既存 KINIC 用と同じ Timelock・役割鍵を新 Bridge に割り当てる。資産登録は既存設定のTimelockへの一致を必須とする。別Timelock・鍵の分離は協調した鍵ローテーションとともに将来のレビュー対象とする。
 
 共通 Canister の controller は全資産のコードと保管資産に権限を持つ。将来 KINIC SNS Root の単独管理に移る場合、追加資産もその権限に依存する。資産別の停止・会計は、この管理権限を分離しない。追加トークン側 SNS に独立した upgrade 権限があるとは表示・説明しない。
 

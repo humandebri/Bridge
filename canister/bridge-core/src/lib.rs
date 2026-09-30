@@ -4,6 +4,7 @@
 //! provide confirmed external facts as events and persist the returned state atomically.
 
 mod accounting;
+pub mod asset_governance_policy;
 mod authorization;
 mod deposit;
 mod external;

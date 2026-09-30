@@ -633,6 +633,27 @@ pub async fn prepare(
     action: GovernanceAction,
 ) -> Result<SignedBaseGovernanceTransaction, BaseGovernanceError> {
     require_operational_config_sealed()?;
+    require_action_authorization(caller, &action)?;
+    prepare_inner(caller, action, None).await
+}
+
+pub(crate) async fn prepare_sns_asset(
+    caller: Principal,
+    action: GovernanceAction,
+    proposal: &crate::sns_assets::SnsAssetProposal,
+) -> Result<SignedBaseGovernanceTransaction, BaseGovernanceError> {
+    prepare_inner(caller, action, Some(proposal)).await
+}
+
+async fn prepare_inner(
+    caller: Principal,
+    action: GovernanceAction,
+    sns_proposal: Option<&crate::sns_assets::SnsAssetProposal>,
+) -> Result<SignedBaseGovernanceTransaction, BaseGovernanceError> {
+    require_operational_config_sealed()?;
+    if let Some(proposal) = sns_proposal {
+        crate::sns_assets::validate(proposal).map_err(|_| BaseGovernanceError::InvalidArgument)?;
+    }
     let activation_authority = require_action_authorization(caller, &action)?;
     let controller_snapshot =
         capture_action_controller_authority(&action, activation_authority.as_ref()).await?;
@@ -731,11 +752,11 @@ pub async fn prepare(
         )
         .await?;
     }
+    let gas_limit = action_gas_limit(&action, config.governance_evm_fee.gas_limit_ceiling);
     let (kind, target, calldata) = encode_action(action, id).await?;
     let payload_hash: [u8; 32] = Sha256::digest(&calldata).into();
     let fee_cap = config.governance_evm_fee.max_fee_per_gas_ceiling;
     let priority_cap = config.governance_evm_fee.max_priority_fee_per_gas_ceiling;
-    let gas_limit = config.governance_evm_fee.gas_limit_ceiling;
     let initial_max_fee_per_gas = initial_fee(
         fee_cap,
         config.governance_replacement.fee_bump_bps,
@@ -769,6 +790,9 @@ pub async fn prepare(
     require_affordable(&config, operator, &transaction.envelope).await?;
     require_transaction_authorization(caller, &transaction)?;
     require_transaction_controller_authority(&transaction, controller_snapshot.as_ref()).await?;
+    if let Some(proposal) = sns_proposal {
+        crate::sns_assets::validate(proposal).map_err(|_| BaseGovernanceError::InvalidArgument)?;
+    }
     if !initialized {
         STORE.with(|store| {
             store
@@ -2465,6 +2489,130 @@ fn action_signer_role(action: &GovernanceAction) -> signer::SignerRole {
     }
 }
 
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AssetGovernanceOperationIds {
+    pub governance: u64,
+    pub runtime_administrator: u64,
+}
+
+pub(crate) fn asset_governance_operation_ids(
+) -> Result<AssetGovernanceOperationIds, BaseGovernanceError> {
+    let id = |lane| {
+        governance_lane(lane).map(|(_, _, next, pending)| pending.map_or(next, |value| value.id))
+    };
+    Ok(AssetGovernanceOperationIds {
+        governance: id(storage::GovernanceNonceLane::Governance)?,
+        runtime_administrator: id(storage::GovernanceNonceLane::RuntimeAdministrator)?,
+    })
+}
+
+fn action_gas_limit(action: &GovernanceAction, legacy_limit: u128) -> u128 {
+    use bridge_core::asset_governance_policy::{asset_governance_gas_limit, AssetGasClass};
+    let class = match action {
+        GovernanceAction::ScheduleAssetRegistration { .. } => AssetGasClass::RegistrationSchedule,
+        GovernanceAction::ExecuteAssetRegistration { .. } => AssetGasClass::TokenRegistration,
+        GovernanceAction::ScheduleAssetActivation { .. }
+        | GovernanceAction::ExecuteAssetActivation { .. } => AssetGasClass::Activation,
+        GovernanceAction::PauseAssetDepositMints { .. }
+        | GovernanceAction::PauseAssetWithdrawals { .. }
+        | GovernanceAction::SetAssetServiceFee { .. } => AssetGasClass::Runtime,
+        _ => AssetGasClass::Legacy,
+    };
+    asset_governance_gas_limit(class, legacy_limit)
+}
+
+pub(crate) fn validate_sns_asset_action(
+    action: &BaseGovernanceAction,
+    expected_id: u64,
+) -> Result<(), String> {
+    let internal = GovernanceAction::from(action.clone());
+    let asset_id = match action {
+        BaseGovernanceAction::ScheduleAssetRegistration { registration }
+        | BaseGovernanceAction::ExecuteAssetRegistration { registration } => {
+            prepared_asset_registration(registration).map_err(|e| format!("{e:?}"))?;
+            &registration.asset_id
+        }
+        BaseGovernanceAction::ScheduleAssetActivation { asset_id, .. }
+        | BaseGovernanceAction::ExecuteAssetActivation { asset_id, .. }
+        | BaseGovernanceAction::PauseAssetDepositMints { asset_id }
+        | BaseGovernanceAction::PauseAssetWithdrawals { asset_id }
+        | BaseGovernanceAction::SetAssetServiceFee { asset_id, .. } => asset_id,
+        _ => return Err("Only additional-asset actions are accepted".into()),
+    };
+    shared_asset_context(asset_id).map_err(|e| format!("{e:?}"))?;
+    let (_, _, next, pending) =
+        governance_lane(action_nonce_lane(&internal)).map_err(|e| format!("{e:?}"))?;
+    if expected_id == u64::MAX {
+        return Err("Proposal operation ID is exhausted".into());
+    }
+    if let Some(pending) = pending {
+        let salt_matches = match (action, &pending.kind) {
+            (
+                BaseGovernanceAction::ScheduleAssetRegistration { registration }
+                | BaseGovernanceAction::ExecuteAssetRegistration { registration },
+                storage::GovernanceTransactionKind::ScheduleAssetRegistration { salt, .. }
+                | storage::GovernanceTransactionKind::ExecuteAssetRegistration { salt, .. },
+            ) => {
+                let instance = hash32(
+                    &config()
+                        .map_err(|e| format!("{e:?}"))?
+                        .deployment_instance_id,
+                )
+                .map_err(|e| format!("{e:?}"))?;
+                *salt
+                    == asset_operation_salt(
+                        instance,
+                        hash32(asset_id).map_err(|e| format!("{e:?}"))?,
+                        registration.operation_nonce,
+                        b"REGISTER",
+                    )
+            }
+            (
+                BaseGovernanceAction::ScheduleAssetActivation {
+                    operation_nonce,
+                    activate_global,
+                    ..
+                }
+                | BaseGovernanceAction::ExecuteAssetActivation {
+                    operation_nonce,
+                    activate_global,
+                    ..
+                },
+                storage::GovernanceTransactionKind::ScheduleAssetActivation { salt, .. }
+                | storage::GovernanceTransactionKind::ExecuteAssetActivation { salt, .. },
+            ) => {
+                let instance = hash32(
+                    &config()
+                        .map_err(|e| format!("{e:?}"))?
+                        .deployment_instance_id,
+                )
+                .map_err(|e| format!("{e:?}"))?;
+                *salt
+                    == asset_operation_salt(
+                        instance,
+                        hash32(asset_id).map_err(|e| format!("{e:?}"))?,
+                        *operation_nonce,
+                        if *activate_global {
+                            b"GLOBAL_ACTIVATE"
+                        } else {
+                            b"ACTIVATE"
+                        },
+                    )
+            }
+            _ => true,
+        };
+        if pending.id != expected_id
+            || !action_matches_pending(&internal, &pending.kind)
+            || !salt_matches
+        {
+            return Err("Proposal differs from the accepted pending intent".into());
+        }
+    } else if next != expected_id {
+        return Err("Proposal operation ID differs from the current lane".into());
+    }
+    Ok(())
+}
+
 fn action_nonce_lane(action: &GovernanceAction) -> storage::GovernanceNonceLane {
     match action_signer_role(action) {
         signer::SignerRole::Governance => storage::GovernanceNonceLane::Governance,
@@ -3890,5 +4038,55 @@ mod tests {
             generation: 0,
             signed_at_ns: 9,
         }
+    }
+}
+
+#[cfg(test)]
+mod asset_budget_tests {
+    use super::*;
+    #[test]
+    fn asset_action_budget_preserves_legacy_and_reserves_token_creation_gas() {
+        let registration = SharedAssetRegistrationArgs {
+            asset_id: vec![1; 32],
+            operation_nonce: 1,
+            per_deposit_limit: 1u64.into(),
+            mint_window_limit: 1u64.into(),
+            mint_window_duration: 3600,
+            min_service_fee: 1u64.into(),
+            max_service_fee: 2u64.into(),
+            initial_service_fee: 1u64.into(),
+        };
+        assert_eq!(
+            action_gas_limit(&GovernanceAction::PauseDepositMints, 114_000),
+            114_000
+        );
+        assert_eq!(
+            action_gas_limit(&GovernanceAction::ScheduleActivation, 114_000),
+            114_000
+        );
+        assert_eq!(
+            action_gas_limit(
+                &GovernanceAction::ExecuteAssetRegistration {
+                    registration: registration.clone()
+                },
+                114_000
+            ),
+            2_000_000
+        );
+        assert_eq!(
+            action_gas_limit(
+                &GovernanceAction::ScheduleAssetRegistration { registration },
+                114_000
+            ),
+            500_000
+        );
+        let registration_liability = bridge_core::kernel::transaction_liability_wei(
+            2_000_000,
+            100_000_000,
+            30_285_822_260,
+            0,
+        )
+        .unwrap();
+        assert!(registration_liability > 7_707_763_640_230);
     }
 }

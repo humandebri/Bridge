@@ -26,6 +26,7 @@ mod multi_asset;
 mod phases;
 mod scheduler;
 mod signer;
+mod sns_assets;
 pub mod storage;
 mod tasks;
 
@@ -717,6 +718,16 @@ fn register_asset(asset: config::AssetConfig) -> Result<(), admin::AdminError> {
     if !admin::is_governance(caller)? {
         return Err(admin::AdminError::Unauthorized);
     }
+    validate_new_asset(&asset)?;
+    STORE.with(|store| {
+        store
+            .borrow_mut()
+            .register_asset(&asset, caller, ic_cdk::api::time())
+            .map_err(|error| admin::AdminError::InvalidArgument(error.to_string()))
+    })
+}
+
+fn validate_new_asset(asset: &config::AssetConfig) -> Result<(), admin::AdminError> {
     if STORE
         .with(|store| store.borrow().admin_state())
         .map_err(|_| admin::AdminError::StorageFailure)?
@@ -760,12 +771,9 @@ fn register_asset(asset: config::AssetConfig) -> Result<(), admin::AdminError> {
             "asset does not match the configured chain, instance, signer, or Timelock".into(),
         ));
     }
-    STORE.with(|store| {
-        store
-            .borrow_mut()
-            .register_asset(&asset, caller, ic_cdk::api::time())
-            .map_err(|error| admin::AdminError::InvalidArgument(error.to_string()))
-    })
+    STORE
+        .with(|store| store.borrow().validate_asset_registration(asset))
+        .map_err(|error| admin::AdminError::InvalidArgument(error.to_string()))
 }
 
 #[ic_cdk::query]
@@ -783,6 +791,13 @@ fn get_asset_runtime_attestation(
 #[ic_cdk::update]
 async fn refresh_asset_runtime_attestation(
     asset_id: Vec<u8>,
+) -> Result<config::AssetRuntimeAttestation, admin::AdminError> {
+    refresh_asset_runtime_inner(asset_id, None).await
+}
+
+async fn refresh_asset_runtime_inner(
+    asset_id: Vec<u8>,
+    sns_proposal: Option<&sns_assets::SnsAssetProposal>,
 ) -> Result<config::AssetRuntimeAttestation, admin::AdminError> {
     let caller = ic_cdk::api::msg_caller();
     if !admin::is_governance(caller)? {
@@ -842,6 +857,9 @@ async fn refresh_asset_runtime_attestation(
         asset_deposits_paused: snapshot.asset_deposits_paused,
         asset_withdrawals_paused: snapshot.asset_withdrawals_paused,
     };
+    if let Some(proposal) = sns_proposal {
+        sns_assets::validate(proposal).map_err(admin::AdminError::InvalidArgument)?;
+    }
     STORE
         .with(|store| {
             store
@@ -2980,6 +2998,26 @@ async fn schedule_activation(
         base_governance::GovernanceAction::ScheduleActivation,
     )
     .await
+}
+
+#[ic_cdk::query]
+fn get_asset_governance_operation_ids(
+) -> Result<base_governance::AssetGovernanceOperationIds, base_governance::BaseGovernanceError> {
+    base_governance::asset_governance_operation_ids()
+}
+
+#[ic_cdk::update]
+fn validate_sns_manage_asset(proposal: sns_assets::SnsAssetProposal) -> Result<String, String> {
+    sns_assets::validate(&proposal)
+}
+
+#[ic_cdk::update(manual_reply = true)]
+async fn sns_manage_asset(proposal: sns_assets::SnsAssetProposal) {
+    let result = sns_assets::execute(proposal).await;
+    match result {
+        Ok(()) => ic_cdk::api::msg_reply([0x44, 0x49, 0x44, 0x4c, 0, 0]),
+        Err(error) => ic_cdk::api::msg_reject(error),
+    }
 }
 
 #[ic_cdk::update]

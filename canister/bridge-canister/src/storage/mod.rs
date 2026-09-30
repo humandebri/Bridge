@@ -7040,12 +7040,7 @@ impl StableStore {
             .ok_or(StorageError::RecordNotFound)
     }
 
-    pub fn register_asset(
-        &mut self,
-        asset: &AssetConfig,
-        caller: Principal,
-        timestamp_ns: u64,
-    ) -> Result<(), StorageError> {
+    pub fn validate_asset_registration(&self, asset: &AssetConfig) -> Result<(), StorageError> {
         if self.pending_control_plane_rotation()?.is_some()
             || self.emergency_base_actions_pending()?
         {
@@ -7085,6 +7080,16 @@ impl StableStore {
         {
             return Err(StorageError::Core(CoreError::PayloadConflict));
         }
+        Ok(())
+    }
+
+    pub fn register_asset(
+        &mut self,
+        asset: &AssetConfig,
+        caller: Principal,
+        timestamp_ns: u64,
+    ) -> Result<(), StorageError> {
+        self.validate_asset_registration(asset)?;
         let encoded = encode(asset)?;
         let financial = encode(&AssetFinancialState::default())?;
         let mut counters = self.counters()?;

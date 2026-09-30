@@ -86,6 +86,10 @@ export interface AssetFinancialStatus {
   'withdrawal_fee_guard_charged_service_fee' : [] | [bigint],
   'reserved_deposit_mint_amount' : bigint,
 }
+export interface AssetGovernanceOperationIds {
+  'governance' : bigint,
+  'runtime_administrator' : bigint,
+}
 export type AssetLifecycle = { 'Enabled' : null } |
   { 'Prepared' : null } |
   { 'WithdrawalEnabled' : null };
@@ -689,51 +693,53 @@ export type Result_1 = { 'Ok' : BaseGovernanceConfirmation } |
   { 'Err' : BaseGovernanceError };
 export type Result_10 = { 'Ok' : AssetFinancialStatus } |
   { 'Err' : AdminError };
-export type Result_11 = { 'Ok' : [] | [AssetRuntimeAttestation] } |
-  { 'Err' : AdminError };
-export type Result_12 = { 'Ok' : AuditEventPage } |
-  { 'Err' : AdminError };
-export type Result_14 = { 'Ok' : Array<SignedBaseGovernanceTransaction> } |
+export type Result_11 = { 'Ok' : AssetGovernanceOperationIds } |
   { 'Err' : BaseGovernanceError };
-export type Result_15 = { 'Ok' : ProductionLifecycle } |
+export type Result_12 = { 'Ok' : [] | [AssetRuntimeAttestation] } |
+  { 'Err' : AdminError };
+export type Result_13 = { 'Ok' : AuditEventPage } |
+  { 'Err' : AdminError };
+export type Result_15 = { 'Ok' : Array<SignedBaseGovernanceTransaction> } |
   { 'Err' : BaseGovernanceError };
-export type Result_16 = { 'Ok' : string } |
+export type Result_16 = { 'Ok' : ProductionLifecycle } |
+  { 'Err' : BaseGovernanceError };
+export type Result_17 = { 'Ok' : string } |
   { 'Err' : StorageMaintenanceError };
-export type Result_17 = { 'Ok' : Array<[] | [WithdrawalView]> } |
+export type Result_18 = { 'Ok' : Array<[] | [WithdrawalView]> } |
   { 'Err' : GetWithdrawalsError };
-export type Result_18 = { 'Ok' : null } |
+export type Result_19 = { 'Ok' : null } |
   { 'Err' : PublicConfigInitializationError };
-export type Result_19 = { 'Ok' : Array<AssetConfig> } |
-  { 'Err' : AdminError };
 export type Result_2 = { 'Ok' : SettlementActionResult } |
   { 'Err' : SettlementActionError };
-export type Result_20 = { 'Ok' : DepositIdPage } |
+export type Result_20 = { 'Ok' : Array<AssetConfig> } |
+  { 'Err' : AdminError };
+export type Result_21 = { 'Ok' : DepositIdPage } |
   { 'Err' : ListDepositIdsError };
-export type Result_21 = { 'Ok' : NonterminalDepositRefPage } |
+export type Result_22 = { 'Ok' : NonterminalDepositRefPage } |
   { 'Err' : ListDepositIdsError };
-export type Result_22 = { 'Ok' : WithdrawalHistoryPage } |
+export type Result_23 = { 'Ok' : WithdrawalHistoryPage } |
   { 'Err' : ListWithdrawalsError };
-export type Result_23 = { 'Ok' : NotifyWithdrawalReceipt } |
+export type Result_24 = { 'Ok' : NotifyWithdrawalReceipt } |
   { 'Err' : NotifyWithdrawalError };
-export type Result_24 = { 'Ok' : NotifyDepositMintReceipt } |
+export type Result_25 = { 'Ok' : NotifyDepositMintReceipt } |
   { 'Err' : NotifyDepositMintError };
-export type Result_25 = { 'Ok' : null } |
+export type Result_26 = { 'Ok' : null } |
   { 'Err' : AdminError };
-export type Result_26 = { 'Ok' : AssetRuntimeAttestation } |
+export type Result_27 = { 'Ok' : AssetRuntimeAttestation } |
   { 'Err' : AdminError };
-export type Result_27 = { 'Ok' : ChecksumRefreshStatus } |
+export type Result_28 = { 'Ok' : ChecksumRefreshStatus } |
   { 'Err' : StorageMaintenanceError };
-export type Result_28 = { 'Ok' : DepositReceipt } |
+export type Result_29 = { 'Ok' : DepositReceipt } |
   { 'Err' : DepositError };
-export type Result_29 = { 'Ok' : DepositView } |
-  { 'Err' : RequestDepositRefundError };
 export type Result_3 = { 'Ok' : FeePayoutActionResult } |
   { 'Err' : SettlementActionError };
-export type Result_30 = { 'Ok' : FeePayoutReceipt } |
+export type Result_30 = { 'Ok' : DepositView } |
+  { 'Err' : RequestDepositRefundError };
+export type Result_31 = { 'Ok' : FeePayoutReceipt } |
   { 'Err' : AdminError };
-export type Result_31 = { 'Ok' : OperationalConfigSealReceipt } |
+export type Result_32 = { 'Ok' : OperationalConfigSealReceipt } |
   { 'Err' : BaseGovernanceError };
-export type Result_32 = { 'Ok' : string } |
+export type Result_33 = { 'Ok' : string } |
   { 'Err' : string };
 export type Result_4 = { 'Ok' : StorageValidationStatus } |
   { 'Err' : StorageMaintenanceError };
@@ -849,6 +855,26 @@ export type SigningFailureClass = { 'CallFailed' : null } |
 export interface SnsActivationProposal {
   'previous_governance_operation_id' : bigint,
 }
+export type SnsAssetAction = {
+    'RefreshRuntime' : {
+      'expected_observed_at_ns' : [] | [bigint],
+      'asset_id' : Uint8Array | number[],
+    }
+  } |
+  { 'RegisterAsset' : AssetConfig } |
+  {
+    'PrepareBase' : {
+      'expected_operation_id' : bigint,
+      'action' : BaseGovernanceAction,
+    }
+  };
+export interface SnsAssetProposal {
+  'action' : SnsAssetAction,
+  'deployment_instance_id' : Uint8Array | number[],
+  'bridge_canister_id' : Principal,
+  'expires_at_ns' : bigint,
+  'operational_config_sha256' : Uint8Array | number[],
+}
 export interface StatusCounts {
   'retained_audit_events' : bigint,
   'reconciliation_holds' : bigint,
@@ -924,11 +950,12 @@ export interface _SERVICE {
     [Uint8Array | number[]],
     Result_10
   >,
+  'get_asset_governance_operation_ids' : ActorMethod<[], Result_11>,
   'get_asset_runtime_attestation' : ActorMethod<
     [Uint8Array | number[]],
-    Result_11
+    Result_12
   >,
-  'get_audit_events' : ActorMethod<[bigint, number], Result_12>,
+  'get_audit_events' : ActorMethod<[bigint, number], Result_13>,
   'get_bridge_status' : ActorMethod<[], BridgeStatus>,
   'get_deposit' : ActorMethod<[Uint8Array | number[]], [] | [DepositView]>,
   'get_deposit_by_owner_sequence' : ActorMethod<
@@ -936,10 +963,10 @@ export interface _SERVICE {
     [] | [DepositView]
   >,
   'get_next_deposit_sequence' : ActorMethod<[Principal], bigint>,
-  'get_pending_base_governance_transaction' : ActorMethod<[], Result_14>,
-  'get_production_lifecycle' : ActorMethod<[], Result_15>,
-  'get_release_operational_config' : ActorMethod<[], Result_14>,
-  'get_release_storage_integrity' : ActorMethod<[], Result_16>,
+  'get_pending_base_governance_transaction' : ActorMethod<[], Result_15>,
+  'get_production_lifecycle' : ActorMethod<[], Result_16>,
+  'get_release_operational_config' : ActorMethod<[], Result_15>,
+  'get_release_storage_integrity' : ActorMethod<[], Result_17>,
   'get_release_upgrade_observation' : ActorMethod<
     [],
     [] | [ReleaseUpgradeObservation]
@@ -949,7 +976,7 @@ export interface _SERVICE {
     [Uint8Array | number[]],
     [] | [WithdrawalView]
   >,
-  'get_withdrawals' : ActorMethod<[Array<Uint8Array | number[]>], Result_17>,
+  'get_withdrawals' : ActorMethod<[Array<Uint8Array | number[]>], Result_18>,
   'icrc10_supported_standards' : ActorMethod<
     [],
     Array<Icrc10SupportedStandard>
@@ -958,18 +985,18 @@ export interface _SERVICE {
     [Icrc21ConsentMessageRequest],
     Icrc21ConsentMessageResponse
   >,
-  'initialize_public_config' : ActorMethod<[], Result_18>,
-  'list_assets' : ActorMethod<[], Result_19>,
-  'list_deposit_ids' : ActorMethod<[ListDepositIdsArgs], Result_20>,
+  'initialize_public_config' : ActorMethod<[], Result_19>,
+  'list_assets' : ActorMethod<[], Result_20>,
+  'list_deposit_ids' : ActorMethod<[ListDepositIdsArgs], Result_21>,
   'list_nonterminal_deposit_refs' : ActorMethod<
     [ListDepositIdsArgs],
-    Result_21
+    Result_22
   >,
-  'list_withdrawals' : ActorMethod<[ListWithdrawalsArgs], Result_22>,
-  'notify_asset_withdrawal' : ActorMethod<[AssetOperationArgs], Result_23>,
-  'notify_deposit_mint' : ActorMethod<[NotifyDepositMintArgs], Result_24>,
-  'notify_withdrawal' : ActorMethod<[NotifyWithdrawalArgs], Result_23>,
-  'pause_new_deposits' : ActorMethod<[], Result_25>,
+  'list_withdrawals' : ActorMethod<[ListWithdrawalsArgs], Result_23>,
+  'notify_asset_withdrawal' : ActorMethod<[AssetOperationArgs], Result_24>,
+  'notify_deposit_mint' : ActorMethod<[NotifyDepositMintArgs], Result_25>,
+  'notify_withdrawal' : ActorMethod<[NotifyWithdrawalArgs], Result_24>,
+  'pause_new_deposits' : ActorMethod<[], Result_26>,
   'prepare_base_governance_action' : ActorMethod<
     [BaseGovernanceAction],
     Result_6
@@ -982,29 +1009,31 @@ export interface _SERVICE {
   'refresh_activation_attestation' : ActorMethod<[], Result_7>,
   'refresh_asset_runtime_attestation' : ActorMethod<
     [Uint8Array | number[]],
-    Result_26
+    Result_27
   >,
-  'refresh_storage_checksum' : ActorMethod<[bigint], Result_27>,
-  'register_asset' : ActorMethod<[AssetConfig], Result_25>,
-  'request_asset_deposit' : ActorMethod<[AssetOperationArgs_1], Result_28>,
-  'request_deposit' : ActorMethod<[DepositArgs], Result_28>,
-  'request_deposit_refund' : ActorMethod<[Uint8Array | number[]], Result_29>,
-  'request_fee_payout' : ActorMethod<[bigint], Result_30>,
-  'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_25>,
-  'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_25>,
+  'refresh_storage_checksum' : ActorMethod<[bigint], Result_28>,
+  'register_asset' : ActorMethod<[AssetConfig], Result_26>,
+  'request_asset_deposit' : ActorMethod<[AssetOperationArgs_1], Result_29>,
+  'request_deposit' : ActorMethod<[DepositArgs], Result_29>,
+  'request_deposit_refund' : ActorMethod<[Uint8Array | number[]], Result_30>,
+  'request_fee_payout' : ActorMethod<[bigint], Result_31>,
+  'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_26>,
+  'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_26>,
   'schedule_activation' : ActorMethod<[], Result_6>,
-  'seal_operational_config' : ActorMethod<[OperationalConfigArgs], Result_31>,
+  'seal_operational_config' : ActorMethod<[OperationalConfigArgs], Result_32>,
   'sns_execute_activation' : ActorMethod<[SnsActivationProposal], undefined>,
+  'sns_manage_asset' : ActorMethod<[SnsAssetProposal], undefined>,
   'sns_schedule_activation' : ActorMethod<[SnsActivationProposal], undefined>,
   'start_storage_validation' : ActorMethod<[], Result_4>,
-  'storage_integrity_check' : ActorMethod<[], Result_16>,
+  'storage_integrity_check' : ActorMethod<[], Result_17>,
   'validate_sns_execute_activation' : ActorMethod<
     [SnsActivationProposal],
-    Result_32
+    Result_33
   >,
+  'validate_sns_manage_asset' : ActorMethod<[SnsAssetProposal], Result_33>,
   'validate_sns_schedule_activation' : ActorMethod<
     [SnsActivationProposal],
-    Result_32
+    Result_33
   >,
 }
 export declare const idlFactory: IDL.InterfaceFactory;
