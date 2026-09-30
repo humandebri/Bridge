@@ -24,6 +24,7 @@ vi.mock("./use-deposit-refund", () => ({
 vi.mock("@/lib/ic/bridge", () => ({
   createBridgeActor: async () => ({
     get_deposit_by_owner_sequence: async () => [{ state: { AuthorizationAvailable: null } }],
+    get_deposit: async () => [{ state: { AuthorizationAvailable: null } }],
   }),
 }))
 import { clearTransferFacts, publishTransferFacts, readTransferFacts } from "@/lib/transfer-state"
