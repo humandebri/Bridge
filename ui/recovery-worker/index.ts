@@ -182,6 +182,7 @@ export async function handleMintRecovery(request: Request, env: Env): Promise<Re
       })
       const runtime = await actor.get_runtime_binding()
       if (
+        !runtime.kinic_asset_binding_valid ||
         runtime.schema_version !== 37 ||
         runtime.base_chain_id !== 8453n ||
         toHex(Uint8Array.from(runtime.deployment_instance_id)).toLowerCase() !==
@@ -194,24 +195,46 @@ export async function handleMintRecovery(request: Request, env: Env): Promise<Re
       const authorization = record?.mint_authorization[0]
       if (!record || !authorization?.signature[0]) throw new ApiError(404, "deposit_unavailable")
       const bytesHex = (bytes: Uint8Array | number[]) => toHex(Uint8Array.from(bytes))
+      const assetResult = await actor.get_asset(record.asset_id)
+      const asset = "Ok" in assetResult ? assetResult.Ok[0] : undefined
+      if (!asset || bytesHex(asset.asset_id) !== bytesHex(record.asset_id))
+        throw new ApiError(409, "asset_binding_mismatch")
+      const shared = "SharedMultiToken" in record.bridge_kind
+      if (
+        shared !== "SharedMultiToken" in asset.bridge_kind ||
+        asset.base_chain_id !== 8453n ||
+        bytesHex(asset.deployment_instance_id).toLowerCase() !==
+          profile.deploymentInstanceId.toLowerCase()
+      )
+        throw new ApiError(409, "asset_binding_mismatch")
+      const bridgeAddress = bytesHex(asset.bridge_contract).toLowerCase()
+      const tokenAddress = bytesHex(asset.token_contract).toLowerCase()
+      if (
+        !/^0x[0-9a-f]{40}$/.test(bridgeAddress) ||
+        !/^0x[0-9a-f]{40}$/.test(tokenAddress) ||
+        (!shared &&
+          (bridgeAddress !== profile.bridgeAddress.toLowerCase() ||
+            tokenAddress !== profile.bsnsAddress.toLowerCase()))
+      )
+        throw new ApiError(409, "asset_binding_mismatch")
       if (
         bytesHex(record.deposit_id) !== depositId ||
         authorization.chain_id !== 8453n ||
-        bytesHex(authorization.verifying_contract).toLowerCase() !==
-          profile.bridgeAddress.toLowerCase()
+        bytesHex(authorization.verifying_contract).toLowerCase() !== bridgeAddress
       )
         throw new ApiError(409, "deposit_binding_mismatch")
       const digest = bytesHex(authorization.digest),
         recipient = bytesHex(authorization.recipient)
       const from =
-        authorization.finalized_block_number > profile.deploymentBlock
+        shared || authorization.finalized_block_number > profile.deploymentBlock
           ? authorization.finalized_block_number
           : profile.deploymentBlock
       const binding = JSON.stringify([
         profile.deploymentInstanceId.toLowerCase(),
         profile.bridgeCanisterId,
-        profile.bridgeAddress.toLowerCase(),
-        profile.bsnsAddress.toLowerCase(),
+        bytesHex(asset.asset_id),
+        bridgeAddress,
+        tokenAddress,
         depositId,
         digest,
         recipient,
@@ -248,7 +271,7 @@ export async function handleMintRecovery(request: Request, env: Env): Promise<Re
             fromBlock,
             toBlock,
             toAddress: recipient,
-            contractAddresses: [profile.bsnsAddress],
+            contractAddresses: [tokenAddress],
             category: ["erc20"],
             order: "asc",
             maxCount: "0x64",

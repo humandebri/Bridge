@@ -916,6 +916,10 @@ export interface _SERVICE {
   'get_activation_attestation' : ActorMethod<[], Result_7>,
   'get_activation_status' : ActorMethod<[], Result_8>,
   'get_asset' : ActorMethod<[Uint8Array | number[]], Result_9>,
+  'get_asset_deposit_by_owner_sequence' : ActorMethod<
+    [Uint8Array | number[], Principal, bigint],
+    [] | [DepositView]
+  >,
   'get_asset_financial_status' : ActorMethod<
     [Uint8Array | number[]],
     Result_10

@@ -119,6 +119,8 @@ vi.mock("@/lib/ic/bridge", () => ({
     Promise.resolve({
       get_next_deposit_sequence: mocks.getNextDepositSequence,
       get_deposit_by_owner_sequence: mocks.getDepositByOwnerSequence,
+      get_asset_deposit_by_owner_sequence: mocks.getDepositByOwnerSequence,
+      get_deposit: mocks.getDepositByOwnerSequence,
       get_runtime_binding: mocks.getRuntimeBinding,
       list_assets: mocks.listAssets,
     }),
@@ -303,6 +305,7 @@ describe("BridgePage automatic wallet refresh", () => {
     mocks.getDepositByOwnerSequence.mockReset().mockResolvedValue([
       {
         state: { AuthorizationPending: null },
+        asset_id: new Uint8Array(32).fill(0xaa),
       },
     ])
     mocks.removeDepositIntent.mockReset().mockResolvedValue(undefined)
@@ -997,6 +1000,8 @@ describe("BridgePage automatic wallet refresh", () => {
       {
         state: { AuthorizationAvailable: null },
         deposit_id: new Uint8Array(32).fill(7),
+        asset_id: new Uint8Array(32).fill(0xaa),
+        bridge_kind: { LegacySingleToken: null },
         owner_sequence: 3n,
         gross_amount: 200_000_000n,
         max_service_fee: 50_000_000n,
@@ -1046,6 +1051,8 @@ describe("BridgePage automatic wallet refresh", () => {
       {
         state: { AuthorizationPending: null },
         deposit_id: new Uint8Array(32).fill(7),
+        asset_id: new Uint8Array(32).fill(0xaa),
+        bridge_kind: { LegacySingleToken: null },
         owner_sequence: 3n,
         gross_amount: 200_000_001n,
         max_service_fee: 50_000_000n,
@@ -1110,6 +1117,8 @@ describe("BridgePage automatic wallet refresh", () => {
       {
         state: { AuthorizationPending: null },
         deposit_id: new Uint8Array(32).fill(7),
+        asset_id: new Uint8Array(32).fill(0xaa),
+        bridge_kind: { LegacySingleToken: null },
         owner_sequence: 3n,
         gross_amount: 200_000_000n,
         max_service_fee: 50_000_000n,
@@ -1151,6 +1160,8 @@ describe("BridgePage automatic wallet refresh", () => {
         approve: vi.fn().mockResolvedValue(7n),
         requestDeposit: vi.fn().mockResolvedValue({
           deposit_id: new Uint8Array(32).fill(7),
+          asset_id: new Uint8Array(32).fill(0xaa),
+          bridge_kind: { LegacySingleToken: null },
           owner_sequence: 3n,
           state: { EscrowedUnquoted: null },
         }),
@@ -1506,6 +1517,8 @@ describe("BridgePage automatic wallet refresh", () => {
       approve: vi.fn().mockResolvedValue(7n),
       requestDeposit: vi.fn().mockResolvedValue({
         deposit_id: new Uint8Array(32).fill(7),
+        asset_id: new Uint8Array(32).fill(0xaa),
+        bridge_kind: { LegacySingleToken: null },
         owner_sequence: 3n,
         state: { EscrowedUnquoted: null },
       }),
@@ -1560,6 +1573,8 @@ describe("BridgePage automatic wallet refresh", () => {
       approve: vi.fn().mockResolvedValue(7n),
       requestDeposit: vi.fn().mockResolvedValue({
         deposit_id: new Uint8Array(32).fill(7),
+        asset_id: new Uint8Array(32).fill(0xaa),
+        bridge_kind: { LegacySingleToken: null },
         owner_sequence: 3n,
         state: { EscrowedUnquoted: null },
       }),
@@ -1576,7 +1591,9 @@ describe("BridgePage automatic wallet refresh", () => {
       connect: vi.fn(),
       disconnect: vi.fn(),
     })
-    mocks.getDepositByOwnerSequence.mockResolvedValue([{ state }])
+    mocks.getDepositByOwnerSequence.mockResolvedValue([
+      { state, asset_id: new Uint8Array(32).fill(0xaa) },
+    ])
 
     render(
       <>

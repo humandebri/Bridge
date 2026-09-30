@@ -315,3 +315,49 @@ financial-row presence, and the asset/contract/Base-ID origin of shared withdraw
 The UI verifies the root deployment and the selected asset's ledger metadata,
 fee, index binding and runtime attestation before requesting wallet operations.
 WithdrawalEnabled assets may withdraw without enabling deposits.
+
+
+## Registered SNS migration from deployed v36 to v37
+
+The production Bridge is controlled solely by KINIC SNS Root. Use the SNS
+`UpgradeSnsControlledCanister` action; a personal identity cannot install the Wasm.
+The legacy personal-controller upgrade driver does not authorize this path.
+
+1. Freeze a clean reviewed HEAD, initialize pinned submodules, and complete
+   `scripts/ci-local.sh all`. Bind the candidate release bundle to that HEAD.
+2. Run `scripts/production-canister-upgrade.sh check-sns-migration --wasm ABS
+   --expected-current-wasm SHA256 --source-evidence ABS` with
+   `BRIDGE_RELEASE_BUNDLE=ABS`. This read-only check requires certified sole Root
+   controllers and the current module, registered/Activated/unpaused v36 state,
+   signature-verified runtime and operational configuration, complete history,
+   and storage integrity. It reruns the complete proof gate and builds the
+   production Wasm twice from clean HEAD. The current state must remain identical
+   through validation. The evidence binds source revision/tree and both modules.
+3. Review the exact proposal: fixed Bridge Canister ID, upgrade mode, empty
+   upgrade argument, candidate Wasm hash, and chunk hashes. Immediately before
+   submission recapture the certified v36 source using
+   `bridge-profile capture-production-sns-migration-source PROFILE SOURCE_HASH ABS`
+   and compare that snapshot with the reviewed evidence's `snapshot`. A change
+   requires repeating review/validation. Proposal submission is a separate
+   explicitly approved governance action; the check command never submits it.
+4. After execution, run `bridge-profile verify-production-sns-migration-live
+   PROFILE EVIDENCE TARGET_HASH WASM PROPOSAL_ID`. It verifies the executed SNS
+   action and chunk hashes, certified target module/Root controllers, live v37
+   readiness, and preservation of the recorded state. The only allowed snapshot
+   difference is module hash plus v36→v37 RuntimeBinding schema and a valid KINIC
+   registry binding. Activity that changes other observed state fails this strict
+   comparison and requires investigation; it is not silently accepted.
+5. Publish only a reviewed v37 UI profile bound to the verified target and reviewed
+   UI RPC configuration. v36 observations are accepted exclusively as this migration
+   source, never for UI writes. Keep KINIC's existing token and Bridge unchanged;
+   register and activate additional ERC-20s on the shared Bridge separately.
+
+The migration validates an unfinished v36 storage-validation cursor using its
+deployed shape and resets it transactionally. A new v37 validation traverses all
+asset tables. Malformed predecessor state is rejected.
+
+Emergency pause queues legacy and every registered shared asset's deposit and
+withdrawal pause independently. Prepared assets that do not yet exist on Base
+are excluded. Each flag survives upgrades/reverts and is cleared only by a
+confirmed matching transaction. Drain the whole queue before resuming admission;
+asset registration and activation are rejected while the queue is pending.

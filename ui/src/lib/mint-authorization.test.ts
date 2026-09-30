@@ -2,11 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { DepositView, MintAuthorizationView } from "@/generated/bridge.did"
 import type { FinalizedRuntimeObservation } from "@/lib/runtime-validation"
 import vector from "../../../verification/generated/mint-authorization-vector.json"
-import { validateMintAuthorization } from "./mint-authorization"
+import { validateMintAuthorization, sharedMintAuthorizationTypes } from "./mint-authorization"
+import { privateKeyToAccount } from "viem/accounts"
+import { hashTypedData, hexToBytes, bytesToHex } from "viem"
+import { runtimeBytecodeSha256 } from "./runtime-bytecode-hash"
+vi.mock("@/lib/ic/bridge", () => ({
+  createBridgeActor: async () => ({ get_asset: mocks.getAsset }),
+}))
 
 const mocks = vi.hoisted(() => ({
   getBlock: vi.fn(),
   readContract: vi.fn(),
+  getAsset: vi.fn(),
+  getBytecode: vi.fn(),
 }))
 
 vi.mock("@/config/profile", () => ({
@@ -152,4 +160,87 @@ describe("mint authorization latest Base admission", () => {
       validateMintAuthorization(authorizationRecord(), runtimeObservation()),
     ).rejects.toThrow("already processed on Base")
   })
+})
+
+it("honors_signed_shared_fee_after_current_fee_change", async () => {
+  const account = privateKeyToAccount(`0x${"11".repeat(32)}`)
+  const record = authorizationRecord()
+  record.bridge_kind = { SharedMultiToken: null }
+  record.asset_id = new Uint8Array(32).fill(9)
+  record.asset_authorization_epoch = [2n]
+  const view = record.mint_authorization[0]!
+  view.domain_name = "IC Base Multi-Token Bridge"
+  view.verifying_contract = new Uint8Array(20).fill(0x11)
+  const code = "0x6000" as const
+  mocks.getAsset.mockResolvedValue({
+    Ok: [
+      {
+        asset_id: record.asset_id,
+        bridge_kind: record.bridge_kind,
+        bridge_contract: view.verifying_contract,
+        token_contract: new Uint8Array(20).fill(0x22),
+        expected_bridge_runtime_sha256: hexToBytes(runtimeBytecodeSha256(code)),
+        expected_token_runtime_sha256: hexToBytes(runtimeBytecodeSha256(code)),
+      },
+    ],
+  })
+  mocks.getBytecode.mockResolvedValue(code)
+  const currentMaximum = 30n
+  mocks.readContract.mockImplementation(async ({ functionName }) => {
+    if (functionName === "assetSnapshot")
+      return {
+        serviceFee: 20n,
+        minServiceFee: 1n,
+        maxServiceFee: currentMaximum,
+        assetEpoch: 2n,
+        depositMintsPaused: false,
+      }
+    if (functionName === "globalEpoch") return view.authorization_epoch
+    if (functionName === "bridgeSigner") return account.address
+    if (functionName === "tokenForAsset") return `0x${"22".repeat(20)}`
+    return false
+  })
+  mocks.getBlock.mockResolvedValue({ timestamp: view.deadline - 300n })
+  const client = {
+    getBlock: mocks.getBlock,
+    readContract: mocks.readContract,
+    getBytecode: mocks.getBytecode,
+  } as unknown as Parameters<typeof validateMintAuthorization>[2]
+  for (const chargedFee of [10n, 31n]) {
+    record.max_service_fee = 40n
+    view.max_service_fee = 40n
+    view.charged_service_fee = chargedFee
+    record.quote[0]!.service_fee = chargedFee
+    const typedData = {
+      domain: {
+        name: view.domain_name,
+        version: "1",
+        chainId: Number(view.chain_id),
+        verifyingContract: bytesToHex(view.verifying_contract),
+      },
+      types: sharedMintAuthorizationTypes,
+      primaryType: "MintAuthorization" as const,
+      message: {
+        assetId: bytesToHex(record.asset_id),
+        depositId: bytesToHex(Uint8Array.from(view.deposit_id)),
+        recipient: bytesToHex(Uint8Array.from(view.recipient)),
+        grossAmount: view.gross_amount,
+        maxServiceFee: view.max_service_fee,
+        chargedServiceFee: chargedFee,
+        deadline: view.deadline,
+        globalEpoch: view.authorization_epoch,
+        assetEpoch: 2n,
+      },
+    }
+    view.digest = hexToBytes(hashTypedData(typedData))
+    view.signature = [hexToBytes(await account.signTypedData(typedData))]
+    if (chargedFee <= currentMaximum)
+      await expect(
+        validateMintAuthorization(record, runtimeObservation(), client),
+      ).resolves.toMatchObject({ shared: true, authorization: { chargedServiceFee: 10n } })
+    else
+      await expect(validateMintAuthorization(record, runtimeObservation(), client)).rejects.toThrow(
+        "no longer valid",
+      )
+  }
 })

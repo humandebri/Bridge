@@ -1,11 +1,15 @@
 // @vitest-environment node
 import { beforeEach, afterEach, expect, it, vi } from "vitest"
 import worker from "./index"
-const mocks = vi.hoisted(() => ({ deposit: vi.fn(), runtime: vi.fn() }))
+const mocks = vi.hoisted(() => ({ deposit: vi.fn(), runtime: vi.fn(), asset: vi.fn() }))
 vi.mock("@icp-sdk/core/agent", () => ({
   HttpAgent: { createSync: () => ({}) },
   Actor: {
-    createActor: () => ({ get_deposit: mocks.deposit, get_runtime_binding: mocks.runtime }),
+    createActor: () => ({
+      get_deposit: mocks.deposit,
+      get_runtime_binding: mocks.runtime,
+      get_asset: mocks.asset,
+    }),
   },
 }))
 const id = `0x${"11".repeat(32)}`
@@ -49,6 +53,8 @@ beforeEach(() => {
   mocks.deposit.mockResolvedValue([
     {
       deposit_id: new Uint8Array(32).fill(0x11),
+      asset_id: new Uint8Array(32).fill(0x99),
+      bridge_kind: { LegacySingleToken: null },
       mint_authorization: [
         {
           signature: [new Uint8Array(65)],
@@ -61,7 +67,20 @@ beforeEach(() => {
       ],
     },
   ])
+  mocks.asset.mockResolvedValue({
+    Ok: [
+      {
+        asset_id: new Uint8Array(32).fill(0x99),
+        bridge_kind: { LegacySingleToken: null },
+        base_chain_id: 8453n,
+        deployment_instance_id: new Uint8Array(32).fill(0x33),
+        bridge_contract: new Uint8Array(20).fill(0x55),
+        token_contract: new Uint8Array(20).fill(0x66),
+      },
+    ],
+  })
   mocks.runtime.mockResolvedValue({
+    kinic_asset_binding_valid: true,
     schema_version: 37,
     base_chain_id: 8453n,
     deployment_instance_id: new Uint8Array(32).fill(0x33),
@@ -127,7 +146,7 @@ it("recovery_worker_rejects_forgery_and_resumes_expired_page_keys", async () => 
   ).toBe(400)
   const other = { ...env, BRIDGE_PROFILE_JSON: JSON.stringify({ ...profile, bsnsAddress: bridge }) }
   expect((await worker.fetch(request({ depositId: id, cursor: page.cursor }), other)).status).toBe(
-    400,
+    409,
   )
   vi.useFakeTimers()
   vi.setSystemTime(Date.now() + 900001)
@@ -149,7 +168,22 @@ it("recovery_worker_rejects_forgery_and_resumes_expired_page_keys", async () => 
 })
 it("recovery_worker_rejects_foreign_runtime_and_input_overrides", async () => {
   expect((await worker.fetch(request({ depositId: id, toAddress: bridge }), env)).status).toBe(400)
-  mocks.runtime.mockResolvedValue({ schema_version: 35 })
+  mocks.asset.mockResolvedValue({
+    Ok: [
+      {
+        asset_id: new Uint8Array(32).fill(0x99),
+        bridge_kind: { LegacySingleToken: null },
+        base_chain_id: 8453n,
+        deployment_instance_id: new Uint8Array(32).fill(0x33),
+        bridge_contract: new Uint8Array(20).fill(0x55),
+        token_contract: new Uint8Array(20).fill(0x66),
+      },
+    ],
+  })
+  mocks.runtime.mockResolvedValue({
+    kinic_asset_binding_valid: true,
+    schema_version: 35,
+  })
   expect((await worker.fetch(request(), env)).status).toBe(409)
   expect(rpc).not.toHaveBeenCalled()
 })
@@ -179,4 +213,28 @@ it("recovery_worker_preserves_upstream_failures_and_timeout", async () => {
   const pending = worker.fetch(request(), env)
   await vi.advanceTimersByTimeAsync(15001)
   expect((await pending).status).toBe(504)
+})
+
+it("uses_registered_shared_token_and_bridge_for_recovery", async () => {
+  const record = (await mocks.deposit())[0]
+  record.bridge_kind = { SharedMultiToken: null }
+  record.mint_authorization[0].verifying_contract = new Uint8Array(20).fill(0x88)
+  mocks.deposit.mockResolvedValue([record])
+  const asset = (await mocks.asset()).Ok[0]
+  asset.bridge_kind = { SharedMultiToken: null }
+  asset.bridge_contract = new Uint8Array(20).fill(0x88)
+  asset.token_contract = new Uint8Array(20).fill(0xaa)
+  mocks.asset.mockResolvedValue({ Ok: [asset] })
+  const response = await worker.fetch(request(), env)
+  expect(response.status).toBe(200)
+  const calls = rpc.mock.calls.map(([, options]) => JSON.parse(options.body))
+  expect(
+    calls.find((call) => call.method === "alchemy_getAssetTransfers").params[0].contractAddresses,
+  ).toEqual([`0x${"aa".repeat(20)}`])
+})
+
+it("rejects_unavailable_or_conflicting_registered_asset", async () => {
+  mocks.asset.mockResolvedValue({ Ok: [] })
+  expect((await worker.fetch(request(), env)).status).toBe(409)
+  expect(rpc).not.toHaveBeenCalled()
 })

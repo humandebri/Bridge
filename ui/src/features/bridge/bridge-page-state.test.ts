@@ -122,12 +122,13 @@ describe("bridgePageReducer", () => {
       type: "deposit-accepted",
       owner: account.owner,
       sequence: 7n,
+      depositId: `0x${"07".repeat(32)}`,
     })
 
     expect(accepted.depositRecovery).toEqual({ status: "clear", owner: account.owner })
     expect(accepted.depositExecution).toEqual({
       status: "authorization",
-      active: { owner: account.owner, sequence: 7n },
+      active: { owner: account.owner, sequence: 7n, depositId: `0x${"07".repeat(32)}` },
     })
   })
 
@@ -136,6 +137,7 @@ describe("bridgePageReducer", () => {
       type: "deposit-accepted",
       owner: account.owner,
       sequence: 8n,
+      depositId: `0x${"08".repeat(32)}`,
     })
     const next = bridgePageReducer(accepted, {
       type: "deposit-terminal-reset",

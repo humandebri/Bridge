@@ -895,6 +895,9 @@ service : {
   get_activation_attestation : () -> (Result_7) query;
   get_activation_status : () -> (Result_8) query;
   get_asset : (blob) -> (Result_9) query;
+  get_asset_deposit_by_owner_sequence : (blob, principal, nat64) -> (
+      opt DepositView,
+    ) query;
   get_asset_financial_status : (blob) -> (Result_10) query;
   get_asset_runtime_attestation : (blob) -> (Result_11) query;
   get_audit_events : (nat64, nat16) -> (Result_12) query;

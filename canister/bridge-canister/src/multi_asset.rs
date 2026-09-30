@@ -224,6 +224,20 @@ pub fn notification_key(asset_id: [u8; 32], transaction_hash: [u8; 32]) -> [u8; 
     hasher.finalize().into()
 }
 
+/// Failed verification must not let one caller suppress another caller's proof.
+pub fn notification_failure_key(
+    asset_id: [u8; 32],
+    transaction_hash: [u8; 32],
+    caller: Principal,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"IC_BASE_NOTIFICATION_FAILURE_V1\0");
+    hasher.update(asset_id);
+    hasher.update(transaction_hash);
+    hasher.update(caller.as_slice());
+    hasher.finalize().into()
+}
+
 pub fn internal_withdrawal_id(
     asset_id: [u8; 32],
     bridge_contract: [u8; 20],
@@ -304,6 +318,21 @@ fn keccak(bytes: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_failure_keys_isolate_callers_and_assets() {
+        let caller = Principal::from_slice(&[1]);
+        let other = Principal::from_slice(&[2]);
+        let tx = [9; 32];
+        let key = notification_failure_key(KINIC_ASSET_ID, tx, caller);
+        assert_ne!(key, notification_failure_key(KINIC_ASSET_ID, tx, other));
+        assert_ne!(key, notification_failure_key([8; 32], tx, caller));
+        assert_ne!(
+            notification_key(KINIC_ASSET_ID, tx),
+            notification_key([8; 32], tx)
+        );
+        assert_eq!(key, notification_failure_key(KINIC_ASSET_ID, tx, caller));
+    }
 
     #[test]
     fn additional_assets_use_distinct_nonzero_custody_subaccounts() {

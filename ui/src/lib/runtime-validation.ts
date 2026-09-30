@@ -262,6 +262,7 @@ export async function validateRuntime(
   profile: DeploymentProfile,
   connectedChainId?: number,
   signal?: AbortSignal,
+  scope: "legacy" | "shared-root" = "legacy",
 ): Promise<DeploymentAttestation> {
   const profileFingerprint = runtimeProfileFingerprint(profile)
   const blockers = profileCompleteness(profile)
@@ -297,7 +298,7 @@ export async function validateRuntime(
       client.getChainId(),
       client.getBlock({ blockTag: "finalized" }),
     ])
-  if (status.withdrawal_fee_guard_active)
+  if (scope === "legacy" && status.withdrawal_fee_guard_active)
     blockers.push("Withdrawal fee guard is active; pause Base withdrawals and reconcile fees")
   if (localChainId !== profile.chainId)
     blockers.push(`Base RPC is on chain ${localChainId}; expected ${profile.chainId}`)
@@ -494,7 +495,7 @@ export async function validateAssetRuntime(
   signal?: AbortSignal,
   expectedAsset?: AssetConfig,
 ): Promise<FinalizedRuntimeObservation> {
-  const root = await validateRuntime(profile, connectedChainId, signal)
+  const root = await validateRuntime(profile, connectedChainId, signal, "shared-root")
   requireRuntimeWriteReady(root)
   const actor = await createBridgeActor(
     profile.icHost,

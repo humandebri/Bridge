@@ -11,6 +11,7 @@ shift || true
 WASM=""
 EXPECTED_CURRENT_WASM=""
 CONTROLLER_PEM=""
+SOURCE_EVIDENCE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --wasm) WASM="$2"; shift 2 ;;
@@ -19,19 +20,28 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --controller-pem) CONTROLLER_PEM="$2"; shift 2 ;;
+    --source-evidence) SOURCE_EVIDENCE="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 usage() {
+  echo "usage: BRIDGE_RELEASE_BUNDLE=ABS $0 check-sns-migration --wasm ABS --expected-current-wasm SHA256 --source-evidence ABS" >&2
   echo "usage: BRIDGE_RELEASE_BUNDLE=ABS BRIDGE_ICP_IDENTITY=production $0 check --wasm ABS" >&2
   echo "       BRIDGE_RELEASE_BUNDLE=ABS BRIDGE_ICP_IDENTITY=production BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE=UPGRADE_PRODUCTION_BRIDGE_CANISTER $0 execute --wasm ABS --expected-current-wasm SHA256 --controller-pem ABS" >&2
   exit 2
 }
-[[ "$MODE" == check || "$MODE" == execute ]] || usage
-[[ "${BRIDGE_ICP_IDENTITY:-}" == production ]] || {
-  echo "production upgrade requires BRIDGE_ICP_IDENTITY=production" >&2; exit 1;
-}
+[[ "$MODE" == check || "$MODE" == execute || "$MODE" == check-sns-migration ]] || usage
+if [[ "$MODE" == check-sns-migration ]]; then
+  [[ "$EXPECTED_CURRENT_WASM" =~ ^[0-9a-f]{64}$ && "$SOURCE_EVIDENCE" == /* && ! -e "$SOURCE_EVIDENCE" && ! -L "$SOURCE_EVIDENCE" ]] || {
+    echo "SNS migration check requires --expected-current-wasm SHA256 and a new absolute --source-evidence path" >&2; exit 1;
+  }
+fi
+if [[ "$MODE" != check-sns-migration ]]; then
+  [[ "${BRIDGE_ICP_IDENTITY:-}" == production ]] || {
+    echo "production upgrade requires BRIDGE_ICP_IDENTITY=production" >&2; exit 1;
+  }
+fi
 : "${BRIDGE_RELEASE_BUNDLE:?missing reviewed release bundle}"
 PROFILE="$BRIDGE_RELEASE_BUNDLE/profile.json"
 for path in "$WASM" "$PROFILE"; do
@@ -105,9 +115,11 @@ PY
   && "$HOST" == https://icp-api.io ]] || {
   echo "release profile does not select the fixed production domain" >&2; exit 1;
 }
-[[ "$(icp identity principal --identity production)" == "$CONTROLLER" ]] || {
-  echo "production identity differs from the configured controller" >&2; exit 1;
-}
+if [[ "$MODE" != check-sns-migration ]]; then
+  [[ "$(icp identity principal --identity production)" == "$CONTROLLER" ]] || {
+    echo "production identity differs from the configured controller" >&2; exit 1;
+  }
+fi
 
 CARGO_TARGET_DIR="$TMP/profile" cargo build --quiet --locked --release --manifest-path "$ROOT/Cargo.toml" -p bridge-profile
 PROFILE_BIN="$TMP/profile/release/bridge-profile"
@@ -135,7 +147,11 @@ print(s)')"
 fi
 [[ "$CURRENT_WASM" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid current module hash" >&2; exit 1; }
 export BRIDGE_PRODUCTION_INSTALLER_IDENTITY=production
-"$PROFILE_BIN" verify-production-current-state "$PROFILE" "$CONTROLLER" "$CURRENT_WASM" sole-unregistered
+if [[ "$MODE" == check-sns-migration ]]; then
+  "$PROFILE_BIN" capture-production-sns-migration-source "$PROFILE" "$CURRENT_WASM" "$TMP/source-before.json"
+else
+  "$PROFILE_BIN" verify-production-current-state "$PROFILE" "$CONTROLLER" "$CURRENT_WASM" sole-unregistered
+fi
 
 production_run_proof_gate "$ROOT" "$REVISION" "$TREE"
 for index in 1 2; do
@@ -149,6 +165,27 @@ done
 require_source_identity
 printf 'production_upgrade_check=pass current_module_sha256=%s candidate_module_sha256=%s source_revision=%s\n' \
   "$CURRENT_WASM" "$CANDIDATE_WASM" "$REVISION"
+if [[ "$MODE" == check-sns-migration ]]; then
+  "$PROFILE_BIN" capture-production-sns-migration-source "$PROFILE" "$CURRENT_WASM" "$TMP/source-after.json"
+  cmp -s "$TMP/source-before.json" "$TMP/source-after.json" || {
+    echo "production state changed during the migration proof/build gate" >&2; exit 1;
+  }
+  require_source_identity
+  python3 -I -S - "$TMP/source-after.json" "$SOURCE_EVIDENCE" "$REVISION" "$TREE" "$CURRENT_WASM" "$CANDIDATE_WASM" <<'PY'
+import json,os,sys
+source,target,revision,tree,current,candidate=sys.argv[1:]
+evidence=dict(schema_version=1,source_revision=revision,source_tree_sha256=tree,
+              source_module_sha256=current,target_module_sha256=candidate,snapshot=json.load(open(source)))
+fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600)
+try:
+ with os.fdopen(fd,'w') as out:
+  json.dump(evidence,out,sort_keys=True,separators=(',',':'));out.flush();os.fsync(out.fileno())
+except BaseException:
+ raise
+PY
+  echo "SNS migration validation complete; proposal submission requires a fresh certified source observation immediately before submission."
+  exit 0
+fi
 [[ "$MODE" == check ]] && exit 0
 [[ "$CURRENT_WASM" == "$EXPECTED_CURRENT_WASM" ]] || {
   echo "certified module changed since operator review" >&2; exit 1;

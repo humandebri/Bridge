@@ -379,6 +379,85 @@ export const idlFactory = ({ IDL }) => {
     'Ok' : IDL.Opt(AssetConfig),
     'Err' : AdminError,
   });
+  const DepositQuoteView = IDL.Record({
+    'net_amount' : IDL.Nat,
+    'service_fee' : IDL.Nat,
+  });
+  const MintReceiptView = IDL.Record({
+    'transaction_hash' : IDL.Vec(IDL.Nat8),
+    'log_index' : IDL.Nat64,
+    'receipt_block_number' : IDL.Nat64,
+  });
+  const MintAuthorizationView = IDL.Record({
+    'finalized_block_number' : IDL.Nat64,
+    'signature' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'deposit_id' : IDL.Vec(IDL.Nat8),
+    'issued_at_timestamp' : IDL.Nat64,
+    'domain_name' : IDL.Text,
+    'charged_service_fee' : IDL.Nat,
+    'recipient' : IDL.Vec(IDL.Nat8),
+    'domain_version' : IDL.Text,
+    'authorization_epoch' : IDL.Nat64,
+    'max_service_fee' : IDL.Nat,
+    'deadline' : IDL.Nat64,
+    'signature_dispatch_attempt' : IDL.Nat32,
+    'chain_id' : IDL.Nat64,
+    'finalized_block_hash' : IDL.Vec(IDL.Nat8),
+    'finalized_block_timestamp' : IDL.Nat64,
+    'verifying_contract' : IDL.Vec(IDL.Nat8),
+    'digest' : IDL.Vec(IDL.Nat8),
+    'gross_amount' : IDL.Nat,
+  });
+  const AutomaticProgressState = IDL.Variant({
+    'Scheduled' : IDL.Record({ 'next_run_at_ns' : IDL.Nat64 }),
+    'Running' : IDL.Record({ 'lease_until_ns' : IDL.Nat64 }),
+  });
+  const AutomaticProgressView = IDL.Record({
+    'state' : AutomaticProgressState,
+  });
+  const DepositRefundStatusView = IDL.Variant({
+    'Sending' : IDL.Null,
+    'ReconciliationRequired' : IDL.Null,
+    'Completed' : IDL.Null,
+  });
+  const DepositRefundReasonView = IDL.Variant({
+    'ServiceFeeRejected' : IDL.Null,
+    'InvalidRecipient' : IDL.Null,
+    'MintWindowLimitExceeded' : IDL.Null,
+    'BasePaused' : IDL.Null,
+    'RefundAmountTooSmall' : IDL.Null,
+    'AuthorizationExpired' : IDL.Null,
+    'PerDepositLimitExceeded' : IDL.Null,
+  });
+  const DepositRefundView = IDL.Record({
+    'status' : DepositRefundStatusView,
+    'refund_ledger_block_index' : IDL.Opt(IDL.Nat),
+    'attempt_no' : IDL.Nat64,
+    'ledger_fee' : IDL.Nat,
+    'amount' : IDL.Nat,
+    'reason' : DepositRefundReasonView,
+  });
+  const DepositView = IDL.Record({
+    'base_recipient' : IDL.Vec(IDL.Nat8),
+    'deposit_id' : IDL.Vec(IDL.Nat8),
+    'asset_authorization_epoch' : IDL.Opt(IDL.Nat64),
+    'quote' : IDL.Opt(DepositQuoteView),
+    'max_service_fee' : IDL.Nat,
+    'funding_ledger_block_index' : IDL.Opt(IDL.Nat),
+    'from_subaccount' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'last_settlement_stop_reason' : IDL.Opt(SettlementStopReason),
+    'mint_receipt' : IDL.Opt(MintReceiptView),
+    'created_at_ns' : IDL.Nat64,
+    'state' : DepositPhase,
+    'available_refund_amount' : IDL.Opt(IDL.Nat),
+    'owner_sequence' : IDL.Nat64,
+    'asset_id' : IDL.Vec(IDL.Nat8),
+    'mint_authorization' : IDL.Opt(MintAuthorizationView),
+    'automatic_progress' : IDL.Opt(AutomaticProgressView),
+    'bridge_kind' : BaseBridgeKind,
+    'gross_amount' : IDL.Nat,
+    'refund' : IDL.Opt(DepositRefundView),
+  });
   const AssetFinancialStatus = IDL.Record({
     'fee_reserve' : IDL.Nat,
     'withdrawal_fee_guard_ledger_fee' : IDL.Opt(IDL.Nat),
@@ -554,85 +633,6 @@ export const idlFactory = ({ IDL }) => {
   const Result_13 = IDL.Variant({
     'Ok' : ControlPlaneAddressesView,
     'Err' : ControlPlaneAddressesError,
-  });
-  const DepositQuoteView = IDL.Record({
-    'net_amount' : IDL.Nat,
-    'service_fee' : IDL.Nat,
-  });
-  const MintReceiptView = IDL.Record({
-    'transaction_hash' : IDL.Vec(IDL.Nat8),
-    'log_index' : IDL.Nat64,
-    'receipt_block_number' : IDL.Nat64,
-  });
-  const MintAuthorizationView = IDL.Record({
-    'finalized_block_number' : IDL.Nat64,
-    'signature' : IDL.Opt(IDL.Vec(IDL.Nat8)),
-    'deposit_id' : IDL.Vec(IDL.Nat8),
-    'issued_at_timestamp' : IDL.Nat64,
-    'domain_name' : IDL.Text,
-    'charged_service_fee' : IDL.Nat,
-    'recipient' : IDL.Vec(IDL.Nat8),
-    'domain_version' : IDL.Text,
-    'authorization_epoch' : IDL.Nat64,
-    'max_service_fee' : IDL.Nat,
-    'deadline' : IDL.Nat64,
-    'signature_dispatch_attempt' : IDL.Nat32,
-    'chain_id' : IDL.Nat64,
-    'finalized_block_hash' : IDL.Vec(IDL.Nat8),
-    'finalized_block_timestamp' : IDL.Nat64,
-    'verifying_contract' : IDL.Vec(IDL.Nat8),
-    'digest' : IDL.Vec(IDL.Nat8),
-    'gross_amount' : IDL.Nat,
-  });
-  const AutomaticProgressState = IDL.Variant({
-    'Scheduled' : IDL.Record({ 'next_run_at_ns' : IDL.Nat64 }),
-    'Running' : IDL.Record({ 'lease_until_ns' : IDL.Nat64 }),
-  });
-  const AutomaticProgressView = IDL.Record({
-    'state' : AutomaticProgressState,
-  });
-  const DepositRefundStatusView = IDL.Variant({
-    'Sending' : IDL.Null,
-    'ReconciliationRequired' : IDL.Null,
-    'Completed' : IDL.Null,
-  });
-  const DepositRefundReasonView = IDL.Variant({
-    'ServiceFeeRejected' : IDL.Null,
-    'InvalidRecipient' : IDL.Null,
-    'MintWindowLimitExceeded' : IDL.Null,
-    'BasePaused' : IDL.Null,
-    'RefundAmountTooSmall' : IDL.Null,
-    'AuthorizationExpired' : IDL.Null,
-    'PerDepositLimitExceeded' : IDL.Null,
-  });
-  const DepositRefundView = IDL.Record({
-    'status' : DepositRefundStatusView,
-    'refund_ledger_block_index' : IDL.Opt(IDL.Nat),
-    'attempt_no' : IDL.Nat64,
-    'ledger_fee' : IDL.Nat,
-    'amount' : IDL.Nat,
-    'reason' : DepositRefundReasonView,
-  });
-  const DepositView = IDL.Record({
-    'base_recipient' : IDL.Vec(IDL.Nat8),
-    'deposit_id' : IDL.Vec(IDL.Nat8),
-    'asset_authorization_epoch' : IDL.Opt(IDL.Nat64),
-    'quote' : IDL.Opt(DepositQuoteView),
-    'max_service_fee' : IDL.Nat,
-    'funding_ledger_block_index' : IDL.Opt(IDL.Nat),
-    'from_subaccount' : IDL.Opt(IDL.Vec(IDL.Nat8)),
-    'last_settlement_stop_reason' : IDL.Opt(SettlementStopReason),
-    'mint_receipt' : IDL.Opt(MintReceiptView),
-    'created_at_ns' : IDL.Nat64,
-    'state' : DepositPhase,
-    'available_refund_amount' : IDL.Opt(IDL.Nat),
-    'owner_sequence' : IDL.Nat64,
-    'asset_id' : IDL.Vec(IDL.Nat8),
-    'mint_authorization' : IDL.Opt(MintAuthorizationView),
-    'automatic_progress' : IDL.Opt(AutomaticProgressView),
-    'bridge_kind' : BaseBridgeKind,
-    'gross_amount' : IDL.Nat,
-    'refund' : IDL.Opt(DepositRefundView),
   });
   const OperationalConfig = IDL.Record({
     'settlement_rate_limit_global' : IDL.Nat16,
@@ -1076,6 +1076,11 @@ export const idlFactory = ({ IDL }) => {
     'get_activation_attestation' : IDL.Func([], [Result_7], ['query']),
     'get_activation_status' : IDL.Func([], [Result_8], ['query']),
     'get_asset' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_9], ['query']),
+    'get_asset_deposit_by_owner_sequence' : IDL.Func(
+        [IDL.Vec(IDL.Nat8), IDL.Principal, IDL.Nat64],
+        [IDL.Opt(DepositView)],
+        ['query'],
+      ),
     'get_asset_financial_status' : IDL.Func(
         [IDL.Vec(IDL.Nat8)],
         [Result_10],

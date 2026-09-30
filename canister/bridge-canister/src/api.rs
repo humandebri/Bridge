@@ -431,6 +431,37 @@ pub async fn notify_withdrawal(
     Ok(receipt)
 }
 
+pub(crate) fn shared_withdrawal_notification_context(
+    asset_id: [u8; 32],
+) -> Result<crate::multi_asset::AssetExecutionContext, NotifyWithdrawalError> {
+    let context = STORE
+        .with(|store| {
+            let store = store.borrow();
+            let root = store
+                .config()?
+                .ok_or(crate::storage::StorageError::RecordNotFound)?;
+            let asset = store
+                .asset(&asset_id)?
+                .ok_or(crate::storage::StorageError::RecordNotFound)?;
+            crate::multi_asset::AssetExecutionContext::new(root, asset, false)
+                .map_err(|_| crate::storage::StorageError::DecodeFailed)
+        })
+        .map_err(|_| NotifyWithdrawalError::BaseStateMismatch)?;
+    if !context.is_shared() || context.asset.lifecycle == crate::config::AssetLifecycle::Prepared {
+        return Err(NotifyWithdrawalError::BaseStateMismatch);
+    }
+    let attestation = STORE
+        .with(|store| store.borrow().asset_runtime_attestation(&asset_id))
+        .map_err(|_| NotifyWithdrawalError::StorageFailure)?
+        .ok_or(NotifyWithdrawalError::BaseStateMismatch)?;
+    if !attestation.permits_withdrawal_ingestion()
+        || attestation.service_fee < context.asset.ledger_fee
+    {
+        return Err(NotifyWithdrawalError::BaseStateMismatch);
+    }
+    Ok(context)
+}
+
 pub async fn notify_asset_withdrawal(
     caller: Principal,
     asset_id: [u8; 32],
@@ -447,31 +478,7 @@ pub async fn notify_asset_withdrawal(
     if transaction_hash == [0; 32] {
         return Err(NotifyWithdrawalError::InvalidTransactionHash);
     }
-    let context = STORE
-        .with(|store| {
-            let store = store.borrow();
-            let root = store
-                .config()?
-                .ok_or(crate::storage::StorageError::RecordNotFound)?;
-            let asset = store
-                .asset(&asset_id)?
-                .ok_or(crate::storage::StorageError::RecordNotFound)?;
-            crate::multi_asset::AssetExecutionContext::new(root, asset, false)
-                .map_err(|_| crate::storage::StorageError::DecodeFailed)
-        })
-        .map_err(|_| NotifyWithdrawalError::StorageFailure)?;
-    if !context.is_shared() || context.asset.lifecycle == crate::config::AssetLifecycle::Prepared {
-        return Err(NotifyWithdrawalError::BaseStateMismatch);
-    }
-    let attestation = STORE
-        .with(|store| store.borrow().asset_runtime_attestation(&asset_id))
-        .map_err(|_| NotifyWithdrawalError::StorageFailure)?
-        .ok_or(NotifyWithdrawalError::BaseStateMismatch)?;
-    if !attestation.permits_withdrawal_ingestion()
-        || attestation.service_fee < context.asset.ledger_fee
-    {
-        return Err(NotifyWithdrawalError::BaseStateMismatch);
-    }
+    let context = shared_withdrawal_notification_context(asset_id)?;
     let outcome = evm_rpc::shared_notified_withdrawal_outcome(
         &context.evm_args(),
         asset_id,
@@ -2448,6 +2455,29 @@ fn withdrawal_release_ledger_block_index(record: &WithdrawalRecord) -> Option<Na
         | WithdrawalState::ReleasePending { .. }
         | WithdrawalState::ReconciliationHold { .. } => None,
     }
+}
+
+pub fn get_asset_deposit_by_owner_sequence(
+    asset_id: Vec<u8>,
+    owner: Principal,
+    owner_sequence: u64,
+) -> Option<DepositView> {
+    let asset_id = crate::multi_asset::parse_asset_id(&asset_id).ok()?;
+    let asset = STORE.with(|store| store.borrow().asset(&asset_id)).ok()??;
+    let config = config().ok()?;
+    let id = if asset_id == crate::config::KINIC_ASSET_ID {
+        derive_deposit_id(&config, ic_cdk::api::canister_self(), owner, owner_sequence).ok()?
+    } else {
+        crate::multi_asset::derive_deposit_id(
+            &asset.deployment_instance_id,
+            ic_cdk::api::canister_self(),
+            asset_id,
+            owner,
+            owner_sequence,
+        )
+    };
+    let record = get_deposit(id.to_vec())?;
+    (record.asset_id == asset_id).then_some(record)
 }
 
 pub fn get_deposit_by_owner_sequence(owner: Principal, owner_sequence: u64) -> Option<DepositView> {

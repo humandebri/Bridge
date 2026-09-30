@@ -717,6 +717,15 @@ fn register_asset(asset: config::AssetConfig) -> Result<(), admin::AdminError> {
     if !admin::is_governance(caller)? {
         return Err(admin::AdminError::Unauthorized);
     }
+    if STORE
+        .with(|store| store.borrow().admin_state())
+        .map_err(|_| admin::AdminError::StorageFailure)?
+        .deposits_paused
+    {
+        return Err(admin::AdminError::InvalidArgument(
+            "asset registration is disabled while admission is paused".into(),
+        ));
+    }
     asset
         .validate_asset()
         .map_err(|error| admin::AdminError::InvalidArgument(error.into()))?;
@@ -1556,6 +1565,15 @@ async fn request_deposit_refund(
 }
 
 #[ic_cdk::query]
+fn get_asset_deposit_by_owner_sequence(
+    asset_id: Vec<u8>,
+    owner: candid::Principal,
+    owner_sequence: u64,
+) -> Option<api::DepositView> {
+    api::get_asset_deposit_by_owner_sequence(asset_id, owner, owner_sequence)
+}
+
+#[ic_cdk::query]
 fn get_deposit_by_owner_sequence(
     owner: candid::Principal,
     owner_sequence: u64,
@@ -1620,13 +1638,18 @@ async fn notify_withdrawal(
             .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?
             .ok_or(api::NotifyWithdrawalError::StorageFailure)
     })?;
+    let failure_key = multi_asset::notification_failure_key(
+        crate::config::KINIC_ASSET_ID,
+        transaction_hash,
+        caller,
+    );
     let now_ns = ic_cdk::api::time();
     let protected_lane = caller == config.confirmation_relayer_principal;
     if STORE
         .with(|store| {
             store
                 .borrow()
-                .notification_failure_cooldown_active(transaction_hash, now_ns)
+                .notification_failure_cooldown_active(failure_key, now_ns)
         })
         .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?
     {
@@ -1688,7 +1711,7 @@ async fn notify_withdrawal(
             STORE
                 .with(|store| {
                     store.borrow_mut().record_notification_failure_cooldown(
-                        transaction_hash,
+                        failure_key,
                         ic_cdk::api::time(),
                         30_000_000_000,
                     )
@@ -1717,6 +1740,7 @@ async fn notify_asset_withdrawal(
     if let Some(receipt) = api::existing_notified_withdrawal_by_hash(asset_id, transaction_hash)? {
         return Ok(receipt);
     }
+    api::shared_withdrawal_notification_context(asset_id)?;
     let config = STORE.with(|store| {
         store
             .borrow()
@@ -1724,13 +1748,14 @@ async fn notify_asset_withdrawal(
             .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?
             .ok_or(api::NotifyWithdrawalError::StorageFailure)
     })?;
+    let failure_key = multi_asset::notification_failure_key(asset_id, transaction_hash, caller);
     let now_ns = ic_cdk::api::time();
     let protected_lane = caller == config.confirmation_relayer_principal;
     if STORE
         .with(|store| {
             store
                 .borrow()
-                .notification_failure_cooldown_active(transaction_hash, now_ns)
+                .notification_failure_cooldown_active(failure_key, now_ns)
         })
         .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?
     {
@@ -1756,9 +1781,9 @@ async fn notify_asset_withdrawal(
     let Some(_quota_guard) = NotificationQuotaGuard::acquire(caller, protected_lane) else {
         return Err(api::NotifyWithdrawalError::RateLimited);
     };
-    let Some(notification_guard) =
-        InFlightGuard::acquire(ActionKey::Notification(transaction_hash))
-    else {
+    let Some(notification_guard) = InFlightGuard::acquire(ActionKey::Notification(
+        multi_asset::notification_key(asset_id, transaction_hash),
+    )) else {
         return Err(api::NotifyWithdrawalError::Busy);
     };
     let caller_count = NotificationAdmissionGuard::caller_count(
@@ -1792,7 +1817,7 @@ async fn notify_asset_withdrawal(
             STORE
                 .with(|store| {
                     store.borrow_mut().record_notification_failure_cooldown(
-                        transaction_hash,
+                        failure_key,
                         ic_cdk::api::time(),
                         30_000_000_000,
                     )

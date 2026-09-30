@@ -349,7 +349,7 @@ export function BridgePage({
     },
   })
   const activeDepositRecord = useQuery({
-    queryKey: ["active-deposit", activeDeposit?.owner, activeDeposit?.sequence.toString()],
+    queryKey: ["active-deposit", activeDeposit?.depositId],
     enabled: direction === "deposit" && Boolean(activeDeposit),
     refetchInterval: 5_000,
     refetchIntervalInBackground: true,
@@ -358,10 +358,7 @@ export function BridgePage({
         deploymentProfile.icHost,
         deploymentProfile.bridgeCanisterId as string,
       )
-      const result = await actor.get_deposit_by_owner_sequence(
-        Principal.fromText(activeDeposit!.owner),
-        activeDeposit!.sequence,
-      )
+      const result = await actor.get_deposit(hexToBytes(activeDeposit!.depositId))
       if (!result[0]) throw new Error("Canonical deposit is not available yet")
       return result[0]
     },
@@ -528,6 +525,7 @@ export function BridgePage({
         type: "deposit-accepted",
         owner: attempt.account.owner,
         sequence: receipt.owner_sequence,
+        depositId: bytesHex(receipt.deposit_id),
       })
       bridgeProgress.update(progressId, {
         phase: "ic-deposit-accepted",
@@ -944,12 +942,20 @@ export function BridgePage({
           "The previous deposit was not accepted. You can now edit the form or start a new deposit.",
         )
       } else if (status === "accepted-or-conflicted") {
-        const record = await actor.get_deposit_by_owner_sequence(
-          Principal.fromText(unresolvedDeposit.account.owner),
-          unresolvedDeposit.call.ownerSequence,
-        )
+        const record = unresolvedDeposit.call.assetId
+          ? await actor.get_asset_deposit_by_owner_sequence(
+              unresolvedDeposit.call.assetId,
+              Principal.fromText(unresolvedDeposit.account.owner),
+              unresolvedDeposit.call.ownerSequence,
+            )
+          : await actor.get_deposit_by_owner_sequence(
+              Principal.fromText(unresolvedDeposit.account.owner),
+              unresolvedDeposit.call.ownerSequence,
+            )
         if (
           !record[0] ||
+          (unresolvedDeposit.call.assetId &&
+            bytesHex(record[0].asset_id) !== bytesHex(unresolvedDeposit.call.assetId)) ||
           record[0].gross_amount !== unresolvedDeposit.call.grossAmount ||
           record[0].max_service_fee !== unresolvedDeposit.call.maxServiceFee ||
           bytesHex(record[0].base_recipient).toLowerCase() !==
@@ -972,7 +978,21 @@ export function BridgePage({
             "Another transfer is active. Close it before recovering this deposit from History.",
           )
         }
-        const progressState = recoveredDepositProgressState(canonical)
+        const recoveredAsset =
+          "SharedMultiToken" in canonical.bridge_kind
+            ? await actor.get_asset(canonical.asset_id)
+            : undefined
+        if (recoveredAsset && ("Err" in recoveredAsset || !recoveredAsset.Ok[0]))
+          throw new Error("Registered deposit asset is unavailable")
+        const assetProgress = {
+          assetId: bytesHex(canonical.asset_id),
+          shared: "SharedMultiToken" in canonical.bridge_kind,
+          contractAddress:
+            recoveredAsset && "Ok" in recoveredAsset
+              ? bytesHex(recoveredAsset.Ok[0]!.bridge_contract)
+              : (deploymentProfile.bridgeAddress as `0x${string}`),
+        }
+        const progressState = { ...recoveredDepositProgressState(canonical), ...assetProgress }
         const depositIdentity = {
           owner: unresolvedDeposit.account.owner,
           ownerSequence: unresolvedDeposit.call.ownerSequence.toString(),
@@ -1003,6 +1023,7 @@ export function BridgePage({
           type: "deposit-accepted",
           owner: unresolvedDeposit.account.owner,
           sequence: unresolvedDeposit.call.ownerSequence,
+          depositId: bytesHex(canonical.deposit_id),
         })
         queryClient.setQueryData(
           ["deposit-owner-sequence", unresolvedDeposit.account.owner],

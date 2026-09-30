@@ -295,7 +295,8 @@ export async function validateMintAuthorization(
       assetSnapshot.minServiceFee === 0n ||
       assetSnapshot.serviceFee < assetSnapshot.minServiceFee ||
       assetSnapshot.maxServiceFee < assetSnapshot.minServiceFee ||
-      assetSnapshot.serviceFee !== sharedAuthorization.chargedServiceFee ||
+      sharedAuthorization.chargedServiceFee > sharedAuthorization.maxServiceFee ||
+      sharedAuthorization.chargedServiceFee > assetSnapshot.maxServiceFee ||
       globalEpoch !== sharedAuthorization.globalEpoch ||
       assetSnapshot.assetEpoch !== sharedAuthorization.assetEpoch ||
       recovered.toLowerCase() !== signer.toLowerCase()

@@ -622,6 +622,7 @@ describe("selected shared asset runtime", () => {
     ledger.icrc1_fee = vi.fn(async () => 10n)
     const verify = (direction: "deposit" | "withdraw") =>
       validateAssetRuntime(profile, asset.asset_id, direction, profile.chainId, undefined, asset)
+    mocks.getBridgeStatus.mockResolvedValue({ withdrawal_fee_guard_active: true })
     await expect(verify("withdraw")).resolves.toMatchObject({ ready: true })
     await expect(verify("deposit")).rejects.toThrow("not enabled")
     asset.lifecycle = { Enabled: null }

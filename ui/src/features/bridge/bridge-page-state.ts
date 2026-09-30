@@ -79,7 +79,10 @@ export type DepositExecutionState =
   | { status: "idle" }
   | { status: "checking" }
   | { status: "oisy-action" }
-  | { status: "authorization"; active: { owner: string; sequence: bigint } }
+  | {
+      status: "authorization"
+      active: { owner: string; sequence: bigint; depositId: `0x${string}` }
+    }
 
 export interface BridgePageState {
   depositAmount: string
@@ -130,7 +133,7 @@ export type BridgePageEvent =
   | { type: "deposit-intent-check-finished"; owner: string }
   | { type: "deposit-intent-cleared"; owner?: string }
   | { type: "deposit-progress-changed"; progress: Exclude<DepositProgress, "authorization"> }
-  | { type: "deposit-accepted"; owner: string; sequence: bigint }
+  | { type: "deposit-accepted"; owner: string; sequence: bigint; depositId: `0x${string}` }
   | { type: "deposit-terminal-reset"; owner: string; sequence: bigint }
   | { type: "withdrawal-submission-started" }
   | { type: "withdrawal-submission-finished"; clearAmount?: boolean }
@@ -259,7 +262,7 @@ export function bridgePageReducer(state: BridgePageState, event: BridgePageEvent
         depositRecovery: { status: "clear", owner: event.owner },
         depositExecution: {
           status: "authorization",
-          active: { owner: event.owner, sequence: event.sequence },
+          active: { owner: event.owner, sequence: event.sequence, depositId: event.depositId },
         },
       }
     case "deposit-terminal-reset":

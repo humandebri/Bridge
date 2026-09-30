@@ -469,6 +469,8 @@ pub struct SharedWithdrawalOrigin {
 /// `asset_financial_states` so amounts with different units are never summed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetFinancialState {
+    pub emergency_pause_deposit_required: bool,
+    pub emergency_pause_withdrawal_required: bool,
     pub external_progress: ExternalProgress,
     pub accounting: AccountingState,
     pub reserved_deposit_mint_amount: u128,
@@ -824,6 +826,7 @@ fn read_asset_financial_state(
             withdrawal_liability_amount: u128::from_sql_bytes(liability)
                 .map_err(|_| DbError::Constraint("invalid withdrawal liability amount".into()))?,
             withdrawal_fee_guard: admin.and_then(|value| value.withdrawal_fee_guard),
+            ..Default::default()
         });
     }
     let bytes = connection.query_scalar::<Vec<u8>>(
@@ -2445,6 +2448,24 @@ struct StorageValidationProgress {
     asset_totals: std::collections::BTreeMap<[u8; 32], (u128, u128)>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct V36StorageValidationProgress {
+    expected_revision: u64,
+    phase: u16,
+    cursor: Option<Vec<u8>>,
+    phase_rows: u64,
+    scanned_rows: u64,
+    pending_ledger_operations: u64,
+    nonterminal_withdrawals: u64,
+    reconciliation_holds: u64,
+    reserved_deposit_mint_amount: u128,
+    reserved_deposit_mint_operations: u64,
+    #[serde(default)]
+    funding_attempts: u64,
+    settlement_job_status_counts: [u64; 4],
+    settlement_job_kind_counts: [u64; 3],
+}
+
 enum ValidationChunkOutcome {
     Status(StorageValidationStatus),
     StateChanged,
@@ -2668,7 +2689,7 @@ fn migrate_previous_schema(
     }
     verify_schema_shape(handle, true)?;
     let store = StableStore::attach_handle(handle)?;
-    store.validate_singletons()?;
+    store.validate_singletons_for_schema(true)?;
     let config = store.config()?.ok_or(StorageError::RecordNotFound)?;
     let kinic = encode(&AssetConfig::legacy_kinic(&config))?;
     drop(store);
@@ -2758,6 +2779,8 @@ fn migrate_previous_schema(
                 binding_count.to_sql_bytes()
             ],
         )?;
+        // A predecessor cursor cannot cover the newly added asset tables.
+        connection.execute("UPDATE singleton_state SET storage_validation = NULL WHERE id = 1", params![])?;
         connection.execute(
             "UPDATE bridge_metadata SET application_schema_version = ?1 WHERE id = 1",
             params![i64::from(SCHEMA_VERSION)],
@@ -3768,6 +3791,10 @@ impl StableStore {
     }
 
     fn validate_singletons(&self) -> Result<(), StorageError> {
+        self.validate_singletons_for_schema(false)
+    }
+
+    fn validate_singletons_for_schema(&self, predecessor: bool) -> Result<(), StorageError> {
         self.accounting()?;
         self.counters()?;
         self.external_progress()?;
@@ -3828,11 +3855,19 @@ impl StableStore {
             return Err(StorageError::DecodeFailed);
         }
         if let Some(validation) = validation {
-            decode_with_context::<StorageValidationProgress>(
-                validation,
-                "invalid storage validation progress",
-            )
-            .map_err(StorageError::from)?;
+            if predecessor {
+                decode_with_context::<V36StorageValidationProgress>(
+                    validation,
+                    "invalid v36 storage validation progress",
+                )
+                .map_err(StorageError::from)?;
+            } else {
+                decode_with_context::<StorageValidationProgress>(
+                    validation,
+                    "invalid storage validation progress",
+                )
+                .map_err(StorageError::from)?;
+            }
         }
         Ok(())
     }
@@ -6165,35 +6200,100 @@ impl StableStore {
         admission.emergency_pause_deposit_required = true;
         admission.emergency_pause_withdrawal_required = true;
         admission.emergency_cancel_required = admission.pending_timelock_operation.is_some();
-        self.set_deposit_admission(&admission)
+        let mut changes = Vec::new();
+        for asset in self.assets()? {
+            if asset.bridge_kind != BaseBridgeKind::SharedMultiToken
+                || asset.lifecycle == crate::config::AssetLifecycle::Prepared
+            {
+                continue;
+            }
+            let id: [u8; 32] = asset
+                .asset_id
+                .as_slice()
+                .try_into()
+                .map_err(|_| StorageError::DecodeFailed)?;
+            let previous = self.asset_financial_state(&id)?;
+            let mut next = previous;
+            next.emergency_pause_deposit_required = true;
+            next.emergency_pause_withdrawal_required = true;
+            changes.push((id, previous, next));
+        }
+        self.commit_emergency_admission(&admission, &changes)
+    }
+
+    // Queue flags and transaction completion must become durable together.
+    fn commit_emergency_admission(
+        &mut self,
+        admission: &DepositAdmissionControl,
+        changes: &[([u8; 32], AssetFinancialState, AssetFinancialState)],
+    ) -> Result<(), StorageError> {
+        let previous_admission = self.deposit_admission.get()?;
+        let admission_blob = encode(admission)?;
+        self.handle.update(|connection| {
+            expect_blob(
+                connection,
+                "SELECT deposit_admission FROM singleton_state WHERE id = 1",
+                params![],
+                previous_admission.as_slice(),
+                "stale emergency admission",
+            )?;
+            for (id, previous, next) in changes {
+                write_shared_asset_financial_state(connection, *id, previous, next)?;
+            }
+            connection.execute(
+                "UPDATE singleton_state SET deposit_admission = ?1 WHERE id = 1",
+                params![admission_blob.to_sql_bytes()],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    pub fn emergency_base_actions(&self) -> Result<Vec<GovernanceTransactionKind>, StorageError> {
+        let admission = self.deposit_admission()?;
+        let mut actions = Vec::new();
+        if admission.emergency_pause_deposit_required {
+            actions.push(GovernanceTransactionKind::PauseDepositMints);
+        }
+        if admission.emergency_pause_withdrawal_required {
+            actions.push(GovernanceTransactionKind::PauseWithdrawals);
+        }
+        if admission.emergency_cancel_required {
+            let pending = admission
+                .pending_timelock_operation
+                .ok_or(StorageError::DecodeFailed)?;
+            actions.push(GovernanceTransactionKind::CancelTimelock {
+                operation_id: pending.operation_id,
+            });
+        }
+        for asset in self.assets()? {
+            if asset.bridge_kind != BaseBridgeKind::SharedMultiToken {
+                continue;
+            }
+            let asset_id: [u8; 32] = asset
+                .asset_id
+                .as_slice()
+                .try_into()
+                .map_err(|_| StorageError::DecodeFailed)?;
+            let financial = self.asset_financial_state(&asset_id)?;
+            if financial.emergency_pause_deposit_required {
+                actions.push(GovernanceTransactionKind::PauseAssetDepositMints { asset_id });
+            }
+            if financial.emergency_pause_withdrawal_required {
+                actions.push(GovernanceTransactionKind::PauseAssetWithdrawals { asset_id });
+            }
+        }
+        Ok(actions)
     }
 
     pub fn next_emergency_base_action(
         &self,
     ) -> Result<Option<GovernanceTransactionKind>, StorageError> {
-        let admission = self.deposit_admission()?;
-        if admission.emergency_pause_deposit_required {
-            Ok(Some(GovernanceTransactionKind::PauseDepositMints))
-        } else if admission.emergency_pause_withdrawal_required {
-            Ok(Some(GovernanceTransactionKind::PauseWithdrawals))
-        } else if admission.emergency_cancel_required {
-            admission
-                .pending_timelock_operation
-                .map(|pending| GovernanceTransactionKind::CancelTimelock {
-                    operation_id: pending.operation_id,
-                })
-                .map(Some)
-                .ok_or(StorageError::DecodeFailed)
-        } else {
-            Ok(None)
-        }
+        Ok(self.emergency_base_actions()?.into_iter().next())
     }
 
     pub fn emergency_base_actions_pending(&self) -> Result<bool, StorageError> {
-        let admission = self.deposit_admission()?;
-        Ok(admission.emergency_pause_deposit_required
-            || admission.emergency_pause_withdrawal_required
-            || admission.emergency_cancel_required)
+        Ok(!self.emergency_base_actions()?.is_empty())
     }
 
     pub fn initialize_governance_nonce(&mut self, nonce: u64) -> Result<(), StorageError> {
@@ -6232,6 +6332,28 @@ impl StableStore {
             return Err(StorageError::DecodeFailed);
         }
         let mut admission = self.deposit_admission()?;
+        if matches!(
+            transaction.kind,
+            GovernanceTransactionKind::ScheduleAssetRegistration { .. }
+                | GovernanceTransactionKind::ExecuteAssetRegistration { .. }
+                | GovernanceTransactionKind::ScheduleAssetActivation { .. }
+                | GovernanceTransactionKind::ExecuteAssetActivation { .. }
+        ) && self.admin_state()?.deposits_paused
+        {
+            return Err(StorageError::DecodeFailed);
+        }
+        if matches!(
+            transaction.kind,
+            GovernanceTransactionKind::ScheduleAssetRegistration { .. }
+                | GovernanceTransactionKind::ExecuteAssetRegistration { .. }
+                | GovernanceTransactionKind::ScheduleAssetActivation { .. }
+                | GovernanceTransactionKind::ExecuteAssetActivation { .. }
+                | GovernanceTransactionKind::ScheduleActivation { .. }
+                | GovernanceTransactionKind::ExecuteActivation { .. }
+        ) && self.emergency_base_actions_pending()?
+        {
+            return Err(StorageError::DecodeFailed);
+        }
         let lane = transaction.kind.nonce_lane();
         let (initialized, next_nonce) = admission.nonce_state(lane);
         if !initialized
@@ -6481,7 +6603,32 @@ impl StableStore {
     ) -> Result<(), StorageError> {
         let mut admission = self.deposit_admission()?;
         Self::apply_governance_completion(&mut admission, &transaction)?;
-        self.set_deposit_admission(&admission)
+        let mut changes = Vec::new();
+        if matches!(
+            transaction.state,
+            GovernanceTransactionState::Confirmed { .. }
+        ) {
+            let asset_id = match transaction.kind {
+                GovernanceTransactionKind::PauseAssetDepositMints { asset_id }
+                | GovernanceTransactionKind::PauseAssetWithdrawals { asset_id } => Some(asset_id),
+                _ => None,
+            };
+            if let Some(id) = asset_id {
+                let previous = self.asset_financial_state(&id)?;
+                let mut next = previous;
+                match transaction.kind {
+                    GovernanceTransactionKind::PauseAssetDepositMints { .. } => {
+                        next.emergency_pause_deposit_required = false
+                    }
+                    GovernanceTransactionKind::PauseAssetWithdrawals { .. } => {
+                        next.emergency_pause_withdrawal_required = false
+                    }
+                    _ => unreachable!(),
+                }
+                changes.push((id, previous, next));
+            }
+        }
+        self.commit_emergency_admission(&admission, &changes)
     }
 
     pub fn complete_confirmed_activation_and_resume_if_clear(
@@ -6516,9 +6663,7 @@ impl StableStore {
         {
             return Err(StorageError::DecodeFailed);
         }
-        let resume = !admission.emergency_pause_deposit_required
-            && !admission.emergency_pause_withdrawal_required
-            && !admission.emergency_cancel_required;
+        let resume = !self.emergency_base_actions_pending()?;
         admin.deposits_paused = !resume;
 
         let mut counters = self.counters()?;
@@ -6880,6 +7025,7 @@ impl StableStore {
                 withdrawal_liability_amount: u128::from_sql_bytes(withdrawal_liability_amount)
                     .map_err(|_| StorageError::DecodeFailed)?,
                 withdrawal_fee_guard: admin.and_then(|value| value.withdrawal_fee_guard),
+                ..Default::default()
             });
         }
         let bytes = self.handle.query(|connection| {
@@ -6900,7 +7046,9 @@ impl StableStore {
         caller: Principal,
         timestamp_ns: u64,
     ) -> Result<(), StorageError> {
-        if self.pending_control_plane_rotation()?.is_some() {
+        if self.pending_control_plane_rotation()?.is_some()
+            || self.emergency_base_actions_pending()?
+        {
             return Err(StorageError::Core(CoreError::ConflictingReplay));
         }
         asset
@@ -15227,6 +15375,52 @@ mod tests {
 
     #[test]
     #[serial]
+    fn schema_v36_unfinished_validation_is_verified_then_reset() {
+        let memory = VectorMemory::default();
+        let store = StableStore::init_configured(memory.clone(), &config()).unwrap();
+        mark_as_schema_v36(&store);
+        let cursor = V36StorageValidationProgress {
+            expected_revision: 0,
+            phase: 0,
+            cursor: None,
+            phase_rows: 0,
+            scanned_rows: 0,
+            pending_ledger_operations: 0,
+            nonterminal_withdrawals: 0,
+            reconciliation_holds: 0,
+            reserved_deposit_mint_amount: 0,
+            reserved_deposit_mint_operations: 0,
+            funding_attempts: 0,
+            settlement_job_status_counts: [0; 4],
+            settlement_job_kind_counts: [0; 3],
+        };
+        let blob = encode(&cursor).unwrap();
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "UPDATE singleton_state SET storage_validation = ?1 WHERE id = 1",
+                    params![blob.to_sql_bytes()],
+                )
+            })
+            .unwrap();
+        drop(store);
+        let reopened = StableStore::reopen_after_upgrade(memory).unwrap();
+        let cursor = reopened
+            .handle
+            .query(|connection| {
+                connection.query_scalar::<Option<Vec<u8>>>(
+                    "SELECT storage_validation FROM singleton_state WHERE id = 1",
+                    params![],
+                )
+            })
+            .unwrap();
+        assert_eq!(cursor, None);
+        reopened.start_storage_validation().unwrap();
+    }
+
+    #[test]
+    #[serial]
     fn schema_v36_is_migrated_only_by_upgrade_reopen() {
         let memory = VectorMemory::default();
         let store =
@@ -15545,6 +15739,89 @@ mod tests {
         }
     }
 
+    #[test]
+    #[serial]
+    fn emergency_queue_covers_shared_assets_and_survives_reopen() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init_configured(memory.clone(), &config()).unwrap();
+        let mut asset = shared_test_asset();
+        asset.lifecycle = crate::config::AssetLifecycle::Enabled;
+        let id: [u8; 32] = asset.asset_id.clone().try_into().unwrap();
+        store
+            .register_asset(&asset, Principal::from_slice(&[1]), 1)
+            .unwrap();
+        store.enqueue_emergency_base_actions().unwrap();
+        let actions = store.emergency_base_actions().unwrap();
+        assert_eq!(actions.len(), 4);
+        assert!(
+            actions.contains(&GovernanceTransactionKind::PauseAssetDepositMints { asset_id: id })
+        );
+        assert!(
+            actions.contains(&GovernanceTransactionKind::PauseAssetWithdrawals { asset_id: id })
+        );
+        assert!(store
+            .register_asset(&shared_test_asset(), Principal::from_slice(&[1]), 2)
+            .is_err());
+        let mut admission = store.deposit_admission().unwrap();
+        admission.emergency_pause_deposit_required = false;
+        admission.emergency_pause_withdrawal_required = false;
+        store.set_deposit_admission(&admission).unwrap();
+        assert!(store.emergency_base_actions_pending().unwrap());
+        drop(store);
+        let mut store = StableStore::reopen(memory).unwrap();
+        assert_eq!(
+            store.next_emergency_base_action().unwrap(),
+            Some(GovernanceTransactionKind::PauseAssetDepositMints { asset_id: id })
+        );
+        store
+            .initialize_governance_nonce_for(GovernanceNonceLane::RuntimeAdministrator, 4)
+            .unwrap();
+        let mut tx = GovernanceTransaction {
+            id: 0,
+            kind: GovernanceTransactionKind::PauseAssetDepositMints { asset_id: id },
+            envelope: governance_intent(GovernanceOperationId::new(0), [3; 32]).assign_nonce(4),
+            activation_controller_authority: None,
+            state: GovernanceTransactionState::Prepared,
+        };
+        store.prepare_governance_transaction(tx.clone()).unwrap();
+        tx.state = GovernanceTransactionState::Reverted {
+            transaction_hash: [5; 32],
+            receipt_block_number: 8,
+        };
+        store.complete_governance_transaction(tx.clone()).unwrap();
+        assert!(
+            store
+                .asset_financial_state(&id)
+                .unwrap()
+                .emergency_pause_deposit_required
+        );
+        tx.id = 1;
+        tx.envelope = governance_intent(GovernanceOperationId::new(1), [3; 32]).assign_nonce(5);
+        tx.state = GovernanceTransactionState::Prepared;
+        store.prepare_governance_transaction(tx.clone()).unwrap();
+        tx.state = GovernanceTransactionState::Confirmed {
+            transaction_hash: [6; 32],
+            receipt_block_number: 9,
+        };
+        store.complete_governance_transaction(tx).unwrap();
+        assert!(
+            !store
+                .asset_financial_state(&id)
+                .unwrap()
+                .emergency_pause_deposit_required
+        );
+        assert!(
+            store
+                .asset_financial_state(&id)
+                .unwrap()
+                .emergency_pause_withdrawal_required
+        );
+        assert_eq!(
+            store.next_emergency_base_action().unwrap(),
+            Some(GovernanceTransactionKind::PauseAssetWithdrawals { asset_id: id })
+        );
+    }
+
     fn shared_test_asset() -> AssetConfig {
         AssetConfig {
             asset_id: [0x44; 32].to_vec(),
@@ -15595,6 +15872,7 @@ mod tests {
             reserved_deposit_mint_amount: 0,
             withdrawal_liability_amount: 0,
             withdrawal_fee_guard: None,
+            ..Default::default()
         };
         let isolated_blob = encode(&isolated).unwrap();
         store

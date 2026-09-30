@@ -1189,22 +1189,17 @@ pub fn emergency_pause(caller: Principal) -> Result<EmergencyPauseReceipt, BaseG
         admin::AdminError::Unauthorized => BaseGovernanceError::Unauthorized,
         _ => BaseGovernanceError::StorageFailure,
     })?;
-    let cancel_required = STORE.with(|store| {
+    let actions = STORE.with(|store| {
         let mut store = store.borrow_mut();
         store
             .enqueue_emergency_base_actions()
             .map_err(|_| BaseGovernanceError::StorageFailure)?;
         store
-            .pending_timelock_operation()
-            .map(|value| value.is_some())
+            .emergency_base_actions()
             .map_err(|_| BaseGovernanceError::StorageFailure)
     })?;
-    let action_names = if cancel_required {
-        ["PauseDepositMints", "PauseWithdrawals", "CancelTimelock"].as_slice()
-    } else {
-        ["PauseDepositMints", "PauseWithdrawals"].as_slice()
-    };
-    let action_plan = action_names.join("\n");
+    let action_plan =
+        serde_json::to_vec(&actions).map_err(|_| BaseGovernanceError::StorageFailure)?;
     let audit_bytes =
         candid::encode_one(&local_pause_audit).map_err(|_| BaseGovernanceError::StorageFailure)?;
     Ok(EmergencyPauseReceipt {
@@ -1213,8 +1208,9 @@ pub fn emergency_pause(caller: Principal) -> Result<EmergencyPauseReceipt, BaseG
         local_pause_audit_sequence: local_pause_audit.sequence,
         local_pause_audit_sha256: Sha256::digest(audit_bytes).to_vec(),
         base_actions_queued: true,
-        base_action_count: action_names.len() as u8,
-        base_action_plan_sha256: Sha256::digest(action_plan.as_bytes()).to_vec(),
+        base_action_count: u8::try_from(actions.len())
+            .map_err(|_| BaseGovernanceError::StorageFailure)?,
+        base_action_plan_sha256: Sha256::digest(&action_plan).to_vec(),
     })
 }
 
@@ -1265,6 +1261,16 @@ pub async fn prepare_next_emergency(
         }
         Some(storage::GovernanceTransactionKind::CancelTimelock { .. }) => {
             GovernanceAction::CancelPendingTimelock
+        }
+        Some(storage::GovernanceTransactionKind::PauseAssetDepositMints { asset_id }) => {
+            GovernanceAction::PauseAssetDepositMints {
+                asset_id: asset_id.to_vec(),
+            }
+        }
+        Some(storage::GovernanceTransactionKind::PauseAssetWithdrawals { asset_id }) => {
+            GovernanceAction::PauseAssetWithdrawals {
+                asset_id: asset_id.to_vec(),
+            }
         }
         _ => return Err(BaseGovernanceError::InvalidArgument),
     };
