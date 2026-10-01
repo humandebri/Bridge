@@ -23,40 +23,24 @@ No full proof gate, fresh-clone end-to-end run, production operation, publicatio
 
 ## Follow-up publication audit
 
-The follow-up inspected merged source `9d6f3fae67bc3b18de13a8bfd64b1fbf24aa252c` from an independent remote clone with recursive submodules. Its frozen Git archive SHA-256 was `333e1b6d8d6d3ecbf34fd99cb1d5b696356548c3742228edbbd1e999b0ca41bf`, unchanged after validation. The [machine-readable record](evidence/publication-audit-20261001.json) separates completed checks from unresolved conditions. New notices and documentation are follow-up artifacts; tests of the merged source are not a complete validation receipt for this later change.
+The October 1 follow-up inspected merged source `9d6f3fae67bc3b18de13a8bfd64b1fbf24aa252c` from an independent remote clone with recursive submodules. The [audit record](evidence/publication-audit-20261001.json) contains the source fingerprint, scan scope, results, and settings. It is not a complete validation receipt for later revisions.
 
-### Credential and public evidence review
+Gitleaks 8.30.1 found no matches in the tracked archive or fetched reachable history, including merge diffs. It scanned 802 patch-bearing commits out of 829 reachable commits. Reports were redacted; unreachable/deleted refs, ignored local artifacts, and unsupported credential formats remain outside the scan. History was not rewritten. Public evidence was reviewed for credential URLs, personal paths, and contact metadata; public verification identifiers were retained.
 
-Gitleaks 8.30.1 found no matches in the tracked source archive or fetched reachable remote history. The history scan included merge diffs (`--all --full-history --diff-merges=first-parent`), archive depth 2, decode depth 5, and disabled inline ignores. Reports were fully redacted. Git listed 829 reachable commits; Gitleaks scanned 802 patch-bearing commits and about 38.79 MB. These counts differ because patchless commits have no content diff. Deleted or unreachable references, ignored local artifacts, arbitrary unsupported formats, and unknown credentials remain outside this evidence.
-
-The earlier limited pattern scan is superseded by this broader dated result; neither scan guarantees absence of secrets. No history was rewritten. Public evidence and deployment records were checked for credential-bearing URLs, personal host paths, and contact metadata. Public principals, addresses, transaction/module hashes, anonymous query arguments, and operational binding identifiers remain as verification evidence. Commit author metadata remains public Git metadata. Upstream copyright/contact text in license bodies is preserved as attribution. Local audit reports and host paths are excluded from committed audit artifacts.
-
-### Dependency notices
-
-The [license audit](licenses/README.md) supplies an inventory of 319 UI and 177 external Rust package versions, frontend notices, and a Wasm companion notice file. Reown custom community terms require operator review beyond retaining notices. Five UI package versions still have `metadata-only` notices. These gaps prevent a claim of complete distribution-license clearance.
-
-### GitHub settings and reporting
-
-The repository was already public; visibility was not changed. Private vulnerability reporting, secret scanning, and secret scanning push protection are now enabled. The [security guide](../SECURITY.md) links to the confidential report entry point. The endpoint and enabled setting were checked without submitting a report; delivery to maintainers and response handling remain untested.
-
-Main requires the strict `trusted-pr-gate` check bound to GitHub App 15368, with force pushes and deletion disabled. Administrator enforcement is disabled, and there is no branch-level required PR review rule. Repository rulesets are empty. External-contributor Actions approval is configured for first-time contributors. These observations describe the actual boundaries; this audit does not tighten administrator/review settings or replace the trusted-PR policy.
+The repository was already public. Private vulnerability reporting, secret scanning, and push protection were enabled. The [security guide](../SECURITY.md) links to the report endpoint; no synthetic report was submitted, so notification delivery is untested. Main requires strict `trusted-pr-gate` checks and disallows force pushes/deletion; administrator enforcement and a required PR review rule are absent. These settings observations do not change the trusted-PR policy.
 
 ### Fresh-clone validation
 
-The independent clone used pinned Node 24.14.0, pnpm 11.0.8, Rust 1.97.0, initialized submodules, frozen lockfiles, and executable installed dependency assets. Lightweight formatting, schema, ABI/Candid generation, proof ownership, claim registration, and claim/test manifest checks passed.
+With pinned Node 24.14.0, pnpm 11.0.8, Rust 1.97.0, locked dependencies, and initialized submodules, the independent clone passed:
 
-- UI: 61 suites / 509 tests passed; typecheck, lint, and production build passed.
-- Rust: 236 Canister and 8 core unit tests passed with locked dependencies and an isolated Cargo target directory.
-- `cargo build -p bridge-canister --release --target wasm32-unknown-unknown --locked --offline` passed. This raw Cargo Wasm is a build result, not an installable production release receipt or a twice-reproduced production artifact.
-- The focused production-install fixture passed in the existing trusted Linux/amd64 image under UID/GID 1001, with read-only input mounts and writable `/tmp` and test temporary tmpfs paths.
+- 509 UI tests, UI typecheck/lint/build, and 244 Rust unit tests.
+- A locked release Wasm build and lightweight formatting, code-generation, schema, and manifest checks.
+- The focused production-install fixture in the trusted Linux/amd64 container, using UID/GID 1001, read-only inputs, and writable temporary tmpfs paths.
 
-The host `scripts/ci-local.sh versions` run stopped because the production-install fixture correctly rejected an operating-system-resolved Cargo home configuration. This is a host environment limitation, not a passing full versions run. Personal Cargo configuration was preserved; the Linux result is reported independently and is not stitched into a complete receipt.
+The host `scripts/ci-local.sh versions` run stopped at the guard rejecting an operating-system-resolved Cargo home configuration. Personal configuration was preserved. The Linux fixture result is separate evidence, not a passing full versions run. No full proof, PocketIC, browser E2E, staging, production deployment, or complete `all` gate was run by this audit.
 
-No full proof, PocketIC, browser E2E, staging, production deployment, or complete `scripts/ci-local.sh all` gate was run by this audit. The existing main CI run remains a separate source of evidence. Full validation and deployment requirements in repository policy remain in force.
+### Distribution follow-up
 
-## Remaining publication conditions
+The [dependency review](licenses/README.md) records Reown custom terms and five package versions lacking license bodies. Prepare notices for the components included in the actual release, rather than maintaining generated dependency closures in Git. These release tasks do not require expanding this documentation cleanup into a dependency replacement or production release.
 
-- Resolve Reown custom terms against actual deployed branding, network use, usage, and commercial arrangements, or change dependencies through a separately reviewed implementation.
-- Obtain the five missing upstream license bodies or resolve the corresponding dependencies before asserting complete notice coverage.
-- Confirm real private-report notification delivery and maintainer handling when a legitimate report arrives; no synthetic report was sent.
-- Retain a complete current-source validation receipt for a release. Focused fresh-clone checks and dated settings observations do not authorize production.
+Complete current-source validation and distribution-specific notice review remain release requirements. This audit does not authorize production.

@@ -1,33 +1,27 @@
-# Dependency licenses and distribution notices
+# Dependency licenses for releases
 
-This audit covers source revision `9d6f3fae67bc3b18de13a8bfd64b1fbf24aa252c` on October 1, 2026. Its lockfiles contain 319 unique UI production dependency versions and 177 external Rust dependency versions in the Canister closure. Project crates are covered by the root Apache-2.0 license.
+The October 1, 2026 review of source `9d6f3fae67bc3b18de13a8bfd64b1fbf24aa252c` inspected 319 UI production package versions and 177 external Rust package versions. These conservative dependency closures include code that may not appear in distributed artifacts. Full generated inventories and license bodies are not maintained in Git.
 
-## Scope and artifacts
+## Generate notices when preparing a distribution
 
-- [Dependency inventory](dependency-inventory.json): package names, versions, license declarations, notice status, SHA-256 hashes of collected UTF-8 license text, and provenance.
-- [UI notices](../../ui/public/THIRD_PARTY_NOTICES.txt): original upstream license bodies and package attribution. Vite copies this public asset to `dist/THIRD_PARTY_NOTICES.txt`; retain it when publishing frontend assets.
-- [Canister notices](canister-notices.txt): distribute this companion file with the audited Wasm. The deployment scripts do not automatically attach it to every release artifact.
-- [Root notices](../../THIRD_PARTY_NOTICES.md): vendored contract licenses and outstanding conditions.
+1. Build the intended UI or Wasm from the release revision with pinned tools and lockfiles.
+2. Enumerate dependencies as review inputs:
 
-The UI inventory comes from `pnpm --dir ui licenses list --prod --json` after frozen-lockfile installation with Node 24.14.0 and pnpm 11.0.8. The Rust inventory comes from `cargo metadata --format-version 1 --locked --filter-platform wasm32-unknown-unknown`, following normal and build dependency edges from `bridge-canister` and excluding development edges. This deliberately includes build tools and dependencies that may be eliminated from the final artifact; it does not prove byte-level inclusion or cover arbitrary development-tool redistributions.
+   ```sh
+   pnpm --dir ui licenses list --prod --json > /path/to/release/ui-dependencies.json
+   cargo metadata --format-version 1 --locked --filter-platform wasm32-unknown-unknown > /path/to/release/rust-dependencies.json
+   ```
 
-License bodies were collected from published packages. Where absent, the inventory records a retrieved upstream license or README section at an immutable commit or version tag. License wording is preserved with UTF-8/newline normalization, trailing whitespace removal, and a single final newline. `upstream_text_sha256` records the collected source text before normalization; `sha256` identifies the distributed text. The published `@phosphor-icons/webcomponents@2.1.5` LICENSE contained merge markers around two identical `SOFTWARE.` lines; the distributed notice keeps one identical line and removes those markers. This repair changes no license wording. Different bodies have separate hashes even when their declared license names match. Alternative-license expressions retain their upstream meaning.
+3. Select the components included in that distribution using build output and bundler/module evidence. For Wasm, trace dependencies from `bridge-canister`; distinguish host build tools from runtime code. Dependency enumeration alone does not establish inclusion. When inclusion is uncertain, retain the corresponding notice conservatively.
+4. Collect the selected versions' license and attribution text from their published packages or matching immutable upstream revisions. Preserve copyright and license wording; record package versions and provenance in the release output. Resolve missing text and custom terms for the selected components.
+5. Generate `THIRD_PARTY_NOTICES.txt` in the release output directory. Include it with the frontend assets or alongside the Wasm download, and verify that the published release retains it. The commands above produce inventories, not complete notices; current build/deployment scripts do not automate these steps.
 
-When a lockfile or submodule changes, repeat dependency enumeration, inspect each package's license and notice files, retrieve missing text from the matching upstream revision, and update the inventory and both notice files together. Review custom terms before distribution. Do not substitute a generic license template for missing upstream copyright information.
+Review notices again when the release dependencies or included components change. Release artifacts belong with their release, rather than as a second dependency database in the source tree.
 
-## Reown community terms
+## Findings to retain
 
-Pinned Reown and WalletConnect packages supply AppKit and WalletKit Community License texts dated August 25, 2025. These custom terms are included verbatim in the UI notices, together with the required Reown copyright notice. They include conditions beyond notice retention, including branding, gateway/network use, ownership changes, and commercial thresholds. The pinned texts describe thresholds of 500 monthly active users or 2.5 million monthly RPC requests. The operator must determine applicable terms and actual usage before asserting compliance; this audit does not accept a commercial agreement or verify deployed branding or usage.
+Reown AppKit and WalletConnect packages in the audited lockfile use custom Reown Community License terms. Review their branding, network, usage, and commercial conditions for the distributed product; retaining a copyright notice alone does not establish compliance. Project Apache-2.0 licensing does not change upstream terms. Refer to the version-specific packaged license, since upstream main branches can change.
 
-Refer to the collected version-specific license bodies and [upstream AppKit license](https://github.com/reown-com/appkit/blob/main/LICENSE.md); the upstream main branch may change. These dependencies do not become Apache-2.0 when distributed with Bridge. A claim that every component uses a standard open-source license would be inaccurate.
+License text was not found in the inspected packages or matching upstream revisions for `encode-utf8@1.0.3`, `react-remove-scroll-bar@2.3.8`, `tr46@0.0.3`, and `uint8arrays@3.1.0` / `3.1.1`, although their metadata declares MIT. Resolve notice coverage if those components are included in a distribution. This dated review is not complete distribution clearance.
 
-## Missing license bodies
-
-| Package | Version | Observed declaration | Status |
-|---|---|---|---|
-| encode-utf8 | 1.0.3 | MIT | metadata-only |
-| react-remove-scroll-bar | 2.3.8 | MIT | metadata-only |
-| tr46 | 0.0.3 | MIT | metadata-only |
-| uint8arrays | 3.1.0, 3.1.1 | MIT | metadata-only |
-
-No standalone license body was found in these published packages or at the inspected matching upstream revision. Package author metadata is retained where available; it is not an invented copyright attribution. Obtain the applicable upstream notices or resolve these dependency choices before declaring complete notice coverage. All inspected Rust package versions have a collected notice body; collection alone does not establish that every license obligation has been satisfied.
+See the [root third-party guidance](../../THIRD_PARTY_NOTICES.md) and [publication audit](../publication.md) for scope and validation evidence.
