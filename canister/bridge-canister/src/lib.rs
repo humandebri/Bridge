@@ -2663,6 +2663,78 @@ fn rotate_pause_principal(args: admin::RotatePausePrincipalArgs) -> Result<(), a
 fn rotate_fee_recipient(args: config::FeeRecipientConfig) -> Result<(), admin::AdminError> {
     admin::rotate_fee_recipient(ic_cdk::api::msg_caller(), args)
 }
+#[ic_cdk::query]
+fn get_fee_status() -> Result<admin::FeeStatus, admin::AdminError> {
+    admin::fee_status()
+}
+#[ic_cdk::query]
+fn get_fee_payout(payout_id: u64) -> Result<Option<admin::FeePayoutView>, admin::AdminError> {
+    admin::fee_payout_view(payout_id)
+}
+#[ic_cdk::update]
+fn validate_sns_request_fee_payout(
+    proposal: admin::SnsFeePayoutProposal,
+) -> Result<String, String> {
+    admin::validate_sns_fee_payout(&proposal, false)
+}
+#[ic_cdk::update]
+fn validate_sns_continue_fee_payout(
+    proposal: admin::SnsFeePayoutProposal,
+) -> Result<String, String> {
+    admin::validate_sns_fee_payout(&proposal, true)
+}
+
+#[ic_cdk::update(manual_reply = true)]
+fn sns_request_fee_payout(proposal: admin::SnsFeePayoutProposal) {
+    let result = (|| {
+        let caller = ic_cdk::api::msg_caller();
+        let existing = admin::check_sns_fee_identity(
+            &proposal,
+            admin::is_governance(caller)?,
+            asset_operations_are_available().map_err(|_| admin::AdminError::StorageFailure)?,
+            false,
+        )?;
+        if existing.is_none() {
+            request_fee_payout(proposal.amount)?;
+        }
+        Ok::<(), admin::AdminError>(())
+    })();
+    match result {
+        Ok(()) => ic_cdk::api::msg_reply([0x44, 0x49, 0x44, 0x4c, 0, 0]),
+        Err(error) => ic_cdk::api::msg_reject(format!("{error:?}")),
+    }
+}
+#[ic_cdk::update(manual_reply = true)]
+async fn sns_continue_fee_payout(proposal: admin::SnsFeePayoutProposal) {
+    let result = async {
+        let caller = ic_cdk::api::msg_caller();
+        admin::check_sns_fee_identity(
+            &proposal,
+            admin::is_governance(caller).map_err(|e| format!("{e:?}"))?,
+            asset_operations_are_available().map_err(|e| format!("{e:?}"))?,
+            true,
+        )
+        .map_err(|e| format!("{e:?}"))?;
+        let result = continue_fee_payout(proposal.payout_id)
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        match result {
+            tasks::FeePayoutActionResult::Stopped { reason, .. } => {
+                Err(format!("Payout stopped: {reason:?}"))
+            }
+            tasks::FeePayoutActionResult::Complete {
+                state: admin::FeePayoutState::Failed,
+            } => Err("Payout permanently failed".into()),
+            _ => Ok(()),
+        }
+    }
+    .await;
+    match result {
+        Ok(()) => ic_cdk::api::msg_reply([0x44, 0x49, 0x44, 0x4c, 0, 0]),
+        Err(error) => ic_cdk::api::msg_reject(error),
+    }
+}
+
 #[ic_cdk::update]
 fn request_fee_payout(amount: candid::Nat) -> Result<admin::FeePayoutReceipt, admin::AdminError> {
     require_asset_operations_for_fee_payout()?;

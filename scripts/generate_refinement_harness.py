@@ -200,6 +200,18 @@ RUST_RENDERERS: dict[str, tuple[str, str]] = {
         assert_eq!(payout_debit(true, payout_amount, fee), Some(amount(text(&case, "first_debit"))));
         assert_eq!(payout_debit(false, payout_amount, fee), Some(amount(text(&case, "replay_debit"))));''',
     ),
+    "fee_payout_capacity_cases": (
+        "protocol_fee_payout_capacity_cases_match_production",
+        '''        assert_eq!(bridge_core::kernel::fee_payout_capacity(
+            amount(text(&case, "reserve")), amount(text(&case, "pending")), amount(text(&case, "fee"))),
+            amount(text(&case, "capacity")));''',
+    ),
+    "sns_fee_payout_authorization_cases": (
+        "protocol_sns_fee_payout_authorization_cases_match_production",
+        '''        assert_eq!(bridge_core::kernel::sns_fee_payout_authorized(
+            boolean(&case, "governance"), boolean(&case, "operational"), boolean(&case, "positive"),
+            boolean(&case, "recipient"), boolean(&case, "identity")), boolean(&case, "allowed"));''',
+    ),
     "hold_cases": (
         "protocol_hold_cases_matches_production",
         '''        assert_eq!(hold_retry_allowed(

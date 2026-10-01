@@ -166,6 +166,16 @@ def feePayoutCase (reserve pending amount fee : Nat) : String :=
     natField "first_debit" (payoutDebit true amount fee) ++ "," ++
     natField "replay_debit" (payoutDebit false amount fee) ++ "}"
 
+def feePayoutCapacityCase (reserve pending fee : Nat) : String :=
+  "{" ++ natField "reserve" reserve ++ "," ++ natField "pending" pending ++ "," ++
+    natField "fee" fee ++ "," ++ natField "capacity" (feePayoutCapacity reserve pending fee) ++ "}"
+
+def snsFeePayoutCase (governance operational positive recipient identity : Bool) : String :=
+  "{" ++ field "governance" (boolJson governance) ++ "," ++
+    field "operational" (boolJson operational) ++ "," ++ field "positive" (boolJson positive) ++ "," ++
+    field "recipient" (boolJson recipient) ++ "," ++ field "identity" (boolJson identity) ++ "," ++
+    field "allowed" (boolJson (snsFeePayoutAuthorized governance operational positive recipient identity)) ++ "}"
+
 def holdCase (success absence : Bool) : String :=
   "{" ++ field "success" (boolJson success) ++ "," ++
     field "absence" (boolJson absence) ++ "," ++
@@ -328,6 +338,13 @@ def document : String :=
   let feeRotations := [
     feeRotationCase 100 40 60 0 1 2,
     feeRotationCase 100 40 60 1 1 2]
+  let feeCapacities := [feePayoutCapacityCase 0 0 1, feePayoutCapacityCase 101 0 1,
+    feePayoutCapacityCase 101 100 1, feePayoutCapacityCase 101 102 1,
+    feePayoutCapacityCase max 0 1, feePayoutCapacityCase max max 1,
+    feePayoutCapacityCase max 1 max]
+  let snsFeePayouts := [false, true].flatMap fun g => [false, true].flatMap fun o =>
+    [false, true].flatMap fun p => [false, true].flatMap fun r =>
+      [false, true].map fun i => snsFeePayoutCase g o p r i
   let feePayouts := [
     feePayoutCase 101 0 100 1,
     feePayoutCase 100 0 100 1,
@@ -424,6 +441,8 @@ def document : String :=
     jsonSection "service_fee" serviceFees ++ "," ++
     jsonSection "fee_rotation" feeRotations ++ "," ++
     jsonSection "fee_payout" feePayouts ++ "," ++
+    jsonSection "fee_payout_capacity" feeCapacities ++ "," ++
+    jsonSection "sns_fee_payout_authorization" snsFeePayouts ++ "," ++
     jsonSection "hold" holds ++ "," ++ jsonSection "lease" leases ++ "," ++
     jsonSection "manual_claim" manualClaims ++ "," ++
     jsonSection "refund_request_identity" refundRequestIdentities ++ "," ++

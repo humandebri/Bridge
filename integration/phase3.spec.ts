@@ -3576,6 +3576,109 @@ describe("Phase 3 PocketIC saga", () => {
     expect(retried).toHaveProperty("Ok.Complete");
   });
 
+  async function sns_fee_payout_queries_bind_identity_replay_and_v36_upgrade() {
+    const {ledger, evm, bridge, runtimePrincipal} = await setup();
+    bridge.actor.setPrincipal(Principal.anonymous());
+    const empty = (await bridge.actor.get_fee_status()).Ok;
+    expect(empty.max_payout_amount).toBe(0n);
+    expect((await bridge.actor.get_fee_payout(empty.next_fee_payout_id)).Ok).toEqual([]);
+    bridge.actor.setPrincipal(runtimePrincipal);
+    await evm.actor.set_max_service_fee(200_000n);
+    await evm.actor.set_service_fee(200_000n);
+    const deposit = await bridge.actor.request_deposit({owner_sequence:0n,base_recipient:new Uint8Array(20).fill(4),from_subaccount:[],gross_amount:900_000n,max_service_fee:200_000n});
+    await mintAuthorizedDeposit(bridge,evm,deposit.Ok.deposit_id);
+    const status = (await bridge.actor.get_fee_status()).Ok;
+    expect(status.max_payout_amount).toBe(status.fee_reserve-status.pending_payout_debit-status.ledger_fee);
+    const payload = {payout_id:status.next_fee_payout_id,amount:status.max_payout_amount,recipient:status.fee_recipient};
+    const beforeValidation = await bridge.actor.get_fee_status();
+    expect(await bridge.actor.validate_sns_request_fee_payout(payload)).toHaveProperty("Ok");
+    expect(await bridge.actor.get_fee_status()).toEqual(beforeValidation);
+    bridge.actor.setPrincipal(Principal.anonymous());
+    await expect(bridge.actor.sns_request_fee_payout(payload)).rejects.toThrow();
+    bridge.actor.setPrincipal(Principal.selfAuthenticating(new Uint8Array(32).fill(99)));
+    await expect(bridge.actor.sns_request_fee_payout(payload)).rejects.toThrow();
+    bridge.actor.setPrincipal(runtimePrincipal);
+    await expect(bridge.actor.sns_request_fee_payout({...payload,amount:payload.amount+1n})).rejects.toThrow();
+    await expect(bridge.actor.sns_request_fee_payout({...payload,recipient:{...payload.recipient,owner:Principal.selfAuthenticating(new Uint8Array(32).fill(98))}})).rejects.toThrow();
+    await expect(bridge.actor.sns_request_fee_payout({...payload,payout_id:payload.payout_id+1n})).rejects.toThrow();
+    await ledger.actor.set_ledger_mode({TemporarilyUnavailable:null});
+    await bridge.actor.sns_request_fee_payout(payload);
+    const reserved = (await bridge.actor.get_fee_status()).Ok;
+    expect(reserved.max_payout_amount).toBe(0n);
+    expect(reserved.pending_payout_debit).toBe(payload.amount+status.ledger_fee);
+    await bridge.actor.sns_request_fee_payout(payload);
+    expect((await bridge.actor.get_fee_status()).Ok).toEqual(reserved);
+    await expect(bridge.actor.sns_request_fee_payout({...payload,amount:payload.amount-1n})).rejects.toThrow();
+    const view = await bridge.actor.get_fee_payout(payload.payout_id);
+    await upgradeBridge(bridge);
+    expect(await bridge.actor.get_fee_payout(payload.payout_id)).toEqual(view);
+    expect((await bridge.actor.get_fee_status()).Ok).toEqual(reserved);
+    await expect(bridge.actor.sns_continue_fee_payout(payload)).rejects.toThrow();
+    await ledger.actor.set_ledger_mode({Succeed:null});
+    await advanceClock(120);
+    let settled = (await bridge.actor.get_fee_payout(payload.payout_id)).Ok[0];
+    if (!("Succeeded" in settled.state)) {
+      await bridge.actor.sns_continue_fee_payout(payload);
+      settled = (await bridge.actor.get_fee_payout(payload.payout_id)).Ok[0];
+    }
+    expect(settled.state).toHaveProperty("Succeeded.block_index");
+    const calls = await ledger.actor.ledger_transfer_calls();
+    const settledStatus = await bridge.actor.get_fee_status();
+    await bridge.actor.sns_request_fee_payout(payload);
+    await bridge.actor.sns_continue_fee_payout(payload);
+    expect(await bridge.actor.get_fee_status()).toEqual(settledStatus);
+    expect(await ledger.actor.ledger_transfer_calls()).toBe(calls);
+  }
+  it("SNS fee payout queries bind identity, replay and v36 upgrade", sns_fee_payout_queries_bind_identity_replay_and_v36_upgrade);
+
+  async function real_sns_fee_payout_registration_execution_and_replay() {
+    const sns = await setupRealSns(pic!);
+    const {evm,bridge} = await setup(true,{governance_principal:sns.governanceId},bridgeWasm,true,true);
+    for (const [phase,id] of [["request",1010n],["continue",1011n]] as const) {
+      await sns.propose({AddGenericNervousSystemFunction:{id,name:`KINIC fee ${phase}`,description:[],function_type:[{GenericNervousSystemFunction:{topic:[{TreasuryAssetManagement:null}],target_canister_id:[bridge.canisterId],target_method_name:[`sns_${phase}_fee_payout`],validator_canister_id:[bridge.canisterId],validator_method_name:[`validate_sns_${phase}_fee_payout`]}}]}});
+    }
+    await evm.actor.set_max_service_fee(200_000n);
+    await evm.actor.set_service_fee(200_000n);
+    const deposit = await bridge.actor.request_deposit({owner_sequence:0n,base_recipient:new Uint8Array(20).fill(4),from_subaccount:[],gross_amount:900_000n,max_service_fee:200_000n});
+    await mintAuthorizedDeposit(bridge,evm,deposit.Ok.deposit_id);
+    const status = (await bridge.actor.get_fee_status()).Ok;
+    const type = IDL.Record({payout_id:IDL.Nat64,amount:IDL.Nat,recipient:IDL.Record({owner:IDL.Principal,subaccount:IDL.Vec(IDL.Nat8)})});
+    const payload = new Uint8Array(IDL.encode([type],[{payout_id:status.next_fee_payout_id,amount:1n,recipient:status.fee_recipient}]));
+    const action = {ExecuteGenericNervousSystemFunction:{function_id:1010n,payload}};
+    await sns.propose(action);
+    const reserved = await bridge.actor.get_fee_status();
+    await sns.propose(action);
+    expect(await bridge.actor.get_fee_status()).toEqual(reserved);
+    await advanceClock(120);
+    const view = (await bridge.actor.get_fee_payout(status.next_fee_payout_id)).Ok[0];
+    expect(view.state).toHaveProperty("Succeeded.block_index");
+    await sns.propose({ExecuteGenericNervousSystemFunction:{function_id:1011n,payload}});
+    await expect(sns.propose({ExecuteGenericNervousSystemFunction:{function_id:1010n,payload:new Uint8Array(IDL.encode([type],[{payout_id:status.next_fee_payout_id,amount:2n,recipient:status.fee_recipient}]))}})).rejects.toThrow();
+    // Validate while voting, then change the live bindings before adoption.
+    for (const drift of ["id", "recipient"] as const) {
+      await advanceClock(120);
+      const current = (await bridge.actor.get_fee_status()).Ok;
+      const votedPayload = {payout_id:current.next_fee_payout_id,amount:1n,recipient:current.fee_recipient};
+      const pending = await sns.submitUnadopted({ExecuteGenericNervousSystemFunction:{function_id:1010n,payload:new Uint8Array(IDL.encode([type],[votedPayload]))}});
+      bridge.actor.setPrincipal(sns.governanceId);
+      if (drift === "id") expect(await bridge.actor.request_fee_payout(2n)).toHaveProperty("Ok");
+      else expect(await bridge.actor.rotate_fee_recipient({owner:Principal.selfAuthenticating(new Uint8Array(32).fill(97)),subaccount:[]})).toHaveProperty("Ok");
+      await sns.governance.manage_neuron({subaccount:new Uint8Array(32).fill(202),command:[{RegisterVote:{proposal:pending.id,vote:1}}]});
+      let failed:any;
+      for (let attempt=0;attempt<40;attempt++) {
+        await pic!.tick(5);
+        failed=(await sns.governance.get_proposal({proposal_id:pending.id})).result[0].Proposal;
+        if (failed.failed_timestamp_seconds!==0n) break;
+      }
+      expect(failed.failed_timestamp_seconds).not.toBe(0n);
+      expect(failed.executed_timestamp_seconds).toBe(0n);
+      const record=(await bridge.actor.get_fee_payout(current.next_fee_payout_id)).Ok;
+      if (drift === "id") expect(record[0].amount).toBe(2n);
+      else expect(record).toEqual([]);
+    }
+  }
+  it("real SNS fee payout registration execution and replay", real_sns_fee_payout_registration_execution_and_replay);
+
   async function fee_payout_stalled_scan_stops_and_real_progress_restores_automatic_work() {
     const { ledger, index, evm, bridge } = await setup(true, { settlement_retry_interval_seconds: 1n });
     await (evm.actor as any).set_max_service_fee(200_000n);

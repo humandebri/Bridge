@@ -445,7 +445,31 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'gross_amount' : IDL.Nat,
     'refund' : IDL.Opt(DepositRefundView),
   });
+  const FeeRecipientConfig = IDL.Record({
+    'owner' : IDL.Principal,
+    'subaccount' : IDL.Vec(IDL.Nat8),
+  });
+  const FeePayoutView = IDL.Record({
+    'id' : IDL.Nat64,
+    'recipient' : FeeRecipientConfig,
+    'state' : FeePayoutState,
+    'ledger_fee' : IDL.Nat,
+    'amount' : IDL.Nat,
+  });
   const Result_11 = IDL.Variant({
+    'Ok' : IDL.Opt(FeePayoutView),
+    'Err' : AdminError,
+  });
+  const FeeStatus = IDL.Record({
+    'fee_reserve' : IDL.Nat,
+    'fee_recipient' : FeeRecipientConfig,
+    'next_fee_payout_id' : IDL.Nat64,
+    'pending_payout_debit' : IDL.Nat,
+    'max_payout_amount' : IDL.Nat,
+    'ledger_fee' : IDL.Nat,
+  });
+  const Result_12 = IDL.Variant({ 'Ok' : FeeStatus, 'Err' : AdminError });
+  const Result_13 = IDL.Variant({
     'Ok' : IDL.Vec(SignedBaseGovernanceTransaction),
     'Err' : BaseGovernanceError,
   });
@@ -454,11 +478,11 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'Activated' : IDL.Null,
     'OperationalConfigSealed' : IDL.Null,
   });
-  const Result_12 = IDL.Variant({
+  const Result_14 = IDL.Variant({
     'Ok' : ProductionLifecycle,
     'Err' : BaseGovernanceError,
   });
-  const Result_13 = IDL.Variant({
+  const Result_15 = IDL.Variant({
     'Ok' : IDL.Text,
     'Err' : StorageMaintenanceError,
   });
@@ -493,7 +517,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'amount' : IDL.Nat,
   });
   const GetWithdrawalsError = IDL.Variant({ 'TooManyIds' : IDL.Null });
-  const Result_14 = IDL.Variant({
+  const Result_16 = IDL.Variant({
     'Ok' : IDL.Vec(IDL.Opt(WithdrawalView)),
     'Err' : GetWithdrawalsError,
   });
@@ -547,7 +571,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'StorageFailure' : IDL.Null,
     'DerivationUnavailable' : IDL.Null,
   });
-  const Result_15 = IDL.Variant({
+  const Result_17 = IDL.Variant({
     'Ok' : IDL.Null,
     'Err' : PublicConfigInitializationError,
   });
@@ -563,7 +587,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'deposit_ids' : IDL.Vec(IDL.Vec(IDL.Nat8)),
   });
   const ListDepositIdsError = IDL.Variant({ 'InvalidLimit' : IDL.Null });
-  const Result_16 = IDL.Variant({
+  const Result_18 = IDL.Variant({
     'Ok' : DepositIdPage,
     'Err' : ListDepositIdsError,
   });
@@ -575,7 +599,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'next_cursor' : IDL.Opt(IDL.Nat64),
     'deposits' : IDL.Vec(NonterminalDepositRef),
   });
-  const Result_17 = IDL.Variant({
+  const Result_19 = IDL.Variant({
     'Ok' : NonterminalDepositRefPage,
     'Err' : ListDepositIdsError,
   });
@@ -604,7 +628,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'StorageFailure' : IDL.Null,
     'InvalidLimit' : IDL.Null,
   });
-  const Result_18 = IDL.Variant({
+  const Result_20 = IDL.Variant({
     'Ok' : WithdrawalHistoryPage,
     'Err' : ListWithdrawalsError,
   });
@@ -632,7 +656,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'StorageFailure' : IDL.Null,
     'AnonymousCaller' : IDL.Null,
   });
-  const Result_19 = IDL.Variant({
+  const Result_21 = IDL.Variant({
     'Ok' : NotifyDepositMintReceipt,
     'Err' : NotifyDepositMintError,
   });
@@ -671,11 +695,11 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'AnonymousCaller' : IDL.Null,
     'InvalidBaseResponse' : IDL.Null,
   });
-  const Result_20 = IDL.Variant({
+  const Result_22 = IDL.Variant({
     'Ok' : NotifyWithdrawalReceipt,
     'Err' : NotifyWithdrawalError,
   });
-  const Result_21 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : AdminError });
+  const Result_23 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : AdminError });
   const BaseGovernanceAction = IDL.Variant({
     'ExecuteControlPlaneRotation' : IDL.Null,
     'PauseDepositMints' : IDL.Null,
@@ -696,7 +720,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'complete' : IDL.Bool,
     'checksum' : IDL.Nat64,
   });
-  const Result_22 = IDL.Variant({
+  const Result_24 = IDL.Variant({
     'Ok' : ChecksumRefreshStatus,
     'Err' : StorageMaintenanceError,
   });
@@ -736,7 +760,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       'retry_after_seconds' : IDL.Nat64,
     }),
   });
-  const Result_23 = IDL.Variant({
+  const Result_25 = IDL.Variant({
     'Ok' : DepositReceipt,
     'Err' : DepositError,
   });
@@ -757,7 +781,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'FinalityUnavailable' : IDL.Null,
     'AnonymousCaller' : IDL.Null,
   });
-  const Result_24 = IDL.Variant({
+  const Result_26 = IDL.Variant({
     'Ok' : DepositView,
     'Err' : RequestDepositRefundError,
   });
@@ -766,13 +790,9 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'state' : FeePayoutState,
     'amount' : IDL.Nat,
   });
-  const Result_25 = IDL.Variant({
+  const Result_27 = IDL.Variant({
     'Ok' : FeePayoutReceipt,
     'Err' : AdminError,
-  });
-  const FeeRecipientConfig = IDL.Record({
-    'owner' : IDL.Principal,
-    'subaccount' : IDL.Vec(IDL.Nat8),
   });
   const RotatePausePrincipalArgs = IDL.Record({
     'pause_principal' : IDL.Principal,
@@ -796,14 +816,19 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
     'activation_attestation' : ActivationAttestation,
     'lifecycle' : ProductionLifecycle,
   });
-  const Result_26 = IDL.Variant({
+  const Result_28 = IDL.Variant({
     'Ok' : OperationalConfigSealReceipt,
     'Err' : BaseGovernanceError,
+  });
+  const SnsFeePayoutProposal = IDL.Record({
+    'recipient' : FeeRecipientConfig,
+    'payout_id' : IDL.Nat64,
+    'amount' : IDL.Nat,
   });
   const SnsActivationProposal = IDL.Record({
     'previous_governance_operation_id' : IDL.Nat64,
   });
-  const Result_27 = IDL.Variant({ 'Ok' : IDL.Text, 'Err' : IDL.Text });
+  const Result_29 = IDL.Variant({ 'Ok' : IDL.Text, 'Err' : IDL.Text });
   return IDL.Service({
     'check_cycles_top_up' : IDL.Func([], [Result], []),
     'confirm_base_governance_transaction' : IDL.Func(
@@ -835,6 +860,8 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
         [IDL.Opt(DepositView)],
         ['query'],
       ),
+    'get_fee_payout' : IDL.Func([IDL.Nat64], [Result_11], ['query']),
+    'get_fee_status' : IDL.Func([], [Result_12], ['query']),
     'get_next_deposit_sequence' : IDL.Func(
         [IDL.Principal],
         [IDL.Nat64],
@@ -842,12 +869,12 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       ),
     'get_pending_base_governance_transaction' : IDL.Func(
         [],
-        [Result_11],
+        [Result_13],
         ['query'],
       ),
-    'get_production_lifecycle' : IDL.Func([], [Result_12], ['query']),
-    'get_release_operational_config' : IDL.Func([], [Result_11], ['query']),
-    'get_release_storage_integrity' : IDL.Func([], [Result_13], ['query']),
+    'get_production_lifecycle' : IDL.Func([], [Result_14], ['query']),
+    'get_release_operational_config' : IDL.Func([], [Result_13], ['query']),
+    'get_release_storage_integrity' : IDL.Func([], [Result_15], ['query']),
     'get_release_upgrade_observation' : IDL.Func(
         [],
         [IDL.Opt(ReleaseUpgradeObservation)],
@@ -861,7 +888,7 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       ),
     'get_withdrawals' : IDL.Func(
         [IDL.Vec(IDL.Vec(IDL.Nat8))],
-        [Result_14],
+        [Result_16],
         ['query'],
       ),
     'icrc10_supported_standards' : IDL.Func(
@@ -874,21 +901,21 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
         [Icrc21ConsentMessageResponse],
         [],
       ),
-    'initialize_public_config' : IDL.Func([], [Result_15], []),
-    'list_deposit_ids' : IDL.Func([ListDepositIdsArgs], [Result_16], ['query']),
+    'initialize_public_config' : IDL.Func([], [Result_17], []),
+    'list_deposit_ids' : IDL.Func([ListDepositIdsArgs], [Result_18], ['query']),
     'list_nonterminal_deposit_refs' : IDL.Func(
         [ListDepositIdsArgs],
-        [Result_17],
+        [Result_19],
         ['query'],
       ),
     'list_withdrawals' : IDL.Func(
         [ListWithdrawalsArgs],
-        [Result_18],
+        [Result_20],
         ['query'],
       ),
-    'notify_deposit_mint' : IDL.Func([NotifyDepositMintArgs], [Result_19], []),
-    'notify_withdrawal' : IDL.Func([NotifyWithdrawalArgs], [Result_20], []),
-    'pause_new_deposits' : IDL.Func([], [Result_21], []),
+    'notify_deposit_mint' : IDL.Func([NotifyDepositMintArgs], [Result_21], []),
+    'notify_withdrawal' : IDL.Func([NotifyWithdrawalArgs], [Result_22], []),
+    'pause_new_deposits' : IDL.Func([], [Result_23], []),
     'prepare_base_governance_action' : IDL.Func(
         [BaseGovernanceAction],
         [Result_6],
@@ -901,34 +928,46 @@ export const idlFactory = ({ IDL }: Parameters<import("@icp-sdk/core/candid").ID
       ),
     'prepare_next_emergency_base_action' : IDL.Func([], [Result_6], []),
     'refresh_activation_attestation' : IDL.Func([], [Result_7], []),
-    'refresh_storage_checksum' : IDL.Func([IDL.Nat64], [Result_22], []),
-    'request_deposit' : IDL.Func([DepositArgs], [Result_23], []),
-    'request_deposit_refund' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_24], []),
-    'request_fee_payout' : IDL.Func([IDL.Nat], [Result_25], []),
-    'rotate_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_21], []),
+    'refresh_storage_checksum' : IDL.Func([IDL.Nat64], [Result_24], []),
+    'request_deposit' : IDL.Func([DepositArgs], [Result_25], []),
+    'request_deposit_refund' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_26], []),
+    'request_fee_payout' : IDL.Func([IDL.Nat], [Result_27], []),
+    'rotate_fee_recipient' : IDL.Func([FeeRecipientConfig], [Result_23], []),
     'rotate_pause_principal' : IDL.Func(
         [RotatePausePrincipalArgs],
-        [Result_21],
+        [Result_23],
         [],
       ),
     'schedule_activation' : IDL.Func([], [Result_6], []),
     'seal_operational_config' : IDL.Func(
         [OperationalConfigArgs],
-        [Result_26],
+        [Result_28],
         [],
       ),
+    'sns_continue_fee_payout' : IDL.Func([SnsFeePayoutProposal], [], []),
     'sns_execute_activation' : IDL.Func([SnsActivationProposal], [], []),
+    'sns_request_fee_payout' : IDL.Func([SnsFeePayoutProposal], [], []),
     'sns_schedule_activation' : IDL.Func([SnsActivationProposal], [], []),
     'start_storage_validation' : IDL.Func([], [Result_4], []),
-    'storage_integrity_check' : IDL.Func([], [Result_13], ['query']),
+    'storage_integrity_check' : IDL.Func([], [Result_15], ['query']),
+    'validate_sns_continue_fee_payout' : IDL.Func(
+        [SnsFeePayoutProposal],
+        [Result_29],
+        [],
+      ),
     'validate_sns_execute_activation' : IDL.Func(
         [SnsActivationProposal],
-        [Result_27],
+        [Result_29],
+        [],
+      ),
+    'validate_sns_request_fee_payout' : IDL.Func(
+        [SnsFeePayoutProposal],
+        [Result_29],
         [],
       ),
     'validate_sns_schedule_activation' : IDL.Func(
         [SnsActivationProposal],
-        [Result_27],
+        [Result_29],
         [],
       ),
   });

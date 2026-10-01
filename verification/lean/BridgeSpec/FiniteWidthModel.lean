@@ -72,6 +72,14 @@ def feePayoutImpl (reserve pending amount fee : U128) : Bool :=
   | none => false
   | some _ => feePayoutAllowed reserve.val pending.val amount.val fee.val
 
+def feePayoutCapacityImpl (reserve pending fee : U128) : Nat :=
+  if pending.val > reserve.val then 0
+  else if reserve.val - pending.val ≤ fee.val then 0
+  else reserve.val - pending.val - fee.val
+
+def snsFeePayoutAuthorizedImpl (governance operational positive recipient identity : Bool) : Bool :=
+  governance && operational && positive && recipient && identity
+
 def holdImpl (exactSuccess completeAbsence : Bool) : Bool :=
   holdRetryAllowed exactSuccess completeAbsence
 

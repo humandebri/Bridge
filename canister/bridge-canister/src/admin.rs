@@ -329,3 +329,282 @@ pub fn request_fee_payout(caller: Principal, amount: Nat) -> Result<FeePayoutRec
         state: record.state,
     })
 }
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FeeStatus {
+    pub fee_reserve: Nat,
+    pub pending_payout_debit: Nat,
+    pub ledger_fee: Nat,
+    pub max_payout_amount: Nat,
+    pub fee_recipient: FeeRecipientConfig,
+    pub next_fee_payout_id: u64,
+}
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FeePayoutView {
+    pub id: u64,
+    pub amount: Nat,
+    pub recipient: FeeRecipientConfig,
+    pub ledger_fee: Nat,
+    pub state: FeePayoutState,
+}
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SnsFeePayoutProposal {
+    pub payout_id: u64,
+    pub amount: Nat,
+    pub recipient: FeeRecipientConfig,
+}
+
+pub fn fee_status() -> Result<FeeStatus, AdminError> {
+    STORE.with(|store| {
+        let store = store.borrow();
+        let reserve = store
+            .accounting()
+            .map_err(|_| AdminError::StorageFailure)?
+            .fee_reserve
+            .get();
+        let pending = store
+            .pending_fee_payout_amount()
+            .map_err(|_| AdminError::StorageFailure)?;
+        if pending > reserve {
+            return Err(AdminError::StorageFailure);
+        }
+        let fee = ledger::KINIC_LEDGER_FEE.get();
+        Ok(FeeStatus {
+            fee_reserve: reserve.into(),
+            pending_payout_debit: pending.into(),
+            ledger_fee: fee.into(),
+            max_payout_amount: ::bridge_core::kernel::fee_payout_capacity(reserve, pending, fee)
+                .into(),
+            fee_recipient: store
+                .admin_state()
+                .map_err(|_| AdminError::StorageFailure)?
+                .fee_recipient,
+            next_fee_payout_id: store
+                .next_fee_payout_id()
+                .map_err(|_| AdminError::StorageFailure)?,
+        })
+    })
+}
+pub fn fee_payout_view(id: u64) -> Result<Option<FeePayoutView>, AdminError> {
+    STORE.with(|store| {
+        store
+            .borrow()
+            .fee_payout(id)
+            .map_err(|_| AdminError::StorageFailure)
+            .map(|record| {
+                record.map(|r| FeePayoutView {
+                    id: r.id,
+                    amount: r.amount.into(),
+                    recipient: r.recipient,
+                    ledger_fee: r.transfer.fee.get().into(),
+                    state: r.state,
+                })
+            })
+    })
+}
+
+pub(crate) fn check_sns_fee_identity(
+    proposal: &SnsFeePayoutProposal,
+    governance: bool,
+    operational: bool,
+    continuation: bool,
+) -> Result<Option<FeePayoutView>, AdminError> {
+    let amount = crate::api::bounded_nat_u128(&proposal.amount)
+        .ok_or_else(|| AdminError::InvalidArgument("amount exceeds u128".into()))?;
+    let existing = fee_payout_view(proposal.payout_id)?;
+    let status = fee_status()?;
+    let recipient_matches = existing
+        .as_ref()
+        .map_or(status.fee_recipient == proposal.recipient, |r| {
+            r.recipient == proposal.recipient
+        });
+    let identity_matches = existing.as_ref().map_or(
+        !continuation && proposal.payout_id == status.next_fee_payout_id,
+        |r| r.amount == proposal.amount,
+    );
+    if !::bridge_core::kernel::sns_fee_payout_authorized(
+        governance,
+        operational,
+        amount > 0,
+        recipient_matches,
+        identity_matches,
+    ) {
+        return Err(if !governance {
+            AdminError::Unauthorized
+        } else {
+            AdminError::InvalidArgument(
+                "proposal does not match current payout identity or lifecycle".into(),
+            )
+        });
+    }
+    if existing.is_none() && proposal.amount > status.max_payout_amount {
+        return Err(AdminError::InsufficientFeeReserve);
+    }
+    if continuation
+        && matches!(
+            existing.as_ref().map(|r| &r.state),
+            Some(FeePayoutState::Failed)
+        )
+    {
+        return Err(AdminError::InvalidArgument(
+            "payout has permanently failed".into(),
+        ));
+    }
+    Ok(existing)
+}
+
+pub(crate) fn validate_sns_fee_payout(
+    proposal: &SnsFeePayoutProposal,
+    continuation: bool,
+) -> Result<String, String> {
+    let operational = crate::asset_operations_are_available().map_err(|e| format!("{e:?}"))?;
+    let existing = check_sns_fee_identity(proposal, true, operational, continuation)
+        .map_err(|e| format!("{e:?}"))?;
+    let fee = existing.map_or(ledger::KINIC_LEDGER_FEE.get().into(), |r| r.ledger_fee);
+    Ok(format!("{} KINIC fee payout {}: amount {} raw units, recipient {} subaccount {}, Ledger fee {} raw units. Acceptance or continuation is not proof of Ledger settlement.",
+        if continuation { "Continue" } else { "Request" }, proposal.payout_id, proposal.amount, proposal.recipient.owner,
+        proposal.recipient.subaccount.iter().map(|b| format!("{b:02x}")).collect::<String>(), fee))
+}
+
+#[cfg(test)]
+mod fee_tests {
+    use super::*;
+    use crate::storage::StableStore;
+    use bridge_core::AccountingState;
+    use ic_sqlite_vfs::DefaultMemoryImpl;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn fee_queries_bind_reservations_replays_and_reopened_v36_state() {
+        let memory = DefaultMemoryImpl::default();
+        let mut store = StableStore::init(memory.clone()).unwrap();
+        let mut admin = AdminState {
+            deposits_paused: false,
+            withdrawal_fee_guard: None,
+            pause_principal: Principal::self_authenticating([6; 32]),
+            governance_principal: Principal::self_authenticating([8; 32]),
+            fee_recipient: FeeRecipientConfig {
+                owner: Principal::self_authenticating([7; 32]),
+                subaccount: vec![],
+            },
+        };
+        admin.governance_principal = Principal::self_authenticating([8; 32]);
+        admin.fee_recipient = FeeRecipientConfig {
+            owner: Principal::self_authenticating([7; 32]),
+            subaccount: vec![],
+        };
+        store.set_admin_state(&admin).unwrap();
+        let fee = ledger::KINIC_LEDGER_FEE;
+        store
+            .set_accounting(&AccountingState {
+                fee_reserve: Amount::new(fee.get() + 100),
+                ..Default::default()
+            })
+            .unwrap();
+        let proposal = SnsFeePayoutProposal {
+            payout_id: store.next_fee_payout_id().unwrap(),
+            amount: 100u128.into(),
+            recipient: admin.fee_recipient.clone(),
+        };
+        STORE.with(|slot| slot.borrow_mut().0 = Some(store));
+        assert_eq!(fee_status().unwrap().max_payout_amount, Nat::from(100u128));
+        assert_eq!(
+            check_sns_fee_identity(&proposal, false, true, false),
+            Err(AdminError::Unauthorized)
+        );
+        assert!(check_sns_fee_identity(&proposal, true, false, false).is_err());
+        assert_eq!(
+            check_sns_fee_identity(&proposal, true, true, false),
+            Ok(None)
+        );
+        let mut changed = proposal.clone();
+        changed.amount = Nat::from(u128::MAX) + Nat::from(1u128);
+        assert!(matches!(
+            check_sns_fee_identity(&changed, true, true, false),
+            Err(AdminError::InvalidArgument(_))
+        ));
+        changed.amount = Nat::from(0u128);
+        assert!(check_sns_fee_identity(&changed, true, true, false).is_err());
+        changed.amount = 101u128.into();
+        assert_eq!(
+            check_sns_fee_identity(&changed, true, true, false),
+            Err(AdminError::InsufficientFeeReserve)
+        );
+        changed = proposal.clone();
+        changed.recipient.owner = Principal::self_authenticating([9; 32]);
+        assert!(check_sns_fee_identity(&changed, true, true, false).is_err());
+        changed = proposal.clone();
+        changed.payout_id += 1;
+        assert!(check_sns_fee_identity(&changed, true, true, false).is_err());
+        assert!(check_sns_fee_identity(&proposal, true, true, true).is_err());
+        let record = FeePayoutRecord {
+            id: proposal.payout_id,
+            amount: 100,
+            recipient: proposal.recipient.clone(),
+            state: FeePayoutState::Pending,
+            transfer: LedgerTransferIdentity {
+                operation: LedgerOperation::FeePayout,
+                created_at_time_ns: 1,
+                memo: [1; 32],
+                amount: Amount::new(100),
+                fee,
+                from: Account::new(admin.governance_principal.as_slice().to_vec(), [0; 32])
+                    .unwrap(),
+                to: Account::new(proposal.recipient.owner.as_slice().to_vec(), [0; 32]).unwrap(),
+                spender: None,
+            },
+        };
+        STORE
+            .with(|slot| {
+                slot.borrow_mut()
+                    .commit_fee_payout_request(&record, admin.governance_principal, 1)
+            })
+            .unwrap();
+        STORE
+            .with(|slot| {
+                slot.borrow_mut()
+                    .set_accounting(&AccountingState::default())
+            })
+            .unwrap();
+        assert_eq!(fee_status(), Err(AdminError::StorageFailure));
+        STORE
+            .with(|slot| {
+                slot.borrow_mut().set_accounting(&AccountingState {
+                    fee_reserve: Amount::new(fee.get() + 100),
+                    ..Default::default()
+                })
+            })
+            .unwrap();
+        let before = fee_status().unwrap();
+        assert_eq!(before.max_payout_amount, Nat::from(0u128));
+        assert_eq!(before.pending_payout_debit, Nat::from(fee.get() + 100));
+        for _ in 0..2 {
+            assert!(check_sns_fee_identity(&proposal, true, true, false)
+                .unwrap()
+                .is_some());
+        }
+        assert_eq!(fee_status().unwrap(), before);
+        changed = proposal.clone();
+        changed.amount = 99u128.into();
+        assert!(check_sns_fee_identity(&changed, true, true, false).is_err());
+        let view = fee_payout_view(record.id).unwrap();
+        STORE.with(|slot| slot.borrow_mut().0.take());
+        let reopened = StableStore::reopen_after_upgrade(memory).unwrap();
+        STORE.with(|slot| slot.borrow_mut().0 = Some(reopened));
+        assert_eq!(fee_status().unwrap(), before);
+        assert_eq!(fee_payout_view(record.id).unwrap(), view);
+        STORE
+            .with(|slot| slot.borrow_mut().complete_fee_payout_success(record.id, 42))
+            .unwrap();
+        assert_eq!(
+            fee_payout_view(record.id).unwrap().unwrap().state,
+            FeePayoutState::Succeeded { block_index: 42 }
+        );
+        assert!(check_sns_fee_identity(&proposal, true, true, true)
+            .unwrap()
+            .is_some());
+        assert_eq!(fee_status().unwrap().fee_reserve, Nat::from(0u128));
+        STORE.with(|slot| slot.borrow_mut().0.take());
+    }
+}
