@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -135,4 +136,18 @@ test('fee preparation checks capacity and continuation state without submitting'
   await assert.rejects(runFeeCommand(['prepare-continue-fee-payout','8',join(directory,'done.json')],clients));
   clients.bridge.get_fee_status=async()=>({Err:{StorageFailure:null}});
   await assert.rejects(runFeeCommand(['fee-status'],clients),/rejected query/);
+});
+
+
+test('fee CLI starts and rejects invalid arguments without network access', () => {
+  const script = fileURLToPath(new URL('./fees.mjs', import.meta.url));
+  for (const command of ['fee-status', 'fee-payout-status', 'prepare-fee-payout', 'prepare-continue-fee-payout']) {
+    const result = spawnSync(process.execPath, [script, command, ...(command === 'fee-status' ? ['extra'] : [])], {
+      encoding: 'utf8', timeout: 10_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, `${command} must run the CLI argument validation`);
+    assert.match(result.stderr, /Usage: fees\.mjs/);
+    assert.equal(result.stdout, '');
+  }
 });

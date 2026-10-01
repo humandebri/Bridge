@@ -86,7 +86,7 @@ export function feeClients(agent) {
     ledger: Actor.createActor(() => IDL.Service({ icrc1_decimals: IDL.Func([], [IDL.Nat8], ['query']) }), { agent, canisterId: LEDGER }),
   };
 }
-if (isMainModule(process.argv[1])) {
+if (isMainModule(process.argv[1], import.meta.url)) {
   const agent = await HttpAgent.create({ host: 'https://icp-api.io', verifyQuerySignatures: true });
   console.log(json(await runFeeCommand(process.argv.slice(2), feeClients(agent))));
 }
