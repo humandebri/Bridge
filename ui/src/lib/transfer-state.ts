@@ -163,7 +163,11 @@ export function transferPresentation(facts: TransferFacts): TransferPresentation
       ...base,
       code: facts.outcome,
       title,
-      description: facts.recordingPending ? "Waiting for IC recording." : (facts.message ?? ""),
+      description: facts.recordingPending
+        ? "Waiting for IC recording."
+        : facts.outcome === "reverted" || facts.outcome === "cancelled"
+          ? (facts.message ?? "")
+          : "",
       icon: facts.outcome === "reverted" || facts.outcome === "cancelled" ? "warning" : "success",
     }
   }

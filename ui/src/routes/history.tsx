@@ -1269,9 +1269,6 @@ function WithdrawalActivityRow({
           {presentation.title}
         </Badge>
         {presentation.description && <p className="mt-1 text-xs">{presentation.description}</p>}
-        {needsAttention && (
-          <p className="mt-1 text-xs font-bold text-[#b42318]">Continue from History when ready.</p>
-        )}
         {pendingAttempt?.failure && (
           <p className="mt-1 text-xs font-bold text-[#b42318]">{pendingAttempt.failure.message}</p>
         )}
