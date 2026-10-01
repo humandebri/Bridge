@@ -2,7 +2,7 @@
   "schema": 1,
   "lean_version": "Lean 4.30.0 commit d024af099ca4bf2c86f649261ebf59565dc8c622",
   "toolchain": "leanprover/lean4:v4.30.0",
-  "exporter_sha256": "0c93ff184cdb2e043e576124ad1a1281478b9059f1325e46b6edcda7a93d9528",
+  "exporter_sha256": "1ef5a6f5c2f2e1643c931edb34a1cd6c09355605d1809bfb8e2d173525fb8331",
   "sources": {
     "verification/lean/BridgeSpec/AuditExport.lean": {
       "sha256": "71f528152dcd1c0a250ae213e0d250e8c4a46d42002c38d579b13679dd7bf501",

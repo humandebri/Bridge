@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 
 SCHEMA_VERSION = "7"
@@ -13,7 +14,24 @@ LEAN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 PROOF_CLASSES = {"local-safety", "history-safety", "implementation-only"}
 ASSURANCE_TARGETS = {"release-safety", "model-support"}
 REQUIRED_STRENGTHS = {"production-linked", "implementation-proved"}
-REQUIRED_CLAIM_IDS = frozenset(
+# Stage the catalog before the fee-payout feature lands. This detects feature
+# presence only; the unchanged claim, refinement and proof gates establish its
+# implementation evidence. The feature PR replaces this with an unconditional
+# mandatory claim once the trusted base has learned the new catalog.
+FEE_PAYOUT_AUTHORIZATION_CLAIM = "sns_fee_payout_authorization"
+
+
+def fee_payout_claim_ids(kernel_source: str) -> frozenset[str]:
+    if re.search(r"\bpub\s+const\s+fn\s+sns_fee_payout_authorized\s*\(", kernel_source):
+        return frozenset({FEE_PAYOUT_AUTHORIZATION_CLAIM})
+    return frozenset()
+
+
+FEE_PAYOUT_CLAIM_IDS = fee_payout_claim_ids(
+    (Path(__file__).resolve().parents[1] / "canister/bridge-core/src/kernel.rs")
+    .read_text(encoding="utf-8")
+)
+REQUIRED_CLAIM_IDS = FEE_PAYOUT_CLAIM_IDS | frozenset(
     """cycles_top_up_request_policy activation_preflight authorization_binding automatic_retry_limit canonical_probe committed_quote
     deposit_admission deposit_backing deposit_identity_preflight epoch_invalidation
     exact_mint_finalization expiry_refund
@@ -31,7 +49,7 @@ REQUIRED_CLAIM_IDS = frozenset(
     paid_call_cycle_reserve settlement_backing signing_cycle_reserve withdrawal_admission_boundary
     withdrawal_finality_quorum withdrawal_finalization""".split()
 )
-REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS = frozenset(
+REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS = FEE_PAYOUT_CLAIM_IDS | frozenset(
     """cycles_top_up_request_policy activation_preflight canonical_probe committed_quote deposit_identity_preflight
     fee_recipient_rotation funding_attempt_lifecycle funding_reconciliation_freshness
     governance_confirmation_authorization governance_transaction_affordability

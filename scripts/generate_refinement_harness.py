@@ -10,6 +10,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from claim_manifest import REQUIRED_CLAIM_IDS
+
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "verification" / "generated" / "refinement-harnesses.json"
@@ -199,6 +201,18 @@ RUST_RENDERERS: dict[str, tuple[str, str]] = {
         assert_eq!(payout_allowed(reserve, pending, payout_amount, fee), boolean(&case, "allowed"));
         assert_eq!(payout_debit(true, payout_amount, fee), Some(amount(text(&case, "first_debit"))));
         assert_eq!(payout_debit(false, payout_amount, fee), Some(amount(text(&case, "replay_debit"))));''',
+    ),
+    "fee_payout_capacity_cases": (
+        "protocol_fee_payout_capacity_cases_match_production",
+        '''        assert_eq!(bridge_core::kernel::fee_payout_capacity(
+            amount(text(&case, "reserve")), amount(text(&case, "pending")), amount(text(&case, "fee"))),
+            amount(text(&case, "capacity")));''',
+    ),
+    "sns_fee_payout_authorization_cases": (
+        "protocol_sns_fee_payout_authorization_cases_match_production",
+        '''        assert_eq!(bridge_core::kernel::sns_fee_payout_authorized(
+            boolean(&case, "governance"), boolean(&case, "operational"), boolean(&case, "positive"),
+            boolean(&case, "recipient"), boolean(&case, "identity")), boolean(&case, "allowed"));''',
     ),
     "hold_cases": (
         "protocol_hold_cases_matches_production",
@@ -441,6 +455,11 @@ VITEST_RENDERERS = {
     ),
 }
 
+
+# Do not emit tests for production kernels that have not landed yet.
+if "sns_fee_payout_authorization" not in REQUIRED_CLAIM_IDS:
+    del RUST_RENDERERS["fee_payout_capacity_cases"]
+    del RUST_RENDERERS["sns_fee_payout_authorization_cases"]
 
 RENDERERS: dict[tuple[str, str], Renderer] = {}
 for section, (selector, body) in RUST_RENDERERS.items():
