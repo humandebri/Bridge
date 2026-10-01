@@ -7,6 +7,8 @@ The KINIC–Base Bridge maintains 1:1 backing between KINIC on ICP and its ERC-2
 | Document | Purpose |
 |---|---|
 | [Repository overview](../README.md) | Current status, pinned tools, setup, and validation commands |
+| [Architecture](architecture.md) | Components, execution model, and trust boundaries |
+| [Development and validation](development.md) | Pinned tools, focused checks, proofs, and local deployment |
 | [Bridge flows](bridge-flow.md) | Deposit, mint authorization, refund, and Withdrawal execution |
 | [Glossary](glossary.md) | Shared terminology and distinctions between safety and liveness |
 | [Canister state machine](canister-state-machine.md) | State transitions, persistence, and external-call boundaries |
@@ -18,7 +20,7 @@ The KINIC–Base Bridge maintains 1:1 backing between KINIC on ICP and its ERC-2
 
 - [Implementation phases](implementation-plan.md) describe the implementation structure.
 - [Architecture decision records](adr/README.md) explain accepted decisions and link to superseded history.
-- [Implementation plan index](../plans/README.md) is the source of truth for plan progress. Completed plans are historical records; use the current design documents for current behavior.
+- [Implementation plan index](../plans/README.md) records development history and proposed work. Use the repository overview for dated production observations and the current design documents for behavior.
 - [Deposit and Timelock audit](audits/2026-09-08-deposit-timelock.md) records the dated review.
 
 ## Operations
@@ -26,7 +28,7 @@ The KINIC–Base Bridge maintains 1:1 backing between KINIC on ICP and its ERC-2
 | Runbook | Use it for |
 |---|---|
 | [Operations](runbooks/operations.md) | Production gates, activation, upgrades, monitoring, and incident handling |
-| [DAO reactivation](runbooks/dao-reactivation.md) | Governance-controlled reactivation |
+| [DAO reactivation and handover](runbooks/dao-reactivation.md) | Historical joint-control demonstration and post-handover upgrade validation |
 | [Emergency pause principal](runbooks/emergency-pause-principal.md) | The emergency principal's authority and operating boundaries |
 | [Token publication](runbooks/token-publication.md) | Publishing token metadata and related artifacts |
 | [Bridge error messages](runbooks/bridge-error-messages.md) | Interpreting errors and choosing recovery actions |
@@ -56,6 +58,13 @@ Dated evidence and archived decisions describe their recorded state. They do not
 - [Generated claim statements](../verification/generated/claim-statements.md): exported Lean statements and specification correspondence. Update the source registries and regenerate; do not edit this artifact directly.
 - [Certora](../verification/certora/README.md): supplementary verification setup.
 - [Contract ABI snapshots](../contracts/abi/README.md): snapshot maintenance.
+
+## Public repository guides
+
+- [Public repository preparation](publication.md): completed cleanup and remaining publication checks.
+- [Contributing](../CONTRIBUTING.md): development workflow and review expectations.
+- [Security](../SECURITY.md): confidential vulnerability reporting.
+- [License](../LICENSE) and [third-party notices](../THIRD_PARTY_NOTICES.md).
 
 ## Maintaining these documents
 

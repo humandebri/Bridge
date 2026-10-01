@@ -121,7 +121,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await expect(
     page
       .getByText(
-        /Ledger escrowを処理中|Mint Authorizationを署名中|Mint Authorization ready|Your tokens were minted on Base|Success/,
+        /Processing Ledger escrow|Signing Mint Authorization|Mint Authorization ready|Your tokens were minted on Base|Success/,
       )
       .first(),
   ).toBeVisible()
@@ -161,7 +161,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await expect(
     page
       .getByText(
-        /Ledger escrowを処理中|Mint Authorizationを署名中|Mint Authorization ready|Your tokens were minted on Base|Success/,
+        /Processing Ledger escrow|Signing Mint Authorization|Mint Authorization ready|Your tokens were minted on Base|Success/,
       )
       .first(),
   ).toBeVisible()

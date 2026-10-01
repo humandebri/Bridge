@@ -1,9 +1,11 @@
 # Implementation plans
 
-This index records implementation plans beginning after Base contract Phase 1E completion and their current progress.
+This index records development plans beginning after Base contract Phase 1E completion. The entries below retain their planning context; they are not a current production-state report.
 Plans 001–004 are completed historical records. The repository-root `README.md` and `docs/` are authoritative for current specifications.
 
-## Execution order
+The [repository overview](../README.md#production-status) records the October 1, 2026 Root-only controller observation and deferred same-Wasm upgrade validation. Recheck current authenticated state before operations; historical completion boxes are not deployment authorization.
+
+## Recorded execution order
 
 | Plan | Scope | Priority | Size | Dependencies | Status |
 |---|---|---:|---:|---|---|
@@ -26,9 +28,9 @@ Plans 001–004 are completed historical records. The repository-root `README.md
 - Resolve 005 TBDs before installing initial production values; unresolved values block 006 preflight.
 - 007 is nonblocking staging validation independent of production/SNS. External stages require clean-commit local-gate evidence, but unfinished detailed wallet matrices and additional failure scenarios do not block production activation.
 
-## Recommended next step
+## Using these plans
 
-Rerun Plan 007's local gate from a clean commit to issue promotion evidence, then proceed to IC mainnet test Canister/Base Sepolia external stages after explicit approval. Complete Plan 005 external measurements in parallel.
+Read completed plans as implementation history and planned work as proposals. Reassess unfinished items against current source, current-state evidence, and operator decisions before scheduling work. The previous recommendation to repeat Plan 007 promotion is a development milestone, not a requirement inferred from the current controller state.
 
 ## Remaining completion criteria
 

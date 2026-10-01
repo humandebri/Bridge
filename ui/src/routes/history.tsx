@@ -1029,13 +1029,13 @@ export function DepositActivityRow({
           <p role="alert" className="text-xs">
             {mintRecoveryProblem === "conflict"
               ? "The Base receipt does not match this deposit. Review is required."
-              : "検索サービスに接続できません。再試行します"}
+              : "Transaction search is unavailable. Retrying."}
           </p>
         )}
         {processedWithoutReceipt && (
           <p className="text-xs">
             {discoveryEnabled
-              ? "Processed on Base. 取引を自動検索中"
+              ? "Processed on Base. Searching for the transaction automatically."
               : "Processed on Base. Receipt not linked; recovery without a saved transaction hash is not supported on this network."}
           </p>
         )}
@@ -1115,7 +1115,9 @@ export function DepositActivityRow({
           <span className="text-sm text-[var(--muted)]">—</span>
         ) : processedWithoutReceipt ? (
           <span className="text-sm text-[var(--muted)]">
-            {discoveryEnabled ? "取引を自動検索中" : "Transaction confirmation unavailable"}
+            {discoveryEnabled
+              ? "Searching for the transaction automatically"
+              : "Transaction confirmation unavailable"}
           </span>
         ) : mintFinalization === "minted" ? (
           <span className="text-sm text-[var(--muted)]">—</span>

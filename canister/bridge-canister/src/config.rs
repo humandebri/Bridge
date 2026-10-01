@@ -1042,7 +1042,7 @@ mod tests {
                 valid[2].clone(),
             ],
             vec![
-                "https://例.example/rpc".into(),
+                "https://\u{4f8b}.example/rpc".into(),
                 valid[1].clone(),
                 valid[2].clone(),
             ],

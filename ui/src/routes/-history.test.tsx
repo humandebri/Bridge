@@ -278,7 +278,7 @@ function expectRefundOnlyAfterDeadline(reason: SettlementStopReason): void {
   expect(
     screen.getByText(
       deploymentProfile.mintRecoveryUrl
-        ? "取引を自動検索中"
+        ? "Searching for the transaction automatically"
         : "Transaction confirmation unavailable",
     ),
   ).toBeInTheDocument()

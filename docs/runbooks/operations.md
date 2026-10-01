@@ -1,5 +1,12 @@
 # Bridge resource replenishment and emergency pause
 
+## Controller status and procedure scope
+
+The October 1, 2026 [controller observation](../../README.md#production-status) found SNS Root as the sole Bridge controller. Controller-only operations therefore require the SNS-controlled path; the former individual controller has no direct controller authority. Emergency pause authority is separate.
+
+Initial-install, bootstrap activation, joint-control, and recovery instructions below describe earlier lifecycle stages. They do not authorize replaying those operations after handover. The fixed local paths in the initial-install recovery record identify that historical installation and must not be substituted into a new deployment. Use the [DAO handover runbook](dao-reactivation.md) for post-registration upgrade validation and verify live state before acting.
+
+
 History index rebuilding persists progress in batches of at most 100 rows. An error stops its timer; there is no automatic retry or administrator restart API. Investigate and correct the cause before a reviewed same-instance upgrade, which rearms rebuilding from the saved cursor. Upgrading alone does not repair corrupt data. Until rebuilding completes, `list_withdrawals` returns `IndexNotReady`; do not publish the new UI before index verification.
 
 ## Schema v36 baseline

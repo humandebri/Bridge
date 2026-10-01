@@ -1,4 +1,13 @@
-# Demonstrate DAO reactivation under joint SNS Root control
+# DAO reactivation and controller handover
+
+## Recorded handover status
+
+On October 1, 2026, certified IC controller state showed Kinic SNS Root as the only Bridge controller. The same-Wasm SNS upgrade demonstration is deferred until an upgrade is needed; its completion has not been verified here. See the [repository overview](../../README.md#production-status) for the exact observation and its limits.
+
+The joint-control preparation and registration steps below describe the earlier handover path. Do not repeat them from the Root-only state or assume that the former individual controller can operate controller-only APIs. Future upgrades require current-state and proposal verification under SNS control. Root registration and the relevant executed proposal must be verified before using the post-registration upgrade steps.
+
+## Joint-control demonstration procedure
+
 
 This procedure verifies post-launch reactivation. Add SNS Root first, prove exact joint control with the production identity, and demonstrate DAO reactivation in that state. It does not automatically run `RegisterDappCanisters`, remove the individual controller, or complete handover.
 
