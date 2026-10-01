@@ -9,7 +9,6 @@ export interface UiDeploymentMode {
   ledgerCanisterId?: string | null
   indexCanisterId?: string | null
   evmRpcCanisterId?: string | null
-  gateBManifestSha256?: string | null
   deploymentBlock?: bigint | number | string | null
   profileFileSha256?: string | null
   profileCanonicalSha256?: string | null
@@ -23,7 +22,7 @@ export const MINIMUM_PRODUCTION_TIMELOCK_DELAY_SECONDS = 24 * 60 * 60
 
 export function assertProductionUiProfile(
   profile: UiDeploymentMode,
-  verifiedManifestSha256?: string,
+  verifiedProfileSha256?: string,
 ): void {
   if (profile.testOnly !== false)
     throw new Error("Production UI deploy rejects test-only or unspecified deployment profiles")
@@ -41,13 +40,13 @@ export function assertProductionUiProfile(
     throw new Error("Production UI deploy requires a Timelock contract address")
   }
   if (
-    !/^[0-9a-f]{64}$/i.test(verifiedManifestSha256 ?? "") ||
-    /^0+$/.test(verifiedManifestSha256 ?? "")
+    !/^[0-9a-f]{64}$/i.test(verifiedProfileSha256 ?? "") ||
+    /^0+$/.test(verifiedProfileSha256 ?? "")
   ) {
-    throw new Error("Production UI deploy requires a verified Gate B manifest hash")
+    throw new Error("Production UI deploy requires a verified current production profile hash")
   }
-  if (profile.gateBManifestSha256?.toLowerCase() !== verifiedManifestSha256?.toLowerCase()) {
-    throw new Error("Production UI profile does not match the verified Gate B manifest")
+  if (profile.profileCanonicalSha256?.toLowerCase() !== verifiedProfileSha256?.toLowerCase()) {
+    throw new Error("Production UI profile does not match the verified current production profile")
   }
   if (profile.mintRecoveryUrl !== "https://recovery.bridge.kinic.xyz/v1/mint-recovery")
     throw new Error("Production UI requires the reviewed mint recovery URL")

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest"
 import { assertProductionUiProfile } from "./deploy-safety"
 
 describe("UI deployment safety", () => {
-  it("requires_a_production_profile_bound_to_the_verified_Gate_B_manifest", () => {
-    const manifest = "a".repeat(64)
+  it("requires_a_production_profile_bound_to_the_verified_current_state", () => {
+    const manifest = "c".repeat(64)
     const hashes = { profileFileSha256: "b".repeat(64), profileCanonicalSha256: "c".repeat(64) }
     const production = {
       testOnly: false,
@@ -11,7 +11,6 @@ describe("UI deployment safety", () => {
       environmentMode: null,
       activationTimelockDelaySeconds: 86_400,
       timelockAddress: `0x${"11".repeat(20)}`,
-      gateBManifestSha256: manifest,
       deploymentBlock: 1n,
       ...hashes,
       canisterSchemaVersion: 36,
@@ -31,13 +30,15 @@ describe("UI deployment safety", () => {
         "v36 module",
       )
     }
-    expect(() =>
-      assertProductionUiProfile({ testOnly: true, gateBManifestSha256: manifest }, manifest),
-    ).toThrow("Production UI deploy rejects test-only")
+    expect(() => assertProductionUiProfile({ testOnly: true }, manifest)).toThrow(
+      "Production UI deploy rejects test-only",
+    )
     expect(() => assertProductionUiProfile({})).toThrow("Production UI deploy rejects test-only")
-    expect(() => assertProductionUiProfile(production)).toThrow("requires a verified Gate B")
+    expect(() => assertProductionUiProfile(production)).toThrow(
+      "requires a verified current production profile",
+    )
     expect(() =>
-      assertProductionUiProfile({ ...production, gateBManifestSha256: null }, manifest),
+      assertProductionUiProfile({ ...production, profileCanonicalSha256: null }, manifest),
     ).toThrow("does not match")
     expect(() => assertProductionUiProfile(production, "b".repeat(64))).toThrow("does not match")
     expect(() =>

@@ -190,18 +190,18 @@ function installRuntimeProfile(targetRoot, publicRaw) {
 
 /** @param {string} profileFile */
 function verifyProductionUiLive(profileFile) {
-  const releaseBundle = process.env.BRIDGE_RELEASE_BUNDLE
+  const productionProfileFile = process.env.BRIDGE_PRODUCTION_PROFILE_FILE
   const uiRpcConfig = process.env.BRIDGE_UI_RPC_CONFIG
   const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
   const controllerMode = process.env.BRIDGE_UI_CONTROLLER_MODE
   if (
-    !releaseBundle ||
+    !productionProfileFile ||
     !uiRpcConfig ||
-    !productionInstallerIdentity ||
-    !["sole", "joint"].includes(controllerMode ?? "")
+    (controllerMode !== "root-registered" && !productionInstallerIdentity) ||
+    !["sole-unregistered", "joint-unregistered", "root-registered"].includes(controllerMode ?? "")
   ) {
     throw new Error(
-      "Production UI deploy requires the release bundle, reviewed RPC configuration, production installer identity, and explicit controller mode",
+      "Production UI deploy requires the reviewed production profile, reviewed RPC configuration, production installer identity, and explicit controller mode",
     )
   }
   const profile = JSON.parse(readOrdinaryFile(profileFile).toString("utf8"))
@@ -223,7 +223,7 @@ function verifyProductionUiLive(profileFile) {
     [
       ...cargoArgs,
       "verify-production-current-ui-live",
-      releaseBundle,
+      productionProfileFile,
       profile.canisterModuleSha256,
       uiRpcConfig,
       profileFile,
@@ -231,14 +231,14 @@ function verifyProductionUiLive(profileFile) {
     ],
     { cwd: sourceRoot, encoding: "utf8" },
   )
-  const manifestSha256 =
-    /^production_ui=current-live-pass schema=36 module_sha256=[0-9a-f]{64} manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
-      gateOutput,
-    )?.[1]
-  if (!manifestSha256) {
+  const profileSha256 = new RegExp(
+    `^production_ui=current-live-pass schema=36 module_sha256=${profile.canisterModuleSha256} profile_sha256=([0-9a-fA-F]{64})$`,
+    "m",
+  ).exec(gateOutput)?.[1]
+  if (!profileSha256) {
     throw new Error("Fixed bridge-profile did not authorize the live production UI")
   }
-  return manifestSha256
+  return profileSha256
 }
 
 /** @param {string} profileFile */
@@ -319,12 +319,12 @@ async function deployFrozenAssets(
     }
     chmodSync(frozen, 0o500)
     await requireUnchangedSourceIdentity(identity)
-    const manifestSha256 = verifyProductionUiLive(profileFile)
+    const profileSha256 = verifyProductionUiLive(profileFile)
     if (readOrdinaryFile(profileFile).toString("utf8") !== rawProfile) {
       throw new Error("Production UI runtime profile changed after assets were frozen")
     }
     const { assertProductionUiProfile } = await import("../src/config/deploy-safety.ts")
-    assertProductionUiProfile(releaseProfile, manifestSha256)
+    assertProductionUiProfile(releaseProfile, profileSha256)
     if (assetsOnly) await requireUnchangedProductionProfile(publicProfile)
     const deployArgs = ["exec", "wrangler", "deploy", "--config", frozenConfig, "--assets", frozen]
     if (dryRun) deployArgs.push("--dry-run")
