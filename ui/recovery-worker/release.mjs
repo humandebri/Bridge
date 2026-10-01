@@ -55,7 +55,7 @@ if (command !== "smoke") {
       "bridge-profile",
       "--",
       "verify-production-current-ui-live",
-      required("BRIDGE_RELEASE_BUNDLE"),
+      required("BRIDGE_PRODUCTION_PROFILE_FILE"),
       profile.canisterModuleSha256,
       required("BRIDGE_UI_RPC_CONFIG"),
       profileFile,
@@ -63,11 +63,11 @@ if (command !== "smoke") {
     ],
     { cwd: root, encoding: "utf8" },
   )
-  const manifest =
-    /^production_ui=current-live-pass schema=36 module_sha256=[0-9a-f]{64} manifest_sha256=([0-9a-f]{64})$/m.exec(
-      output,
-    )?.[1]
-  assertProductionUiProfile(profile, manifest)
+  const profileSha256 = new RegExp(
+    `^production_ui=current-live-pass schema=36 module_sha256=${profile.canisterModuleSha256} profile_sha256=([0-9a-fA-F]{64})$`,
+    "m",
+  ).exec(output)?.[1]
+  assertProductionUiProfile(profile, profileSha256)
   // Prove the server-side key can discover an existing success before publishing anything.
   const actor = Actor.createActor(idlFactory, {
     agent: HttpAgent.createSync({ host: profile.icHost }),

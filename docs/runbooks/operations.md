@@ -162,8 +162,8 @@ Post-activation production UI publication uses certified current state and the r
 
 UI RPC is public configuration separate from Canister RPC. Point `BRIDGE_UI_RPC_CONFIG` to reviewed JSON shaped as `{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/REVIEWED_APP_KEY"}`; never record production keys in source/logs. This release accepts only Base mainnet Alchemy endpoints. Origin restrictions do not provide secrecy: key-bearing URLs are delivered in the public UI. Preserve fixed Canister RPC configuration.
 
-After Canister upgrade and index completion, generate the publication profile with `bridge-profile render-production-current-ui-runtime BUNDLE MODULE_SHA256 RPC_CONFIG OUTPUT`.
-`verify-production-current-ui-live BUNDLE MODULE_SHA256 RPC_CONFIG UI_RUNTIME_PROFILE sole|joint` requires byte equality, live RuntimeBinding from signature-verified queries and module/controllers from certified `read_state`, Activated/unpaused state, no pending Base Governance, reserves, storage, and an activation attestation whose release bindings match the authenticated current state. The five-minute freshness window applies to initial activation authorization, not current-state upgrade, handover, or UI verification.
+Use a reviewed schema v36 production `profile.json` binding the current certified module and deployment domain. Set `BRIDGE_PRODUCTION_PROFILE_FILE` to this file; UI publication does not require a historical release bundle, prior Wasm, initial-deployment receipts, or an upgrade chain. After index completion, generate the publication profile with `bridge-profile render-production-current-ui-runtime PROFILE MODULE_SHA256 RPC_CONFIG OUTPUT`.
+`verify-production-current-ui-live PROFILE MODULE_SHA256 RPC_CONFIG UI_RUNTIME_PROFILE sole-unregistered|joint-unregistered|root-registered` requires byte equality, live RuntimeBinding from signature-verified queries and module/controllers from certified `read_state`, Activated/unpaused state, no pending Base Governance, reserves, storage, and an activation attestation whose release bindings match the authenticated current state. The five-minute freshness window applies to initial activation authorization, not current-state upgrade, handover, or UI verification.
 Also require a successful signature-verified `list_withdrawals` query; never treat IndexNotReady or RPC failure as empty history.
 Attestation refresh is a production update call requiring separate execution approval.
 Stop UI publication until the candidate module is certified live and the post-upgrade current-state publication check passes.
@@ -196,7 +196,7 @@ Use the [DAO reactivation procedure](dao-reactivation.md) for post-launch demons
 
 Remove individual control only after separate approval. After Root-only transition, verify SNS registration before the same-Wasm upgrade. Do not register with SNS during the period intended to retain individual control; registration itself removes that controller.
 
-While joint control is retained, set `BRIDGE_UI_CONTROLLER_MODE=joint`; before Root addition use `sole`. Root-only control and dapp registration remain a separately approved future transition and require a dedicated current-state policy update.
+Set `BRIDGE_UI_CONTROLLER_MODE=joint-unregistered` while the production identity and SNS Root jointly control an unregistered dapp, `sole-unregistered` before Root addition, or `root-registered` after the separately approved Root-only registration. The verifier requires the exact certified controller set and signature-verified registration state. Root-only UI verification uses public release queries and does not require an installer identity. UI publication never changes controllers or registers a dapp.
 
 ## Mint evidence disagreement
 
@@ -281,7 +281,7 @@ Successful reconciliation communication alone is not progress. If Ledger/Index p
 
 `ui/recovery-worker` is a production-only candidate-hash discovery API; it performs no mint, refund, or IC notification. Store secrets in Cloudflare Secrets `ALCHEMY_API_KEY`, `CURSOR_KEY`, and `BRIDGE_PROFILE_JSON`. Use a dedicated server-capable Transfers API key, not the UI's Origin-restricted public key. `CURSOR_KEY` must contain at least 32 cryptographically random characters.
 
-Publish with pinned Node.js using `node ui/recovery-worker/release.mjs dry-run`, then `deploy`. Required variables include `BRIDGE_UI_RUNTIME_PROFILE_FILE`, `BRIDGE_RELEASE_BUNDLE`, `BRIDGE_UI_RPC_CONFIG`, `BRIDGE_UI_CONTROLLER_MODE`, `BRIDGE_PROOF_RECEIPT`, and the existing recovery secrets/smoke inputs. Smoke targets must be existing successful production mints.
+Publish with pinned Node.js using `node ui/recovery-worker/release.mjs dry-run`, then `deploy`. Required variables include `BRIDGE_UI_RUNTIME_PROFILE_FILE`, `BRIDGE_PRODUCTION_PROFILE_FILE`, `BRIDGE_UI_RPC_CONFIG`, `BRIDGE_UI_CONTROLLER_MODE`, `BRIDGE_PROOF_RECEIPT`, and the existing recovery secrets/smoke inputs. Smoke targets must be existing successful production mints.
 
 On failure, set that Worker's `RECOVERY_ENABLED` to `false`, stopping only discovery while known-hash receipt tracking continues. Log no secrets, RPC URLs, or addresses; monitor HTTP status/duration, 429s, and upstream failures. IP/Deposit limits are soft per-Cloudflare-location limits, not a global spending cap. Failed recovery never implies “not submitted” or permits automatic resubmission. History does not support manual recovery by pasting hashes.
 

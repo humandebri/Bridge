@@ -103,7 +103,7 @@ test("deposits through the real ledger, canister, and Anvil contract", async ({
   await expect(
     page.getByText("Previous deposit outcome is unconfirmed", { exact: true }),
   ).toBeVisible()
-  await page.getByRole("button", { name: "Close", exact: true }).click()
+  await page.getByRole("button", { name: "Close confirmation", exact: true }).click()
   await expect(page.getByRole("button", { name: "Check previous deposit" })).toBeVisible()
   expect(await controlState(request)).toMatchObject({
     knownDepositCount: 1,

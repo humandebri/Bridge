@@ -15,21 +15,21 @@ function readOrdinaryFile(path) {
 
 try {
   const profileFile = process.env.BRIDGE_UI_RUNTIME_PROFILE_FILE
-  const releaseBundle = process.env.BRIDGE_RELEASE_BUNDLE
+  const productionProfileFile = process.env.BRIDGE_PRODUCTION_PROFILE_FILE
   const uiRpcConfig = process.env.BRIDGE_UI_RPC_CONFIG
   const assetReceipt = process.env.BRIDGE_UI_ASSET_RECEIPT
   const productionInstallerIdentity = process.env.BRIDGE_PRODUCTION_INSTALLER_IDENTITY
   const controllerMode = process.env.BRIDGE_UI_CONTROLLER_MODE
   if (
     !profileFile ||
-    !releaseBundle ||
+    !productionProfileFile ||
     !uiRpcConfig ||
     !assetReceipt ||
-    !productionInstallerIdentity ||
-    !["sole", "joint"].includes(controllerMode ?? "")
+    (controllerMode !== "root-registered" && !productionInstallerIdentity) ||
+    !["sole-unregistered", "joint-unregistered", "root-registered"].includes(controllerMode ?? "")
   ) {
     throw new Error(
-      "Production UI deploy requires the release bundle, UI asset receipt, reviewed RPC configuration, runtime profile, production installer identity, and explicit controller mode",
+      "Production UI deploy requires the reviewed production profile, UI asset receipt, reviewed RPC configuration, runtime profile, production installer identity, and explicit controller mode",
     )
   }
   if (!/^[0-9a-f]{32}$/i.test(process.env.VITE_WALLETCONNECT_PROJECT_ID?.trim() ?? "")) {
@@ -57,7 +57,7 @@ try {
       "bridge-profile",
       "--",
       "verify-production-current-ui-live",
-      releaseBundle,
+      productionProfileFile,
       moduleSha256,
       uiRpcConfig,
       profileFile,
@@ -65,17 +65,17 @@ try {
     ],
     { cwd: sourceRoot, encoding: "utf8" },
   )
-  const verifiedManifestSha256 =
-    /^production_ui=current-live-pass schema=36 module_sha256=[0-9a-f]{64} manifest_sha256=([0-9a-fA-F]{64})$/m.exec(
-      gateOutput,
-    )?.[1]
-  if (!verifiedManifestSha256)
+  const verifiedProfileSha256 = new RegExp(
+    `^production_ui=current-live-pass schema=36 module_sha256=${moduleSha256} profile_sha256=([0-9a-fA-F]{64})$`,
+    "m",
+  ).exec(gateOutput)?.[1]
+  if (!verifiedProfileSha256)
     throw new Error("Fixed bridge-profile did not authorize the live production UI")
   if (process.env.VITE_DEPLOYMENT_PROFILE_JSON?.trim() !== rawProfile.trim()) {
     throw new Error("VITE_DEPLOYMENT_PROFILE_JSON must be the reviewed UI runtime profile verbatim")
   }
   const { assertProductionUiProfile } = await import("../src/config/deploy-safety.ts")
-  assertProductionUiProfile(releaseProfile, verifiedManifestSha256)
+  assertProductionUiProfile(releaseProfile, verifiedProfileSha256)
   process.stdout.write(`Production UI profile accepted: ${releaseProfile.environment}\n`)
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
