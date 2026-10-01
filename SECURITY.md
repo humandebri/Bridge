@@ -4,7 +4,9 @@
 
 Do not disclose an exploitable vulnerability, attack instructions, or credentials in a public issue or pull request.
 
-If GitHub private vulnerability reporting is enabled, use the repository's Security tab to submit a private report. Otherwise, contact the repository maintainer through an established private channel to arrange a confidential report. This repository does not currently document a dedicated security email or a response-time commitment.
+Submit a confidential report through [GitHub private vulnerability reporting](https://github.com/humandebri/Bridge/security/advisories/new). Reporting is enabled for this repository as of October 1, 2026; a GitHub account is required. Do not use public issues for security reports.
+
+This repository does not currently document a dedicated security email or a response-time commitment. The publication audit verified the setting and report-entry endpoint without submitting a test report; notification delivery and maintainer response have not been tested.
 
 Include the affected revision and component, preconditions, reproduction steps, observed impact, and a suggested fix if available. Sanitize evidence and use a local or test environment; do not test attacks against production or move real assets without explicit authorization.
 

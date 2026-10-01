@@ -64,7 +64,7 @@ Dated evidence and archived decisions describe their recorded state. They do not
 - [Public repository preparation](publication.md): completed cleanup and remaining publication checks.
 - [Contributing](../CONTRIBUTING.md): development workflow and review expectations.
 - [Security](../SECURITY.md): confidential vulnerability reporting.
-- [License](../LICENSE) and [third-party notices](../THIRD_PARTY_NOTICES.md).
+- [License](../LICENSE), [third-party notices](../THIRD_PARTY_NOTICES.md), and [dependency audit](licenses/README.md).
 
 ## Maintaining these documents
 
