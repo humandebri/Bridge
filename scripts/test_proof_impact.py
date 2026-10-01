@@ -103,7 +103,7 @@ class ProofImpactTests(unittest.TestCase):
     def test_production_ui_deploy_precheck_routes_to_consuming_stages(self) -> None:
         for path in (
             "ui/scripts/check-deploy-profile.mjs",
-            "ui/scripts/check-deploy-profile.test.mjs",
+            "ui/src/config/production-publication.test.ts",
         ):
             with self.subTest(path=path):
                 impact = check_proof_impact.classify_paths([path], self.manifest)
