@@ -3315,7 +3315,6 @@ fn ui_runtime_profile(
     profile: &Profile,
     profile_bytes: &[u8],
     production: bool,
-    gate_b_manifest_sha256: Option<&str>,
 ) -> Result<Value, String> {
     let canister_rpc_urls = if production {
         Vec::new()
@@ -3342,7 +3341,6 @@ fn ui_runtime_profile(
         "testOnly": profile.test_assets_only,
         "environmentMode": null,
         "activationTimelockDelaySeconds": profile.timelock.minimum_delay_seconds,
-        "gateBManifestSha256": gate_b_manifest_sha256,
         "profileFileSha256": hex(&Sha256::digest(profile_bytes)),
         "profileCanonicalSha256": hex(&canonical_sha256(profile)?),
         "icHost": profile.ic_host,
@@ -3377,7 +3375,6 @@ fn render_release_inputs(
     profile_path: &Path,
     output: &Path,
     production: bool,
-    gate_b_manifest_sha256: Option<&str>,
 ) -> Result<(), String> {
     let profile_bytes =
         fs::read(profile_path).map_err(|e| format!("{}: {e}", profile_path.display()))?;
@@ -3468,7 +3465,7 @@ fn render_release_inputs(
             "max_priority_fee_per_gas": profile.initial_base_deployment.max_priority_fee_per_gas.to_string()
         }
     });
-    let ui = ui_runtime_profile(&profile, &profile_bytes, production, gate_b_manifest_sha256)?;
+    let ui = ui_runtime_profile(&profile, &profile_bytes, production)?;
     let mut artifacts = BTreeMap::new();
     artifacts.insert(
         "canister-init.json",
@@ -4416,10 +4413,25 @@ fn verify_production_current_state(
     expected_module_sha256: &str,
     controller_mode: &str,
 ) -> Result<(), String> {
+    let profile: Profile = read_json(profile_path)?;
+    verify_production_current_profile_state(
+        &profile,
+        expected_controller_text,
+        expected_module_sha256,
+        controller_mode,
+    )
+}
+
+fn verify_production_current_profile_state(
+    reviewed_profile: &Profile,
+    expected_controller_text: &str,
+    expected_module_sha256: &str,
+    controller_mode: &str,
+) -> Result<(), String> {
     if !valid_sha256(expected_module_sha256) {
         return Err("expected production module SHA-256 is invalid".into());
     }
-    let mut profile: Profile = read_json(profile_path)?;
+    let mut profile = reviewed_profile.clone();
     let bridge =
         Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
     let expected_controller =
@@ -4689,32 +4701,38 @@ struct ProductionUiRpcConfig {
 }
 
 fn production_current_ui_runtime_profile(
-    bundle_path: &Path,
+    profile_path: &Path,
     module_sha256: &str,
     rpc_config_path: &Path,
-) -> Result<(ValidatedBundle, Value), String> {
+) -> Result<(Profile, Value), String> {
     if !valid_sha256(module_sha256) {
         return Err("production UI module SHA-256 is invalid".into());
     }
-    let mut bundle = validate_historical_gate_b_bundle(bundle_path)?;
-    bundle.profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
-    bundle.profile.bridge_canister_wasm_sha256 = module_sha256.to_ascii_lowercase();
-    let profile_bytes = canonical_bytes(&bundle.profile)?;
+    let profile: Profile = read_json(profile_path)?;
+    validate_profile(&profile, true)?;
+    if profile.deployment_block == 0
+        || !profile
+            .bridge_canister_wasm_sha256
+            .eq_ignore_ascii_case(module_sha256)
+    {
+        return Err(
+            "reviewed production profile must bind the deployed block and current module".into(),
+        );
+    }
+    let profile_bytes = canonical_bytes(&profile)?;
     let rpc_bytes = fs::read(rpc_config_path).map_err(|error| error.to_string())?;
     let ui = production_current_ui_runtime_profile_value(
-        &bundle.profile,
+        &profile,
         &profile_bytes,
-        &bundle.manifest_sha256,
         module_sha256,
         &rpc_bytes,
     )?;
-    Ok((bundle, ui))
+    Ok((profile, ui))
 }
 
 fn production_current_ui_runtime_profile_value(
     profile: &Profile,
     profile_bytes: &[u8],
-    manifest_sha256: &str,
     module_sha256: &str,
     rpc_bytes: &[u8],
 ) -> Result<Value, String> {
@@ -4735,7 +4753,7 @@ fn production_current_ui_runtime_profile_value(
     {
         return Err("invalid reviewed production UI RPC configuration".into());
     }
-    let mut ui = ui_runtime_profile(profile, profile_bytes, true, Some(manifest_sha256))?;
+    let mut ui = ui_runtime_profile(profile, profile_bytes, true)?;
     let fields = ui
         .as_object_mut()
         .ok_or("UI runtime profile must be an object")?;
@@ -4760,13 +4778,13 @@ fn production_current_ui_runtime_profile_value(
 }
 
 fn render_production_current_ui_runtime(
-    bundle_path: &Path,
+    profile_path: &Path,
     module_sha256: &str,
     rpc_config_path: &Path,
     output_path: &Path,
 ) -> Result<(), String> {
     let (_, rendered) =
-        production_current_ui_runtime_profile(bundle_path, module_sha256, rpc_config_path)?;
+        production_current_ui_runtime_profile(profile_path, module_sha256, rpc_config_path)?;
     OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -4780,29 +4798,29 @@ fn render_production_current_ui_runtime(
 }
 
 fn verify_production_current_ui_live(
-    bundle_path: &Path,
+    profile_path: &Path,
     module_sha256: &str,
     rpc_config_path: &Path,
     runtime_profile_path: &Path,
     controller_mode: &str,
 ) -> Result<(), String> {
-    let (bundle, rendered) =
-        production_current_ui_runtime_profile(bundle_path, module_sha256, rpc_config_path)?;
+    let (profile, rendered) =
+        production_current_ui_runtime_profile(profile_path, module_sha256, rpc_config_path)?;
     if fs::read(runtime_profile_path).map_err(|error| error.to_string())?
         != canonical_bytes(&rendered)?
     {
         return Err("supplied UI runtime profile differs from current production state".into());
     }
-    verify_production_current_state(
-        &bundle.root.join("profile.json"),
-        &gate_b_controller(&bundle)?.to_text(),
+    verify_production_current_profile_state(
+        &profile,
+        PRODUCTION_PAUSE_PRINCIPAL,
         module_sha256,
         controller_mode,
     )?;
     println!(
-        "production_ui=current-live-pass schema=36 module_sha256={} manifest_sha256={}",
+        "production_ui=current-live-pass schema=36 module_sha256={} profile_sha256={}",
         module_sha256.to_ascii_lowercase(),
-        bundle.manifest_sha256
+        hex(&canonical_sha256(&profile)?)
     );
     Ok(())
 }
@@ -8531,10 +8549,10 @@ fn run() -> Result<(), String> {
             )?;
         }
         Some("render-release-inputs") if args.len() == 4 => {
-            render_release_inputs(Path::new(&args[2]), Path::new(&args[3]), true, None)?;
+            render_release_inputs(Path::new(&args[2]), Path::new(&args[3]), true)?;
         }
         Some("render-test-inputs") if args.len() == 4 => {
-            render_release_inputs(Path::new(&args[2]), Path::new(&args[3]), false, None)?;
+            render_release_inputs(Path::new(&args[2]), Path::new(&args[3]), false)?;
         }
         Some("render-bundle-inputs") if args.len() == 4 => {
             let bundle = validate_bundle(Path::new(&args[2]), true)?;
@@ -8545,7 +8563,6 @@ fn run() -> Result<(), String> {
                 &Path::new(&args[2]).join("profile.json"),
                 Path::new(&args[3]),
                 true,
-                Some(&bundle.manifest_sha256),
             )?;
         }
         Some("validate-production-canister-plan") if args.len() == 3 => {
@@ -9597,19 +9614,52 @@ mod tests {
     fn production_ui_runtime_profile_rendering_is_byte_stable() {
         let profile = valid_profile();
         let profile_bytes = canonical_bytes(&profile).unwrap();
-        let manifest_sha256 = "a".repeat(64);
-        let first = canonical_bytes(
-            &ui_runtime_profile(&profile, &profile_bytes, true, Some(&manifest_sha256)).unwrap(),
-        )
-        .unwrap();
-        let second = canonical_bytes(
-            &ui_runtime_profile(&profile, &profile_bytes, true, Some(&manifest_sha256)).unwrap(),
-        )
-        .unwrap();
+        let first =
+            canonical_bytes(&ui_runtime_profile(&profile, &profile_bytes, true).unwrap()).unwrap();
+        let second =
+            canonical_bytes(&ui_runtime_profile(&profile, &profile_bytes, true).unwrap()).unwrap();
         assert_eq!(first, second);
-        assert!(String::from_utf8(first)
+        assert!(!String::from_utf8(first)
             .unwrap()
-            .contains(&format!("\"gateBManifestSha256\":\"{manifest_sha256}\"")));
+            .contains("gateBManifestSha256"));
+    }
+
+    #[test]
+    fn production_ui_profile_rejects_unbound_source_without_historical_bundle() {
+        let root = env::temp_dir().join(format!("bridge-ui-source-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let profile_path = root.join("profile.json");
+        let rpc_path = root.join("rpc.json");
+        fs::write(&rpc_path, br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/test-key"}"#).unwrap();
+        let mut profile = valid_profile();
+        profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
+        profile.deployment_block = 1;
+        let module = profile.bridge_canister_wasm_sha256.clone();
+        fs::write(&profile_path, canonical_bytes(&profile).unwrap()).unwrap();
+        let (_, ui) =
+            production_current_ui_runtime_profile(&profile_path, &module, &rpc_path).unwrap();
+        assert!(ui.get("gateBManifestSha256").is_none());
+        assert_eq!(
+            ui["profileCanonicalSha256"],
+            hex(&canonical_sha256(&profile).unwrap())
+        );
+        assert!(
+            production_current_ui_runtime_profile(&profile_path, &"f".repeat(64), &rpc_path)
+                .is_err()
+        );
+        for schema in [35, 37] {
+            profile.canister_schema_version = schema;
+            fs::write(&profile_path, canonical_bytes(&profile).unwrap()).unwrap();
+            assert!(
+                production_current_ui_runtime_profile(&profile_path, &module, &rpc_path).is_err()
+            );
+        }
+        profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
+        profile.deployment_block = 0;
+        fs::write(&profile_path, canonical_bytes(&profile).unwrap()).unwrap();
+        assert!(production_current_ui_runtime_profile(&profile_path, &module, &rpc_path).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -9620,18 +9670,11 @@ mod tests {
         let mut profile = valid_profile();
         profile.canister_schema_version = CURRENT_STABLE_SCHEMA_VERSION;
         let profile_bytes = canonical_bytes(&profile).unwrap();
-        let manifest = "a".repeat(64);
         let module = "b".repeat(64);
         let rpc = br#"{"schema_version":1,"base_rpc_url":"https://base-mainnet.g.alchemy.com/v2/test-key"}"#;
         let expected = canonical_bytes(
-            &production_current_ui_runtime_profile_value(
-                &profile,
-                &profile_bytes,
-                &manifest,
-                &module,
-                rpc,
-            )
-            .unwrap(),
+            &production_current_ui_runtime_profile_value(&profile, &profile_bytes, &module, rpc)
+                .unwrap(),
         )
         .unwrap();
         let parsed: Value = serde_json::from_slice(&expected).unwrap();
@@ -9648,7 +9691,6 @@ mod tests {
             assert!(production_current_ui_runtime_profile_value(
                 &profile,
                 &profile_bytes,
-                &manifest,
                 &module,
                 rpc
             )
@@ -9664,7 +9706,6 @@ mod tests {
             assert!(production_current_ui_runtime_profile_value(
                 &profile,
                 &profile_bytes,
-                &manifest,
                 &module,
                 invalid_rpc
             )
@@ -10376,8 +10417,8 @@ mod tests {
         fs::write(&profile_path, serde_json::to_vec(&valid_profile()).unwrap()).unwrap();
         let first = root.join("first");
         let second = root.join("second");
-        render_release_inputs(&profile_path, &first, true, None).unwrap();
-        render_release_inputs(&profile_path, &second, true, None).unwrap();
+        render_release_inputs(&profile_path, &first, true).unwrap();
+        render_release_inputs(&profile_path, &second, true).unwrap();
         for name in [
             "canister-init.json",
             "contract-constructor-args.json",
