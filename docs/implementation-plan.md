@@ -1,5 +1,7 @@
 # KINIC–Base Bridge implementation plan
 
+This document records implementation phases and their original milestones. For the dated production controller observation and deferred upgrade demonstration, see the [repository overview](../README.md#production-status). Current behavior is described by the design documents; milestones do not authorize production actions.
+
 > The former polling intervals and priority scheduler below are historical designs. The current sources of truth are ADR 0019's stable settlement executor, ADR 0023's wallet-submitted Mint Authorizations, and rate-limited manual Retry only after failures.
 
 This plan follows the ADRs in `docs/adr/` and terminology in `docs/glossary.md`.

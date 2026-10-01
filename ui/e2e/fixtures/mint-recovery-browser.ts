@@ -28,7 +28,7 @@ setInterval(async () => {
   try {
     const result = await runMintRecoveryCycle("aaaaa-aa")
     if (result?.observation.unavailable)
-      status.textContent = "検索サービスに接続できません。再試行します"
+      status.textContent = "Transaction search is unavailable. Retrying."
     render()
   } catch {
     status.textContent = "Recovery temporarily unavailable; retrying"

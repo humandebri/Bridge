@@ -1,6 +1,7 @@
 import { encodeAbiParameters, encodeEventTopics, type Hex } from "viem"
 import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import type { DepositView } from "@/generated/bridge.did"
+export * from "../../src/lib/ic/withdrawal-notification-client"
 export const deploymentProfile = {
   chainId: 8453,
   bridgeAddress: `0x${"44".repeat(20)}` as Hex,
