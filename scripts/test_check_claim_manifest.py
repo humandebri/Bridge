@@ -44,8 +44,9 @@ from smt_obligations import parse_smt_obligations, validate_trusted_smt_sources
 class ClaimContractTests(unittest.TestCase):
     def test_fee_claim_is_staged_only_for_the_planned_production_kernel(self) -> None:
         from generate_refinement_harness import RUST_RENDERERS
-        self.assertNotIn("fee_payout_capacity_cases", RUST_RENDERERS)
-        self.assertNotIn("sns_fee_payout_authorization_cases", RUST_RENDERERS)
+        enabled = "sns_fee_payout_authorization" in REQUIRED_CLAIM_POLICY
+        self.assertEqual("fee_payout_capacity_cases" in RUST_RENDERERS, enabled)
+        self.assertEqual("sns_fee_payout_authorization_cases" in RUST_RENDERERS, enabled)
         self.assertEqual(fee_payout_claim_ids("pub const fn payout_decision() {}"), frozenset())
         self.assertEqual(
             fee_payout_claim_ids("pub const fn sns_fee_payout_authorized(governance: bool) -> bool {}"),
@@ -60,6 +61,10 @@ class ClaimContractTests(unittest.TestCase):
     def test_staged_fee_catalog_requires_strong_claim_and_matching_receipt_counts(self) -> None:
         root = Path(__file__).resolve().parents[1]
         document = (root / "verification/claims.tsv").read_text(encoding="utf-8")
+        document = "".join(
+            line + "\n" for line in document.splitlines()
+            if line.split("\t")[1] != "sns_fee_payout_authorization"
+        )
         contract = "contract\tsns_fee_payout_authorization\tlocal-safety\trelease-safety\timplementation-proved\tBridgeSpec.ClaimContracts.SnsFeePayoutAuthorization\tBridgeSpec.ClaimContracts.sns_fee_payout_authorization_witness\n"
         protocol = "protocol\tsns_fee_payout_authorization\tsns_fee_payout_authorization_claim\tsns_fee_payout_authorization_model_refinement\t-\tsns_fee_payout_requires_every_binding\t-\t-\tverus:sns_fee_payout_requires_every_binding\tcanister/bridge-core/src/kernel.rs#sns_fee_payout_authorized\truntime_toolchain\tsns_fee_payout_authorization_cases\n"
         program = textwrap.dedent("""
