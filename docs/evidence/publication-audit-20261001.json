@@ -1,0 +1,58 @@
+{
+  "date": "2026-10-01",
+  "source_revision": "9d6f3fae67bc3b18de13a8bfd64b1fbf24aa252c",
+  "source_archive_sha256": "333e1b6d8d6d3ecbf34fd99cb1d5b696356548c3742228edbbd1e999b0ca41bf",
+  "scope": "Publication follow-up; not a production authorization or complete proof receipt",
+  "credential_scan": {
+    "tool": "gitleaks 8.30.1",
+    "current_tracked_archive_findings": 0,
+    "remote_reachable_history_findings": 0,
+    "reachable_commits": 829,
+    "patch_bearing_commits_scanned": 802,
+    "log_opts": "--all --full-history --diff-merges=first-parent",
+    "additional_options": [
+      "--max-archive-depth 2",
+      "--max-decode-depth 5",
+      "--ignore-gitleaks-allow",
+      "--redact=100"
+    ],
+    "excluded": "Unreachable/deleted refs, ignored local artifacts and unsupported credential formats"
+  },
+  "validation": {
+    "ui_tests": 509,
+    "rust_unit_tests": 244,
+    "ui_build": "passed",
+    "wasm_build": "passed",
+    "linux_production_install_fixture": "passed",
+    "host_versions": "failed: OS-resolved Cargo home configuration",
+    "full_proof_receipt": "not produced",
+    "source_archive_unchanged": true
+  },
+  "raw_cargo_wasm_sha256": "0c63f4646fd2a6b1cfb3a2835b284641e4f794a1627cf982b6fd4ab225aa15e4",
+  "tools": {
+    "node": "24.14.0",
+    "pnpm": "11.0.8",
+    "rust": "1.97.0",
+    "foundry": "1.7.1",
+    "shellcheck": "0.11.0"
+  },
+  "repository_settings": {
+    "visibility": "public",
+    "private_vulnerability_reporting": true,
+    "secret_scanning": "enabled",
+    "secret_scanning_push_protection": "enabled",
+    "main_required_check": "trusted-pr-gate",
+    "main_required_check_app_id": 15368,
+    "main_strict_status_checks": true,
+    "main_admin_enforcement": false,
+    "main_required_pr_review_rule": false,
+    "main_force_pushes": false,
+    "main_deletions": false
+  },
+  "open_items": [
+    "Reown custom terms and deployed branding/usage compliance",
+    "Five UI package versions with metadata-only notices",
+    "Private reporting notification delivery not tested",
+    "Full current-source gate and main CI completion not established by this audit"
+  ]
+}

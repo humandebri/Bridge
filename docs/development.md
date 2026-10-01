@@ -32,6 +32,9 @@ pnpm --dir ui exec playwright install chromium
 ```
 
 Install the pinned tools above, then run `scripts/ci-local.sh versions`.
+
+The production-install fixtures require a clean operating-system account without a Cargo home configuration. The validator resolves the account home through the operating system; setting `HOME` or `CARGO_HOME` does not replace that boundary. On a developer machine with a Cargo home configuration, use the documented trusted Linux container/account for this fixture rather than changing personal configuration. See the [publication audit](publication.md#fresh-clone-validation) for the observed macOS limitation and focused Linux result.
+
 See [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) for the CI installation procedure for pinned tools.
 
 ## Validation

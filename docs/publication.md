@@ -21,19 +21,26 @@ The browser fixture initially failed because its notification-client alias did n
 
 No full proof gate, fresh-clone end-to-end run, production operation, publication, or repository visibility change was performed.
 
-## Publication checks still to complete
+## Follow-up publication audit
 
-- Verify a fresh clone using pinned tools, lockfiles, initialized submodules, and executable test assets. This documentation change does not supply a new full validation receipt.
-- Establish and test a confidential vulnerability-reporting channel. The security guide does not claim that GitHub private reporting is enabled.
-- Review licenses and required notices for dependencies included in distributed Wasm and UI bundles.
-- Review public evidence for unnecessary account information and operational metadata. Preserve public principals, addresses, and hashes needed for independent verification.
-- Perform a dedicated credential review before publishing Git history. The limited scan below is not a comprehensive secret audit.
-- Review GitHub repository settings and existing trusted-PR instructions for contributions from outside the project. No repository visibility or settings were changed during documentation preparation.
+The October 1 follow-up inspected merged source `9d6f3fae67bc3b18de13a8bfd64b1fbf24aa252c` from an independent remote clone with recursive submodules. The [audit record](evidence/publication-audit-20261001.json) contains the source fingerprint, scan scope, results, and settings. It is not a complete validation receipt for later revisions.
 
-## Limited credential review
+Gitleaks 8.30.1 found no matches in the tracked archive or fetched reachable history, including merge diffs. It scanned 802 patch-bearing commits out of 829 reachable commits. Reports were redacted; unreachable/deleted refs, ignored local artifacts, and unsupported credential formats remain outside the scan. History was not rewritten. Public evidence was reviewed for credential URLs, personal paths, and contact metadata; public verification identifiers were retained.
 
-The current tracked text files were checked for private-key headers, GitHub token formats, AWS access-key formats, and credential-bearing HTTP URLs. The only candidate was a deliberately invalid `https://user:secret@two.example/rpc` URL in `scripts/evm-rpc-rehearsal/test_rehearsal.py`, used to test rejection of authenticated URLs.
+The repository was already public. Private vulnerability reporting, secret scanning, and push protection were enabled. The [security guide](../SECURITY.md) links to the report endpoint; no synthetic report was submitted, so notification delivery is untested. Main requires strict `trusted-pr-gate` checks and disallows force pushes/deletion; administrator enforcement and a required PR review rule are absent. These settings observations do not change the trusted-PR policy.
 
-Reachable local Git history was checked for changes matching private-key headers, GitHub token formats, and AWS access-key formats; those patterns returned no matching commits. This does not cover every credential format, encoded values, arbitrary RPC path tokens, unreferenced objects, or remote-only branches.
+### Fresh-clone validation
 
-Local ignored operational artifacts and credentials are not publication inputs. Verify what Git actually tracks and what the hosting service will expose before changing visibility. Do not rewrite history or delete evidence automatically on the basis of a pattern match.
+With pinned Node 24.14.0, pnpm 11.0.8, Rust 1.97.0, locked dependencies, and initialized submodules, the independent clone passed:
+
+- 509 UI tests, UI typecheck/lint/build, and 244 Rust unit tests.
+- A locked release Wasm build and lightweight formatting, code-generation, schema, and manifest checks.
+- The focused production-install fixture in the trusted Linux/amd64 container, using UID/GID 1001, read-only inputs, and writable temporary tmpfs paths.
+
+The host `scripts/ci-local.sh versions` run stopped at the guard rejecting an operating-system-resolved Cargo home configuration. Personal configuration was preserved. The Linux fixture result is separate evidence, not a passing full versions run. No full proof, PocketIC, browser E2E, staging, production deployment, or complete `all` gate was run by this audit.
+
+### Distribution follow-up
+
+The [dependency review](licenses/README.md) records Reown custom terms and five package versions lacking license bodies. Prepare notices for the components included in the actual release, rather than maintaining generated dependency closures in Git. These release tasks do not require expanding this documentation cleanup into a dependency replacement or production release.
+
+Complete current-source validation and distribution-specific notice review remain release requirements. This audit does not authorize production.
