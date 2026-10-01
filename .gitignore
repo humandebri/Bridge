@@ -14,8 +14,9 @@
 .env.*
 !.env.example
 
-# Rust build artifacts
+# Rust build artifacts, including an external build directory link.
 target/
+/target
 
 # Foundry build and deployment artifacts
 /cache/
