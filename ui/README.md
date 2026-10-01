@@ -11,11 +11,13 @@ legacy `/deposit` or `/withdraw` routes.
 
 Production assets are built without an embedded deployment profile. A standalone schema 2 receipt
 binds the current clean UI source, reviewed WalletConnect project ID, sorted per-file digests, and
-aggregate digest. The historical Gate B separately binds the deployed Canister, runtime, and
-activation evidence. `deployment-profile.js` is excluded from the generic code digest and is
-generated only from the runtime profile deterministically rendered from that Gate B. Production
-deployment rejects a dirty source tree, either evidence-lineage drift, or an unauthorized runtime
-profile.
+aggregate digest. `deployment-profile.js` is excluded from the generic code digest and is
+rendered from the reviewed current production profile and UI RPC configuration. Immediately
+before publication, the verifier authenticates the current v36 module, controllers, registration,
+RuntimeBinding, Activated/unpaused state, operational configuration, storage integrity, and
+complete history indexes. Historical release bundles, prior Wasm, deployment receipts, and
+upgrade chains are not required for UI-only publication. Dirty source, configuration drift, or
+unavailable live verification blocks publication.
 
 ## Requirements
 
@@ -107,29 +109,30 @@ not contain an E2E branch.
 Deployment is manual:
 
 ```sh
-BRIDGE_RELEASE_BUNDLE=<verified-gate-b-bundle> \
-BRIDGE_UI_RUNTIME_PROFILE_FILE=<gate-b-ui-runtime-profile> \
+BRIDGE_PRODUCTION_PROFILE_FILE=<reviewed-current-v36-production-profile> \
+BRIDGE_UI_RUNTIME_PROFILE_FILE=<rendered-current-ui-runtime-profile> \
+BRIDGE_UI_RPC_CONFIG=<reviewed-ui-rpc-config> \
 BRIDGE_UI_ASSET_RECEIPT=<current-source-ui-assets-receipt> \
-BRIDGE_OPERATIONAL_CONFIG_SEAL_RECEIPT=<seal-receipt> \
-BRIDGE_CONTROLLER_SCHEDULE_RECEIPT=<schedule-receipt> \
-BRIDGE_CONTROLLER_EXECUTE_RECEIPT=<execute-receipt> \
-BRIDGE_PRODUCTION_INSTALLER_IDENTITY=<local-identity-name-for-sole-controller> \
-VITE_DEPLOYMENT_PROFILE_JSON="$(cat <gate-b-ui-runtime-profile>)" \
+BRIDGE_UI_CONTROLLER_MODE=<sole-unregistered|joint-unregistered|root-registered> \
+BRIDGE_PRODUCTION_INSTALLER_IDENTITY=<identity-for-unregistered-controller-mode> \
+VITE_DEPLOYMENT_PROFILE_JSON="$(cat <rendered-current-ui-runtime-profile>)" \
 VITE_WALLETCONNECT_PROJECT_ID=<reviewed-project-id> \
 pnpm run deploy
 ```
 
-Run this command only from the clean source revision bound by the standalone UI asset receipt.
-The current post-activation path accepts only the already-deployed stable schema v35 Gate B and
-its immutable seal/schedule/execute lineage; the normal current-release Gate B path remains v36.
-The installer identity name is resolved locally and must match the sole controller recorded by
-Gate B; it is used only for the controller-protected storage-integrity query and no key material is
-written to release evidence or deployment output.
-Publishing this UI does not resubmit either activation proposal or upgrade the Canister.
+Run only from the clean source revision bound by the UI asset receipt. Render the runtime profile
+with `bridge-profile render-production-current-ui-runtime PROFILE MODULE_SHA256 RPC_CONFIG OUTPUT`.
+The reviewed source profile must already bind schema v36, the certified current module, and a
+positive deployment block. No historical schema or module is promoted by a fallback.
+`root-registered` mode verifies the exact SNS Root controller and dapp registration through
+authenticated current state and uses public release queries; the installer identity is needed only
+for unregistered controller modes. Publishing UI assets does not send activation proposals,
+change controllers, register the dapp, or upgrade the Canister.
 
-Production profiles intentionally omit a custom browser RPC. The UI derives Base Mainnet's
-standard `https://mainnet.base.org` endpoint from chain ID 8453; this is separate from the
-Canister's built-in `BaseMainnet` EVM RPC provider selection.
+For an assets-only update preserving the served browser profile, run `pnpm run deploy:assets-only:check`
+then `pnpm run deploy:assets-only`. The live gate and exact public profile continuity checks run
+before upload. The reviewed public UI RPC URL is supplied through `BRIDGE_UI_RPC_CONFIG` and is
+separate from the Canister's built-in BaseMainnet RPC providers.
 
 The WalletConnect project ID is public client configuration. It is injected through the
 environment rather than committed to source, and is recorded in the reviewed asset receipt so the

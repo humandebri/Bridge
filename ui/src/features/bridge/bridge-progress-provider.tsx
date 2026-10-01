@@ -25,7 +25,6 @@ import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -403,6 +402,7 @@ function ProgressDialog({
   onDismiss: () => void
 }) {
   const presentation = progress.transfer ? transferPresentation(progress.transfer) : undefined
+  const completionDetail = presentation?.description ?? ""
   const needsAttention = progress.phase === "attention" || presentation?.icon === "warning"
   const canonicalTerminal =
     progress.phase === "complete" ||
@@ -429,7 +429,7 @@ function ProgressDialog({
     >
       <DialogContent
         dismissible={dismissible}
-        aria-describedby={canonicalTerminal ? "bridge-progress-description" : undefined}
+        aria-describedby={undefined}
         onOverlayPointerDown={handleOutsidePointerDown}
         onPointerDownOutside={(event) => {
           event.preventDefault()
@@ -443,11 +443,6 @@ function ProgressDialog({
               <DialogTitle>
                 {progress.direction === "deposit" ? "Bridge to Base" : "Bridge to IC"}
               </DialogTitle>
-              {canonicalTerminal && (
-                <DialogDescription id="bridge-progress-description">
-                  Review the result below.
-                </DialogDescription>
-              )}
             </div>
             {!dismissible && (
               <Button size="sm" variant="ghost" onClick={onMinimize}>
@@ -473,11 +468,15 @@ function ProgressDialog({
             <p className="font-bold text-black">
               {progress.phase === "complete" ? bridgeProgressLabel(progress) : "Mint included"}
             </p>
-            <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
-              {progress.phase === "complete"
-                ? bridgeProgressDetail(progress)
-                : "No further action is needed. Final confirmation will continue in History."}
-            </p>
+            {progress.phase === "complete" ? (
+              completionDetail && (
+                <p className="mt-1 text-sm leading-6 text-[var(--muted)]">{completionDetail}</p>
+              )
+            ) : (
+              <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
+                No further action is needed. Final confirmation will continue in History.
+              </p>
+            )}
           </div>
         )}
         {progress.transfer?.warnings.storage && (

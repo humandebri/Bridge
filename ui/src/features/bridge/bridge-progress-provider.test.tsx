@@ -536,7 +536,8 @@ describe("BridgeProgressProvider", () => {
       screen.getByRole("button", { name: "Complete matching withdrawal", hidden: true }),
     )
     expect(screen.getByText("Withdrawal complete")).toBeVisible()
-    expect(screen.getByText("1.5 TICRC1 was paid to aaaaa-aa.")).toBeVisible()
+    expect(screen.queryByText("1.5 TICRC1 was paid to aaaaa-aa.")).not.toBeInTheDocument()
+    expect(screen.getByRole("status")).toHaveTextContent(/^Withdrawal complete$/)
     expect(screen.getByRole("button", { name: "Close" })).toBeEnabled()
   })
 
