@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 /** @type {string} */
-let root: string
+let root
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "bridge-ui-deploy-check."))
@@ -14,7 +14,7 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }))
 
 /** @param {Record<string, unknown>} [profileOverrides] */
-function fixture(profileOverrides: Record<string, unknown> = {}) {
+function fixture(profileOverrides = {}) {
   const inputs = join(root, "inputs")
   const bin = join(root, "bin")
   mkdirSync(inputs)
@@ -80,24 +80,20 @@ console.log('production_ui=current-live-pass schema='+ (process.env.FAKE_VERIFY_
 }
 
 /** @param {NodeJS.ProcessEnv} env */
-function run(env: NodeJS.ProcessEnv) {
-  return spawnSync(
-    process.execPath,
-    [resolve(import.meta.dirname, "../../scripts/check-deploy-profile.mjs")],
-    {
-      encoding: "utf8",
-      env: { ...process.env, ...env },
-    },
-  )
+function run(env) {
+  return spawnSync(process.execPath, [resolve(import.meta.dirname, "./check-deploy-profile.mjs")], {
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  })
 }
 
 const walletConnectProjectId = "0123456789abcdef0123456789abcdef"
 
 /** @param {ReturnType<typeof fixture>} f @param {NodeJS.ProcessEnv} [overrides] */
-function validEnv(f: ReturnType<typeof fixture>, overrides: NodeJS.ProcessEnv = {}) {
+function validEnv(f, overrides = {}) {
   return {
     PATH: `${f.bin}:${process.env.PATH}`,
-    EXPECTED_CARGO_CWD: resolve(import.meta.dirname, "../../.."),
+    EXPECTED_CARGO_CWD: resolve(import.meta.dirname, "../.."),
     BRIDGE_PRODUCTION_PROFILE_FILE: f.paths.sourceProfile,
     BRIDGE_UI_RUNTIME_PROFILE_FILE: f.paths.profile,
     BRIDGE_UI_ASSET_RECEIPT: f.paths.asset,
