@@ -1279,6 +1279,17 @@ proof fn operational_config_seal_allows_only_pending_valid_candidate(
             <==> !sealed && candidate_valid,
 {}
 
+proof fn fee_capacity_never_overdraws(reserve: int, pending: int, fee: int)
+    requires 0 <= reserve, 0 <= pending, 0 <= fee,
+    ensures kernel::fee_payout_capacity_spec(reserve,pending,fee) >= 0,
+        kernel::fee_payout_capacity_spec(reserve,pending,fee) > 0 ==>
+          pending <= reserve && kernel::fee_payout_capacity_spec(reserve,pending,fee) + fee <= reserve-pending,
+{}
+proof fn sns_fee_payout_requires_every_binding(governance: bool, operational: bool, positive: bool, recipient: bool, identity: bool)
+    ensures kernel::sns_fee_payout_authorized_spec(governance,operational,positive,recipient,identity)
+        == (governance && operational && positive && recipient && identity),
+{}
+
 }
 
 fn main() {}

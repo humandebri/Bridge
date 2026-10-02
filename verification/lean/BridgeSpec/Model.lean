@@ -218,6 +218,11 @@ def serviceFeeChangeAllowed (serviceFee minimumServiceFee maximumServiceFee : Na
 def feePayoutAllowed (reserve pending amount fee : Nat) : Bool :=
   pending ≤ reserve && amount + fee ≤ reserve - pending
 
+def feePayoutCapacity (reserve pending fee : Nat) : Nat := reserve - pending - fee
+
+def snsFeePayoutAuthorized (governance operational positive recipient identity : Bool) : Bool :=
+  governance && operational && positive && recipient && identity
+
 def payoutDebit (confirmedFirstTime : Bool) (amount fee : Nat) : Nat :=
   if confirmedFirstTime then amount + fee else 0
 

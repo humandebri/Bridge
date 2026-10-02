@@ -10,8 +10,6 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from claim_manifest import REQUIRED_CLAIM_IDS
-
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "verification" / "generated" / "refinement-harnesses.json"
@@ -455,11 +453,6 @@ VITEST_RENDERERS = {
     ),
 }
 
-
-# Do not emit tests for production kernels that have not landed yet.
-if "sns_fee_payout_authorization" not in REQUIRED_CLAIM_IDS:
-    del RUST_RENDERERS["fee_payout_capacity_cases"]
-    del RUST_RENDERERS["sns_fee_payout_authorization_cases"]
 
 RENDERERS: dict[tuple[str, str], Renderer] = {}
 for section, (selector, body) in RUST_RENDERERS.items():

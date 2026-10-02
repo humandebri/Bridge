@@ -126,6 +126,20 @@ fn protocol_deposit_nonterminal_index_cases_match_production() {
 }
 
 #[test]
+fn protocol_fee_payout_capacity_cases_match_production() {
+    for case in cases("fee_payout_capacity_cases") {
+        assert_eq!(
+            bridge_core::kernel::fee_payout_capacity(
+                amount(text(&case, "reserve")),
+                amount(text(&case, "pending")),
+                amount(text(&case, "fee"))
+            ),
+            amount(text(&case, "capacity"))
+        );
+    }
+}
+
+#[test]
 fn protocol_fee_payout_cases_matches_production() {
     for case in cases("fee_payout_cases") {
         let reserve = amount(text(&case, "reserve"));
@@ -494,6 +508,22 @@ fn protocol_signature_time_cases_matches_production() {
         assert_eq!(
             bridge_core::kernel::mint_authorization_has_minimum_remaining_time(observed, deadline),
             boolean(&case, "accepted")
+        );
+    }
+}
+
+#[test]
+fn protocol_sns_fee_payout_authorization_cases_match_production() {
+    for case in cases("sns_fee_payout_authorization_cases") {
+        assert_eq!(
+            bridge_core::kernel::sns_fee_payout_authorized(
+                boolean(&case, "governance"),
+                boolean(&case, "operational"),
+                boolean(&case, "positive"),
+                boolean(&case, "recipient"),
+                boolean(&case, "identity")
+            ),
+            boolean(&case, "allowed")
         );
     }
 }

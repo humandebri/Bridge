@@ -641,3 +641,32 @@ fn deposit_transition_decision_effects_cover_every_state_event_and_idempotency()
         }
     }
 }
+
+#[test]
+fn fee_capacity_and_sns_authority_fail_closed_at_boundaries() {
+    use bridge_core::kernel::{fee_payout_capacity, sns_fee_payout_authorized};
+    for (reserve, pending, fee, expected) in [
+        (0, 0, 1, 0),
+        (100, 0, 100, 0),
+        (101, 0, 1, 100),
+        (101, 100, 1, 0),
+        (101, 102, 1, 0),
+        (u128::MAX, 0, 1, u128::MAX - 1),
+        (u128::MAX, u128::MAX, 1, 0),
+        (u128::MAX, 1, u128::MAX, 0),
+    ] {
+        assert_eq!(fee_payout_capacity(reserve, pending, fee), expected);
+    }
+    for bits in 0u8..32 {
+        assert_eq!(
+            sns_fee_payout_authorized(
+                bits & 1 != 0,
+                bits & 2 != 0,
+                bits & 4 != 0,
+                bits & 8 != 0,
+                bits & 16 != 0
+            ),
+            bits == 31
+        );
+    }
+}

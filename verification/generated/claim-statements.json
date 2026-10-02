@@ -10,14 +10,14 @@
       "source_declarations": 1
     },
     "verification/lean/BridgeSpec/ClaimContracts.lean": {
-      "sha256": "c9b78c3d0f847ebfdcb06b013805eada5964bed831c23eefe7128c1f9abd36c3",
-      "lines": 639,
-      "source_declarations": 107
+      "sha256": "d386c64a832f1560c9a4abeef96e09bfff253170f70e4f6333c0e4705b9eb54e",
+      "lines": 647,
+      "source_declarations": 109
     },
     "verification/lean/BridgeSpec/Claims.lean": {
-      "sha256": "f74ffe05f86fbdfa4e94095bdc2dc64a1dd3ed94c947a4b800af6433dada3430",
-      "lines": 226,
-      "source_declarations": 28
+      "sha256": "05d79552cb8d45808c6f53636d4f419a1059e33d4b1238aef0df0e4f0d6137c1",
+      "lines": 237,
+      "source_declarations": 30
     },
     "verification/lean/BridgeSpec/ControlPlane.lean": {
       "sha256": "57e6656b42d4da34726d8e69bfe129939d7649070923beddc9c5fdce8876936c",
@@ -35,9 +35,9 @@
       "source_declarations": 27
     },
     "verification/lean/BridgeSpec/FiniteWidthModel.lean": {
-      "sha256": "0345c19c9df5a982a4f896205cbde5d01a40dd68a8bd1f4e3c58e9923e3cf0ea",
-      "lines": 137,
-      "source_declarations": 31
+      "sha256": "b8d042b3826c16d95d9dcd2153373c4653f9971bb746c9404105dc7cd7f970aa",
+      "lines": 145,
+      "source_declarations": 33
     },
     "verification/lean/BridgeSpec/GlobalHistory.lean": {
       "sha256": "a1b6668db4ec35f997042da7fbfb73285d8606a2891084b4645542e2e8b7ea37",
@@ -55,9 +55,9 @@
       "source_declarations": 26
     },
     "verification/lean/BridgeSpec/Model.lean": {
-      "sha256": "a9f07f9643e72cfb41bf9c1d14a34c5c6ab5108fc3cd54886e31216c0889ecd3",
-      "lines": 323,
-      "source_declarations": 60
+      "sha256": "0d66a5ccd1ae8da2cd56de58eb95156dcf21e556d08e597f09aea095a1771f98",
+      "lines": 328,
+      "source_declarations": 62
     },
     "verification/lean/BridgeSpec/ModelBoundaries.lean": {
       "sha256": "67b361fa752dfd66e101553b9a0ed6b49d177d49866b94239c8a6c214eba7d13",
@@ -65,9 +65,9 @@
       "source_declarations": 4
     },
     "verification/lean/BridgeSpec/ModelRefinement.lean": {
-      "sha256": "101d62bf7e751cdcc14e0bccf61b9d6ba12326fa8cccdb70df63a51338649342",
-      "lines": 161,
-      "source_declarations": 24
+      "sha256": "aaf9f96703e65d563dd111a936a2809492422c75adbdce0909276440324c4a80",
+      "lines": 175,
+      "source_declarations": 26
     },
     "verification/lean/BridgeSpec/Protocol.lean": {
       "sha256": "41678966a02226b6930bac1f74881d49b6d20f13c60671d7354da0bd90571043",
@@ -85,9 +85,9 @@
       "source_declarations": 19
     },
     "verification/lean/BridgeSpec/Vectors.lean": {
-      "sha256": "00c33dad5b79d86ac6c9147f33352a412bc20f672e9c7ad33e25961a0a7e9325",
-      "lines": 439,
-      "source_declarations": 41
+      "sha256": "2e6a4b91642674f5e5d02a63d660ca9fd817f7cf383ee15db837acca5d41f14e",
+      "lines": 458,
+      "source_declarations": 43
     },
     "verification/lean/Main.lean": {
       "sha256": "286cd7fcd66afc4e7532fb8f2f0d7e0e15f858ffdad3de716c9f83bfc6b42a05",
@@ -753,6 +753,18 @@
     },
     {
       "kind": "claim",
+      "id": "sns_fee_payout_authorization",
+      "specification": "docs/runbooks/fee-payout.md",
+      "definitions": "BridgeSpec.ClaimContracts.SnsFeePayoutAuthorization",
+      "premises": "Boolean inputs are derived from the authenticated caller and current storage",
+      "conclusion": "All five bindings must hold; request replay reuses its stored identity",
+      "boundary": "IC caller authenticity, SQLite atomicity and runtime/toolchain behavior remain external assumptions",
+      "evidence": "claims.tsv:sns_fee_payout_authorization",
+      "external": "claims.tsv:sns_fee_payout_authorization",
+      "review_note": "Production shared expression, exhaustive vectors, adapter and real SNS transaction tests bind this contract"
+    },
+    {
+      "kind": "claim",
       "id": "withdrawal_admission_boundary",
       "specification": "docs/canister-state-machine.md",
       "definitions": "BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary",
@@ -1090,6 +1102,12 @@
       "meaning": "Preserves the reserve after billing"
     },
     {
+      "name": "BridgeSpec.ClaimContracts.SnsFeePayoutAuthorization",
+      "role": "specification",
+      "specification": "docs/runbooks/fee-payout.md",
+      "meaning": "Authorization requires Governance, operational lifecycle, positive amount, exact recipient and exact payout identity"
+    },
+    {
       "name": "BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary",
       "role": "specification",
       "specification": "docs/canister-state-machine.md",
@@ -1414,6 +1432,10 @@
     "withdrawal_eventually_paid": {
       "contract": "BridgeSpec.Liveness.WithdrawalEventuallyPaid",
       "witness": "BridgeSpec.Liveness.committed_withdrawal_eventually_paid"
+    },
+    "sns_fee_payout_authorization": {
+      "contract": "BridgeSpec.ClaimContracts.SnsFeePayoutAuthorization",
+      "witness": "BridgeSpec.ClaimContracts.sns_fee_payout_authorization_witness"
     }
   },
   "declarations": [
@@ -1615,6 +1637,11 @@
     {
       "definition": "∀ (liquid reserve signingCost callMargin charged : Nat),\n  LE.le.{0} (HAdd.hAdd.{0, 0, 0} (HAdd.hAdd.{0, 0, 0} reserve signingCost) callMargin) liquid →\n    LE.le.{0} charged (HAdd.hAdd.{0, 0, 0} signingCost callMargin) →\n      LE.le.{0} reserve (HSub.hSub.{0, 0, 0} liquid charged)",
       "name": "BridgeSpec.ClaimContracts.SigningCycleReserve",
+      "type": "Prop"
+    },
+    {
+      "definition": "∀ (governance operational positive recipient identity : Bool),\n  Iff (Eq.{1} (BridgeSpec.snsFeePayoutAuthorized governance operational positive recipient identity) Bool.true)\n    (And (Eq.{1} governance Bool.true)\n      (And (Eq.{1} operational Bool.true)\n        (And (Eq.{1} positive Bool.true) (And (Eq.{1} recipient Bool.true) (Eq.{1} identity Bool.true)))))",
+      "name": "BridgeSpec.ClaimContracts.SnsFeePayoutAuthorization",
       "type": "Prop"
     },
     {
@@ -1836,6 +1863,11 @@
       "definition": null,
       "name": "BridgeSpec.ClaimContracts.signing_cycle_reserve_witness",
       "type": "BridgeSpec.ClaimContracts.SigningCycleReserve"
+    },
+    {
+      "definition": null,
+      "name": "BridgeSpec.ClaimContracts.sns_fee_payout_authorization_witness",
+      "type": "BridgeSpec.ClaimContracts.SnsFeePayoutAuthorization"
     },
     {
       "definition": null,

@@ -13,7 +13,6 @@ from types import SimpleNamespace
 
 from claim_manifest import (
     REQUIRED_CLAIM_POLICY,
-    fee_payout_claim_ids,
     REQUIRED_CONDITIONAL_LIVENESS_POLICY,
     REQUIRED_CONDITIONAL_LIVENESS_IDS,
     conditional_liveness_check_source,
@@ -42,23 +41,18 @@ from smt_obligations import parse_smt_obligations, validate_trusted_smt_sources
 
 
 class ClaimContractTests(unittest.TestCase):
-    def test_fee_claim_is_staged_only_for_the_planned_production_kernel(self) -> None:
+    def test_fee_catalog_and_consumers_are_unconditionally_required(self) -> None:
+        from claim_manifest import REQUIRED_CLAIM_IDS
         from generate_refinement_harness import RUST_RENDERERS
-        enabled = "sns_fee_payout_authorization" in REQUIRED_CLAIM_POLICY
-        self.assertEqual("fee_payout_capacity_cases" in RUST_RENDERERS, enabled)
-        self.assertEqual("sns_fee_payout_authorization_cases" in RUST_RENDERERS, enabled)
-        self.assertEqual(fee_payout_claim_ids("pub const fn payout_decision() {}"), frozenset())
+        self.assertEqual(len(REQUIRED_CLAIM_IDS), 44)
         self.assertEqual(
-            fee_payout_claim_ids("pub const fn sns_fee_payout_authorized(governance: bool) -> bool {}"),
-            frozenset({"sns_fee_payout_authorization"}),
+            REQUIRED_CLAIM_POLICY["sns_fee_payout_authorization"],
+            ("release-safety", "implementation-proved"),
         )
-        self.assertEqual(
-            fee_payout_claim_ids("pub\nconst\nfn sns_fee_payout_authorized\n("),
-            frozenset({"sns_fee_payout_authorization"}),
-        )
-        self.assertEqual(fee_payout_claim_ids("pub const fn sns_fee_payout_authorized_model() {}"), frozenset())
+        self.assertIn("fee_payout_capacity_cases", RUST_RENDERERS)
+        self.assertIn("sns_fee_payout_authorization_cases", RUST_RENDERERS)
 
-    def test_staged_fee_catalog_requires_strong_claim_and_matching_receipt_counts(self) -> None:
+    def test_fee_catalog_requires_strong_claim_and_matching_receipt_counts(self) -> None:
         root = Path(__file__).resolve().parents[1]
         document = (root / "verification/claims.tsv").read_text(encoding="utf-8")
         document = "".join(
@@ -69,18 +63,10 @@ class ClaimContractTests(unittest.TestCase):
         protocol = "protocol\tsns_fee_payout_authorization\tsns_fee_payout_authorization_claim\tsns_fee_payout_authorization_model_refinement\t-\tsns_fee_payout_requires_every_binding\t-\t-\tverus:sns_fee_payout_requires_every_binding\tcanister/bridge-core/src/kernel.rs#sns_fee_payout_authorized\truntime_toolchain\tsns_fee_payout_authorization_cases\n"
         program = textwrap.dedent("""
             import json, sys
-            from pathlib import Path
-            from unittest.mock import patch
-            original_read = Path.read_text
-            def read(path, *args, **kwargs):
-                if path.as_posix().endswith('/canister/bridge-core/src/kernel.rs'):
-                    return 'pub const fn sns_fee_payout_authorized(governance: bool) -> bool {}'
-                return original_read(path, *args, **kwargs)
-            with patch.object(Path, 'read_text', read):
-                import claim_manifest as catalog
-                import check_claim_manifest as gate
-                import check_proof_impact as receipt
-                import generate_refinement_harness as consumers
+            import claim_manifest as catalog
+            import check_claim_manifest as gate
+            import check_proof_impact as receipt
+            import generate_refinement_harness as consumers
             data = json.load(sys.stdin)
             def reject(document, message):
                 try:

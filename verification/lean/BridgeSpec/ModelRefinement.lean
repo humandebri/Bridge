@@ -99,6 +99,20 @@ theorem fee_payout_model_refinement
       feePayoutAllowed reserve.val pending.val amount.val fee.val := by
   simp [feePayoutImpl, checkedAdd128, bounded]
 
+theorem fee_payout_capacity_model_refinement (reserve pending fee : U128) :
+    feePayoutCapacityImpl reserve pending fee = feePayoutCapacity reserve.val pending.val fee.val := by
+  simp only [feePayoutCapacityImpl, feePayoutCapacity]
+  split
+  · omega
+  · split
+    · omega
+    · rfl
+
+theorem sns_fee_payout_authorization_model_refinement (governance operational positive recipient identity : Bool) :
+    snsFeePayoutAuthorizedImpl governance operational positive recipient identity =
+      snsFeePayoutAuthorized governance operational positive recipient identity := by
+  rfl
+
 theorem hold_model_refinement
     (success absence : Bool) :
     holdImpl success absence = holdRetryAllowed success absence := by

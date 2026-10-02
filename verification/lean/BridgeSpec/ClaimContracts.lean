@@ -425,6 +425,14 @@ def FeePayout : Prop :=
 theorem fee_payout_witness : FeePayout :=
   ⟨Claims.fee_payout_claim, settlement_backing_witness⟩
 
+def SnsFeePayoutAuthorization : Prop :=
+  ∀ governance operational positive recipient identity : Bool,
+    snsFeePayoutAuthorized governance operational positive recipient identity = true ↔
+      governance = true ∧ operational = true ∧ positive = true ∧ recipient = true ∧ identity = true
+
+theorem sns_fee_payout_authorization_witness : SnsFeePayoutAuthorization :=
+  Claims.sns_fee_payout_authorization_claim
+
 def HoldResolution : Prop :=
   (∀ {success absence : Bool}, holdRetryAllowed success absence = true →
       success = true ∨ absence = true) ∧ IntegratedProtocolReachability

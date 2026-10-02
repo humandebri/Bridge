@@ -1,3 +1,33 @@
+macro_rules! fee_payout_capacity_body {
+    ($reserve:expr, $pending:expr, $fee:expr, $zero:expr) => {
+        if $pending > $reserve {
+            $zero
+        } else if $reserve - $pending <= $fee {
+            $zero
+        } else {
+            $reserve - $pending - $fee
+        }
+    };
+}
+macro_rules! sns_fee_payout_authorized_body {
+    ($governance:expr, $operational:expr, $positive:expr, $recipient:expr, $identity:expr) => {
+        $governance && $operational && $positive && $recipient && $identity
+    };
+}
+#[cfg(not(verus_keep_ghost))]
+pub const fn fee_payout_capacity(reserve: u128, pending: u128, fee: u128) -> u128 {
+    fee_payout_capacity_body!(reserve, pending, fee, 0u128)
+}
+#[cfg(not(verus_keep_ghost))]
+pub const fn sns_fee_payout_authorized(
+    governance: bool,
+    operational: bool,
+    positive: bool,
+    recipient: bool,
+    identity: bool,
+) -> bool {
+    sns_fee_payout_authorized_body!(governance, operational, positive, recipient, identity)
+}
 macro_rules! sns_upgrade_completion_allowed_body {
     ($root:expr, $completed:expr, $decided:expr, $handover:expr, $now:expr, $zero:expr) => {
         $root
@@ -3190,6 +3220,14 @@ verus! {
     {
         if events.len() == 0 { state }
         else { withdrawal_phase_run_spec(withdrawal_phase_step_spec(state, events[0]), events.drop_first()) }
+    }
+
+    pub open spec fn fee_payout_capacity_spec(reserve: int, pending: int, fee: int) -> int {
+        let zero: int = 0;
+        fee_payout_capacity_body!(reserve, pending, fee, zero)
+    }
+    pub open spec fn sns_fee_payout_authorized_spec(governance: bool, operational: bool, positive: bool, recipient: bool, identity: bool) -> bool {
+        sns_fee_payout_authorized_body!(governance, operational, positive, recipient, identity)
     }
 
 }

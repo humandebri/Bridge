@@ -804,6 +804,26 @@ BridgeSpec.ClaimContracts.signing_cycle_reserve_witness : BridgeSpec.ClaimContra
 
 Major definitions: `BridgeSpec.ClaimContracts.SigningCycleReserve`
 
+## claim: sns_fee_payout_authorization
+
+Specification: `docs/runbooks/fee-payout.md`
+
+Premises: Boolean inputs are derived from the authenticated caller and current storage
+
+Conclusion: All five bindings must hold; request replay reuses its stored identity
+
+Unproved boundary: IC caller authenticity, SQLite atomicity and runtime/toolchain behavior remain external assumptions
+
+Evidence and external assumptions: `claims.tsv:sns_fee_payout_authorization` / `claims.tsv:sns_fee_payout_authorization`
+
+Review rationale: Production shared expression, exhaustive vectors, adapter and real SNS transaction tests bind this contract
+
+```lean
+BridgeSpec.ClaimContracts.sns_fee_payout_authorization_witness : BridgeSpec.ClaimContracts.SnsFeePayoutAuthorization
+```
+
+Major definitions: `BridgeSpec.ClaimContracts.SnsFeePayoutAuthorization`
+
 ## claim: withdrawal_admission_boundary
 
 Specification: `docs/canister-state-machine.md`
@@ -1852,6 +1872,21 @@ BridgeSpec.ClaimContracts.SigningCycleReserve : Prop
       LE.le.{0} reserve (HSub.hSub.{0, 0, 0} liquid charged)
 ```
 
+### BridgeSpec.ClaimContracts.SnsFeePayoutAuthorization
+
+specification: Authorization requires Governance, operational lifecycle, positive amount, exact recipient and exact payout identity
+
+Specification: `docs/runbooks/fee-payout.md`
+
+```lean
+BridgeSpec.ClaimContracts.SnsFeePayoutAuthorization : Prop
+∀ (governance operational positive recipient identity : Bool),
+  Iff (Eq.{1} (BridgeSpec.snsFeePayoutAuthorized governance operational positive recipient identity) Bool.true)
+    (And (Eq.{1} governance Bool.true)
+      (And (Eq.{1} operational Bool.true)
+        (And (Eq.{1} positive Bool.true) (And (Eq.{1} recipient Bool.true) (Eq.{1} identity Bool.true)))))
+```
+
 ### BridgeSpec.ClaimContracts.WithdrawalAdmissionBoundary
 
 specification: The minimum is nonzero and observed is at least the minimum
@@ -2389,22 +2424,22 @@ fun observedTimestamp deadline =>
 | Source | Lines | Declarations | SHA-256 |
 |---|---:|---:|---|
 | verification/lean/BridgeSpec/AuditExport.lean | 18 | 1 | 71f528152dcd1c0a250ae213e0d250e8c4a46d42002c38d579b13679dd7bf501 |
-| verification/lean/BridgeSpec/ClaimContracts.lean | 639 | 107 | c9b78c3d0f847ebfdcb06b013805eada5964bed831c23eefe7128c1f9abd36c3 |
-| verification/lean/BridgeSpec/Claims.lean | 226 | 28 | f74ffe05f86fbdfa4e94095bdc2dc64a1dd3ed94c947a4b800af6433dada3430 |
+| verification/lean/BridgeSpec/ClaimContracts.lean | 647 | 109 | d386c64a832f1560c9a4abeef96e09bfff253170f70e4f6333c0e4705b9eb54e |
+| verification/lean/BridgeSpec/Claims.lean | 237 | 30 | 05d79552cb8d45808c6f53636d4f419a1059e33d4b1238aef0df0e4f0d6137c1 |
 | verification/lean/BridgeSpec/ControlPlane.lean | 323 | 32 | 57e6656b42d4da34726d8e69bfe129939d7649070923beddc9c5fdce8876936c |
 | verification/lean/BridgeSpec/DepositAuthorization.lean | 586 | 48 | 737633200787c8db2275d4a8408e8bad75754e04415c9cbc435b934660ca001e |
 | verification/lean/BridgeSpec/DepositHistory.lean | 561 | 27 | 51536b20ba0fd5da8a26491d13faf56b5e38a3c300f16e319e99ee5c8dec6620 |
-| verification/lean/BridgeSpec/FiniteWidthModel.lean | 137 | 31 | 0345c19c9df5a982a4f896205cbde5d01a40dd68a8bd1f4e3c58e9923e3cf0ea |
+| verification/lean/BridgeSpec/FiniteWidthModel.lean | 145 | 33 | b8d042b3826c16d95d9dcd2153373c4653f9971bb746c9404105dc7cd7f970aa |
 | verification/lean/BridgeSpec/GlobalHistory.lean | 889 | 67 | a1b6668db4ec35f997042da7fbfb73285d8606a2891084b4645542e2e8b7ea37 |
 | verification/lean/BridgeSpec/LedgerBlockProvenance.lean | 337 | 28 | 23421e6d692d4651eb98d658e501e918e185f36d378f72ed5115fbaf06ba69c4 |
 | verification/lean/BridgeSpec/Liveness.lean | 209 | 26 | 72402ad8473fc2e294a3725535ade0153ed8bd51270ebb22660d75d8706aeff0 |
-| verification/lean/BridgeSpec/Model.lean | 323 | 60 | a9f07f9643e72cfb41bf9c1d14a34c5c6ab5108fc3cd54886e31216c0889ecd3 |
+| verification/lean/BridgeSpec/Model.lean | 328 | 62 | 0d66a5ccd1ae8da2cd56de58eb95156dcf21e556d08e597f09aea095a1771f98 |
 | verification/lean/BridgeSpec/ModelBoundaries.lean | 42 | 4 | 67b361fa752dfd66e101553b9a0ed6b49d177d49866b94239c8a6c214eba7d13 |
-| verification/lean/BridgeSpec/ModelRefinement.lean | 161 | 24 | 101d62bf7e751cdcc14e0bccf61b9d6ba12326fa8cccdb70df63a51338649342 |
+| verification/lean/BridgeSpec/ModelRefinement.lean | 175 | 26 | aaf9f96703e65d563dd111a936a2809492422c75adbdce0909276440324c4a80 |
 | verification/lean/BridgeSpec/Protocol.lean | 809 | 34 | 41678966a02226b6930bac1f74881d49b6d20f13c60671d7354da0bd90571043 |
 | verification/lean/BridgeSpec/ProtocolPolicies.lean | 420 | 52 | a2702b5b210970ee5ac01e5c3109697c902775610de2e8982da60195d132f71c |
 | verification/lean/BridgeSpec/Theorems.lean | 204 | 19 | 848b4f6361b2f097725a3ab084b9e7344d03c906030ca8ad004bb19095e6c4f4 |
-| verification/lean/BridgeSpec/Vectors.lean | 439 | 41 | 00c33dad5b79d86ac6c9147f33352a412bc20f672e9c7ad33e25961a0a7e9325 |
+| verification/lean/BridgeSpec/Vectors.lean | 458 | 43 | 2e6a4b91642674f5e5d02a63d660ca9fd817f7cf383ee15db837acca5d41f14e |
 | verification/lean/Main.lean | 10 | 1 | 286cd7fcd66afc4e7532fb8f2f0d7e0e15f858ffdad3de716c9f83bfc6b42a05 |
 | verification/lean/fail/AccountingDeltaViolation.lean | 24 | 1 | 638f8837d8c221d828fed5162973b4215af39c61984c6aba3220f8b8b3dd7a08 |
 | verification/lean/fail/AnonymousRefundRequest.lean | 8 | 0 | beae263600cfc9307feadae225b64983f34e11bfdfa04adae6316ec7a1869552 |

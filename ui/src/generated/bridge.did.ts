@@ -321,9 +321,24 @@ export type FeePayoutState = { 'Failed' : null } |
   { 'Succeeded' : { 'block_index' : bigint } } |
   { 'ReconciliationHold' : null } |
   { 'Pending' : null };
+export interface FeePayoutView {
+  'id' : bigint,
+  'recipient' : FeeRecipientConfig,
+  'state' : FeePayoutState,
+  'ledger_fee' : bigint,
+  'amount' : bigint,
+}
 export interface FeeRecipientConfig {
   'owner' : Principal,
   'subaccount' : Uint8Array | number[],
+}
+export interface FeeStatus {
+  'fee_reserve' : bigint,
+  'fee_recipient' : FeeRecipientConfig,
+  'next_fee_payout_id' : bigint,
+  'pending_payout_debit' : bigint,
+  'max_payout_amount' : bigint,
+  'ledger_fee' : bigint,
 }
 export type FundingFailure = {
     'InsufficientAllowance' : { 'allowance' : bigint }
@@ -530,41 +545,45 @@ export type Result = { 'Ok' : null } |
   { 'Err' : string };
 export type Result_1 = { 'Ok' : BaseGovernanceConfirmation } |
   { 'Err' : BaseGovernanceError };
-export type Result_11 = { 'Ok' : Array<SignedBaseGovernanceTransaction> } |
+export type Result_11 = { 'Ok' : [] | [FeePayoutView] } |
+  { 'Err' : AdminError };
+export type Result_12 = { 'Ok' : FeeStatus } |
+  { 'Err' : AdminError };
+export type Result_13 = { 'Ok' : Array<SignedBaseGovernanceTransaction> } |
   { 'Err' : BaseGovernanceError };
-export type Result_12 = { 'Ok' : ProductionLifecycle } |
+export type Result_14 = { 'Ok' : ProductionLifecycle } |
   { 'Err' : BaseGovernanceError };
-export type Result_13 = { 'Ok' : string } |
+export type Result_15 = { 'Ok' : string } |
   { 'Err' : StorageMaintenanceError };
-export type Result_14 = { 'Ok' : Array<[] | [WithdrawalView]> } |
+export type Result_16 = { 'Ok' : Array<[] | [WithdrawalView]> } |
   { 'Err' : GetWithdrawalsError };
-export type Result_15 = { 'Ok' : null } |
+export type Result_17 = { 'Ok' : null } |
   { 'Err' : PublicConfigInitializationError };
-export type Result_16 = { 'Ok' : DepositIdPage } |
+export type Result_18 = { 'Ok' : DepositIdPage } |
   { 'Err' : ListDepositIdsError };
-export type Result_17 = { 'Ok' : NonterminalDepositRefPage } |
+export type Result_19 = { 'Ok' : NonterminalDepositRefPage } |
   { 'Err' : ListDepositIdsError };
-export type Result_18 = { 'Ok' : WithdrawalHistoryPage } |
-  { 'Err' : ListWithdrawalsError };
-export type Result_19 = { 'Ok' : NotifyDepositMintReceipt } |
-  { 'Err' : NotifyDepositMintError };
 export type Result_2 = { 'Ok' : SettlementActionResult } |
   { 'Err' : SettlementActionError };
-export type Result_20 = { 'Ok' : NotifyWithdrawalReceipt } |
+export type Result_20 = { 'Ok' : WithdrawalHistoryPage } |
+  { 'Err' : ListWithdrawalsError };
+export type Result_21 = { 'Ok' : NotifyDepositMintReceipt } |
+  { 'Err' : NotifyDepositMintError };
+export type Result_22 = { 'Ok' : NotifyWithdrawalReceipt } |
   { 'Err' : NotifyWithdrawalError };
-export type Result_21 = { 'Ok' : null } |
+export type Result_23 = { 'Ok' : null } |
   { 'Err' : AdminError };
-export type Result_22 = { 'Ok' : ChecksumRefreshStatus } |
+export type Result_24 = { 'Ok' : ChecksumRefreshStatus } |
   { 'Err' : StorageMaintenanceError };
-export type Result_23 = { 'Ok' : DepositReceipt } |
+export type Result_25 = { 'Ok' : DepositReceipt } |
   { 'Err' : DepositError };
-export type Result_24 = { 'Ok' : DepositView } |
+export type Result_26 = { 'Ok' : DepositView } |
   { 'Err' : RequestDepositRefundError };
-export type Result_25 = { 'Ok' : FeePayoutReceipt } |
+export type Result_27 = { 'Ok' : FeePayoutReceipt } |
   { 'Err' : AdminError };
-export type Result_26 = { 'Ok' : OperationalConfigSealReceipt } |
+export type Result_28 = { 'Ok' : OperationalConfigSealReceipt } |
   { 'Err' : BaseGovernanceError };
-export type Result_27 = { 'Ok' : string } |
+export type Result_29 = { 'Ok' : string } |
   { 'Err' : string };
 export type Result_3 = { 'Ok' : FeePayoutActionResult } |
   { 'Err' : SettlementActionError };
@@ -671,6 +690,11 @@ export type SigningFailureClass = { 'CallFailed' : null } |
 export interface SnsActivationProposal {
   'previous_governance_operation_id' : bigint,
 }
+export interface SnsFeePayoutProposal {
+  'recipient' : FeeRecipientConfig,
+  'payout_id' : bigint,
+  'amount' : bigint,
+}
 export interface StatusCounts {
   'retained_audit_events' : bigint,
   'reconciliation_holds' : bigint,
@@ -741,11 +765,13 @@ export interface _SERVICE {
     [Principal, bigint],
     [] | [DepositView]
   >,
+  'get_fee_payout' : ActorMethod<[bigint], Result_11>,
+  'get_fee_status' : ActorMethod<[], Result_12>,
   'get_next_deposit_sequence' : ActorMethod<[Principal], bigint>,
-  'get_pending_base_governance_transaction' : ActorMethod<[], Result_11>,
-  'get_production_lifecycle' : ActorMethod<[], Result_12>,
-  'get_release_operational_config' : ActorMethod<[], Result_11>,
-  'get_release_storage_integrity' : ActorMethod<[], Result_13>,
+  'get_pending_base_governance_transaction' : ActorMethod<[], Result_13>,
+  'get_production_lifecycle' : ActorMethod<[], Result_14>,
+  'get_release_operational_config' : ActorMethod<[], Result_13>,
+  'get_release_storage_integrity' : ActorMethod<[], Result_15>,
   'get_release_upgrade_observation' : ActorMethod<
     [],
     [] | [ReleaseUpgradeObservation]
@@ -755,7 +781,7 @@ export interface _SERVICE {
     [Uint8Array | number[]],
     [] | [WithdrawalView]
   >,
-  'get_withdrawals' : ActorMethod<[Array<Uint8Array | number[]>], Result_14>,
+  'get_withdrawals' : ActorMethod<[Array<Uint8Array | number[]>], Result_16>,
   'icrc10_supported_standards' : ActorMethod<
     [],
     Array<Icrc10SupportedStandard>
@@ -764,16 +790,16 @@ export interface _SERVICE {
     [Icrc21ConsentMessageRequest],
     Icrc21ConsentMessageResponse
   >,
-  'initialize_public_config' : ActorMethod<[], Result_15>,
-  'list_deposit_ids' : ActorMethod<[ListDepositIdsArgs], Result_16>,
+  'initialize_public_config' : ActorMethod<[], Result_17>,
+  'list_deposit_ids' : ActorMethod<[ListDepositIdsArgs], Result_18>,
   'list_nonterminal_deposit_refs' : ActorMethod<
     [ListDepositIdsArgs],
-    Result_17
+    Result_19
   >,
-  'list_withdrawals' : ActorMethod<[ListWithdrawalsArgs], Result_18>,
-  'notify_deposit_mint' : ActorMethod<[NotifyDepositMintArgs], Result_19>,
-  'notify_withdrawal' : ActorMethod<[NotifyWithdrawalArgs], Result_20>,
-  'pause_new_deposits' : ActorMethod<[], Result_21>,
+  'list_withdrawals' : ActorMethod<[ListWithdrawalsArgs], Result_20>,
+  'notify_deposit_mint' : ActorMethod<[NotifyDepositMintArgs], Result_21>,
+  'notify_withdrawal' : ActorMethod<[NotifyWithdrawalArgs], Result_22>,
+  'pause_new_deposits' : ActorMethod<[], Result_23>,
   'prepare_base_governance_action' : ActorMethod<
     [BaseGovernanceAction],
     Result_6
@@ -784,25 +810,35 @@ export interface _SERVICE {
   >,
   'prepare_next_emergency_base_action' : ActorMethod<[], Result_6>,
   'refresh_activation_attestation' : ActorMethod<[], Result_7>,
-  'refresh_storage_checksum' : ActorMethod<[bigint], Result_22>,
-  'request_deposit' : ActorMethod<[DepositArgs], Result_23>,
-  'request_deposit_refund' : ActorMethod<[Uint8Array | number[]], Result_24>,
-  'request_fee_payout' : ActorMethod<[bigint], Result_25>,
-  'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_21>,
-  'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_21>,
+  'refresh_storage_checksum' : ActorMethod<[bigint], Result_24>,
+  'request_deposit' : ActorMethod<[DepositArgs], Result_25>,
+  'request_deposit_refund' : ActorMethod<[Uint8Array | number[]], Result_26>,
+  'request_fee_payout' : ActorMethod<[bigint], Result_27>,
+  'rotate_fee_recipient' : ActorMethod<[FeeRecipientConfig], Result_23>,
+  'rotate_pause_principal' : ActorMethod<[RotatePausePrincipalArgs], Result_23>,
   'schedule_activation' : ActorMethod<[], Result_6>,
-  'seal_operational_config' : ActorMethod<[OperationalConfigArgs], Result_26>,
+  'seal_operational_config' : ActorMethod<[OperationalConfigArgs], Result_28>,
+  'sns_continue_fee_payout' : ActorMethod<[SnsFeePayoutProposal], undefined>,
   'sns_execute_activation' : ActorMethod<[SnsActivationProposal], undefined>,
+  'sns_request_fee_payout' : ActorMethod<[SnsFeePayoutProposal], undefined>,
   'sns_schedule_activation' : ActorMethod<[SnsActivationProposal], undefined>,
   'start_storage_validation' : ActorMethod<[], Result_4>,
-  'storage_integrity_check' : ActorMethod<[], Result_13>,
+  'storage_integrity_check' : ActorMethod<[], Result_15>,
+  'validate_sns_continue_fee_payout' : ActorMethod<
+    [SnsFeePayoutProposal],
+    Result_29
+  >,
   'validate_sns_execute_activation' : ActorMethod<
     [SnsActivationProposal],
-    Result_27
+    Result_29
+  >,
+  'validate_sns_request_fee_payout' : ActorMethod<
+    [SnsFeePayoutProposal],
+    Result_29
   >,
   'validate_sns_schedule_activation' : ActorMethod<
     [SnsActivationProposal],
-    Result_27
+    Result_29
   >,
 }
 export declare const idlFactory: IDL.InterfaceFactory;
