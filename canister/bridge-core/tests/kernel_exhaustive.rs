@@ -20,6 +20,108 @@ use bridge_core::{
 };
 
 #[test]
+fn notification_reservations_preserve_other_owners_and_partition_funding() {
+    use bridge_core::kernel::{
+        nonterminal_deposit_reservation_count, notification_poll_owner,
+        notification_reservation_excluding_owner, notification_reservation_slots,
+    };
+    assert_eq!(
+        notification_reservation_slots(u64::MAX / 2),
+        Some(u64::MAX - 1)
+    );
+    assert_eq!(notification_reservation_slots(u64::MAX / 2 + 1), None);
+    assert_eq!(notification_reservation_slots(u64::MAX), None);
+    assert_eq!(notification_reservation_excluding_owner(0, true), None);
+    assert_eq!(notification_reservation_excluding_owner(1, true), None);
+    assert_eq!(
+        nonterminal_deposit_reservation_count(u64::MAX, 0),
+        Some(u64::MAX)
+    );
+    // Exercise the complete u8 counter domain, including rejected admissions
+    // and zero saturation, against both production lane limits.
+    for global in 0..=u8::MAX {
+        assert_eq!(
+            bridge_core::kernel::notification_quota_release(global),
+            global.saturating_sub(1)
+        );
+        for caller in 0..=u8::MAX {
+            for lane in [14, 16] {
+                let next = bridge_core::kernel::notification_quota_acquire(global, caller, lane, 2);
+                if global >= lane || caller >= 2 {
+                    assert_eq!(next, None);
+                } else {
+                    let (g, c) = next.unwrap();
+                    assert!(g <= lane && c <= 2);
+                    assert_eq!(bridge_core::kernel::notification_quota_release(g), global);
+                    assert_eq!(bridge_core::kernel::notification_quota_release(c), caller);
+                    assert_eq!(
+                        notification_reservation_slots(u64::from(g)),
+                        Some(2 * u64::from(global) + 2)
+                    );
+                }
+            }
+        }
+    }
+    for indexed in 0..=8 {
+        for funding in 0..=8 {
+            let result = nonterminal_deposit_reservation_count(indexed, funding);
+            if funding > indexed {
+                assert_eq!(result, None);
+            } else {
+                assert_eq!(result.unwrap() + funding, indexed);
+            }
+        }
+    }
+    for active in 0..=16 {
+        for liabilities in 0..=8 {
+            let slots = notification_reservation_slots(active).unwrap();
+            let total = liabilities + slots;
+            assert_eq!(
+                notification_reservation_excluding_owner(total, false),
+                Some(total)
+            );
+            if active > 0 {
+                let others = notification_reservation_excluding_owner(total, true).unwrap();
+                assert_eq!(others, liabilities + (active - 1) * 2);
+                let policy = bridge_core::ReservePolicy {
+                    cycles_floor: 100,
+                    settlement_cycle_ceiling: 10,
+                };
+                let reserve = policy.required_cycles(others, 0, 0).unwrap();
+                assert_eq!(reserve, 100 + u128::from(others) * 10);
+                for indexed in 0..=8 {
+                    for funding in 0..=indexed {
+                        let idle = nonterminal_deposit_reservation_count(indexed, funding).unwrap();
+                        let full_reserve =
+                            policy.required_cycles(others, idle + funding, 0).unwrap();
+                        assert_eq!(full_reserve, 100 + u128::from(others + indexed) * 10);
+                        let admission = paid_call_cycle_requirement(full_reserve, 5, 10).unwrap();
+                        assert_eq!(
+                            signing_cycle_requirement(full_reserve, 5, 10),
+                            Some(admission)
+                        );
+                        for charged in 0..=15 {
+                            assert!(admission - charged >= full_reserve);
+                        }
+                    }
+                }
+                let required = paid_call_cycle_requirement(reserve, 5, 10).unwrap();
+                // After paying the attachment, preserve every other reservation
+                // and one margin for the owner's possible new liability.
+                assert_eq!(required - 5, reserve + 10);
+            }
+        }
+    }
+    for previous in [false, true] {
+        let entered = notification_poll_owner(previous, true);
+        let nested = notification_poll_owner(entered, true);
+        assert!(entered && nested);
+        assert_eq!(notification_poll_owner(entered, false), entered);
+        assert_eq!(notification_poll_owner(previous, false), previous);
+    }
+}
+
+#[test]
 fn mint_authorization_remaining_time_is_checked_at_boundaries() {
     assert!(mint_authorization_has_minimum_remaining_time(700, 1_000));
     assert!(!mint_authorization_has_minimum_remaining_time(701, 1_000));

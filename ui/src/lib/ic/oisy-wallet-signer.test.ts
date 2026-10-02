@@ -16,6 +16,7 @@ interface JsonRpcRequest {
 
 class FakeSignerPopup {
   closed = false
+  injectUnrelatedDuringConnect = false
   requests: JsonRpcRequest[] = []
   private readyResponses = 1
 
@@ -29,6 +30,9 @@ class FakeSignerPopup {
     this.requests.push(request)
     if (request.method === STATUS_METHOD && this.readyResponses > 0) {
       this.readyResponses -= 1
+      if (this.injectUnrelatedDuringConnect) {
+        new FakeSignerPopup().respond(request, "ready", "https://attacker.example")
+      }
       queueMicrotask(() => this.respond(request, "ready"))
     }
   }
@@ -78,12 +82,17 @@ describe("patched OISY signer status polling", () => {
 
   it("ignores an accounts response received while a status probe is pending", async () => {
     const popup = new FakeSignerPopup()
+    popup.injectUnrelatedDuringConnect = true
     const wallet = await connect(popup)
     const firstAccounts = wallet.accounts({ options: { timeoutInMilliseconds: 20_000 } })
 
     await vi.advanceTimersByTimeAsync(5_000)
     const statusRequest = popup.latest(STATUS_METHOD)
     const accountsRequest = popup.latest(ACCOUNTS_METHOD)
+    // A different window cannot abort either request, even with a matching ID.
+    const unrelated = new FakeSignerPopup()
+    unrelated.respond(accountsRequest, { accounts: [] }, "https://attacker.example")
+    unrelated.respond(statusRequest, "ready", "https://attacker.example")
     popup.respond(accountsRequest, { accounts: [{ owner: "aaaaa-aa" }] })
 
     await expect(firstAccounts).resolves.toEqual([{ owner: "aaaaa-aa" }])

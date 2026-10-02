@@ -147,7 +147,7 @@ export async function handleMintRecovery(request: Request, env: Env): Promise<Re
     const parsed = recoveryRequestSchema.safeParse(input)
     if (!parsed.success) throw new ApiError(400, "invalid_request")
     const depositId = parsed.data.depositId.toLowerCase()
-    if (!(await env.DEPOSIT_LIMIT.limit({ key: depositId })).success)
+    if (!(await env.DEPOSIT_LIMIT.limit({ key: `${ip}:${depositId}` })).success)
       throw new ApiError(429, "rate_limited")
     const profile = profileSchema.parse(JSON.parse(env.BRIDGE_PROFILE_JSON))
     const controller = new AbortController()

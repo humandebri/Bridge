@@ -245,7 +245,11 @@ impl DepositRecord {
         } else {
             0
         };
-        let net_amount = if matches!(event, Event::StartRefund { .. }) && !authorization_issued {
+        let net_amount = if matches!(
+            event,
+            Event::StartRefund { .. } | Event::RefundSucceeded { .. }
+        ) && !authorization_issued
+        {
             self.gross_amount.get()
         } else {
             transition_quote.map_or(0, |quote| quote.net_amount.get())

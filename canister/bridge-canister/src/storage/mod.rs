@@ -3234,7 +3234,13 @@ impl StableStore {
     pub fn deposit_reserve_token(&self) -> Result<DepositReserveToken, StorageError> {
         let counters = self.counters()?;
         Ok(DepositReserveToken {
-            nonterminal_withdrawals: self.table_count_value("withdrawal_liability_index")?,
+            nonterminal_withdrawals: self
+                .table_count_value("withdrawal_liability_index")?
+                .checked_add(
+                    crate::notification_cycle_reservation_count()
+                        .ok_or(StorageError::CounterOverflow)?,
+                )
+                .ok_or(StorageError::CounterOverflow)?,
             nonterminal_deposits: self.nonterminal_deposit_count()?,
             reserved_deposit_mint_amount: counters.reserved_deposit_mint_amount,
             reserved_deposit_mint_operations: counters.reserved_deposit_mint_operations,
@@ -7635,7 +7641,7 @@ impl StableStore {
         let active_funding_reservations = u64::try_from(admission.funding_reservations.len())
             .map_err(|_| StorageError::CounterOverflow)?;
         let required_cycles = cycles.reserve_policy.required_cycles(
-            self.nonterminal_withdrawal_count()?,
+            self.deposit_reserve_token()?.nonterminal_withdrawals,
             self.nonterminal_deposit_count()?,
             active_funding_reservations,
         )?;
@@ -7730,6 +7736,7 @@ impl StableStore {
             })
     }
 
+    #[cfg(test)]
     fn settlement_job_kind_count(&self, kind: SettlementJobKind) -> Result<u64, StorageError> {
         let count = self.handle.query(|connection| {
             connection.query_scalar::<i64>(
@@ -7741,7 +7748,13 @@ impl StableStore {
     }
 
     pub fn nonterminal_deposit_count(&self) -> Result<u64, StorageError> {
-        self.settlement_job_kind_count(SettlementJobKind::Deposit)
+        // Idle authorizations and refund claims still carry asset liabilities.
+        // Funding attempts share this index but have a separate cycles reservation.
+        ::bridge_core::kernel::nonterminal_deposit_reservation_count(
+            self.table_count_value("nonterminal_deposit_owner_index")?,
+            self.table_count_value("deposit_funding_attempts")?,
+        )
+        .ok_or(StorageError::CounterOverflow)
     }
 
     pub fn update_deposit_funding_attempt(
@@ -9266,6 +9279,22 @@ impl StableStore {
         if !is_open_hold(&previous_hold) || is_open_hold(hold) {
             return Err(StorageError::Core(CoreError::HoldMismatch));
         }
+        let deposit_owner_index_update = match parent {
+            ResolveHoldBundleParent::Deposit { next, .. } => {
+                let stored = self
+                    .stored_deposit(next.id.bytes())?
+                    .ok_or(StorageError::RecordNotFound)?;
+                Some((
+                    deposit_owner_index_key(
+                        Principal::from_slice(next.transfer.from.owner()),
+                        stored.owner_sequence,
+                    )?,
+                    next.id.bytes(),
+                    is_terminal_deposit(next),
+                ))
+            }
+            ResolveHoldBundleParent::Withdrawal { .. } => None,
+        };
         let fee_delta = match parent {
             ResolveHoldBundleParent::Withdrawal { previous, next }
                 if matches!(previous.state, WithdrawalState::ReconciliationHold { .. }) =>
@@ -9384,6 +9413,22 @@ impl StableStore {
                     "UPDATE deposits SET value = ?1 WHERE key = ?2",
                     params![parent_blob.to_sql_bytes(), key.clone()],
                 )?;
+                if let Some((owner_key, deposit_id, terminal)) = &deposit_owner_index_update {
+                    if *terminal {
+                        remove_table_entry(
+                            connection,
+                            "nonterminal_deposit_owner_index",
+                            owner_key.to_sql_bytes(),
+                        )?;
+                    } else {
+                        upsert_table_entry(
+                            connection,
+                            "nonterminal_deposit_owner_index",
+                            owner_key.to_sql_bytes(),
+                            deposit_id.to_sql_bytes(),
+                        )?;
+                    }
+                }
             } else {
                 replace_withdrawal_row(
                     connection,
@@ -9736,6 +9781,7 @@ mod tests {
                         for (table, count) in [
                             ("deposits", deposits),
                             ("deposit_funding_attempts", total - deposits),
+                            ("nonterminal_deposit_owner_index", total - deposits),
                         ] {
                             connection.execute(
                                 "UPDATE table_counts SET count = ?1 WHERE name = ?2",
@@ -13122,6 +13168,54 @@ mod tests {
             store.accounting().expect("Mint accounting").fee_reserve,
             quote.service_fee
         );
+        // Scheduler completion cannot release cycles reserved for an idle,
+        // unsigned refund claim. Its eventual refund debits the whole gross sum.
+        store
+            .handle
+            .update(|connection| {
+                connection.execute("DELETE FROM settlement_jobs", params![])?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.nonterminal_deposit_count().unwrap(), 1);
+        second = store.deposit(second.id.bytes()).unwrap().unwrap();
+        let start = second
+            .apply(DepositEvent::StartRefund {
+                reason: bridge_core::DepositRefundReason::AuthorizationExpired,
+                attempt: Box::new(TransferAttempt {
+                    attempt_no: 0,
+                    identity: LedgerTransferIdentity {
+                        operation: LedgerOperation::RefundDeposit,
+                        created_at_time_ns: 42,
+                        memo: [42; 32],
+                        amount: Amount::new(109),
+                        fee: Amount::new(1),
+                        from: second.transfer.to.clone(),
+                        to: second.transfer.from.clone(),
+                        spender: None,
+                    },
+                }),
+                expiry_evidence: None,
+            })
+            .unwrap();
+        store.put_deposit_transition(&second, start).unwrap();
+        let completed = second
+            .apply(DepositEvent::RefundSucceeded {
+                refund_ledger_block_index: 42,
+            })
+            .unwrap();
+        store.put_deposit_transition(&second, completed).unwrap();
+        assert_eq!(store.nonterminal_deposit_count().unwrap(), 0);
+        assert_eq!(store.accounting().unwrap().fee_reserve, quote.service_fee);
+        assert_eq!(
+            second
+                .apply(DepositEvent::RefundSucceeded {
+                    refund_ledger_block_index: 42
+                })
+                .unwrap()
+                .outcome,
+            ApplyOutcome::Idempotent
+        );
     }
 
     #[test]
@@ -13214,6 +13308,7 @@ mod tests {
         scan: Option<ReconciliationScanProgress>,
         scan_table_count: u64,
         counts: StorageCounts,
+        nonterminal_deposits: u64,
     }
 
     fn hold_bundle_snapshot(
@@ -13242,6 +13337,7 @@ mod tests {
                 .expect("scan"),
             scan_table_count: store.table_count("reconciliation_scans"),
             counts: store.status_counts().expect("counts"),
+            nonterminal_deposits: store.nonterminal_deposit_count().expect("liability count"),
         }
     }
 
@@ -13391,11 +13487,33 @@ mod tests {
                 "{failpoint:?}"
             );
             drop(store);
-            let reopened = StableStore::reopen(memory).expect("reopen");
+            let reopened = StableStore::reopen(memory.clone()).expect("reopen");
             assert_eq!(
                 hold_bundle_snapshot(&reopened, Some(held.id), None, hold_id),
                 before,
                 "reopen {failpoint:?}"
+            );
+            let mut reopened = reopened;
+            assert_eq!(reopened.nonterminal_deposit_count().unwrap(), 1);
+            reopened
+                .resolve_deposit_hold_and_scan(
+                    held.id,
+                    hold_id,
+                    DepositHoldResolution::FundingAbsent {
+                        history_watermark: 100,
+                    },
+                    Some(&scan_target),
+                )
+                .unwrap();
+            assert_eq!(reopened.nonterminal_deposit_count().unwrap(), 0);
+            assert_eq!(reopened.table_count("nonterminal_deposit_owner_index"), 0);
+            drop(reopened);
+            assert_eq!(
+                StableStore::reopen(memory)
+                    .unwrap()
+                    .nonterminal_deposit_count()
+                    .unwrap(),
+                0
             );
         }
     }

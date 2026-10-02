@@ -1434,6 +1434,15 @@ fn unsigned_policy_rejection_refunds_without_fee_and_rejects_late_signature() {
                 expiry_evidence: None,
             })
             .unwrap();
+        let refunded = deposit
+            .apply(DepositEvent::RefundSucceeded {
+                refund_ledger_block_index: 2,
+            })
+            .unwrap();
+        let effects = refunded.deposit_effects.unwrap();
+        assert_eq!(effects.pending_liability_debit, deposit.gross_amount);
+        assert_eq!(effects.escrow_debit, deposit.gross_amount);
+        assert_eq!(effects.fee_credit, Amount::ZERO);
         let mut signed = signed_before_rejection;
         signed
             .apply(DepositEvent::AuthorizationSigned {

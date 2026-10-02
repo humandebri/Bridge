@@ -194,6 +194,62 @@ macro_rules! refresh_owner_matches_body {
     };
 }
 
+macro_rules! notification_quota_acquire_body {
+    ($global:expr, $caller:expr, $lane:expr, $limit:expr, $one:expr) => {
+        if $global >= $lane || $caller >= $limit {
+            None
+        } else {
+            Some(($global + $one, $caller + $one))
+        }
+    };
+}
+
+macro_rules! notification_quota_release_body {
+    ($count:expr, $zero:expr, $one:expr) => {
+        if $count == $zero {
+            $zero
+        } else {
+            $count - $one
+        }
+    };
+}
+
+macro_rules! notification_reservation_slots_body {
+    ($active:expr, $max:expr, $two:expr) => {
+        if $active > $max / $two {
+            None
+        } else {
+            Some($active * $two)
+        }
+    };
+}
+
+macro_rules! notification_reservation_excluding_owner_body {
+    ($total:expr, $owner:expr, $two:expr, $zero:expr) => {
+        if $owner && $total < $two {
+            None
+        } else {
+            Some($total - if $owner { $two } else { $zero })
+        }
+    };
+}
+
+macro_rules! nonterminal_deposit_reservation_count_body {
+    ($indexed:expr, $funding:expr) => {
+        if $indexed < $funding {
+            None
+        } else {
+            Some($indexed - $funding)
+        }
+    };
+}
+
+macro_rules! notification_poll_owner_body {
+    ($previous:expr, $entering:expr) => {
+        $previous || $entering
+    };
+}
+
 macro_rules! checked_requirement_body {
     ($floor:expr, $unit:expr, $count:expr, $max:expr, $zero:expr) => {
         if $count != $zero && $unit > ($max - $floor) / $count {
@@ -1217,6 +1273,47 @@ pub const fn lease_generation_next(current: u64) -> Option<u64> {
 }
 
 #[cfg(not(verus_keep_ghost))]
+/// Verification and possible settlement require separate slots per notification.
+#[cfg(not(verus_keep_ghost))]
+pub const fn notification_reservation_slots(active: u64) -> Option<u64> {
+    notification_reservation_slots_body!(active, u64::MAX, 2u64)
+}
+
+/// Admission increments both counters together, or leaves both unchanged.
+#[cfg(not(verus_keep_ghost))]
+pub const fn notification_quota_acquire(
+    global: u8,
+    caller: u8,
+    lane_limit: u8,
+    caller_limit: u8,
+) -> Option<(u8, u8)> {
+    notification_quota_acquire_body!(global, caller, lane_limit, caller_limit, 1u8)
+}
+
+/// Release one live guard; preserve the existing defensive saturation at zero.
+#[cfg(not(verus_keep_ghost))]
+pub const fn notification_quota_release(count: u8) -> u8 {
+    notification_quota_release_body!(count, 0u8, 1u8)
+}
+
+/// Only the currently polled notification may use its own two reserved slots.
+#[cfg(not(verus_keep_ghost))]
+pub const fn notification_reservation_excluding_owner(total: u64, owner_poll: bool) -> Option<u64> {
+    notification_reservation_excluding_owner_body!(total, owner_poll, 2u64, 0u64)
+}
+
+/// Funding attempts share the owner index but are reserved separately.
+#[cfg(not(verus_keep_ghost))]
+pub const fn nonterminal_deposit_reservation_count(indexed: u64, funding: u64) -> Option<u64> {
+    nonterminal_deposit_reservation_count_body!(indexed, funding)
+}
+
+/// Enter a poll with ownership, or restore the ownership saved by that scope.
+#[cfg(not(verus_keep_ghost))]
+pub const fn notification_poll_owner(previous: bool, entering: bool) -> bool {
+    notification_poll_owner_body!(previous, entering)
+}
+
 pub const fn checked_requirement(floor: u128, unit: u128, count: u128) -> Option<u128> {
     checked_requirement_body!(floor, unit, count, u128::MAX, 0u128)
 }
@@ -2687,6 +2784,39 @@ verus! {
         next_attempt_body!(current, max, one)
     }
 
+
+    pub open spec fn notification_quota_acquire_spec(
+        global: int, caller: int, lane_limit: int, caller_limit: int,
+    ) -> Option<(int, int)> {
+        let one: int = 1;
+        notification_quota_acquire_body!(global, caller, lane_limit, caller_limit, one)
+    }
+
+    pub open spec fn notification_quota_release_spec(count: int) -> int {
+        let zero: int = 0;
+        let one: int = 1;
+        notification_quota_release_body!(count, zero, one)
+    }
+
+    pub open spec fn notification_reservation_slots_spec(active: int) -> Option<int> {
+        let max: int = 18446744073709551615;
+        let two: int = 2;
+        notification_reservation_slots_body!(active, max, two)
+    }
+
+    pub open spec fn notification_reservation_excluding_owner_spec(total: int, owner_poll: bool) -> Option<int> {
+        let two: int = 2;
+        let zero: int = 0;
+        notification_reservation_excluding_owner_body!(total, owner_poll, two, zero)
+    }
+
+    pub open spec fn nonterminal_deposit_reservation_count_spec(indexed: int, funding: int) -> Option<int> {
+        nonterminal_deposit_reservation_count_body!(indexed, funding)
+    }
+
+    pub open spec fn notification_poll_owner_spec(previous: bool, entering: bool) -> bool {
+        notification_poll_owner_body!(previous, entering)
+    }
 
     pub open spec fn checked_requirement_spec(floor: int, unit: int, count: int) -> Option<int> {
         let max: int = 340282366920938463463374607431768211455;

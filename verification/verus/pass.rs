@@ -361,6 +361,126 @@ proof fn governance_transaction_liability_is_checked(
         ) == None::<int>
 {}
 
+proof fn notification_slots_are_exact_or_overflow_rejected(active: int)
+    requires 0 <= active <= 18446744073709551615int
+    ensures active <= 9223372036854775807int ==>
+            kernel::notification_reservation_slots_spec(active) == Some(2 * active),
+        active <= 9223372036854775807int ==> 0 <= 2 * active <= 18446744073709551615int,
+        active > 9223372036854775807int ==>
+            kernel::notification_reservation_slots_spec(active) == None::<int>
+{}
+
+proof fn notification_owner_exclusion_is_exact_and_fail_closed(total: int, owner: bool)
+    requires 0 <= total <= 18446744073709551615int
+    ensures !owner ==> kernel::notification_reservation_excluding_owner_spec(total, owner) == Some(total),
+        owner && total < 2 ==> kernel::notification_reservation_excluding_owner_spec(total, owner) == None::<int>,
+        owner && total >= 2 ==> kernel::notification_reservation_excluding_owner_spec(total, owner) == Some(total - 2)
+{}
+
+// A polled owner cannot subtract any existing liability or another owner's slots.
+proof fn notification_exclusion_preserves_other_owners(liabilities: int, active: int, owner: bool)
+    requires 0 <= liabilities,
+        0 <= active <= 9223372036854775807int,
+        liabilities + 2 * active <= 18446744073709551615int,
+        owner ==> active >= 1
+    ensures kernel::notification_reservation_slots_spec(active) == Some(2 * active),
+        kernel::notification_reservation_excluding_owner_spec(liabilities + 2 * active, owner)
+            == Some(liabilities + 2 * (active - if owner { 1int } else { 0int })),
+        liabilities <= liabilities + 2 * (active - if owner { 1int } else { 0int })
+{}
+
+proof fn deposit_reservations_partition_the_owner_index(indexed: int, funding: int)
+    requires 0 <= indexed <= 18446744073709551615int,
+        0 <= funding <= 18446744073709551615int
+    ensures funding > indexed ==>
+            kernel::nonterminal_deposit_reservation_count_spec(indexed, funding) == None::<int>,
+        funding <= indexed ==>
+            kernel::nonterminal_deposit_reservation_count_spec(indexed, funding) == Some(indexed - funding),
+        funding <= indexed ==> (indexed - funding) + funding == indexed,
+        funding <= indexed ==> 0 <= indexed - funding <= 18446744073709551615int
+{}
+
+proof fn notification_poll_scope_restores_previous_ownership(previous: bool)
+    ensures kernel::notification_poll_owner_spec(previous, true),
+        kernel::notification_poll_owner_spec(previous, false) == previous,
+        kernel::notification_poll_owner_spec(kernel::notification_poll_owner_spec(previous, true), true),
+        kernel::notification_poll_owner_spec(kernel::notification_poll_owner_spec(previous, true), false),
+        !previous ==> !kernel::notification_poll_owner_spec(previous, false)
+{}
+
+proof fn notification_quota_acquisition_is_atomic_and_bounded(
+    global: int, caller: int, lane: int, limit: int,
+)
+    requires 0 <= global <= 255, 0 <= caller <= 255,
+        0 <= lane <= 255, 0 <= limit <= 255
+    ensures global >= lane || caller >= limit ==>
+            kernel::notification_quota_acquire_spec(global, caller, lane, limit) == None::<(int, int)>,
+        global < lane && caller < limit ==>
+            kernel::notification_quota_acquire_spec(global, caller, lane, limit) == Some((global + 1, caller + 1)),
+        global < lane && caller < limit ==> global + 1 <= lane && caller + 1 <= limit
+{}
+
+proof fn notification_quota_release_is_exact_or_zero(count: int)
+    requires 0 <= count <= 255
+    ensures count == 0 ==> kernel::notification_quota_release_spec(count) == 0,
+        count > 0 ==> kernel::notification_quota_release_spec(count) == count - 1,
+        0 <= kernel::notification_quota_release_spec(count) <= 255
+{}
+
+proof fn notification_guard_acquire_release_restores_counts(
+    global: int, caller: int, lane: int, limit: int,
+)
+    requires 0 <= global < lane <= 255, 0 <= caller < limit <= 255
+    ensures kernel::notification_quota_acquire_spec(global, caller, lane, limit) == Some((global + 1, caller + 1)),
+        kernel::notification_quota_release_spec(global + 1) == global,
+        kernel::notification_quota_release_spec(caller + 1) == caller,
+        kernel::notification_reservation_slots_spec(global + 1) == Some(2 * global + 2),
+        kernel::notification_reservation_slots_spec(kernel::notification_quota_release_spec(global + 1)) == Some(2 * global)
+{}
+
+// Compose the actual count/exclusion/reserve/paid-call expressions. Numeric
+// premises bind successful checked additions and the registered charging bound.
+proof fn notification_paid_call_composition_preserves_all_other_reserves(
+    liabilities: int, active: int, owner: bool, indexed: int, funding: int,
+    floor: int, unit: int, attached: int, liquid: int, charged: int,
+)
+    requires 0 <= liabilities, 0 <= active <= 9223372036854775807int,
+        liabilities + 2 * active <= 18446744073709551615int,
+        owner ==> active >= 1,
+        0 <= funding <= indexed <= 18446744073709551615int,
+        0 <= floor <= 340282366920938463463374607431768211455int,
+        0 <= unit, 0 <= attached, 0 <= charged <= attached + unit,
+        0 < liabilities + 2 * (active - if owner { 1int } else { 0int }) + indexed ==>
+        unit <= (340282366920938463463374607431768211455int - floor) /
+            (liabilities + 2 * (active - if owner { 1int } else { 0int }) + indexed),
+        floor + unit * (liabilities + 2 * (active - if owner { 1int } else { 0int }) + indexed)
+            + attached + unit <= 340282366920938463463374607431768211455int,
+        floor + unit * (liabilities + 2 * (active - if owner { 1int } else { 0int }) + indexed)
+            + attached + unit <= liquid
+    ensures kernel::nonterminal_deposit_reservation_count_spec(indexed, funding) == Some(indexed - funding),
+        kernel::notification_reservation_excluding_owner_spec(liabilities + 2 * active, owner)
+            == Some(liabilities + 2 * (active - if owner { 1int } else { 0int })),
+        kernel::checked_requirement_spec(floor, unit,
+            liabilities + 2 * (active - if owner { 1int } else { 0int }) + (indexed - funding) + funding)
+            == Some(floor + unit * (liabilities + 2 * (active - if owner { 1int } else { 0int }) + indexed)),
+        kernel::paid_call_cycle_requirement_spec(
+            floor + unit * (liabilities + 2 * (active - if owner { 1int } else { 0int }) + indexed), attached, unit)
+            == Some(floor + unit * (liabilities + 2 * (active - if owner { 1int } else { 0int }) + indexed) + attached + unit),
+        kernel::signing_cycle_requirement_spec(
+            floor + unit * (liabilities + 2 * (active - if owner { 1int } else { 0int }) + indexed), attached, unit)
+            == kernel::paid_call_cycle_requirement_spec(
+                floor + unit * (liabilities + 2 * (active - if owner { 1int } else { 0int }) + indexed), attached, unit),
+        floor + unit * (liabilities + 2 * (active - if owner { 1int } else { 0int }) + indexed) <= liquid - charged
+{
+    notification_exclusion_preserves_other_owners(liabilities, active, owner);
+    deposit_reservations_partition_the_owner_index(indexed, funding);
+    let count = liabilities + 2 * (active - if owner { 1int } else { 0int }) + indexed;
+    vstd::arithmetic::mul::lemma_mul_nonnegative(unit, count);
+    let reserve = floor + unit * count;
+    paid_call_cycle_requirement_preserves_reserve(reserve, attached, unit, liquid, charged);
+    signing_cycle_requirement_preserves_reserve(reserve, attached, unit, liquid, charged);
+}
+
 proof fn signing_cycle_requirement_preserves_reserve(
     required_reserve: int,
     signing_cost: int,
