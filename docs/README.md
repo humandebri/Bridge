@@ -69,3 +69,5 @@ Dated evidence and archived decisions describe their recorded state. They do not
 ## Maintaining these documents
 
 Write maintained documentation in English, keeping API names, claim IDs, commands, addresses, hashes, and evidence identifiers exact. Keep historical decisions and evidence explicitly historical. When a heading or path changes, update its references in the same change. Prefer linking to the authoritative document over copying operational requirements into multiple pages.
+
+- [KINIC Bridge fee payouts](runbooks/fee-payout.md): public fee queries, signed CLI reads, fixed DAO payloads and settlement verification.

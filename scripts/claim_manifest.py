@@ -14,7 +14,7 @@ PROOF_CLASSES = {"local-safety", "history-safety", "implementation-only"}
 ASSURANCE_TARGETS = {"release-safety", "model-support"}
 REQUIRED_STRENGTHS = {"production-linked", "implementation-proved"}
 REQUIRED_CLAIM_IDS = frozenset(
-    """cycles_top_up_request_policy activation_preflight authorization_binding automatic_retry_limit canonical_probe committed_quote
+    """sns_fee_payout_authorization cycles_top_up_request_policy activation_preflight authorization_binding automatic_retry_limit canonical_probe committed_quote
     deposit_admission deposit_backing deposit_identity_preflight epoch_invalidation
     exact_mint_finalization expiry_refund
     fee_accounting_once fee_payout fee_recipient_rotation funding_attempt_lifecycle
@@ -32,7 +32,7 @@ REQUIRED_CLAIM_IDS = frozenset(
     withdrawal_finality_quorum withdrawal_finalization""".split()
 )
 REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS = frozenset(
-    """cycles_top_up_request_policy activation_preflight canonical_probe committed_quote deposit_identity_preflight
+    """sns_fee_payout_authorization cycles_top_up_request_policy activation_preflight canonical_probe committed_quote deposit_identity_preflight
     fee_recipient_rotation funding_attempt_lifecycle funding_reconciliation_freshness
     governance_confirmation_authorization governance_transaction_affordability
     automatic_retry_limit lease_lane_isolation ledger_block_provenance nonterminal_deposit_index_consistency

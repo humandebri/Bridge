@@ -146,6 +146,17 @@ theorem fee_rotation_claim
     simp [noPending]
   next => simp at rotated
 
+theorem sns_fee_payout_authorization_claim (governance operational positive recipient identity : Bool) :
+    snsFeePayoutAuthorized governance operational positive recipient identity = true ↔
+      governance = true ∧ operational = true ∧ positive = true ∧ recipient = true ∧ identity = true := by
+  simp [snsFeePayoutAuthorized, Bool.and_eq_true, and_assoc]
+
+theorem fee_payout_capacity_claim (reserve pending fee : Nat) :
+    0 < feePayoutCapacity reserve pending fee →
+      pending ≤ reserve ∧ feePayoutCapacity reserve pending fee + fee ≤ reserve - pending := by
+  unfold feePayoutCapacity
+  omega
+
 theorem fee_payout_claim
     {reserve pending amount fee : Nat}
     (allowed : feePayoutAllowed reserve pending amount fee = true) :

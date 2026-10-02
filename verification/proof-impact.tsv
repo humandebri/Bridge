@@ -63,3 +63,4 @@ exclude	ui_lib_withdrawal-notification_ts	ui/src/lib/withdrawal-notification.ts	
 exclude	ui_vite-env_d_ts	ui/src/vite-env.d.ts	presentation	Vite ambient type declarations only.
 root	ui_source_ts	ui/src	.ts	-
 root	ui_source_tsx	ui/src	.tsx	-
+area	fee_payout_operations	tools/sns-proposal/fees.mjs;verification/verus/fail/fee_payout_capacity.rs;verification/verus/fail/sns_fee_payout_authorized.rs	fee_payout;operational_config_seal;sns_fee_payout_authorization	claim-manifest;lean;lean-negative;policy-vector-consumers;refinement-gate;claim-transaction-tests;verus-and-negative

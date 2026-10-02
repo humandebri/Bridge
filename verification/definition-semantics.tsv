@@ -61,3 +61,4 @@ BridgeSpec.Protocol.Safe	model-support	verification/README.md	Accounting, quote,
 BridgeSpec.Protocol.filterSafeStoredState	model-support	verification/README.md	Abstract filter accepting states under the Safe condition, not production decoding or migration
 BridgeSpec.signatureTimeAllowed	specification	verification/README.md	Predicate for a u64 deadline, rejection of addition overflow, and at least 300 seconds remaining
 BridgeSpec.ClaimContracts.governanceAffordabilityDecision	specification	docs/canister-state-machine.md	Returns the smaller observed balance and the inclusive affordability comparison
+BridgeSpec.ClaimContracts.SnsFeePayoutAuthorization	specification	docs/runbooks/fee-payout.md	Authorization requires Governance, operational lifecycle, positive amount, exact recipient and exact payout identity

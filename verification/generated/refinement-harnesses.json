@@ -32,6 +32,12 @@
       "selector": "protocol_deposit_nonterminal_index_cases_match_production"
     },
     {
+      "section": "fee_payout_capacity_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_fee_payout_capacity_cases_match_production"
+    },
+    {
       "section": "fee_payout_cases",
       "runner": "rust",
       "target": "canister/bridge-core/tests/generated_refinement.rs",
@@ -150,6 +156,12 @@
       "runner": "rust",
       "target": "canister/bridge-core/tests/generated_refinement.rs",
       "selector": "protocol_signature_time_cases_matches_production"
+    },
+    {
+      "section": "sns_fee_payout_authorization_cases",
+      "runner": "rust",
+      "target": "canister/bridge-core/tests/generated_refinement.rs",
+      "selector": "protocol_sns_fee_payout_authorization_cases_match_production"
     }
   ]
 }

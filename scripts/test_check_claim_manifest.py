@@ -2,6 +2,9 @@
 """Regression tests for the claim-manifest Solidity refinement gate."""
 
 import hashlib
+import json
+import sys
+import textwrap
 import unittest
 import subprocess
 import tempfile
@@ -38,6 +41,67 @@ from smt_obligations import parse_smt_obligations, validate_trusted_smt_sources
 
 
 class ClaimContractTests(unittest.TestCase):
+    def test_fee_catalog_and_consumers_are_unconditionally_required(self) -> None:
+        from claim_manifest import REQUIRED_CLAIM_IDS
+        from generate_refinement_harness import RUST_RENDERERS
+        self.assertEqual(len(REQUIRED_CLAIM_IDS), 44)
+        self.assertEqual(
+            REQUIRED_CLAIM_POLICY["sns_fee_payout_authorization"],
+            ("release-safety", "implementation-proved"),
+        )
+        self.assertIn("fee_payout_capacity_cases", RUST_RENDERERS)
+        self.assertIn("sns_fee_payout_authorization_cases", RUST_RENDERERS)
+
+    def test_fee_catalog_requires_strong_claim_and_matching_receipt_counts(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        document = (root / "verification/claims.tsv").read_text(encoding="utf-8")
+        document = "".join(
+            line + "\n" for line in document.splitlines()
+            if line.split("\t")[1] != "sns_fee_payout_authorization"
+        )
+        contract = "contract\tsns_fee_payout_authorization\tlocal-safety\trelease-safety\timplementation-proved\tBridgeSpec.ClaimContracts.SnsFeePayoutAuthorization\tBridgeSpec.ClaimContracts.sns_fee_payout_authorization_witness\n"
+        protocol = "protocol\tsns_fee_payout_authorization\tsns_fee_payout_authorization_claim\tsns_fee_payout_authorization_model_refinement\t-\tsns_fee_payout_requires_every_binding\t-\t-\tverus:sns_fee_payout_requires_every_binding\tcanister/bridge-core/src/kernel.rs#sns_fee_payout_authorized\truntime_toolchain\tsns_fee_payout_authorization_cases\n"
+        program = textwrap.dedent("""
+            import json, sys
+            import claim_manifest as catalog
+            import check_claim_manifest as gate
+            import check_proof_impact as receipt
+            import generate_refinement_harness as consumers
+            data = json.load(sys.stdin)
+            def reject(document, message):
+                try:
+                    gate.require_mandatory_claim_catalog(catalog.parse_claim_manifest(document))
+                except ValueError as error:
+                    assert message in str(error), str(error)
+                else:
+                    raise AssertionError('accepted invalid catalog')
+            assert len(catalog.REQUIRED_CLAIM_IDS) == 44
+            assert 'fee_payout_capacity_cases' in consumers.RUST_RENDERERS
+            assert 'sns_fee_payout_authorization_cases' in consumers.RUST_RENDERERS
+            assert catalog.REQUIRED_CLAIM_POLICY['sns_fee_payout_authorization'] == ('release-safety', 'implementation-proved')
+            assert receipt.EXPECTED_CLAIM_SUMMARY['total'] == 44
+            assert receipt.EXPECTED_CLAIM_SUMMARY['implementation-proved'] == len(catalog.REQUIRED_IMPLEMENTATION_PROVED_CLAIM_IDS)
+            gate.require_mandatory_claim_catalog(catalog.parse_claim_manifest(data['full']))
+            reject(data['current'], 'mandatory claim catalog differs')
+            reject(data['full'].replace('sns_fee_payout_authorization', 'unapproved_fee_claim'), 'mandatory claim catalog differs')
+            reject(data['full'].replace('release-safety\\timplementation-proved\\tBridgeSpec.ClaimContracts.SnsFee', 'release-safety\\tproduction-linked\\tBridgeSpec.ClaimContracts.SnsFee'), 'mandatory claim policy differs')
+            reject(data['full'].replace('release-safety\\timplementation-proved\\tBridgeSpec.ClaimContracts.SnsFee', 'model-support\\timplementation-proved\\tBridgeSpec.ClaimContracts.SnsFee'), 'mandatory claim policy differs')
+            ready = [{'id': claim, 'status': 'release-ready'} for claim in catalog.REQUIRED_CLAIM_IDS]
+            gate.require_release_ready_catalog(ready)
+            try:
+                gate.require_release_ready_catalog([row for row in ready if row['id'] != 'sns_fee_payout_authorization'])
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('accepted incomplete release catalog')
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", program], cwd=root / "scripts",
+            input=json.dumps({"current": document, "full": document + contract + protocol}),
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_lifecycle_guard_must_precede_state_effects(self) -> None:
         valid = "fn entry() { require_sealed()?; STORE.with(|store| store.write()); }"
         require_guard_dominance(valid, "entry", "require_sealed()", ("STORE.with",))
