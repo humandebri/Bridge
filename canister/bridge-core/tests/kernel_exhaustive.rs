@@ -37,6 +37,31 @@ fn notification_reservations_preserve_other_owners_and_partition_funding() {
         nonterminal_deposit_reservation_count(u64::MAX, 0),
         Some(u64::MAX)
     );
+    // Exercise the complete u8 counter domain, including rejected admissions
+    // and zero saturation, against both production lane limits.
+    for global in 0..=u8::MAX {
+        assert_eq!(
+            bridge_core::kernel::notification_quota_release(global),
+            global.saturating_sub(1)
+        );
+        for caller in 0..=u8::MAX {
+            for lane in [14, 16] {
+                let next = bridge_core::kernel::notification_quota_acquire(global, caller, lane, 2);
+                if global >= lane || caller >= 2 {
+                    assert_eq!(next, None);
+                } else {
+                    let (g, c) = next.unwrap();
+                    assert!(g <= lane && c <= 2);
+                    assert_eq!(bridge_core::kernel::notification_quota_release(g), global);
+                    assert_eq!(bridge_core::kernel::notification_quota_release(c), caller);
+                    assert_eq!(
+                        notification_reservation_slots(u64::from(g)),
+                        Some(2 * u64::from(global) + 2)
+                    );
+                }
+            }
+        }
+    }
     for indexed in 0..=8 {
         for funding in 0..=8 {
             let result = nonterminal_deposit_reservation_count(indexed, funding);
@@ -58,7 +83,28 @@ fn notification_reservations_preserve_other_owners_and_partition_funding() {
             if active > 0 {
                 let others = notification_reservation_excluding_owner(total, true).unwrap();
                 assert_eq!(others, liabilities + (active - 1) * 2);
-                let reserve = 100 + u128::from(others) * 10;
+                let policy = bridge_core::ReservePolicy {
+                    cycles_floor: 100,
+                    settlement_cycle_ceiling: 10,
+                };
+                let reserve = policy.required_cycles(others, 0, 0).unwrap();
+                assert_eq!(reserve, 100 + u128::from(others) * 10);
+                for indexed in 0..=8 {
+                    for funding in 0..=indexed {
+                        let idle = nonterminal_deposit_reservation_count(indexed, funding).unwrap();
+                        let full_reserve =
+                            policy.required_cycles(others, idle + funding, 0).unwrap();
+                        assert_eq!(full_reserve, 100 + u128::from(others + indexed) * 10);
+                        let admission = paid_call_cycle_requirement(full_reserve, 5, 10).unwrap();
+                        assert_eq!(
+                            signing_cycle_requirement(full_reserve, 5, 10),
+                            Some(admission)
+                        );
+                        for charged in 0..=15 {
+                            assert!(admission - charged >= full_reserve);
+                        }
+                    }
+                }
                 let required = paid_call_cycle_requirement(reserve, 5, 10).unwrap();
                 // After paying the attachment, preserve every other reservation
                 // and one margin for the owner's possible new liability.

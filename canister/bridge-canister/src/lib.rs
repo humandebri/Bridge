@@ -372,7 +372,7 @@ impl NotificationQuotaGuard {
     const GLOBAL_LIMIT: u8 = 16;
     const PER_CALLER_LIMIT: u8 = 2;
 
-    fn acquire(caller: Principal, protected_lane: bool) -> Option<Self> {
+    fn acquire_notification(caller: Principal, protected_lane: bool) -> Option<Self> {
         NOTIFICATIONS_IN_FLIGHT.with(|global| {
             NOTIFICATION_CALLERS.with(|callers| {
                 let mut global = global.borrow_mut();
@@ -383,11 +383,14 @@ impl NotificationQuotaGuard {
                 } else {
                     Self::GLOBAL_LIMIT.saturating_sub(2)
                 };
-                if *global >= lane_limit || caller_count >= Self::PER_CALLER_LIMIT {
-                    return None;
-                }
-                *global += 1;
-                callers.insert(caller, caller_count + 1);
+                let (next_global, next_caller) = ::bridge_core::kernel::notification_quota_acquire(
+                    *global,
+                    caller_count,
+                    lane_limit,
+                    Self::PER_CALLER_LIMIT,
+                )?;
+                *global = next_global;
+                callers.insert(caller, next_caller);
                 Some(Self { caller })
             })
         })
@@ -396,20 +399,24 @@ impl NotificationQuotaGuard {
 
 impl Drop for NotificationQuotaGuard {
     fn drop(&mut self) {
-        NOTIFICATIONS_IN_FLIGHT.with(|global| {
-            let mut global = global.borrow_mut();
-            *global = global.saturating_sub(1);
-        });
-        NOTIFICATION_CALLERS.with(|callers| {
-            let mut callers = callers.borrow_mut();
-            if let Some(count) = callers.get_mut(&self.caller) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    callers.remove(&self.caller);
-                }
-            }
-        });
+        release_notification_quota(self.caller);
     }
+}
+
+fn release_notification_quota(caller: Principal) {
+    NOTIFICATIONS_IN_FLIGHT.with(|global| {
+        let mut global = global.borrow_mut();
+        *global = ::bridge_core::kernel::notification_quota_release(*global);
+    });
+    NOTIFICATION_CALLERS.with(|callers| {
+        let mut callers = callers.borrow_mut();
+        if let Some(count) = callers.get_mut(&caller) {
+            *count = ::bridge_core::kernel::notification_quota_release(*count);
+            if *count == 0 {
+                callers.remove(&caller);
+            }
+        }
+    });
 }
 
 impl InFlightGuard {
@@ -868,7 +875,8 @@ async fn notify_deposit_mint(
     ) {
         return Err(Error::InsufficientCycles);
     }
-    let Some(quota_guard) = NotificationQuotaGuard::acquire(caller, protected_lane) else {
+    let Some(quota_guard) = NotificationQuotaGuard::acquire_notification(caller, protected_lane)
+    else {
         return Err(Error::RateLimited);
     };
     let Some(_notification_guard) =
@@ -1345,7 +1353,8 @@ async fn notify_withdrawal(
     ) {
         return Err(api::NotifyWithdrawalError::InsufficientCycles);
     }
-    let Some(quota_guard) = NotificationQuotaGuard::acquire(caller, protected_lane) else {
+    let Some(quota_guard) = NotificationQuotaGuard::acquire_notification(caller, protected_lane)
+    else {
         return Err(api::NotifyWithdrawalError::RateLimited);
     };
     let Some(notification_guard) =
@@ -3120,8 +3129,9 @@ mod candid_tests {
             store.deposit_reserve_token().unwrap(),
             0
         ));
-        let first = super::NotificationQuotaGuard::acquire(Principal::from_slice(&[1]), false)
-            .expect("first notification");
+        let first =
+            super::NotificationQuotaGuard::acquire_notification(Principal::from_slice(&[1]), false)
+                .expect("first notification");
         assert_eq!(
             store
                 .deposit_reserve_token()
@@ -3171,8 +3181,9 @@ mod candid_tests {
         assert!(verification.as_mut().poll(&mut context).is_ready());
         assert!(!super::NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| *active.borrow()));
         drop(verification);
-        let second = super::NotificationQuotaGuard::acquire(Principal::from_slice(&[2]), false)
-            .expect("second notification");
+        let second =
+            super::NotificationQuotaGuard::acquire_notification(Principal::from_slice(&[2]), false)
+                .expect("second notification");
         let reserved = store.deposit_reserve_token().unwrap();
         assert_eq!(reserved.nonterminal_withdrawals, 4);
         assert!(!has_notification_cycle_budget(151, policy, reserved, 0));
@@ -3198,6 +3209,15 @@ mod candid_tests {
         )));
         assert!(cancelled.as_mut().poll(&mut context).is_pending());
         drop(cancelled);
+        // Cancellation releases poll ownership, while the borrowed live guard
+        // continues to own both slots until the guard itself is dropped.
+        assert_eq!(
+            store
+                .deposit_reserve_token()
+                .unwrap()
+                .nonterminal_withdrawals,
+            4
+        );
         assert!(!super::NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| *active.borrow()));
         assert_eq!(
             super::external_call_cycle_requirement(policy, reserved, 0, 5),
@@ -3219,6 +3239,60 @@ mod candid_tests {
                 .nonterminal_withdrawals,
             0
         );
+        let mut guards = Vec::new();
+        for index in 0..14u8 {
+            let caller = Principal::from_slice(&[20 + index / 2]);
+            guards
+                .push(super::NotificationQuotaGuard::acquire_notification(caller, false).unwrap());
+            assert_eq!(
+                super::NOTIFICATIONS_IN_FLIGHT.with(|g| *g.borrow()),
+                index + 1
+            );
+        }
+        let full_snapshot = super::NOTIFICATION_CALLERS.with(|c| c.borrow().clone());
+        assert!(super::NotificationQuotaGuard::acquire_notification(
+            Principal::from_slice(&[99]),
+            false
+        )
+        .is_none());
+        assert_eq!(
+            super::NOTIFICATION_CALLERS.with(|c| c.borrow().clone()),
+            full_snapshot
+        );
+        for caller in [98, 99] {
+            guards.push(
+                super::NotificationQuotaGuard::acquire_notification(
+                    Principal::from_slice(&[caller]),
+                    true,
+                )
+                .unwrap(),
+            );
+        }
+        assert!(super::NotificationQuotaGuard::acquire_notification(
+            Principal::from_slice(&[100]),
+            true
+        )
+        .is_none());
+        while let Some(guard) = guards.pop() {
+            drop(guard);
+            let global = super::NOTIFICATIONS_IN_FLIGHT.with(|g| *g.borrow());
+            let sum = super::NOTIFICATION_CALLERS
+                .with(|c| c.borrow().values().map(|n| u16::from(*n)).sum::<u16>());
+            assert_eq!(usize::from(global), guards.len());
+            assert_eq!(sum, u16::from(global));
+        }
+        assert!(super::NOTIFICATION_CALLERS.with(|c| c.borrow().is_empty()));
+        // Per-caller rejection below global capacity also preserves both counts.
+        let caller = Principal::from_slice(&[101]);
+        let one = super::NotificationQuotaGuard::acquire_notification(caller, true).unwrap();
+        let two = super::NotificationQuotaGuard::acquire_notification(caller, true).unwrap();
+        assert!(super::NotificationQuotaGuard::acquire_notification(caller, true).is_none());
+        assert_eq!(super::NOTIFICATIONS_IN_FLIGHT.with(|g| *g.borrow()), 2);
+        assert_eq!(super::NOTIFICATION_CALLERS.with(|c| c.borrow()[&caller]), 2);
+        drop(two);
+        drop(one);
+        assert_eq!(super::NOTIFICATIONS_IN_FLIGHT.with(|g| *g.borrow()), 0);
+        assert!(super::NOTIFICATION_CALLERS.with(|c| c.borrow().is_empty()));
     }
 
     #[test]

@@ -50,3 +50,47 @@ against the implementation rather than represented as an already-proved database
 
 The full proof gate and release gate remain separate from an impacted proof run;
 the latter does not produce a complete production proof receipt.
+
+## Count-to-charging composition and guard transitions
+
+`notification_paid_call_composition_preserves_all_other_reserves` composes the
+existing production-shared count partition, owner exclusion, checked reserve,
+paid-call, and signing expressions. With `L` existing withdrawal liabilities,
+`N` active notifications, indexed deposit count `D`, and funding subset `F`, it
+proves that idle deposits `D - F` plus separately reserved funding `F` contribute
+exactly `D`. The resulting protected operation count is
+`L + 2 * (N - owner) + D`. The theorem covers zero operation count as well as
+positive counts, under the successful checked arithmetic premises. With floor
+`B`, unit ceiling `U`, attached cycles `A`, and actual charge `C <= A + U`, a
+balance admitted at `B + U * count + A + U` retains at least `B + U * count`
+after charging. The signing and paid-call requirement expressions agree.
+
+The composition is a supporting theorem in the registered `pass.rs` source; its
+kernel constituents retain their individual manifest obligations, negative
+fixtures, and claim ownership. It invokes both registered charging preservation
+theorems. This adds implementation-linked evidence for `paid_call_cycle_reserve`
+and `signing_cycle_reserve`, without weakening their existing contracts.
+
+Two more production-shared expressions implement guard acquisition and counter
+release. Acquisition either rejects without producing updated counts or returns
+both counters incremented by exactly one within their configured u8 limits.
+Release subtracts exactly one from a positive count and retains the pre-existing
+defensive saturation at zero. The round-trip theorem proves successful
+acquisition followed by one release restores both original counts, and adds then
+removes exactly two global reservation slots. The quota acquisition/release
+obligations, negative fixtures, and actual guard call sites are registered for
+`notification_quota_isolation` and `paid_call_cycle_reserve`.
+
+The registered exhaustive test checks all u8 global/caller counter values for
+both runtime lane limits and calls actual `ReservePolicy::required_cycles` for
+the count/funding composition. The actual canister adapter test exercises global
+and per-caller rejection, the two protected-lane slots, and releases all guards,
+checking that the sum of caller counts equals the global count after every
+release and that caller entries are removed at zero. It also retains its actual
+Future pending/completion/cancellation and nested ownership checks.
+
+These transition proofs establish arithmetic preservation for one acquire and
+one release. They do not prove that arbitrary Rust execution invokes `Drop`
+exactly once, that every executor schedule satisfies the guard lifetime
+invariant, or that a durable owner index faithfully counts every underlying SQL
+record. Those remain explicit implementation/runtime boundaries.

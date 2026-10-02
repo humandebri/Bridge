@@ -194,6 +194,26 @@ macro_rules! refresh_owner_matches_body {
     };
 }
 
+macro_rules! notification_quota_acquire_body {
+    ($global:expr, $caller:expr, $lane:expr, $limit:expr, $one:expr) => {
+        if $global >= $lane || $caller >= $limit {
+            None
+        } else {
+            Some(($global + $one, $caller + $one))
+        }
+    };
+}
+
+macro_rules! notification_quota_release_body {
+    ($count:expr, $zero:expr, $one:expr) => {
+        if $count == $zero {
+            $zero
+        } else {
+            $count - $one
+        }
+    };
+}
+
 macro_rules! notification_reservation_slots_body {
     ($active:expr, $max:expr, $two:expr) => {
         if $active > $max / $two {
@@ -1257,6 +1277,23 @@ pub const fn lease_generation_next(current: u64) -> Option<u64> {
 #[cfg(not(verus_keep_ghost))]
 pub const fn notification_reservation_slots(active: u64) -> Option<u64> {
     notification_reservation_slots_body!(active, u64::MAX, 2u64)
+}
+
+/// Admission increments both counters together, or leaves both unchanged.
+#[cfg(not(verus_keep_ghost))]
+pub const fn notification_quota_acquire(
+    global: u8,
+    caller: u8,
+    lane_limit: u8,
+    caller_limit: u8,
+) -> Option<(u8, u8)> {
+    notification_quota_acquire_body!(global, caller, lane_limit, caller_limit, 1u8)
+}
+
+/// Release one live guard; preserve the existing defensive saturation at zero.
+#[cfg(not(verus_keep_ghost))]
+pub const fn notification_quota_release(count: u8) -> u8 {
+    notification_quota_release_body!(count, 0u8, 1u8)
 }
 
 /// Only the currently polled notification may use its own two reserved slots.
@@ -2747,6 +2784,19 @@ verus! {
         next_attempt_body!(current, max, one)
     }
 
+
+    pub open spec fn notification_quota_acquire_spec(
+        global: int, caller: int, lane_limit: int, caller_limit: int,
+    ) -> Option<(int, int)> {
+        let one: int = 1;
+        notification_quota_acquire_body!(global, caller, lane_limit, caller_limit, one)
+    }
+
+    pub open spec fn notification_quota_release_spec(count: int) -> int {
+        let zero: int = 0;
+        let one: int = 1;
+        notification_quota_release_body!(count, zero, one)
+    }
 
     pub open spec fn notification_reservation_slots_spec(active: int) -> Option<int> {
         let max: int = 18446744073709551615;
