@@ -8,12 +8,23 @@ on:
         description: Exact commit to validate; defaults to the caller SHA
         required: false
         type: string
+      validation_target:
+        description: Complete repository gate or complete production proof gate
+        required: false
+        type: string
+        default: all
   workflow_dispatch:
     inputs:
       target_sha:
         description: Exact release-candidate commit SHA
         required: false
         type: string
+      validation_target:
+        description: Validation gate to run against the exact target commit
+        required: false
+        type: choice
+        options: [all, proofs]
+        default: all
 
 permissions:
   contents: read
@@ -24,6 +35,7 @@ concurrency:
 
 env:
   CI: "true"
+  BRIDGE_VALIDATION_TARGET: ${{ inputs.validation_target || 'all' }}
   BRIDGE_EXPECTED_HEAD_SHA: ${{ inputs.target_sha || github.sha }}
 
 jobs:
@@ -82,7 +94,25 @@ jobs:
         run: |
           pnpm --dir ui install --frozen-lockfile
           pnpm --dir ui exec playwright install --with-deps chromium
-      - name: Run complete repository gate
-        run: scripts/ci-local.sh all
+      - name: Run the selected complete gate
+        run: |
+          case "$BRIDGE_VALIDATION_TARGET" in
+            all|proofs) scripts/ci-local.sh "$BRIDGE_VALIDATION_TARGET" ;;
+            *) echo "unsupported validation target" >&2; exit 2 ;;
+          esac
+      - name: Verify the complete current-source proof receipt
+        run: python3 scripts/check_proof_impact.py --receipt verification/output/proof-receipt.json
+      - name: Preserve complete proof evidence and consumed test modules
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bridge-proof-evidence-${{ inputs.target_sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            verification/output/proof-receipt.json
+            verification/output/test-execution/
+            target/test-deployment/staging/bridge_canister.wasm
+            target/test-deployment/predecessor-v35/bridge_canister.wasm
+            target/wasm32-unknown-unknown/release/mock_external.wasm
       - name: Verify smoke restored the ICP configuration
         run: git diff --exit-code -- icp.yaml
