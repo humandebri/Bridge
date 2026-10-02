@@ -3236,7 +3236,10 @@ impl StableStore {
         Ok(DepositReserveToken {
             nonterminal_withdrawals: self
                 .table_count_value("withdrawal_liability_index")?
-                .checked_add(crate::notification_cycle_reservation_count())
+                .checked_add(
+                    crate::notification_cycle_reservation_count()
+                        .ok_or(StorageError::CounterOverflow)?,
+                )
                 .ok_or(StorageError::CounterOverflow)?,
             nonterminal_deposits: self.nonterminal_deposit_count()?,
             reserved_deposit_mint_amount: counters.reserved_deposit_mint_amount,
@@ -7747,9 +7750,11 @@ impl StableStore {
     pub fn nonterminal_deposit_count(&self) -> Result<u64, StorageError> {
         // Idle authorizations and refund claims still carry asset liabilities.
         // Funding attempts share this index but have a separate cycles reservation.
-        self.table_count_value("nonterminal_deposit_owner_index")?
-            .checked_sub(self.table_count_value("deposit_funding_attempts")?)
-            .ok_or(StorageError::CounterOverflow)
+        ::bridge_core::kernel::nonterminal_deposit_reservation_count(
+            self.table_count_value("nonterminal_deposit_owner_index")?,
+            self.table_count_value("deposit_funding_attempts")?,
+        )
+        .ok_or(StorageError::CounterOverflow)
     }
 
     pub fn update_deposit_funding_attempt(

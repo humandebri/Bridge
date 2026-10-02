@@ -361,6 +361,53 @@ proof fn governance_transaction_liability_is_checked(
         ) == None::<int>
 {}
 
+proof fn notification_slots_are_exact_or_overflow_rejected(active: int)
+    requires 0 <= active <= 18446744073709551615int
+    ensures active <= 9223372036854775807int ==>
+            kernel::notification_reservation_slots_spec(active) == Some(2 * active),
+        active <= 9223372036854775807int ==> 0 <= 2 * active <= 18446744073709551615int,
+        active > 9223372036854775807int ==>
+            kernel::notification_reservation_slots_spec(active) == None::<int>
+{}
+
+proof fn notification_owner_exclusion_is_exact_and_fail_closed(total: int, owner: bool)
+    requires 0 <= total <= 18446744073709551615int
+    ensures !owner ==> kernel::notification_reservation_excluding_owner_spec(total, owner) == Some(total),
+        owner && total < 2 ==> kernel::notification_reservation_excluding_owner_spec(total, owner) == None::<int>,
+        owner && total >= 2 ==> kernel::notification_reservation_excluding_owner_spec(total, owner) == Some(total - 2)
+{}
+
+// A polled owner cannot subtract any existing liability or another owner's slots.
+proof fn notification_exclusion_preserves_other_owners(liabilities: int, active: int, owner: bool)
+    requires 0 <= liabilities,
+        0 <= active <= 9223372036854775807int,
+        liabilities + 2 * active <= 18446744073709551615int,
+        owner ==> active >= 1
+    ensures kernel::notification_reservation_slots_spec(active) == Some(2 * active),
+        kernel::notification_reservation_excluding_owner_spec(liabilities + 2 * active, owner)
+            == Some(liabilities + 2 * (active - if owner { 1int } else { 0int })),
+        liabilities <= liabilities + 2 * (active - if owner { 1int } else { 0int })
+{}
+
+proof fn deposit_reservations_partition_the_owner_index(indexed: int, funding: int)
+    requires 0 <= indexed <= 18446744073709551615int,
+        0 <= funding <= 18446744073709551615int
+    ensures funding > indexed ==>
+            kernel::nonterminal_deposit_reservation_count_spec(indexed, funding) == None::<int>,
+        funding <= indexed ==>
+            kernel::nonterminal_deposit_reservation_count_spec(indexed, funding) == Some(indexed - funding),
+        funding <= indexed ==> (indexed - funding) + funding == indexed,
+        funding <= indexed ==> 0 <= indexed - funding <= 18446744073709551615int
+{}
+
+proof fn notification_poll_scope_restores_previous_ownership(previous: bool)
+    ensures kernel::notification_poll_owner_spec(previous, true),
+        kernel::notification_poll_owner_spec(previous, false) == previous,
+        kernel::notification_poll_owner_spec(kernel::notification_poll_owner_spec(previous, true), true),
+        kernel::notification_poll_owner_spec(kernel::notification_poll_owner_spec(previous, true), false),
+        !previous ==> !kernel::notification_poll_owner_spec(previous, false)
+{}
+
 proof fn signing_cycle_requirement_preserves_reserve(
     required_reserve: int,
     signing_cost: int,

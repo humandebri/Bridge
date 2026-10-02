@@ -245,10 +245,12 @@ struct NotificationQuotaGuard {
     caller: Principal,
 }
 
-pub(crate) fn notification_cycle_reservation_count() -> u64 {
+pub(crate) fn notification_cycle_reservation_count() -> Option<u64> {
     // Every admitted notification owns its verification and possible liability
     // slots until its final callback commits or fails and drops the guard.
-    NOTIFICATIONS_IN_FLIGHT.with(|count| u64::from(*count.borrow()) * 2)
+    NOTIFICATIONS_IN_FLIGHT.with(|count| {
+        ::bridge_core::kernel::notification_reservation_slots(u64::from(*count.borrow()))
+    })
 }
 
 struct NotificationReservationPollScope {
@@ -258,15 +260,28 @@ struct NotificationReservationPollScope {
 impl NotificationReservationPollScope {
     fn enter(_owner: &NotificationQuotaGuard) -> Self {
         Self {
-            previous: NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| active.replace(true)),
+            previous: NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| {
+                let previous = *active.borrow();
+                active.replace(::bridge_core::kernel::notification_poll_owner(
+                    previous, true,
+                ))
+            }),
         }
     }
 }
 
 impl Drop for NotificationReservationPollScope {
     fn drop(&mut self) {
-        NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| active.replace(self.previous));
+        restore_notification_poll_owner(self.previous);
     }
+}
+
+fn restore_notification_poll_owner(previous: bool) {
+    NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| {
+        active.replace(::bridge_core::kernel::notification_poll_owner(
+            previous, false,
+        ))
+    });
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1536,9 +1551,11 @@ fn external_call_cycle_requirement(
     active_funding: u64,
     attached_cycles: u128,
 ) -> Option<u128> {
-    let owned_slots =
-        NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| if *active.borrow() { 2 } else { 0 });
-    let withdrawals = token.nonterminal_withdrawals.checked_sub(owned_slots)?;
+    let owner_poll = NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| *active.borrow());
+    let withdrawals = ::bridge_core::kernel::notification_reservation_excluding_owner(
+        token.nonterminal_withdrawals,
+        owner_poll,
+    )?;
     let deposits = token.nonterminal_deposits.checked_add(active_funding)?;
     let reserve = policy.required_cycles(withdrawals, deposits, 0).ok()?;
     // The attachment spends the owner's verification budget; the call margin
@@ -3117,6 +3134,9 @@ mod candid_tests {
         let mut context = Context::from_waker(Waker::noop());
         let mut first_poll = true;
         let mut verification = Box::pin(first.with_reserved_cycles(std::future::poll_fn(|_| {
+            let nested = super::NotificationReservationPollScope::enter(&first);
+            drop(nested);
+            assert!(super::NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| *active.borrow()));
             let required = super::external_call_cycle_requirement(
                 policy,
                 store.deposit_reserve_token().unwrap(),
@@ -3137,6 +3157,7 @@ mod candid_tests {
             }
         })));
         assert!(verification.as_mut().poll(&mut context).is_pending());
+        assert!(!super::NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| *active.borrow()));
         // An unrelated call cannot spend the suspended notification's slots.
         assert_eq!(
             super::external_call_cycle_requirement(
@@ -3148,6 +3169,7 @@ mod candid_tests {
             Some(135)
         );
         assert!(verification.as_mut().poll(&mut context).is_ready());
+        assert!(!super::NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| *active.borrow()));
         drop(verification);
         let second = super::NotificationQuotaGuard::acquire(Principal::from_slice(&[2]), false)
             .expect("second notification");
@@ -3176,6 +3198,7 @@ mod candid_tests {
         )));
         assert!(cancelled.as_mut().poll(&mut context).is_pending());
         drop(cancelled);
+        assert!(!super::NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| *active.borrow()));
         assert_eq!(
             super::external_call_cycle_requirement(policy, reserved, 0, 5),
             Some(155)
