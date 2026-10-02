@@ -191,6 +191,7 @@ thread_local! {
     static IN_FLIGHT_ACTIONS: RefCell<BTreeSet<ActionKey>> = const { RefCell::new(BTreeSet::new()) };
     static NOTIFICATION_CALLERS: RefCell<BTreeMap<Principal, u8>> = const { RefCell::new(BTreeMap::new()) };
     static NOTIFICATIONS_IN_FLIGHT: RefCell<u8> = const { RefCell::new(0) };
+    static NOTIFICATION_RESERVATION_OWNER_POLL: RefCell<bool> = const { RefCell::new(false) };
     static NOTIFICATION_CALLER_ADMISSION: RefCell<BTreeMap<Principal, NotificationAdmissionBucket>> =
         const { RefCell::new(BTreeMap::new()) };
 }
@@ -242,6 +243,30 @@ struct InFlightGuard {
 
 struct NotificationQuotaGuard {
     caller: Principal,
+}
+
+pub(crate) fn notification_cycle_reservation_count() -> u64 {
+    // Every admitted notification owns its verification and possible liability
+    // slots until its final callback commits or fails and drops the guard.
+    NOTIFICATIONS_IN_FLIGHT.with(|count| u64::from(*count.borrow()) * 2)
+}
+
+struct NotificationReservationPollScope {
+    previous: bool,
+}
+
+impl NotificationReservationPollScope {
+    fn enter(_owner: &NotificationQuotaGuard) -> Self {
+        Self {
+            previous: NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| active.replace(true)),
+        }
+    }
+}
+
+impl Drop for NotificationReservationPollScope {
+    fn drop(&mut self) {
+        NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| active.replace(self.previous));
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,6 +343,17 @@ fn record_notification_bucket<K: Ord + Clone>(
 }
 
 impl NotificationQuotaGuard {
+    async fn with_reserved_cycles<F: std::future::Future>(&self, future: F) -> F::Output {
+        let mut future = Box::pin(future);
+        std::future::poll_fn(|context| {
+            // Never leave ownership ambient across an await: another message's
+            // RPC must preserve this notification's complete reservation.
+            let _scope = NotificationReservationPollScope::enter(self);
+            future.as_mut().poll(context)
+        })
+        .await
+    }
+
     const GLOBAL_LIMIT: u8 = 16;
     const PER_CALLER_LIMIT: u8 = 2;
 
@@ -817,7 +853,7 @@ async fn notify_deposit_mint(
     ) {
         return Err(Error::InsufficientCycles);
     }
-    let Some(_quota_guard) = NotificationQuotaGuard::acquire(caller, protected_lane) else {
+    let Some(quota_guard) = NotificationQuotaGuard::acquire(caller, protected_lane) else {
         return Err(Error::RateLimited);
     };
     let Some(_notification_guard) =
@@ -850,52 +886,54 @@ async fn notify_deposit_mint(
         now_ns,
         config.notification_rate_limit_window_seconds,
     );
-    let result = async {
-        let runtime_attested = api::runtime_attested(&config).map_err(|_| Error::StorageFailure)?;
-        let observation = evm_rpc::recovery_observation(
-            &config,
-            evm_rpc::RecoveryTarget::Deposit(id),
-            runtime_attested,
-        )
-        .await
-        .map_err(map_mint_notification_error)?;
-        if !matches!(
-            observation.state,
-            evm_rpc::RecoveryBaseState::DepositProcessed(true)
-        ) {
-            return Err(Error::TransactionNotConfirmed);
-        }
-        let evidence = evm_rpc::exact_mint_receipt_evidence(
-            &config,
-            &authorization,
-            observation.finalized,
-            transaction_hash,
-        )
-        .await
-        .map_err(map_mint_notification_error)?;
-        STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            let mut deposit = store
-                .deposit(id)
-                .map_err(|_| Error::StorageFailure)?
-                .ok_or(Error::NotFound)?;
-            if deposit.mint_authorization.as_ref() != Some(&authorization) {
-                return Err(Error::IdentityConflict);
+    let result = quota_guard
+        .with_reserved_cycles(async {
+            let runtime_attested =
+                api::runtime_attested(&config).map_err(|_| Error::StorageFailure)?;
+            let observation = evm_rpc::recovery_observation(
+                &config,
+                evm_rpc::RecoveryTarget::Deposit(id),
+                runtime_attested,
+            )
+            .await
+            .map_err(map_mint_notification_error)?;
+            if !matches!(
+                observation.state,
+                evm_rpc::RecoveryBaseState::DepositProcessed(true)
+            ) {
+                return Err(Error::TransactionNotConfirmed);
             }
-            let transition = deposit
-                .apply(bridge_core::DepositEvent::MintReconciled {
-                    evidence: Box::new(evidence),
-                })
-                .map_err(|_| Error::IdentityConflict)?;
-            store
-                .put_deposit_transition(&deposit, transition)
-                .map_err(|_| Error::StorageFailure)
-        })?;
-        Ok(api::NotifyDepositMintReceipt::Recorded {
-            deposit_id: id.to_vec(),
+            let evidence = evm_rpc::exact_mint_receipt_evidence(
+                &config,
+                &authorization,
+                observation.finalized,
+                transaction_hash,
+            )
+            .await
+            .map_err(map_mint_notification_error)?;
+            STORE.with(|store| {
+                let mut store = store.borrow_mut();
+                let mut deposit = store
+                    .deposit(id)
+                    .map_err(|_| Error::StorageFailure)?
+                    .ok_or(Error::NotFound)?;
+                if deposit.mint_authorization.as_ref() != Some(&authorization) {
+                    return Err(Error::IdentityConflict);
+                }
+                let transition = deposit
+                    .apply(bridge_core::DepositEvent::MintReconciled {
+                        evidence: Box::new(evidence),
+                    })
+                    .map_err(|_| Error::IdentityConflict)?;
+                store
+                    .put_deposit_transition(&deposit, transition)
+                    .map_err(|_| Error::StorageFailure)
+            })?;
+            Ok(api::NotifyDepositMintReceipt::Recorded {
+                deposit_id: id.to_vec(),
+            })
         })
-    }
-    .await;
+        .await;
     if result.is_err() {
         STORE
             .with(|store| {
@@ -1252,6 +1290,7 @@ async fn notify_withdrawal(
     require_asset_operations_for_withdrawal_notification()?;
     let caller = ic_cdk::api::msg_caller();
     let transaction_hash = api::notification_action_hash(caller, &args)?;
+    let cooldown_key = withdrawal_notification_cooldown_key(caller, transaction_hash);
     if let Some(receipt) = api::existing_notified_withdrawal_by_hash(transaction_hash)? {
         return Ok(receipt);
     }
@@ -1268,7 +1307,7 @@ async fn notify_withdrawal(
         .with(|store| {
             store
                 .borrow()
-                .notification_failure_cooldown_active(transaction_hash, now_ns)
+                .notification_failure_cooldown_active(cooldown_key, now_ns)
         })
         .map_err(|_| api::NotifyWithdrawalError::StorageFailure)?
     {
@@ -1291,7 +1330,7 @@ async fn notify_withdrawal(
     ) {
         return Err(api::NotifyWithdrawalError::InsufficientCycles);
     }
-    let Some(_quota_guard) = NotificationQuotaGuard::acquire(caller, protected_lane) else {
+    let Some(quota_guard) = NotificationQuotaGuard::acquire(caller, protected_lane) else {
         return Err(api::NotifyWithdrawalError::RateLimited);
     };
     let Some(notification_guard) =
@@ -1324,13 +1363,16 @@ async fn notify_withdrawal(
         now_ns,
         config.notification_rate_limit_window_seconds,
     );
-    let receipt = match api::notify_withdrawal(caller, args).await {
+    let receipt = match quota_guard
+        .with_reserved_cycles(api::notify_withdrawal(caller, args))
+        .await
+    {
         Ok(receipt) => receipt,
         Err(error) => {
             STORE
                 .with(|store| {
                     store.borrow_mut().record_notification_failure_cooldown(
-                        transaction_hash,
+                        cooldown_key,
                         ic_cdk::api::time(),
                         30_000_000_000,
                     )
@@ -1345,6 +1387,15 @@ async fn notify_withdrawal(
     }
     drop(notification_guard);
     Ok(receipt)
+}
+
+fn withdrawal_notification_cooldown_key(caller: Principal, transaction_hash: [u8; 32]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"withdrawal-notification-caller");
+    hash.update(transaction_hash);
+    hash.update(caller.as_slice());
+    hash.finalize().into()
 }
 
 fn admit_control_plane_external_call() -> Result<InFlightGuard, base_governance::BaseGovernanceError>
@@ -1464,39 +1515,11 @@ pub(crate) fn require_external_call_cycle_budget_with_policy(
             available: ic_cdk::api::canister_liquid_cycle_balance(),
             required: u128::MAX,
         })?;
-    let deposits = token
-        .nonterminal_deposits
-        .checked_add(active_funding)
+    let required = external_call_cycle_requirement(policy, token, active_funding, attached_cycles)
         .ok_or(ExternalCallCycleBudgetError {
             available: ic_cdk::api::canister_liquid_cycle_balance(),
             required: u128::MAX,
         })?;
-    let reserve = policy
-        .required_cycles(token.nonterminal_withdrawals, deposits, 0)
-        .map_err(|_| ExternalCallCycleBudgetError {
-            available: ic_cdk::api::canister_liquid_cycle_balance(),
-            required: u128::MAX,
-        })?;
-    let required = ::bridge_core::kernel::paid_call_cycle_requirement(
-        reserve,
-        attached_cycles,
-        policy.settlement_cycle_ceiling,
-    )
-    .ok_or(ExternalCallCycleBudgetError {
-        available: ic_cdk::api::canister_liquid_cycle_balance(),
-        required: u128::MAX,
-    })?;
-    if ::bridge_core::kernel::signing_cycle_requirement(
-        reserve,
-        attached_cycles,
-        policy.settlement_cycle_ceiling,
-    ) != Some(required)
-    {
-        return Err(ExternalCallCycleBudgetError {
-            available: ic_cdk::api::canister_liquid_cycle_balance(),
-            required: u128::MAX,
-        });
-    }
     let available = ic_cdk::api::canister_liquid_cycle_balance();
     if available < required {
         return Err(ExternalCallCycleBudgetError {
@@ -1505,6 +1528,32 @@ pub(crate) fn require_external_call_cycle_budget_with_policy(
         });
     }
     Ok(())
+}
+
+fn external_call_cycle_requirement(
+    policy: bridge_core::ReservePolicy,
+    token: storage::DepositReserveToken,
+    active_funding: u64,
+    attached_cycles: u128,
+) -> Option<u128> {
+    let owned_slots =
+        NOTIFICATION_RESERVATION_OWNER_POLL.with(|active| if *active.borrow() { 2 } else { 0 });
+    let withdrawals = token.nonterminal_withdrawals.checked_sub(owned_slots)?;
+    let deposits = token.nonterminal_deposits.checked_add(active_funding)?;
+    let reserve = policy.required_cycles(withdrawals, deposits, 0).ok()?;
+    // The attachment spends the owner's verification budget; the call margin
+    // protects its possible new liability. Every other owner's slots stay reserved.
+    let required = ::bridge_core::kernel::paid_call_cycle_requirement(
+        reserve,
+        attached_cycles,
+        policy.settlement_cycle_ceiling,
+    )?;
+    (::bridge_core::kernel::signing_cycle_requirement(
+        reserve,
+        attached_cycles,
+        policy.settlement_cycle_ceiling,
+    ) == Some(required))
+    .then_some(required)
 }
 
 fn can_continue_withdrawal(caller: candid::Principal) -> bool {
@@ -1931,7 +1980,9 @@ fn get_bridge_status() -> BridgeStatus {
             .snapshot(
                 storage_or_trap(
                     "nonterminal withdrawal count read",
-                    store.nonterminal_withdrawal_count(),
+                    store
+                        .deposit_reserve_token()
+                        .map(|token| token.nonterminal_withdrawals),
                 ),
                 storage_or_trap(
                     "nonterminal deposit count read",
@@ -2574,12 +2625,14 @@ fn icrc21_canister_call_consent_message(
         } else {
             None
         };
-    consent::consent_message(
+    let response = consent::consent_message(
         ic_cdk::api::msg_caller(),
         ic_cdk::api::canister_self(),
         request,
         ledger_fee,
-    )
+    );
+    // Invalid requests must not consume the shared wallet consent budget.
+    consent::admit_validated_response(response, consume_consent_request_quota)
 }
 
 fn consent_cycle_budget(
@@ -2626,6 +2679,15 @@ fn admit_consent_request() -> Result<(), consent::ConsentAdmissionError> {
         token,
         active_funding,
     )?;
+    Ok(())
+}
+
+fn consume_consent_request_quota() -> Result<(), consent::ConsentAdmissionError> {
+    use consent::ConsentAdmissionError as Error;
+    let config = STORE
+        .with(|store| store.borrow().config())
+        .map_err(|_| Error::ConfigurationUnavailable)?
+        .ok_or(Error::ConfigurationUnavailable)?;
     let now_ns = ic_cdk::api::time();
     let admitted = STORE
         .with(|store| {
@@ -2739,6 +2801,7 @@ mod candid_tests {
         DefaultMemoryImpl, InFlightGuard, NotificationAdmissionGuard, StableStore,
         NOTIFICATION_CALLER_ADMISSION,
     };
+    use candid::Principal;
 
     #[test]
     fn public_asset_adapters_reject_bootstrap_and_allow_sealed_lifecycle() {
@@ -2944,6 +3007,7 @@ mod candid_tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn new_notifications_preserve_cycles_for_every_existing_asset_liability() {
         let policy = bridge_core::ReservePolicy {
             cycles_floor: 100,
@@ -2959,6 +3023,107 @@ mod candid_tests {
         // verification and newly-ingested withdrawal settlement slots.
         assert!(!has_notification_cycle_budget(180, policy, token, 1));
         assert!(has_notification_cycle_budget(181, policy, token, 1));
+        let store = StableStore::init(DefaultMemoryImpl::default()).expect("initialize");
+        let liquid = 125;
+        assert!(has_notification_cycle_budget(
+            liquid,
+            policy,
+            store.deposit_reserve_token().unwrap(),
+            0
+        ));
+        let first = super::NotificationQuotaGuard::acquire(Principal::from_slice(&[1]), false)
+            .expect("first notification");
+        assert_eq!(
+            store
+                .deposit_reserve_token()
+                .unwrap()
+                .nonterminal_withdrawals,
+            2
+        );
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let mut context = Context::from_waker(Waker::noop());
+        let mut first_poll = true;
+        let mut verification = Box::pin(first.with_reserved_cycles(std::future::poll_fn(|_| {
+            let required = super::external_call_cycle_requirement(
+                policy,
+                store.deposit_reserve_token().unwrap(),
+                0,
+                5,
+            )
+            .unwrap();
+            // The original reported boundary: admission at 125 must permit
+            // the owner's paid RPC while retaining floor + one liability slot.
+            assert_eq!(required, 115);
+            assert!(liquid >= required);
+            assert!(liquid - 5 >= policy.cycles_floor + policy.settlement_cycle_ceiling);
+            if first_poll {
+                first_poll = false;
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })));
+        assert!(verification.as_mut().poll(&mut context).is_pending());
+        // An unrelated call cannot spend the suspended notification's slots.
+        assert_eq!(
+            super::external_call_cycle_requirement(
+                policy,
+                store.deposit_reserve_token().unwrap(),
+                0,
+                5,
+            ),
+            Some(135)
+        );
+        assert!(verification.as_mut().poll(&mut context).is_ready());
+        drop(verification);
+        let second = super::NotificationQuotaGuard::acquire(Principal::from_slice(&[2]), false)
+            .expect("second notification");
+        let reserved = store.deposit_reserve_token().unwrap();
+        assert_eq!(reserved.nonterminal_withdrawals, 4);
+        assert!(!has_notification_cycle_budget(151, policy, reserved, 0));
+        assert_eq!(
+            consent_cycle_budget(140, policy, reserved, 0),
+            Err(super::consent::ConsentAdmissionError::InsufficientCycles)
+        );
+        let mut cancelled = Box::pin(second.with_reserved_cycles(std::future::poll_fn::<(), _>(
+            |_| {
+                // Only this owner's two slots are usable; the other owner's
+                // complete reservation remains protected.
+                assert_eq!(
+                    super::external_call_cycle_requirement(
+                        policy,
+                        store.deposit_reserve_token().unwrap(),
+                        0,
+                        5,
+                    ),
+                    Some(135)
+                );
+                Poll::Pending
+            },
+        )));
+        assert!(cancelled.as_mut().poll(&mut context).is_pending());
+        drop(cancelled);
+        assert_eq!(
+            super::external_call_cycle_requirement(policy, reserved, 0, 5),
+            Some(155)
+        );
+        drop(first);
+        assert_eq!(
+            store
+                .deposit_reserve_token()
+                .unwrap()
+                .nonterminal_withdrawals,
+            2
+        );
+        drop(second);
+        assert_eq!(
+            store
+                .deposit_reserve_token()
+                .unwrap()
+                .nonterminal_withdrawals,
+            0
+        );
     }
 
     #[test]
@@ -3158,6 +3323,25 @@ mod candid_tests {
             .expect("reset canonical ingestion window"));
 
         let hash = [9; 32];
+        let public_key = super::withdrawal_notification_cooldown_key(caller, hash);
+        reopened
+            .record_notification_failure_cooldown(public_key, 0, 30)
+            .unwrap();
+        assert!(reopened
+            .notification_failure_cooldown_active(public_key, 29)
+            .unwrap());
+        assert!(!reopened
+            .notification_failure_cooldown_active(hash, 29)
+            .unwrap());
+        assert!(!reopened
+            .notification_failure_cooldown_active(
+                super::withdrawal_notification_cooldown_key(Principal::from_slice(&[2]), hash),
+                29
+            )
+            .unwrap());
+        assert!(!reopened
+            .notification_failure_cooldown_active(public_key, 30)
+            .unwrap());
         let guard = InFlightGuard::acquire(ActionKey::Notification(hash))
             .expect("first hash notification acquires");
         assert!(InFlightGuard::acquire(ActionKey::Notification(hash)).is_none());

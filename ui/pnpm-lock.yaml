@@ -13,7 +13,7 @@ overrides:
   undici: 7.29.0
 
 patchedDependencies:
-  '@dfinity/oisy-wallet-signer@6.0.0': 845fb0200f088cb3ff3eaab3a8e294d399f11cff37d972a78e47de822eff000e
+  '@dfinity/oisy-wallet-signer@6.0.0': 260392e5cdcf7977f8b180881e52a8f15596c74fee497d6bbe1aec6d643e0918
 
 importers:
 
@@ -24,7 +24,7 @@ importers:
         version: 4.3.7(typescript@6.0.2)(zod@4.5.0)
       '@dfinity/oisy-wallet-signer':
         specifier: 6.0.0
-        version: 6.0.0(patch_hash=845fb0200f088cb3ff3eaab3a8e294d399f11cff37d972a78e47de822eff000e)(@dfinity/utils@4.2.1(@icp-sdk/core@5.4.0))(@dfinity/zod-schemas@3.2.0(@icp-sdk/core@5.4.0)(zod@4.5.0))(@icp-sdk/canisters@3.6.0(@dfinity/utils@4.2.1(@icp-sdk/core@5.4.0))(@icp-sdk/core@5.4.0))(@icp-sdk/core@5.4.0)(zod@4.5.0)
+        version: 6.0.0(patch_hash=260392e5cdcf7977f8b180881e52a8f15596c74fee497d6bbe1aec6d643e0918)(@dfinity/utils@4.2.1(@icp-sdk/core@5.4.0))(@dfinity/zod-schemas@3.2.0(@icp-sdk/core@5.4.0)(zod@4.5.0))(@icp-sdk/canisters@3.6.0(@dfinity/utils@4.2.1(@icp-sdk/core@5.4.0))(@icp-sdk/core@5.4.0))(@icp-sdk/core@5.4.0)(zod@4.5.0)
       '@dfinity/utils':
         specifier: 4.2.1
         version: 4.2.1(@icp-sdk/core@5.4.0)
@@ -4050,7 +4050,7 @@ snapshots:
 
   '@dfinity/cbor@0.2.3': {}
 
-  '@dfinity/oisy-wallet-signer@6.0.0(patch_hash=845fb0200f088cb3ff3eaab3a8e294d399f11cff37d972a78e47de822eff000e)(@dfinity/utils@4.2.1(@icp-sdk/core@5.4.0))(@dfinity/zod-schemas@3.2.0(@icp-sdk/core@5.4.0)(zod@4.5.0))(@icp-sdk/canisters@3.6.0(@dfinity/utils@4.2.1(@icp-sdk/core@5.4.0))(@icp-sdk/core@5.4.0))(@icp-sdk/core@5.4.0)(zod@4.5.0)':
+  '@dfinity/oisy-wallet-signer@6.0.0(patch_hash=260392e5cdcf7977f8b180881e52a8f15596c74fee497d6bbe1aec6d643e0918)(@dfinity/utils@4.2.1(@icp-sdk/core@5.4.0))(@dfinity/zod-schemas@3.2.0(@icp-sdk/core@5.4.0)(zod@4.5.0))(@icp-sdk/canisters@3.6.0(@dfinity/utils@4.2.1(@icp-sdk/core@5.4.0))(@icp-sdk/core@5.4.0))(@icp-sdk/core@5.4.0)(zod@4.5.0)':
     dependencies:
       '@dfinity/utils': 4.2.1(@icp-sdk/core@5.4.0)
       '@dfinity/zod-schemas': 3.2.0(@icp-sdk/core@5.4.0)(zod@4.5.0)

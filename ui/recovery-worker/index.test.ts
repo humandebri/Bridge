@@ -44,6 +44,26 @@ function request(body: unknown = { depositId: id }, origin = "https://bridge.kin
   })
 }
 const rpc = vi.fn()
+
+it("partitions recovery quota by edge-verified client IP and deposit", async () => {
+  const used = new Set<string>()
+  const limited = {
+    ...env,
+    DEPOSIT_LIMIT: {
+      limit: async ({ key }: { key: string }) => {
+        const success = !used.has(key)
+        used.add(key)
+        return { success }
+      },
+    },
+  }
+  expect((await worker.fetch(request(), limited)).status).toBe(200)
+  expect((await worker.fetch(request(), limited)).status).toBe(429)
+  const victim = request()
+  victim.headers.set("CF-Connecting-IP", "192.0.2.2")
+  expect((await worker.fetch(victim, limited)).status).toBe(200)
+  expect(used).toEqual(new Set([`192.0.2.1:${id}`, `192.0.2.2:${id}`]))
+})
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.deposit.mockResolvedValue([

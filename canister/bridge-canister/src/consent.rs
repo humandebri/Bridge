@@ -210,6 +210,18 @@ pub fn consent_message(
     })
 }
 
+pub fn admit_validated_response(
+    response: Icrc21ConsentMessageResponse,
+    admit: impl FnOnce() -> Result<(), ConsentAdmissionError>,
+) -> Icrc21ConsentMessageResponse {
+    if matches!(response, Icrc21ConsentMessageResponse::Ok(_)) {
+        if let Err(reason) = admit() {
+            return admission_error(reason);
+        }
+    }
+    response
+}
+
 fn settlement_consent(
     caller: Principal,
     canister: Principal,
@@ -597,6 +609,41 @@ mod tests {
     #[test]
     fn rejects_malformed_and_unsupported_calls() {
         let caller = Principal::management_canister();
+        let mut consumed = 0;
+        for caller in [caller, Principal::anonymous()] {
+            for mut request in [
+                settlement_request("unsupported", vec![]),
+                settlement_request("continue_deposit", vec![1; 31]),
+                settlement_request("continue_deposit", vec![1; 4_097]),
+            ] {
+                request.user_preferences.metadata.language = "en".into();
+                let response = consent_message(caller, caller, request, None);
+                assert!(matches!(
+                    admit_validated_response(response, || {
+                        consumed += 1;
+                        Ok(())
+                    }),
+                    Icrc21ConsentMessageResponse::Err(_)
+                ));
+            }
+        }
+        assert_eq!(consumed, 0);
+        let valid = consent_message(
+            caller,
+            caller,
+            settlement_request("continue_deposit", vec![1; 32]),
+            None,
+        );
+        assert!(matches!(
+            admit_validated_response(valid, || {
+                consumed += 1;
+                Err(ConsentAdmissionError::RateLimited {
+                    retry_after_seconds: 1,
+                })
+            }),
+            Icrc21ConsentMessageResponse::Err(Icrc21Error::GenericError(_))
+        ));
+        assert_eq!(consumed, 1);
         let malformed = Icrc21ConsentMessageRequest {
             arg: Vec::new(),
             method: "request_deposit".into(),
