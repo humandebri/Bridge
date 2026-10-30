@@ -2,7 +2,7 @@
 
 ## Current scope and historical record
 
-On October 1, 2026, the certified controller observation recorded SNS Root as the sole Bridge controller. It is historical evidence, not authorization for a future operation; see the [production status](../../README.md#production-status) and [historical baseline](../evidence/dao-baseline-20260914/manifest.json). The former joint-control reactivation driver and instructions have been retired. Do not re-add an individual controller or repeat registration to recover the current production Bridge. Emergency pause authority is separate from canister controller authority.
+On October 1, 2026, the certified controller observation recorded SNS Root as the sole Bridge controller. It is historical evidence, not authorization for a future operation; see the [production status](../../README.md#production-status) and [historical baseline](../evidence/dao-baseline-20260914/manifest.json). The former joint-control reactivation and one-time Root addition drivers have been retired. Do not re-add an individual controller or repeat registration to recover the current production Bridge. Emergency pause authority is separate from canister controller authority.
 
 ## Root-only recovery
 

@@ -154,7 +154,6 @@ run_versions() {
     "$ROOT/scripts/production-root-reactivation-driver.sh" \
     "$ROOT/scripts/test_production_root_reactivation.sh" \
     "$ROOT/scripts/production-seal-driver.sh" \
-    "$ROOT/scripts/production-handover-driver.sh" \
     "$ROOT/scripts/production-handover-registration-proposal.sh" \
     "$ROOT/scripts/production-canister-upgrade.sh" \
     "$ROOT/scripts/base-sepolia-experiment/experiment.sh" \
@@ -192,7 +191,6 @@ run_versions() {
   "$ROOT/scripts/test_production_canister_upgrade.sh"
   "$ROOT/scripts/test_production_activation.sh"
   "$ROOT/scripts/test_production_root_reactivation.sh"
-  "$ROOT/scripts/test_production_handover.sh"
   "$ROOT/scripts/test_production_handover_registration.sh"
   bash "$ROOT/scripts/test_base_sepolia_experiment.sh"
   python3 "$ROOT/scripts/evm-rpc-rehearsal/test_rehearsal.py"

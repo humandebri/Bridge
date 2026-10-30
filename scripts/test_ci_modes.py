@@ -545,7 +545,6 @@ grep -q $'^sample\\tfail\\t' "$PROOF_STAGE_RECEIPT"
             "production-deploy-driver.sh",
             "production-activate-driver.sh",
             "production-seal-driver.sh",
-            "production-handover-driver.sh",
             "production-canister-upgrade.sh",
         ):
             with self.subTest(relative_path=relative_path):

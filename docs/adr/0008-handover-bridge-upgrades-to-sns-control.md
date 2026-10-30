@@ -4,6 +4,8 @@ status: accepted
 
 # Keep the Bridge canister upgradeable and hand it over to SNS control
 
+The staged handover below is a historical decision record. Production Root addition has already been performed and its one-time driver is retired; current Root-only operations use the [SNS recovery and upgrade procedure](../runbooks/dao-reactivation.md).
+
 Keep the Bridge canister upgradeable. Before demonstrating DAO operations, validate the certified current state and reproducible current-source Wasm, add SNS Root, and prove exact joint control by the production identity and Root. After demonstrating reactivation through DAO proposals under joint control, stop without automatically registering the dapp or removing the production identity; operators decide full-handover timing separately. Confirmation of the initial execute permanently consumes only the internal bootstrap activation authority and does not determine when external controller settings change. If operators separately approve full handover, make SNS Root the sole controller, after which only adopted SNS Governance proposals approve upgrades.
 
 ## Staged handover
