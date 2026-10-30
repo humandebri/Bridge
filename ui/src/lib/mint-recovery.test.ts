@@ -143,6 +143,61 @@ afterEach(() => {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe("mint recovery", () => {
+  it("ignores_unrelated_transfer_receipts_without_reporting_conflict", async () => {
+    await recovery.rememberMintRecovery(record)
+    mocks.receipt.mockResolvedValue({ ...receipt(), logs: [] })
+
+    const result = await recovery.recoverMint(recovery.readMintRecoveryTargets()[0]!)
+
+    expect(result.status).toBe("unsubmitted")
+    expect(mocks.notify).not.toHaveBeenCalled()
+    expect(recovery.readMintRecoveryTargets()[0]!.search!.deferred[0]!.hash).toBe(transactionHash)
+  })
+  it("recovers_the_matching_mint_after_an_unrelated_transfer", async () => {
+    const mintHash = `0x${"77".repeat(32)}` as Hex
+    await recovery.rememberMintRecovery(record)
+    mocks.fetch.mockResolvedValue(
+      Response.json({
+        deploymentInstanceId: `0x${"88".repeat(32)}`,
+        depositId,
+        authorizationDigest: digest,
+        hashes: [transactionHash, mintHash],
+        cursor: null,
+      }),
+    )
+    mocks.receipt.mockImplementation(async ({ hash }: { hash: Hex }) =>
+      hash === transactionHash ? { ...receipt(), logs: [] } : receipt(),
+    )
+
+    const result = await recovery.recoverMint(recovery.readMintRecoveryTargets()[0]!)
+
+    expect(result).toMatchObject({ status: "success", transactionHash: mintHash, recorded: true })
+    expect(mocks.notify).toHaveBeenCalledOnce()
+  })
+  it("does_not_report_a_reverted_candidate_as_a_deposit_conflict", async () => {
+    await recovery.rememberMintRecovery(record)
+    mocks.receipt.mockResolvedValue({ ...receipt(), status: "reverted", logs: [] })
+
+    const result = await recovery.recoverMint(recovery.readMintRecoveryTargets()[0]!)
+
+    expect(result.status).toBe("unsubmitted")
+    expect(mocks.notify).not.toHaveBeenCalled()
+  })
+  it("does_not_report_an_unfinalized_same_deposit_mismatch_as_conflict", async () => {
+    await recovery.rememberMintRecovery(record)
+    const bad = receipt()
+    bad.logs[0]!.data = encodeAbiParameters(
+      [{ type: "uint256" }, { type: "uint256" }, { type: "uint256" }],
+      [100n, 10n, 91n],
+    )
+    mocks.receipt.mockResolvedValue(bad)
+    mocks.block.mockResolvedValue({ number: 20n, hash: blockHash, timestamp: 3000n })
+
+    const result = await recovery.recoverMint(recovery.readMintRecoveryTargets()[0]!)
+
+    expect(result.status).toBe("unsubmitted")
+    expect(mocks.notify).not.toHaveBeenCalled()
+  })
   it("does_not_report_conflict_when_another_rpc_has_a_matching_unfinalized_receipt", async function does_not_report_conflict_when_another_rpc_has_a_matching_unfinalized_receipt() {
     await recovery.rememberMintRecovery(record)
     mocks.receipt.mockResolvedValue({ ...receipt(), logs: [] })

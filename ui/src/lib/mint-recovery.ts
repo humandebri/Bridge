@@ -1,8 +1,9 @@
 import { Principal } from "@icp-sdk/core/principal"
-import { hexToBytes, toHex, type Hex } from "viem"
+import { decodeEventLog, hexToBytes, toHex, type Hex } from "viem"
 import { z } from "zod"
 import { deploymentProfile } from "@/config/profile"
 import type { DepositView } from "@/generated/bridge.did"
+import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { browserLocalStorage, withBrowserLock } from "@/lib/browser-lock"
 import { baseHistoryClients, firstSuccessfulHistoryClient } from "@/lib/evm/client"
 import { createBridgeActor } from "@/lib/ic/bridge"
@@ -50,6 +51,27 @@ const prefix = [
 const session = new Map<string, RecoveryTarget>()
 const keyOf = (id: string, digest: string) => `${prefix}${id.toLowerCase()}:${digest.toLowerCase()}`
 const hex = (bytes: Uint8Array | number[]) => toHex(Uint8Array.from(bytes))
+
+function receiptContainsDeposit(
+  logs: readonly { address: Hex; data: Hex; topics: readonly Hex[] }[],
+  depositId: string,
+): boolean {
+  return logs.some((log) => {
+    if (log.address.toLowerCase() !== deploymentProfile.bridgeAddress?.toLowerCase()) return false
+    try {
+      const event = decodeEventLog({
+        abi: bridgeAbi,
+        eventName: "DepositMinted",
+        data: log.data,
+        topics: log.topics as [Hex, ...Hex[]],
+        strict: true,
+      })
+      return event.args.depositId.toLowerCase() === depositId.toLowerCase()
+    } catch {
+      return false
+    }
+  })
+}
 
 export function readMintRecoveryTargets(): RecoveryTarget[] {
   const values = new Map(session)
@@ -302,24 +324,28 @@ export async function recoverMint(
         try {
           await firstSuccessfulHistoryClient(baseHistoryClients, async (client) => {
             const receipt = await client.getTransactionReceipt({ hash: hash as Hex })
-            if (
-              receipt.status !== "success" ||
-              !receiptContainsExactDepositMint(
+            const exact =
+              receipt.status === "success" &&
+              receiptContainsExactDepositMint(
                 expected,
                 receipt.logs,
                 deploymentProfile.bridgeAddress as Hex,
               )
-            ) {
-              mismatchedReceipt = true
-              throw new Error("Mint candidate receipt does not match")
-            }
-            matchingReceipt = true
+            if (exact) matchingReceipt = true
             const finalized = await client.getBlock({ blockTag: "finalized" })
             if (finalized.number === null || finalized.number < receipt.blockNumber)
               throw new Error("Mint candidate is awaiting canonical finality")
             const canonical = await client.getBlock({ blockNumber: receipt.blockNumber })
             if (canonical.hash?.toLowerCase() !== receipt.blockHash.toLowerCase())
               throw new Error("Mint candidate is not canonical")
+            if (!exact) {
+              if (
+                receipt.status === "success" &&
+                receiptContainsDeposit(receipt.logs, target.depositId)
+              )
+                mismatchedReceipt = true
+              throw new Error("Mint candidate receipt does not match")
+            }
             return receipt
           })
           const recovered = { ...pendingExpected, transactionHash: hash as Hex }
