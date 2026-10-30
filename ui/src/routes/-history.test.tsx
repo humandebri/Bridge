@@ -45,6 +45,9 @@ vi.mock("@/features/status/use-status", () => ({
 vi.mock("@/features/bridge/bridge-progress-provider", () => ({
   useBridgeProgress: () => ({ completeWithdrawal: mocks.complete }),
 }))
+vi.mock("@/features/bridge/mint-authorization-action", () => ({
+  MintAuthorizationAction: () => null,
+}))
 vi.mock("@/lib/ic/bridge", () => ({ createBridgeActor: async () => mocks.actor }))
 vi.mock("@/lib/base-transaction-observation", () => ({
   readBaseBlock: () => mocks.block(),
@@ -196,9 +199,9 @@ describe("History refresh", () => {
   })
 })
 
-describe("History finalized authorization deadline recovery", () => {
-  it("holds_AuthorizationExpired_until_finalized_Base_time_passes_the_deadline", () => {
-    expectRefundOnlyAfterDeadline({ AuthorizationExpired: null })
+describe("History authorization recovery", () => {
+  it("lets_the_canister_check_AuthorizationExpired_when_browser_time_is_unavailable", () => {
+    expectRefundCheckRegardlessOfBrowserClock({ AuthorizationExpired: null })
   })
 })
 
@@ -246,7 +249,45 @@ function offers_one_explicit_continuation_for_retry_limited_stops(): void {
   view.unmount()
 }
 
-function expectRefundOnlyAfterDeadline(reason: SettlementStopReason): void {
+it("keeps_refund_action_when_rpc_claims_processed", function keeps_refund_action_when_rpc_claims_processed() {
+  const item = depositItem({ InsufficientCycles: null })
+  item.deposit.state = { RefundAvailable: null }
+  const onRequestRefund = vi.fn(() => Promise.resolve())
+  render(
+    <DepositActivityRow
+      item={item}
+      mintFinalization="absent"
+      processedWithoutReceipt
+      writesEnabled
+      actioningId={undefined}
+      onRequestRefund={onRequestRefund}
+      onContinue={vi.fn()}
+    />,
+  )
+  fireEvent.click(screen.getByRole("button", { name: "Check refund" }))
+  expect(onRequestRefund).toHaveBeenCalledWith(item.deposit)
+})
+
+it("allows_refund_check_with_untrusted_rpc_clock", function allows_refund_check_with_untrusted_rpc_clock() {
+  const item = depositItem({ InsufficientCycles: null })
+  item.deposit.state = { AuthorizationAvailable: null }
+  const onRequestRefund = vi.fn(() => Promise.resolve())
+  render(
+    <DepositActivityRow
+      item={item}
+      mintFinalization="absent"
+      processedWithoutReceipt
+      writesEnabled
+      actioningId={undefined}
+      onRequestRefund={onRequestRefund}
+      onContinue={vi.fn()}
+    />,
+  )
+  fireEvent.click(screen.getByRole("button", { name: "Check refund" }))
+  expect(onRequestRefund).toHaveBeenCalledWith(item.deposit)
+})
+
+function expectRefundCheckRegardlessOfBrowserClock(reason: SettlementStopReason): void {
   const item = depositItem(reason)
   const onRequestRefund = vi.fn(() => Promise.resolve())
   const props = {
@@ -259,13 +300,12 @@ function expectRefundOnlyAfterDeadline(reason: SettlementStopReason): void {
   }
   const view = render(<DepositActivityRow {...props} finalizedBlockTimestamp={1_000n} />)
 
-  expect(screen.getByText("Waiting for Base finality")).toBeInTheDocument()
-  expect(screen.queryByRole("button", { name: "Check refund" })).not.toBeInTheDocument()
-  expect(onRequestRefund).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole("button", { name: "Check refund" }))
+  expect(onRequestRefund).toHaveBeenCalledOnce()
 
   view.rerender(<DepositActivityRow {...props} finalizedBlockTimestamp={1_001n} />)
   fireEvent.click(screen.getByRole("button", { name: "Check refund" }))
-  expect(onRequestRefund).toHaveBeenCalledOnce()
+  expect(onRequestRefund).toHaveBeenCalledTimes(2)
 
   view.rerender(<DepositActivityRow {...props} processedWithoutReceipt />)
   expect(screen.getByText("Processed on Base")).toBeInTheDocument()
@@ -275,13 +315,8 @@ function expectRefundOnlyAfterDeadline(reason: SettlementStopReason): void {
     expect(
       screen.getByText(/recovery without a saved transaction hash is not supported/),
     ).toBeInTheDocument()
-  expect(
-    screen.getByText(
-      deploymentProfile.mintRecoveryUrl
-        ? "Searching for the transaction automatically"
-        : "Transaction confirmation unavailable",
-    ),
-  ).toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Check refund" }))
+  expect(onRequestRefund).toHaveBeenCalledTimes(3)
 }
 
 function depositItem(

@@ -158,10 +158,6 @@ mod tests {
     fn deadline_is_fixed_and_checked() {
         assert_eq!(MINT_AUTHORIZATION_TTL_SECONDS, 900);
         assert_eq!(
-            crate::kernel::MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS,
-            300
-        );
-        assert_eq!(
             MintAuthorization::deadline_from_issued_at_timestamp(10),
             Some(910)
         );
@@ -172,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn minimum_remaining_time_accepts_300_seconds_and_rejects_299_seconds() {
+    fn signing_accepts_any_positive_remaining_time() {
         let authorization = MintAuthorization {
             deposit_id: [1; 32],
             recipient: [2; 20],
@@ -182,24 +178,30 @@ mod tests {
             deadline: 1_000,
             authorization_epoch: 1,
         };
-        assert!(
-            crate::kernel::mint_authorization_has_minimum_remaining_time(
-                700,
-                authorization.deadline
-            )
-        );
-        assert!(
-            !crate::kernel::mint_authorization_has_minimum_remaining_time(
-                701,
-                authorization.deadline
-            )
-        );
-        assert!(
-            !crate::kernel::mint_authorization_has_minimum_remaining_time(
-                u64::MAX,
-                authorization.deadline
-            )
-        );
+        assert!(crate::kernel::mint_authorization_before_deadline(
+            700,
+            authorization.deadline
+        ));
+        assert!(crate::kernel::mint_authorization_before_deadline(
+            701,
+            authorization.deadline
+        ));
+        assert!(crate::kernel::mint_authorization_before_deadline(
+            999,
+            authorization.deadline
+        ));
+        assert!(!crate::kernel::mint_authorization_before_deadline(
+            1_000,
+            authorization.deadline
+        ));
+        assert!(!crate::kernel::mint_authorization_before_deadline(
+            1_001,
+            authorization.deadline
+        ));
+        assert!(!crate::kernel::mint_authorization_before_deadline(
+            u64::MAX,
+            authorization.deadline
+        ));
     }
 
     fn unsigned_record() -> MintAuthorizationRecord {

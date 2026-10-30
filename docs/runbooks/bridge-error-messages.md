@@ -6,8 +6,15 @@ transaction, clear an unresolved intent, or infer acceptance from wallet text.
 ## Consent admission
 
 The existing ICRC-21 `GenericError { error_code, description }` shape is unchanged.
-These are application error codes, not HTTP status codes. No stable layout change
-is required. Only an actual consent quota rejection uses code 429.
+These are application error codes, not HTTP status codes. Only an actual consent
+quota rejection uses code 429. The current source keeps stable schema v36 and
+persists bounded per-Principal window counters alongside the existing global
+counter. Older v36 records without the new field retain their global usage and
+begin with empty per-Principal counts. Both limits reset with the configured
+notification window. A caller is limited to half the global consent limit,
+equal to the configured notification global limit. This reduces a single Principal's ability to consume
+the entire quota; multiple Principals can still exhaust it and temporarily block consent for legitimate users until the window resets. This availability risk is accepted for now; monitor quota rejection and cycles through available operational observability. The existing cycles
+reserve check continues to apply.
 
 | Code | Meaning | Action |
 | --- | --- | --- |

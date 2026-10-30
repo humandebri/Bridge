@@ -1,5 +1,5 @@
 import {
-  assertTransferActionAllowed,
+  assertDepositRefundCheckAllowed,
   readTransferFacts,
   initialTransferFacts,
   reduceTransfer,
@@ -41,7 +41,7 @@ export function useDepositRefund() {
   const request = useCallback(
     async (record: DepositView) => {
       const key = `0x${Array.from(record.deposit_id, (b) => b.toString(16).padStart(2, "0")).join("")}`
-      assertTransferActionAllowed(`deposit:${key}`)
+      assertDepositRefundCheckAllowed(`deposit:${key}`)
       const existing = operations.get(key)
       if (existing) return existing
       const progress =
@@ -66,7 +66,7 @@ export function useDepositRefund() {
                   runtime.refetch,
                   heartbeat.refetch,
                 )
-                assertTransferActionAllowed(`deposit:${key}`)
+                assertDepositRefundCheckAllowed(`deposit:${key}`)
                 return await adapter.requestDepositRefund(Uint8Array.from(record.deposit_id))
               } finally {
                 const finish = close
@@ -84,8 +84,12 @@ export function useDepositRefund() {
             readTransferFacts(`deposit:${key}`) ??
             initialTransferFacts(`deposit:${key}`, "deposit", "refund-checking")
           if (facts.generation === generation) {
+            // A successful Canister response supersedes an advisory browser
+            // conflict, but never replaces an already established outcome.
+            const authoritativeFacts =
+              facts.issue === "conflict" && !facts.outcome ? { ...facts, issue: undefined } : facts
             publishTransferFacts(
-              reduceTransfer(facts, {
+              reduceTransfer(authoritativeFacts, {
                 identity: facts.identity,
                 generation,
                 source: "operation",

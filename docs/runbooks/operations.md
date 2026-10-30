@@ -60,7 +60,7 @@ After fresh install and before controller handover, call `initialize_public_conf
 2. Verify `storage_integrity_check()` returns `ok`. Upgrades do not automatically run this check.
 3. Repeat `refresh_storage_checksum(4194304)` until `complete = true`. Each call covers at most 4 MiB; this is not a raw stable-memory copy or filesystem backup.
 
-Production is now deployed at stable schema v36; v35 is the historical initial-deployment/activation root. Normal current-release Gate B accepts only v36. Historical verification may accept v35 or v36 only when profile, Gate A receipt, upgrade-chain terminal, Wasm, and live RuntimeBinding converge on one version. Post-activation UI publication requires a deployed v36 terminal with valid upgrade evidence rooted in immutable v35 Gate B. Reject v34, v37, disconnected mixed versions, dual reads, shims, and generic fallbacks. The new UI cannot target v35. Replace never-deployed formats directly, updating all callers, tests, fixtures, and documentation together.
+Production runs stable schema v36. Authorize current production upgrades and UI publication from certified current module and controller information, signature-verified v36 state, and the reviewed runtime configuration; follow the current-state publication procedure below. Historical v35 deployment and upgrade records remain audit evidence, not a prerequisite or substitute for current-state authorization. Reject v35 or v37 live states, disconnected mixed-version observations, dual reads, shims, and generic fallbacks. Replace never-deployed formats directly, updating all callers, tests, fixtures, and documentation together.
 
 ## ETH and cycles replenishment
 
@@ -192,7 +192,7 @@ The handover driver reruns the complete proof gate, reproduces the current Wasm 
 
 ## DAO demonstration with individual control and final handover
 
-Use the [DAO reactivation procedure](dao-reactivation.md) for post-launch demonstrations. Preserve initial seal/controller schedule/controller execute evidence unchanged, saving DAO schedule/execute receipts separately. After reactivation, provide both `BRIDGE_DAO_SCHEDULE_RECEIPT` and `BRIDGE_DAO_EXECUTE_RECEIPT` for handover/UI live validation. Reject one-sided input, unexecuted proposals, validator mismatch, or live activation disagreement.
+The former joint-control reactivation demonstration is historical and its driver is retired. For a Root-only incident, follow the [DAO recovery procedure](dao-reactivation.md); preserve historical seal and activation evidence and do not treat it as authorization for a new action.
 
 Remove individual control only after separate approval. After Root-only transition, verify SNS registration before the same-Wasm upgrade. Do not register with SNS during the period intended to retain individual control; registration itself removes that controller.
 
@@ -206,7 +206,7 @@ For audit, save Deposit ID, Authorization digest, originating block, observed Fi
 
 ## Stable Settlement executor and manual recovery
 
-Mint Authorizations expire 900 seconds after IC-consensus `issued_at_timestamp`; installing a threshold signature requires at least 300 seconds remaining. Using Finalized snapshots from new Deposits/other operations, scan the deadline index in bounded batches and release only reservations with `Finalized timestamp > deadline`, without individual RPC calls. There are no per-Deposit timers, automatic Base reconciliation, or automatic Ledger refunds. When any non-anonymous Principal calls `request_deposit_refund`, issued Authorizations require canonical `isDepositProcessed == false` before refunding the fixed recipient. No funds move before/at the deadline or on RPC disagreement.
+Mint Authorizations expire 900 seconds after IC-consensus `issued_at_timestamp`; installing a threshold signature requires IC consensus time strictly before its deadline. A short remaining window may expire before Base inclusion; a refund after signature issuance still deducts the Service Fee. Using Finalized snapshots from new Deposits/other operations, scan the deadline index in bounded batches and release only reservations with `Finalized timestamp > deadline`, without individual RPC calls. There are no per-Deposit timers, automatic Base reconciliation, or automatic Ledger refunds. When any non-anonymous Principal calls `request_deposit_refund`, issued Authorizations require canonical `isDepositProcessed == false` before refunding the fixed recipient. No funds move before/at the deadline or on RPC disagreement.
 
 For `settlement_scheduler.health = Degraded`, identify stopped jobs, schedules overdue by at least five minutes, and expired leases. While a lease is active, the next wakeup is its expiry; do not immediately rearm a timer for another overdue job. For `Faulted`, record `last_internal_error`/`last_dispatcher_run_at_ns`, pause new Deposits, and upgrade the same Wasm to rearm timers from stable job tables without manually editing SQLite. If unresolved, investigate the failing Wasm.
 The base retry interval for transient failures is public `settlement_retry_interval_seconds`, independent of Governance transaction monitoring settings.
@@ -235,11 +235,11 @@ Default manual Retry quota per 10-minute window is 60 globally, six per caller, 
 
 `rpc-e2e.json` and `monitor-drill.json` are post-unpause Gate C evidence, not authorization inputs for 13-artifact Gate B, seal, schedule, execute, or controller handover. Seven-day/10-per-type measurements likewise do not authorize handover. Current templates still conflate production/rehearsal Wasm hashes and pause principals, require all 10 staging-v8 scenarios, mismatch `quorum_loss` injector/validator operations, and lack fault control for fixed URLs. Replace schemas/capture paths and obtain separate review before Gate C collection; reject bypassed evidence. Until then, PocketIC/proof gates remain authoritative mandatory quorum-loss negative evidence.
 
-### Mint epoch observations across upgrades
+### Historical mint epoch observations across upgrades
 
 The observation that may change between upgrade-history terminal and live runtime is the mint Authorization epoch saved by Deposit admission. Only when Activated/unpaused, all other runtime fields match, TTL is unchanged, and epochs are positive/monotonic may old/current digests be recomputed from the same typed controller-authenticated `get_operational_config` preimage. Reject arbitrary digests or configuration changes. Drivers save raw Candid/SHA-256 in preflight/receipt `before_operational_config`, checking snapshot status/runtime agreement. Receipts reaching v36, including 36→36, require this evidence; only already-published 35→35 receipts may omit it. Preserve pre/post-runtime equality for the upgrade itself.
 
-`bridge-profile operational-epoch-digests OPERATIONAL_HEX_FILE LEDGER_FEE OLD_EPOCH NEW_EPOCH` is a diagnostic command displaying only two digests from canonical Rust Candid encoding. UI live validation retrieves the preimage using Gate B controller-bound `BRIDGE_PRODUCTION_INSTALLER_IDENTITY`, comparing history terminal under identical conditions. This is implementation verification depending on authentic external observations and IC response/controller authentication, not abstract proof of external facts.
+`bridge-profile operational-epoch-digests OPERATIONAL_HEX_FILE LEDGER_FEE OLD_EPOCH NEW_EPOCH` is a diagnostic command displaying only two digests from canonical Rust Candid encoding. Historical receipt comparisons are not current UI publication authorization. Current verification depends on authentic external observations and IC response/controller authentication, not abstract proof of external facts.
 
 ## Launcher execution-cycles replenishment
 

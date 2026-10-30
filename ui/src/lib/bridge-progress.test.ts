@@ -206,7 +206,7 @@ describe("latest bridge progress persistence", () => {
     ])
   })
 
-  it("ends Deposit presentation at a successful Base transaction without changing Withdrawal steps", () => {
+  it("keeps Deposit presentation open until IC recording without changing Withdrawal steps", () => {
     const deposit = createBridgeProgress({
       direction: "deposit",
       phase: "base-mint-included",
@@ -225,12 +225,13 @@ describe("latest bridge progress persistence", () => {
       { label: "IC token approval", status: "complete", note: "Not required" },
       { label: "IC deposit transaction", status: "complete" },
       { label: "Bridge authorization", status: "complete" },
-      { label: "Base mint transaction", status: "complete" },
+      { label: "Base mint transaction", status: "current" },
     ])
 
-    expect(isDepositInteractionComplete(deposit)).toBe(true)
+    expect(isDepositInteractionComplete(deposit)).toBe(false)
     expect(isDepositTransactionComplete(deposit)).toBe(false)
-    expect(isDepositInteractionComplete({ ...deposit, phase: "base-mint-finalizing" })).toBe(true)
+    expect(isDepositInteractionComplete({ ...deposit, phase: "base-mint-finalizing" })).toBe(false)
+    expect(isDepositInteractionComplete({ ...deposit, phase: "complete" })).toBe(true)
     for (const patch of [
       { phase: "base-mint-submitted" as const },
       { baseTransactionOutcome: "reverted" as const },

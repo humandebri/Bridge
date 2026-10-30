@@ -126,12 +126,11 @@ def installSignature (state : DepositState) (observedTimestamp : Nat) : Option D
           feeCounted := true }
       else none
 
-theorem accepted_signature_requires_minimum_remaining_time
+theorem accepted_signature_requires_unexpired_deadline
     {state next : DepositState} {observedTimestamp : Nat}
     (accepted : installSignature state observedTimestamp = some next) :
     ∃ authorization, state.authorization = some authorization ∧
-      authorization.deadline ≤ maxU64 ∧ observedTimestamp ≤ maxU64 - 300 ∧
-      observedTimestamp + 300 ≤ authorization.deadline := by
+      authorization.deadline ≤ maxU64 ∧ observedTimestamp < authorization.deadline := by
   unfold installSignature at accepted
   cases auth : state.authorization with
   | none => simp [auth] at accepted

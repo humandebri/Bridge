@@ -13,7 +13,9 @@ const mocks = vi.hoisted(() => ({
   logs: vi.fn(),
   backupLogs: vi.fn(),
   block: vi.fn(),
+  backupBlock: vi.fn(),
   receipt: vi.fn(),
+  backupReceipt: vi.fn(),
   notify: vi.fn(),
   fetch: vi.fn(),
 }))
@@ -37,8 +39,8 @@ vi.mock("@/lib/evm/client", async (importOriginal) => ({
   baseHistoryClients: [
     { getBlock: mocks.block, getTransactionReceipt: mocks.receipt, getContractEvents: mocks.logs },
     {
-      getBlock: mocks.block,
-      getTransactionReceipt: mocks.receipt,
+      getBlock: mocks.backupBlock,
+      getTransactionReceipt: mocks.backupReceipt,
       getContractEvents: mocks.backupLogs,
     },
   ],
@@ -126,7 +128,9 @@ beforeEach(async () => {
   mocks.logs.mockResolvedValue([])
   mocks.backupLogs.mockRejectedValue(new Error("Backup unavailable"))
   mocks.receipt.mockResolvedValue(receipt())
+  mocks.backupReceipt.mockRejectedValue(new Error("Backup unavailable"))
   mocks.block.mockResolvedValue({ number: 100n, hash: blockHash, timestamp: 3000n })
+  mocks.backupBlock.mockRejectedValue(new Error("Backup unavailable"))
   mocks.notify.mockResolvedValue({ Ok: { Recorded: { deposit_id: record.deposit_id } } })
   recovery = await import("./mint-recovery")
   pending = await import("./pending-confirmations")
@@ -139,6 +143,247 @@ afterEach(() => {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe("mint recovery", () => {
+  it("does_not_report_conflict_when_another_rpc_has_a_matching_unfinalized_receipt", async function does_not_report_conflict_when_another_rpc_has_a_matching_unfinalized_receipt() {
+    await recovery.rememberMintRecovery(record)
+    mocks.receipt.mockResolvedValue({ ...receipt(), logs: [] })
+    mocks.backupReceipt.mockResolvedValue(receipt())
+    mocks.backupBlock.mockResolvedValue({ number: 20n, hash: blockHash, timestamp: 3000n })
+
+    const result = await recovery.recoverMint(recovery.readMintRecoveryTargets()[0]!)
+
+    expect(result.status).toBe("unsubmitted")
+    expect(result.recorded).toBe(false)
+    expect(recovery.readMintRecoveryTargets()[0]!.search!.deferred[0]!.hash).toBe(transactionHash)
+    expect(mocks.notify).not.toHaveBeenCalled()
+  })
+  it("does_not_report_conflict_when_a_matching_receipt_cannot_be_recorded", async function does_not_report_conflict_when_a_matching_receipt_cannot_be_recorded() {
+    await recovery.rememberMintRecovery(record)
+    mocks.receipt.mockResolvedValue({ ...receipt(), logs: [] })
+    mocks.backupReceipt.mockResolvedValue(receipt())
+    mocks.backupBlock.mockResolvedValue({ number: 100n, hash: blockHash, timestamp: 3000n })
+    mocks.notify.mockRejectedValue(new Error("Canister unavailable"))
+
+    const result = await recovery.recoverMint(recovery.readMintRecoveryTargets()[0]!)
+
+    expect(result.status).toBe("unsubmitted")
+    expect(result.recorded).toBe(false)
+    expect(recovery.readMintRecoveryTargets()[0]!.search!.deferred[0]!.hash).toBe(transactionHash)
+    expect(mocks.notify).toHaveBeenCalledOnce()
+  })
+  it("uses_a_healthy_history_rpc_when_primary_returns_a_false_future_receipt", async function uses_a_healthy_history_rpc_when_primary_returns_a_false_future_receipt() {
+    await recovery.rememberMintRecovery(record)
+    mocks.receipt.mockResolvedValue({ ...receipt(), blockNumber: 200n })
+    mocks.backupReceipt.mockResolvedValue(receipt())
+    mocks.backupBlock.mockResolvedValue({ number: 100n, hash: blockHash, timestamp: 3000n })
+    const result = await recovery.recoverMint(recovery.readMintRecoveryTargets()[0]!)
+    expect(result.recorded).toBe(true)
+    expect(mocks.backupReceipt).toHaveBeenCalledWith({ hash: transactionHash })
+    expect(mocks.notify).toHaveBeenCalledOnce()
+  })
+  it("keeps_saved_mint_when_canister_rejects_alternative", async function keeps_saved_mint_when_canister_rejects_alternative() {
+    vi.useFakeTimers()
+    const alternativeHash = `0x${"77".repeat(32)}` as Hex
+    await pending.savePendingMint({
+      depositId,
+      authorizationDigest: digest,
+      recipient,
+      grossAmount: "100",
+      chargedServiceFee: "10",
+      mintedAmount: "90",
+      transactionHash,
+    })
+    await recovery.rememberMintRecovery(record)
+    mocks.fetch.mockResolvedValue(
+      Response.json({
+        deploymentInstanceId: `0x${"88".repeat(32)}`,
+        depositId,
+        authorizationDigest: digest,
+        hashes: [alternativeHash],
+        cursor: null,
+      }),
+    )
+    mocks.receipt.mockImplementation(async ({ hash }: { hash: Hex }) =>
+      hash === transactionHash ? { ...receipt(), logs: [] } : receipt(),
+    )
+    mocks.notify.mockResolvedValue({ Err: { TransactionNotConfirmed: null } })
+    const result = await recovery.runMintRecoveryCycle()
+    expect(result?.observation.recorded).toBe(false)
+    expect(mocks.notify).toHaveBeenCalledOnce()
+    expect(pending.readAllPendingMints()[0]?.transactionHash).toBe(transactionHash)
+  })
+  it("records_a_discovered_mint_when_primary_browser_rpc_is_unavailable", async function records_a_discovered_mint_when_primary_browser_rpc_is_unavailable() {
+    vi.useFakeTimers()
+    const alternativeHash = `0x${"77".repeat(32)}` as Hex
+    await pending.savePendingMint({
+      depositId,
+      authorizationDigest: digest,
+      recipient,
+      grossAmount: "100",
+      chargedServiceFee: "10",
+      mintedAmount: "90",
+      transactionHash,
+    })
+    await recovery.rememberMintRecovery(record)
+    mocks.fetch.mockResolvedValue(
+      Response.json({
+        deploymentInstanceId: `0x${"88".repeat(32)}`,
+        depositId,
+        authorizationDigest: digest,
+        hashes: [alternativeHash],
+        cursor: null,
+      }),
+    )
+    mocks.receipt.mockRejectedValue(new Error("Primary unavailable"))
+    mocks.block.mockRejectedValue(new Error("Primary unavailable"))
+    mocks.backupReceipt.mockResolvedValue(receipt())
+    mocks.backupBlock.mockResolvedValue({ number: 100n, hash: blockHash, timestamp: 3000n })
+    for (let i = 0; i < 4; i++) {
+      await recovery.runMintRecoveryCycle()
+      await vi.advanceTimersByTimeAsync(10_001)
+    }
+    expect(mocks.backupReceipt).toHaveBeenCalledWith({ hash: alternativeHash })
+    expect(mocks.notify).toHaveBeenCalledWith({
+      deposit_id: record.deposit_id,
+      transaction_hash: Uint8Array.from(Buffer.from(alternativeHash.slice(2), "hex")),
+    })
+  })
+  it("searches_alternative_when_saved_receipt_is_missing", async function searches_alternative_when_saved_receipt_is_missing() {
+    vi.useFakeTimers()
+    const alternativeHash = `0x${"77".repeat(32)}` as Hex
+    await pending.savePendingMint({
+      depositId,
+      authorizationDigest: digest,
+      recipient,
+      grossAmount: "100",
+      chargedServiceFee: "10",
+      mintedAmount: "90",
+      transactionHash,
+    })
+    await recovery.rememberMintRecovery(record)
+    mocks.fetch.mockResolvedValue(
+      Response.json({
+        deploymentInstanceId: `0x${"88".repeat(32)}`,
+        depositId,
+        authorizationDigest: digest,
+        hashes: [alternativeHash],
+        cursor: null,
+      }),
+    )
+    mocks.receipt.mockImplementation(async ({ hash }: { hash: Hex }) => {
+      if (hash === transactionHash) {
+        const error = new Error("missing")
+        error.name = "TransactionReceiptNotFoundError"
+        throw error
+      }
+      return receipt()
+    })
+    for (let i = 0; i < 4; i++) {
+      await recovery.runMintRecoveryCycle()
+      await vi.advanceTimersByTimeAsync(10_001)
+    }
+    expect(mocks.receipt).toHaveBeenCalledWith({ hash: alternativeHash })
+    expect(mocks.notify).toHaveBeenCalled()
+  })
+  it("searches_alternative_after_saved_receipt_conflicts", async function searches_alternative_after_saved_receipt_conflicts() {
+    vi.useFakeTimers()
+    const alternativeHash = `0x${"77".repeat(32)}` as Hex
+    await pending.savePendingMint({
+      depositId,
+      authorizationDigest: digest,
+      recipient,
+      grossAmount: "100",
+      chargedServiceFee: "10",
+      mintedAmount: "90",
+      transactionHash,
+    })
+    await recovery.rememberMintRecovery(record)
+    mocks.fetch.mockResolvedValue(
+      Response.json({
+        deploymentInstanceId: `0x${"88".repeat(32)}`,
+        depositId,
+        authorizationDigest: digest,
+        hashes: [alternativeHash],
+        cursor: null,
+      }),
+    )
+    mocks.receipt.mockImplementation(async ({ hash }: { hash: Hex }) =>
+      hash === transactionHash ? { ...receipt(), logs: [] } : receipt(),
+    )
+    for (let i = 0; i < 4; i++) {
+      await recovery.runMintRecoveryCycle()
+      await vi.advanceTimersByTimeAsync(10_001)
+    }
+    expect(mocks.fetch).toHaveBeenCalled()
+    expect(mocks.receipt).toHaveBeenCalledWith({ hash: alternativeHash })
+    expect(mocks.notify).toHaveBeenCalled()
+  })
+  it("searches_for_an_alternative_after_a_saved_revert", async () => {
+    vi.useFakeTimers()
+    const alternativeHash = `0x${"77".repeat(32)}` as Hex
+    await pending.savePendingMint({
+      depositId,
+      authorizationDigest: digest,
+      recipient,
+      grossAmount: "100",
+      chargedServiceFee: "10",
+      mintedAmount: "90",
+      transactionHash,
+    })
+    await recovery.rememberMintRecovery(record)
+    mocks.fetch.mockResolvedValue(
+      Response.json({
+        deploymentInstanceId: `0x${"88".repeat(32)}`,
+        depositId,
+        authorizationDigest: digest,
+        hashes: [alternativeHash],
+        cursor: null,
+      }),
+    )
+    mocks.receipt.mockImplementation(async ({ hash }: { hash: Hex }) =>
+      hash === transactionHash ? { ...receipt(), status: "reverted", logs: [] } : receipt(),
+    )
+    await recovery.runMintRecoveryCycle()
+    await vi.advanceTimersByTimeAsync(10_001)
+    await recovery.runMintRecoveryCycle()
+    await vi.advanceTimersByTimeAsync(10_001)
+    await recovery.runMintRecoveryCycle()
+    expect(mocks.fetch).toHaveBeenCalled()
+    expect(mocks.receipt).toHaveBeenCalledWith({ hash: alternativeHash })
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(10_001)
+    await recovery.runMintRecoveryCycle()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mocks.notify).toHaveBeenCalled()
+  })
+  it("rechecks_a_finalized_revert_when_the_rpc_recovers", async () => {
+    vi.useFakeTimers()
+    await pending.savePendingMint({
+      depositId,
+      authorizationDigest: digest,
+      recipient,
+      grossAmount: "100",
+      chargedServiceFee: "10",
+      mintedAmount: "90",
+      transactionHash,
+    })
+    await recovery.rememberMintRecovery(record)
+    mocks.receipt.mockResolvedValue({ ...receipt(), status: "reverted", logs: [] })
+    const first = await recovery.runMintRecoveryCycle()
+    expect(first?.observation).toMatchObject({ status: "reverted", finalized: false })
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(10_001)
+    const second = await recovery.runMintRecoveryCycle()
+    expect(second?.observation).toMatchObject({ status: "reverted", finalized: true })
+    const before = mocks.receipt.mock.calls.length
+    mocks.receipt.mockResolvedValue(receipt())
+    observation.clearBaseObservationCache()
+    await vi.advanceTimersByTimeAsync(10_001)
+    const recovered = await recovery.runMintRecoveryCycle()
+    expect(recovered?.observation.status).toBe("success")
+    expect(mocks.receipt.mock.calls.length).toBeGreaterThan(before)
+    expect(pending.readAllPendingMints()).toHaveLength(1)
+    expect(mocks.notify).toHaveBeenCalled()
+  })
   it("reads_history_in_bounded_parallel_batches_and_does_not_advance_on_partial_failure", async () => {
     mocks.list.mockResolvedValue({
       Ok: { deposit_ids: Array.from({ length: 21 }, () => record.deposit_id), next_cursor: [99n] },
@@ -276,8 +521,10 @@ describe("mint recovery", () => {
       return receipt()
     })
     await recovery.rememberMintRecovery(record)
-    await recovery.recoverMint(recovery.readMintRecoveryTargets()[0]!)
-    expect(pending.readAllPendingMints()[0]?.transactionHash).toBe(transactionHash)
+    expect(await recovery.recoverMint(recovery.readMintRecoveryTargets()[0]!)).toMatchObject({
+      transactionHash,
+      recorded: true,
+    })
     await flush()
     expect(mocks.notify).toHaveBeenCalled()
   })
@@ -298,7 +545,7 @@ describe("mint recovery", () => {
     mocks.receipt.mockResolvedValue({ ...receipt(), logs: [] })
     await recovery.recoverMint(target)
     expect(mocks.receipt).toHaveBeenCalledTimes(attempts + 1)
-    expect(recovery.readMintRecoveryTargets()[0]!.search!.deferred).toEqual([])
+    expect(recovery.readMintRecoveryTargets()[0]!.search!.deferred[0]?.hash).toBe(transactionHash)
   })
   it("recovery_fetches_next_pages_before_draining_four_large_deposit_queues", async () => {
     vi.useFakeTimers()
@@ -342,8 +589,10 @@ describe("mint recovery", () => {
     recovery = await import("./mint-recovery")
     pending = await import("./pending-confirmations")
     expect(recovery.wasMintRequested(record)).toBe(true)
-    await recovery.recoverMint(recovery.readMintRecoveryTargets()[0]!)
-    expect(pending.readAllPendingMints()[0]?.transactionHash).toBe(transactionHash)
+    expect(await recovery.recoverMint(recovery.readMintRecoveryTargets()[0]!)).toMatchObject({
+      transactionHash,
+      recorded: true,
+    })
     await flush()
     expect(mocks.notify).toHaveBeenCalledWith({
       deposit_id: record.deposit_id,
@@ -454,6 +703,7 @@ describe("mint recovery", () => {
     await flush()
   })
   it("recovery_rejects_mismatched_same_deposit_receipt", async () => {
+    vi.useFakeTimers()
     await recovery.rememberMintRecovery(record)
     const bad = receipt()
     bad.logs[0]!.data = encodeAbiParameters(
@@ -466,6 +716,13 @@ describe("mint recovery", () => {
     )
     expect(pending.readAllPendingMints()).toHaveLength(0)
     expect(mocks.notify).not.toHaveBeenCalled()
+    mocks.receipt.mockResolvedValue(receipt())
+    observation.clearBaseObservationCache()
+    await vi.advanceTimersByTimeAsync(30_001)
+    await recovery.runMintRecoveryCycle()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(pending.readAllPendingMints()).toHaveLength(0)
+    expect(mocks.notify).toHaveBeenCalled()
   })
   it("recovery_preserves_noncanonical_and_unfinalized_candidates", async () => {
     await recovery.rememberMintRecovery(record)

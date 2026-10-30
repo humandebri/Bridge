@@ -1,22 +1,19 @@
 import { Principal } from "@icp-sdk/core/principal"
-import { decodeEventLog, hexToBytes, toHex, type Hex } from "viem"
+import { hexToBytes, toHex, type Hex } from "viem"
 import { z } from "zod"
 import { deploymentProfile } from "@/config/profile"
 import type { DepositView } from "@/generated/bridge.did"
-import { bridgeAbi } from "@/generated/abi/bridge.generated"
 import { browserLocalStorage, withBrowserLock } from "@/lib/browser-lock"
 import { baseHistoryClients, firstSuccessfulHistoryClient } from "@/lib/evm/client"
 import { createBridgeActor } from "@/lib/ic/bridge"
-import { readBaseBlock } from "@/lib/base-transaction-observation"
-import { observeMint, type MintObservation } from "@/lib/mint-observation"
+import { observeMint, recordMintCandidate, type MintObservation } from "@/lib/mint-observation"
 import {
   readAllPendingMints,
   readPendingMint,
   removePendingMint,
-  savePendingMint,
 } from "@/lib/pending-confirmations"
 import { fetchInBatches } from "@/lib/withdrawal-history"
-import { exactMintReceiptFinalization } from "@/lib/deposit-mint-finalization"
+import { receiptContainsExactDepositMint } from "@/lib/deposit-mint-finalization"
 
 import {
   MINT_RECOVERY_URL,
@@ -166,6 +163,7 @@ export async function discoverMintRecovery(
 export async function recoverMint(
   target: RecoveryTarget,
   work: "search" | "receipts" | "all" = "all",
+  searchDespitePending = false,
 ): Promise<MintObservation> {
   return withBrowserLock(
     `kinic-mint-recovery:${keyOf(target.depositId, target.digest)}`,
@@ -209,11 +207,10 @@ export async function recoverMint(
         mintedAmount: expected.mintedAmount.toString(),
       }
       const pending = readPendingMint(pendingExpected)
-      if (pending)
+      if (pending && !searchDespitePending)
         return work === "search"
           ? { status: "unsubmitted", finalized: false, recorded: false }
           : observeMint(pending)
-      if (current.conflict) return { status: "conflict", finalized: false, recorded: false }
       if (
         deploymentProfile.chainId !== 8453 ||
         deploymentProfile.mintRecoveryUrl !== MINT_RECOVERY_URL
@@ -288,52 +285,9 @@ export async function recoverMint(
       const retry = search.deferred.filter((entry) => entry.nextAttemptAt <= Date.now())
       const candidates = search.hashes.slice(0, retry.length ? 3 : 4)
       candidates.push(...retry.slice(0, 4 - candidates.length).map((entry) => entry.hash))
+      let conflict = false
       for (const hash of candidates) {
-        try {
-          const receipt = await firstSuccessfulHistoryClient(baseHistoryClients, (client) =>
-            client.getTransactionReceipt({ hash: hash as Hex }),
-          )
-          const sameDeposit = receipt.logs.some((log) => {
-            if (log.address.toLowerCase() !== deploymentProfile.bridgeAddress?.toLowerCase())
-              return false
-            try {
-              const event = decodeEventLog({
-                abi: bridgeAbi,
-                eventName: "DepositMinted",
-                data: log.data,
-                topics: log.topics,
-                strict: true,
-              })
-              return event.args.depositId.toLowerCase() === target.depositId
-            } catch {
-              return false
-            }
-          })
-          if (sameDeposit) {
-            const finalized = await readBaseBlock("finalized")
-            if (finalized.number === null) throw new Error("Base finality is unavailable")
-            const canonical = await firstSuccessfulHistoryClient(baseHistoryClients, (client) =>
-              client.getBlock({ blockNumber: receipt.blockNumber }),
-            )
-            const result = exactMintReceiptFinalization({
-              expected,
-              expectedBridgeAddress: deploymentProfile.bridgeAddress as Hex,
-              receipt,
-              finalizedBlockNumber: finalized.number,
-              canonicalReceiptBlockHash: canonical.hash,
-            })
-            if (result === "pending")
-              throw new Error("Mint candidate is awaiting canonical finality")
-            if (result !== "finalized") {
-              recordMintRecoveryDiagnostic("conflict")
-              persist({ ...current, search, conflict: true })
-              return { status: "conflict", finalized: false, recorded: false }
-            }
-            const recovered = { ...pendingExpected, transactionHash: hash as Hex }
-            await savePendingMint(recovered)
-            recordMintRecoveryDiagnostic("verified", 1)
-            return observeMint(recovered)
-          }
+        if (pending?.transactionHash.toLowerCase() === hash.toLowerCase()) {
           search = {
             ...search,
             hashes: search.hashes.filter((h) => h !== hash),
@@ -341,7 +295,50 @@ export async function recoverMint(
             seen: [...new Set([...search.seen, hash])],
           }
           persist({ ...current, search })
+          continue
+        }
+        let mismatchedReceipt = false
+        let matchingReceipt = false
+        try {
+          await firstSuccessfulHistoryClient(baseHistoryClients, async (client) => {
+            const receipt = await client.getTransactionReceipt({ hash: hash as Hex })
+            if (
+              receipt.status !== "success" ||
+              !receiptContainsExactDepositMint(
+                expected,
+                receipt.logs,
+                deploymentProfile.bridgeAddress as Hex,
+              )
+            ) {
+              mismatchedReceipt = true
+              throw new Error("Mint candidate receipt does not match")
+            }
+            matchingReceipt = true
+            const finalized = await client.getBlock({ blockTag: "finalized" })
+            if (finalized.number === null || finalized.number < receipt.blockNumber)
+              throw new Error("Mint candidate is awaiting canonical finality")
+            const canonical = await client.getBlock({ blockNumber: receipt.blockNumber })
+            if (canonical.hash?.toLowerCase() !== receipt.blockHash.toLowerCase())
+              throw new Error("Mint candidate is not canonical")
+            return receipt
+          })
+          const recovered = { ...pendingExpected, transactionHash: hash as Hex }
+          // Browser observations are hints. The Canister independently checks
+          // the exact receipt and finalized quorum before recording this mint.
+          if (!(await recordMintCandidate(recovered))) throw new Error("Mint recording unavailable")
+          recordMintRecoveryDiagnostic("verified", 1)
+          return {
+            status: "success",
+            transactionHash: hash as Hex,
+            finalized: true,
+            recorded: true,
+          }
         } catch {
+          const unresolvedMismatch = mismatchedReceipt && !matchingReceipt
+          if (unresolvedMismatch) {
+            conflict = true
+            recordMintRecoveryDiagnostic("conflict")
+          }
           search = {
             ...search,
             hashes: search.hashes.filter((h) => h !== hash),
@@ -351,11 +348,11 @@ export async function recoverMint(
             ],
           }
           persist({ ...current, search })
-          recordMintRecoveryDiagnostic("unavailable")
+          if (!unresolvedMismatch) recordMintRecoveryDiagnostic("unavailable")
         }
       }
       if (searchError && !candidates.length) throw searchError
-      return { status: "unsubmitted", finalized: false, recorded: false }
+      return { status: conflict ? "conflict" : "unsubmitted", finalized: false, recorded: false }
     },
   )
 }
@@ -365,13 +362,12 @@ const cycleSchema = z.object({
   failures: z.number().int().min(0).max(10),
   lastTarget: z.string().optional(),
   searchTarget: z.string().optional(),
-  finalizedReverts: z.array(hex32).default([]),
   owner: z.string().optional(),
   before: nat.optional(),
   nextHistoryAt: z.number().finite().nonnegative().optional(),
 })
 const cycleKey = `${prefix}cycle`
-let sessionCycle: z.infer<typeof cycleSchema> = { nextRunAt: 0, failures: 0, finalizedReverts: [] }
+let sessionCycle: z.infer<typeof cycleSchema> = { nextRunAt: 0, failures: 0 }
 
 /** One shared schedule processes one deposit and up to four candidate receipts per turn. */
 export async function runMintRecoveryCycle(
@@ -415,17 +411,11 @@ export async function runMintRecoveryCycle(
         }
       }
       const allPending = readAllPendingMints()
-      const pending = allPending.filter((p) => !cycle.finalizedReverts.includes(p.transactionHash))
-      const revertedIds = new Set(
-        allPending
-          .filter((p) => cycle.finalizedReverts.includes(p.transactionHash))
-          .map((p) => p.depositId),
-      )
-      const targets = readMintRecoveryTargets().filter((t) => !revertedIds.has(t.depositId as Hex))
-      const pendingIds = new Set(pending.map((p) => p.depositId))
-      const searchable = targets
-        .filter((target) => !target.conflict && !pendingIds.has(target.depositId as Hex))
-        .sort((a, b) => a.depositId.localeCompare(b.depositId))
+      // A single browser RPC cannot rule out an alternative transaction.
+      // Keep polling saved hashes while independently searching for others.
+      const pending = allPending
+      const targets = readMintRecoveryTargets()
+      const searchable = [...targets].sort((a, b) => a.depositId.localeCompare(b.depositId))
       const hasCapacity = (target: RecoveryTarget) =>
         !target.search || target.search.hashes.length + target.search.deferred.length <= 9_900
       const active = searchable.find(
@@ -444,7 +434,7 @@ export async function runMintRecoveryCycle(
       if (scan) {
         cycle.searchTarget = scan.depositId
         try {
-          await recoverMint(scan, "search")
+          await recoverMint(scan, "search", true)
         } catch {
           searchFailure = scan.depositId
           const failed = readMintRecoveryTarget(scan.depositId, scan.digest)
@@ -470,12 +460,18 @@ export async function runMintRecoveryCycle(
       }
       cycle.lastTarget = depositId
       const saved = pending.find((p) => p.depositId === depositId)
-      const observation = saved
-        ? await observeMint(saved)
-        : await recoverMint(
-            targets.find((t) => t.depositId === depositId)!,
-            "receipts",
-          )
+      const savedObservation = saved ? await observeMint(saved) : undefined
+      let observation =
+        savedObservation ??
+        (await recoverMint(
+          targets.find((t) => t.depositId === depositId)!,
+          "receipts",
+        ))
+      const target = targets.find((t) => t.depositId === depositId)
+      if (saved && target && !observation.recorded) {
+        const alternative = await recoverMint(target, "receipts", true)
+        if (alternative.status !== "unsubmitted") observation = alternative
+      }
       if (searchFailure === depositId && !observation.recorded) observation.unavailable = true
       if (observation.recorded) {
         const tracked = readAllPendingMints().find((p) => p.depositId === depositId)
@@ -485,8 +481,6 @@ export async function runMintRecoveryCycle(
           session.delete(key)
           browserLocalStorage().removeItem(key)
         }
-      } else if (saved && observation.finalized && observation.status === "reverted") {
-        cycle.finalizedReverts.push(saved.transactionHash)
       }
       if (observation.unavailable || observation.notificationError) {
         cycle.failures = Math.min(10, cycle.failures + 1)

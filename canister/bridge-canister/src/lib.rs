@@ -2715,12 +2715,19 @@ fn consume_consent_request_quota() -> Result<(), consent::ConsentAdmissionError>
         .map_err(|_| Error::ConfigurationUnavailable)?
         .ok_or(Error::ConfigurationUnavailable)?;
     let now_ns = ic_cdk::api::time();
+    let global_limit = config.notification_rate_limit_global.saturating_mul(2);
+    // The consent budget is twice the configured global notification budget.
+    // Reserve at least half for other callers without applying the stricter
+    // external-RPC notification limit to wallet previews and retries.
+    let caller_limit = config.notification_rate_limit_global;
     let admitted = STORE
         .with(|store| {
             store.borrow_mut().consume_consent_quota(
+                ic_cdk::api::msg_caller(),
                 now_ns,
                 config.notification_rate_limit_window_seconds,
-                config.notification_rate_limit_global.saturating_mul(2),
+                global_limit,
+                caller_limit,
             )
         })
         .map_err(|_| Error::StorageUnavailable)?;
@@ -3387,16 +3394,42 @@ mod candid_tests {
     #[test]
     #[serial_test::serial]
     fn consent_quota_keeps_the_existing_limit_and_window() {
-        let mut store = StableStore::init(DefaultMemoryImpl::default()).expect("initialize");
+        let memory = DefaultMemoryImpl::default();
+        let mut store = StableStore::init(memory.clone()).expect("initialize");
         let now = 1_788_840_001_000_000_000;
-        for _ in 0..120 {
-            assert!(store.consume_consent_quota(now, 600, 120).unwrap());
+        let first = Principal::from_slice(&[1]);
+        let second = Principal::from_slice(&[2]);
+        for _ in 0..6 {
+            assert!(store
+                .consume_consent_quota(first, now, 600, 120, 6)
+                .unwrap());
         }
-        assert!(!store.consume_consent_quota(now, 600, 120).unwrap());
-        assert!(store
-            .consume_consent_quota(now + 600_000_000_000, 600, 120)
+        assert!(!store
+            .consume_consent_quota(first, now, 600, 120, 6)
             .unwrap());
-        assert!(store.consume_consent_quota(now, 0, 120).is_err());
+        assert!(store
+            .consume_consent_quota(second, now, 600, 120, 6)
+            .unwrap());
+        let mut store = StableStore::reopen(memory).expect("reopen");
+        assert!(!store
+            .consume_consent_quota(first, now, 600, 120, 6)
+            .unwrap());
+        assert!(store
+            .consume_consent_quota(first, now + 600_000_000_000, 600, 120, 6)
+            .unwrap());
+        let next_window = now + 1_200_000_000_000;
+        for id in 1..=20 {
+            let caller = Principal::from_slice(&[id]);
+            for _ in 0..6 {
+                assert!(store
+                    .consume_consent_quota(caller, next_window, 600, 120, 6)
+                    .unwrap());
+            }
+        }
+        assert!(!store
+            .consume_consent_quota(Principal::from_slice(&[21]), next_window, 600, 120, 6)
+            .unwrap());
+        assert!(store.consume_consent_quota(first, now, 0, 120, 6).is_err());
     }
 
     #[test]

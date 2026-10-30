@@ -280,6 +280,7 @@ CREATE TABLE singleton_state (
     admin_state BLOB NOT NULL,
     deposit_admission BLOB NOT NULL,
     notification_admission BLOB NOT NULL,
+    consent_admission BLOB NOT NULL,
     audit_retention BLOB NOT NULL,
     settlement_admission BLOB NOT NULL,
     settlement_scheduler_health BLOB NOT NULL,
@@ -408,7 +409,8 @@ INSERT INTO table_counts(name, count) VALUES
  ('withdrawal_notification_index', X'0000000000000000'),
  ('withdrawal_requester_index', X'0000000000000000'),
  ('withdrawal_transaction_index', X'0000000000000000'),
- ('withdrawal_stop_reason_counts', X'0000000000000000');
+ ('withdrawal_stop_reason_counts', X'0000000000000000'),
+ ('consent_admission_schema', X'0000000000000001');
 "#;
 
 const MIGRATIONS: &[Migration] = &[Migration {
@@ -842,6 +844,7 @@ enum SingletonColumn {
     AdminState,
     DepositAdmission,
     NotificationAdmission,
+    ConsentAdmission,
     AuditRetention,
     SettlementAdmission,
     SettlementSchedulerHealth,
@@ -857,6 +860,7 @@ impl SingletonColumn {
             Self::AdminState => "admin_state",
             Self::DepositAdmission => "deposit_admission",
             Self::NotificationAdmission => "notification_admission",
+            Self::ConsentAdmission => "consent_admission",
             Self::AuditRetention => "audit_retention",
             Self::SettlementAdmission => "settlement_admission",
             Self::SettlementSchedulerHealth => "settlement_scheduler_health",
@@ -1502,6 +1506,12 @@ struct NotificationAdmissionControl {
     ingestion_count: u16,
     consent_count: u16,
     failed_transactions: Vec<NotificationFailureCooldown>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct ConsentAdmissionControl {
+    window_id: u64,
+    caller_counts: Vec<SettlementCallerQuota>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2448,7 +2458,7 @@ fn migrate_previous_schema(
         });
     }
     verify_schema_shape(handle, true)?;
-    StableStore::attach_handle(handle)?.validate_singletons()?;
+    StableStore::attach_handle_for_schema(handle, true)?.validate_singletons_for_schema(true)?;
     let previous_admission = handle.query(|connection| {
         connection.query_scalar::<Vec<u8>>(
             "SELECT deposit_admission FROM singleton_state WHERE id = 1",
@@ -2572,6 +2582,58 @@ fn verify_current_schema_shape(handle: DbHandle) -> Result<(), StorageError> {
     verify_schema_shape(handle, false)
 }
 
+// The deployed v36 layout predates the separate consent counter. A marker in
+// the existing metadata table detects a lost new column without expanding a
+// potentially full deployed notification blob during migration.
+fn migrate_consent_admission_v36(handle: DbHandle) -> Result<(), StorageError> {
+    verify_metadata(handle)?;
+    let (columns, marker, previous): (i64, Option<Vec<u8>>, Vec<u8>) = handle.query(|connection| {
+        Ok((
+            connection.query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('singleton_state') WHERE name = 'consent_admission'",
+                params![],
+            )?,
+            connection.query_optional_scalar(
+                "SELECT count FROM table_counts WHERE name = 'consent_admission_schema'", params![],
+            )?,
+            connection.query_scalar("SELECT notification_admission FROM singleton_state WHERE id = 1", params![])?,
+        ))
+    })?;
+    let notification: NotificationAdmissionControl = decode(&StableBlob::new(previous.clone())?)?;
+    match (columns, marker.as_deref()) {
+        (1, Some(value)) if value == 1u64.to_sql_bytes() => return Ok(()),
+        (0, None) => {}
+        _ => return Err(StorageError::DecodeFailed),
+    }
+    let consent = encode(&ConsentAdmissionControl {
+        window_id: notification.window_id,
+        caller_counts: Vec::new(),
+    })?;
+    handle.update(|connection| {
+        expect_blob(
+            connection,
+            "SELECT notification_admission FROM singleton_state WHERE id = 1",
+            params![],
+            &previous,
+            "stale consent migration",
+        )?;
+        connection.execute(
+            "ALTER TABLE singleton_state ADD COLUMN consent_admission BLOB",
+            params![],
+        )?;
+        connection.execute(
+            "UPDATE singleton_state SET consent_admission = ?1 WHERE id = 1",
+            params![consent.to_sql_bytes()],
+        )?;
+        connection.execute(
+            "INSERT INTO table_counts(name, count) VALUES ('consent_admission_schema', ?1)",
+            params![1u64.to_sql_bytes()],
+        )?;
+        bump_storage_revision(connection)
+    })?;
+    Ok(())
+}
+
 fn verify_schema_shape(handle: DbHandle, predecessor: bool) -> Result<(), StorageError> {
     handle
         .query(|connection| {
@@ -2639,6 +2701,7 @@ fn initialize_singleton_state(
     let admin = encode(&admin)?.to_sql_bytes();
     let deposit_admission = encode(&DepositAdmissionControl::default())?.to_sql_bytes();
     let notification_admission = encode(&NotificationAdmissionControl::default())?.to_sql_bytes();
+    let consent_admission = encode(&ConsentAdmissionControl::default())?.to_sql_bytes();
     let audit_retention = encode(&AuditRetentionState::default())?.to_sql_bytes();
     let settlement_admission = encode(&SettlementAdmissionControl::default())?.to_sql_bytes();
     let settlement_scheduler_health = encode(&SettlementSchedulerHealth::default())?.to_sql_bytes();
@@ -2646,10 +2709,10 @@ fn initialize_singleton_state(
         connection.execute(
             "INSERT INTO singleton_state(
                 id, accounting, counters, external_progress, config, admin_state,
-                deposit_admission, notification_admission, audit_retention,
+                deposit_admission, notification_admission, consent_admission, audit_retention,
                 settlement_admission, settlement_scheduler_health, storage_revision,
                 withdrawal_liability_amount, storage_validation
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)",
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL)",
             params![
                 accounting,
                 counters,
@@ -2658,6 +2721,7 @@ fn initialize_singleton_state(
                 admin,
                 deposit_admission,
                 notification_admission,
+                consent_admission,
                 audit_retention,
                 settlement_admission,
                 settlement_scheduler_health,
@@ -2694,6 +2758,7 @@ pub struct StableStore {
     deposit_authorization_deadline_index: SqlMap<StableBlob, [u8; 32]>,
     deposit_admission: SqlCell<StableBlob>,
     notification_admission: SqlCell<StableBlob>,
+    consent_admission: SqlCell<StableBlob>,
     pull_pending_deposit_index: SqlMap<[u8; 32], u8>,
     release_pending_withdrawal_index: SqlMap<[u8; 32], u8>,
     withdrawal_notification_index: SqlMap<[u8; 32], [u8; 32]>,
@@ -2746,6 +2811,20 @@ fn validate_storage_row(
             }
             if stored.intent().caller.is_empty() {
                 return Err(DbError::Constraint("invalid deposit caller".into()));
+            }
+            if let Some(deadline) = deposit_authorization_deadline(record) {
+                let deadline_key =
+                    deposit_authorization_deadline_index_key(deadline, record.id.bytes())
+                        .map_err(|_| DbError::Constraint("invalid deposit deadline key".into()))?;
+                let indexed = connection.query_optional_scalar::<Vec<u8>>(
+                    "SELECT value FROM deposit_authorization_deadline_index WHERE key = ?1",
+                    params![deadline_key.as_slice()],
+                )?;
+                if indexed.as_deref() != Some(key) {
+                    return Err(DbError::Constraint(
+                        "deposit deadline index membership mismatch".into(),
+                    ));
+                }
             }
             if is_pending_deposit_ledger(record) {
                 progress.pending_ledger_operations = progress
@@ -3276,6 +3355,10 @@ impl StableStore {
     }
 
     fn attach_handle(handle: DbHandle) -> Result<Self, StorageError> {
+        Self::attach_handle_for_schema(handle, false)
+    }
+
+    fn attach_handle_for_schema(handle: DbHandle, previous: bool) -> Result<Self, StorageError> {
         let handle = RevisionedHandle(handle);
         Ok(Self {
             handle,
@@ -3299,6 +3382,17 @@ impl StableStore {
             ),
             deposit_admission: SqlCell::load(handle, SingletonColumn::DepositAdmission)?,
             notification_admission: SqlCell::load(handle, SingletonColumn::NotificationAdmission)?,
+            consent_admission: if previous {
+                // The v35 singleton has no consent column. It is added only
+                // after the existing v35 state has passed validation.
+                SqlCell {
+                    handle,
+                    column: SingletonColumn::ConsentAdmission,
+                    _value: PhantomData,
+                }
+            } else {
+                SqlCell::load(handle, SingletonColumn::ConsentAdmission)?
+            },
             pull_pending_deposit_index: SqlMap::new(handle, "pull_pending_deposit_index"),
             release_pending_withdrawal_index: SqlMap::new(
                 handle,
@@ -3338,6 +3432,7 @@ impl StableStore {
         if stored_metadata(handle)?.0 == PREVIOUS_SCHEMA_VERSION {
             migrate_previous_schema(handle, SchemaMigrationMode::Production)?;
         }
+        migrate_consent_admission_v36(handle)?;
         Self::reopen_handle(handle)
     }
 
@@ -3360,6 +3455,7 @@ impl StableStore {
                 StorageError::UnsupportedWireVersion(wire)
             });
         }
+        migrate_consent_admission_v36(handle)?;
         let store = Self::reopen_handle(handle)?;
         if let Some(expected) = confirmation_relayer {
             let actual = store
@@ -3374,6 +3470,10 @@ impl StableStore {
     }
 
     fn validate_singletons(&self) -> Result<(), StorageError> {
+        self.validate_singletons_for_schema(false)
+    }
+
+    fn validate_singletons_for_schema(&self, previous: bool) -> Result<(), StorageError> {
         self.accounting()?;
         self.counters()?;
         self.external_progress()?;
@@ -3381,6 +3481,18 @@ impl StableStore {
         decode::<Option<AdminState>>(&self.admin_state.get()?)?;
         self.deposit_admission()?;
         decode::<NotificationAdmissionControl>(&self.notification_admission.get()?)?;
+        if !previous {
+            decode::<ConsentAdmissionControl>(&self.consent_admission.get()?)?;
+            let consent_marker = self.handle.query(|connection| {
+                connection.query_optional_scalar::<Vec<u8>>(
+                    "SELECT count FROM table_counts WHERE name = 'consent_admission_schema'",
+                    params![],
+                )
+            })?;
+            if consent_marker.as_deref() != Some(1u64.to_sql_bytes().as_slice()) {
+                return Err(StorageError::DecodeFailed);
+            }
+        }
         decode::<AuditRetentionState>(&self.audit_retention.get()?)?;
         decode::<SettlementAdmissionControl>(&self.settlement_admission.get()?)?;
         decode::<SettlementSchedulerHealth>(&self.settlement_scheduler_health.get()?)?;
@@ -4309,16 +4421,20 @@ impl StableStore {
 
     pub fn consume_consent_quota(
         &mut self,
+        caller: Principal,
         now_ns: u64,
         window_seconds: u64,
         limit: u16,
+        caller_limit: u16,
     ) -> Result<bool, StorageError> {
         let window_ns = window_seconds.saturating_mul(1_000_000_000);
-        if window_ns == 0 || limit == 0 {
+        if window_ns == 0 || limit == 0 || limit > 200 || caller_limit == 0 {
             return Err(StorageError::DecodeFailed);
         }
         let previous_blob = self.notification_admission.get()?;
         let mut admission: NotificationAdmissionControl = decode(&previous_blob)?;
+        let previous_consent = self.consent_admission.get()?;
+        let mut consent: ConsentAdmissionControl = decode(&previous_consent)?;
         let window_id = now_ns / window_ns;
         if admission.window_id != window_id {
             admission = NotificationAdmissionControl {
@@ -4330,14 +4446,45 @@ impl StableStore {
                 failed_transactions: admission.failed_transactions,
             };
         }
-        if admission.consent_count >= limit {
+        if consent.window_id != window_id {
+            consent = ConsentAdmissionControl {
+                window_id,
+                caller_counts: Vec::new(),
+            };
+        }
+        let caller_position = consent
+            .caller_counts
+            .iter()
+            .position(|entry| entry.caller == caller);
+        let caller_count = caller_position
+            .map(|position| consent.caller_counts[position].count)
+            .unwrap_or(0);
+        if !::bridge_core::kernel::notification_admission_allowed(
+            admission.consent_count,
+            caller_count,
+            limit,
+            caller_limit,
+        ) {
             return Ok(false);
+        }
+        if let Some(position) = caller_position {
+            consent.caller_counts[position].count = caller_count
+                .checked_add(1)
+                .ok_or(StorageError::CounterOverflow)?;
+        } else {
+            if consent.caller_counts.len() >= usize::from(limit) {
+                return Err(StorageError::CounterOverflow);
+            }
+            consent
+                .caller_counts
+                .push(SettlementCallerQuota { caller, count: 1 });
         }
         admission.consent_count = admission
             .consent_count
             .checked_add(1)
             .ok_or(StorageError::CounterOverflow)?;
         let next_blob = encode(&admission)?;
+        let next_consent = encode(&consent)?;
         self.handle.update(|connection| {
             expect_blob(
                 connection,
@@ -4346,9 +4493,10 @@ impl StableStore {
                 previous_blob.as_slice(),
                 "stale consent admission",
             )?;
+            expect_blob(connection, "SELECT consent_admission FROM singleton_state WHERE id = 1", params![], previous_consent.as_slice(), "stale consent callers")?;
             connection.execute(
-                "UPDATE singleton_state SET notification_admission = ?1 WHERE id = 1",
-                params![next_blob.to_sql_bytes()],
+                "UPDATE singleton_state SET notification_admission = ?1, consent_admission = ?2 WHERE id = 1",
+                params![next_blob.to_sql_bytes(), next_consent.to_sql_bytes()],
             )
         })?;
         Ok(true)
@@ -9701,6 +9849,245 @@ mod tests {
     use serial_test::serial;
 
     #[test]
+    #[serial]
+    fn consent_and_notification_cooldowns_do_not_share_value_capacity() {
+        let mut store = StableStore::init(VectorMemory::default()).unwrap();
+        let boundary = 6_000_000_000_000u64;
+        let earlier = boundary - 1_000_000_000;
+        let later = boundary + 1_000_000_000;
+        for id in 0..54u8 {
+            assert!(store
+                .consume_notification_verification_quota(earlier, 600, 60, 0, 6, false)
+                .unwrap());
+            let key = crate::withdrawal_notification_cooldown_key(
+                Principal::self_authenticating([id]),
+                [id + 100; 32],
+            );
+            store
+                .record_notification_failure_cooldown(key, earlier, 30_000_000_000)
+                .unwrap();
+        }
+        for id in 0..120u8 {
+            assert!(store
+                .consume_consent_quota(Principal::self_authenticating([id]), later, 600, 120, 60)
+                .unwrap());
+        }
+        for id in 0..54u8 {
+            assert!(store
+                .consume_notification_verification_quota(later, 600, 60, 0, 6, false)
+                .unwrap());
+            let key = crate::withdrawal_notification_cooldown_key(
+                Principal::self_authenticating([id + 100]),
+                [id + 160; 32],
+            );
+            store
+                .record_notification_failure_cooldown(key, later, 30_000_000_000)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn consent_admission_supports_the_maximum_configured_caller_count() {
+        let memory = VectorMemory::default();
+        let mut store = StableStore::init(memory.clone()).unwrap();
+        let now = 6_000_000_000_001u64;
+        for id in 0..200u8 {
+            assert!(store
+                .consume_consent_quota(Principal::self_authenticating([id]), now, 600, 200, 100)
+                .unwrap());
+        }
+        drop(store);
+        let mut reopened = StableStore::reopen(memory).unwrap();
+        assert!(!reopened
+            .consume_consent_quota(Principal::self_authenticating([201]), now, 600, 200, 100)
+            .unwrap());
+    }
+
+    #[test]
+    #[serial]
+    fn consent_migration_rejects_a_missing_column_after_migration() {
+        let memory = VectorMemory::default();
+        let store = StableStore::init(memory.clone()).unwrap();
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "ALTER TABLE singleton_state DROP COLUMN consent_admission",
+                    params![],
+                )
+            })
+            .unwrap();
+        drop(store);
+        assert!(StableStore::reopen_after_upgrade(memory).is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn consent_migration_preserves_a_near_full_deployed_notification_blob() {
+        let memory = VectorMemory::default();
+        let store = StableStore::init(memory.clone()).unwrap();
+        let mut old = NotificationAdmissionControl::default();
+        let mut last = encode(&old).unwrap();
+        for id in 0..4096u16 {
+            let mut hash = [0xff; 32];
+            hash[0..2].copy_from_slice(&id.to_be_bytes());
+            old.failed_transactions.push(NotificationFailureCooldown {
+                transaction_hash: hash,
+                retry_after_ns: u64::MAX,
+            });
+            match encode(&old) {
+                Ok(value) => last = value,
+                Err(StorageError::ValueTooLarge { .. }) => break,
+                Err(error) => panic!("unexpected encoding failure: {error:?}"),
+            }
+        }
+        assert!(last.as_slice().len() > MAX_STABLE_VALUE_BYTES - 128);
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "ALTER TABLE singleton_state DROP COLUMN consent_admission",
+                    params![],
+                )?;
+                connection.execute(
+                    "DELETE FROM table_counts WHERE name = 'consent_admission_schema'",
+                    params![],
+                )?;
+                connection.execute(
+                    "UPDATE singleton_state SET notification_admission = ?1 WHERE id = 1",
+                    params![last.to_sql_bytes()],
+                )
+            })
+            .unwrap();
+        drop(store);
+        let reopened = StableStore::reopen_after_upgrade(memory).unwrap();
+        assert_eq!(reopened.notification_admission.get().unwrap(), last);
+    }
+
+    #[test]
+    #[serial]
+    fn consent_quota_reopens_legacy_v36_without_losing_global_usage() {
+        let memory = VectorMemory::default();
+        let store = StableStore::init(memory.clone()).expect("initialize");
+        let now = 1_788_840_001_000_000_000u64;
+        let old = NotificationAdmissionControl {
+            window_id: now / 600_000_000_000,
+            consent_count: 119,
+            ..Default::default()
+        };
+        let old_blob = encode(&old).expect("encode deployed v36 admission");
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "ALTER TABLE singleton_state DROP COLUMN consent_admission",
+                    params![],
+                )?;
+                connection.execute(
+                    "DELETE FROM table_counts WHERE name = 'consent_admission_schema'",
+                    params![],
+                )?;
+                connection.execute(
+                    "UPDATE singleton_state SET notification_admission = ?1 WHERE id = 1",
+                    params![old_blob.to_sql_bytes()],
+                )
+            })
+            .expect("persist legacy v36 admission");
+        drop(store);
+        let mut reopened =
+            StableStore::reopen_after_upgrade(memory.clone()).expect("upgrade legacy v36");
+        let first = Principal::from_slice(&[1]);
+        assert!(reopened
+            .consume_consent_quota(first, now, 600, 120, 6)
+            .unwrap());
+        assert!(!reopened
+            .consume_consent_quota(Principal::from_slice(&[2]), now, 600, 120, 6)
+            .unwrap());
+        drop(reopened);
+        let mut reopened = StableStore::reopen(memory).expect("reopen upgraded admission");
+        assert!(!reopened
+            .consume_consent_quota(first, now, 600, 120, 6)
+            .unwrap());
+    }
+
+    #[test]
+    #[serial]
+    fn validation_rejects_missing_authorization_deadline_index() {
+        let mut store =
+            StableStore::init_configured(VectorMemory::default(), &config()).expect("initialize");
+        let owner = Principal::self_authenticating([36; 32]);
+        let mut record = deposit_for(owner);
+        let deposit_intent = intent(record.id.bytes(), owner);
+        store
+            .admit_deposit(owner, &deposit_intent, &record, None, None)
+            .expect("admit");
+        let quote = DepositQuote {
+            service_fee: Amount::new(10),
+            net_amount: Amount::new(100),
+        };
+        let authorization = MintAuthorization {
+            deposit_id: record.id.bytes(),
+            recipient: deposit_intent.base_recipient,
+            gross_amount: record.gross_amount,
+            max_service_fee: record.max_service_fee,
+            charged_service_fee: quote.service_fee,
+            deadline: MintAuthorization::deadline_from_issued_at_timestamp(100).expect("deadline"),
+            authorization_epoch: 1,
+        };
+        let domain = MintAuthorizationDomain::bridge(8453, [1; 20]);
+        let result = record
+            .apply(DepositEvent::CommitAuthorization {
+                quote,
+                authorization: Box::new(MintAuthorizationRecord {
+                    authorization,
+                    domain: domain.clone(),
+                    digest: crate::mint_authorization::digest(&domain, authorization),
+                    origin: MintAuthorizationOrigin {
+                        finalized_block_number: 7,
+                        finalized_block_hash: [7; 32],
+                        finalized_block_timestamp: 100,
+                        issued_at_timestamp: 100,
+                    },
+                    signature_dispatch_attempt: 0,
+                    signature_dispatched: false,
+                    signature: None,
+                }),
+            })
+            .expect("commit");
+        store
+            .put_deposit_transition(&record, result)
+            .expect("persist");
+        store
+            .handle
+            .update(|connection| {
+                connection.execute(
+                    "DELETE FROM deposit_authorization_deadline_index WHERE value = ?1",
+                    params![record.id.bytes().to_vec()],
+                )?;
+                decrement_table_count(connection, "deposit_authorization_deadline_index")
+            })
+            .expect("simulate consistent missing index row");
+        assert_eq!(
+            store.storage_integrity_check().expect("sqlite integrity"),
+            "ok"
+        );
+        store.start_storage_validation().expect("start validation");
+        let mut rejected = false;
+        for _ in 0..=VALIDATION_TABLES.len() {
+            match store.continue_storage_validation(MAX_VALIDATION_ROWS) {
+                Err(StorageMaintenanceError::StorageFailure) => {
+                    rejected = true;
+                    break;
+                }
+                Ok(status) if !status.complete => {}
+                other => panic!("missing deadline index was not rejected: {other:?}"),
+            }
+        }
+        assert!(rejected);
+    }
+
+    #[test]
     fn lifetime_deposit_budget_fails_closed_at_the_boundary() {
         assert!(lifetime_deposit_capacity_available(
             MAX_LIFETIME_DEPOSIT_RECORDS - 1
@@ -13004,7 +13391,7 @@ mod tests {
         let signature_result = record
             .apply(DepositEvent::AuthorizationSigned {
                 signature: vec![1; 65],
-                observed_timestamp: authorization.deadline - 300,
+                observed_timestamp: authorization.deadline - 1,
             })
             .expect("install signature");
         store
@@ -13052,15 +13439,15 @@ mod tests {
             .expect("second authorization")
             .dispatch_signature()
             .expect("dispatch second signature");
-        let before_short_window = second.clone();
+        let before_expired_signature = second.clone();
         assert_eq!(
             second.apply(DepositEvent::AuthorizationSigned {
                 signature: vec![2; 65],
-                observed_timestamp: second_authorization.deadline - 299,
+                observed_timestamp: second_authorization.deadline,
             }),
             Err(CoreError::ConflictingReplay)
         );
-        assert_eq!(second, before_short_window);
+        assert_eq!(second, before_expired_signature);
         assert_eq!(
             store
                 .counters()
@@ -13936,6 +14323,20 @@ mod tests {
             .expect("execute evidence");
         let admission = store.deposit_admission().expect("admission");
         write_v35_admission(&store, &admission);
+        store
+            .handle
+            .0
+            .update(|connection| {
+                connection.execute(
+                    "ALTER TABLE singleton_state DROP COLUMN consent_admission",
+                    params![],
+                )?;
+                connection.execute(
+                    "DELETE FROM table_counts WHERE name = 'consent_admission_schema'",
+                    params![],
+                )
+            })
+            .expect("restore deployed v35 singleton shape");
         drop(store);
 
         assert!(matches!(

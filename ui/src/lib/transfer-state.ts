@@ -292,3 +292,9 @@ export function assertTransferActionAllowed(identity: string): void {
   if (facts?.outcome || facts?.issue === "conflict" || facts?.issue === "processed")
     throw new Error("Transfer already resolved or requires review.")
 }
+
+/** Advisory browser RPC observations must not prevent an authoritative IC refund check. */
+export function assertDepositRefundCheckAllowed(identity: string): void {
+  if (readTransferFacts(identity)?.outcome)
+    throw new Error("Transfer already resolved or requires review.")
+}

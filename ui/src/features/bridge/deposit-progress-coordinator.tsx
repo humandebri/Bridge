@@ -35,7 +35,12 @@ export function DepositProgressCoordinator() {
   const record =
     observation && observation.identityKey === identityKey ? observation.record : undefined
   const registerAction = useCallback(
-    (action?: { label: string; run: () => void | Promise<void>; pending?: boolean }) => {
+    (action?: {
+      label: string
+      kind?: "refund-check"
+      run: () => void | Promise<void>
+      pending?: boolean
+    }) => {
       if (progressId) setProgressAction(progressId, action)
     },
     [progressId, setProgressAction],
@@ -173,8 +178,9 @@ export function DepositProgressCoordinator() {
         })
       else if (event.phase === "finalized")
         updateMint({
-          phase: "complete",
-          outcome: "minted",
+          phase: "base-mint-finalizing",
+          transactionHash: event.transactionHash,
+          receiptBlockNumber: event.blockNumber.toString(),
           recordingPending: true,
           observationError: undefined,
         })
@@ -210,6 +216,7 @@ export function DepositProgressCoordinator() {
     if (!canonicalRefund) return
     registerAction({
       label: refundAction.pending ? "Checking…" : "Check refund",
+      kind: "refund-check",
       pending: refundAction.pending,
       run: async () => {
         if (refundRecord.current) await requestRefund.current(refundRecord.current).catch(() => {})

@@ -431,7 +431,8 @@ def document : String :=
     ledgerBlockCase none none (some 9) (.releaseSucceeded 10)]
   "{" ++ field "schema_version" "3" ++ "," ++
     jsonSection "signature_time" [signatureTimeCase 700 1000,
-      signatureTimeCase 701 1000, signatureTimeCase 1001 1000,
+      signatureTimeCase 701 1000, signatureTimeCase 999 1000,
+      signatureTimeCase 1000 1000, signatureTimeCase 1001 1000,
       signatureTimeCase 18446744073709551615 18446744073709551615,
       signatureTimeCase 18446744073709551315 18446744073709551615] ++ "," ++
     jsonSection "quote" quotes ++ "," ++ jsonSection "settlement" settlements ++ "," ++
