@@ -28,6 +28,7 @@ const KINIC_LEDGER: &str = "73mez-iiaaa-aaaaq-aaasq-cai";
 const KINIC_INDEX: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
 const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
+#[cfg(test)]
 const PRODUCTION_BRIDGE_CANISTER: &str = "lb5i5-ziaaa-aaaar-qcgwq-cai";
 const PRODUCTION_PAUSE_PRINCIPAL: &str =
     "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe";
