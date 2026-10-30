@@ -542,11 +542,18 @@ grep -q $'^sample\\tfail\\t' "$PROOF_STAGE_RECEIPT"
         repository = Path(__file__).resolve().parents[1]
         script = repository / "scripts/test_production_handover.sh"
         driver = repository / "scripts/production-handover-driver.sh"
-        profile = (repository / "tools/bridge-profile/src/main.rs").read_text()
-        retired = (profile.replace("execute-production-root-addition", "retired-command")
-                   .replace("execute_production_root_addition", "retired_function")
-                   .replace("preserved_across_root_addition", "retired_observation")
-                   .replace('"--add-controller"', '"retired-argument"'))
+        common = (
+            "root_state.dapps.iter().filter(|id| **id == bridge).count()\n"
+            "sole-unregistered, joint-unregistered, or root-registered\n"
+            "do not retry for 6 minutes\n"
+        )
+        profile = common + (
+            'execute-production-root-addition\n'
+            'execute_production_root_addition\n'
+            'preserved_across_root_addition\n'
+            '"--add-controller"\n'
+        )
+        retired = common
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             scripts = root / "scripts"
