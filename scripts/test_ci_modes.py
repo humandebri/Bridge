@@ -2,6 +2,7 @@
 """Static regression tests for local CI mode composition."""
 
 from pathlib import Path
+import os
 import re
 import shlex
 import subprocess
@@ -536,6 +537,44 @@ grep -q $'^sample\\tfail\\t' "$PROOF_STAGE_RECEIPT"
             "ui/npm-shrinkwrap.json",
         ):
             self.assertIn(relative_path, guard)
+
+    def test_handover_policy_accepts_only_complete_retirement(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        script = repository / "scripts/test_production_handover.sh"
+        driver = repository / "scripts/production-handover-driver.sh"
+        profile = (repository / "tools/bridge-profile/src/main.rs").read_text()
+        retired = (profile.replace("execute-production-root-addition", "retired-command")
+                   .replace("execute_production_root_addition", "retired_function")
+                   .replace("preserved_across_root_addition", "retired_observation")
+                   .replace('"--add-controller"', '"retired-argument"'))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "scripts"
+            candidate = root / "candidate-scripts"
+            profile_path = root / "tools/bridge-profile/src/main.rs"
+            scripts.mkdir(parents=True)
+            candidate.mkdir()
+            profile_path.parent.mkdir(parents=True)
+            (scripts / script.name).write_bytes(script.read_bytes())
+            (scripts / driver.name).write_bytes(driver.read_bytes())
+            (scripts / "production-validation.sh").write_text("")
+            (candidate / driver.name).write_bytes(driver.read_bytes())
+            environment = os.environ.copy()
+            environment["BRIDGE_CANDIDATE_SCRIPTS"] = str(candidate)
+
+            def check(source: str, expected: bool) -> None:
+                profile_path.write_text(source)
+                result = subprocess.run(["bash", str(scripts / script.name)], env=environment,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, expected, result.stdout + result.stderr)
+
+            check(profile, True)
+            check(retired, False)  # An executable candidate driver remains.
+            (candidate / driver.name).unlink()
+            check(profile, False)  # The command remains, but its driver is missing.
+            check(retired, True)
+            (candidate / driver.name).symlink_to("missing-driver")
+            check(retired, False)  # A dangling link is not an absent candidate file.
 
     def test_versions_shellchecks_every_production_release_driver(self) -> None:
         body = function_body("run_versions")
