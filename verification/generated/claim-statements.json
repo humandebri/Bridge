@@ -437,7 +437,7 @@
       "boundary": "There is no complete proof connecting GlobalHistory and DepositHistory to production histories",
       "evidence": "claims.tsv:fee_accounting_once",
       "external": "claims.tsv:fee_accounting_once",
-      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
+      "review_note": "Reviewed deadline policy: signature installation now permits any timestamp strictly before the fixed deadline, including less than 300 seconds remaining. The fee is credited once upon accepted installation; timely minting and fairness of the fee are not guaranteed by this claim."
     },
     {
       "kind": "claim",

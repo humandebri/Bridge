@@ -276,7 +276,7 @@ Unproved boundary: There is no complete proof connecting GlobalHistory and Depos
 
 Evidence and external assumptions: `claims.tsv:fee_accounting_once` / `claims.tsv:fee_accounting_once`
 
-Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
+Review rationale: Reviewed deadline policy: signature installation now permits any timestamp strictly before the fixed deadline, including less than 300 seconds remaining. The fee is credited once upon accepted installation; timely minting and fairness of the fee are not guaranteed by this claim.
 
 ```lean
 BridgeSpec.ClaimContracts.fee_accounting_once_witness : BridgeSpec.ClaimContracts.FeeAccountingOnce
