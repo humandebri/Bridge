@@ -49,7 +49,7 @@ case "$MODE" in
   policy|contracts-fast|proofs|proofs-impacted|certora|real) NEEDS_FOUNDRY=true ;;
 esac
 case "$MODE" in
-  policy) NEEDS_WORKSPACE_DEPS=true ;;
+  policy|rust-fast) NEEDS_WORKSPACE_DEPS=true ;;
   rust-integration|proofs|proofs-impacted) NEEDS_WORKSPACE_DEPS=true; NEEDS_UI_DEPS=true ;;
   ui-fast|ui-e2e|real) NEEDS_UI_DEPS=true ;;
 esac

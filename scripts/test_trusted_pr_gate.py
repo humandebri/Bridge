@@ -383,8 +383,11 @@ class TrustedPrGateTests(unittest.TestCase):
             )
         ]
         self.assertIn("matrix.area == 'proofs-impacted'", workspace_dependencies_step)
+        self.assertIn("matrix.area == 'rust-fast'", workspace_dependencies_step)
+        node_step = workflow[workflow.index("Install Node.js 24.14.0"):workflow.index("Install pnpm 11.0.8")]
+        self.assertIn("matrix.area == 'rust-fast'", node_step)
         self.assertIn('case "${{ matrix.area }}" in', workflow)
-        self.assertIn('rust-integration|proofs-impacted|ui-fast|ui-e2e|real) ;;', workflow)
+        self.assertIn('rust-fast|rust-integration|proofs-impacted|ui-fast|ui-e2e|real) ;;', workflow)
         self.assertIn('*) mkdir "$dependency_root" ;;', workflow)
         self.assertNotIn(
             'mkdir -p "$RUNNER_TEMP/bridge-trusted-dependencies"', workflow
@@ -409,6 +412,26 @@ class TrustedPrGateTests(unittest.TestCase):
             "matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'",
             workflow,
         )
+
+    def test_rust_fast_receives_node_and_reviewed_workspace_dependencies(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        steps = (
+            "Install Node.js 24.14.0",
+            "Install pnpm 11.0.8",
+            "Isolate reviewed candidate dependency inputs",
+            "Install reviewed workspace dependencies without lifecycle scripts",
+        )
+        for name in steps:
+            with self.subTest(step=name):
+                start = workflow.index("      - name: " + name)
+                end = workflow.index("\n      - name:", start + 1)
+                condition = re.search(r"if: (.+)", workflow[start:end]).group(1)
+                condition = condition.replace("matrix.area", '\"$AREA\"')
+                result = subprocess.run(
+                    ["bash", "-c", "[[ " + condition + " ]]"],
+                    env={**os.environ, "AREA": "rust-fast"}, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_claim_transactions_prefetch_pocketic_before_isolation(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -507,6 +530,7 @@ class TrustedPrGateTests(unittest.TestCase):
             "rust-integration|proofs|proofs-impacted) NEEDS_WORKSPACE_DEPS=true; NEEDS_UI_DEPS=true ;;",
             wrapper,
         )
+        self.assertIn("policy|rust-fast) NEEDS_WORKSPACE_DEPS=true ;;", wrapper)
         self.assertIn("DEPENDENCY_ROOT", wrapper)
         self.assertNotIn("src=$POLICY_ROOT/node_modules", wrapper)
         self.assertIn("dst=/workspace/ui/node_modules/.tmp", wrapper)
