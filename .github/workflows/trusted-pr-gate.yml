@@ -124,12 +124,12 @@ jobs:
         working-directory: trusted-policy
         run: rustup show
       - name: Install Node.js 24.14.0
-        if: matrix.area == 'policy' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
+        if: matrix.area == 'policy' || matrix.area == 'rust-fast' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.14.0
       - name: Install pnpm 11.0.8
-        if: matrix.area == 'policy' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
+        if: matrix.area == 'policy' || matrix.area == 'rust-fast' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
         uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
         with:
           version: 11.0.8
@@ -143,7 +143,7 @@ jobs:
             /home/runner/.cargo/git
           key: bridge-trusted-pr-rust-${{ needs.classify.outputs.base_sha }}-${{ hashFiles('trusted-policy/Cargo.lock', 'trusted-policy/rust-toolchain.toml') }}
       - name: Restore pnpm store cache
-        if: matrix.area == 'policy' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
+        if: matrix.area == 'policy' || matrix.area == 'rust-fast' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /home/runner/.local/share/pnpm/store
@@ -211,7 +211,7 @@ jobs:
         run: |
           dependency_root="$RUNNER_TEMP/bridge-trusted-dependencies"
           case "${{ matrix.area }}" in
-            policy|rust-integration|proofs-impacted|ui-fast|ui-e2e|real) ;;
+            policy|rust-fast|rust-integration|proofs-impacted|ui-fast|ui-e2e|real) ;;
             *) mkdir "$dependency_root" ;;
           esac
           echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$dependency_root" >> "$GITHUB_ENV"
@@ -229,14 +229,14 @@ jobs:
         working-directory: source
         run: git fetch --no-tags --no-recurse-submodules https://github.com/humandebri/Bridge.git e0b426e7465531d2e572b5b741509f1889e6def8
       - name: Isolate reviewed candidate dependency inputs
-        if: matrix.area == 'policy' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
+        if: matrix.area == 'policy' || matrix.area == 'rust-fast' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
         run: |
           dependency_root="$RUNNER_TEMP/bridge-trusted-dependencies"
           python3 trusted-policy/scripts/prepare_candidate_dependencies.py \
             --source source --destination "$dependency_root"
           echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$dependency_root" >> "$GITHUB_ENV"
       - name: Install reviewed workspace dependencies without lifecycle scripts
-        if: matrix.area == 'policy' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted'
+        if: matrix.area == 'policy' || matrix.area == 'rust-fast' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted'
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts
       - name: Install reviewed UI dependencies without lifecycle scripts
         if: matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted' || matrix.area == 'ui-fast' || matrix.area == 'ui-e2e' || matrix.area == 'real'
