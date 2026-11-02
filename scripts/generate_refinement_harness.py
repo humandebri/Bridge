@@ -647,9 +647,27 @@ def bridge_constructor_prefix(root: Path) -> str:
     raise ValueError(f"unsupported Bridge constructor parameters: {parameters!r}")
 
 
+def signature_time_guard(source_root: Path) -> str:
+    source = (source_root / "canister/bridge-core/src/kernel.rs").read_text(encoding="utf-8")
+    supported = (
+        "mint_authorization_has_minimum_remaining_time",
+        "mint_authorization_before_deadline",
+    )
+    declared = [name for name in supported if re.search(
+        rf"\bpub\s+const\s+fn\s+{name}\s*\(", source
+    )]
+    if len(declared) != 1:
+        raise ValueError("signature-time kernel must declare exactly one supported guard")
+    return declared[0]
+
+
 def generated_sources(root: Path = ROOT, *, source_root: Path = ROOT) -> dict[Path, str]:
     rust_source = RUST_PRELUDE + "\n".join(
         renderer.body for key, renderer in sorted(RENDERERS.items()) if key[1] == "rust"
+    )
+    rust_source = rust_source.replace(
+        "mint_authorization_has_minimum_remaining_time(",
+        signature_time_guard(source_root) + "(",
     )
     foundry_source = FOUNDRY_PRELUDE.replace(
         "__BRIDGE_CONSTRUCTOR_PREFIX__", bridge_constructor_prefix(source_root)
