@@ -28,7 +28,7 @@ The KINIC–Base Bridge maintains 1:1 backing between KINIC on ICP and its ERC-2
 | Runbook | Use it for |
 |---|---|
 | [Operations](runbooks/operations.md) | Production gates, activation, upgrades, monitoring, and incident handling |
-| [DAO reactivation and handover](runbooks/dao-reactivation.md) | Historical joint-control demonstration and post-handover upgrade validation |
+| [DAO recovery and SNS upgrades](runbooks/dao-reactivation.md) | Root-only recovery and upgrade preparation, with historical handover context |
 | [Emergency pause principal](runbooks/emergency-pause-principal.md) | The emergency principal's authority and operating boundaries |
 | [Token publication](runbooks/token-publication.md) | Publishing token metadata and related artifacts |
 | [Bridge error messages](runbooks/bridge-error-messages.md) | Interpreting errors and choosing recovery actions |

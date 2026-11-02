@@ -44,7 +44,7 @@ pub use kernel::{
     funding_reconciliation_decision, hold_resolution_decision, hold_retry_allowed,
     lease_generation_next, lease_lane_claim_decision, lease_outcome_decision,
     lease_outcome_is_current, legacy_activation_evidence_requirement, manual_claim_allowed,
-    manual_claim_decision, mint_admission_total, mint_authorization_has_minimum_remaining_time,
+    manual_claim_decision, mint_admission_total, mint_authorization_before_deadline,
     mint_finalization_allowed, next_attempt, notification_admission_allowed,
     notification_failure_cooldown_active, notification_ingestion_allowed,
     operational_config_seal_caller_authorized, operational_config_seal_decision,
@@ -65,7 +65,7 @@ pub use kernel::{
     HoldResolutionDecision, LeaseLaneClaimDecision, LeaseOutcomeDecision,
     LegacyActivationEvidenceRequirement, ManualClaimDecision, OperationalConfigSealDecision,
     PayoutDecision, RefundRequestIdentityDecision, ReservationDecision, SettlementDecision,
-    WithdrawalFinalizedIdentity, MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS,
+    WithdrawalFinalizedIdentity,
 };
 pub use reconciliation::{
     resolve_deposit_hold, resolve_withdrawal_hold, DepositHoldResolution, ReconciliationHoldRecord,

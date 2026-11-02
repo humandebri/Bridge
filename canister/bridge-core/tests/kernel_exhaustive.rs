@@ -6,7 +6,7 @@ use bridge_core::{
     expiry_refund_allowed, fee_recipient_rotation_allowed, fee_recipient_rotation_decision,
     hold_resolution_decision, lease_generation_next, lease_outcome_is_current,
     legacy_activation_evidence_requirement, manual_claim_decision, mint_admission_total,
-    mint_authorization_has_minimum_remaining_time, mint_finalization_allowed, next_attempt,
+    mint_authorization_before_deadline, mint_finalization_allowed, next_attempt,
     operational_config_seal_decision, outbound_settlement, paid_call_cycle_requirement,
     payout_allowed, payout_debit, refresh_generation_next, refresh_owner_matches,
     release_transfer_matches, reservation_decision, reserve_admission_preserves_requirement,
@@ -123,15 +123,17 @@ fn notification_reservations_preserve_other_owners_and_partition_funding() {
 
 #[test]
 fn mint_authorization_remaining_time_is_checked_at_boundaries() {
-    assert!(mint_authorization_has_minimum_remaining_time(700, 1_000));
-    assert!(!mint_authorization_has_minimum_remaining_time(701, 1_000));
-    assert!(!mint_authorization_has_minimum_remaining_time(
-        u64::MAX,
-        u64::MAX
-    ));
+    assert!(mint_authorization_before_deadline(700, 1_000));
+    assert!(mint_authorization_before_deadline(701, 1_000));
+    assert!(mint_authorization_before_deadline(999, 1_000));
+    assert!(!mint_authorization_before_deadline(1_000, 1_000));
+    assert!(!mint_authorization_before_deadline(1_001, 1_000));
+    assert!(!mint_authorization_before_deadline(u64::MAX, u64::MAX));
 
     assert!(signature_install_allowed(true, true, true, 700, 1_000));
-    assert!(!signature_install_allowed(true, true, true, 701, 1_000));
+    assert!(signature_install_allowed(true, true, true, 701, 1_000));
+    assert!(signature_install_allowed(true, true, true, 999, 1_000));
+    assert!(!signature_install_allowed(true, true, true, 1_000, 1_000));
     assert!(!signature_install_allowed(
         true,
         true,

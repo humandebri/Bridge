@@ -1,4 +1,7 @@
 import { useState } from "react"
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import { WagmiProvider } from "wagmi"
+import { wagmiConfig } from "@/lib/evm/client"
 import { deploymentProfile } from "@/config/profile"
 import { DepositActivityRow } from "@/routes/history"
 import type { DepositView } from "@/generated/bridge.did"
@@ -9,6 +12,7 @@ import {
 } from "@/features/bridge/bridge-progress-provider"
 import { useTransferPresentation } from "@/features/bridge/use-transfer-presentation"
 import { initialTransferFacts, transferIdentity } from "@/lib/transfer-state"
+import { savePendingMint } from "@/lib/pending-confirmations"
 import "@/styles.css"
 deploymentProfile.snsRootCanisterId = "aaaaa-aa"
 const depositId = `0x${"11".repeat(32)}` as const
@@ -151,6 +155,21 @@ function Harness() {
       </button>
       <button
         onClick={() => {
+          void savePendingMint({
+            depositId,
+            authorizationDigest: `0x${"33".repeat(32)}`,
+            recipient: `0x${"44".repeat(20)}`,
+            grossAmount: "200",
+            chargedServiceFee: "1",
+            mintedAmount: "199",
+            transactionHash: `0x${"22".repeat(32)}`,
+          })
+        }}
+      >
+        Save pending mint
+      </button>
+      <button
+        onClick={() => {
           if (bridge.progress)
             bridge.update(bridge.progress.id, {
               observationSource: "base",
@@ -212,7 +231,11 @@ function Harness() {
   )
 }
 createRoot(document.getElementById("root")!).render(
-  <BridgeProgressProvider>
-    <Harness />
-  </BridgeProgressProvider>,
+  <WagmiProvider config={wagmiConfig}>
+    <QueryClientProvider client={new QueryClient()}>
+      <BridgeProgressProvider>
+        <Harness />
+      </BridgeProgressProvider>
+    </QueryClientProvider>
+  </WagmiProvider>,
 )

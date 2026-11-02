@@ -77,8 +77,8 @@ Query response authentication means signature verification via `call_with_verifi
 The production Bridge Canister runs stable schema v36. Published evidence for corrected v36 and the UI uses the local layout below.
 Normal current-release Gate B remains v36-only.
 Upgrades and UI publication use certified current state plus a Wasm reproduced twice from clean current source.
-`verify-production-current-ui-live` verifies the v36 RuntimeBinding from signature-verified queries, module/controllers from certified `read_state`, Activated and unpaused state, complete indexes, fresh attestation, reviewed `BRIDGE_UI_RPC_CONFIG`, and explicit `sole` or `joint` controller mode.
-Use `BRIDGE_PRODUCTION_INSTALLER_IDENTITY` for controller-only queries, matching the production controller.
+`verify-production-current-ui-live` verifies the v36 RuntimeBinding from signature-verified queries, module/controllers from certified `read_state`, Activated and unpaused state, complete indexes, an activation attestation matching the authenticated current release bindings, reviewed `BRIDGE_UI_RPC_CONFIG`, and an explicit `sole-unregistered`, `joint-unregistered`, or `root-registered` controller mode. The five-minute attestation freshness requirement applies to initial activation, not current-state UI verification.
+Root-only UI verification uses public release queries and does not require the former installer identity. Controller-only procedures require the identity authorized for their current controller configuration.
 Generate a new UI asset receipt from the clean source being published and WalletConnect project ID.
 Do not publish the new UI until the current module and refreshed live publication authorization are available.
 See the [operations runbook](../docs/runbooks/operations.md) for procedures and stop points.
@@ -94,13 +94,13 @@ Never record credentials, seeds, private keys, hardware-wallet backups, or crede
 | `artifacts/production/80d9ebb/private/` | Reviewed RPC configuration that may contain secrets | Untracked; directory 700 / file 600 |
 | `artifacts/audit/` | Historical formal evidence and audit manifests | Untracked; back up separately |
 
-Use the reviewed release bundle, current runtime profile, and reviewed RPC configuration for UI validation.
+Use a reviewed v36 production profile, a newly rendered current runtime profile, and the reviewed RPC configuration for UI validation. Historical release bundles and publication profiles are audit records, not current authorization.
 
 ```sh
-BRIDGE_RELEASE_BUNDLE="/absolute/path/to/reviewed-release-bundle"
-BRIDGE_UI_RUNTIME_PROFILE_FILE="$PWD/artifacts/production/80d9ebb/execution/ui-runtime-after-upgrade.json"
+BRIDGE_PRODUCTION_PROFILE_FILE="/absolute/path/to/reviewed-v36-profile.json"
+BRIDGE_UI_RUNTIME_PROFILE_FILE="/absolute/path/to/new-current-ui-runtime.json"
 BRIDGE_UI_RPC_CONFIG="$PWD/artifacts/production/80d9ebb/private/ui-rpc-config.json"
-BRIDGE_UI_CONTROLLER_MODE=sole
+BRIDGE_UI_CONTROLLER_MODE=root-registered
 ```
 
 Generate the new Wasm from the same clean source being validated. Production upgrade and handover drivers do not create preflight, request, recovery, or completion receipts. Historical records may be archived for audit but are never accepted as current authorization.

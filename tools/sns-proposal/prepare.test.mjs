@@ -83,6 +83,29 @@ test('handover preparation skips registered dapps and fixes exact upgrade bytes'
   assert.throws(()=>decodeChunkHash({hash:[0x12]}));
 });
 
+test('different Wasm preparation binds the store, current hash, candidate and ordered chunks', async () => {
+  const {prepareRootUpgrade,verifyRootUpgradeChunks,KINIC_ROOT} = await import('./handover.mjs');
+  const {createHash} = await import('node:crypto');
+  const wasm = Buffer.concat([Buffer.from([0,97,115,109,1,0,0,0]), Buffer.alloc(1_000_000, 7)]);
+  const hash = createHash('sha256').update(wasm).digest('hex');
+  const current = '11'.repeat(32);
+  const prepared = prepareRootUpgrade(bridge, KINIC_ROOT, wasm, current, hash);
+  assert.equal(prepared.current_wasm_sha256, current);
+  assert.equal(prepared.candidate_wasm_sha256, hash);
+  assert.equal(prepared.store_canister_id, KINIC_ROOT);
+  assert.equal(prepared.chunks.length, 2);
+  assert.match(prepared.upgrade_proposal, new RegExp(`store_canister_id=opt principal "${KINIC_ROOT}"`));
+  assert.equal(verifyRootUpgradeChunks(prepared, bridge, KINIC_ROOT, wasm, current, hash, prepared.chunks.map(x => x.sha256)), true);
+  assert.throws(() => verifyRootUpgradeChunks({...prepared,chunks:[...prepared.chunks].reverse()}, bridge, KINIC_ROOT, wasm, current, hash, prepared.chunks.map(x => x.sha256)));
+  assert.throws(() => verifyRootUpgradeChunks({...prepared,upgrade_proposal:prepared.upgrade_proposal+' '}, bridge, KINIC_ROOT, wasm, current, hash, prepared.chunks.map(x => x.sha256)));
+  assert.throws(() => verifyRootUpgradeChunks(prepared, bridge, KINIC_ROOT, wasm, '22'.repeat(32), hash, prepared.chunks.map(x => x.sha256)));
+  assert.throws(() => verifyRootUpgradeChunks(prepared, bridge, KINIC_ROOT, wasm, current, hash, [prepared.chunks[0].sha256]));
+  assert.throws(() => verifyRootUpgradeChunks(prepared, bridge, bridge, wasm, current, hash, prepared.chunks.map(x => x.sha256)));
+  assert.throws(() => prepareRootUpgrade(bridge, KINIC_ROOT, wasm, hash, hash));
+  assert.throws(() => prepareRootUpgrade(bridge, KINIC_ROOT, wasm, current, '00'.repeat(32)));
+  assert.throws(() => prepareRootUpgrade(bridge, bridge, wasm, current, hash));
+});
+
 test('fee proposals pin payload and avoid active and reserved function IDs', async () => {
   const {prepareFeeProposal,proposalType,formatKinic,rawInteger,BRIDGE} = await import('./fees.mjs');
   const {createHash} = await import('node:crypto');

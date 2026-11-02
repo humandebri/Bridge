@@ -20,9 +20,8 @@ grep -q -- '-u BRIDGE_CONFIRM_PRODUCTION_CANISTER_UPGRADE' "$VALIDATION"
 grep -q -- '-u BRIDGE_CONFIRM_SNS_DAPP_REGISTRATION' "$VALIDATION"
 grep -q -- '-u BRIDGE_CONFIRM_SNS_SAME_WASM_UPGRADE' "$VALIDATION"
 
-# Handover now delegates the state transition and in-memory continuity check
-# to the fixed current-state verifier binary.
-grep -q 'execute-production-root-addition' "$ROOT/scripts/production-handover-driver.sh"
-grep -q 'CARGO_NET_OFFLINE=true' "$ROOT/scripts/production-handover-driver.sh"
+# The one-time production Root addition is retired after handover.
+[[ ! -e "$ROOT/scripts/production-handover-driver.sh" ]]
+! grep -q 'execute-production-root-addition' "$ROOT/tools/bridge-profile/src/main.rs"
 
 echo 'production driver policy contract: pass'

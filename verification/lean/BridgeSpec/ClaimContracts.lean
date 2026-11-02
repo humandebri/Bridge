@@ -576,8 +576,7 @@ def AuthorizationBinding : Prop :=
       installSignature state observedTimestamp = some next →
         ∃ authorization, state.authorization = some authorization ∧
           authorization.deadline ≤ MintAuthorization.maxU64 ∧
-          observedTimestamp ≤ MintAuthorization.maxU64 - 300 ∧
-          observedTimestamp + 300 ≤ authorization.deadline) ∧ DepositTransitionSafety
+          observedTimestamp < authorization.deadline) ∧ DepositTransitionSafety
 
 theorem authorization_binding_witness : AuthorizationBinding := by
   constructor
@@ -585,7 +584,7 @@ theorem authorization_binding_witness : AuthorizationBinding := by
     rcases accepted_authorization_is_exact_and_has_fixed_deadline accepted with
       ⟨stored, _, _, deadline, chain, contract, epoch, _⟩
     exact ⟨stored, deadline, chain, contract, epoch⟩
-  · exact ⟨accepted_signature_requires_minimum_remaining_time,
+  · exact ⟨accepted_signature_requires_unexpired_deadline,
       deposit_transition_safety_witness⟩
 
 def ExpiryRefund : Prop :=

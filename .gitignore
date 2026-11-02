@@ -5,6 +5,12 @@
 .DS_Store
 .claude/settings.local.json
 
+# Python bytecode and browser test tooling generated locally.
+__pycache__/
+*.py[cod]
+/.playwright-cli/
+/test-results/
+
 # Local production and historical audit evidence; never include credentials in Git.
 /artifacts/production/
 /artifacts/audit/

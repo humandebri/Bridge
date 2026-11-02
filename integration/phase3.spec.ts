@@ -13,6 +13,9 @@ import { PocketIc, SubnetStateType } from "@dfinity/pic";
 
 const root = resolve(__dirname, "..");
 const bridgeWasm = resolve(root, "target/test-deployment/staging/bridge_canister.wasm");
+const schema36ConsentPredecessorWasm = resolve(root, "target/test-deployment/predecessor-v36-consent/bridge_canister.wasm");
+const schema36ConsentPredecessorRevision = "1381c4a33c3e221f18eda588f8ebb325398ba958";
+const schema36ConsentPredecessorArchiveSha256 = "fa82fe570ae389c579bb8e045e29c2414664f3753da630c45b8e30beaae2afd5";
 const schema35BridgeWasm = resolve(root, "target/test-deployment/predecessor-v35/bridge_canister.wasm");
 const schema35Revision = "e0b426e7465531d2e572b5b741509f1889e6def8";
 const schema35ArchiveSha256 = "24dfae12273dd04c899b058f2665610fb8c273b9099f0574838898d686f14866";
@@ -34,6 +37,30 @@ function readWasm(path: string): Buffer {
   const bytes = readFileSync(path);
   wasmBytes.set(path, bytes);
   return bytes;
+}
+function buildSchema36ConsentPredecessor(): void {
+  const temporary = mkdtempSync(join(tmpdir(), "bridge-schema36-consent-predecessor."));
+  try {
+    const archive = join(temporary, "source.tar");
+    const source = join(temporary, "source");
+    execFileSync("git", ["-C", root, "archive", "--format=tar", "-o", archive, schema36ConsentPredecessorRevision]);
+    if (createHash("sha256").update(readFileSync(archive)).digest("hex") !== schema36ConsentPredecessorArchiveSha256) {
+      throw new Error("schema 36 consent predecessor archive differs from reviewed source");
+    }
+    mkdirSync(source);
+    execFileSync("tar", ["-xf", archive, "-C", source]);
+    const cache = resolve(root, "target/test-deployment/schema36-consent-build");
+    mkdirSync(cache, { recursive: true });
+    symlinkSync(cache, join(source, "target"));
+    mkdirSync(resolve(root, "target/test-deployment/predecessor-v36-consent"), { recursive: true });
+    execFileSync(join(source, "scripts/plan007/build-staging-canister-wasm.sh"), [schema36ConsentPredecessorWasm], {
+      stdio: "inherit",
+      env: { ...process.env, CARGO_NET_OFFLINE: "true", CARGO_INCREMENTAL: "0" },
+    });
+    wasmBytes.delete(schema36ConsentPredecessorWasm);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
 }
 const testLedgerFee = 10_000n;
 
@@ -228,6 +255,41 @@ describe("Phase 3 PocketIC saga", () => {
       sender: controller,
     });
   }
+
+  async function consent_quota_survives_v36_upgrade_and_resets_per_caller() {
+    const { bridge, runtimePrincipal } = await setup(true, {}, schema36ConsentPredecessorWasm);
+    const other = Principal.selfAuthenticating(new Uint8Array(32).fill(23));
+    const request = {
+      arg: new Uint8Array(IDL.encode([depositArgs], [{
+        owner_sequence: 0n,
+        base_recipient: new Uint8Array(20).fill(4),
+        from_subaccount: [],
+        gross_amount: 200_000n,
+        max_service_fee: 10n,
+      }])),
+      method: "request_deposit",
+      user_preferences: { metadata: { utc_offset_minutes: [], language: "en" }, device_spec: [{ GenericDisplay: null }] },
+    };
+    const consent = async () => (bridge.actor as any).icrc21_canister_call_consent_message(request);
+    for (let i = 0; i < 119; i += 1) expect(await consent()).toHaveProperty("Ok");
+    await upgradeBridge(bridge);
+    bridge.actor.setPrincipal(other);
+    expect(await consent()).toHaveProperty("Ok");
+    expect(await consent()).toHaveProperty("Err.GenericError.error_code", 429n);
+    await pic!.advanceTime(600_001);
+    bridge.actor.setPrincipal(runtimePrincipal);
+    for (let i = 0; i < 60; i += 1) expect(await consent()).toHaveProperty("Ok");
+    expect(await consent()).toHaveProperty("Err.GenericError.error_code", 429n);
+    bridge.actor.setPrincipal(other);
+    expect(await consent()).toHaveProperty("Ok");
+    await upgradeBridge(bridge);
+    bridge.actor.setPrincipal(runtimePrincipal);
+    expect(await consent()).toHaveProperty("Err.GenericError.error_code", 429n);
+    await pic!.advanceTime(600_001);
+    expect(await consent()).toHaveProperty("Ok");
+  }
+
+  it("preserves consent quota across v36 upgrades and isolates callers", consent_quota_survives_v36_upgrade_and_resets_per_caller);
 
   async function rejects_overlapping_confirmation_and_pause_roles_at_install() {
     const overlappingPrincipal = Principal.selfAuthenticating(new Uint8Array(32).fill(77));
@@ -674,6 +736,7 @@ describe("Phase 3 PocketIC saga", () => {
     // and, if necessary, rebuild it before PocketIC starts so both workloads do
     // not compete for the trusted runner's memory.
     readWasm(schema35BridgeWasm);
+    buildSchema36ConsentPredecessor();
     const probe = createServer();
     const port = await new Promise<number>((resolvePort, reject) => {
       probe.once("error", reject);
@@ -1673,6 +1736,139 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (ledger.actor as any).ledger_transactions())).toHaveLength(1);
   });
 
+  it("defers_authorization_when_outstanding_reservations_fill_mint_window", async () => {
+    const { ledger, evm, bridge } = await setup();
+    const baseNow = BigInt(Math.floor((await pic!.getTime()) / 1_000));
+    await (evm.actor as any).set_mint_window(0n, 300_000n, baseNow, 3_600n, baseNow + 1n);
+    const first: any = await (bridge.actor as any).request_deposit({
+      owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4),
+      from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n,
+    });
+    expect(first).toHaveProperty("Ok");
+    const firstAuthorization = await awaitMintAuthorization(bridge, first.Ok.deposit_id);
+    expect(firstAuthorization.signature[0]).toBeDefined();
+    const second: any = await (bridge.actor as any).request_deposit({
+      owner_sequence: 1n, base_recipient: new Uint8Array(20).fill(4),
+      from_subaccount: [], gross_amount: 200_003n, max_service_fee: 10n,
+    });
+    expect(second).toHaveProperty("Ok");
+    await advanceDepositJobs(bridge, second.Ok.deposit_id);
+    const stored: any = await (bridge.actor as any).get_deposit(second.Ok.deposit_id);
+    expect(stored[0].state).toHaveProperty("EscrowedUnquoted");
+    expect(stored[0].mint_authorization).toHaveLength(0);
+    expect((await (bridge.actor as any).get_bridge_status()).counts.reserved_deposit_mint_amount)
+      .toBe(199_999n);
+    expect((await (ledger.actor as any).ledger_transactions())).toHaveLength(2);
+    await pic!.advanceTime(16 * 60_000);
+    await assertAuthorizationRefunded(bridge, evm, first.Ok.deposit_id);
+    const resumed = await awaitMintAuthorization(bridge, second.Ok.deposit_id);
+    expect(resumed.signature[0]).toBeDefined();
+    expect((await (bridge.actor as any).get_bridge_status()).counts.reserved_deposit_mint_amount)
+      .toBe(200_002n);
+  });
+
+  it("retries_signing_when_a_minted_reservation_is_recorded", async () => {
+    const { evm, bridge, confirmationRelayerPrincipal } = await setup();
+    const baseNow = BigInt(Math.floor((await pic!.getTime()) / 1_000));
+    await evm.actor.set_mint_window(0n, 500_000n, baseNow, 3_600n, baseNow + 1n);
+    const first: any = await requestDefaultDeposit(bridge, 0n);
+    const firstAuthorization = await awaitMintAuthorization(bridge, first.Ok.deposit_id);
+    const second: any = await requestDefaultDeposit(bridge, 1n);
+    await evm.actor.set_block_mode({ FinalizedUnavailable: null });
+    await advanceClock(3);
+    const pending: any = (await bridge.actor.get_deposit(second.Ok.deposit_id))[0];
+    expect(phaseName(pending.state)).toBe("AuthorizationPending");
+    expect(pending.mint_authorization[0].signature).toEqual([]);
+    await evm.actor.set_mint_window(199_999n, 500_000n, baseNow, 3_600n, baseNow + 1n);
+    await evm.actor.set_block_mode({ Canonical: null });
+    await advanceClock(2);
+    const deferred: any = (await bridge.actor.get_deposit(second.Ok.deposit_id))[0];
+    expect(phaseName(deferred.state)).toBe("AuthorizationPending");
+    expect(deferred.mint_authorization[0].signature).toEqual([]);
+    expect(deferred.automatic_progress[0].state).toHaveProperty("Scheduled");
+
+    const transactionHash = new Uint8Array(32).fill(0x42);
+    await evm.actor.set_observed_transaction(transactionHash, firstAuthorization.verifying_contract,
+      new Uint8Array(20).fill(0x77), firstAuthorization.finalized_block_number);
+    await evm.actor.set_receipt_mode({ Confirmed: null });
+    await evm.actor.set_processed_deposit(true);
+    await evm.actor.set_mint_log([{
+      deposit_id: firstAuthorization.deposit_id, recipient: firstAuthorization.recipient,
+      authorization_digest: firstAuthorization.digest, gross_amount: firstAuthorization.gross_amount,
+      charged_service_fee: firstAuthorization.charged_service_fee,
+      minted_amount: firstAuthorization.gross_amount - firstAuthorization.charged_service_fee,
+      transaction_hash: transactionHash,
+    }]);
+    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
+    expect(await bridge.actor.notify_deposit_mint({ deposit_id: first.Ok.deposit_id, transaction_hash: transactionHash }))
+      .toHaveProperty("Ok.Recorded");
+    await evm.actor.set_processed_deposit(false);
+    const resumed = await awaitMintAuthorization(bridge, second.Ok.deposit_id);
+    expect(resumed.signature[0]).toBeDefined();
+  });
+
+  it("retries_after_capacity_changes_during_signature_dispatch", async () => {
+    const { evm, bridge, confirmationRelayerPrincipal } = await setup();
+    const baseNow = BigInt(Math.floor((await pic!.getTime()) / 1_000));
+    await evm.actor.set_mint_window(0n, 500_000n, baseNow, 3_600n, baseNow + 1n);
+    const first: any = await requestDefaultDeposit(bridge, 0n);
+    const firstAuthorization = await awaitMintAuthorization(bridge, first.Ok.deposit_id);
+    const second: any = await requestDefaultDeposit(bridge, 1n);
+    await evm.actor.set_block_mode({ FinalizedUnavailable: null });
+    await advanceClock(3);
+    const pending: any = (await bridge.actor.get_deposit(second.Ok.deposit_id))[0];
+    expect(phaseName(pending.state)).toBe("AuthorizationPending");
+    expect(pending.mint_authorization[0].signature_dispatch_attempt).toBe(0);
+    await evm.actor.set_block_mode({ FinalizedDelayed: null });
+    await pic!.advanceTime(120_001);
+
+    const findBarrier = async (after?: number) => {
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        await pic!.tick(1);
+        const barrier = (await pic!.getPendingHttpsOutcalls())
+          .find((outcall) => outcall.url === "https://finalized-delay.invalid/" && outcall.requestId !== after);
+        if (barrier) return barrier;
+      }
+      throw new Error("finalized revalidation did not reach the barrier");
+    };
+    const respond = async (barrier: Awaited<ReturnType<typeof findBarrier>>) =>
+      pic!.mockPendingHttpsOutcall({ requestId: barrier.requestId, subnetId: barrier.subnetId,
+        response: { type: "success", statusCode: 200, headers: [], body: new Uint8Array() } });
+    const beforeSigning = await findBarrier();
+    await respond(beforeSigning);
+    const afterSigning = await findBarrier(beforeSigning.requestId);
+    const dispatched: any = (await bridge.actor.get_deposit(second.Ok.deposit_id))[0];
+    expect(dispatched.mint_authorization[0].signature_dispatch_attempt).toBeGreaterThan(0);
+    expect(dispatched.mint_authorization[0].signature).toEqual([]);
+    await evm.actor.set_mint_window(199_999n, 500_000n, baseNow, 3_600n, baseNow + 1n);
+    await evm.actor.set_block_mode({ Canonical: null });
+    await respond(afterSigning);
+    await pic!.tick(30);
+    const deferred: any = (await bridge.actor.get_deposit(second.Ok.deposit_id))[0];
+    expect(deferred.mint_authorization[0].signature).toEqual([]);
+    expect(deferred.automatic_progress[0].state).toHaveProperty("Scheduled");
+
+    const transactionHash = new Uint8Array(32).fill(0x42);
+    await evm.actor.set_observed_transaction(transactionHash, firstAuthorization.verifying_contract,
+      new Uint8Array(20).fill(0x77), firstAuthorization.finalized_block_number);
+    await evm.actor.set_receipt_mode({ Confirmed: null });
+    await evm.actor.set_processed_deposit(true);
+    await evm.actor.set_mint_log([{
+      deposit_id: firstAuthorization.deposit_id, recipient: firstAuthorization.recipient,
+      authorization_digest: firstAuthorization.digest, gross_amount: firstAuthorization.gross_amount,
+      charged_service_fee: firstAuthorization.charged_service_fee,
+      minted_amount: firstAuthorization.gross_amount - firstAuthorization.charged_service_fee,
+      transaction_hash: transactionHash,
+    }]);
+    bridge.actor.setPrincipal(confirmationRelayerPrincipal);
+    expect(await bridge.actor.notify_deposit_mint({ deposit_id: first.Ok.deposit_id, transaction_hash: transactionHash }))
+      .toHaveProperty("Ok.Recorded");
+    await evm.actor.set_processed_deposit(false);
+    const resumed = await awaitMintAuthorization(bridge, second.Ok.deposit_id);
+    expect(resumed.signature[0]).toBeDefined();
+    expect(resumed.signature_dispatch_attempt).toBeGreaterThan(1);
+  });
+
   it("promotes funded deposits before refunding a later Mint window overflow", async () => {
     const { ledger, evm, bridge } = await setup();
     const baseNow = BigInt(Math.floor((await pic!.getTime()) / 1_000));
@@ -1882,7 +2078,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect((await (ledger.actor as any).ledger_transactions()).length).toBe(1);
   });
 
-  async function stops_a_less_than_300_second_pending_authorization_before_installing_a_signature() {
+  async function signs_a_pending_authorization_with_less_than_300_seconds_remaining() {
     const { evm, bridge } = await setup();
     const result: any = await (bridge.actor as any).request_deposit({ owner_sequence: 0n, base_recipient: new Uint8Array(20).fill(4), from_subaccount: [], gross_amount: 200_000n, max_service_fee: 10n });
     expect(result).toHaveProperty("Ok.state.EscrowedUnquoted");
@@ -1899,15 +2095,15 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_block_mode({ Canonical: null });
     await pic!.tick(30);
 
-    const stopped: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
-    expect(phaseName(stopped[0].state)).toBe("AuthorizationPending");
-    expect(stopped[0].mint_authorization[0].signature).toEqual([]);
-    expect(stopped[0].last_settlement_stop_reason).toEqual([{ AuthorizationWindowTooShort: null }]);
+    const signed: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
+    expect(phaseName(signed[0].state)).toBe("AuthorizationAvailable");
+    expect(signed[0].mint_authorization[0].signature[0]).toHaveLength(65);
+    expect(BigInt(signed[0].mint_authorization[0].deadline)).toBe(deadline);
   }
 
   it(
-    "stops_a_less_than_300_second_pending_authorization_before_installing_a_signature",
-    stops_a_less_than_300_second_pending_authorization_before_installing_a_signature,
+    "signs_a_pending_authorization_with_less_than_300_seconds_remaining",
+    signs_a_pending_authorization_with_less_than_300_seconds_remaining,
   );
 
   async function resamples_time_after_Base_revalidation_before_dispatching_a_signature() {
@@ -1932,9 +2128,8 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_block_mode({ FinalizedDelayed: null });
     const nextRunAtNs = BigInt(pending[0].automatic_progress[0].state.Scheduled.next_run_at_ns);
     const nowNs = BigInt(await pic!.getTime()) * 1_000_000n;
-    // Start revalidation near the signing floor so the delayed response crosses
-    // that floor without also exceeding the bounded RPC call timeout.
-    const revalidationAtNs = (BigInt(authorization.deadline) - 301n) * 1_000_000_000n;
+    // The delayed revalidation crosses the deadline before signature dispatch.
+    const revalidationAtNs = (BigInt(authorization.deadline) - 2n) * 1_000_000_000n;
     expect(revalidationAtNs).toBeGreaterThan(nextRunAtNs);
     if (revalidationAtNs >= nowNs) {
       const untilDueMs = Number((revalidationAtNs - nowNs + 999_999n) / 1_000_000n);
@@ -1950,7 +2145,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(finalizedBarrier).toBeDefined();
 
     const deadline = BigInt(authorization.deadline);
-    const boundaryTimeMs = (deadline - 299n) * 1_000n;
+    const boundaryTimeMs = deadline * 1_000n;
     const currentTimeMs = BigInt(await pic!.getTime());
     expect(boundaryTimeMs).toBeGreaterThan(currentTimeMs);
     await pic!.advanceTime(Number(boundaryTimeMs - currentTimeMs));
@@ -1966,7 +2161,7 @@ describe("Phase 3 PocketIC saga", () => {
     expect(stopped[0].mint_authorization[0].signature).toEqual([]);
     expect(stopped[0].mint_authorization[0].signature_dispatch_attempt).toBe(0);
     expect(stopped[0].last_settlement_stop_reason)
-      .toEqual([{ AuthorizationWindowTooShort: null }]);
+      .toEqual([{ AuthorizationExpired: null }]);
   }
 
   it(
@@ -1982,7 +2177,7 @@ describe("Phase 3 PocketIC saga", () => {
     await (evm.actor as any).set_block_mode({ FinalizedUnavailable: null });
     // The setup observation is still fresh enough to issue the authorization.
     // Stop on the immediately following Base revalidation attempt, before the
-    // 300-second signing floor becomes the dominant stop reason.
+    // authorization deadline becomes the dominant stop reason.
     await advanceClock(2);
     await (evm.actor as any).set_block_mode({ Canonical: null });
     const stopped: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
@@ -1998,16 +2193,16 @@ describe("Phase 3 PocketIC saga", () => {
     expect(nextRunAtNs).toBeDefined();
     const nowNs = BigInt(await pic!.getTime()) * 1_000_000n;
     const overdueAtNs = nextRunAtNs + 300_000_000_000n + 1_000_000n;
-    const signingFloorAtNs = (BigInt(stopped[0].mint_authorization[0].deadline) - 299n) * 1_000_000_000n;
-    const manualRetryAtNs = overdueAtNs > signingFloorAtNs ? overdueAtNs : signingFloorAtNs;
+    const deadlineAtNs = BigInt(stopped[0].mint_authorization[0].deadline) * 1_000_000_000n;
+    const manualRetryAtNs = overdueAtNs > deadlineAtNs ? overdueAtNs : deadlineAtNs;
     await (evm.actor as any).set_block_timestamp(manualRetryAtNs / 1_000_000_000n);
     await pic!.advanceTime(Number((manualRetryAtNs - nowNs) / 1_000_000n));
     expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id))
-      .toHaveProperty("Ok.Stopped.reason.AuthorizationWindowTooShort");
+      .toHaveProperty("Ok.Stopped.reason.AuthorizationExpired");
 
     const resumed: any = await (bridge.actor as any).get_deposit(result.Ok.deposit_id);
     expect(phaseName(resumed[0].state)).toBe("AuthorizationPending");
-    expect(resumed[0].last_settlement_stop_reason).toEqual([{ AuthorizationWindowTooShort: null }]);
+    expect(resumed[0].last_settlement_stop_reason).toEqual([{ AuthorizationExpired: null }]);
     expect(await (bridge.actor as any).continue_deposit(result.Ok.deposit_id))
       .toEqual({ Err: { WrongState: null } });
   }

@@ -22,7 +22,7 @@ represents one claim and displays the following separately:
 
 `release-ready` does not mean there are no external assumptions or TCB. It means only that the target and minimum strength
 exactly match the manifest and fixed checker policy, and that the declared production bindings are satisfied.
-The current fixed policy makes all 43 claims release targets, requiring `implementation-proved` for 25 and
+The current fixed policy makes all 44 claims release targets, requiring `implementation-proved` for 26 and
 `production-linked` for 18. SMT, Halmos, generated vectors, and model-only
 Verus are supporting evidence and cannot independently establish `implementation-proved` status.
 
@@ -32,6 +32,6 @@ Lean theorems, strong assumptions, and production-unbound boundaries are documen
 and undergo Lean typechecking and axiom dependency checks.
 
 Before audit submission, run `scripts/ci-local.sh proofs` with the pinned toolchain and check receipt schema 8:
-the source fingerprint, `pass` for all 10 stages, `complete: true`, 43 `release-ready` claims,
-`release-blocked: 0`, `model-support: 0`, and the 25/18 evidence-strength partition. The receipt is not tracked in Git;
+the source fingerprint, `pass` for all 10 stages, `complete: true`, 44 `release-ready` claims,
+`release-blocked: 0`, `model-support: 0`, and the 26/18 evidence-strength partition. The receipt is not tracked in Git;
 regenerate it from the checkout being audited.

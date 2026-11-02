@@ -103,10 +103,6 @@ macro_rules! verus {
     };
 }
 
-verus! {
-pub const MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS: u64 = 300;
-}
-
 macro_rules! scan_complete_body {
     ($next:expr, $tip:expr, $watermark:expr, $archives:expr, $matched:expr) => {
         $archives && !$matched && $watermark >= $tip && $next > $tip
@@ -1027,27 +1023,21 @@ macro_rules! mint_finalization_allowed_body {
     };
 }
 
-macro_rules! mint_authorization_has_minimum_remaining_time_body {
-    ($observed_timestamp:expr, $deadline:expr, $minimum_remaining:expr, $maximum:expr) => {{
-        $observed_timestamp <= $maximum - $minimum_remaining
-            && $observed_timestamp + $minimum_remaining <= $deadline
-    }};
+macro_rules! mint_authorization_before_deadline_body {
+    ($observed_timestamp:expr, $deadline:expr) => {
+        $observed_timestamp < $deadline
+    };
 }
 
 macro_rules! signature_install_allowed_body {
     (
         $dispatched:expr, $absent:expr, $length:expr, $observed_timestamp:expr,
-        $deadline:expr, $minimum_remaining:expr, $maximum:expr
+        $deadline:expr
     ) => {
         $dispatched
             && $absent
             && $length
-            && mint_authorization_has_minimum_remaining_time_body!(
-                $observed_timestamp,
-                $deadline,
-                $minimum_remaining,
-                $maximum
-            )
+            && mint_authorization_before_deadline_body!($observed_timestamp, $deadline)
     };
 }
 
@@ -2329,16 +2319,8 @@ pub const fn mint_finalization_allowed(
     )
 }
 
-pub const fn mint_authorization_has_minimum_remaining_time(
-    observed_timestamp: u64,
-    deadline: u64,
-) -> bool {
-    mint_authorization_has_minimum_remaining_time_body!(
-        observed_timestamp,
-        deadline,
-        MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS,
-        u64::MAX
-    )
+pub const fn mint_authorization_before_deadline(observed_timestamp: u64, deadline: u64) -> bool {
+    mint_authorization_before_deadline_body!(observed_timestamp, deadline)
 }
 
 pub const fn signature_install_allowed(
@@ -2353,9 +2335,7 @@ pub const fn signature_install_allowed(
         signature_absent,
         signature_length_valid,
         observed_timestamp,
-        deadline,
-        MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS,
-        u64::MAX
+        deadline
     )
 }
 
@@ -2525,9 +2505,7 @@ impl DepositEventGuard {
                 signature_absent,
                 signature_length_valid,
                 observed_timestamp,
-                deadline,
-                MINIMUM_MINT_AUTHORIZATION_REMAINING_SECONDS,
-                u64::MAX
+                deadline
             ),
             Self::MintFinalization {
                 fixed_fields_match,
@@ -3262,28 +3240,22 @@ verus! {
             binding, receipt_succeeded, receipt_block, finalized_block)
     }
 
-    pub open spec fn mint_authorization_has_minimum_remaining_time_spec(
+    pub open spec fn mint_authorization_before_deadline_spec(
         observed_timestamp: int, deadline: int,
     ) -> bool {
-        let minimum: int = 300;
-        let maximum: int = 18446744073709551615;
-        mint_authorization_has_minimum_remaining_time_body!(
-            observed_timestamp, deadline, minimum, maximum)
+        mint_authorization_before_deadline_body!(
+            observed_timestamp, deadline)
     }
 
     pub open spec fn signature_install_allowed_spec(
         dispatched: bool, absent: bool, length: bool, observed_timestamp: int, deadline: int,
     ) -> bool {
-        let minimum: int = 300;
-        let maximum: int = 18446744073709551615;
         signature_install_allowed_body!(
             dispatched,
             absent,
             length,
             observed_timestamp,
-            deadline,
-            minimum,
-            maximum
+            deadline
         )
     }
 

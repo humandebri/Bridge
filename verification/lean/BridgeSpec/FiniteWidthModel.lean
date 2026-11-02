@@ -140,6 +140,6 @@ def ledgerBlockImpl (current : Option U128) (block : U128) : Option (Option Nat)
   ledgerBlockProvenance (current.map U128.val) block.val
 
 def signatureTimeImpl (observedTimestamp deadline : U64) : Bool :=
-  decide (observedTimestamp.val ≤ maxU64 - 300 ∧ observedTimestamp.val + 300 ≤ deadline.val)
+  decide (observedTimestamp.val < deadline.val)
 
 end BridgeSpec.FiniteWidthModel

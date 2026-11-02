@@ -1,5 +1,6 @@
 import {
   assertTransferActionAllowed,
+  assertDepositRefundCheckAllowed,
   initialTransferFacts,
   reduceTransfer,
   transferIdentity,
@@ -9,6 +10,7 @@ import {
   subscribeTransfers,
 } from "@/lib/transfer-state"
 import { mintExecutionDiagnostics } from "@/lib/mint-execution"
+import { readAllPendingMints } from "@/lib/pending-confirmations"
 import { toast } from "sonner"
 import { Check, ChevronUp, Circle, LoaderCircle, Minus, TriangleAlert } from "lucide-react"
 import {
@@ -44,6 +46,7 @@ import {
 
 interface ProgressAction {
   label: string
+  kind?: "refund-check"
   run: () => void | Promise<void>
   pending?: boolean
 }
@@ -409,6 +412,20 @@ function ProgressDialog({
     progress.phase === "attention" ||
     Boolean(presentation?.terminal)
   const depositInteractionComplete = isDepositInteractionComplete(progress)
+  const canContinueInHistory =
+    progress.direction === "deposit" &&
+    !canonicalTerminal &&
+    !progress.storageWarning &&
+    !progress.transfer?.warnings.storage &&
+    ["base-mint-submitted", "base-mint-included", "base-mint-finalizing"].includes(
+      progress.phase,
+    ) &&
+    Boolean(progress.transactionHash && progress.deposit?.depositId) &&
+    readAllPendingMints().some(
+      (mint) =>
+        mint.depositId.toLowerCase() === progress.deposit?.depositId?.toLowerCase() &&
+        mint.transactionHash.toLowerCase() === progress.transactionHash?.toLowerCase(),
+    )
   const dismissible = canonicalTerminal || depositInteractionComplete
   const closeProgress =
     depositInteractionComplete ||
@@ -568,18 +585,21 @@ function ProgressDialog({
           {action &&
             !depositInteractionComplete &&
             !presentation?.terminal &&
-            presentation?.code !== "conflict" &&
-            presentation?.code !== "processed" && (
+            (action.kind === "refund-check" ||
+              (presentation?.code !== "conflict" && presentation?.code !== "processed")) && (
               <Button
                 disabled={action.pending}
                 onClick={() => {
-                  assertTransferActionAllowed(transferIdentity(progress))
+                  if (action.kind === "refund-check")
+                    assertDepositRefundCheckAllowed(transferIdentity(progress))
+                  else assertTransferActionAllowed(transferIdentity(progress))
                   void action.run()
                 }}
               >
                 {action.pending && progress.direction !== "deposit" ? "Working…" : action.label}
               </Button>
             )}
+          {canContinueInHistory && <Button onClick={onDismiss}>Continue in History</Button>}
           {progress.phase === "attention" && (
             <Button asChild>
               <a href="/history" onClick={onMinimize}>

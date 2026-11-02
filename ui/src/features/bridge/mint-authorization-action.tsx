@@ -104,6 +104,7 @@ export function MintAuthorizationAction({
   headless?: boolean
   registerAction?: (action?: {
     label: string
+    kind?: "refund-check"
     run: () => void | Promise<void>
     pending?: boolean
   }) => void
@@ -143,19 +144,18 @@ export function MintAuthorizationAction({
               ...envelope,
               type: "observed",
               phase:
-                event.phase === "finalized" || event.phase === "recorded"
+                event.phase === "recorded"
                   ? "complete"
                   : event.phase === "attention"
                     ? "attention"
                     : event.phase === "included"
                       ? "base-mint-included"
-                      : event.phase === "finalizing"
+                      : event.phase === "finalizing" || event.phase === "finalized"
                         ? "base-mint-finalizing"
                         : event.phase === "submitted"
                           ? "base-mint-submitted"
                           : "awaiting-base-mint",
-              outcome:
-                event.phase === "finalized" || event.phase === "recorded" ? "minted" : undefined,
+              outcome: event.phase === "recorded" ? "minted" : undefined,
               recordingPending:
                 event.phase === "recorded" ? false : event.phase === "finalized" ? true : undefined,
               issue: event.phase === "attention" ? event.issue : undefined,
@@ -280,15 +280,7 @@ export function MintAuthorizationAction({
   }, [clockNow, executionKey, pending, pendingExpectation])
 
   useEffect(() => {
-    if (
-      !pendingAuthorizationDigest ||
-      !pending ||
-      mintRecorded ||
-      terminalReverted ||
-      identityConflict ||
-      !authorizationAvailable
-    )
-      return
+    if (!pendingAuthorizationDigest || !pending || mintRecorded || !authorizationAvailable) return
     let active = true
     let running = false
     const checkReceipt = async () => {
@@ -300,6 +292,8 @@ export function MintAuthorizationAction({
       if (!active) return
       setReceiptConfirmed(observation.status === "success" && observation.finalized)
       setMintRecorded(observation.recorded)
+      setTerminalReverted(observation.status === "reverted" && observation.finalized)
+      setIdentityConflict(observation.status === "conflict")
       setNotificationUnavailable(Boolean(observation.notificationError))
       if (observation.status === "success") {
         setReceiptObservation("sequencer-success")
@@ -339,7 +333,7 @@ export function MintAuthorizationAction({
         onProgress?.({
           phase: "attention",
           transactionHash: pending.transactionHash,
-          issue: "conflict",
+          issue: "unknown",
           message: "The Base receipt does not match this mint authorization.",
         })
       } else {
@@ -365,15 +359,7 @@ export function MintAuthorizationAction({
       window.clearInterval(timer)
       document.removeEventListener("visibilitychange", checkReceipt)
     }
-  }, [
-    authorizationAvailable,
-    identityConflict,
-    onProgress,
-    pending,
-    pendingAuthorizationDigest,
-    mintRecorded,
-    terminalReverted,
-  ])
+  }, [authorizationAvailable, onProgress, pending, pendingAuthorizationDigest, mintRecorded])
 
   useEffect(() => {
     if (
@@ -386,7 +372,7 @@ export function MintAuthorizationAction({
   }, [record.state, pending, pendingExpectation])
 
   useEffect(() => {
-    if (!receiptConfirmed || !pending || !pendingExpectation) return
+    if (!mintRecorded || !pending || !pendingExpectation) return
     const confirmationKey = `${pendingExpectation.authorizationDigest}:${pending.transactionHash}`
     if (notifiedConfirmation.current === confirmationKey) return
     notifiedConfirmation.current = confirmationKey
@@ -398,7 +384,7 @@ export function MintAuthorizationAction({
     void queryClient.invalidateQueries({ queryKey: ["deposit-history"] })
     if (onMintConfirmed) onMintConfirmed(confirmation)
     else toast.success(`Base mint confirmed (${pending.transactionHash.slice(0, 12)}…).`)
-  }, [onMintConfirmed, pending, pendingExpectation, queryClient, receiptConfirmed])
+  }, [mintRecorded, onMintConfirmed, pending, pendingExpectation, queryClient])
 
   const executionBusy = mintExecutionBusy(execution)
   const executionBlocked =
@@ -566,29 +552,35 @@ export function MintAuthorizationAction({
   const mintPending = mint.isPending
 
   useEffect(() => {
-    if (finalizedDeadlinePassed && !pending && !mintPending)
+    if (finalizedDeadlinePassed && !mintRecorded && !mintPending)
       onProgress?.({
         phase: "attention",
         issue: execution.phase === "unknown" ? "refund-ready" : "expired",
         message: "The deadline has passed. Check if you can get a refund.",
       })
-  }, [finalizedDeadlinePassed, mintPending, onProgress, pending, execution.phase])
+  }, [finalizedDeadlinePassed, mintPending, mintRecorded, onProgress, execution.phase])
   const refundCallback = useRef(onRequestRefund)
   useEffect(() => {
     refundCallback.current = onRequestRefund
   }, [onRequestRefund])
   const canRequestRefund = Boolean(onRequestRefund)
+  const offerRefundCheck =
+    canRequestRefund &&
+    !mintRecorded &&
+    !executionBusy &&
+    (finalizedDeadlinePassed ||
+      latestClockUnavailable ||
+      finalizedBaseClock.isError ||
+      identityConflict ||
+      Boolean(pending) ||
+      execution.phase === "unknown" ||
+      authorizationExpired)
   useEffect(() => {
     if (!registerAction) return
-    if (
-      finalizedDeadlinePassed &&
-      !pending &&
-      !mintPending &&
-      !identityConflict &&
-      canRequestRefund
-    ) {
+    if (offerRefundCheck) {
       registerAction({
         label: claimingRefund ? "Checking…" : "Check refund",
+        kind: "refund-check",
         pending: claimingRefund,
         run: () => refundCallback.current?.(),
       })
@@ -619,8 +611,10 @@ export function MintAuthorizationAction({
   }, [
     address,
     canRequestRefund,
+    offerRefundCheck,
     claimingRefund,
     finalizedDeadlinePassed,
+    mintRecorded,
     identityConflict,
     latestClockUnavailable,
     execution,
@@ -762,11 +756,11 @@ export function MintAuthorizationAction({
           )}
         </>
       )}
-      {identityConflict ? (
+      {identityConflict && !finalizedDeadlinePassed ? (
         <p className="font-bold text-[#b42318]">
           Deposit identity conflict. Do not submit another transaction.
         </p>
-      ) : receiptConfirmed && pending ? (
+      ) : mintRecorded && pending ? (
         compact ? (
           <span className="text-sm text-[var(--muted)]">—</span>
         ) : (
@@ -781,7 +775,7 @@ export function MintAuthorizationAction({
             )}
           </div>
         )
-      ) : finalizedDeadlinePassed && !pending ? (
+      ) : finalizedDeadlinePassed && !mintRecorded ? (
         <div className="space-y-2" role="alert">
           <p className="font-bold text-[#8a4b08]">
             {execution.phase === "unknown" ? "Mint status unknown" : "Mint authorization expired"}
@@ -872,6 +866,11 @@ export function MintAuthorizationAction({
             {verifyRetry.isPending ? "Checking saved transaction…" : "Review saved transaction"}
           </Button>
         )}
+      {offerRefundCheck && !finalizedDeadlinePassed && onRequestRefund && (
+        <Button size="sm" variant="ghost" disabled={claimingRefund} onClick={onRequestRefund}>
+          {claimingRefund ? "Checking…" : "Check refund"}
+        </Button>
+      )}
       <Dialog open={retryDialogOpen} onOpenChange={setRetryDialogOpen}>
         <DialogContent>
           <DialogHeader>

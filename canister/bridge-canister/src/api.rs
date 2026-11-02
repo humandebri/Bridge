@@ -982,6 +982,36 @@ fn cached_deposit_preflight(
     Ok(())
 }
 
+pub(crate) fn deposit_reservation_preflight(
+    store: &crate::storage::StableStore,
+    snapshot: bridge_core::BaseMintSnapshot,
+    deposit_id: [u8; 32],
+    gross_amount: Amount,
+    max_service_fee: Amount,
+) -> Result<(), DepositError> {
+    let deposit = store
+        .deposit(deposit_id)
+        .map_err(|_| DepositError::StorageFailure)?
+        .ok_or(DepositError::StorageFailure)?;
+    let committed = store
+        .counters()
+        .map_err(|_| DepositError::StorageFailure)?
+        .reserved_deposit_mint_amount;
+    let own = deposit
+        .reserved_mint_amount()
+        .map_err(|_| DepositError::StorageFailure)?
+        .get();
+    let funding = store
+        .deposit_funding_reserved_mint_amount_excluding(deposit_id)
+        .map_err(|_| DepositError::StorageFailure)?;
+    let reserved = committed
+        .checked_sub(own)
+        .and_then(|amount| amount.checked_add(funding))
+        .ok_or(DepositError::StorageFailure)?;
+    cached_deposit_preflight(snapshot, reserved, gross_amount, max_service_fee)
+        .map_err(preflight_error)
+}
+
 fn preflight_error(error: bridge_core::CoreError) -> DepositError {
     match error {
         bridge_core::CoreError::ServiceFeeAboveMaximum
@@ -1838,6 +1868,7 @@ pub(crate) fn commit_deposit_authorization(
     deposit_id: [u8; 32],
     quote: DepositQuote,
     authorization: bridge_core::MintAuthorizationRecord,
+    snapshot: bridge_core::BaseMintSnapshot,
 ) -> Result<(), DepositError> {
     let intent = store
         .deposit_intent(deposit_id)
@@ -1869,6 +1900,24 @@ pub(crate) fn commit_deposit_authorization(
         .deposit(deposit_id)
         .map_err(|_| DepositError::StorageFailure)?
         .ok_or(DepositError::StorageFailure)?;
+    // Funding and authorization progress can interleave across awaits. Re-admit
+    // against the reservations that exist now, in the same message as the
+    // transition which creates this reservation.
+    deposit_reservation_preflight(
+        store,
+        snapshot,
+        deposit_id,
+        deposit.gross_amount,
+        deposit.max_service_fee,
+    )?;
+    if snapshot.service_fee != quote.service_fee
+        || snapshot
+            .quote(deposit.gross_amount, deposit.max_service_fee)
+            .ok()
+            != Some(quote.net_amount)
+    {
+        return Err(DepositError::BaseObservationUnavailable);
+    }
     let result = deposit
         .apply(DepositEvent::CommitAuthorization {
             quote,

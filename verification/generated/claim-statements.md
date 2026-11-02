@@ -30,7 +30,7 @@ Specification: `docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md`
 
 Premises: Authorization commit or signature installation is accepted
 
-Conclusion: Binds the domain, epoch, and 900-second deadline from IC time; signing requires the u64 range and at least 300 seconds remaining
+Conclusion: Binds the domain, epoch, and 900-second deadline from IC time; signing requires a u64 deadline and IC time strictly before it
 
 Unproved boundary: Cryptographic signature authenticity and correspondence between IC time and Nat are external assumptions
 
@@ -276,7 +276,7 @@ Unproved boundary: There is no complete proof connecting GlobalHistory and Depos
 
 Evidence and external assumptions: `claims.tsv:fee_accounting_once` / `claims.tsv:fee_accounting_once`
 
-Review rationale: Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately.
+Review rationale: Reviewed deadline policy: signature installation now permits any timestamp strictly before the fixed deadline, including less than 300 seconds remaining. The fee is credited once upon accepted installation; timely minting and fairness of the fee are not guaranteed by this claim.
 
 ```lean
 BridgeSpec.ClaimContracts.fee_accounting_once_witness : BridgeSpec.ClaimContracts.FeeAccountingOnce
@@ -1003,7 +1003,7 @@ BridgeSpec.ClaimContracts.ActivationPreflight : Prop
 
 ### BridgeSpec.ClaimContracts.AuthorizationBinding
 
-specification: Binds the domain, epoch, and 900-second deadline from IC time; signing requires the u64 range and at least 300 seconds remaining
+specification: Binds the domain, epoch, and 900-second deadline from IC time; signing requires a u64 deadline and IC time strictly before it
 
 Specification: `docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md`
 
@@ -1035,9 +1035,7 @@ And
             (And
               (LE.le.{0} (BridgeSpec.MintAuthorization.Authorization.deadline authorization)
                 BridgeSpec.MintAuthorization.maxU64)
-              (And (LE.le.{0} observedTimestamp (HSub.hSub.{0, 0, 0} BridgeSpec.MintAuthorization.maxU64 300))
-                (LE.le.{0} (HAdd.hAdd.{0, 0, 0} observedTimestamp 300)
-                  (BridgeSpec.MintAuthorization.Authorization.deadline authorization)))))
+              (LT.lt.{0} observedTimestamp (BridgeSpec.MintAuthorization.Authorization.deadline authorization))))
     BridgeSpec.ClaimContracts.DepositTransitionSafety)
 ```
 
@@ -2314,7 +2312,7 @@ fun evidence authorization =>
 
 ### BridgeSpec.MintAuthorization.installSignature
 
-specification: Abstract transition checking 300 seconds remaining at signing, finite-width bounds, and fee accounting once
+specification: Abstract transition checking that IC time is strictly before the u64 deadline and accounting for the fee once
 
 Specification: `verification/README.md`
 
@@ -2406,7 +2404,7 @@ fun stored => ite.{1} (BridgeSpec.Protocol.Safe stored) (Option.some.{0} stored)
 
 ### BridgeSpec.signatureTimeAllowed
 
-specification: Predicate for a u64 deadline, rejection of addition overflow, and at least 300 seconds remaining
+specification: Predicate for a u64 deadline and an IC timestamp strictly before it
 
 Specification: `verification/README.md`
 
@@ -2414,9 +2412,7 @@ Specification: `verification/README.md`
 BridgeSpec.signatureTimeAllowed : Nat → Nat → Bool
 fun observedTimestamp deadline =>
   Decidable.decide
-    (And (LE.le.{0} deadline (HSub.hSub.{0, 0, 0} (HPow.hPow.{0, 0, 0} 2 64) 1))
-      (And (LE.le.{0} observedTimestamp (HSub.hSub.{0, 0, 0} (HSub.hSub.{0, 0, 0} (HPow.hPow.{0, 0, 0} 2 64) 1) 300))
-        (LE.le.{0} (HAdd.hAdd.{0, 0, 0} observedTimestamp 300) deadline)))
+    (And (LE.le.{0} deadline (HSub.hSub.{0, 0, 0} (HPow.hPow.{0, 0, 0} 2 64) 1)) (LT.lt.{0} observedTimestamp deadline))
 ```
 
 ## Source inventory (conservative change detection)
@@ -2424,22 +2420,22 @@ fun observedTimestamp deadline =>
 | Source | Lines | Declarations | SHA-256 |
 |---|---:|---:|---|
 | verification/lean/BridgeSpec/AuditExport.lean | 18 | 1 | 71f528152dcd1c0a250ae213e0d250e8c4a46d42002c38d579b13679dd7bf501 |
-| verification/lean/BridgeSpec/ClaimContracts.lean | 647 | 109 | d386c64a832f1560c9a4abeef96e09bfff253170f70e4f6333c0e4705b9eb54e |
+| verification/lean/BridgeSpec/ClaimContracts.lean | 646 | 109 | 8d0604c2155171ab48d38fb7bba4a77145e1faaed3a841780871168512163ebc |
 | verification/lean/BridgeSpec/Claims.lean | 237 | 30 | 05d79552cb8d45808c6f53636d4f419a1059e33d4b1238aef0df0e4f0d6137c1 |
 | verification/lean/BridgeSpec/ControlPlane.lean | 323 | 32 | 57e6656b42d4da34726d8e69bfe129939d7649070923beddc9c5fdce8876936c |
-| verification/lean/BridgeSpec/DepositAuthorization.lean | 586 | 48 | 737633200787c8db2275d4a8408e8bad75754e04415c9cbc435b934660ca001e |
+| verification/lean/BridgeSpec/DepositAuthorization.lean | 585 | 48 | 55c590c8e1b6478db6678acff13c8876b6aa04ab8d9ff5bf48176770ea5d6350 |
 | verification/lean/BridgeSpec/DepositHistory.lean | 561 | 27 | 51536b20ba0fd5da8a26491d13faf56b5e38a3c300f16e319e99ee5c8dec6620 |
-| verification/lean/BridgeSpec/FiniteWidthModel.lean | 145 | 33 | b8d042b3826c16d95d9dcd2153373c4653f9971bb746c9404105dc7cd7f970aa |
+| verification/lean/BridgeSpec/FiniteWidthModel.lean | 145 | 33 | fb4aa3fa857b1f959d6f66721ab58e352e2527bcda05705b248aca5519f77d5e |
 | verification/lean/BridgeSpec/GlobalHistory.lean | 889 | 67 | a1b6668db4ec35f997042da7fbfb73285d8606a2891084b4645542e2e8b7ea37 |
 | verification/lean/BridgeSpec/LedgerBlockProvenance.lean | 337 | 28 | 23421e6d692d4651eb98d658e501e918e185f36d378f72ed5115fbaf06ba69c4 |
 | verification/lean/BridgeSpec/Liveness.lean | 209 | 26 | 72402ad8473fc2e294a3725535ade0153ed8bd51270ebb22660d75d8706aeff0 |
-| verification/lean/BridgeSpec/Model.lean | 328 | 62 | 0d66a5ccd1ae8da2cd56de58eb95156dcf21e556d08e597f09aea095a1771f98 |
-| verification/lean/BridgeSpec/ModelBoundaries.lean | 42 | 4 | 67b361fa752dfd66e101553b9a0ed6b49d177d49866b94239c8a6c214eba7d13 |
-| verification/lean/BridgeSpec/ModelRefinement.lean | 175 | 26 | aaf9f96703e65d563dd111a936a2809492422c75adbdce0909276440324c4a80 |
+| verification/lean/BridgeSpec/Model.lean | 327 | 62 | f02240b723e67d1c2b139ea7c035dd65316069425ab79cbebb5446dcd6a71d95 |
+| verification/lean/BridgeSpec/ModelBoundaries.lean | 44 | 4 | b646a09a2e5de142fceb46ef7f8573afb05249e9ff34c55ff0d15550a517aff1 |
+| verification/lean/BridgeSpec/ModelRefinement.lean | 175 | 26 | 285525b854bcf6207da62655540c6e6922f003ee2d875159f642562d67ef6b58 |
 | verification/lean/BridgeSpec/Protocol.lean | 809 | 34 | 41678966a02226b6930bac1f74881d49b6d20f13c60671d7354da0bd90571043 |
 | verification/lean/BridgeSpec/ProtocolPolicies.lean | 420 | 52 | a2702b5b210970ee5ac01e5c3109697c902775610de2e8982da60195d132f71c |
 | verification/lean/BridgeSpec/Theorems.lean | 204 | 19 | 848b4f6361b2f097725a3ab084b9e7344d03c906030ca8ad004bb19095e6c4f4 |
-| verification/lean/BridgeSpec/Vectors.lean | 458 | 43 | 2e6a4b91642674f5e5d02a63d660ca9fd817f7cf383ee15db837acca5d41f14e |
+| verification/lean/BridgeSpec/Vectors.lean | 459 | 43 | a1bbfb47734a3da249574d318a6bc8a43b15d7de6d8c91fb0c95db48f9939fb5 |
 | verification/lean/Main.lean | 10 | 1 | 286cd7fcd66afc4e7532fb8f2f0d7e0e15f858ffdad3de716c9f83bfc6b42a05 |
 | verification/lean/fail/AccountingDeltaViolation.lean | 24 | 1 | 638f8837d8c221d828fed5162973b4215af39c61984c6aba3220f8b8b3dd7a08 |
 | verification/lean/fail/AnonymousRefundRequest.lean | 8 | 0 | beae263600cfc9307feadae225b64983f34e11bfdfa04adae6316ec7a1869552 |
