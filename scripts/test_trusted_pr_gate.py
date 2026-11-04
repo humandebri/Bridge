@@ -320,7 +320,8 @@ class TrustedPrGateTests(unittest.TestCase):
                      'WRITABLE_BUILD_MOUNTS=(); ' + mount_setup +
                      '\nprintf "%s\\n" "${WRITABLE_BUILD_MOUNTS[@]-}"'],
                     env={**os.environ, "MODE": mode, "SOURCE_ROOT": "/source",
-                         "SCRATCH": "/scratch", "POLICY_ROOT": "/policy"},
+                         "SCRATCH": "/scratch", "POLICY_ROOT": "/policy",
+                         "DEPENDENCY_ROOT": "/dependencies"},
                     capture_output=True, text=True,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -330,10 +331,28 @@ class TrustedPrGateTests(unittest.TestCase):
                     "type=bind,src=/scratch/lean-lake,dst=/workspace/verification/lean/.lake\n" in result.stdout,
                     needs_lean,
                 )
+                if mode in {"proofs", "proofs-impacted"}:
+                    self.assertIn(
+                        "type=bind,src=/dependencies/verification/halmos/.venv,dst=/workspace/verification/halmos/.venv,readonly",
+                        result.stdout,
+                    )
+                    self.assertNotIn("src=/policy/verification/halmos/.venv", result.stdout)
                 if mode == "policy":
                     self.assertNotIn("dst=/workspace/verification/output", result.stdout)
                     self.assertNotIn("dst=/workspace/verification/halmos/.venv", result.stdout)
                     self.assertNotIn("dst=/workspace/verification/smt", result.stdout)
+
+    def test_reviewed_halmos_environment_is_built_without_candidate_execution(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        isolate = workflow.index("- name: Isolate reviewed candidate dependency inputs")
+        install = workflow.index("- name: Install reviewed Halmos dependencies without builds")
+        trusted_check = workflow.index("- name: Run selected trusted check")
+        self.assertLess(isolate, install)
+        self.assertLess(install, trusted_check)
+        section = workflow[install:workflow.index("- name: Install reviewed workspace dependencies", install)]
+        self.assertIn("--frozen --no-config --no-build --no-install-project", section)
+        self.assertIn('trusted-policy/scripts/halmos_environment.py', section)
+        self.assertNotIn('source/scripts/', section)
 
     def test_untrusted_lifecycle_never_runs_before_policy_and_isolation_are_fixed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
