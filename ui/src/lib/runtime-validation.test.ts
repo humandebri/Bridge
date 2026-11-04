@@ -154,7 +154,10 @@ beforeEach(() => {
       rpc_provider_urls_sha256: new Uint8Array(32).fill(0xcc),
     }),
   )
-  mocks.getBridgeStatus.mockResolvedValue({ withdrawal_fee_guard_active: false })
+  mocks.getBridgeStatus.mockResolvedValue({
+    schema_version: 36,
+    withdrawal_fee_guard_active: false,
+  })
   mocks.createBridgeActor.mockResolvedValue({
     get_runtime_binding: mocks.getRuntimeBinding,
     get_bridge_status: mocks.getBridgeStatus,
@@ -170,6 +173,19 @@ beforeEach(() => {
 })
 
 describe("validateRuntime token bindings", () => {
+  it("rejects_non_v36_status_schema_in_full_validation_and_heartbeat", async () => {
+    for (const schema_version of [35, 37, undefined]) {
+      mocks.getBridgeStatus.mockResolvedValue({
+        schema_version,
+        withdrawal_fee_guard_active: false,
+      })
+      for (const validate of [validateRuntime, validateRuntimeHeartbeat]) {
+        const result = await validate(profile, profile.chainId)
+        expect(result.ready).toBe(false)
+        expect(result.blockers).toContain(`Unsupported canister status schema ${schema_version}`)
+      }
+    }
+  })
   it.each([
     ["stale", BigInt(Math.floor(Date.now() / 1_000)) - 86_400n],
     ["missing", undefined],
@@ -359,7 +375,10 @@ describe("validateRuntime token bindings", () => {
   })
 
   it("fails the runtime heartbeat on a fee guard or signer rotation", async () => {
-    mocks.getBridgeStatus.mockResolvedValueOnce({ withdrawal_fee_guard_active: true })
+    mocks.getBridgeStatus.mockResolvedValueOnce({
+      schema_version: 36,
+      withdrawal_fee_guard_active: true,
+    })
     await expect(validateRuntimeHeartbeat(profile, profile.chainId)).resolves.toMatchObject({
       ready: false,
       blockers: ["Withdrawal fee guard is active; pause Base withdrawals and reconcile fees"],
@@ -504,7 +523,9 @@ describe("validateRuntime token bindings", () => {
         evm_rpc_canister_id: Principal.managementCanister(),
         rpc_provider_urls_sha256: new Uint8Array(32).fill(0xdd),
       }),
-      get_bridge_status: vi.fn().mockResolvedValue({ withdrawal_fee_guard_active: false }),
+      get_bridge_status: vi
+        .fn()
+        .mockResolvedValue({ schema_version: 36, withdrawal_fee_guard_active: false }),
     })
     const result = await validateRuntime(profile)
     expect(result.blockers).toContain("Unsupported canister schema 18")

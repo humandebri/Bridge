@@ -30,8 +30,8 @@ This fixes the accounting model's expressive boundary; it does not claim that pr
 ## Individual guarantees and abstractions (8 minutes)
 
 DepositHistory covers histories from authorization issuance to termination.
-Signature events receive an IC observation timestamp and check the deadline's u64 range, rejection of addition overflow, and at least 300 seconds of remaining validity.
-Exactly 300 seconds is accepted; 299 seconds, expired deadlines, and addition at the maximum timestamp are rejected.
+Signature events require a u64 deadline and an IC observation timestamp strictly before it.
+Remaining validity of 300, 299, and 1 seconds is accepted; equality with the deadline and expired deadlines are rejected.
 Correspondence with the production minimum-remaining-time predicate is linked through a finite-width model theorem and the Rust vector consumer.
 Cryptographic signatures themselves and IC timestamp authenticity remain external assumptions.
 

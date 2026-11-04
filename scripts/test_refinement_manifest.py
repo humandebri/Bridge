@@ -52,6 +52,22 @@ class RefinementManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unsupported Bridge constructor"):
                 generator.bridge_constructor_prefix(root)
 
+    def test_signature_time_guard_requires_one_supported_production_kernel(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            kernel = root / "canister/bridge-core/src/kernel.rs"
+            kernel.parent.mkdir(parents=True)
+            old = "pub const fn mint_authorization_has_minimum_remaining_time(a: u64, b: u64) {}"
+            new = "pub const fn mint_authorization_before_deadline(a: u64, b: u64) {}"
+            for source, expected in ((old, "mint_authorization_has_minimum_remaining_time"),
+                                     (new, "mint_authorization_before_deadline")):
+                kernel.write_text(source, encoding="utf-8")
+                self.assertEqual(generator.signature_time_guard(root), expected)
+            for source in ("", old + "\n" + new):
+                kernel.write_text(source, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "exactly one supported guard"):
+                    generator.signature_time_guard(root)
+
     def fixture(self) -> tuple[Path, dict[str, object], str, str, str, str, dict[tuple[str, str], Renderer]]:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

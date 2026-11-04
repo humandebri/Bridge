@@ -498,6 +498,8 @@ export function BridgePage({
           reviewed.gate.sequence,
           confirmedRecipient,
         )
+        if (beforeApproval.base.serviceFee > reviewed.gate.base.serviceFee)
+          throw new Error("Deposit fee increased; review again")
         const requiredAllowance = reviewed.amount + beforeApproval.ledger.fee
         if (beforeApproval.ledger.allowance < requiredAllowance) {
           bridgeProgress.update(progressId, { phase: "awaiting-ic-allowance" })
@@ -525,12 +527,14 @@ export function BridgePage({
           confirmedRecipient,
           undefined,
         )
+        if (final.base.serviceFee > reviewed.gate.base.serviceFee)
+          throw new Error("Deposit fee increased; review again")
         const attempt: UnresolvedDepositAttempt = {
           call: {
             ownerSequence: final.sequence,
             baseRecipient: hexToBytes(confirmedRecipient),
             grossAmount: reviewed.amount,
-            maxServiceFee: final.base.serviceFee,
+            maxServiceFee: reviewed.gate.base.serviceFee,
           },
           account: {
             owner: confirmedAccount.owner,
@@ -922,6 +926,8 @@ export function BridgePage({
       dispatch({ type: "withdrawal-submission-started" })
       if (!address) throw new Error("Connect the EVM wallet that owns bSNS")
       if (!reviewedWithdrawalAccount) throw new Error("Verify the destination IC wallet again")
+      const reviewedFee = reviewedObservation?.snapshot?.serviceFee
+      if (reviewedFee === undefined) throw new Error("Review the withdrawal fee again")
       if (!withdrawParsed.ok) throw new Error(withdrawParsed.reason)
       if (baseData === undefined || bsnsBalanceData === undefined)
         throw new Error("Fee or balance data is unavailable or stale")
@@ -953,6 +959,7 @@ export function BridgePage({
       if (approvalQuote.withdrawalsPaused) throw new Error("Withdrawals are paused on Base")
       if (
         withdrawParsed.value <= approvalQuote.serviceFee ||
+        approvalQuote.serviceFee > reviewedFee ||
         approvalBalance.data < withdrawParsed.value
       )
         throw new Error("Withdrawal fee or balance changed; review again")
@@ -1050,17 +1057,19 @@ export function BridgePage({
             },
             validateFinancials: ({ serviceFee, balance: finalBalance, withdrawalsPaused }) => {
               if (withdrawalsPaused) throw new Error("Withdrawals are paused on Base")
+              if (serviceFee > reviewedFee)
+                throw new Error("Withdrawal fee increased; review again")
               if (withdrawParsed.value <= serviceFee)
                 throw new Error("Amount must be greater than the current service fee")
               if (finalBalance < withdrawParsed.value)
                 throw new Error("bSNS balance is insufficient")
             },
-            simulateWithdrawal: ({ serviceFee }, blockNumber) =>
-              client.simulateContract({ ...withdrawalRequest(serviceFee), blockNumber }),
-            createWithdrawal: ({ serviceFee }) => {
+            simulateWithdrawal: (_financials, blockNumber) =>
+              client.simulateContract({ ...withdrawalRequest(reviewedFee), blockNumber }),
+            createWithdrawal: () => {
               walletDispatched = true
               bridgeProgress.update(progressId, { phase: "awaiting-base-withdrawal" })
-              return write.writeContractAsync(withdrawalRequest(serviceFee))
+              return write.writeContractAsync(withdrawalRequest(reviewedFee))
             },
             onBroadcast: async (transactionHash) => {
               bridgeProgress.update(progressId, {
@@ -1491,6 +1500,11 @@ export function BridgePage({
         preflight={preflight}
         source={source.wallet}
         destination={destination.wallet}
+        destinationSubaccount={
+          direction === "withdraw" && reviewedWithdrawalAccount
+            ? bytesToHex(reviewedWithdrawalAccount.subaccount ?? new Uint8Array(32))
+            : undefined
+        }
         amount={amount}
         receive={receive}
         fee={fee}
@@ -1620,6 +1634,7 @@ export function BridgeConfirmationDialog({
   preflight,
   source,
   destination,
+  destinationSubaccount,
   amount,
   receive,
   fee,
@@ -1635,6 +1650,7 @@ export function BridgeConfirmationDialog({
   preflight?: PreflightState
   source: string
   destination: string
+  destinationSubaccount?: string
   amount: string
   receive?: bigint
   fee?: bigint
@@ -1705,6 +1721,11 @@ export function BridgeConfirmationDialog({
               <div className="sm:col-span-2">
                 <ConfirmRow label="Recipient" value={destination} />
               </div>
+              {direction === "withdraw" && destinationSubaccount && (
+                <div className="sm:col-span-2">
+                  <ConfirmRow label="Recipient subaccount" value={destinationSubaccount} />
+                </div>
+              )}
             </div>
           </>
         )}

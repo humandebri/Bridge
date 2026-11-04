@@ -1,11 +1,13 @@
 import path from "node:path"
-import { realpathSync } from "node:fs"
+import { mkdtempSync, realpathSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { createServer, type ViteDevServer } from "vite"
 import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 import { expect, test } from "@playwright/test"
 let server: ViteDevServer
 let fixtureUrl: string
+let cacheDirectory: string | undefined
 test.beforeAll(async () => {
   const root = path.resolve(import.meta.dirname, "..")
   const environment = path.join(root, "e2e/fixtures/withdrawal-tabs-environment.ts")
@@ -22,9 +24,10 @@ test.beforeAll(async () => {
     "@/lib/ic/withdrawal-notification-client",
     "@/lib/transaction-recovery",
   ]
+  cacheDirectory = mkdtempSync(path.join(tmpdir(), "bridge-vite-withdrawal-tabs-"))
   server = await createServer({
     root,
-    cacheDir: path.join(root, "test-results/vite-withdrawal-tabs"),
+    cacheDir: cacheDirectory,
     configFile: false,
     plugins: [react(), tailwindcss()],
     resolve: {
@@ -43,7 +46,11 @@ test.beforeAll(async () => {
   fixtureUrl = `${server.resolvedUrls!.local[0]}e2e/fixtures/withdrawal-tabs.html`
 })
 test.afterAll(async () => {
-  await server?.close()
+  try {
+    await server?.close()
+  } finally {
+    if (cacheDirectory) rmSync(cacheDirectory, { recursive: true, force: true })
+  }
 })
 for (const completingTabHasModal of [true, false]) {
   test(`withdrawal follows shared queue removal with completing modal=${completingTabHasModal}`, async ({

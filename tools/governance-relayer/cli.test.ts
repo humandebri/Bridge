@@ -27,7 +27,6 @@ import {
   parseOptions,
   selectPendingArtifact,
   selectPendingActivationArtifact,
-  snsActivationAuthorization,
   storedArtifactMatches,
   storedActivationConfirmationIdentity,
   unwrap,
@@ -331,7 +330,7 @@ test("reuses only an exact confirmation receipt after a post-confirmation restar
 })
 
 test("uses an anonymous IC actor only for read-only status, recovery, and raw relay commands", () => {
-  for (const command of ["status", "relay", "recover-activation", "recover-sns-activation"]) {
+  for (const command of ["status", "relay", "recover-activation"]) {
     assert.equal(commandRequiresIdentity(command), false)
   }
   for (const command of ["confirm", "run", "prepare", "replace", "seal-operational-config", "prepare-schedule-activation", "prepare-execute-activation", "refresh-attestation", "drain-emergency"]) {
@@ -339,51 +338,8 @@ test("uses an anonymous IC actor only for read-only status, recovery, and raw re
   }
 })
 
-test("binds an SNS activation artifact to its proposal and exact co-controller receipt", () => {
-  const gate = "11".repeat(32)
-  const bridge = "lb5i5-ziaaa-aaaar-qcgwq-cai"
-  const root = "7jkta-eyaaa-aaaaq-aaarq-cai"
-  const installer = "aaaaa-aa"
-  const submission = {
-    schema_version: 4,
-    phase: "schedule",
-    gate_b_manifest_sha256: gate,
-    governance_canister_id: "74ncn-fqaaa-aaaaq-aaasa-cai",
-    bridge_canister_id: bridge,
-    target_method_name: "sns_schedule_activation",
-    validator_canister_id: bridge,
-    validator_method_name: "validate_sns_schedule_activation",
-    proposal_id: 41,
-    function_id: 1002,
-    previous_governance_operation_id: 1,
-    submitted_at_unix: 100,
-    payload_hex: "00",
-    payload_sha256: "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
-  }
-  const artifact = {
-    operation_id: 2n,
-    kind: { ScheduleActivation: {} },
-    signed_at_ns: 100_000_000_000n,
-  } as never
-  const authorization = snsActivationAuthorization(
-    "schedule", submission, artifact, gate, bridge, root,
-    "22".repeat(32), "33".repeat(32), installer,
-  )
-  assert.equal(authorization.kind, "sns-activation-proposal-authorization")
-  assert.deepEqual(authorization.certified_controller_set, [installer, root].sort())
-  assert.equal(authorization.proposal_id, 41)
-  assert.throws(() => snsActivationAuthorization(
-    "schedule", submission, artifact, gate, bridge, root,
-    "22".repeat(32), "invalid", installer,
-  ), /current-state binding/)
-  assert.throws(() => snsActivationAuthorization(
-    "schedule", submission, artifact, gate, bridge, root,
-    "22".repeat(32), "33".repeat(32), root,
-  ), /current-state binding/)
-  assert.throws(() => snsActivationAuthorization(
-    "schedule", submission, { ...artifact, operation_id: 3n },
-    gate, bridge, root, "22".repeat(32), "33".repeat(32), installer,
-  ), /not derived from the SNS proposal/)
+test("rejects the retired unauthenticated SNS recovery command", () => {
+  assert.throws(() => validateCommandOptions("recover-sns-activation", {}), /Unknown command/)
 })
 
 test("recovers exactly one pending activation transaction for the requested phase", () => {
