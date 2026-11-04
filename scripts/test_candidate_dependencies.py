@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -11,12 +12,51 @@ from prepare_candidate_dependencies import (
     candidate_dependency_sources,
     materialize,
 )
+from prepare_candidate_cargo import prepare as prepare_cargo
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class CandidateDependencyTests(unittest.TestCase):
+    def test_cargo_prefetch_uses_trusted_workspace_and_reviewed_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trusted = root / "trusted"
+            trusted.mkdir()
+            (trusted / "Cargo.toml").write_text("trusted manifest\n")
+            (trusted / "Cargo.lock").write_text("trusted lock\n")
+            subprocess.run(["git", "init", "-q", str(trusted)], check=True)
+            subprocess.run(["git", "-C", str(trusted), "add", "Cargo.toml", "Cargo.lock"], check=True)
+            subprocess.run(["git", "-C", str(trusted), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"], check=True)
+            (trusted / "ignored-output").write_text("not tracked\n")
+            candidate = root / "candidate.lock"
+            candidate.write_bytes((ROOT / "Cargo.lock").read_bytes())
+            destination = root / "isolated"
+            prepare_cargo(trusted, candidate, destination)
+            self.assertEqual((destination / "Cargo.toml").read_text(), "trusted manifest\n")
+            self.assertEqual((destination / "Cargo.lock").read_bytes(), candidate.read_bytes())
+            self.assertEqual((trusted / "Cargo.lock").read_text(), "trusted lock\n")
+            self.assertFalse((destination / "ignored-output").exists())
+
+    def test_cargo_prefetch_rejects_untrusted_source_and_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trusted = root / "trusted"
+            trusted.mkdir()
+            (trusted / "Cargo.lock").write_text("trusted lock\n")
+            candidate = root / "candidate.lock"
+            candidate.write_text('[[package]]\nname="bad"\nversion="1.0.0"\nsource="git+https://example.com/x"\n')
+            with self.assertRaisesRegex(ValueError, "unsupported source"):
+                prepare_cargo(trusted, candidate, root / "isolated")
+            candidate.write_text('[[package]]\nname="bad"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\nchecksum="bad"\n')
+            with self.assertRaisesRegex(ValueError, "invalid checksum"):
+                prepare_cargo(trusted, candidate, root / "isolated")
+            candidate.unlink()
+            candidate.symlink_to(trusted / "Cargo.lock")
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                prepare_cargo(trusted, candidate, root / "isolated")
+
     def test_materializes_exact_fixed_manifests_and_patches(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "dependencies"

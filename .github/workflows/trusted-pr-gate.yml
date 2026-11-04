@@ -224,6 +224,15 @@ jobs:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
+      - name: Prefetch candidate Cargo lock using trusted manifests
+        if: >-
+          matrix.area == 'policy' || matrix.area == 'rust-fast' || matrix.area == 'rust-integration' ||
+          matrix.area == 'proofs-impacted' || matrix.area == 'real' || matrix.area == 'icp'
+        run: |
+          cargo_root="$RUNNER_TEMP/bridge-trusted-cargo"
+          python3 trusted-policy/scripts/prepare_candidate_cargo.py \
+            --trusted trusted-policy --candidate-lock source/Cargo.lock --destination "$cargo_root"
+          cargo fetch --locked --manifest-path "$cargo_root/Cargo.toml"
       - name: Fetch the pinned schema 35 upgrade predecessor
         if: matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted'
         working-directory: source
