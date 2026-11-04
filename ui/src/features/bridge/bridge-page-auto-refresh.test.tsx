@@ -527,6 +527,156 @@ describe("BridgePage automatic wallet refresh", () => {
     expect(screen.queryByText(/no Base refund/)).not.toBeInTheDocument()
   })
 
+  it("rejects_deposit_fee_increase_after_review", async () => {
+    const account = { owner: "aaaaa-aa" }
+    const close = vi.fn().mockResolvedValue(undefined)
+    const adapter = {
+      prepare: vi.fn().mockResolvedValue(close),
+      getAccount: vi.fn().mockResolvedValue(account),
+      approve: vi.fn().mockResolvedValue(7n),
+      requestDeposit: vi.fn(),
+    }
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to Base" }))
+    const confirm = await screen.findByRole("button", { name: "Continue to IC wallet" })
+    const higher = runtimeObservationAt(BigInt(Math.floor(Date.now() / 1_000)))
+    higher.data.snapshot.serviceFee = 80_000_000n
+    higher.data.snapshot.maxServiceFee = 100_000_000n
+    mocks.baseRefetch.mockResolvedValue(higher)
+    fireEvent.click(confirm)
+    await waitFor(() => expect(close).toHaveBeenCalled())
+    expect(adapter.approve).not.toHaveBeenCalled()
+    expect(adapter.requestDeposit).not.toHaveBeenCalled()
+  })
+
+  it("rejects_withdrawal_fee_increase_after_review", async () => {
+    const account = { owner: "2vxsx-fae", subaccount: new Uint8Array(32).fill(0x55) }
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter: {
+        prepare: vi.fn().mockResolvedValue(vi.fn()),
+        getAccount: vi.fn().mockResolvedValue(account),
+      },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    render(<BridgePage direction="withdraw" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.bsnsBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
+    const confirm = await screen.findByRole("button", { name: "Continue to Base wallet" })
+    const higher = runtimeObservationAt(BigInt(Math.floor(Date.now() / 1_000)))
+    higher.data.snapshot.serviceFee = 80_000_000n
+    higher.data.snapshot.maxServiceFee = 100_000_000n
+    mocks.baseRefetch.mockResolvedValue(higher)
+    const previousCalls = mocks.baseRefetch.mock.calls.length
+    fireEvent.click(confirm)
+    await waitFor(() => expect(mocks.baseRefetch.mock.calls.length).toBeGreaterThan(previousCalls))
+    await waitFor(() =>
+      expect(screen.getByText(/Withdrawal fee or balance changed; review again/)).toBeVisible(),
+    )
+    expect(mocks.writeContractAsync).not.toHaveBeenCalled()
+  })
+
+  it("rejects_deposit_fee_increase_during_approval", async () => {
+    const account = { owner: "aaaaa-aa" }
+    const close = vi.fn().mockResolvedValue(undefined)
+    const higher = runtimeObservationAt(BigInt(Math.floor(Date.now() / 1_000)))
+    higher.data.snapshot.serviceFee = 80_000_000n
+    higher.data.snapshot.maxServiceFee = 100_000_000n
+    const adapter = {
+      prepare: vi.fn().mockResolvedValue(close),
+      getAccount: vi.fn().mockResolvedValue(account),
+      approve: vi.fn().mockImplementation(async () => {
+        mocks.baseRefetch.mockResolvedValue(higher)
+        return 7n
+      }),
+      requestDeposit: vi.fn(),
+    }
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    render(<BridgePage direction="deposit" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.ledgerBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to Base" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Continue to IC wallet" }))
+    await waitFor(() => expect(close).toHaveBeenCalled())
+    expect(adapter.approve).toHaveBeenCalledOnce()
+    expect(adapter.requestDeposit).not.toHaveBeenCalled()
+    expect(mocks.saveDepositIntent).not.toHaveBeenCalled()
+  })
+
+  it("rejects_withdrawal_fee_increase_during_approval", async () => {
+    const account = { owner: "2vxsx-fae", subaccount: new Uint8Array(32).fill(0x55) }
+    let approved = false
+    mocks.bsnsBalance.mockImplementation(({ functionName }: { functionName: string }) =>
+      Promise.resolve(functionName === "allowance" && !approved ? 0n : 500_000_000n),
+    )
+    const higher = runtimeObservationAt(BigInt(Math.floor(Date.now() / 1_000)))
+    higher.data.snapshot.serviceFee = 80_000_000n
+    higher.data.snapshot.maxServiceFee = 100_000_000n
+    mocks.approvalReceipt.mockImplementation(async () => {
+      approved = true
+      mocks.baseRefetch.mockResolvedValue(higher)
+      return { status: "success", blockNumber: 10n, blockHash: "0xabc" }
+    })
+    mocks.useAccount.mockReturnValue({
+      address: "0x0000000000000000000000000000000000000002",
+      isConnected: true,
+    })
+    mocks.useIcWallet.mockReturnValue({
+      account,
+      provider: "oisy",
+      adapter: {
+        prepare: vi.fn().mockResolvedValue(vi.fn()),
+        getAccount: vi.fn().mockResolvedValue(account),
+      },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })
+    render(<BridgePage direction="withdraw" onDirectionChange={vi.fn()} />, { wrapper: Wrapper })
+    await waitFor(() => expect(mocks.bsnsBalance).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole("textbox", { name: "You send" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Continue to Base wallet" }))
+    await waitFor(() => expect(mocks.approvalReceipt).toHaveBeenCalledOnce())
+    await waitFor(() =>
+      expect(screen.getByText(/Withdrawal fee increased; review again/)).toBeVisible(),
+    )
+    expect(mocks.writeContractAsync).toHaveBeenCalledOnce()
+    expect(mocks.writeContractAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ functionName: "approve" }),
+    )
+    expect(mocks.simulateWithdrawal).not.toHaveBeenCalled()
+  })
+
   it.each([false, true])(
     "submits the reviewed IC destination without reopening OISY (approval: %s)",
     async (needsApproval) => {
@@ -578,6 +728,7 @@ describe("BridgePage automatic wallet refresh", () => {
         target: { value: "2" },
       })
       fireEvent.click(screen.getByRole("button", { name: "Bridge to IC" }))
+      expect(await screen.findByText(`0x${"55".repeat(32)}`)).toBeVisible()
       fireEvent.click(await screen.findByRole("button", { name: "Continue to Base wallet" }))
 
       expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent(

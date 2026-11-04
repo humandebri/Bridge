@@ -26,16 +26,12 @@ vi.mock("@/lib/ic/bridge", () => ({
     get_deposit_by_owner_sequence: async () => [{ state: { AuthorizationAvailable: null } }],
   }),
 }))
-import { clearTransferFacts, publishTransferFacts, readTransferFacts } from "@/lib/transfer-state"
+import { clearTransferFacts } from "@/lib/transfer-state"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { useState } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { browserLocalStorage } from "@/lib/browser-lock"
-import {
-  createBridgeProgress,
-  readLatestBridgeProgress,
-  saveLatestBridgeProgress,
-} from "@/lib/bridge-progress"
+import { createBridgeProgress, saveLatestBridgeProgress } from "@/lib/bridge-progress"
 import { BridgeProgressProvider, useBridgeProgress } from "./bridge-progress-provider"
 
 beforeEach(() => {
@@ -130,6 +126,18 @@ function Harness() {
         }
       >
         Complete
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          progress.progress &&
+          progress.update(progress.progress.id, {
+            phase: "base-mint-submitted",
+            transactionHash: `0x${"22".repeat(32)}`,
+          })
+        }
+      >
+        Base submitted
       </button>
       <button
         type="button"
@@ -296,7 +304,7 @@ describe("BridgeProgressProvider", () => {
     expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled()
   })
 
-  it("dismisses the Deposit modal from the backdrop after a successful Base receipt and preserves pending recovery state", async () => {
+  it("keeps unrecorded Base inclusion pending and permits minimizing without dropping recovery", async () => {
     const storage = browserLocalStorage()
     storage.setItem("kinic.bridge.pending-mint.v2:test", "saved pending mint")
     render(
@@ -305,26 +313,67 @@ describe("BridgeProgressProvider", () => {
       </BridgeProgressProvider>,
     )
     fireEvent.click(screen.getByRole("button", { name: "Start" }))
-
     fireEvent.click(screen.getByRole("button", { name: "Base included", hidden: true }))
-
-    expect(screen.getByRole("status")).toHaveTextContent("Mint included")
-    expect(screen.queryByText("Finality will be reflected in History.")).not.toBeInTheDocument()
-    expect(screen.getAllByRole("listitem")).toHaveLength(4)
-    expect(screen.queryByRole("listitem", { current: "step" })).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled()
-    expect(screen.queryByText("Base finality")).not.toBeInTheDocument()
-    expect(screen.queryByText("Complete", { selector: "li *" })).not.toBeInTheDocument()
-
-    await new Promise((resolve) => window.setTimeout(resolve, 0))
-    fireEvent.pointerDown(document.querySelector('[data-state="open"][aria-hidden="true"]')!)
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+    expect(screen.queryByRole("button", { name: "Finish" })).not.toBeInTheDocument()
+    expect(screen.getByRole("listitem", { current: "step" })).toHaveTextContent(
+      "Base mint transaction",
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Minimize" }))
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Open transfer progress/ })).toBeVisible()
     expect(storage.getItem("kinic.bridge.pending-mint.v2:test")).toBe("saved pending mint")
+  })
+
+  it("allows_other_transfers_while_saved_mint_continues", async function allows_other_transfers_while_saved_mint_continues() {
+    await savePendingMint({
+      depositId: `0x${"07".repeat(32)}`,
+      authorizationDigest: `0x${"11".repeat(32)}`,
+      recipient: `0x${"02".repeat(20)}`,
+      grossAmount: "200",
+      chargedServiceFee: "1",
+      mintedAmount: "199",
+      transactionHash: `0x${"22".repeat(32)}`,
+    })
+    render(
+      <BridgeProgressProvider>
+        <Harness />
+      </BridgeProgressProvider>,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Start" }))
+    fireEvent.click(screen.getByRole("button", { name: "Base included", hidden: true }))
+    fireEvent.click(screen.getByRole("button", { name: "Continue in History" }))
+    expect(readAllPendingMints()).toHaveLength(1)
+    fireEvent.click(screen.getByRole("button", { name: "Start another" }))
+    expect(
+      screen.queryByText("Complete or close the current transfer before starting another one"),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole("dialog", { name: "Bridge to IC" })).toBeVisible()
+  })
+
+  it("allows_other_transfers_when_saved_receipt_is_unavailable", async function allows_other_transfers_when_saved_receipt_is_unavailable() {
+    await savePendingMint({
+      depositId: `0x${"07".repeat(32)}`,
+      authorizationDigest: `0x${"11".repeat(32)}`,
+      recipient: `0x${"02".repeat(20)}`,
+      grossAmount: "200",
+      chargedServiceFee: "1",
+      mintedAmount: "199",
+      transactionHash: `0x${"22".repeat(32)}`,
+    })
+    render(
+      <BridgeProgressProvider>
+        <Harness />
+      </BridgeProgressProvider>,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Start" }))
+    fireEvent.click(screen.getByRole("button", { name: "Base submitted", hidden: true }))
+    fireEvent.click(screen.getByRole("button", { name: "Continue in History" }))
+    expect(readAllPendingMints()).toHaveLength(1)
     fireEvent.click(screen.getByRole("button", { name: "Start another" }))
     expect(screen.getByRole("dialog", { name: "Bridge to IC" })).toBeVisible()
   })
 
-  it("finishes inclusion without clearing recovery or reopening on later observations", async () => {
+  it("preserves pending recovery across minimizing and remounting", async () => {
     const pending = {
       depositId: `0x${"07".repeat(32)}` as const,
       authorizationDigest: `0x${"08".repeat(32)}` as const,
@@ -345,35 +394,20 @@ describe("BridgeProgressProvider", () => {
     )
     fireEvent.click(screen.getByRole("button", { name: "Start" }))
     fireEvent.click(screen.getByRole("button", { name: "Base included", hidden: true }))
-    const saved = readLatestBridgeProgress()!
-    fireEvent.click(screen.getByRole("button", { name: "Finish" }))
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: /Open transfer progress/ })).not.toBeInTheDocument()
-    const facts = readTransferFacts(`deposit:${saved.deposit!.depositId}`)!
-    act(() =>
-      publishTransferFacts({
-        ...facts,
-        phase: "complete",
-        outcome: "minted",
-        revisions: { ...facts.revisions, base: (facts.revisions.base ?? 0) + 1 },
-      }),
-    )
-    expect(readTransferFacts(facts.identity)?.outcome).toBe("minted")
+    fireEvent.click(screen.getByRole("button", { name: "Minimize" }))
     await waitFor(() => expect(recovery.tick).toHaveBeenCalled())
     const calls = recovery.tick.mock.calls.length
     fireEvent(document, new Event("visibilitychange"))
     await waitFor(() => expect(recovery.tick.mock.calls.length).toBeGreaterThan(calls))
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(readAllPendingMints()).toContainEqual(pending)
     view.unmount()
     render(
       <BridgeProgressProvider>
         <Harness />
       </BridgeProgressProvider>,
     )
-    expect(screen.queryByRole("button", { name: /Open transfer progress/ })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Open transfer progress/ })).toBeVisible()
     expect(readAllPendingMints()).toContainEqual(pending)
-    fireEvent.click(screen.getByRole("button", { name: "Start another" }))
-    expect(screen.getByRole("dialog", { name: "Bridge to IC" })).toBeVisible()
   })
 
   it("restores an incomplete latest transfer as a minimized global bar", async () => {

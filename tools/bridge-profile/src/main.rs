@@ -28,6 +28,7 @@ const KINIC_LEDGER: &str = "73mez-iiaaa-aaaaq-aaasq-cai";
 const KINIC_INDEX: &str = "7vojr-tyaaa-aaaaq-aaatq-cai";
 const KINIC_ROOT: &str = "7jkta-eyaaa-aaaaq-aaarq-cai";
 const KINIC_GOVERNANCE: &str = "74ncn-fqaaa-aaaaq-aaasa-cai";
+#[cfg(test)]
 const PRODUCTION_BRIDGE_CANISTER: &str = "lb5i5-ziaaa-aaaar-qcgwq-cai";
 const PRODUCTION_PAUSE_PRINCIPAL: &str =
     "lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe";
@@ -1148,7 +1149,7 @@ struct GenericNervousSystemFunctionView {
     validator_method_name: Option<String>,
 }
 
-#[derive(CandidType, Deserialize, Serialize)]
+#[derive(CandidType, Deserialize, Serialize, Clone)]
 struct ActivationOperationStatusView {
     operation_id: Vec<u8>,
     salt: Vec<u8>,
@@ -1181,6 +1182,34 @@ enum ActivationStatusResultView {
 #[derive(CandidType, Deserialize)]
 enum PendingGovernanceTransactionsView {
     Ok(Vec<Reserved>),
+    Err(Reserved),
+}
+
+#[derive(CandidType, Deserialize, Clone)]
+enum PendingActivationKindView {
+    ScheduleActivation(ActivationOperationStatusView),
+    ExecuteActivation(ActivationOperationStatusView),
+    PauseDepositMints,
+    PauseWithdrawals,
+    CancelTimelock(Reserved),
+    SetServiceFee(Reserved),
+    ScheduleControlPlaneRotation(Reserved),
+    ExecuteControlPlaneRotation(Reserved),
+}
+
+#[derive(CandidType, Deserialize, Clone)]
+struct PendingActivationArtifactView {
+    operation_id: u64,
+    kind: PendingActivationKindView,
+    raw_transaction: Vec<u8>,
+    transaction_hash: Vec<u8>,
+    generation: u8,
+    signed_at_ns: u64,
+}
+
+#[derive(CandidType, Deserialize)]
+enum PendingActivationArtifactsView {
+    Ok(Vec<PendingActivationArtifactView>),
     Err(Reserved),
 }
 
@@ -4288,6 +4317,31 @@ fn validate_control_plane_addresses(
     Ok(())
 }
 
+fn validate_current_control_plane_response(profile: &Profile, raw: &[u8]) -> Result<(), String> {
+    let ControlPlaneAddressesResultView::Ok(observed) =
+        Decode!(raw, ControlPlaneAddressesResultView).map_err(|error| error.to_string())?
+    else {
+        return Err("authenticated control-plane addresses are unavailable".into());
+    };
+    for (expected, actual) in [
+        (&profile.expected_bridge_signer, &observed.bridge_signer),
+        (&profile.governance_operator, &observed.governance_operator),
+        (
+            &profile.runtime_administrator,
+            &observed.runtime_administrator,
+        ),
+        (
+            &profile.independent_canceller,
+            &observed.independent_canceller,
+        ),
+    ] {
+        if *actual != decode_address(expected)? {
+            return Err("authenticated control-plane addresses differ from the profile".into());
+        }
+    }
+    Ok(())
+}
+
 fn verify_production_canister_predeploy(
     profile_path: &Path,
     receipt_path: &Path,
@@ -4456,6 +4510,8 @@ fn verify_production_current_profile_state(
             ),
         };
     let agent = mainnet_agent(&profile.ic_host, false)?;
+    let before = production_upgrade_current_state_snapshot(&agent, bridge)?;
+    validate_current_control_plane_response(&profile, &before.control_plane_addresses)?;
     let (
         lifecycle_raw,
         attestation_raw,
@@ -4568,6 +4624,18 @@ fn verify_production_current_profile_state(
     let status = Decode!(&status_raw, BridgeStatusLiveView).map_err(|error| error.to_string())?;
     let pending = Decode!(&pending_raw, PendingGovernanceTransactionsView)
         .map_err(|error| error.to_string())?;
+    if before.lifecycle != lifecycle_raw
+        || before.activation_attestation != attestation_raw
+        || before.activation_status != activation_status_raw
+        || before.runtime_binding != runtime_raw
+        || before.bridge_status != status
+        || before.pending_governance != pending_raw
+        || before.withdrawal_index_probe != history_raw
+        || before.controllers != controllers.iter().copied().collect()
+        || before.module_hash != module_hash
+    {
+        return Err("authenticated production state changed during verification".into());
+    }
     let root_state = Decode!(&root_raw, SnsCanistersView).map_err(|error| error.to_string())?;
     let history_ready = matches!(
         Decode!(&history_raw, ProductionUiHistoryResult).map_err(|error| error.to_string())?,
@@ -4575,6 +4643,10 @@ fn verify_production_current_profile_state(
     );
     let storage_ok = matches!(
         production_installer_storage_integrity(bridge, release_query_principal)?,
+        StorageIntegrityResultView::Ok(ref value) if value == "ok"
+    ) && matches!(
+        Decode!(&before.storage_integrity, StorageIntegrityResultView)
+            .map_err(|error| error.to_string())?,
         StorageIntegrityResultView::Ok(ref value) if value == "ok"
     );
     let bridge_is_registered = root_state.dapps.contains(&bridge);
@@ -4630,18 +4702,47 @@ fn verify_production_current_profile_state(
             .map_err(|_| "invalid operational config output")?
             .trim(),
     )?;
+    if operational_evidence.response_hex != hex(&before.operational_config) {
+        return Err("authenticated operational configuration changed during verification".into());
+    }
     validate_operational_epoch_snapshot(
         &operational_evidence,
         &status,
         &live_runtime_binding_from_view(&runtime),
         profile.parameters.ledger_fee,
     )?;
+    let after = production_upgrade_current_state_snapshot(&agent, bridge)?;
+    ensure_production_observation_unchanged(&before, &after)?;
+    let current_root = async_runtime()?.block_on(async {
+        agent
+            .query(&root, "list_sns_canisters")
+            .with_arg(Encode!(&SnsRootQuery {}).map_err(|error| error.to_string())?)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())
+    })?;
+    ensure_sns_bridge_registration_unchanged(&root_raw, &current_root, bridge)?;
     println!(
         "production_current_state=verified canister={} module_sha256={} controllers={}",
         profile.bridge_canister_id,
         expected_module_sha256.to_ascii_lowercase(),
         controller_mode
     );
+    Ok(())
+}
+
+fn ensure_sns_bridge_registration_unchanged(
+    before: &[u8],
+    after: &[u8],
+    bridge: Principal,
+) -> Result<(), String> {
+    let before = Decode!(before, SnsCanistersView).map_err(|error| error.to_string())?;
+    let after = Decode!(after, SnsCanistersView).map_err(|error| error.to_string())?;
+    let count = |values: &[Principal]| values.iter().filter(|value| **value == bridge).count();
+    let old_count = count(&before.dapps);
+    if old_count > 1 || old_count != count(&after.dapps) {
+        return Err("authenticated SNS Bridge registration changed during verification".into());
+    }
     Ok(())
 }
 
@@ -5113,28 +5214,22 @@ fn validate_dao_activation_management_snapshot(
     bundle: &ValidatedBundle,
     controllers: &[Principal],
     module_hash: &[u8],
+    root_only: bool,
 ) -> Result<(), String> {
-    if env::var("BRIDGE_DAO_JOINT_CONTROL").as_deref() != Ok("1") {
-        return validate_gate_b_management_snapshot(bundle, controllers, module_hash);
+    if root_only {
+        validate_root_activation_management_snapshot(&bundle.profile, controllers, module_hash)
+    } else {
+        validate_gate_b_management_snapshot(bundle, controllers, module_hash)
     }
-    let installer = gate_b_controller(bundle)?;
-    if !dao_activation_controller_set_matches(installer, controllers)?
-        || !hex(module_hash).eq_ignore_ascii_case(&bundle.profile.bridge_canister_wasm_sha256)
-    {
-        return Err("DAO activation requires the exact certified production identity and SNS Root controller set".into());
-    }
-    Ok(())
 }
 
-fn dao_activation_controller_set_matches(
-    installer: Principal,
+fn validate_root_activation_management_snapshot(
+    profile: &Profile,
     controllers: &[Principal],
-) -> Result<bool, String> {
-    let expected = BTreeSet::from([
-        installer,
-        Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?,
-    ]);
-    Ok(controllers.len() == 2 && controllers.iter().copied().collect::<BTreeSet<_>>() == expected)
+    module_hash: &[u8],
+) -> Result<(), String> {
+    let root = Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?;
+    validate_current_profile_management_snapshot(profile, root, controllers, module_hash)
 }
 
 fn validate_current_profile_management_snapshot(
@@ -5146,7 +5241,10 @@ fn validate_current_profile_management_snapshot(
     if controllers != [installer]
         || !hex(module_hash).eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
     {
-        return Err("Gate B requires the production identity as sole controller".into());
+        return Err(
+            "certified controller or module differs from the expected sole-controller profile"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -6430,6 +6528,471 @@ fn validate_direct_activation_transaction_fields(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn validate_root_pending_activation(
+    phase: &str,
+    profile: &Profile,
+    previous_operation_id: u64,
+    proposal_submitted_at: u64,
+    proposal_executed_at: u64,
+    now: u64,
+    status: &ActivationStatusView,
+    pending: &[PendingActivationArtifactView],
+    artifact: &DirectActivationArtifact,
+) -> Result<(), String> {
+    let operation = direct_activation_operation(phase, &artifact.kind)?;
+    let governance_id = artifact
+        .operation_id
+        .parse::<u64>()
+        .map_err(|_| "invalid governance operation ID")?;
+    let pending_ids: BTreeSet<_> = pending.iter().map(|entry| entry.operation_id).collect();
+    if pending_ids.len() != pending.len() {
+        return Err("pending governance transaction IDs are ambiguous".into());
+    }
+    let live = pending
+        .iter()
+        .find(|entry| entry.operation_id == governance_id)
+        .ok_or("the reviewed activation transaction is not pending")?;
+    let signed_at_ns = artifact
+        .signed_at_ns
+        .parse::<u64>()
+        .map_err(|_| "invalid signed timestamp")?;
+    let live_kind = match (&live.kind, phase) {
+        (PendingActivationKindView::ScheduleActivation(value), "schedule") => value,
+        (PendingActivationKindView::ExecuteActivation(value), "execute") => value,
+        _ => return Err("pending governance transaction has the wrong activation phase".into()),
+    };
+    let previous = status
+        .last_confirmed_activation
+        .as_ref()
+        .ok_or("Root activation has no confirmed predecessor")?;
+    if !status.deposits_paused
+        || governance_id <= previous_operation_id
+        || live.operation_id != governance_id
+        || live.generation != artifact.generation
+        || live.signed_at_ns != signed_at_ns
+        || live.raw_transaction != decode_hex(&artifact.raw_transaction)?
+        || live.transaction_hash != decode_hex(&artifact.transaction_hash)?
+        || live_kind.operation_id != decode_hex(&operation.operation_id)?
+        || live_kind.salt != decode_hex(&operation.salt)?
+        || signed_at_ns / 1_000_000_000 < proposal_submitted_at
+        || signed_at_ns / 1_000_000_000 > proposal_executed_at
+        || proposal_executed_at > now
+        || previous.governance_operation_id != previous_operation_id
+        || previous.receipt_block_number == 0
+        || previous.transaction_hash.len() != 32
+        || previous.timelock_operation_id.len() != 32
+        || previous.signed_at_ns == 0
+    {
+        return Err(
+            "authenticated pending activation differs from the proposal or artifact".into(),
+        );
+    }
+    validate_direct_activation_transaction_fields(phase, profile, &operation.salt, artifact)?;
+    match phase {
+        "schedule" => {
+            let expected = status
+                .pending_timelock_operation
+                .as_ref()
+                .ok_or("Root schedule has no prepared operation")?;
+            if expected.operation_id != live_kind.operation_id
+                || expected.salt != live_kind.salt
+                || !matches!(status.last_confirmed_activation.as_ref(), Some(last) if last.phase == "execute")
+            {
+                return Err("Root schedule differs from the prepared Timelock operation".into());
+            }
+            let instance: [u8; 32] = decode_hex(&profile.deployment_instance_id)?
+                .try_into()
+                .map_err(|_| "invalid deployment instance")?;
+            let salt = initial_activation_salt(instance, governance_id);
+            let operation_id =
+                initial_activation_operation_id(decode_address(&profile.bridge_contract)?, salt);
+            if decode_hex(&operation.salt)? != salt
+                || decode_hex(&operation.operation_id)? != operation_id
+            {
+                return Err("Root schedule artifact has an incorrect Timelock binding".into());
+            }
+        }
+        "execute" => {
+            let expected = status
+                .pending_timelock_operation
+                .as_ref()
+                .ok_or("Root execute has no scheduled operation")?;
+            if !matches!(status.last_confirmed_activation.as_ref(), Some(last) if last.phase == "schedule")
+                || expected.operation_id != live_kind.operation_id
+                || expected.salt != live_kind.salt
+                || previous.timelock_operation_id != expected.operation_id
+            {
+                return Err("Root execute differs from the confirmed schedule".into());
+            }
+        }
+        _ => return Err("activation phase must be schedule or execute".into()),
+    }
+    Ok(())
+}
+
+fn validate_root_recovery_snapshot(
+    profile: &Profile,
+    snapshot: &ProductionUpgradeCurrentStateSnapshot,
+) -> Result<(ActivationStatusView, Vec<PendingActivationArtifactView>), String> {
+    let root = Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?;
+    if snapshot.controllers != BTreeSet::from([root])
+        || !hex(&snapshot.module_hash).eq_ignore_ascii_case(&profile.bridge_canister_wasm_sha256)
+    {
+        return Err(
+            "Root recovery requires the reviewed module and Root as sole controller".into(),
+        );
+    }
+    if !matches!(
+        Decode!(&snapshot.lifecycle, ProductionLifecycleResultView)
+            .map_err(|error| error.to_string())?,
+        ProductionLifecycleResultView::Ok(ProductionLifecycleView::Activated)
+    ) {
+        return Err("Root recovery requires the Activated lifecycle".into());
+    }
+    let ActivationStatusResultView::Ok(activation) =
+        Decode!(&snapshot.activation_status, ActivationStatusResultView)
+            .map_err(|error| error.to_string())?
+    else {
+        return Err("Root recovery activation status is unavailable".into());
+    };
+    let PendingActivationArtifactsView::Ok(pending) =
+        Decode!(&snapshot.pending_governance, PendingActivationArtifactsView)
+            .map_err(|error| error.to_string())?
+    else {
+        return Err("Root recovery pending governance state is unavailable".into());
+    };
+    let ActivationAttestationResultView::Ok(attestation) = Decode!(
+        &snapshot.activation_attestation,
+        ActivationAttestationResultView
+    )
+    .map_err(|error| error.to_string())?
+    else {
+        return Err("Root recovery activation attestation is unavailable".into());
+    };
+    let runtime = Decode!(&snapshot.runtime_binding, RuntimeBindingView)
+        .map_err(|error| error.to_string())?;
+    let status = &snapshot.bridge_status;
+    if !activation.deposits_paused
+        || !status.deposits_paused
+        || !status.reserve.sufficient
+        || runtime.schema_version != CURRENT_STABLE_SCHEMA_VERSION
+        || !matches!(
+            Decode!(&snapshot.withdrawal_index_probe, ProductionUiHistoryResult)
+                .map_err(|error| error.to_string())?,
+            ProductionUiHistoryResult::Ok(_)
+        )
+        || !matches!(Decode!(&snapshot.storage_integrity, StorageIntegrityResultView).map_err(|error| error.to_string())?, StorageIntegrityResultView::Ok(ref value) if value == "ok")
+    {
+        return Err(
+            "Root recovery requires paused v36 state with reserve, storage and history ready"
+                .into(),
+        );
+    }
+    validate_current_control_plane_response(profile, &snapshot.control_plane_addresses)?;
+    let operational = OperationalEpochEvidence::from_response(&hex(&snapshot.operational_config))?;
+    let observed = live_runtime_binding_from_view(&runtime);
+    let rpc_hash = hex(&canonical_sha256(&Vec::<String>::new())?);
+    let expected_config = expected_operational_config_sha256(
+        profile,
+        status.mint_authorization_ttl_seconds,
+        status.mint_authorization_epoch,
+    )?;
+    validate_live_runtime_binding(&observed, profile, &rpc_hash, &expected_config)?;
+    if runtime.expected_bridge_runtime_sha256
+        != decode_hex(&profile.bridge_runtime_bytecode_sha256)?
+    {
+        return Err("Root recovery runtime code binding differs from the reviewed profile".into());
+    }
+    validate_operational_epoch_snapshot(
+        &operational,
+        status,
+        &observed,
+        profile.parameters.ledger_fee,
+    )?;
+    validate_activation_attestation_content(profile, &attestation, 1, None)?;
+    Ok((activation, pending))
+}
+
+fn validate_root_pending_proposal(
+    phase: &str,
+    bundle: &ValidatedBundle,
+    submission: &ActivationSubmission,
+    snapshot: &LiveActivationSnapshot,
+    now: u64,
+) -> Result<u64, String> {
+    validate_activation_time(
+        submission.submitted_at_unix,
+        bundle.manifest.created_at_unix,
+        now,
+    )?;
+    let method = match phase {
+        "schedule" => "sns_schedule_activation",
+        "execute" => "sns_execute_activation",
+        _ => return Err("activation phase must be schedule or execute".into()),
+    };
+    let payload = sns_activation_payload(submission.previous_governance_operation_id)?;
+    let proposal_response = decode_hex(&submission.proposal_response_hex)?;
+    if submission.schema_version != 4
+        || submission.phase != phase
+        || submission.release_id != bundle.manifest.release_id
+        || submission.source_revision != bundle.manifest.source_revision
+        || !submission
+            .source_tree_sha256
+            .eq_ignore_ascii_case(&bundle.manifest.source_tree_sha256)
+        || !submission
+            .gate_b_manifest_sha256
+            .eq_ignore_ascii_case(&bundle.manifest_sha256)
+        || submission.governance_canister_id != KINIC_GOVERNANCE
+        || submission.bridge_canister_id != bundle.profile.bridge_canister_id
+        || submission.function_id < 1000
+        || submission.proposal_id == 0
+        || submission.target_method_name != method
+        || submission.validator_canister_id != bundle.profile.bridge_canister_id
+        || submission.validator_method_name != format!("validate_{method}")
+        || decode_hex(&submission.payload_hex)? != payload
+        || !submission
+            .payload_sha256
+            .eq_ignore_ascii_case(&hex(&Sha256::digest(&payload)))
+        || !submission
+            .proposal_response_sha256
+            .eq_ignore_ascii_case(&hex(&Sha256::digest(&proposal_response)))
+        || !valid_sha256(&submission.registry_response_sha256)
+        || !principal(&submission.proposer_principal)
+        || submission.neuron_subaccount.len() != 64
+        || !submission
+            .neuron_subaccount
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || submission.registry_command_argv.is_empty()
+        || submission.proposal_command_argv.is_empty()
+    {
+        return Err("Root activation submission differs from the reviewed release".into());
+    }
+    validate_dao_activation_management_snapshot(
+        bundle,
+        &snapshot.controllers,
+        &snapshot.module_hash,
+        true,
+    )?;
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    validate_authenticated_root_proposal(
+        &snapshot.proposal_raw,
+        &snapshot.registry_raw,
+        submission.proposal_id,
+        submission.function_id,
+        &payload,
+        bridge,
+        method,
+        &submission.validator_method_name,
+        submission.submitted_at_unix,
+        now,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_authenticated_root_proposal(
+    proposal_raw: &[u8],
+    registry_raw: &[u8],
+    proposal_id: u64,
+    function_id: u64,
+    payload: &[u8],
+    bridge: Principal,
+    method: &str,
+    validator_method: &str,
+    submitted_at: u64,
+    now: u64,
+) -> Result<u64, String> {
+    let decoded = Decode!(proposal_raw, GetProposalResponse).map_err(|error| error.to_string())?;
+    let proposal = match decoded.result {
+        Some(GetProposalResult::Proposal(proposal)) => *proposal,
+        _ => return Err("authenticated SNS activation proposal is unavailable".into()),
+    };
+    let (executed_at, action) = verified_executed_proposal(proposal, proposal_id)?;
+    let SnsProposalAction::ExecuteGenericNervousSystemFunction(action) = action else {
+        return Err("SNS activation proposal has the wrong action".into());
+    };
+    if executed_at < submitted_at
+        || executed_at > now
+        || action.function_id != function_id
+        || action.payload != payload
+    {
+        return Err(
+            "authenticated SNS activation proposal differs from the reviewed action".into(),
+        );
+    }
+    let registry = Decode!(registry_raw, ListNervousSystemFunctionsResponseView)
+        .map_err(|error| error.to_string())?;
+    let count = registry.functions.iter().filter(|function| function.id == function_id
+        && matches!(function.function_type.as_ref(), Some(FunctionTypeView::GenericNervousSystemFunction(generic))
+            if generic.target_canister_id == Some(bridge) && generic.target_method_name.as_deref() == Some(method)
+            && generic.validator_canister_id == Some(bridge)
+            && generic.validator_method_name.as_deref() == Some(validator_method))).count();
+    if count != 1
+        || registry
+            .functions
+            .iter()
+            .filter(|function| function.id == function_id)
+            .count()
+            != 1
+    {
+        return Err("authenticated SNS registry lacks the exact activation function".into());
+    }
+    Ok(executed_at)
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct RootActivationPendingEvidence {
+    schema_version: u8,
+    phase: String,
+    gate_b_manifest_sha256: String,
+    bridge_canister_id: String,
+    certified_module_sha256: String,
+    proposal_id: u64,
+    function_id: u64,
+    proposal_executed_at_unix: u64,
+    submission_sha256: String,
+    artifact_sha256: String,
+    production_state_sha256: String,
+}
+
+fn compare_root_activation_evidence(
+    approved: &RootActivationPendingEvidence,
+    current: &RootActivationPendingEvidence,
+) -> Result<(), String> {
+    if approved != current {
+        return Err("Root activation pending state differs from the approved observation".into());
+    }
+    Ok(())
+}
+
+fn root_bridge_registration(agent: &Agent, bridge: Principal) -> Result<(), String> {
+    let root = Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?;
+    let raw = async_runtime()?.block_on(async {
+        agent
+            .query(&root, "list_sns_canisters")
+            .with_arg(Encode!(&SnsRootQuery {}).map_err(|error| error.to_string())?)
+            .call_with_verification()
+            .await
+            .map_err(|error| error.to_string())
+    })?;
+    let response = Decode!(&raw, SnsCanistersView).map_err(|error| error.to_string())?;
+    if response.dapps.iter().filter(|id| **id == bridge).count() != 1 {
+        return Err("SNS Root must register the Bridge exactly once".into());
+    }
+    Ok(())
+}
+
+fn verify_root_activation_pending(
+    phase: &str,
+    bundle: &ValidatedBundle,
+    submission_path: &Path,
+    artifact_path: &Path,
+    mode: &str,
+    evidence_path: &Path,
+) -> Result<(), String> {
+    if !matches!(mode, "capture" | "compare") {
+        return Err("Root activation verification requires capture or compare".into());
+    }
+    let submission_bytes = fs::read(submission_path).map_err(|error| error.to_string())?;
+    let artifact_bytes = fs::read(artifact_path).map_err(|error| error.to_string())?;
+    let submission: ActivationSubmission =
+        serde_json::from_slice(&submission_bytes).map_err(|error| error.to_string())?;
+    let artifact: DirectActivationArtifact =
+        serde_json::from_slice(&artifact_bytes).map_err(|error| error.to_string())?;
+    let bridge = Principal::from_text(&bundle.profile.bridge_canister_id)
+        .map_err(|error| error.to_string())?;
+    let agent = mainnet_agent(&bundle.profile.ic_host, false)?;
+    let before = production_upgrade_current_state_snapshot(&agent, bridge)?;
+    let (activation, pending) = validate_root_recovery_snapshot(&bundle.profile, &before)?;
+    root_bridge_registration(&agent, bridge)?;
+    let payload = sns_activation_payload(submission.previous_governance_operation_id)?;
+    let proposal = fetch_live_activation_snapshot(
+        &bundle.profile.ic_host,
+        bridge,
+        submission.proposal_id,
+        &payload,
+    )?;
+    let now = now_unix()?;
+    let executed_at = validate_root_pending_proposal(phase, bundle, &submission, &proposal, now)?;
+    if proposal.activation_raw != before.activation_status
+        || proposal
+            .controllers
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            != before.controllers
+        || proposal.module_hash != before.module_hash
+    {
+        return Err("Root activation state changed while authenticating the SNS proposal".into());
+    }
+    validate_root_pending_activation(
+        phase,
+        &bundle.profile,
+        submission.previous_governance_operation_id,
+        submission.submitted_at_unix,
+        executed_at,
+        now,
+        &activation,
+        &pending,
+        &artifact,
+    )?;
+    let after = production_upgrade_current_state_snapshot(&agent, bridge)?;
+    ensure_production_observation_unchanged(&before, &after)?;
+    let second = fetch_live_activation_snapshot(
+        &bundle.profile.ic_host,
+        bridge,
+        submission.proposal_id,
+        &payload,
+    )?;
+    if validate_root_pending_proposal(phase, bundle, &submission, &second, now_unix()?)?
+        != executed_at
+        || second.activation_raw != before.activation_status
+        || second.controllers.iter().copied().collect::<BTreeSet<_>>() != before.controllers
+        || second.module_hash != before.module_hash
+    {
+        return Err(
+            "authenticated Root activation proposal or state changed during verification".into(),
+        );
+    }
+    root_bridge_registration(&agent, bridge)?;
+    let final_state = production_upgrade_current_state_snapshot(&agent, bridge)?;
+    ensure_production_observation_unchanged(&before, &final_state)?;
+    if submission_bytes != fs::read(submission_path).map_err(|error| error.to_string())?
+        || artifact_bytes != fs::read(artifact_path).map_err(|error| error.to_string())?
+    {
+        return Err("Root activation review inputs changed during verification".into());
+    }
+    let evidence = RootActivationPendingEvidence {
+        schema_version: 1,
+        phase: phase.into(),
+        gate_b_manifest_sha256: bundle.manifest_sha256.clone(),
+        bridge_canister_id: bridge.to_text(),
+        certified_module_sha256: hex(&before.module_hash),
+        proposal_id: submission.proposal_id,
+        function_id: submission.function_id,
+        proposal_executed_at_unix: executed_at,
+        submission_sha256: hex(&Sha256::digest(&submission_bytes)),
+        artifact_sha256: hex(&Sha256::digest(&artifact_bytes)),
+        production_state_sha256: hex(&Sha256::digest(
+            serde_json::to_vec(&before).map_err(|error| error.to_string())?,
+        )),
+    };
+    if mode == "capture" {
+        write_json_new(evidence_path, &evidence)?;
+    } else {
+        let approved: RootActivationPendingEvidence = read_json(evidence_path)?;
+        compare_root_activation_evidence(&approved, &evidence)?;
+    }
+    println!(
+        "root_activation_pending={mode} phase={phase} proposal_id={}",
+        submission.proposal_id
+    );
+    Ok(())
+}
+
 fn activation_confirmation_artifact_metadata_matches(
     confirmation: &ActivationConfirmationStatusView,
     artifact: &DirectActivationArtifact,
@@ -7134,6 +7697,7 @@ fn verify_activation(
     submission_path: &Path,
     prior_path: Option<&Path>,
     receipt_path: &Path,
+    root_only: bool,
 ) -> Result<(), String> {
     if phase != "schedule" && phase != "execute" {
         return Err("activation phase must be schedule or execute".into());
@@ -7229,7 +7793,7 @@ fn verify_activation(
         controllers,
         module_hash,
     } = snapshot;
-    validate_dao_activation_management_snapshot(bundle, &controllers, &module_hash)?;
+    validate_dao_activation_management_snapshot(bundle, &controllers, &module_hash, root_only)?;
 
     let decoded = Decode!(&proposal_raw, GetProposalResponse).map_err(|error| error.to_string())?;
     let proposal = match decoded.result {
@@ -7394,6 +7958,7 @@ fn verify_activation(
 fn verify_schedule_receipt_live(
     bundle: &ValidatedBundle,
     receipt_path: &Path,
+    root_only: bool,
 ) -> Result<(), String> {
     let receipt: ActivationReceipt = read_json(receipt_path)?;
     let canonical_payload = sns_activation_payload(receipt.previous_governance_operation_id)?;
@@ -7414,7 +7979,7 @@ fn verify_schedule_receipt_live(
         controllers,
         module_hash,
     } = snapshot;
-    validate_dao_activation_management_snapshot(bundle, &controllers, &module_hash)?;
+    validate_dao_activation_management_snapshot(bundle, &controllers, &module_hash, root_only)?;
 
     let decoded = Decode!(&proposal_raw, GetProposalResponse).map_err(|error| error.to_string())?;
     let proposal = match decoded.result {
@@ -7857,13 +8422,15 @@ fn execute_production_canister_upgrade(
         Principal::from_text(expected_principal_text).map_err(|error| error.to_string())?;
     let wasm = fs::read(wasm_path).map_err(|error| error.to_string())?;
     let (agent, sender) = production_upgrade_agent(host, expected_principal, pem_path)?;
+    let before = production_upgrade_current_state_snapshot(&agent, canister)?;
     verify_production_current_state(
         profile_path,
         expected_principal_text,
         expected_current_module_sha256,
         "sole-unregistered",
     )?;
-    let before = production_upgrade_current_state_snapshot(&agent, canister)?;
+    let verified = production_upgrade_current_state_snapshot(&agent, canister)?;
+    ensure_production_observation_unchanged(&before, &verified)?;
     let submission = build_production_upgrade_submission(&agent, host, canister, sender, &wasm)?;
     let submission_bytes = serde_json::to_vec(&submission).map_err(|error| error.to_string())?;
     validate_production_upgrade_submission_bytes(host, canister, sender, &wasm, &submission_bytes)?;
@@ -7988,7 +8555,7 @@ fn execute_production_canister_upgrade(
     Ok(())
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 struct ProductionUpgradeCurrentStateSnapshot {
     lifecycle: Vec<u8>,
     activation_attestation: Vec<u8>,
@@ -8010,12 +8577,16 @@ impl ProductionUpgradeCurrentStateSnapshot {
         expected.module_hash = after.module_hash.clone();
         expected == *after
     }
+}
 
-    fn preserved_across_root_addition(&self, after: &Self) -> bool {
-        let mut expected = self.clone();
-        expected.controllers = after.controllers.clone();
-        expected == *after
+fn ensure_production_observation_unchanged(
+    before: &ProductionUpgradeCurrentStateSnapshot,
+    after: &ProductionUpgradeCurrentStateSnapshot,
+) -> Result<(), String> {
+    if before != after {
+        return Err("authenticated production state changed during verification".into());
     }
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -8041,32 +8612,6 @@ fn classify_production_upgrade_observation(
         return Ok(ProductionUpgradeObservedOutcome::CurrentUnresolved);
     }
     Err("certified production module changed to an unexpected hash".into())
-}
-
-fn validate_production_root_addition_observation(
-    before: &ProductionUpgradeCurrentStateSnapshot,
-    after: &ProductionUpgradeCurrentStateSnapshot,
-    expected_controller: Principal,
-    root: Principal,
-    expected_module_sha256: &str,
-) -> Result<(), String> {
-    if before.controllers != BTreeSet::from([expected_controller]) {
-        return Err("production identity was not the sole controller before Root addition".into());
-    }
-    if after.controllers != BTreeSet::from([expected_controller, root]) {
-        return Err(
-            "certified controller set is not exactly production identity plus SNS Root".into(),
-        );
-    }
-    if !hex(&before.module_hash).eq_ignore_ascii_case(expected_module_sha256)
-        || !hex(&after.module_hash).eq_ignore_ascii_case(expected_module_sha256)
-    {
-        return Err("certified production module changed during Root addition".into());
-    }
-    if !before.preserved_across_root_addition(after) {
-        return Err("authenticated production state changed during Root addition".into());
-    }
-    Ok(())
 }
 
 fn production_upgrade_current_state_snapshot(
@@ -8155,109 +8700,6 @@ fn production_upgrade_current_state_snapshot(
         controllers: controllers.into_iter().collect(),
         module_hash,
     })
-}
-
-fn execute_production_root_addition(
-    profile_path: &Path,
-    expected_controller_text: &str,
-    expected_module_sha256: &str,
-    identity: &str,
-) -> Result<(), String> {
-    if identity != "production" || !valid_sha256(expected_module_sha256) {
-        return Err(
-            "production Root addition requires the fixed identity and module SHA-256".into(),
-        );
-    }
-    let profile: Profile = read_json(profile_path)?;
-    if profile.bridge_canister_id != PRODUCTION_BRIDGE_CANISTER
-        || profile.root_canister_id != KINIC_ROOT
-        || profile.pause_principal != expected_controller_text
-        || profile.ic_host != "https://icp-api.io"
-    {
-        return Err("production Root addition profile differs from the fixed domain".into());
-    }
-    let canister =
-        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
-    let expected_controller =
-        Principal::from_text(expected_controller_text).map_err(|error| error.to_string())?;
-    let root =
-        Principal::from_text(&profile.root_canister_id).map_err(|error| error.to_string())?;
-    let agent = mainnet_agent(&profile.ic_host, false)?;
-
-    verify_production_current_state(
-        profile_path,
-        expected_controller_text,
-        expected_module_sha256,
-        "sole-unregistered",
-    )?;
-    let before = production_upgrade_current_state_snapshot(&agent, canister)?;
-    if before.controllers != BTreeSet::from([expected_controller])
-        || !hex(&before.module_hash).eq_ignore_ascii_case(expected_module_sha256)
-    {
-        return Err(
-            "certified production controller set or module changed before Root addition".into(),
-        );
-    }
-
-    let output = Command::new("icp")
-        .args([
-            "canister",
-            "settings",
-            "update",
-            profile.bridge_canister_id.as_str(),
-            "-n",
-            "ic",
-            "--add-controller",
-            profile.root_canister_id.as_str(),
-            "--force",
-            "--identity",
-            identity,
-            "--debug",
-        ])
-        .output()
-        .map_err(|error| format!("failed to submit production Root addition: {error}"))?;
-    std::io::stdout()
-        .write_all(&output.stdout)
-        .map_err(|error| error.to_string())?;
-    std::io::stderr()
-        .write_all(&output.stderr)
-        .map_err(|error| error.to_string())?;
-
-    let postcondition = (|| -> Result<(), String> {
-        let after = production_upgrade_current_state_snapshot(&agent, canister)?;
-        validate_production_root_addition_observation(
-            &before,
-            &after,
-            expected_controller,
-            root,
-            expected_module_sha256,
-        )?;
-        verify_production_current_state(
-            profile_path,
-            expected_controller_text,
-            expected_module_sha256,
-            "joint-unregistered",
-        )
-    })();
-
-    match (output.status.success(), postcondition) {
-        (_, Ok(())) => {
-            if !output.status.success() {
-                eprintln!("controller update returned an ambiguous response; exact joint state was verified");
-            }
-            println!(
-                "production_handover=co-controller-ready module_sha256={}",
-                expected_module_sha256.to_ascii_lowercase()
-            );
-            Ok(())
-        }
-        (false, Err(error)) => Err(format!(
-            "controller update outcome is unresolved; do not retry for 6 minutes, then rerun authenticated validation: {error}"
-        )),
-        (true, Err(error)) => Err(format!(
-            "controller update returned success but the exact joint-control postcondition is absent: {error}"
-        )),
-    }
 }
 
 fn production_upgrade_request_has_time(ingress_expiry: u64) -> Result<(), String> {
@@ -8407,6 +8849,7 @@ fn expected_sns_wasm_chunks(
 fn validate_sns_upgrade_action(
     action: &SnsProposalAction,
     bridge: Principal,
+    expected_store: Principal,
     expected_module_sha256: &str,
     expected_chunk_hashes: &[Vec<u8>],
 ) -> Result<(), String> {
@@ -8422,11 +8865,11 @@ fn validate_sns_upgrade_action(
         || action.mode != Some(3)
         || action.canister_upgrade_arg.as_deref() != Some(&[68, 73, 68, 76, 0, 0])
         || action.canister_upgrade_options.is_some()
-        || chunked.store_canister_id != Some(bridge)
+        || chunked.store_canister_id != Some(expected_store)
         || chunked.chunk_hashes_list != expected_chunk_hashes
         || !hex(&chunked.wasm_module_hash).eq_ignore_ascii_case(expected_module_sha256)
     {
-        return Err("SNS upgrade proposal differs from the reviewed same-Wasm action".into());
+        return Err("SNS upgrade proposal differs from the reviewed action".into());
     }
     Ok(())
 }
@@ -8454,12 +8897,336 @@ fn verify_sns_registration_live(
     Ok(())
 }
 
+fn sns_upgrade_store(
+    bridge: Principal,
+    expected_store_text: Option<&str>,
+) -> Result<Principal, String> {
+    match expected_store_text {
+        Some(text) => {
+            let store = Principal::from_text(text).map_err(|error| error.to_string())?;
+            if store == bridge {
+                return Err("different-Wasm verification requires a separate chunk store".into());
+            }
+            Ok(store)
+        }
+        None => Ok(bridge),
+    }
+}
+
+fn validate_sns_preflight_facts(
+    root: Principal,
+    uploader: Principal,
+    controllers: &[Principal],
+    bridge_subnet: &Option<Vec<u8>>,
+    store_subnet: &Option<Vec<u8>>,
+    expected_chunks: &[Vec<u8>],
+    stored_chunks: &[Vec<u8>],
+) -> Result<(), String> {
+    let observed_controllers = controllers.iter().copied().collect::<BTreeSet<_>>();
+    if root == uploader
+        || observed_controllers.len() != controllers.len()
+        || !observed_controllers.contains(&root)
+        || !observed_controllers.contains(&uploader)
+    {
+        return Err("chunk store controllers must include SNS Root and the uploader".into());
+    }
+    if bridge_subnet.is_none() || bridge_subnet != store_subnet {
+        return Err("certified Bridge and store subnets are missing or differ".into());
+    }
+    if expected_chunks.is_empty()
+        || expected_chunks.iter().any(|hash| hash.len() != 32)
+        || stored_chunks.iter().any(|hash| hash.len() != 32)
+    {
+        return Err("chunk hash list is empty or malformed".into());
+    }
+    let stored: BTreeSet<_> = stored_chunks.iter().collect();
+    if stored.len() != stored_chunks.len()
+        || expected_chunks.iter().any(|hash| !stored.contains(hash))
+    {
+        return Err("chunk store does not contain the reviewed Wasm chunks".into());
+    }
+    Ok(())
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct SnsUpgradePreflightEvidence {
+    schema_version: u8,
+    profile_sha256: String,
+    prepared_sha256: String,
+    current_module_sha256: String,
+    candidate_module_sha256: String,
+    bridge_canister_id: String,
+    store_canister_id: String,
+    uploader_principal: String,
+    registration_proposal_id: u64,
+    subnet_id_hex: String,
+    store_controllers: Vec<String>,
+    stored_chunk_hashes: Vec<String>,
+    production_state_sha256: String,
+}
+
+fn compare_sns_upgrade_preflight(
+    approved: &SnsUpgradePreflightEvidence,
+    current: &SnsUpgradePreflightEvidence,
+) -> Result<(), String> {
+    if approved != current {
+        return Err("current SNS upgrade evidence differs from the approved observation".into());
+    }
+    Ok(())
+}
+
+fn verified_prepared_sns_upgrade(
+    bridge: Principal,
+    store: Principal,
+    wasm_path: &Path,
+    current_hash: &str,
+    candidate_hash: &str,
+    prepared_path: &Path,
+) -> Result<Vec<Vec<u8>>, String> {
+    if !valid_sha256(current_hash)
+        || !valid_sha256(candidate_hash)
+        || current_hash.eq_ignore_ascii_case(candidate_hash)
+    {
+        return Err("different-Wasm preflight requires distinct valid module hashes".into());
+    }
+    let expected_chunks = expected_sns_wasm_chunks(wasm_path, candidate_hash)?;
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("missing repository root")?;
+    let expected_node =
+        fs::read_to_string(repo.join(".node-version")).map_err(|error| error.to_string())?;
+    let version = Command::new("node")
+        .arg("--version")
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !version.status.success()
+        || String::from_utf8_lossy(&version.stdout).trim() != format!("v{}", expected_node.trim())
+    {
+        return Err("Node version differs from the pinned repository version".into());
+    }
+    let output = Command::new("node")
+        .arg(repo.join("tools/sns-proposal/handover.mjs"))
+        .arg("root-upgrade-prepare")
+        .arg(bridge.to_text())
+        .arg(store.to_text())
+        .arg(wasm_path)
+        .arg(current_hash.to_ascii_lowercase())
+        .arg(candidate_hash.to_ascii_lowercase())
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err("could not reconstruct the reviewed SNS upgrade proposal".into());
+    }
+    let expected: Value =
+        serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
+    let prepared: Value = read_json(prepared_path)?;
+    if prepared != expected {
+        return Err(
+            "reviewed SNS proposal differs from the exact candidate and chunk order".into(),
+        );
+    }
+    Ok(expected_chunks)
+}
+
+async fn certified_subnet_delegation(
+    agent: &Agent,
+    canister: Principal,
+) -> Result<Option<Vec<u8>>, String> {
+    let path = vec![
+        b"canister".to_vec().into(),
+        canister.as_slice().to_vec().into(),
+        b"controllers".to_vec().into(),
+    ];
+    let certificate = agent
+        .read_state_raw(vec![path], canister)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(certificate
+        .delegation
+        .map(|delegation| delegation.subnet_id))
+}
+
+async fn sns_store_observation(
+    agent: &Agent,
+    bridge: Principal,
+    store: Principal,
+) -> Result<
+    (
+        Vec<Principal>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        Vec<Vec<u8>>,
+    ),
+    String,
+> {
+    let controllers = agent
+        .read_state_canister_controllers(store)
+        .await
+        .map_err(|error| error.to_string())?;
+    let bridge_subnet = certified_subnet_delegation(agent, bridge).await?;
+    let store_subnet = certified_subnet_delegation(agent, store).await?;
+    let argument = Encode!(&ManagementStoredChunksArgument { canister_id: store })
+        .map_err(|error| error.to_string())?;
+    let raw = agent
+        .update(&Principal::management_canister(), "stored_chunks")
+        .with_effective_canister_id(store)
+        .with_arg(argument)
+        .call_and_wait()
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut chunks: Vec<Vec<u8>> = Decode!(&raw, Vec<ManagementChunkHash>)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|chunk| chunk.hash)
+        .collect();
+    chunks.sort();
+    Ok((controllers, bridge_subnet, store_subnet, chunks))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_sns_root_upgrade_preflight(
+    profile_path: &Path,
+    current_hash: &str,
+    candidate_hash: &str,
+    wasm_path: &Path,
+    store_text: &str,
+    uploader_text: &str,
+    pem_path: &Path,
+    registration_id: u64,
+    prepared_path: &Path,
+    mode: &str,
+    evidence_path: &Path,
+) -> Result<(), String> {
+    if !matches!(mode, "capture" | "compare") || registration_id == 0 {
+        return Err("preflight requires capture or compare and a registration proposal ID".into());
+    }
+    let profile_bytes = fs::read(profile_path).map_err(|error| error.to_string())?;
+    let profile: Profile =
+        serde_json::from_slice(&profile_bytes).map_err(|error| error.to_string())?;
+    validate_profile(&profile, true)?;
+    let bridge =
+        Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    let store = sns_upgrade_store(bridge, Some(store_text))?;
+    let uploader = Principal::from_text(uploader_text).map_err(|error| error.to_string())?;
+    let root = Principal::from_text(KINIC_ROOT).map_err(|error| error.to_string())?;
+    if store == Principal::management_canister()
+        || store == Principal::anonymous()
+        || uploader == root
+    {
+        return Err("invalid SNS chunk store or uploader".into());
+    }
+    let prepared_bytes = fs::read(prepared_path).map_err(|error| error.to_string())?;
+    let expected_chunks = verified_prepared_sns_upgrade(
+        bridge,
+        store,
+        wasm_path,
+        current_hash,
+        candidate_hash,
+        prepared_path,
+    )?;
+    let (agent, _) = production_upgrade_agent(&profile.ic_host, uploader, pem_path)?;
+    let before = production_upgrade_current_state_snapshot(&agent, bridge)?;
+    verify_sns_registration_live(profile_path, current_hash, registration_id)?;
+    let first = async_runtime()?.block_on(sns_store_observation(&agent, bridge, store))?;
+    validate_sns_preflight_facts(
+        root,
+        uploader,
+        &first.0,
+        &first.1,
+        &first.2,
+        &expected_chunks,
+        &first.3,
+    )?;
+    let second = async_runtime()?.block_on(sns_store_observation(&agent, bridge, store))?;
+    validate_sns_preflight_facts(
+        root,
+        uploader,
+        &second.0,
+        &second.1,
+        &second.2,
+        &expected_chunks,
+        &second.3,
+    )?;
+    let mut first_controllers: Vec<_> = first.0.iter().map(Principal::to_text).collect();
+    let mut second_controllers: Vec<_> = second.0.iter().map(Principal::to_text).collect();
+    first_controllers.sort();
+    second_controllers.sort();
+    if first_controllers != second_controllers
+        || first.1 != second.1
+        || first.2 != second.2
+        || first.3 != second.3
+    {
+        return Err("authenticated chunk store observation changed during preflight".into());
+    }
+    let after = production_upgrade_current_state_snapshot(&agent, bridge)?;
+    ensure_production_observation_unchanged(&before, &after)?;
+    verify_production_current_profile_state(&profile, KINIC_ROOT, current_hash, "root-registered")?;
+    let final_state = production_upgrade_current_state_snapshot(&agent, bridge)?;
+    ensure_production_observation_unchanged(&before, &final_state)?;
+    let final_store = async_runtime()?.block_on(sns_store_observation(&agent, bridge, store))?;
+    validate_sns_preflight_facts(
+        root,
+        uploader,
+        &final_store.0,
+        &final_store.1,
+        &final_store.2,
+        &expected_chunks,
+        &final_store.3,
+    )?;
+    let mut final_controllers: Vec<_> = final_store.0.iter().map(Principal::to_text).collect();
+    final_controllers.sort();
+    if first_controllers != final_controllers
+        || first.1 != final_store.1
+        || first.2 != final_store.2
+        || first.3 != final_store.3
+    {
+        return Err("authenticated chunk store changed before preflight completed".into());
+    }
+    if profile_bytes != fs::read(profile_path).map_err(|error| error.to_string())?
+        || prepared_bytes != fs::read(prepared_path).map_err(|error| error.to_string())?
+        || expected_chunks != expected_sns_wasm_chunks(wasm_path, candidate_hash)?
+    {
+        return Err("review inputs changed during SNS preflight".into());
+    }
+    let evidence = SnsUpgradePreflightEvidence {
+        schema_version: 1,
+        profile_sha256: hex(&Sha256::digest(&profile_bytes)),
+        prepared_sha256: hex(&Sha256::digest(&prepared_bytes)),
+        current_module_sha256: current_hash.to_ascii_lowercase(),
+        candidate_module_sha256: candidate_hash.to_ascii_lowercase(),
+        bridge_canister_id: bridge.to_text(),
+        store_canister_id: store.to_text(),
+        uploader_principal: uploader.to_text(),
+        registration_proposal_id: registration_id,
+        subnet_id_hex: hex(first.1.as_ref().ok_or("missing certified subnet")?),
+        store_controllers: first_controllers,
+        stored_chunk_hashes: first.3.iter().map(|hash| hex(hash)).collect(),
+        production_state_sha256: hex(&Sha256::digest(
+            serde_json::to_vec(&before).map_err(|error| error.to_string())?,
+        )),
+    };
+    if mode == "capture" {
+        write_json_new(evidence_path, &evidence)?;
+    } else {
+        let approved: SnsUpgradePreflightEvidence = read_json(evidence_path)?;
+        compare_sns_upgrade_preflight(&approved, &evidence)?;
+    }
+    println!(
+        "sns_root_upgrade_preflight={mode} current_module_sha256={}",
+        current_hash.to_ascii_lowercase()
+    );
+    Ok(())
+}
+
 fn verify_sns_upgrade_live(
     profile_path: &Path,
     expected_module_sha256: &str,
     wasm_path: &Path,
     registration_proposal_id: u64,
     upgrade_proposal_id: u64,
+    expected_store_text: Option<&str>,
 ) -> Result<(), String> {
     verify_sns_registration_live(
         profile_path,
@@ -8469,8 +9236,10 @@ fn verify_sns_upgrade_live(
     let profile: Profile = read_json(profile_path)?;
     let bridge =
         Principal::from_text(&profile.bridge_canister_id).map_err(|error| error.to_string())?;
+    let expected_store = sns_upgrade_store(bridge, expected_store_text)?;
     let governance = Principal::from_text(KINIC_GOVERNANCE).map_err(|error| error.to_string())?;
     let agent = mainnet_agent(&profile.ic_host, false)?;
+    let before = production_upgrade_current_state_snapshot(&agent, bridge)?;
     let registration = authenticated_sns_proposal(&agent, governance, registration_proposal_id)?;
     let (handover_at, _) = verified_executed_proposal(registration, registration_proposal_id)?;
     let upgrade = authenticated_sns_proposal(&agent, governance, upgrade_proposal_id)?;
@@ -8479,6 +9248,7 @@ fn verify_sns_upgrade_live(
     validate_sns_upgrade_action(
         &action,
         bridge,
+        expected_store,
         expected_module_sha256,
         &expected_chunk_hashes,
     )?;
@@ -8494,8 +9264,16 @@ fn verify_sns_upgrade_live(
         .map_err(|error| error.to_string())?
         .ok_or("production Bridge has no successful release upgrade observation")?;
     validate_sns_upgrade_completion(&observation, upgrade_executed_at, handover_at, now_unix()?)?;
+    let after = production_upgrade_current_state_snapshot(&agent, bridge)?;
+    ensure_production_observation_unchanged(&before, &after)?;
+    verify_production_current_profile_state(
+        &profile,
+        KINIC_ROOT,
+        expected_module_sha256,
+        "root-registered",
+    )?;
     println!(
-        "sns_same_wasm_upgrade=verified proposal_id={} module_sha256={}",
+        "sns_upgrade=verified proposal_id={} module_sha256={}",
         upgrade_proposal_id,
         expected_module_sha256.to_ascii_lowercase()
     );
@@ -8713,7 +9491,7 @@ fn run() -> Result<(), String> {
         Some("sns-activation-payload") if args.len() == 3 => {
             println!("{}", hex(&sns_activation_payload(args[2].parse::<u64>().map_err(|_| "invalid previous operation ID")?)?));
         }
-        Some("verify-activation") if args.len() == 7 => {
+        Some("verify-activation" | "verify-root-activation") if args.len() == 7 => {
             let bundle = dao_activation_bundle(Path::new(&args[3]))?;
             if bundle.manifest.test_only {
                 return Err("activation verification rejects test-only bundles".into());
@@ -8734,8 +9512,16 @@ fn run() -> Result<(), String> {
                 Path::new(&args[4]),
                 prior,
                 Path::new(&args[6]),
+                args[1] == "verify-root-activation",
             )?;
             println!("activation=verified phase={} receipt={}", args[2], args[6]);
+        }
+        Some("verify-root-activation-pending") if args.len() == 8 => {
+            let bundle = dao_activation_bundle(Path::new(&args[3]))?;
+            if bundle.manifest.test_only {
+                return Err("Root activation verification rejects test-only bundles".into());
+            }
+            verify_root_activation_pending(&args[2], &bundle, Path::new(&args[4]), Path::new(&args[5]), &args[6], Path::new(&args[7]))?;
         }
         Some("verify-controller-activation-artifact") if args.len() == 9 => {
             let bundle = validate_bundle(Path::new(&args[3]), true)?;
@@ -8826,13 +9612,13 @@ fn run() -> Result<(), String> {
                 bundle.manifest_sha256, args[4]
             );
         }
-        Some("verify-schedule-receipt-live") if args.len() == 4 => {
+        Some("verify-schedule-receipt-live" | "verify-root-schedule-receipt-live") if args.len() == 4 => {
             let bundle = dao_activation_bundle(Path::new(&args[2]))?;
             if bundle.manifest.test_only {
                 return Err("schedule receipt verification rejects test-only bundles".into());
             }
             verify_dao_live_inputs(&bundle, true)?;
-            verify_schedule_receipt_live(&bundle, Path::new(&args[3]))?;
+            verify_schedule_receipt_live(&bundle, Path::new(&args[3]), args[1] == "verify-root-schedule-receipt-live")?;
             println!(
                 "schedule_receipt=verified manifest_sha256={} receipt={}",
                 bundle.manifest_sha256, args[3]
@@ -8847,14 +9633,6 @@ fn run() -> Result<(), String> {
                 Path::new(&args[6]),
                 Path::new(&args[7]),
                 &args[8],
-            )?;
-        }
-        Some("execute-production-root-addition") if args.len() == 6 => {
-            execute_production_root_addition(
-                Path::new(&args[2]),
-                &args[3],
-                &args[4],
-                &args[5],
             )?;
         }
         Some("verify-sns-registration-live") if args.len() == 5 => {
@@ -8877,6 +9655,29 @@ fn run() -> Result<(), String> {
                 args[6]
                     .parse()
                     .map_err(|_| "invalid SNS upgrade proposal ID")?,
+                None,
+            )?;
+        }
+        Some("verify-sns-root-upgrade-live") if args.len() == 8 => {
+            verify_sns_upgrade_live(
+                Path::new(&args[2]),
+                &args[3],
+                Path::new(&args[4]),
+                args[5]
+                    .parse()
+                    .map_err(|_| "invalid SNS registration proposal ID")?,
+                args[6]
+                    .parse()
+                    .map_err(|_| "invalid SNS upgrade proposal ID")?,
+                Some(&args[7]),
+            )?;
+        }
+        Some("verify-sns-root-upgrade-preflight") if args.len() == 13 => {
+            verify_sns_root_upgrade_preflight(
+                Path::new(&args[2]), &args[3], &args[4], Path::new(&args[5]),
+                &args[6], &args[7], Path::new(&args[8]),
+                args[9].parse().map_err(|_| "invalid SNS registration proposal ID")?,
+                Path::new(&args[10]), &args[11], Path::new(&args[12]),
             )?;
         }
         Some("validate-operational-epoch-snapshot") if args.len() == 6 => {
@@ -8895,7 +9696,7 @@ fn run() -> Result<(), String> {
                 println!("epoch={} operational_config_sha256={}", epoch, operational_epoch_digest(response.trim(), ledger_fee, epoch)?);
             }
         }
-        _ => return Err("usage: bridge-profile <command> <arguments>; production commands: verify-production-current-state, execute-production-canister-upgrade, execute-production-root-addition, verify-sns-registration-live, verify-sns-upgrade-live".into()),
+        _ => return Err("usage: bridge-profile <command> <arguments>; production commands: verify-production-current-state, execute-production-canister-upgrade, verify-sns-registration-live, verify-sns-upgrade-live, verify-sns-root-upgrade-live".into()),
     }
     Ok(())
 }
@@ -8964,12 +9765,14 @@ mod tests {
         assert!(validate_sns_upgrade_action(
             &upgrade(bridge, chunks.clone(), vec![68, 73, 68, 76, 0, 0]),
             bridge,
+            bridge,
             &module_sha256,
             &chunks,
         )
         .is_ok());
         assert!(validate_sns_upgrade_action(
             &upgrade(other, chunks.clone(), vec![68, 73, 68, 76, 0, 0]),
+            bridge,
             bridge,
             &module_sha256,
             &chunks,
@@ -8978,6 +9781,7 @@ mod tests {
         assert!(validate_sns_upgrade_action(
             &upgrade(bridge, vec![vec![0x44; 32]], vec![68, 73, 68, 76, 0, 0]),
             bridge,
+            bridge,
             &module_sha256,
             &chunks,
         )
@@ -8985,10 +9789,784 @@ mod tests {
         assert!(validate_sns_upgrade_action(
             &upgrade(bridge, chunks.clone(), Vec::new()),
             bridge,
+            bridge,
             &module_sha256,
             &chunks,
         )
         .is_err());
+
+        let store = Principal::self_authenticating([0x55; 32]);
+        assert_eq!(sns_upgrade_store(bridge, None).unwrap(), bridge);
+        assert_eq!(
+            sns_upgrade_store(bridge, Some(&store.to_text())).unwrap(),
+            store
+        );
+        assert!(sns_upgrade_store(bridge, Some(&bridge.to_text())).is_err());
+        assert!(sns_upgrade_store(bridge, Some("not a principal")).is_err());
+        let mut external_store = upgrade(bridge, chunks.clone(), vec![68, 73, 68, 76, 0, 0]);
+        let SnsProposalAction::UpgradeSnsControlledCanister(ref mut value) = external_store else {
+            panic!("unexpected action");
+        };
+        value
+            .chunked_canister_wasm
+            .as_mut()
+            .unwrap()
+            .store_canister_id = Some(store);
+        assert!(validate_sns_upgrade_action(
+            &external_store,
+            bridge,
+            store,
+            &module_sha256,
+            &chunks,
+        )
+        .is_ok());
+        assert!(validate_sns_upgrade_action(
+            &external_store,
+            bridge,
+            bridge,
+            &module_sha256,
+            &chunks,
+        )
+        .is_err());
+        assert!(validate_sns_upgrade_action(
+            &external_store,
+            bridge,
+            store,
+            &module_sha256,
+            &[chunks[1].clone(), chunks[0].clone()],
+        )
+        .is_err());
+        assert!(validate_sns_upgrade_action(
+            &external_store,
+            bridge,
+            store,
+            &"44".repeat(32),
+            &chunks,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn sns_preflight_rejects_subnet_controller_and_chunk_drift() {
+        let root = Principal::from_text(KINIC_ROOT).unwrap();
+        let uploader = Principal::self_authenticating([0x31; 32]);
+        let stranger = Principal::self_authenticating([0x32; 32]);
+        let expected = vec![vec![0x10; 32], vec![0x20; 32]];
+        let controllers = vec![uploader, root];
+        let subnet = Some(vec![0x42; 10]);
+        let stored = vec![vec![0x20; 32], vec![0x10; 32], vec![0x30; 32]];
+        assert!(validate_sns_preflight_facts(
+            root,
+            uploader,
+            &controllers,
+            &subnet,
+            &subnet,
+            &expected,
+            &stored
+        )
+        .is_ok());
+        assert!(validate_sns_preflight_facts(
+            root,
+            uploader,
+            &[root],
+            &subnet,
+            &subnet,
+            &expected,
+            &stored
+        )
+        .is_err());
+        assert!(validate_sns_preflight_facts(
+            root,
+            uploader,
+            &[root, uploader, stranger],
+            &subnet,
+            &subnet,
+            &expected,
+            &stored
+        )
+        .is_ok());
+        assert!(validate_sns_preflight_facts(
+            root,
+            uploader,
+            &[root, root, uploader],
+            &subnet,
+            &subnet,
+            &expected,
+            &stored,
+        )
+        .is_err());
+        assert!(validate_sns_preflight_facts(
+            root,
+            uploader,
+            &controllers,
+            &subnet,
+            &Some(vec![0x43; 10]),
+            &expected,
+            &stored
+        )
+        .is_err());
+        assert!(validate_sns_preflight_facts(
+            root,
+            uploader,
+            &controllers,
+            &subnet,
+            &None,
+            &expected,
+            &stored
+        )
+        .is_err());
+        assert!(validate_sns_preflight_facts(
+            root,
+            uploader,
+            &controllers,
+            &subnet,
+            &subnet,
+            &expected,
+            &stored[..1]
+        )
+        .is_err());
+        assert!(validate_sns_preflight_facts(
+            root,
+            uploader,
+            &controllers,
+            &subnet,
+            &subnet,
+            &expected,
+            &[vec![1; 31]]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn root_activation_rejects_other_controllers_and_module_drift() {
+        let profile = valid_profile();
+        let root = Principal::from_text(KINIC_ROOT).unwrap();
+        let other = Principal::self_authenticating([0x31; 32]);
+        let hash = decode_hex(&profile.bridge_canister_wasm_sha256).unwrap();
+        assert!(validate_root_activation_management_snapshot(&profile, &[root], &hash).is_ok());
+        assert!(validate_root_activation_management_snapshot(&profile, &[other], &hash).is_err());
+        assert!(
+            validate_root_activation_management_snapshot(&profile, &[root, other], &hash).is_err()
+        );
+        assert!(validate_root_activation_management_snapshot(&profile, &[root], &[0; 32]).is_err());
+    }
+
+    #[test]
+    fn root_pending_activation_binds_signed_transaction_and_paused_state() {
+        let mut profile = valid_profile();
+        let instance: [u8; 32] = decode_hex(&profile.deployment_instance_id)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let salt = initial_activation_salt(instance, 7);
+        let operation_id = initial_activation_operation_id(
+            decode_address(&profile.bridge_contract).unwrap(),
+            salt,
+        );
+        let mut artifact = signed_activation_artifact(&profile, salt, 0, false);
+        profile.governance_operator = artifact.sender.clone();
+        artifact.kind = DirectActivationKind::ScheduleActivation(DirectActivationOperation {
+            operation_id: format!("0x{}", hex(&operation_id)),
+            salt: format!("0x{}", hex(&salt)),
+        });
+        artifact.signed_at_ns = "100000000000".into();
+        let live = PendingActivationArtifactView {
+            operation_id: 7,
+            kind: PendingActivationKindView::ScheduleActivation(ActivationOperationStatusView {
+                operation_id: operation_id.to_vec(),
+                salt: salt.to_vec(),
+            }),
+            raw_transaction: decode_hex(&artifact.raw_transaction).unwrap(),
+            transaction_hash: decode_hex(&artifact.transaction_hash).unwrap(),
+            generation: 0,
+            signed_at_ns: 100_000_000_000,
+        };
+        let encoded = Encode!(&PendingActivationArtifactsView::Ok(vec![live.clone()])).unwrap();
+        let PendingActivationArtifactsView::Ok(decoded) =
+            Decode!(&encoded, PendingActivationArtifactsView).unwrap()
+        else {
+            panic!("pending activation decode failed")
+        };
+        assert_eq!(decoded[0].raw_transaction, live.raw_transaction);
+        #[allow(dead_code)]
+        #[derive(CandidType)]
+        struct FullRotation {
+            independent_canceller: Vec<u8>,
+            salt: Vec<u8>,
+            generation: u32,
+            operation_id: Vec<u8>,
+            bridge_signer: Vec<u8>,
+            runtime_administrator: Vec<u8>,
+            governance_operator: Vec<u8>,
+        }
+        #[allow(dead_code)]
+        #[derive(CandidType)]
+        struct FullCancel {
+            operation_id: Vec<u8>,
+        }
+        #[allow(dead_code)]
+        #[derive(CandidType)]
+        struct FullFee {
+            value: candid::Nat,
+        }
+        #[allow(dead_code)]
+        #[derive(CandidType)]
+        enum FullKind {
+            ScheduleActivation(ActivationOperationStatusView),
+            ExecuteActivation(ActivationOperationStatusView),
+            PauseDepositMints,
+            PauseWithdrawals,
+            CancelTimelock(FullCancel),
+            SetServiceFee(FullFee),
+            ScheduleControlPlaneRotation(FullRotation),
+            ExecuteControlPlaneRotation(FullRotation),
+        }
+        #[derive(CandidType)]
+        struct FullArtifact {
+            operation_id: u64,
+            kind: FullKind,
+            raw_transaction: Vec<u8>,
+            transaction_hash: Vec<u8>,
+            generation: u8,
+            signed_at_ns: u64,
+            chain_id: u64,
+            nonce: u64,
+            sender: Vec<u8>,
+            target: Vec<u8>,
+            calldata: Vec<u8>,
+            gas_limit: candid::Nat,
+            max_fee_per_gas: candid::Nat,
+            max_priority_fee_per_gas: candid::Nat,
+        }
+        #[allow(dead_code)]
+        #[derive(CandidType)]
+        enum FullResult {
+            Ok(Vec<FullArtifact>),
+            Err(Reserved),
+        }
+        let complete = FullArtifact {
+            operation_id: live.operation_id,
+            kind: FullKind::ScheduleActivation(ActivationOperationStatusView {
+                operation_id: operation_id.to_vec(),
+                salt: salt.to_vec(),
+            }),
+            raw_transaction: live.raw_transaction.clone(),
+            transaction_hash: live.transaction_hash.clone(),
+            generation: live.generation,
+            signed_at_ns: live.signed_at_ns,
+            chain_id: profile.chain_id,
+            nonce: 7,
+            sender: decode_hex(&artifact.sender).unwrap(),
+            target: decode_hex(&artifact.target).unwrap(),
+            calldata: decode_hex(&artifact.calldata).unwrap(),
+            gas_limit: candid::Nat::from(100_000u64),
+            max_fee_per_gas: candid::Nat::from(20u64),
+            max_priority_fee_per_gas: candid::Nat::from(2u64),
+        };
+        let encoded = Encode!(&FullResult::Ok(vec![complete])).unwrap();
+        let PendingActivationArtifactsView::Ok(decoded) =
+            Decode!(&encoded, PendingActivationArtifactsView).unwrap()
+        else {
+            panic!("deployed pending response decode failed")
+        };
+        assert_eq!(decoded[0].raw_transaction, live.raw_transaction);
+        let mut status = ActivationStatusView {
+            deposits_paused: true,
+            pending_timelock_operation: Some(ActivationOperationStatusView {
+                operation_id: operation_id.to_vec(),
+                salt: salt.to_vec(),
+            }),
+            last_confirmed_activation: Some(ActivationConfirmationStatusView {
+                phase: "execute".into(),
+                governance_operation_id: 6,
+                timelock_operation_id: vec![2; 32],
+                transaction_hash: vec![3; 32],
+                receipt_block_number: 1,
+                generation: 0,
+                signed_at_ns: 1,
+            }),
+        };
+        let check = |status: &ActivationStatusView,
+                     live: &[PendingActivationArtifactView],
+                     artifact: &DirectActivationArtifact| {
+            validate_root_pending_activation(
+                "schedule", &profile, 6, 99, 101, 102, status, live, artifact,
+            )
+        };
+        assert!(check(&status, std::slice::from_ref(&live), &artifact).is_ok());
+        let mut wrong = live.clone();
+        wrong.raw_transaction[0] ^= 1;
+        assert!(check(&status, &[wrong], &artifact).is_err());
+        let mut wrong = live.clone();
+        wrong.operation_id = 8;
+        assert!(check(&status, &[wrong], &artifact).is_err());
+        let mut wrong = live.clone();
+        wrong.signed_at_ns = 102_000_000_000;
+        assert!(check(&status, &[wrong], &artifact).is_err());
+        assert!(check(&status, &[live.clone(), live.clone()], &artifact).is_err());
+        let mut unrelated = live.clone();
+        unrelated.operation_id = 8;
+        unrelated.kind = PendingActivationKindView::PauseWithdrawals;
+        assert!(check(&status, &[unrelated, live.clone()], &artifact).is_ok());
+        status.pending_timelock_operation.as_mut().unwrap().salt[0] ^= 1;
+        assert!(check(&status, std::slice::from_ref(&live), &artifact).is_err());
+        status.pending_timelock_operation.as_mut().unwrap().salt[0] ^= 1;
+        status.deposits_paused = false;
+        assert!(check(&status, &[live], &artifact).is_err());
+    }
+
+    #[test]
+    fn root_pending_proposal_rejects_action_and_registry_mismatch() {
+        let bridge = Principal::from_text(PRODUCTION_BRIDGE_CANISTER).unwrap();
+        let payload = sns_activation_payload(6).unwrap();
+        let proposal = |id, executed_at, function_id, payload: Vec<u8>| {
+            Encode!(&GetProposalResponse {
+                result: Some(GetProposalResult::Proposal(Box::new(ProposalDataView {
+                    id: Some(ProposalId { id }),
+                    failure_reason: None,
+                    failed_timestamp_seconds: 0,
+                    decided_timestamp_seconds: 100,
+                    executed_timestamp_seconds: executed_at,
+                    proposal: Some(ProposalView {
+                        summary: String::new(),
+                        action: Some(SnsProposalAction::ExecuteGenericNervousSystemFunction(
+                            ExecuteGenericFunctionView {
+                                function_id,
+                                payload
+                            }
+                        ))
+                    }),
+                }))),
+            })
+            .unwrap()
+        };
+        let registry = |target: Principal, method: &str| {
+            Encode!(&ListNervousSystemFunctionsResponseView {
+                functions: vec![NervousSystemFunctionView {
+                    id: 1002,
+                    function_type: Some(FunctionTypeView::GenericNervousSystemFunction(
+                        GenericNervousSystemFunctionView {
+                            target_canister_id: Some(target),
+                            target_method_name: Some(method.into()),
+                            validator_canister_id: Some(bridge),
+                            validator_method_name: Some("validate_sns_schedule_activation".into()),
+                        }
+                    ))
+                }],
+            })
+            .unwrap()
+        };
+        let valid_proposal = proposal(41, 101, 1002, payload.clone());
+        let valid_registry = registry(bridge, "sns_schedule_activation");
+        let check = |p: &[u8], r: &[u8]| {
+            validate_authenticated_root_proposal(
+                p,
+                r,
+                41,
+                1002,
+                &payload,
+                bridge,
+                "sns_schedule_activation",
+                "validate_sns_schedule_activation",
+                99,
+                102,
+            )
+        };
+        assert_eq!(check(&valid_proposal, &valid_registry).unwrap(), 101);
+        assert!(check(&proposal(42, 101, 1002, payload.clone()), &valid_registry).is_err());
+        assert!(check(&proposal(41, 0, 1002, payload.clone()), &valid_registry).is_err());
+        assert!(check(&proposal(41, 101, 1003, payload.clone()), &valid_registry).is_err());
+        assert!(check(&proposal(41, 101, 1002, vec![0]), &valid_registry).is_err());
+        assert!(check(
+            &valid_proposal,
+            &registry(Principal::anonymous(), "sns_schedule_activation")
+        )
+        .is_err());
+        assert!(check(&valid_proposal, &registry(bridge, "sns_execute_activation")).is_err());
+        let duplicated = Encode!(&ListNervousSystemFunctionsResponseView {
+            functions: vec![
+                NervousSystemFunctionView {
+                    id: 1002,
+                    function_type: Some(FunctionTypeView::GenericNervousSystemFunction(
+                        GenericNervousSystemFunctionView {
+                            target_canister_id: Some(bridge),
+                            target_method_name: Some("sns_schedule_activation".into()),
+                            validator_canister_id: Some(bridge),
+                            validator_method_name: Some("validate_sns_schedule_activation".into()),
+                        }
+                    ))
+                },
+                NervousSystemFunctionView {
+                    id: 1002,
+                    function_type: None
+                },
+            ],
+        })
+        .unwrap();
+        assert!(check(&valid_proposal, &duplicated).is_err());
+    }
+
+    #[test]
+    fn root_execute_requires_the_exact_confirmed_schedule() {
+        let mut profile = valid_profile();
+        let salt = [0x31; 32];
+        let operation_id = initial_activation_operation_id(
+            decode_address(&profile.bridge_contract).unwrap(),
+            salt,
+        );
+        let mut artifact =
+            signed_activation_artifact_for_phase(&profile, salt, 0, false, "execute");
+        profile.governance_operator = artifact.sender.clone();
+        artifact.kind = DirectActivationKind::ExecuteActivation(DirectActivationOperation {
+            operation_id: format!("0x{}", hex(&operation_id)),
+            salt: format!("0x{}", hex(&salt)),
+        });
+        artifact.signed_at_ns = "100000000000".into();
+        let live = PendingActivationArtifactView {
+            operation_id: 7,
+            kind: PendingActivationKindView::ExecuteActivation(ActivationOperationStatusView {
+                operation_id: operation_id.to_vec(),
+                salt: salt.to_vec(),
+            }),
+            raw_transaction: decode_hex(&artifact.raw_transaction).unwrap(),
+            transaction_hash: decode_hex(&artifact.transaction_hash).unwrap(),
+            generation: 0,
+            signed_at_ns: 100_000_000_000,
+        };
+        let mut status = ActivationStatusView {
+            deposits_paused: true,
+            pending_timelock_operation: Some(ActivationOperationStatusView {
+                operation_id: operation_id.to_vec(),
+                salt: salt.to_vec(),
+            }),
+            last_confirmed_activation: Some(ActivationConfirmationStatusView {
+                phase: "schedule".into(),
+                governance_operation_id: 6,
+                timelock_operation_id: operation_id.to_vec(),
+                transaction_hash: vec![3; 32],
+                receipt_block_number: 1,
+                generation: 0,
+                signed_at_ns: 1,
+            }),
+        };
+        let check = |status: &ActivationStatusView| {
+            validate_root_pending_activation(
+                "execute",
+                &profile,
+                6,
+                99,
+                101,
+                102,
+                status,
+                std::slice::from_ref(&live),
+                &artifact,
+            )
+        };
+        assert!(check(&status).is_ok());
+        status.pending_timelock_operation.as_mut().unwrap().salt[0] ^= 1;
+        assert!(check(&status).is_err());
+        status.pending_timelock_operation.as_mut().unwrap().salt[0] ^= 1;
+        status
+            .last_confirmed_activation
+            .as_mut()
+            .unwrap()
+            .timelock_operation_id[0] ^= 1;
+        assert!(check(&status).is_err());
+    }
+
+    #[test]
+    fn root_activation_evidence_rejects_changes_after_review() {
+        let value = serde_json::json!({"schema_version":1, "phase":"schedule", "gate_b_manifest_sha256":"11",
+            "bridge_canister_id":"bridge", "certified_module_sha256":"22", "proposal_id":41,
+            "function_id":1002, "proposal_executed_at_unix":101, "submission_sha256":"33",
+            "artifact_sha256":"44", "production_state_sha256":"55"});
+        let approved: RootActivationPendingEvidence =
+            serde_json::from_value(value.clone()).unwrap();
+        let same: RootActivationPendingEvidence = serde_json::from_value(value.clone()).unwrap();
+        assert!(compare_root_activation_evidence(&approved, &same).is_ok());
+        for field in [
+            "phase",
+            "gate_b_manifest_sha256",
+            "bridge_canister_id",
+            "certified_module_sha256",
+            "submission_sha256",
+            "artifact_sha256",
+            "production_state_sha256",
+        ] {
+            let mut changed = value.clone();
+            changed[field] = serde_json::json!("changed");
+            let current: RootActivationPendingEvidence = serde_json::from_value(changed).unwrap();
+            assert!(
+                compare_root_activation_evidence(&approved, &current).is_err(),
+                "{field}"
+            );
+        }
+        for field in ["proposal_id", "function_id", "proposal_executed_at_unix"] {
+            let mut changed = value.clone();
+            changed[field] = serde_json::json!(999);
+            let current: RootActivationPendingEvidence = serde_json::from_value(changed).unwrap();
+            assert!(
+                compare_root_activation_evidence(&approved, &current).is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn root_recovery_snapshot_requires_matching_paused_v36_state() {
+        let profile = valid_profile();
+        let root = Principal::from_text(KINIC_ROOT).unwrap();
+        let ttl = 600;
+        let epoch = 1;
+        let config_hash = expected_operational_config_sha256(&profile, ttl, epoch).unwrap();
+        let rpc_hash = canonical_sha256(&Vec::<String>::new()).unwrap();
+        let mut runtime = RuntimeBindingView {
+            base_chain_id: profile.chain_id,
+            bridge_contract: decode_address(&profile.bridge_contract).unwrap().to_vec(),
+            expected_bridge_runtime_sha256: decode_hex(&profile.bridge_runtime_bytecode_sha256)
+                .unwrap(),
+            timelock_contract: decode_address(&profile.timelock.address).unwrap().to_vec(),
+            deployment_instance_id: decode_hex(&profile.deployment_instance_id).unwrap(),
+            minimum_withdrawal_id: decode_hex(&profile.minimum_withdrawal_id).unwrap(),
+            ledger_canister_id: Principal::from_text(&profile.ledger_canister_id).unwrap(),
+            index_canister_id: Principal::from_text(&profile.index_canister_id).unwrap(),
+            schema_version: CURRENT_STABLE_SCHEMA_VERSION,
+            expected_bridge_signer: decode_address(&profile.expected_bridge_signer)
+                .unwrap()
+                .to_vec(),
+            evm_rpc_canister_id: Principal::from_text(&profile.evm_rpc_canister_id).unwrap(),
+            rpc_provider_urls_sha256: rpc_hash.to_vec(),
+            operational_config_sha256: config_hash.to_vec(),
+        };
+        let attestation = ActivationAttestationView {
+            chain_id: profile.chain_id,
+            finalized_block_number: 1,
+            finalized_block_hash: vec![1; 32],
+            observed_at_ns: 1,
+            bridge_signer: decode_address(&profile.expected_bridge_signer)
+                .unwrap()
+                .to_vec(),
+            bridge_runtime_sha256: decode_hex(&profile.bridge_runtime_bytecode_sha256).unwrap(),
+            deposits_paused: false,
+            withdrawals_paused: false,
+            bridge_timelock: decode_address(&profile.timelock.address).unwrap().to_vec(),
+            runtime_administrator: decode_address(&profile.runtime_administrator)
+                .unwrap()
+                .to_vec(),
+            timelock_admin: decode_address(&profile.timelock.address).unwrap().to_vec(),
+            timelock_proposer: decode_address(&profile.governance_operator)
+                .unwrap()
+                .to_vec(),
+            timelock_canceller: decode_address(&profile.independent_canceller)
+                .unwrap()
+                .to_vec(),
+            timelock_executor: decode_address(&profile.governance_operator)
+                .unwrap()
+                .to_vec(),
+            timelock_runtime_code_hash: decode_hex(&profile.timelock.runtime_code_hash).unwrap(),
+            bridge_approved_timelock_runtime_code_hash: decode_hex(
+                &profile.timelock.runtime_code_hash,
+            )
+            .unwrap(),
+            timelock_minimum_delay_seconds: profile.timelock.minimum_delay_seconds,
+            bsns_address: decode_address(&profile.bsns_contract).unwrap().to_vec(),
+            bsns_runtime_sha256: decode_hex(&profile.bsns_runtime_bytecode_sha256).unwrap(),
+            bsns_name: "KINIC".into(),
+            bsns_symbol: "KINIC".into(),
+            bsns_decimals: profile.decimals,
+            bsns_bridge: decode_address(&profile.bridge_contract).unwrap().to_vec(),
+            base_service_fee: profile.parameters.service_fee,
+        };
+        #[derive(CandidType)]
+        enum ConfigResult {
+            Ok(OperationalConfigView),
+        }
+        let config = operational_config_binding(&profile, ttl, epoch)
+            .unwrap()
+            .operational_config;
+        let status = BridgeStatusLiveView {
+            reserve: ReserveStatusView { sufficient: true },
+            deposits_paused: true,
+            mint_authorization_ttl_seconds: ttl,
+            mint_authorization_epoch: epoch,
+            counts: ProductionStatusCountsView {
+                deposits: 0,
+                withdrawals: 0,
+                reconciliation_holds: 0,
+                pending_ledger_operations: 0,
+                reserved_deposit_mint_amount: 0,
+                reserved_deposit_mint_operations: 0,
+                retained_audit_events: 0,
+                pruned_audit_events: 0,
+                retained_deposit_index_entries: 0,
+            },
+        };
+        let activation = ActivationStatusView {
+            deposits_paused: true,
+            pending_timelock_operation: None,
+            last_confirmed_activation: Some(ActivationConfirmationStatusView {
+                phase: "execute".into(),
+                governance_operation_id: 6,
+                timelock_operation_id: vec![1; 32],
+                transaction_hash: vec![2; 32],
+                receipt_block_number: 1,
+                generation: 0,
+                signed_at_ns: 1,
+            }),
+        };
+        let mut snapshot = ProductionUpgradeCurrentStateSnapshot {
+            lifecycle: Encode!(&ProductionLifecycleResultView::Ok(
+                ProductionLifecycleView::Activated
+            ))
+            .unwrap(),
+            activation_attestation: Encode!(&ActivationAttestationResultView::Ok(Box::new(
+                attestation
+            )))
+            .unwrap(),
+            activation_status: Encode!(&ActivationStatusResultView::Ok(activation)).unwrap(),
+            runtime_binding: Encode!(&runtime).unwrap(),
+            bridge_status: status,
+            pending_governance: Encode!(&PendingActivationArtifactsView::Ok(vec![])).unwrap(),
+            withdrawal_index_probe: Encode!(&ProductionUiHistoryResult::Ok(Reserved)).unwrap(),
+            operational_config: Encode!(&ConfigResult::Ok(config)).unwrap(),
+            control_plane_addresses: Encode!(&ControlPlaneAddressesResultView::Ok(
+                ControlPlaneAddressesCallView {
+                    bridge_signer: decode_address(&profile.expected_bridge_signer)
+                        .unwrap()
+                        .to_vec(),
+                    governance_operator: decode_address(&profile.governance_operator)
+                        .unwrap()
+                        .to_vec(),
+                    runtime_administrator: decode_address(&profile.runtime_administrator)
+                        .unwrap()
+                        .to_vec(),
+                    independent_canceller: decode_address(&profile.independent_canceller)
+                        .unwrap()
+                        .to_vec(),
+                }
+            ))
+            .unwrap(),
+            storage_integrity: Encode!(&StorageIntegrityResultView::Ok("ok".into())).unwrap(),
+            controllers: BTreeSet::from([root]),
+            module_hash: decode_hex(&profile.bridge_canister_wasm_sha256).unwrap(),
+        };
+        assert!(validate_root_recovery_snapshot(&profile, &snapshot).is_ok());
+        let good = snapshot.clone();
+        snapshot.bridge_status.deposits_paused = false;
+        assert!(validate_root_recovery_snapshot(&profile, &snapshot).is_err());
+        snapshot = good.clone();
+        snapshot.storage_integrity =
+            Encode!(&StorageIntegrityResultView::Ok("bad".into())).unwrap();
+        assert!(validate_root_recovery_snapshot(&profile, &snapshot).is_err());
+        snapshot = good.clone();
+        snapshot.withdrawal_index_probe =
+            Encode!(&ProductionUiHistoryResult::Err(Reserved)).unwrap();
+        assert!(validate_root_recovery_snapshot(&profile, &snapshot).is_err());
+        snapshot = good.clone();
+        runtime.schema_version = 35;
+        snapshot.runtime_binding = Encode!(&runtime).unwrap();
+        assert!(validate_root_recovery_snapshot(&profile, &snapshot).is_err());
+        snapshot = good.clone();
+        runtime.schema_version = 36;
+        runtime.expected_bridge_runtime_sha256 = vec![0; 32];
+        snapshot.runtime_binding = Encode!(&runtime).unwrap();
+        assert!(validate_root_recovery_snapshot(&profile, &snapshot).is_err());
+    }
+
+    #[test]
+    fn sns_preflight_rejects_changed_approved_evidence() {
+        let value = serde_json::json!({
+            "schema_version": 1, "profile_sha256": "11", "prepared_sha256": "22",
+            "current_module_sha256": "33", "candidate_module_sha256": "44",
+            "bridge_canister_id": "bridge", "store_canister_id": "store",
+            "uploader_principal": "uploader", "registration_proposal_id": 1,
+            "subnet_id_hex": "55", "store_controllers": ["root", "uploader"],
+            "stored_chunk_hashes": ["66"], "production_state_sha256": "77"
+        });
+        let approved: SnsUpgradePreflightEvidence = serde_json::from_value(value.clone()).unwrap();
+        let equal: SnsUpgradePreflightEvidence = serde_json::from_value(value.clone()).unwrap();
+        assert!(compare_sns_upgrade_preflight(&approved, &equal).is_ok());
+        for field in [
+            "profile_sha256",
+            "prepared_sha256",
+            "current_module_sha256",
+            "candidate_module_sha256",
+            "bridge_canister_id",
+            "store_canister_id",
+            "uploader_principal",
+            "subnet_id_hex",
+            "production_state_sha256",
+        ] {
+            let mut changed = value.clone();
+            changed[field] = serde_json::json!("changed");
+            let current: SnsUpgradePreflightEvidence = serde_json::from_value(changed).unwrap();
+            assert!(
+                compare_sns_upgrade_preflight(&approved, &current).is_err(),
+                "{field}"
+            );
+        }
+        for field in ["store_controllers", "stored_chunk_hashes"] {
+            let mut changed = value.clone();
+            changed[field] = serde_json::json!(["changed"]);
+            let current: SnsUpgradePreflightEvidence = serde_json::from_value(changed).unwrap();
+            assert!(
+                compare_sns_upgrade_preflight(&approved, &current).is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn sns_preflight_reconstructs_the_complete_reviewed_proposal() {
+        let dir = env::temp_dir().join(format!("bridge-sns-preflight-{}", process::id()));
+        fs::create_dir(&dir).unwrap();
+        let wasm_path = dir.join("candidate.wasm");
+        let prepared_path = dir.join("prepared.json");
+        let wasm = [0, 97, 115, 109, 1, 0, 0, 0];
+        fs::write(&wasm_path, wasm).unwrap();
+        let candidate = hex(&Sha256::digest(wasm));
+        let current = "11".repeat(32);
+        let bridge = Principal::from_text(PRODUCTION_BRIDGE_CANISTER).unwrap();
+        let store = Principal::self_authenticating([0x55; 32]);
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let output = Command::new("node")
+            .arg(repo.join("tools/sns-proposal/handover.mjs"))
+            .arg("root-upgrade-prepare")
+            .arg(bridge.to_text())
+            .arg(store.to_text())
+            .arg(&wasm_path)
+            .arg(&current)
+            .arg(&candidate)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        fs::write(&prepared_path, &output.stdout).unwrap();
+        assert!(verified_prepared_sns_upgrade(
+            bridge,
+            store,
+            &wasm_path,
+            &current,
+            &candidate,
+            &prepared_path
+        )
+        .is_ok());
+        let mut prepared: Value = serde_json::from_slice(&output.stdout).unwrap();
+        prepared["upgrade_proposal"] = serde_json::json!("changed");
+        fs::write(&prepared_path, serde_json::to_vec(&prepared).unwrap()).unwrap();
+        assert!(verified_prepared_sns_upgrade(
+            bridge,
+            store,
+            &wasm_path,
+            &current,
+            &candidate,
+            &prepared_path
+        )
+        .is_err());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -9067,8 +10645,22 @@ mod tests {
         value: u128,
         nonempty_access_list: bool,
     ) -> DirectActivationArtifact {
+        signed_activation_artifact_for_phase(profile, salt, value, nonempty_access_list, "schedule")
+    }
+
+    fn signed_activation_artifact_for_phase(
+        profile: &Profile,
+        salt: [u8; 32],
+        value: u128,
+        nonempty_access_list: bool,
+        phase: &str,
+    ) -> DirectActivationArtifact {
         let calldata = initial_activation_calldata(
-            "schedule_activation",
+            if phase == "execute" {
+                "execute_activation"
+            } else {
+                "schedule_activation"
+            },
             decode_address(&profile.bridge_contract).unwrap(),
             salt,
             profile.timelock.minimum_delay_seconds,
@@ -9118,10 +10710,17 @@ mod tests {
         let sender_hash = keccak256(&public_key.as_bytes()[1..]);
         DirectActivationArtifact {
             operation_id: "7".into(),
-            kind: DirectActivationKind::ScheduleActivation(DirectActivationOperation {
-                operation_id: format!("0x{}", "11".repeat(32)),
-                salt: format!("0x{}", hex(&salt)),
-            }),
+            kind: if phase == "execute" {
+                DirectActivationKind::ExecuteActivation(DirectActivationOperation {
+                    operation_id: format!("0x{}", "11".repeat(32)),
+                    salt: format!("0x{}", hex(&salt)),
+                })
+            } else {
+                DirectActivationKind::ScheduleActivation(DirectActivationOperation {
+                    operation_id: format!("0x{}", "11".repeat(32)),
+                    salt: format!("0x{}", hex(&salt)),
+                })
+            },
             chain_id: profile.chain_id.to_string(),
             sender: format!("0x{}", hex(&sender_hash[12..])),
             nonce: "7".into(),
@@ -9901,6 +11500,10 @@ mod tests {
             independent_canceller: decode_hex(&profile.independent_canceller).unwrap(),
         };
         assert!(validate_control_plane_addresses(&profile, &receipt, &observed).is_ok());
+        let raw = Encode!(&ControlPlaneAddressesResultView::Ok(observed.clone())).unwrap();
+        assert!(validate_current_control_plane_response(&profile, &raw).is_ok());
+        let unavailable = Encode!(&ControlPlaneAddressesResultView::Err(Reserved)).unwrap();
+        assert!(validate_current_control_plane_response(&profile, &unavailable).is_err());
 
         for index in 0..4 {
             let mut drifted = observed.clone();
@@ -9911,6 +11514,8 @@ mod tests {
                 _ => drifted.independent_canceller[0] ^= 1,
             }
             assert!(validate_control_plane_addresses(&profile, &receipt, &drifted).is_err());
+            let raw = Encode!(&ControlPlaneAddressesResultView::Ok(drifted)).unwrap();
+            assert!(validate_current_control_plane_response(&profile, &raw).is_err());
         }
 
         let mut reordered = observed.clone();
@@ -10912,10 +12517,36 @@ mod tests {
             controllers: expected_controllers.clone(),
             module_hash: module.clone(),
         };
+        assert!(ensure_production_observation_unchanged(&snapshot, &snapshot).is_ok());
+        #[derive(CandidType)]
+        struct RootResponseForTest {
+            dapps: Vec<Principal>,
+            archives: Vec<Principal>,
+        }
+        let bridge = Principal::self_authenticating([44]);
+        let other = Principal::self_authenticating([45]);
+        let root_before = Encode!(&RootResponseForTest {
+            dapps: vec![bridge, other],
+            archives: vec![]
+        })
+        .unwrap();
+        let root_after = Encode!(&RootResponseForTest {
+            dapps: vec![other, bridge],
+            archives: vec![other]
+        })
+        .unwrap();
+        assert!(
+            ensure_sns_bridge_registration_unchanged(&root_before, &root_after, bridge).is_ok()
+        );
+        let missing = Encode!(&RootResponseForTest {
+            dapps: vec![other],
+            archives: vec![]
+        })
+        .unwrap();
+        assert!(ensure_sns_bridge_registration_unchanged(&root_before, &missing, bridge).is_err());
         let mut upgraded = snapshot.clone();
         upgraded.module_hash = vec![0x66; 32];
         assert!(snapshot.preserved_across_upgrade(&upgraded));
-        assert!(!snapshot.preserved_across_root_addition(&upgraded));
         assert_eq!(
             classify_production_upgrade_observation(
                 &snapshot,
@@ -10946,30 +12577,6 @@ mod tests {
         )
         .is_err());
 
-        let mut joint = snapshot.clone();
-        let root = Principal::from_text(KINIC_ROOT).unwrap();
-        joint.controllers.insert(root);
-        assert!(snapshot.preserved_across_root_addition(&joint));
-        assert!(!snapshot.preserved_across_upgrade(&joint));
-        assert!(validate_production_root_addition_observation(
-            &snapshot,
-            &joint,
-            controller,
-            root,
-            &module_sha256,
-        )
-        .is_ok());
-        let mut third_controller = joint.clone();
-        third_controller.controllers.insert(Principal::anonymous());
-        assert!(validate_production_root_addition_observation(
-            &snapshot,
-            &third_controller,
-            controller,
-            root,
-            &module_sha256,
-        )
-        .is_err());
-
         type SnapshotDrift = Box<dyn Fn(&mut ProductionUpgradeCurrentStateSnapshot)>;
         let drifts: Vec<SnapshotDrift> = vec![
             Box::new(|value| value.lifecycle.push(0)),
@@ -10984,6 +12591,9 @@ mod tests {
             Box::new(|value| value.storage_integrity.push(0)),
         ];
         for drift in drifts {
+            let mut current = snapshot.clone();
+            drift(&mut current);
+            assert!(ensure_production_observation_unchanged(&snapshot, &current).is_err());
             let mut after_upgrade = upgraded.clone();
             drift(&mut after_upgrade);
             assert!(!snapshot.preserved_across_upgrade(&after_upgrade));
@@ -10992,18 +12602,6 @@ mod tests {
                 &after_upgrade,
                 &module_sha256,
                 &hex(&upgraded.module_hash),
-            )
-            .is_err());
-
-            let mut after_handover = joint.clone();
-            drift(&mut after_handover);
-            assert!(!snapshot.preserved_across_root_addition(&after_handover));
-            assert!(validate_production_root_addition_observation(
-                &snapshot,
-                &after_handover,
-                controller,
-                root,
-                &module_sha256,
             )
             .is_err());
         }

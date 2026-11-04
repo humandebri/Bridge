@@ -322,7 +322,6 @@ def decideFundingReconciliation
   else .wait
 
 def signatureTimeAllowed (observedTimestamp deadline : Nat) : Bool :=
-  decide (deadline ≤ 2 ^ 64 - 1 ∧ observedTimestamp ≤ (2 ^ 64 - 1) - 300 ∧
-    observedTimestamp + 300 ≤ deadline)
+  decide (deadline ≤ 2 ^ 64 - 1 ∧ observedTimestamp < deadline)
 
 end BridgeSpec

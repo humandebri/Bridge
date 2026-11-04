@@ -401,16 +401,11 @@ export function withdrawalFinalityProgress(record: BridgeProgressRecord):
   }
 }
 
-/** Finishes user interaction only; inclusion is not a terminal settlement fact. */
+/** Only Canister-recorded completion ends the deposit interaction. */
 export function isDepositInteractionComplete(record: BridgeProgressRecord): boolean {
   const issue = record.transfer ? record.transfer.issue : record.issue
   if (record.direction !== "deposit" || issue) return false
-  if (isDepositTransactionComplete(record)) return true
-  return (
-    ["base-mint-included", "base-mint-finalizing"].includes(record.phase) &&
-    record.baseTransactionOutcome === "success" &&
-    Boolean(record.transactionHash && record.receiptBlockNumber)
-  )
+  return isDepositTransactionComplete(record)
 }
 
 /** Presentation completion requires a terminal result, not merely inclusion. */

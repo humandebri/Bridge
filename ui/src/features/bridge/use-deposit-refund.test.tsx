@@ -1,4 +1,9 @@
-import { clearTransferFacts } from "@/lib/transfer-state"
+import {
+  clearTransferFacts,
+  initialTransferFacts,
+  publishTransferFacts,
+  readTransferFacts,
+} from "@/lib/transfer-state"
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type { DepositView } from "@/generated/bridge.did"
@@ -53,6 +58,33 @@ beforeEach(() => {
   })
 })
 afterEach(cleanup)
+it("allows_refund_check_despite_advisory_rpc_evidence", async function allows_refund_check_despite_advisory_rpc_evidence() {
+  for (const issue of ["processed", "conflict"] as const) {
+    clearTransferFacts()
+    mocks.request.mockClear()
+    const identity = `deposit:0x${"11".repeat(32)}`
+    publishTransferFacts({ ...initialTransferFacts(identity, "deposit", "attention"), issue })
+    mocks.request.mockResolvedValue({ ...record, state: { RefundAvailable: null } })
+    const view = renderHook(useDepositRefund)
+    await act(async () => {
+      await view.result.current.request(record)
+    })
+    expect(mocks.request).toHaveBeenCalledOnce()
+  }
+})
+it("publishes_the_canister_refund_result_after_a_browser_conflict", async function publishes_the_canister_refund_result_after_a_browser_conflict() {
+  const identity = `deposit:0x${"11".repeat(32)}`
+  publishTransferFacts({
+    ...initialTransferFacts(identity, "deposit", "attention"),
+    issue: "conflict",
+  })
+  mocks.request.mockResolvedValue({ ...record, state: { Refunded: null } })
+  const view = renderHook(useDepositRefund)
+  await act(async () => {
+    await view.result.current.request(record)
+  })
+  expect(readTransferFacts(identity)).toMatchObject({ phase: "complete", outcome: "refunded" })
+})
 it("refund_action_coalesces_and_applies_terminal_result", async function refund_action_coalesces_and_applies_terminal_result() {
   let finish!: (value: DepositView) => void
   mocks.request.mockImplementation(
