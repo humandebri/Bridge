@@ -151,7 +151,7 @@ if [[ "$MODE" == "proofs" || "$MODE" == "proofs-impacted" ]]; then
     --mount "type=bind,src=$SCRATCH/proof-output,dst=/workspace/verification/output"
     --mount "type=bind,src=$SCRATCH/smt-out,dst=/workspace/verification/smt/out"
     --mount "type=bind,src=$SCRATCH/smt-cache,dst=/workspace/verification/smt/cache"
-    --mount "type=bind,src=$POLICY_ROOT/verification/halmos/.venv,dst=/workspace/verification/halmos/.venv,readonly"
+    --mount "type=bind,src=$DEPENDENCY_ROOT/verification/halmos/.venv,dst=/workspace/verification/halmos/.venv,readonly"
   )
 fi
 if [[ "$MODE" == "icp" ]]; then
