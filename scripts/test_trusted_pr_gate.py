@@ -354,6 +354,19 @@ class TrustedPrGateTests(unittest.TestCase):
         self.assertIn('trusted-policy/scripts/halmos_environment.py', section)
         self.assertNotIn('source/scripts/', section)
 
+    def test_candidate_cargo_fetch_uses_only_trusted_manifests(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        checkout = workflow.index("- name: Check out exact candidate head as reviewed data input")
+        fetch = workflow.index("- name: Prefetch candidate Cargo lock using trusted manifests")
+        trusted_check = workflow.index("- name: Run selected trusted check")
+        self.assertLess(checkout, fetch)
+        self.assertLess(fetch, trusted_check)
+        section = workflow[fetch:workflow.index("- name: Fetch the pinned schema 35 upgrade predecessor", fetch)]
+        self.assertIn("trusted-policy/scripts/prepare_candidate_cargo.py", section)
+        self.assertIn("--candidate-lock source/Cargo.lock", section)
+        self.assertIn('cargo fetch --locked --manifest-path "$cargo_root/Cargo.toml"', section)
+        self.assertNotIn("source/Cargo.toml", section)
+
     def test_untrusted_lifecycle_never_runs_before_policy_and_isolation_are_fixed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("path: trusted-policy", workflow)
