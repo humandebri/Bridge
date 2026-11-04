@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from prepare_candidate_dependencies import (
+    REQUIRED_HALMOS_INPUTS,
     REQUIRED_MANIFESTS,
     candidate_dependency_sources,
     materialize,
@@ -39,6 +40,22 @@ class CandidateDependencyTests(unittest.TestCase):
             destination = Path(temporary) / "dependencies"
             materialize(source, destination)
             self.assertEqual(destination.joinpath("package.json").read_bytes(), package.read_bytes())
+
+    def test_materializes_reviewed_halmos_lock_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "dependencies"
+            materialize(ROOT, destination)
+            for relative in ("verification/halmos/pyproject.toml", "verification/halmos/uv.lock"):
+                self.assertEqual((destination / relative).read_bytes(), (ROOT / relative).read_bytes())
+
+    def test_symlinked_halmos_lock_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = self._copy_inputs(Path(temporary))
+            lock = source / "verification/halmos/uv.lock"
+            lock.unlink()
+            lock.symlink_to(source / "package.json")
+            with self.assertRaisesRegex(ValueError, "not regular"):
+                candidate_dependency_sources(source)
 
     def test_symlinked_input_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -120,7 +137,7 @@ class CandidateDependencyTests(unittest.TestCase):
             source = self._copy_inputs(Path(temporary))
             shutil.rmtree(source / "ui" / "patches")
             self.assertEqual(
-                set(candidate_dependency_sources(source)), set(REQUIRED_MANIFESTS)
+                set(candidate_dependency_sources(source)), set(REQUIRED_MANIFESTS + REQUIRED_HALMOS_INPUTS)
             )
 
     def test_symlinked_patch_file_is_rejected(self) -> None:
@@ -159,7 +176,7 @@ class CandidateDependencyTests(unittest.TestCase):
     @staticmethod
     def _copy_inputs(temporary: Path) -> Path:
         source = temporary / "source"
-        for relative in REQUIRED_MANIFESTS:
+        for relative in REQUIRED_MANIFESTS + REQUIRED_HALMOS_INPUTS:
             destination = source / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative, destination)

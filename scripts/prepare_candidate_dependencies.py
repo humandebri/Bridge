@@ -18,6 +18,10 @@ REQUIRED_MANIFESTS = (
     "ui/pnpm-lock.yaml",
     "ui/pnpm-workspace.yaml",
 )
+REQUIRED_HALMOS_INPUTS = (
+    "verification/halmos/pyproject.toml",
+    "verification/halmos/uv.lock",
+)
 MANIFEST_NAMES = frozenset({"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"})
 IGNORED_DISCOVERY_PARTS = frozenset({".certora_internal", ".git", "node_modules"})
 PATCH_ROOT = PurePosixPath("ui/patches")
@@ -60,8 +64,8 @@ def candidate_dependency_sources(source: Path) -> tuple[str, ...]:
     if missing:
         raise ValueError(f"required dependency manifests are missing: {sorted(missing)}")
 
-    inputs = list(REQUIRED_MANIFESTS)
-    for relative in REQUIRED_MANIFESTS:
+    inputs = list(REQUIRED_MANIFESTS + REQUIRED_HALMOS_INPUTS)
+    for relative in inputs:
         _regular_file(source, relative)
 
     patch_root = source / PATCH_ROOT
