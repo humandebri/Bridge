@@ -488,6 +488,7 @@ enum EscrowPreparation {
     Authorization {
         quote: DepositQuote,
         authorization: Box<bridge_core::MintAuthorizationRecord>,
+        snapshot: bridge_core::BaseMintSnapshot,
     },
     RefundAvailable(DepositRefundReason),
     Stopped(SettlementStopReason),
@@ -701,13 +702,14 @@ async fn prepare_escrowed_deposit(
     Ok(EscrowPreparation::Authorization {
         quote,
         authorization: Box::new(authorization),
+        snapshot,
     })
 }
 
 async fn authorization_still_matches_base(
     config: &crate::config::BridgeInitArgs,
     authorization: &bridge_core::MintAuthorizationRecord,
-) -> Result<bool, SettlementStopReason> {
+) -> Result<AuthorizationRevalidation, SettlementStopReason> {
     let runtime_attested = crate::api::runtime_attested(config)
         .map_err(|_| SettlementStopReason::InvalidBaseResponse)?;
     let completed = evm_rpc::bridge_snapshot(config, runtime_attested)
@@ -728,32 +730,71 @@ async fn authorization_still_matches_base(
     let expected_signer = crate::api::cached_signer_address(config)
         .await
         .map_err(|_| SettlementStopReason::InvalidBaseResponse)?;
-    Ok(authorization_matches_snapshot(
-        completed.snapshot,
-        expected_signer,
-        authorization,
-    ))
+    let snapshot_result =
+        classify_authorization_snapshot(completed.snapshot, expected_signer, authorization);
+    if snapshot_result != AuthorizationRevalidation::Ready {
+        return Ok(snapshot_result);
+    }
+    STORE.with(|store| {
+        let signed = authorization.authorization;
+        classify_reservation_revalidation(crate::api::deposit_reservation_preflight(
+            &store.borrow(),
+            completed.snapshot.mint,
+            signed.deposit_id,
+            signed.gross_amount,
+            signed.max_service_fee,
+        ))
+    })
 }
 
-fn authorization_matches_snapshot(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthorizationRevalidation {
+    Ready,
+    CapacityDeferred,
+    Mismatch,
+}
+
+fn classify_reservation_revalidation(
+    result: Result<(), crate::api::DepositError>,
+) -> Result<AuthorizationRevalidation, SettlementStopReason> {
+    match result {
+        Ok(()) => Ok(AuthorizationRevalidation::Ready),
+        Err(crate::api::DepositError::Rejected(reason)) if reason == "MintWindowLimitExceeded" => {
+            Ok(AuthorizationRevalidation::CapacityDeferred)
+        }
+        Err(crate::api::DepositError::Rejected(_)) => Ok(AuthorizationRevalidation::Mismatch),
+        Err(_) => Err(SettlementStopReason::InvalidBaseResponse),
+    }
+}
+
+fn classify_authorization_snapshot(
     snapshot: evm_rpc::BridgeSnapshot,
     expected_signer: [u8; 20],
     authorization: &bridge_core::MintAuthorizationRecord,
-) -> bool {
+) -> AuthorizationRevalidation {
     let signed = authorization.authorization;
     let expected_net = signed
         .gross_amount
         .checked_sub(signed.charged_service_fee)
         .ok();
-    let quoted_net = snapshot
+    if snapshot.deposits_paused
+        || snapshot.bridge_signer != expected_signer
+        || snapshot.mint_authorization_epoch != signed.authorization_epoch
+        || snapshot.mint.service_fee != signed.charged_service_fee
+        || expected_net.is_none()
+    {
+        return AuthorizationRevalidation::Mismatch;
+    }
+    match snapshot
         .mint
         .quote(signed.gross_amount, signed.max_service_fee)
-        .ok();
-    !snapshot.deposits_paused
-        && snapshot.bridge_signer == expected_signer
-        && snapshot.mint_authorization_epoch == signed.authorization_epoch
-        && snapshot.mint.service_fee == signed.charged_service_fee
-        && quoted_net == expected_net
+    {
+        Ok(net) if Some(net) == expected_net => AuthorizationRevalidation::Ready,
+        Err(bridge_core::CoreError::MintWindowLimitExceeded) => {
+            AuthorizationRevalidation::CapacityDeferred
+        }
+        _ => AuthorizationRevalidation::Mismatch,
+    }
 }
 
 pub(crate) async fn advance_deposit(
@@ -877,6 +918,7 @@ pub(crate) async fn advance_deposit(
                     EscrowPreparation::Authorization {
                         quote,
                         authorization,
+                        snapshot,
                     } => {
                         let result = STORE.with(|store| {
                             crate::api::commit_deposit_authorization(
@@ -884,6 +926,7 @@ pub(crate) async fn advance_deposit(
                                 deposit_id,
                                 quote,
                                 *authorization,
+                                snapshot,
                             )
                         });
                         match result {
@@ -892,6 +935,15 @@ pub(crate) async fn advance_deposit(
                                 return Ok(SettlementActionResult::Stopped {
                                     state,
                                     reason: SettlementStopReason::RpcUnavailable,
+                                });
+                            }
+                            Err(crate::api::DepositError::Rejected(reason))
+                                if reason == "MintWindowLimitExceeded" =>
+                            {
+                                return Ok(SettlementActionResult::Deferred {
+                                    state,
+                                    next_run_at_ns: ic_cdk::api::time()
+                                        .saturating_add(60_000_000_000),
                                 });
                             }
                             Err(_) => return Err(SettlementActionError::StorageFailure),
@@ -963,19 +1015,25 @@ pub(crate) async fn advance_deposit(
                     .mint_authorization
                     .as_ref()
                     .ok_or(SettlementActionError::StorageFailure)?;
-                if !::bridge_core::kernel::mint_authorization_has_minimum_remaining_time(
+                if !::bridge_core::kernel::mint_authorization_before_deadline(
                     observed_timestamp,
                     pending_authorization.authorization.deadline,
                 ) {
                     return Ok(SettlementActionResult::Stopped {
                         state,
-                        reason: SettlementStopReason::AuthorizationWindowTooShort,
+                        reason: SettlementStopReason::AuthorizationExpired,
                     });
                 }
                 lease.renew_before_external_call()?;
                 match authorization_still_matches_base(&config, pending_authorization).await {
-                    Ok(true) => {}
-                    Ok(false) => {
+                    Ok(AuthorizationRevalidation::Ready) => {}
+                    Ok(AuthorizationRevalidation::CapacityDeferred) => {
+                        return Ok(SettlementActionResult::Deferred {
+                            state,
+                            next_run_at_ns: ic_cdk::api::time().saturating_add(60_000_000_000),
+                        });
+                    }
+                    Ok(AuthorizationRevalidation::Mismatch) => {
                         return Ok(SettlementActionResult::Stopped {
                             state,
                             reason: SettlementStopReason::InvalidBaseResponse,
@@ -997,7 +1055,7 @@ pub(crate) async fn advance_deposit(
                         .mint_authorization
                         .as_mut()
                         .ok_or(SettlementActionError::StorageFailure)?;
-                    if !::bridge_core::kernel::mint_authorization_has_minimum_remaining_time(
+                    if !::bridge_core::kernel::mint_authorization_before_deadline(
                         dispatch_observed_timestamp,
                         authorization.authorization.deadline,
                     ) {
@@ -1015,7 +1073,7 @@ pub(crate) async fn advance_deposit(
                 let Some(digest) = digest else {
                     return Ok(SettlementActionResult::Stopped {
                         state,
-                        reason: SettlementStopReason::AuthorizationWindowTooShort,
+                        reason: SettlementStopReason::AuthorizationExpired,
                     });
                 };
                 lease.renew_before_external_call()?;
@@ -1058,8 +1116,14 @@ pub(crate) async fn advance_deposit(
                 })?;
                 lease.renew_before_external_call()?;
                 match authorization_still_matches_base(&config, &current_authorization).await {
-                    Ok(true) => {}
-                    Ok(false) => {
+                    Ok(AuthorizationRevalidation::Ready) => {}
+                    Ok(AuthorizationRevalidation::CapacityDeferred) => {
+                        return Ok(SettlementActionResult::Deferred {
+                            state,
+                            next_run_at_ns: ic_cdk::api::time().saturating_add(60_000_000_000),
+                        });
+                    }
+                    Ok(AuthorizationRevalidation::Mismatch) => {
                         return Ok(SettlementActionResult::Stopped {
                             state,
                             reason: SettlementStopReason::InvalidBaseResponse,
@@ -1081,7 +1145,7 @@ pub(crate) async fn advance_deposit(
                         .mint_authorization
                         .as_ref()
                         .is_some_and(|authorization| {
-                            !::bridge_core::kernel::mint_authorization_has_minimum_remaining_time(
+                            !::bridge_core::kernel::mint_authorization_before_deadline(
                                 observed_timestamp,
                                 authorization.authorization.deadline,
                             )
@@ -1113,7 +1177,7 @@ pub(crate) async fn advance_deposit(
                 if !installed {
                     return Ok(SettlementActionResult::Stopped {
                         state,
-                        reason: SettlementStopReason::AuthorizationWindowTooShort,
+                        reason: SettlementStopReason::AuthorizationExpired,
                     });
                 }
                 return Ok(SettlementActionResult::Complete {
@@ -1745,35 +1809,59 @@ mod tests {
     fn authorization_install_requires_current_base_policy() {
         let authorization = pending_authorization();
         let snapshot = authorization_snapshot();
-        assert!(authorization_matches_snapshot(
-            snapshot,
-            [3; 20],
-            &authorization
-        ));
+        assert_eq!(
+            classify_authorization_snapshot(snapshot, [3; 20], &authorization),
+            AuthorizationRevalidation::Ready
+        );
 
         let mut paused = snapshot;
         paused.deposits_paused = true;
-        assert!(!authorization_matches_snapshot(
-            paused,
-            [3; 20],
-            &authorization
-        ));
+        assert_eq!(
+            classify_authorization_snapshot(paused, [3; 20], &authorization),
+            AuthorizationRevalidation::Mismatch
+        );
 
         let mut rotated = snapshot;
         rotated.mint_authorization_epoch += 1;
-        assert!(!authorization_matches_snapshot(
-            rotated,
-            [3; 20],
-            &authorization
-        ));
+        assert_eq!(
+            classify_authorization_snapshot(rotated, [3; 20], &authorization),
+            AuthorizationRevalidation::Mismatch
+        );
 
         let mut repriced = snapshot;
         repriced.mint.service_fee = Amount::new(6);
-        assert!(!authorization_matches_snapshot(
-            repriced,
-            [3; 20],
-            &authorization
-        ));
+        assert_eq!(
+            classify_authorization_snapshot(repriced, [3; 20], &authorization),
+            AuthorizationRevalidation::Mismatch
+        );
+    }
+
+    #[test]
+    fn signing_revalidation_defers_only_temporary_mint_capacity() {
+        let authorization = pending_authorization();
+        let mut snapshot = authorization_snapshot();
+        snapshot.mint.minted_in_window = Amount::new(110);
+        assert_eq!(
+            classify_authorization_snapshot(snapshot, [3; 20], &authorization),
+            AuthorizationRevalidation::CapacityDeferred,
+        );
+        snapshot.deposits_paused = true;
+        assert_eq!(
+            classify_authorization_snapshot(snapshot, [3; 20], &authorization),
+            AuthorizationRevalidation::Mismatch,
+        );
+        assert_eq!(
+            classify_reservation_revalidation(Err(crate::api::DepositError::Rejected(
+                "MintWindowLimitExceeded".into(),
+            ))),
+            Ok(AuthorizationRevalidation::CapacityDeferred),
+        );
+        assert_eq!(
+            classify_reservation_revalidation(Err(crate::api::DepositError::Rejected(
+                "ServiceFeeRejected".into(),
+            ))),
+            Ok(AuthorizationRevalidation::Mismatch),
+        );
     }
 
     #[test]

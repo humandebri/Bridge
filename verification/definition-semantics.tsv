@@ -1,6 +1,6 @@
 name	role	specification	meaning
 BridgeSpec.ClaimContracts.ActivationPreflight	specification	docs/canister-state-machine.md	The last activation is validated
-BridgeSpec.ClaimContracts.AuthorizationBinding	specification	docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md	Binds the domain, epoch, and 900-second deadline from IC time; signing requires the u64 range and at least 300 seconds remaining
+BridgeSpec.ClaimContracts.AuthorizationBinding	specification	docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md	Binds the domain, epoch, and 900-second deadline from IC time; signing requires a u64 deadline and IC time strictly before it
 BridgeSpec.ClaimContracts.AutomaticRetryLimit	specification	docs/canister-state-machine.md	Allowed only for the automatic lane with failures<limit
 BridgeSpec.ClaimContracts.CanonicalProbe	specification	docs/bridge-flow.md	The predicate is equivalent to equality of the numbers
 BridgeSpec.ClaimContracts.CommittedQuote	specification	docs/canister-state-machine.md	The net amount is positive, gross=net+fee, and the terminal recipient and net amount match the initially stored quote
@@ -56,9 +56,9 @@ BridgeSpec.Liveness.WithdrawalEventuallyPaid	model-support	verification/conditio
 BridgeSpec.MintAuthorization.Authorization.valid	specification	verification/README.md	Matching authorization domain, epoch, amount, and IC-origin deadline. Cryptographic digest computation is excluded
 BridgeSpec.MintAuthorization.ExpiryEvidence.valid	specification	verification/README.md	Matches decoded unprocessed evidence and strict expiry
 BridgeSpec.MintAuthorization.MintEvidence.valid	specification	verification/README.md	Matches decoded mint evidence fields. Authenticity of nonzero hashes is an external premise
-BridgeSpec.MintAuthorization.installSignature	specification	verification/README.md	Abstract transition checking 300 seconds remaining at signing, finite-width bounds, and fee accounting once
+BridgeSpec.MintAuthorization.installSignature	specification	verification/README.md	Abstract transition checking that IC time is strictly before the u64 deadline and accounting for the fee once
 BridgeSpec.Protocol.Safe	model-support	verification/README.md	Accounting, quote, and lease conditions of the integrated single-record model, not overall runtime safety
 BridgeSpec.Protocol.filterSafeStoredState	model-support	verification/README.md	Abstract filter accepting states under the Safe condition, not production decoding or migration
-BridgeSpec.signatureTimeAllowed	specification	verification/README.md	Predicate for a u64 deadline, rejection of addition overflow, and at least 300 seconds remaining
+BridgeSpec.signatureTimeAllowed	specification	verification/README.md	Predicate for a u64 deadline and an IC timestamp strictly before it
 BridgeSpec.ClaimContracts.governanceAffordabilityDecision	specification	docs/canister-state-machine.md	Returns the smaller observed balance and the inclusive affordability comparison
 BridgeSpec.ClaimContracts.SnsFeePayoutAuthorization	specification	docs/runbooks/fee-payout.md	Authorization requires Governance, operational lifecycle, positive amount, exact recipient and exact payout identity

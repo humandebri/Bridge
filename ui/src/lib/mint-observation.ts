@@ -187,30 +187,7 @@ async function notifyFinalizedMint(
   if (!completedNotifications.has(notificationKey)) {
     try {
       const recorded = await sharedBaseRead(`mint-notification:${notificationKey}`, () =>
-        withBrowserLock(
-          `kinic-mint-notify:${deploymentProfile.deploymentInstanceId}:${pending.depositId}`,
-          async () => {
-            if (!isCurrent()) return false
-            const identity = await getWithdrawalNotificationIdentity(deploymentProfile)
-            if (!isCurrent()) return false
-            const actor = await createBridgeActor(
-              deploymentProfile.icHost,
-              deploymentProfile.bridgeCanisterId as string,
-              identity,
-            )
-            if (!isCurrent()) return false
-            const result = await actor.notify_deposit_mint({
-              deposit_id: hexToBytes(pending.depositId),
-              transaction_hash: hexToBytes(pending.transactionHash),
-            })
-            if (!isCurrent()) return false
-            if ("Err" in result) throw new Error(Object.keys(result.Err)[0])
-            const value = "Recorded" in result.Ok ? result.Ok.Recorded : result.Ok.Duplicate
-            if (bytesHex(value.deposit_id).toLowerCase() !== pending.depositId.toLowerCase())
-              throw new Error("IdentityConflict")
-            return true
-          },
-        ),
+        recordMintCandidate(pending, isCurrent),
       )
       if (!isCurrent() || !recorded) return
       completedNotifications.add(notificationKey)
@@ -225,6 +202,37 @@ async function notifyFinalizedMint(
     }
   }
   publish({ recorded: true, notificationError: undefined })
+}
+
+/** The Canister independently verifies receipt identity and finalized chain evidence. */
+export async function recordMintCandidate(
+  pending: PendingMint,
+  isCurrent: () => boolean = () => true,
+): Promise<boolean> {
+  return withBrowserLock(
+    `kinic-mint-notify:${deploymentProfile.deploymentInstanceId}:${pending.depositId}`,
+    async () => {
+      if (!isCurrent()) return false
+      const identity = await getWithdrawalNotificationIdentity(deploymentProfile)
+      if (!isCurrent()) return false
+      const actor = await createBridgeActor(
+        deploymentProfile.icHost,
+        deploymentProfile.bridgeCanisterId as string,
+        identity,
+      )
+      if (!isCurrent()) return false
+      const result = await actor.notify_deposit_mint({
+        deposit_id: hexToBytes(pending.depositId),
+        transaction_hash: hexToBytes(pending.transactionHash),
+      })
+      if (!isCurrent()) return false
+      if ("Err" in result) throw new Error(Object.keys(result.Err)[0])
+      const value = "Recorded" in result.Ok ? result.Ok.Recorded : result.Ok.Duplicate
+      if (bytesHex(value.deposit_id).toLowerCase() !== pending.depositId.toLowerCase())
+        throw new Error("IdentityConflict")
+      return true
+    },
+  )
 }
 
 export async function observeDeposit(record: DepositView): Promise<MintObservation> {
