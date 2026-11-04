@@ -1,74 +1,64 @@
-# DAO reactivation and controller handover
+# SNS Root-only recovery and upgrades
 
-## Recorded handover status
+## Current scope and historical record
 
-On October 1, 2026, certified IC controller state showed Kinic SNS Root as the only Bridge controller. The same-Wasm SNS upgrade demonstration is deferred until an upgrade is needed; its completion has not been verified here. See the [repository overview](../../README.md#production-status) for the exact observation and its limits.
+On October 1, 2026, the certified controller observation recorded SNS Root as the sole Bridge controller. It is historical evidence, not authorization for a future operation; see the [production status](../../README.md#production-status) and [historical baseline](../evidence/dao-baseline-20260914/manifest.json). The former joint-control reactivation and one-time Root addition drivers have been retired. Do not re-add an individual controller or repeat registration to recover the current production Bridge. Emergency pause authority is separate from canister controller authority.
 
-The joint-control preparation and registration steps below describe the earlier handover path. Do not repeat them from the Root-only state or assume that the former individual controller can operate controller-only APIs. Future upgrades require current-state and proposal verification under SNS control. Root registration and the relevant executed proposal must be verified before using the post-registration upgrade steps.
+## Root-only recovery
 
-## Joint-control demonstration procedure
+The retired joint-control path and its locally asserted controller receipt must not be used for recovery. The Root-only verifier binds certified current controller/module information, signed v36 state, the executed SNS proposal and registered function, and the exact pending signed Base transaction. It checks that the current state is unchanged when compared with the separately reviewed evidence. It does not prove that state cannot change temporarily and return to its earlier value between sequential observations.
 
+1. Preserve the incident evidence, including the certified module and controller set, signed query results, SNS proposal and execution status, and any Base transaction receipt. Check a receipt for a revert before waiting for finality. Do not automatically resubmit an uncertain action.
+2. Reacquire certified controller/module information and signature-verified individual v36 lifecycle, activation, RuntimeBinding, operational configuration, storage integrity and complete history-index observations. Check SNS Root registration and the reviewed UI RPC configuration. Stop if evidence is unavailable, inconsistent, or changes between review and the immediate pre-submission observation.
+3. Determine whether the issue requires an SNS governance action, a separately reviewed Root-controlled canister upgrade, or investigation without a state change. Do not assume that a former individual controller can run controller-only methods. Do not assume an upgrade repairs corrupt storage. Rebuilding history indexes resumes from the saved cursor after a reviewed same-instance upgrade, but an error needs investigation first.
+4. Before any action, prepare and review its exact proposal and evidence, confirm the current module immediately before submission, and obtain the separately required operational approval. After execution, verify the actual effects and preserved state. SNS proposal execution or a successful call alone does not prove a Base transaction finalized or that a canister upgrade completed.
 
-This procedure verifies post-launch reactivation. Add SNS Root first, prove exact joint control with the production identity, and demonstrate DAO reactivation in that state. It does not automatically run `RegisterDappCanisters`, remove the individual controller, or complete handover.
-
-The operational baseline is the certified current schema-v36 state. Historical module hashes are audit observations, not authorization inputs; every run derives and verifies the current module again.
-
-## Starting state
-
-Reverification on 2026-09-17 found Bridge `lb5i5-ziaaa-aaaar-qcgwq-cai` at schema 36, module SHA-256 `710a2381a997b65ef24fc78ede17cccd5d208687535deabebdf15c19beef869a`, with only production identity `lqfvd-m7ihy-e5dvc-gngvr-blzbt-pupeq-6t7ua-r7v4p-bvqjw-ea7gl-4qe` as controller. Governance is `74ncn-fqaaa-aaaaq-aaasa-cai`, the pause principal is the production identity, and the Bridge is not registered in SNS Root `dapps`. Retain the initial [baseline manifest](../evidence/dao-baseline-20260914/manifest.json) as a historical read-only observation.
-
-Retrieve certified module/controllers and signature-verified runtime, lifecycle, activation, operational configuration, storage integrity, history index, and SNS Root registration immediately before staging Root. Require the candidate Wasm to reproduce twice from the clean current HEAD after the complete proof gate.
-
-## Preparation
-
-1. Complete applicable proofs and tests on current clean source; fix the Wasm, source revision, and public Candid under review. Execute production upgrades only after separate approval.
-2. Query Governance `list_nervous_system_functions`, saving the `icp --json` response including `response_bytes`. Also save Root `list_sns_canisters (record {})`, Bridge management status, runtime, lifecycle, activation, and operational configuration.
-3. Run `tools/sns-proposal/prepare.mjs REGISTRY_JSON BRIDGE PREVIOUS_OPERATION OUTPUT_JSON` with pinned Node. PREVIOUS_OPERATION is the latest confirmed operation ID from `get_activation_status`. Do not submit output. Generate registration proposals avoiding active/reserved IDs; existing registrations must exactly match target and validator.
-4. Review function IDs, targets, validators, methods, topics, payloads, submitting neuron/signer, and full proposal text for both operations. If registration proposals are needed, obtain separate submission approval and verify executed status and live registry. Registration alone does not reactivate the Bridge.
-5. Run `production-handover-driver.sh` to add only SNS Root. It verifies current state and individual sole control, then requires exactly the production identity and Root. It writes no operation receipt. If the outcome is unknown, do not retry for six minutes; rerun authenticated validation afterward.
-
-Both operation payloads from `prepare.mjs` use the operation ID from the same observation. Regenerate with the new ID after schedule confirmation; do not submit the previously prepared execute payload.
-
-Dedicated APIs are `validate_sns_schedule_activation`/`sns_schedule_activation` and `validate_sns_execute_activation`/`sns_execute_activation`, each taking `record { previous_governance_operation_id : nat64 }`. Validators are read-only updates returning `Result<text,text>`; execution entry points return failures as IC rejects. SNS executed status means signature preparation completed, not Base execution.
-
-## Production demonstration (after separate approval for each action)
-
-- Specify pause time and small test amounts in execution proposals/work records. Pause using the current emergency principal and verify both Base flows and IC Deposits are stopped.
-- Prepare and submit schedule proposals from the latest registry and confirmed operation. Append PREVIOUS_OPERATION and the reviewed proposal-preparation JSON path to existing `production-activation-proposal.sh`. Regenerate from the latest registry before submission and verify function ID, validator, payload, and proposal text match. Never automatically resubmit an uncertain proposal; reread the CLI response saved in `OUTPUT.response.json` and proposal history.
-- Run `production-dao-reactivation-driver.sh recover` to bind the executed proposal, schema 4 submission, certified joint-controller state, current module, and pending signed transaction directly.
-- Use the same driver's `relay` and `confirm` steps to relay the signed transaction, complete notification through the designated confirmation relayer, and finish Canister Finalized verification. Stop on revert; do not classify it as a confirmation timeout.
-- After 24 hours, retrieve live state/registry again and separately prepare, approve, and submit an execute proposal bound to the confirmed schedule operation ID. Complete relay and Finalized verification, checking resumed Base flows/IC Deposits, small deposits/withdrawals, and continuity of data, reserves, and audits.
-- SNS submissions use schema 4 and activation receipts schema 5. Do not convert old SNS formats to pass. Retain initial controller receipts as a distinct type.
-- Fee and recipient changes are outside this production demonstration.
-
-For reactivation receipt commands, set `BRIDGE_CURRENT_MODULE_SHA256` to the twice-reproduced current module and `BRIDGE_DAO_JOINT_CONTROL=1`. The verifier independently requires the certified production identity and SNS Root pair. Gate B initial-activation checks remain sole-controller checks.
-
-## Final handover
-
-At the end of the DAO reactivation demonstration, stop with joint control. Register the dapp and remove the individual controller only during a future full handover that operators approve separately.
-
-After verifying joint control, run `production-handover-registration-proposal.sh check-registration --wasm ABS`. Review the complete fixed single-Bridge `RegisterDappCanisters` proposal printed by the command. After separate approval, use `execute-registration --wasm ABS --expected-current-wasm SHA256`. The execute path reruns the complete proof, reproducible build, signer permission, certified joint-controller state, Root registration state, and module binding immediately before uploading chunks and submitting exactly once. It creates no receipt, preflight, or recovery file. Submission/execution failure retains the individual controller without automatic resubmission or removal. Stop as an incident if Root-only but unregistered, registered but still individually controlled, or any third controller exists.
-
-To abort testflight, recheck exactly two controllers—production identity and Root—and that registration has not executed, then remove Root through a separately approved action. After registration executes, run `check-upgrade --wasm ABS --registration-proposal-id ID`. It requires the exact executed registration proposal, unique Root registration, Root-only control, and the same current uncompressed Wasm. After a second approval, use `execute-upgrade` with the same expected hash. Once that proposal executes, run `verify-upgrade --wasm ABS --registration-proposal-id ID --upgrade-proposal-id ID`; it verifies both exact executed actions, the SNS Root post-upgrade observation, preserved state and runtime, admission readiness, and the unchanged module. Verify the UI separately. Do not perform a real asset transfer unless separately approved.
-
-Generate handover submissions as follows without sending them. ROOT_RESPONSE_JSON is Root's latest `--json` response to `list_sns_canisters (record {})`; EXPECTED_SHA256 is the verified current uncompressed module hash.
+For an already executed SNS activation proposal with a pending Base transaction, retain its submission JSON and save the exact pending transaction from the governance relayer's `status` command as `ARTIFACT_JSON`. Set `BRIDGE_CURRENT_MODULE_SHA256` to the reviewed certified module hash, and capture the authenticated pending-state evidence:
 
 ```sh
-node tools/sns-proposal/handover.mjs ROOT_RESPONSE_JSON BRIDGE WASM EXPECTED_SHA256 OUTPUT_JSON
+cargo run --locked -p bridge-profile -- verify-root-activation-pending PHASE BUNDLE SUBMISSION_JSON ARTIFACT_JSON capture EVIDENCE_JSON
 ```
 
-The driver prints the registration or standard same-Wasm upgrade proposal without saving it. If the Bridge is already registered when registration begins, stop on inconsistent state; do not skip directly to a new registration submission. Since Bridge Wasm exceeds ingress limits, `execute-registration` clears the Bridge chunk store, uploads one-megabyte chunks, rereads `stored_chunks`, and requires the exact expected set before submitting registration. Finish uploads before registration while exact joint control remains available. The later proposal fixes ordered chunk hashes and the original uncompressed Wasm hash. Do not change module hash by compression. The chunks remain in the Bridge chunk store after handover because the production identity is no longer authorized to clear them. [Official SNS management procedure](https://docs.internetcomputer.org/guides/governance/managing/)
+Review the proposal, signed transaction and newly created evidence before any separately authorized action. The same command with `compare` in place of `capture` reacquires the evidence and rejects any difference. The existing attestation in the Canister is validated as a configuration binding; it is not claimed to be a fresh observation of Base state. The Canister performs its own Base preflight before preparing the pending activation transaction.
 
-Retain the emergency pause principal. Do not assume the individual identity can directly repair post-handover failures.
+For a separately approved relay or confirmation, `scripts/production-root-reactivation-driver.sh` freezes the inputs, reruns the complete proof gate from the clean current HEAD, compares the authenticated pending state immediately before the operation, and then invokes the governance relayer. Set `BRIDGE_RELEASE_BUNDLE`, `BRIDGE_GATE_B_MANIFEST_SHA256`, `BRIDGE_CURRENT_MODULE_SHA256`, `BRIDGE_ACTIVATION_PHASE`, `BRIDGE_ACTIVATION_SUBMISSION`, `BRIDGE_ACTIVATION_ARTIFACT`, `BRIDGE_ACTIVATION_EVIDENCE`, `BRIDGE_ACTIVATION_STEP` (`relay` or `confirm`) and the phase-specific `BRIDGE_CONFIRM_ASSET_ACCEPTANCE`. The relayer also requires the reviewed `BASE_RPC_URL`. Confirmation additionally requires `BRIDGE_CONFIRMATION_RELAYER_PEM`, new paths for `BRIDGE_ACTIVATION_CONFIRMATION_RECEIPT` and `BRIDGE_ACTIVATION_VERIFIED_RECEIPT`, and, for execute, `BRIDGE_PRIOR_SCHEDULE_RECEIPT`. The driver verifies the SNS result after confirmation. If confirmation succeeds but its final verification fails, retain the confirmation receipt and investigate rather than retrying automatically.
 
-## Local validation
+These commands do not create or submit SNS proposals. Those actions and any Base relay or confirmation require separate operational decisions. In particular, do not use the old `verify-activation` or `verify-schedule-receipt-live` commands for Root-only control; the corresponding Root-only post-confirmation commands are `verify-root-activation` and `verify-root-schedule-receipt-live`.
 
-`scripts/prepare-sns-test-runtime.sh` extracts Governance/Root from the hash-pinned official `release-2026-09-10_03-28--all-in-one-node` archive. Set `BRIDGE_SNS_TEST_RUNTIME` to choose the destination. Start Root with testflight=false.
+Individual authenticated queries are sequential: matching observations before and after validation detect observed differences, but cannot prove that state did not change temporarily and return to its earlier value between queries. Treat concurrent changes as an incident and repeat the observation after they stop.
 
-`real SNS reactivation and production registration` in `integration/phase3.spec.ts` verifies Root addition, retained joint control, an unadopted proposal that leaves the individual controller in place, DAO reactivation through real Governance, and then—at a separate boundary—Root registration, individual-controller removal, and same-Wasm upgrade. Base RPC and Ledger remain mocked, so this does not replace the production 24-hour wait or real-asset checks.
+## Preparing a different Wasm under SNS control
 
-Local early execute may succeed through signature preparation. Base Timelock enforces 24 hours, so SNS executed status does not imply reactivation. Real SNS tests notify mocked reverts and verify continued pause; existing Solidity tests verify Timelock timing itself.
+This is a preparation and review procedure. It does not create a canister, upload chunks, submit a proposal, or authorize a production upgrade. The existing `production-handover-registration-proposal.sh` upgrade path is restricted to the already stored **same Wasm**; it cannot prepare or validate this different-Wasm procedure.
 
-The handover driver requires complete proofs, two identical current-source builds, certified current state before submission, and exact joint control afterward.
+1. From the clean current HEAD, complete the proof gate and reproduce the candidate uncompressed Wasm twice. Record the source fingerprint, complete receipt, both candidate hashes, and the certified current Bridge module hash. Review the upgrade mode, arguments, schema-v36 compatibility and state preservation requirements. Reject a candidate that differs from either reproduction.
+2. Select a dedicated chunk-store canister on the **same subnet** as the Bridge. Verify its subnet using authenticated network evidence and its exact certified controllers. SNS Root must control both the Bridge and the store so it can install from that store; the designated uploader must control the store to upload and inspect its chunks. Record the principals and permissions. Creating or changing a store and funding it are separate actions, outside this procedure.
+3. Divide the exact reviewed uncompressed Wasm into the management API's permitted chunks, record every SHA-256 in installation order and the whole-module SHA-256. After separately authorized upload, read `stored_chunks` and verify that every required hash is present; the returned set does not establish ordering, so independently compare the proposal's ordered list against the locally reconstructed candidate. Avoid clearing a shared store without reviewing its other users.
+4. Prepare the precise SNS upgrade proposal with Bridge target, dedicated store principal, upgrade mode and arguments, ordered chunk hashes, and candidate module hash. The following local-only commands prepare a review artifact and compare its complete proposal, ordered chunk list and candidate against a `stored_chunks` response envelope. They do not upload chunks or call SNS:
 
-Root performs the actual upgrade after responding to the request, so proposal executed status and unchanged module hash alone do not prove completion. Use `get_release_upgrade_observation` to verify caller and completion time of a successful SNS Root `post_upgrade` after adoption/handover. This record is heap-only and changes no stable schema; failed upgrades do not update it. Assume operationally that no other upgrade runs concurrently; if another proposal upgrades during validation, reacquire evidence. Local real SNS tests distinguish a post_upgrade trap after Root response from a subsequent successful same-Wasm upgrade.
+   ```sh
+   node tools/sns-proposal/handover.mjs root-upgrade-prepare BRIDGE STORE WASM CURRENT_SHA256 CANDIDATE_SHA256 > PREPARED_JSON
+   node tools/sns-proposal/handover.mjs root-upgrade-verify-chunks PREPARED_JSON BRIDGE STORE WASM CURRENT_SHA256 CANDIDATE_SHA256 STORED_CHUNKS_JSON
+   ```
+
+   The local helper does not authenticate its supplied stored-chunk envelope. After a separately authorized upload, use the uploader's identity to obtain and review authenticated evidence:
+
+   ```sh
+   cargo run --locked -p bridge-profile -- verify-sns-root-upgrade-preflight PROFILE CURRENT_SHA256 CANDIDATE_SHA256 WASM STORE UPLOADER UPLOADER_PEM REGISTRATION_PROPOSAL_ID PREPARED_JSON capture EVIDENCE_JSON
+   ```
+
+   The command verifies the exact locally reconstructed proposal, certified Root-only Bridge control and current module, signed v36 state, executed registration proposal, matching delegated subnet certificates, the Root/uploader permissions, and the candidate chunks returned by the management canister. It records the complete controller set for review and comparison, including any additional controller who can change the store. It captures the observed values and hashes into a new evidence file. Listing stored chunks is an authenticated management-canister update; this command does not upload, install, or submit a proposal. The uploader PEM must correspond to the designated store controller.
+5. Review and approve the exact prepared proposal and evidence. Immediately before any separately authorized submission, repeat the preceding command with `compare` in place of `capture` and the same evidence file. It reacquires the observations and rejects any difference. Reproduced Wasm and the complete current-source proof gate remain separate mandatory checks; the preflight does not establish those results or submit a proposal. Prevent concurrent upgrades and store modifications throughout the action.
+6. After execution, use the read-only verifier to check the authenticated registration and upgrade proposals, candidate Wasm and ordered chunks, certified installed candidate and Root-only control, and successful Root `post_upgrade` observation. It checks v36 state and repeats the production state observation around proposal and hook verification:
+
+   ```sh
+   cargo run --locked -p bridge-profile -- verify-sns-root-upgrade-live PROFILE CANDIDATE_SHA256 WASM REGISTRATION_PROPOSAL_ID UPGRADE_PROPOSAL_ID STORE
+   ```
+
+   This post-execution check does not establish the pre-submission current module, store permissions, subnet or upload evidence; preserve and verify those independently as described above. Confirm the reviewed UI RPC profile and reassess UI publication separately. Proposal execution alone is insufficient.
+
+The [IC management API specification](https://docs.internetcomputer.org/references/ic-interface-spec/management-canister/) defines controller, same-subnet and chunk-hash requirements. External assumptions include the authenticity of certified IC state and signed query responses, SNS/management-canister semantics, and the absence of concurrent upgrades during the observation interval.
+
+## Local evidence
+
+The local real-SNS integration exercises the historical joint-control handover and same-Wasm scenario with mocked Base RPC and Ledger; it does not establish production recovery, a different-Wasm upgrade, real-asset behavior, or the production Timelock wait. Preserve historical test and receipt records as evidence of what was actually observed.

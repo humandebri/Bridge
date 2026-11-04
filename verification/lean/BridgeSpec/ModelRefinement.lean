@@ -170,6 +170,6 @@ theorem signature_time_model_refinement (observedTimestamp deadline : U64) :
     signatureTimeImpl observedTimestamp deadline =
       signatureTimeAllowed observedTimestamp.val deadline.val := by
   have bounded : deadline.val ≤ 2 ^ 64 - 1 := deadline.bounded
-  simp [signatureTimeImpl, signatureTimeAllowed, maxU64, bounded]
+  simp [signatureTimeImpl, signatureTimeAllowed, bounded]
 
 end BridgeSpec.ModelRefinement

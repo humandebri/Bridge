@@ -10,8 +10,8 @@
       "source_declarations": 1
     },
     "verification/lean/BridgeSpec/ClaimContracts.lean": {
-      "sha256": "d386c64a832f1560c9a4abeef96e09bfff253170f70e4f6333c0e4705b9eb54e",
-      "lines": 647,
+      "sha256": "8d0604c2155171ab48d38fb7bba4a77145e1faaed3a841780871168512163ebc",
+      "lines": 646,
       "source_declarations": 109
     },
     "verification/lean/BridgeSpec/Claims.lean": {
@@ -25,8 +25,8 @@
       "source_declarations": 32
     },
     "verification/lean/BridgeSpec/DepositAuthorization.lean": {
-      "sha256": "737633200787c8db2275d4a8408e8bad75754e04415c9cbc435b934660ca001e",
-      "lines": 586,
+      "sha256": "55c590c8e1b6478db6678acff13c8876b6aa04ab8d9ff5bf48176770ea5d6350",
+      "lines": 585,
       "source_declarations": 48
     },
     "verification/lean/BridgeSpec/DepositHistory.lean": {
@@ -35,7 +35,7 @@
       "source_declarations": 27
     },
     "verification/lean/BridgeSpec/FiniteWidthModel.lean": {
-      "sha256": "b8d042b3826c16d95d9dcd2153373c4653f9971bb746c9404105dc7cd7f970aa",
+      "sha256": "fb4aa3fa857b1f959d6f66721ab58e352e2527bcda05705b248aca5519f77d5e",
       "lines": 145,
       "source_declarations": 33
     },
@@ -55,17 +55,17 @@
       "source_declarations": 26
     },
     "verification/lean/BridgeSpec/Model.lean": {
-      "sha256": "0d66a5ccd1ae8da2cd56de58eb95156dcf21e556d08e597f09aea095a1771f98",
-      "lines": 328,
+      "sha256": "f02240b723e67d1c2b139ea7c035dd65316069425ab79cbebb5446dcd6a71d95",
+      "lines": 327,
       "source_declarations": 62
     },
     "verification/lean/BridgeSpec/ModelBoundaries.lean": {
-      "sha256": "67b361fa752dfd66e101553b9a0ed6b49d177d49866b94239c8a6c214eba7d13",
-      "lines": 42,
+      "sha256": "b646a09a2e5de142fceb46ef7f8573afb05249e9ff34c55ff0d15550a517aff1",
+      "lines": 44,
       "source_declarations": 4
     },
     "verification/lean/BridgeSpec/ModelRefinement.lean": {
-      "sha256": "aaf9f96703e65d563dd111a936a2809492422c75adbdce0909276440324c4a80",
+      "sha256": "285525b854bcf6207da62655540c6e6922f003ee2d875159f642562d67ef6b58",
       "lines": 175,
       "source_declarations": 26
     },
@@ -85,8 +85,8 @@
       "source_declarations": 19
     },
     "verification/lean/BridgeSpec/Vectors.lean": {
-      "sha256": "2e6a4b91642674f5e5d02a63d660ca9fd817f7cf383ee15db837acca5d41f14e",
-      "lines": 458,
+      "sha256": "a1bbfb47734a3da249574d318a6bc8a43b15d7de6d8c91fb0c95db48f9939fb5",
+      "lines": 459,
       "source_declarations": 43
     },
     "verification/lean/Main.lean": {
@@ -289,7 +289,7 @@
       "specification": "docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md",
       "definitions": "BridgeSpec.ClaimContracts.AuthorizationBinding;BridgeSpec.MintAuthorization.installSignature;BridgeSpec.signatureTimeAllowed;BridgeSpec.MintAuthorization.Authorization.valid",
       "premises": "Authorization commit or signature installation is accepted",
-      "conclusion": "Binds the domain, epoch, and 900-second deadline from IC time; signing requires the u64 range and at least 300 seconds remaining",
+      "conclusion": "Binds the domain, epoch, and 900-second deadline from IC time; signing requires a u64 deadline and IC time strictly before it",
       "boundary": "Cryptographic signature authenticity and correspondence between IC time and Nat are external assumptions",
       "evidence": "claims.tsv:authorization_binding",
       "external": "claims.tsv:authorization_binding",
@@ -437,7 +437,7 @@
       "boundary": "There is no complete proof connecting GlobalHistory and DepositHistory to production histories",
       "evidence": "claims.tsv:fee_accounting_once",
       "external": "claims.tsv:fee_accounting_once",
-      "review_note": "Initial correspondence table. Propositions, dependent definitions, and external boundaries are registered separately."
+      "review_note": "Reviewed deadline policy: signature installation now permits any timestamp strictly before the fixed deadline, including less than 300 seconds remaining. The fee is credited once upon accepted installation; timely minting and fairness of the fee are not guaranteed by this claim."
     },
     {
       "kind": "claim",
@@ -871,7 +871,7 @@
       "name": "BridgeSpec.ClaimContracts.AuthorizationBinding",
       "role": "specification",
       "specification": "docs/adr/0023-use-wallet-funded-eip712-mint-authorization.md",
-      "meaning": "Binds the domain, epoch, and 900-second deadline from IC time; signing requires the u64 range and at least 300 seconds remaining"
+      "meaning": "Binds the domain, epoch, and 900-second deadline from IC time; signing requires a u64 deadline and IC time strictly before it"
     },
     {
       "name": "BridgeSpec.ClaimContracts.AutomaticRetryLimit",
@@ -1219,7 +1219,7 @@
       "name": "BridgeSpec.MintAuthorization.installSignature",
       "role": "specification",
       "specification": "verification/README.md",
-      "meaning": "Abstract transition checking 300 seconds remaining at signing, finite-width bounds, and fee accounting once"
+      "meaning": "Abstract transition checking that IC time is strictly before the u64 deadline and accounting for the fee once"
     },
     {
       "name": "BridgeSpec.Protocol.Safe",
@@ -1237,7 +1237,7 @@
       "name": "BridgeSpec.signatureTimeAllowed",
       "role": "specification",
       "specification": "verification/README.md",
-      "meaning": "Predicate for a u64 deadline, rejection of addition overflow, and at least 300 seconds remaining"
+      "meaning": "Predicate for a u64 deadline and an IC timestamp strictly before it"
     }
   ],
   "roots": {
@@ -1445,7 +1445,7 @@
       "type": "Prop"
     },
     {
-      "definition": "And\n  (∀ {state next : BridgeSpec.MintAuthorization.DepositState}\n    {authorization : BridgeSpec.MintAuthorization.Authorization}\n    {origin : BridgeSpec.MintAuthorization.AuthorizationOrigin},\n    Eq.{1} (BridgeSpec.MintAuthorization.commitAuthorization state authorization origin) (Option.some.{0} next) →\n      And (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.authorization next) (Option.some.{0} authorization))\n        (And\n          (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.deadline authorization)\n            (HAdd.hAdd.{0, 0, 0} (BridgeSpec.MintAuthorization.AuthorizationOrigin.issuedAtTimestamp origin)\n              BridgeSpec.MintAuthorization.authorizationTtl))\n          (And\n            (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.chainId authorization)\n              (BridgeSpec.MintAuthorization.AuthorizationOrigin.expectedChainId origin))\n            (And\n              (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.verifyingContract authorization)\n                (BridgeSpec.MintAuthorization.AuthorizationOrigin.expectedVerifyingContract origin))\n              (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.epoch authorization)\n                (BridgeSpec.MintAuthorization.AuthorizationOrigin.expectedEpoch origin))))))\n  (And\n    (∀ {state next : BridgeSpec.MintAuthorization.DepositState} {observedTimestamp : Nat},\n      Eq.{1} (BridgeSpec.MintAuthorization.installSignature state observedTimestamp) (Option.some.{0} next) →\n        Exists.{1} fun authorization =>\n          And (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.authorization state) (Option.some.{0} authorization))\n            (And\n              (LE.le.{0} (BridgeSpec.MintAuthorization.Authorization.deadline authorization)\n                BridgeSpec.MintAuthorization.maxU64)\n              (And (LE.le.{0} observedTimestamp (HSub.hSub.{0, 0, 0} BridgeSpec.MintAuthorization.maxU64 300))\n                (LE.le.{0} (HAdd.hAdd.{0, 0, 0} observedTimestamp 300)\n                  (BridgeSpec.MintAuthorization.Authorization.deadline authorization)))))\n    BridgeSpec.ClaimContracts.DepositTransitionSafety)",
+      "definition": "And\n  (∀ {state next : BridgeSpec.MintAuthorization.DepositState}\n    {authorization : BridgeSpec.MintAuthorization.Authorization}\n    {origin : BridgeSpec.MintAuthorization.AuthorizationOrigin},\n    Eq.{1} (BridgeSpec.MintAuthorization.commitAuthorization state authorization origin) (Option.some.{0} next) →\n      And (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.authorization next) (Option.some.{0} authorization))\n        (And\n          (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.deadline authorization)\n            (HAdd.hAdd.{0, 0, 0} (BridgeSpec.MintAuthorization.AuthorizationOrigin.issuedAtTimestamp origin)\n              BridgeSpec.MintAuthorization.authorizationTtl))\n          (And\n            (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.chainId authorization)\n              (BridgeSpec.MintAuthorization.AuthorizationOrigin.expectedChainId origin))\n            (And\n              (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.verifyingContract authorization)\n                (BridgeSpec.MintAuthorization.AuthorizationOrigin.expectedVerifyingContract origin))\n              (Eq.{1} (BridgeSpec.MintAuthorization.Authorization.epoch authorization)\n                (BridgeSpec.MintAuthorization.AuthorizationOrigin.expectedEpoch origin))))))\n  (And\n    (∀ {state next : BridgeSpec.MintAuthorization.DepositState} {observedTimestamp : Nat},\n      Eq.{1} (BridgeSpec.MintAuthorization.installSignature state observedTimestamp) (Option.some.{0} next) →\n        Exists.{1} fun authorization =>\n          And (Eq.{1} (BridgeSpec.MintAuthorization.DepositState.authorization state) (Option.some.{0} authorization))\n            (And\n              (LE.le.{0} (BridgeSpec.MintAuthorization.Authorization.deadline authorization)\n                BridgeSpec.MintAuthorization.maxU64)\n              (LT.lt.{0} observedTimestamp (BridgeSpec.MintAuthorization.Authorization.deadline authorization))))\n    BridgeSpec.ClaimContracts.DepositTransitionSafety)",
       "name": "BridgeSpec.ClaimContracts.AuthorizationBinding",
       "type": "Prop"
     },
@@ -1995,7 +1995,7 @@
       "type": "BridgeSpec.Protocol.ProtocolState → Option.{0} BridgeSpec.Protocol.ProtocolState"
     },
     {
-      "definition": "fun observedTimestamp deadline =>\n  Decidable.decide\n    (And (LE.le.{0} deadline (HSub.hSub.{0, 0, 0} (HPow.hPow.{0, 0, 0} 2 64) 1))\n      (And (LE.le.{0} observedTimestamp (HSub.hSub.{0, 0, 0} (HSub.hSub.{0, 0, 0} (HPow.hPow.{0, 0, 0} 2 64) 1) 300))\n        (LE.le.{0} (HAdd.hAdd.{0, 0, 0} observedTimestamp 300) deadline)))",
+      "definition": "fun observedTimestamp deadline =>\n  Decidable.decide\n    (And (LE.le.{0} deadline (HSub.hSub.{0, 0, 0} (HPow.hPow.{0, 0, 0} 2 64) 1)) (LT.lt.{0} observedTimestamp deadline))",
       "name": "BridgeSpec.signatureTimeAllowed",
       "type": "Nat → Nat → Bool"
     }

@@ -1216,27 +1216,29 @@ proof fn mint_finalization_requires_exact_finalized_success(
         <==> binding && succeeded && receipt_block <= finalized_block
 {}
 
-proof fn mint_authorization_minimum_remaining_time_accepts_300_rejects_299_and_overflow(
+proof fn mint_authorization_accepts_only_before_deadline(
     observed_timestamp: int, deadline: int,
 )
     ensures
-        kernel::mint_authorization_has_minimum_remaining_time_spec(
+        kernel::mint_authorization_before_deadline_spec(
             observed_timestamp, deadline)
-            <==> observed_timestamp <= 18446744073709551615 - 300
-                && observed_timestamp + 300 <= deadline,
-        kernel::mint_authorization_has_minimum_remaining_time_spec(700, 1000),
-        !kernel::mint_authorization_has_minimum_remaining_time_spec(701, 1000),
-        !kernel::mint_authorization_has_minimum_remaining_time_spec(
+            <==> observed_timestamp < deadline,
+        kernel::mint_authorization_before_deadline_spec(700, 1000),
+        kernel::mint_authorization_before_deadline_spec(701, 1000),
+        kernel::mint_authorization_before_deadline_spec(999, 1000),
+        !kernel::mint_authorization_before_deadline_spec(1000, 1000),
+        !kernel::mint_authorization_before_deadline_spec(1001, 1000),
+        !kernel::mint_authorization_before_deadline_spec(
             18446744073709551615, 18446744073709551615),
 {}
 
-proof fn signature_install_requires_dispatch_absence_exact_length_and_minimum_remaining_time(
+proof fn signature_install_requires_dispatch_absence_exact_length_and_unexpired_deadline(
     dispatched: bool, absent: bool, length: bool, observed_timestamp: int, deadline: int,
 )
     ensures kernel::signature_install_allowed_spec(
         dispatched, absent, length, observed_timestamp, deadline)
         <==> dispatched && absent && length
-            && kernel::mint_authorization_has_minimum_remaining_time_spec(
+            && kernel::mint_authorization_before_deadline_spec(
                 observed_timestamp, deadline)
 {}
 

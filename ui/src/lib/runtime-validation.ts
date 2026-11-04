@@ -184,6 +184,8 @@ export async function validateRuntimeHeartbeat(
     client.getChainId(),
     client.getBlock({ blockTag: "finalized" }),
   ])
+  if (status.schema_version !== 36)
+    blockers.push(`Unsupported canister status schema ${status.schema_version}`)
   if (status.withdrawal_fee_guard_active)
     blockers.push("Withdrawal fee guard is active; pause Base withdrawals and reconcile fees")
   if (localChainId !== profile.chainId)
@@ -297,6 +299,8 @@ export async function validateRuntime(
       client.getChainId(),
       client.getBlock({ blockTag: "finalized" }),
     ])
+  if (status.schema_version !== 36)
+    blockers.push(`Unsupported canister status schema ${status.schema_version}`)
   if (status.withdrawal_fee_guard_active)
     blockers.push("Withdrawal fee guard is active; pause Base withdrawals and reconcile fees")
   if (localChainId !== profile.chainId)

@@ -347,18 +347,55 @@ fn expired_signature_is_not_installed_or_charged() {
         .expect("dispatch");
     let before = deposit.clone();
 
-    assert_eq!(
-        deposit.apply(DepositEvent::AuthorizationSigned {
-            signature: vec![12; 65],
-            observed_timestamp: deadline + 1,
-        }),
-        Err(CoreError::ConflictingReplay)
-    );
-    assert_eq!(deposit, before);
+    for observed_timestamp in [deadline, deadline + 1] {
+        assert_eq!(
+            deposit.apply(DepositEvent::AuthorizationSigned {
+                signature: vec![12; 65],
+                observed_timestamp,
+            }),
+            Err(CoreError::ConflictingReplay)
+        );
+        assert_eq!(deposit, before);
+    }
     assert!(deposit
         .mint_authorization
         .as_ref()
         .is_some_and(|authorization| authorization.signature.is_none()));
+}
+
+#[test]
+fn signature_with_one_second_remaining_charges_fee_once() {
+    let mut deposit = accepted_deposit();
+    deposit
+        .apply(DepositEvent::FundingSucceeded {
+            funding_ledger_block_index: 1,
+        })
+        .unwrap();
+    deposit
+        .apply(DepositEvent::CommitAuthorization {
+            quote: test_deposit_quote(),
+            authorization: Box::new(authorization_record(&deposit)),
+        })
+        .unwrap();
+    let authorization = deposit.mint_authorization.as_mut().unwrap();
+    let deadline = authorization.authorization.deadline;
+    authorization.dispatch_signature().unwrap();
+    let event = DepositEvent::AuthorizationSigned {
+        signature: vec![12; 65],
+        observed_timestamp: deadline - 1,
+    };
+    let result = deposit.apply(event.clone()).unwrap();
+    assert_eq!(result.deposit_effects.unwrap().fee_credit, Amount::new(10));
+    let before = deposit.clone();
+    let replay = deposit.apply(event);
+    assert!(
+        replay.is_err()
+            || replay
+                .unwrap()
+                .deposit_effects
+                .is_none_or(|effects| effects.fee_credit == Amount::ZERO)
+    );
+    assert_eq!(deposit, before);
 }
 
 #[test]

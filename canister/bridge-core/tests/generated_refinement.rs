@@ -506,7 +506,7 @@ fn protocol_signature_time_cases_matches_production() {
         let observed: u64 = text(&case, "observed_timestamp").parse().unwrap();
         let deadline: u64 = text(&case, "deadline").parse().unwrap();
         assert_eq!(
-            bridge_core::kernel::mint_authorization_has_minimum_remaining_time(observed, deadline),
+            bridge_core::kernel::mint_authorization_before_deadline(observed, deadline),
             boolean(&case, "accepted")
         );
     }

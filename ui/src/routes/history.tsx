@@ -234,11 +234,7 @@ function HistoryPage() {
     refetchIntervalInBackground: true,
     refetchInterval: (query) =>
       [...(query.state.data?.values() ?? [])].some(
-        (observation) =>
-          Boolean(observation.transactionHash) &&
-          !observation.recorded &&
-          !(observation.status === "reverted" && observation.finalized) &&
-          observation.status !== "conflict",
+        (observation) => Boolean(observation.transactionHash) && !observation.recorded,
       )
         ? 10_000
         : false,
@@ -950,10 +946,10 @@ export function DepositActivityRow({
   item,
   mintFinalization,
   processedWithoutReceipt,
+  finalizedBlockTimestamp,
   mintRecoveryProblem,
   mintTransactionHash,
   mintRecording,
-  finalizedBlockTimestamp,
   writesEnabled,
   actioningId,
   onRequestRefund,
@@ -999,14 +995,21 @@ export function DepositActivityRow({
     : continuation.message
   const presentation = useTransferPresentation(
     depositFacts(record, {
-      finalized: mintFinalization === "minted" && mintRecording !== "confirming",
+      finalized: mintFinalization === "minted" && mintRecording === "recorded",
       included: mintFinalization === "minted",
       unavailable: mintFinalization === "unavailable",
       submitted: Boolean(pendingMint),
       processed: processedWithoutReceipt,
     }),
   )
-  const mintedOnBase = mintFinalization === "minted" && mintRecording !== "confirming"
+  const advisoryRefundCheck =
+    !presentation.terminal &&
+    (processedWithoutReceipt || presentation.code === "conflict") &&
+    (refundPhase ||
+      "AuthorizationAvailable" in record.state ||
+      continuation.action === "request-refund")
+  const mintedOnBase =
+    "Minted" in record.state || (mintFinalization === "minted" && mintRecording === "recorded")
   const mintSubmitted = depositUsesPendingMintStatus(
     record.state,
     Boolean(pendingMint),
@@ -1076,8 +1079,10 @@ export function DepositActivityRow({
         >
           {presentation.title}
         </Badge>
-        {mintedOnBase && !terminal && mintRecording === "retrying" ? (
+        {mintFinalization === "minted" && !terminal && mintRecording === "retrying" ? (
           <p className="mt-1 text-xs text-[var(--muted)]">IC recording will retry automatically</p>
+        ) : mintFinalization === "minted" && !terminal && mintRecording === "pending" ? (
+          <p className="mt-1 text-xs text-[var(--muted)]">Waiting for IC recording</p>
         ) : presentation.description ? (
           <p className="mt-1 text-xs">{presentation.description}</p>
         ) : null}
@@ -1111,7 +1116,16 @@ export function DepositActivityRow({
       </div>
       <div className="min-w-0">
         <MobileLabel>Next step</MobileLabel>
-        {presentation.code === "conflict" || presentation.terminal ? (
+        {advisoryRefundCheck ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!writesEnabled || actioningId === key}
+            onClick={() => void onRequestRefund(record)}
+          >
+            {actioningId === key ? "Checking…" : "Check refund"}
+          </Button>
+        ) : presentation.code === "conflict" || presentation.terminal ? (
           <span className="text-sm text-[var(--muted)]">—</span>
         ) : processedWithoutReceipt ? (
           <span className="text-sm text-[var(--muted)]">
@@ -1119,16 +1133,24 @@ export function DepositActivityRow({
               ? "Searching for the transaction automatically"
               : "Transaction confirmation unavailable"}
           </span>
-        ) : mintFinalization === "minted" ? (
+        ) : mintedOnBase ? (
           <span className="text-sm text-[var(--muted)]">—</span>
         ) : "AuthorizationAvailable" in record.state ? (
-          <MintAuthorizationAction
-            key={pendingMint?.transactionHash ?? "unsubmitted"}
-            record={record}
-            compact
-            onRequestRefund={writesEnabled ? () => void onRequestRefund(record) : undefined}
-            claimingRefund={actioningId === key}
-          />
+          <div>
+            <MintAuthorizationAction
+              key={pendingMint?.transactionHash ?? "unsubmitted"}
+              record={record}
+              compact
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!writesEnabled || actioningId === key}
+              onClick={() => void onRequestRefund(record)}
+            >
+              {actioningId === key ? "Checking…" : "Check refund"}
+            </Button>
+          </div>
         ) : continuation.action === "retry-authorization" ? (
           <Button
             size="sm"
@@ -1148,7 +1170,14 @@ export function DepositActivityRow({
             {actioningId === key ? "Continuing…" : "Continue deposit"}
           </Button>
         ) : continuation.action === "request-refund" ? (
-          deadlineRefundStatus === "ready" ? (
+          <div>
+            {deadlineRefundStatus !== "ready" && (
+              <span className="text-sm text-[var(--muted)]">
+                {deadlineRefundStatus === "checking-finality"
+                  ? "Checking Base finality…"
+                  : "Waiting for Base finality"}
+              </span>
+            )}
             <Button
               size="sm"
               variant="ghost"
@@ -1157,13 +1186,7 @@ export function DepositActivityRow({
             >
               {actioningId === key ? "Checking…" : "Check refund"}
             </Button>
-          ) : (
-            <span className="text-sm text-[var(--muted)]">
-              {deadlineRefundStatus === "checking-finality"
-                ? "Checking Base finality…"
-                : "Waiting for Base finality"}
-            </span>
-          )
+          </div>
         ) : "RefundAvailable" in record.state ||
           ("RefundProcessing" in record.state &&
             Boolean(
