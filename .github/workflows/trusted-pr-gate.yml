@@ -235,6 +235,14 @@ jobs:
           python3 trusted-policy/scripts/prepare_candidate_dependencies.py \
             --source source --destination "$dependency_root"
           echo "BRIDGE_TRUSTED_DEPENDENCY_ROOT=$dependency_root" >> "$GITHUB_ENV"
+      - name: Install reviewed Halmos dependencies without builds
+        if: matrix.area == 'proofs-impacted'
+        run: |
+          uv sync --frozen --no-config --no-build --no-install-project \
+            --python /usr/bin/python3 --project "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/verification/halmos"
+          mkdir -p "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/scripts"
+          cp trusted-policy/scripts/halmos_environment.py "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/scripts/halmos_environment.py"
+          python3 "$BRIDGE_TRUSTED_DEPENDENCY_ROOT/scripts/halmos_environment.py" --write
       - name: Install reviewed workspace dependencies without lifecycle scripts
         if: matrix.area == 'policy' || matrix.area == 'rust-fast' || matrix.area == 'rust-integration' || matrix.area == 'proofs-impacted'
         run: pnpm --dir "$BRIDGE_TRUSTED_DEPENDENCY_ROOT" install --frozen-lockfile --ignore-scripts
