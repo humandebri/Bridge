@@ -32,6 +32,35 @@ def mode_body(name: str) -> str:
 
 
 class CiModeTests(unittest.TestCase):
+    def test_ui_fast_checks_production_wallet_boundary_and_propagates_failure(self) -> None:
+        body = function_body("run_ui_fast")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for boundary_status in (0, 23):
+                script = f'''
+set -euo pipefail
+ROOT={shlex.quote(str(root))}
+TMP_ROOT="$ROOT/tmp"
+BRIDGE_TEST_SESSION=
+require_ui_dependencies() {{ :; }}
+pnpm() {{ :; }}
+node() {{
+  test "$1" = "$ROOT/ui/scripts/check-wallet-dependency-boundary.mjs"
+  test "$2" = "$TMP_ROOT/wallet-dependency-boundary"
+  printf 'boundary checked\\n'
+  return {boundary_status}
+}}
+run_ui_fast() {{
+{body}
+}}
+run_ui_fast
+printf 'ui complete\\n'
+'''
+                result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+                self.assertEqual(result.returncode, boundary_status, result.stderr)
+                self.assertIn("boundary checked", result.stdout)
+                self.assertEqual("ui complete" in result.stdout, boundary_status == 0)
+
     def test_local_driver_selects_the_pinned_node_with_fnm_once(self) -> None:
         self.assertIn('EXPECTED_NODE_VERSION="v$(<"$ROOT/.node-version")"', SOURCE)
         self.assertIn('BRIDGE_CI_LOCAL_NODE_REEXEC:-0', SOURCE)

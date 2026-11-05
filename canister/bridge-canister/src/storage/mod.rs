@@ -9850,6 +9850,62 @@ mod tests {
 
     #[test]
     #[serial]
+    fn deposit_consent_discloses_deadline_and_signature_fee_without_minimum_window() {
+        use crate::{api, consent};
+        use candid::{Encode, Nat};
+
+        crate::STORE.with(|store| {
+            store.borrow_mut().0 =
+                Some(StableStore::init_configured(VectorMemory::default(), &config()).unwrap());
+        });
+        let owner = Principal::self_authenticating([11; 32]);
+        let args = api::DepositArgs {
+            owner_sequence: 7,
+            base_recipient: vec![2; 20],
+            from_subaccount: Some(vec![3; 32]),
+            gross_amount: Nat::from(200_000_000u64),
+            max_service_fee: Nat::from(1_000_000u64),
+        };
+        let response = consent::consent_message(
+            owner,
+            Principal::self_authenticating([12; 32]),
+            consent::Icrc21ConsentMessageRequest {
+                method: "request_deposit".into(),
+                arg: Encode!(&args).unwrap(),
+                user_preferences: consent::Icrc21ConsentMessageSpec {
+                    metadata: consent::Icrc21ConsentMessageMetadata {
+                        language: "en".into(),
+                        utc_offset_minutes: None,
+                    },
+                    device_spec: Some(consent::Icrc21DeviceSpec::GenericDisplay),
+                },
+            },
+            Some(10_000),
+        );
+        // Close SQLite while its thread-local VFS is still available, including on assertion failure.
+        crate::STORE.with(|store| store.borrow_mut().0.take());
+        let consent::Icrc21ConsentMessageResponse::Ok(info) = response else {
+            panic!("valid deposit must produce consent");
+        };
+        let consent::Icrc21ConsentMessage::GenericDisplayMessage(message) = info.consent_message;
+        assert!(message.contains(&format!("Source wallet: `{owner}`")));
+        assert!(message.contains(&format!("Source subaccount: `0x{}`", "03".repeat(32))));
+        assert!(message.contains("Total wallet debit: `2.0001` KINIC"));
+        assert!(message.contains("minimum refund after authorization is `1.9899` KINIC"));
+        assert!(message.contains(&format!(
+            "valid for {} minutes from its IC consensus issue time",
+            bridge_core::MINT_AUTHORIZATION_TTL_SECONDS / 60
+        )));
+        assert!(message.contains("strictly before the authorization deadline"));
+        assert!(message.contains("no guaranteed minimum time remaining"));
+        assert!(message.contains("expire before your wallet submits or Base includes"));
+        assert!(message
+            .contains("service fee remains charged even if the authorization expires unused"));
+        assert!(!message.contains("At least five minutes must remain"));
+    }
+
+    #[test]
+    #[serial]
     fn consent_and_notification_cooldowns_do_not_share_value_capacity() {
         let mut store = StableStore::init(VectorMemory::default()).unwrap();
         let boundary = 6_000_000_000_000u64;

@@ -127,6 +127,28 @@ class TrustedPrGateTests(unittest.TestCase):
         repository_gate = workflow.index("run: scripts/ci-local.sh all")
         self.assertLess(root_install, repository_gate)
 
+    def test_full_gate_exports_verified_receipt_and_consumed_wasm_only_after_success(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        gate = workflow.index("run: scripts/ci-local.sh all")
+        verify = workflow.index("run: python3 scripts/check_proof_impact.py --receipt verification/output/proof-receipt.json")
+        upload = workflow.index("uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02")
+        self.assertLess(gate, verify)
+        self.assertLess(verify, upload)
+        export = workflow[upload:]
+        self.assertIn("if-no-files-found: error", export)
+        self.assertIn("${{ inputs.target_sha || github.sha }}", export)
+        self.assertIn("${{ github.run_id }}-${{ github.run_attempt }}", export)
+        for artifact in (
+            "verification/output/proof-receipt.json",
+            "verification/output/test-execution/",
+            "target/test-deployment/staging/bridge_canister.wasm",
+            "target/test-deployment/predecessor-v35/bridge_canister.wasm",
+            "target/wasm32-unknown-unknown/release/mock_external.wasm",
+        ):
+            self.assertIn(artifact, export)
+        self.assertNotIn("always()", workflow[gate:])
+        self.assertNotIn("continue-on-error", workflow[gate:])
+
     def test_main_push_calls_the_reusable_full_gate_once(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "main-push.yml").read_text(
             encoding="utf-8"
