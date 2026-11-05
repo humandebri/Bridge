@@ -1,4 +1,6 @@
 import { createRequire } from "node:module"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import path from "node:path"
 import { test, expect, type Frame } from "@playwright/test"
 import { createServer, type ViteDevServer } from "vite"
@@ -9,6 +11,7 @@ const appkit = createRequire(wc.resolve("@reown/appkit/core"))
 const wallet = path.dirname(appkit.resolve("@reown/appkit-wallet"))
 let server: ViteDevServer
 let url: string
+let cacheDirectory: string | undefined
 
 declare global {
   interface Window {
@@ -23,8 +26,10 @@ declare global {
 }
 
 test.beforeAll(async () => {
+  cacheDirectory = mkdtempSync(path.join(tmpdir(), "bridge-vite-reown-frame-"))
   server = await createServer({
     configFile: false,
+    cacheDir: cacheDirectory,
     root: path.resolve(import.meta.dirname, ".."),
     server: { host: "127.0.0.1", port: 0 },
     appType: "custom",
@@ -63,7 +68,13 @@ test.beforeAll(async () => {
   url = server.resolvedUrls!.local[0]!
 })
 
-test.afterAll(async () => server?.close())
+test.afterAll(async () => {
+  try {
+    await server?.close()
+  } finally {
+    if (cacheDirectory) rmSync(cacheDirectory, { recursive: true, force: true })
+  }
+})
 
 test("Reown validates real message origins and sources before parsing, including after reconnect", async ({
   page,
