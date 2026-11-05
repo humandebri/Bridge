@@ -1,6 +1,6 @@
 import { createRequire } from "node:module"
 import path from "node:path"
-import { test, expect } from "@playwright/test"
+import { test, expect, type Frame } from "@playwright/test"
 import { createServer, type ViteDevServer } from "vite"
 
 const require = createRequire(import.meta.url)
@@ -87,7 +87,7 @@ test("Reown validates real message origins and sources before parsing, including
   await expect.poll(() => page.evaluate(() => Boolean(window.reownTest?.frame.iframe))).toBe(true)
   const trusted = page.frameLocator("#w3m-iframe")
   await expect(trusted.getByText("Secure iframe fixture")).toBeAttached()
-  const send = async (frame: import("@playwright/test").Frame, large = false) =>
+  const send = async (frame: Frame, large = false) =>
     frame.evaluate((large) => {
       const data = large
         ? {
