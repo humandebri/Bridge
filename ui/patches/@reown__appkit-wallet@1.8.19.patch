@@ -1,0 +1,33 @@
+diff --git a/dist/esm/src/W3mFrame.js b/dist/esm/src/W3mFrame.js
+index 0000000..1111111 100644
+--- a/dist/esm/src/W3mFrame.js
++++ b/dist/esm/src/W3mFrame.js
+@@ -33,9 +33,16 @@
+                 document.body.appendChild(this.iframe);
+             }
+         };
++        const isTrustedFrameEvent = event => {
++            return Boolean(this.iframe?.contentWindow &&
++                event.source === this.iframe.contentWindow &&
++                event.origin === new URL(SECURE_SITE_SDK).origin);
++        };
+         this.events = {
+             registerFrameEventHandler: (id, callback, signal) => {
+-                function eventHandler({ data }) {
++                function eventHandler(event) {
++                    if (!isTrustedFrameEvent(event)) return;
++                    const { data } = event;
+                     if (!shouldHandleEvent(W3mFrameConstants.FRAME_EVENT_KEY, data)) {
+                         return;
+                     }
+@@ -58,7 +65,9 @@
+             },
+             onFrameEvent: (callback) => {
+                 if (W3mFrameHelpers.isClient) {
+-                    window.addEventListener('message', ({ data }) => {
++                    window.addEventListener('message', event => {
++                        if (!isTrustedFrameEvent(event)) return;
++                        const { data } = event;
+                         if (!shouldHandleEvent(W3mFrameConstants.FRAME_EVENT_KEY, data)) {
+                             return;
+                         }
