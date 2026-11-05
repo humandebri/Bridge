@@ -19,6 +19,8 @@ allowBuilds:
   workerd: true
 patchedDependencies:
   "@dfinity/oisy-wallet-signer@6.0.0": patches/@dfinity__oisy-wallet-signer@6.0.0.patch
+  # Reject forged frame messages before the upstream Zod v3 validation runs.
+  "@reown/appkit-wallet@1.8.19": patches/@reown__appkit-wallet@1.8.19.patch
 peerDependencyRules:
   allowedVersions:
     "@dfinity/oisy-wallet-signer>@dfinity/utils": 4.2.1

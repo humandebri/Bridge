@@ -15,6 +15,7 @@ overrides:
 
 patchedDependencies:
   '@dfinity/oisy-wallet-signer@6.0.0': 260392e5cdcf7977f8b180881e52a8f15596c74fee497d6bbe1aec6d643e0918
+  '@reown/appkit-wallet@1.8.19': c7bc640b4753d97b89b4bf6f749ab188e24feb440c58ecfc04404dd9c8c8cf54
 
 importers:
 
@@ -4801,7 +4802,7 @@ snapshots:
   '@reown/appkit-controllers@1.8.19(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.2)(zod@4.6.6)':
     dependencies:
       '@reown/appkit-common': 1.8.19(typescript@6.0.2)(zod@4.6.6)
-      '@reown/appkit-wallet': 1.8.19(typescript@6.0.2)
+      '@reown/appkit-wallet': 1.8.19(patch_hash=c7bc640b4753d97b89b4bf6f749ab188e24feb440c58ecfc04404dd9c8c8cf54)(typescript@6.0.2)
       '@walletconnect/universal-provider': 2.23.7(typescript@6.0.2)(zod@4.6.6)
       valtio: 2.1.7(@types/react@19.2.17)(react@19.2.7)
       viem: 2.55.1(typescript@6.0.2)(zod@4.6.6)
@@ -4889,7 +4890,7 @@ snapshots:
       '@reown/appkit-pay': 1.8.19(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.2)(use-sync-external-store@1.4.0(react@19.2.7))(zod@4.6.6)
       '@reown/appkit-ui': 1.8.19(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.2)(zod@4.6.6)
       '@reown/appkit-utils': 1.8.19(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.2)(use-sync-external-store@1.4.0(react@19.2.7))(valtio@2.1.7(@types/react@19.2.17)(react@19.2.7))(zod@4.6.6)
-      '@reown/appkit-wallet': 1.8.19(typescript@6.0.2)
+      '@reown/appkit-wallet': 1.8.19(patch_hash=c7bc640b4753d97b89b4bf6f749ab188e24feb440c58ecfc04404dd9c8c8cf54)(typescript@6.0.2)
       lit: 3.3.0
     transitivePeerDependencies:
       - '@azure/app-configuration'
@@ -4934,7 +4935,7 @@ snapshots:
       '@phosphor-icons/webcomponents': 2.1.5
       '@reown/appkit-common': 1.8.19(typescript@6.0.2)(zod@4.6.6)
       '@reown/appkit-controllers': 1.8.19(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.2)(zod@4.6.6)
-      '@reown/appkit-wallet': 1.8.19(typescript@6.0.2)
+      '@reown/appkit-wallet': 1.8.19(patch_hash=c7bc640b4753d97b89b4bf6f749ab188e24feb440c58ecfc04404dd9c8c8cf54)(typescript@6.0.2)
       lit: 3.3.0
       qrcode: 1.5.3
     transitivePeerDependencies:
@@ -4970,7 +4971,7 @@ snapshots:
       '@reown/appkit-common': 1.8.19(typescript@6.0.2)(zod@4.6.6)
       '@reown/appkit-controllers': 1.8.19(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.2)(zod@4.6.6)
       '@reown/appkit-polyfills': 1.8.19
-      '@reown/appkit-wallet': 1.8.19(typescript@6.0.2)
+      '@reown/appkit-wallet': 1.8.19(patch_hash=c7bc640b4753d97b89b4bf6f749ab188e24feb440c58ecfc04404dd9c8c8cf54)(typescript@6.0.2)
       '@wallet-standard/wallet': 1.1.0
       '@walletconnect/logger': 3.0.2
       '@walletconnect/universal-provider': 2.23.7(typescript@6.0.2)(zod@4.6.6)
@@ -5017,7 +5018,7 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@reown/appkit-wallet@1.8.19(typescript@6.0.2)':
+  '@reown/appkit-wallet@1.8.19(patch_hash=c7bc640b4753d97b89b4bf6f749ab188e24feb440c58ecfc04404dd9c8c8cf54)(typescript@6.0.2)':
     dependencies:
       '@reown/appkit-common': 1.8.19(typescript@6.0.2)(zod@3.22.4)
       '@reown/appkit-polyfills': 1.8.19
@@ -5037,7 +5038,7 @@ snapshots:
       '@reown/appkit-scaffold-ui': 1.8.19(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.2)(use-sync-external-store@1.4.0(react@19.2.7))(valtio@2.1.7(@types/react@19.2.17)(react@19.2.7))(zod@4.6.6)
       '@reown/appkit-ui': 1.8.19(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.2)(zod@4.6.6)
       '@reown/appkit-utils': 1.8.19(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.2)(use-sync-external-store@1.4.0(react@19.2.7))(valtio@2.1.7(@types/react@19.2.17)(react@19.2.7))(zod@4.6.6)
-      '@reown/appkit-wallet': 1.8.19(typescript@6.0.2)
+      '@reown/appkit-wallet': 1.8.19(patch_hash=c7bc640b4753d97b89b4bf6f749ab188e24feb440c58ecfc04404dd9c8c8cf54)(typescript@6.0.2)
       '@walletconnect/universal-provider': 2.23.7(typescript@6.0.2)(zod@4.6.6)
       bs58: 6.0.0
       semver: 7.7.2
