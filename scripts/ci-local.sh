@@ -915,6 +915,7 @@ run_ui_fast() {
     pnpm --dir "$ROOT/ui" run test
   fi
   pnpm --dir "$ROOT/ui" run build
+  node "$ROOT/ui/scripts/check-wallet-dependency-boundary.mjs" "$TMP_ROOT/wallet-dependency-boundary"
 }
 
 run_ui_e2e() {
