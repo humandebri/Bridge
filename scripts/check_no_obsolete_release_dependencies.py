@@ -21,7 +21,7 @@ FORBIDDEN_PATHS = frozenset(
 )
 SCRIPT_SUFFIXES = frozenset({".sh", ".py", ".mjs"})
 CANONICAL_REFERENCE = re.compile(
-    r"(?P<path>(?:scripts|deployments)/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)"
+    r"(?P<path>(?:ui/scripts|scripts|deployments)/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)"
 )
 SAME_DIRECTORY_SCRIPT = re.compile(
     r"(?:\)|SCRIPT_DIR\}?)/(?P<path>[A-Za-z0-9_.-]+\.(?:sh|py|mjs))(?=[\"'\s])"

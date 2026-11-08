@@ -66,6 +66,30 @@ class ObsoleteReleaseDependencyTests(unittest.TestCase):
         )
         self.assertIn("missing helper", "\n".join(self.violations(root)))
 
+    def test_ui_helper_uses_its_real_path_and_is_traversed(self) -> None:
+        temporary, root = self.root()
+        self.addCleanup(temporary.cleanup)
+        (root / "scripts/ci-local.sh").write_text(
+            'node "$ROOT/ui/scripts/check-wallet-dependency-boundary.mjs"\n', encoding="utf-8"
+        )
+        helper = root / "ui/scripts/check-wallet-dependency-boundary.mjs"
+        helper.parent.mkdir(parents=True)
+        helper.write_text("// valid UI helper\n", encoding="utf-8")
+        self.assertEqual(self.violations(root), [])
+        helper.write_text(
+            'const policy = "deployments/sepolia-staging/obsolete-replacement-policy.json"\n',
+            encoding="utf-8",
+        )
+        self.assertIn("obsolete-replacement-policy.json", "\n".join(self.violations(root)))
+
+    def test_missing_ui_helper_still_fails_closed_at_the_real_path(self) -> None:
+        temporary, root = self.root()
+        self.addCleanup(temporary.cleanup)
+        (root / "scripts/ci-local.sh").write_text(
+            'node "$ROOT/ui/scripts/missing.mjs"\n', encoding="utf-8"
+        )
+        self.assertIn("missing helper ui/scripts/missing.mjs", "\n".join(self.violations(root)))
+
     def install_replacement_layout(self, root: Path) -> None:
         policy = root / "deployments/sepolia-staging"
         policy.mkdir(parents=True)

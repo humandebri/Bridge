@@ -9,7 +9,7 @@ The [specification correspondence table](claim-semantics.tsv) explains premises 
 These new tables do not compute evidence strength.
 
 In the [statement catalog](generated/claim-statements.md), follow witness types to proposition definitions and check whether premises are too strong or conclusions omit part of the specification.
-For example, fee accounting once at signing and the minimum remaining validity period are separate conditions; check that the proposition includes both.
+For example, fee accounting once at signing and signature installation strictly before the fixed deadline are separate conditions; check that the proposition includes both. No minimum remaining submission window is guaranteed.
 
 ## From accounting deltas to histories (10 minutes)
 
@@ -32,7 +32,7 @@ This fixes the accounting model's expressive boundary; it does not claim that pr
 DepositHistory covers histories from authorization issuance to termination.
 Signature events require a u64 deadline and an IC observation timestamp strictly before it.
 Remaining validity of 300, 299, and 1 seconds is accepted; equality with the deadline and expired deadlines are rejected.
-Correspondence with the production minimum-remaining-time predicate is linked through a finite-width model theorem and the Rust vector consumer.
+Correspondence with the production before-deadline predicate is linked through a finite-width model theorem and the Rust vector consumer.
 Cryptographic signatures themselves and IC timestamp authenticity remain external assumptions.
 
 The integrated Protocol proves that the stored quote's recipient and net amount remain unchanged across transitions.

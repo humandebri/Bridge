@@ -49,7 +49,7 @@ Each stage saves source commit, artifact SHA-256, target, raw receipts, and obse
 ## Finality delay, wallet, and refund E2E
 
 - Demonstrate successful Deposit review with the Finalized head deliberately lagging about 20 minutes; record Authorization `issued_at_timestamp` and `deadline = issued_at + 900`.
-- Using the quote snapshot's `blockTimestamp` as authoritative, record that submission is allowed with 300 seconds remaining, but no wallet call, Ledger pull, intent storage, or Base submission starts at 299 seconds or less or exactly at window end.
+- Use IC consensus issue time for the fixed 900-second authorization deadline. Verify signature installation is allowed with 300, 299, and 1 seconds remaining and rejected exactly at or after the deadline. Check that wallet consent discloses the absence of a minimum remaining window and the service fee retained after signature installation even if the authorization expires unused. Distinguish signing from submission: UI eligibility uses the observed Base timestamp and includes equality with the deadline; Solidity rejects inclusion only after the deadline. An eligible UI observation cannot guarantee timely inclusion.
 - Complete a real-wallet TICRC1 Deposit through Base mint, recording the Base ETH payment receipt and exact processed Deposit.
 - Propagate `AuthorizationExpired` and `AuthorizationWindowTooShort` to History as stop reasons. Record that refund is prohibited until Finalized Base time exceeds the deadline and then requires exact unprocessed evidence.
 - Fix Solidity acceptance of `block.timestamp + 900` and rejection of `+901` through target artifacts and transaction tests.
